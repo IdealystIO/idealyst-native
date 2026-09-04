@@ -108,7 +108,7 @@ use runtime_core::{
 /// intent" delay.
 const SUBMENU_HOVER_GRACE_MS: i32 = 120;
 
-use crate::stylesheets::{MenuCheckMark, MenuCheckbox, MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, Spacer};
+use crate::stylesheets::{MenuItemLabel, MenuCheckMark, MenuCheckbox, MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, Spacer};
 
 /// Right-pointing chevron shown on SubMenu rows.
 const CHEVRON: &str = "\u{203A}";
@@ -289,6 +289,18 @@ impl Default for MenuItemProps {
     }
 }
 
+/// A menu row's label as its own styled text node.
+///
+/// NOT a bare `text()`: native text widgets inherit neither font size
+/// nor color from the row around them, so the `body_size` on
+/// `MenuItemRow` never reached the label and every menu on iOS, Android
+/// and macOS drew it at the platform default. See `MenuItemLabel`.
+fn menu_label(label: Reactive<String>) -> Element {
+    runtime_core::text(label)
+        .with_style(MenuItemLabel())
+        .into_element()
+}
+
 /// Renders one selectable menu row: optional leading element, label,
 /// and optional right-pushed trailing element, in a pressable.
 #[component]
@@ -300,7 +312,7 @@ pub fn MenuItem(props: MenuItemProps) -> Element {
     if let Some(l) = props.leading {
         kids.push(l);
     }
-    kids.push(runtime_core::text(props.label).into_element());
+    kids.push(menu_label(props.label));
     if let Some(tr) = props.trailing {
         kids.push(grow());
         kids.push(tr);
@@ -655,7 +667,7 @@ fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
     if let Some(c) = entry.checked {
         kids.push(menu_checkbox(c));
     }
-    kids.push(runtime_core::text(entry.label).into_element());
+    kids.push(menu_label(entry.label));
     runtime_core::pressable(kids, move || {
         (on_select)();
         if !keep_open {
@@ -822,7 +834,7 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     let chevron = runtime_core::text(CHEVRON.to_string())
         .with_style(MenuChevron())
         .into_element();
-    let label_node = runtime_core::text(props.label).into_element();
+    let label_node = menu_label(props.label);
     let trigger = {
         let open_now = open_now.clone();
         let schedule_close = schedule_close.clone();
@@ -1306,5 +1318,54 @@ mod tests {
                 "a released level holds nobody — the next open closes nothing"
             );
     });
+    }
+
+    /// A menu row's label carries its OWN type size.
+    ///
+    /// Native text widgets inherit neither font size nor color from the
+    /// view around them — the gap `Tabs` documents for its own labels —
+    /// so the `body_size` on `MenuItemRow` never reached a bare `text()`
+    /// label, and every menu on iOS/Android/macOS drew it at the
+    /// platform default: a third too large against a 13.5px body. Web
+    /// inherits through the cascade, which is why it went unseen.
+    ///
+    /// It showed the moment a menu sat beside anything else — the filter
+    /// panel's dimension rows towered over the column switches in the
+    /// pane next to them (measured 38px of ink against 29px on an
+    /// iPhone 17 Pro Max).
+    ///
+    /// Asserting the LABEL node's own resolved size, not the row's, is
+    /// what makes this a valid regression test.
+    #[test]
+    fn regression_menu_labels_carry_their_own_type_size() {
+        with_test_world(|| {
+            let row = MenuItem(MenuItemProps {
+                label: Reactive::Static("Rotation".to_string()),
+                ..Default::default()
+            });
+            let label = match classify(row) {
+                P::Pressable { mut children, .. } => children.remove(0),
+                _ => panic!("a menu row is a Pressable"),
+            };
+            let style = match classify(label) {
+                P::Text { style, .. } => style.expect("the label node carries a style"),
+                _ => panic!("a menu row's label is a Text node"),
+            };
+            let rules = style.resolve();
+            let want = runtime_core::resolve_style(&StyleApplication::new(MenuItemRow::sheet()))
+                .font_size
+                .as_ref()
+                .map(|t| t.resolve())
+                .expect("the row states a font size");
+            assert_eq!(
+                rules.font_size.as_ref().map(|t| t.resolve()),
+                Some(want),
+                "the label must state the ROW's size on its own node"
+            );
+            assert!(
+                rules.color.is_some(),
+                "and its color, for the same reason native ignores the row's"
+            );
+        });
     }
 }

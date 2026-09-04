@@ -2707,6 +2707,26 @@ stylesheet! {
 // The panel surface reuses `SelectMenu`. These style the contents.
 
 stylesheet! {
+    // A menu row's LABEL, carrying the row's type size and color itself.
+    //
+    // Native text widgets (UILabel / TextView / NSTextField) do not
+    // inherit either from their parent — the same gap `Tabs` documents
+    // for its own labels — so a bare text node inside `MenuItemRow`
+    // rendered at the platform default, ignoring the `body_size` the row
+    // asks for. On a 13.5px body that is a label a third too large, and
+    // it showed the moment a menu sat beside anything else: the filter
+    // panel's dimension rows towered over the column switches in the
+    // pane next to them. Web inherits through the cascade and was right
+    // all along, which is why this survived.
+    pub MenuItemLabel<IdeaThemeRef> {
+        base(t) {
+            font_size: t.typography.body_size(),
+            color: t.color.text(),
+        }
+    }
+}
+
+stylesheet! {
     pub MenuItemRow<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Row,
