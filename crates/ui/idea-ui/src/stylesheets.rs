@@ -1854,7 +1854,18 @@ stylesheet! {
     pub TabBar<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
             gap: t.spacing.xs(),
+            // Do NOT shrink inside the scroll viewport. This is the
+            // horizontal twin of `modal_body_sheet`'s note: a scroll
+            // view's child is an ordinary flex item, so without this
+            // the strip shrinks to the scroller's width and the tabs —
+            // which refuse to shrink themselves — are clipped away.
+            // The visible result is a tab bar with space but nothing in
+            // it, not a bar that overflows.
+            flex_shrink: 0.0,
+            flex_grow: 0.0,
+            flex_basis: Length::Auto,
         }
     }
 }

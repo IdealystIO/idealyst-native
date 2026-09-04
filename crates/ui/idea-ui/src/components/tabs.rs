@@ -503,4 +503,26 @@ mod tests {
             );
         });
     }
+
+    /// The strip must keep its CONTENT width inside the scroller.
+    ///
+    /// A scroll view's child is an ordinary flex item, so a strip left
+    /// to shrink collapses to the viewport while the tabs inside it
+    /// refuse to shrink — and they are clipped away. What that looks
+    /// like on a device is a tab bar with space in it and no tabs,
+    /// which reads as "the tabs are gone" rather than as a layout bug.
+    #[test]
+    fn the_strip_keeps_its_content_width_inside_the_scroller() {
+        with_test_world(|| {
+            theme();
+            let rules = runtime_core::resolve_style(&StyleApplication::new(
+                crate::stylesheets::TabBar::sheet(),
+            ));
+            assert_eq!(
+                rules.flex_shrink.as_ref().map(|t| t.resolve()),
+                Some(0.0),
+                "the strip must not shrink to the scroller's width"
+            );
+        });
+    }
 }
