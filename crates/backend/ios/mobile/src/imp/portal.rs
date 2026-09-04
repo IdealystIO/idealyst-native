@@ -190,6 +190,12 @@ const ANCHOR_POPOVER_WIDTH_FALLBACK: f32 = 200.0;
 /// rendering off-screen before the tracker corrects it.
 const ANCHOR_FALLBACK_MIN_INSET: f32 = 8.0;
 
+/// Gutter kept between a measured popover and every viewport edge when
+/// the tracker's clamp kicks in. Matches the web backend's `EDGE_GAP`,
+/// because the same author intent should not place differently per
+/// platform.
+const ANCHOR_EDGE_GAP: f32 = 8.0;
+
 /// Build the absolutely-positioned style for an anchored portal's
 /// content child based on the anchor's current viewport rect. Used
 /// at mount time for an initial frame before the display-link
@@ -296,13 +302,43 @@ pub(crate) fn start_anchor_tracker(
             return;
         }
 
-        // Shared measured align/side geometry (runtime_shared) — one
-        // definition across web/iOS/Android (CLAUDE.md §7). The tracker
-        // keeps its no-flip/no-clamp behavior (it just re-pins to the
-        // requested side); web layers flip+clamp on top of the same math.
-        let (top, left) = runtime_shared::primitives::portal::anchor_top_left(
-            trigger, side, align, offset, (pop_w, pop_h),
+        // The viewport, read fresh every tick from the container the
+        // popover sits in. That container is window-rooted and the
+        // layout tree auto-fills it to the full viewport on every pass
+        // (see the module docs), so its bounds ARE the viewport — and
+        // reading them here rather than caching means a rotation or a
+        // split-view resize is picked up on the next vsync with nothing
+        // to invalidate.
+        let container: Option<Retained<UIView>> =
+            unsafe { msg_send_id![&*popover_for_cb, superview] };
+        let Some(container) = container else { return };
+        let cbounds: objc2_foundation::CGRect = unsafe { msg_send![&*container, bounds] };
+        let vw = cbounds.size.width as f32;
+        let vh = cbounds.size.height as f32;
+        // Not laid out yet — clamping against a zero viewport would
+        // stack every popover in the top-left corner.
+        if vw <= 0.0 || vh <= 0.0 {
+            return;
+        }
+
+        // Shared placement resolver (runtime_shared) — one definition
+        // across web/iOS/Android (CLAUDE.md §7). This is the SAME call
+        // web makes: side-flip when the requested side has no room,
+        // measured position, then a clamp that keeps the whole rect
+        // inside the viewport. The tracker used to call `anchor_top_left`
+        // instead, which is the align/side math WITHOUT either — so a
+        // menu near an edge simply rendered off-screen on iOS while the
+        // identical author code stayed on-screen on web.
+        let placement = runtime_shared::primitives::portal::resolve_anchored_placement(
+            trigger,
+            (pop_w, pop_h),
+            (vw, vh),
+            side,
+            align,
+            offset,
+            ANCHOR_EDGE_GAP,
         );
+        let (top, left) = (placement.y, placement.x);
         let cur_top = pop_frame.origin.y as f32;
         let cur_left = pop_frame.origin.x as f32;
         // Compare against the *live* frame rather than a stored "last
