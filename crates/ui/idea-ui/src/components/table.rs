@@ -842,9 +842,21 @@ mod tests {
                 "left-pinned arm pins at left: 0"
             );
             assert!(rules.right.is_none(), "left pin must not also set right");
+            // `is_some()` is NOT enough, and that gap shipped: when
+            // `row_hovered`'s resting arm began stating `transparent` it
+            // won the merge (axes resolve in alphabetical axis order and
+            // `"pinned" < "row_hovered"`), the resolve stayed `Some(...)`,
+            // this assertion stayed green — and frozen columns went
+            // see-through on a live device. Assert the VALUE.
+            let bg = rules
+                .background
+                .as_ref()
+                .map(|t| format!("{t:?}"))
+                .expect("pinned body cell must state a background");
             assert!(
-                rules.background.is_some(),
-                "pinned body cell must be opaque — content slides beneath it"
+                !bg.contains("transparent"),
+                "pinned body cell must be OPAQUE — content slides beneath a \
+                 frozen column — but resolved to `{bg}`"
             );
 
             let right = TableCell(TableCellProps {

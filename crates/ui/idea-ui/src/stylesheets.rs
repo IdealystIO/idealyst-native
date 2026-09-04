@@ -2239,6 +2239,30 @@ stylesheet! {
                 border_left_color: t.color.border(),
             }
         }
+        // A frozen column's opacity is NOT decided by the `pinned` arms
+        // above. Axis overlays merge in ALPHABETICAL axis order
+        // (`StyleSheet::variants` is a `BTreeMap`), and `row_hovered`
+        // sorts after `pinned` — so the resting arm's `transparent`
+        // erased the pinned background and the columns sliding
+        // underneath showed straight through the frozen one. These
+        // compounds state the combination outright; `resolve` layers
+        // them after every axis, so they are what actually decides.
+        //
+        // They also close the gap the same bug hid: a pinned cell now
+        // takes the row tint WITH its row instead of sitting inert while
+        // its neighbours highlight.
+        compound (pinned: left, row_hovered: off)(t) {
+            background: t.color.surface(),
+        }
+        compound (pinned: right, row_hovered: off)(t) {
+            background: t.color.surface(),
+        }
+        compound (pinned: left, row_hovered: on)(t) {
+            background: t.color.surface_alt(),
+        }
+        compound (pinned: right, row_hovered: on)(t) {
+            background: t.color.surface_alt(),
+        }
         // Author-wired drag-and-drop feedback vocabulary — see
         // `TableHeadCell`.
         variant dragging {

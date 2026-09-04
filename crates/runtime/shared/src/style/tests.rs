@@ -1801,6 +1801,57 @@ fn axis_merge_precedence_is_alphabetical_not_declaration_order() {
     );
 }
 
+/// The third option the note above calls "a later resolution step": a
+/// COMPOUND. `resolve` layers compounds after every per-axis overlay, so a
+/// compound beats the alphabetically-later axis without anyone having to
+/// rename anything or fold two axes into one.
+///
+/// This is not hypothetical. idea-ui's frozen table columns went
+/// transparent exactly here: `TableBodyCell`'s `pinned` arms set an opaque
+/// background, `row_hovered`'s resting arm started stating `transparent`,
+/// and `"pinned" < "row_hovered"` — so the columns scrolling underneath a
+/// frozen one showed straight through it.
+#[test]
+fn a_compound_beats_alphabetical_axis_order() {
+    let red = || Color("#ff0000".into());
+    let blue = || Color("#0000ff".into());
+    let green = || Color("#00ff00".into());
+
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .variant("pinned", "left", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(red())),
+            ..Default::default()
+        })
+        // Sorts after "pinned", so on its own this wins.
+        .variant("row_hovered", "off", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(blue())),
+            ..Default::default()
+        })
+        .compound(vec![("pinned", "left"), ("row_hovered", "off")], move |_vs| {
+            StyleRules {
+                background: Some(Tokenized::Literal(green())),
+                ..Default::default()
+            }
+        });
+
+    let vs = VariantSet::new().with("pinned", "left").with("row_hovered", "off");
+    assert_eq!(
+        sheet.resolve(&vs).background,
+        Some(Tokenized::Literal(green())),
+        "a compound must beat every per-axis overlay, whatever the axis names sort like"
+    );
+
+    // And it fires ONLY on the full combination — one axis off the
+    // condition and the ordinary alphabetical winner is back.
+    let partial = VariantSet::new().with("pinned", "left").with("row_hovered", "on");
+    assert_eq!(
+        sheet.resolve(&partial).background,
+        Some(Tokenized::Literal(red())),
+        "an unmatched compound must not layer; `row_hovered=on` declares no \
+         background, so the pinned arm is the only one left"
+    );
+}
+
 /// The companion half: rename the winning axis so it sorts EARLIER and the
 /// other side wins. Pins that the ordering really is by name — nothing
 /// about `tone`/`variant` specifically.

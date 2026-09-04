@@ -136,6 +136,25 @@ pub struct StyleSheetDecl {
     /// `container-type` ancestor; native merges the active overlays
     /// reactively against the nearest container's resolved inline-size.
     containers: Vec<ContainerArm>,
+    /// Compound overlays (`compound (axis: value, axis: value)(t) { … }`)
+    /// — rules that apply only when EVERY named axis holds its named
+    /// value. `resolve` layers these AFTER every per-axis overlay, which
+    /// is the point: two axes that touch the same property otherwise
+    /// resolve by ALPHABETICAL axis name (`StyleSheet::variants` is a
+    /// `BTreeMap`), so the axis that wins is decided by spelling. A
+    /// compound states the combination outright instead.
+    compounds: Vec<CompoundArm>,
+}
+
+/// One `compound (axis: value, …)(theme) { ... }` block. The condition
+/// is validated against the sheet's own declared axes at macro time: a
+/// compound naming an axis or arm that does not exist could never fire,
+/// and would do so silently.
+struct CompoundArm {
+    /// The `(axis, value)` pairs that must all hold.
+    when: Vec<(Ident, Ident)>,
+    theme_binding: Ident,
+    rules: RulesBlock,
 }
 
 /// One `state name(theme) { ... }` block. The name must be one of
@@ -244,6 +263,7 @@ impl Parse for StyleSheetDecl {
         let mut states = Vec::new();
         let mut breakpoints = Vec::new();
         let mut containers = Vec::new();
+        let mut compounds = Vec::new();
         while !body.is_empty() {
             // `override` is a reserved Rust keyword, so we can't parse
             // it as an Ident. Detect it specifically via Token![override]
@@ -321,6 +341,49 @@ impl Parse for StyleSheetDecl {
                     let rules = parse_rules_block(&body)?;
                     breakpoints.push(BreakpointArm { name, theme_binding, rules });
                 }
+                "compound" => {
+                    // Grammar mirrors `container`: a paren group for the
+                    // condition, then the token-vocabulary binding, then
+                    // the rules.
+                    //
+                    //   compound (pinned: left, row_hovered: on)(t) {
+                    //       background: t.color.surface_alt(),
+                    //   }
+                    let cond;
+                    parenthesized!(cond in body);
+                    let mut when: Vec<(Ident, Ident)> = Vec::new();
+                    while !cond.is_empty() {
+                        let axis: Ident = cond.parse()?;
+                        let _colon: Token![:] = cond.parse()?;
+                        let value: Ident = cond.parse()?;
+                        if when.iter().any(|(a, _)| *a == axis) {
+                            return Err(syn::Error::new(
+                                axis.span(),
+                                format!(
+                                    "axis `{axis}` named twice in one compound; an axis \
+                                     holds one value at a time, so this can never match"
+                                ),
+                            ));
+                        }
+                        when.push((axis, value));
+                        if cond.is_empty() {
+                            break;
+                        }
+                        let _: Token![,] = cond.parse()?;
+                    }
+                    if when.len() < 2 {
+                        return Err(syn::Error::new(
+                            kw.span(),
+                            "a compound needs at least two `axis: value` pairs; with one \
+                             it is just that axis's arm — put the rules there instead",
+                        ));
+                    }
+                    let theme_args;
+                    parenthesized!(theme_args in body);
+                    let theme_binding: Ident = theme_args.parse()?;
+                    let rules = parse_rules_block(&body)?;
+                    compounds.push(CompoundArm { when, theme_binding, rules });
+                }
                 "container" => {
                     // Grammar: `container (min_width: 400px)(theme) { … }`.
                     // The first paren group is the query; v1 supports only
@@ -361,6 +424,35 @@ impl Parse for StyleSheetDecl {
             }
         }
 
+        // A compound whose condition names an axis or arm the sheet does
+        // not declare can never match, and would fail SILENTLY — the
+        // resolve simply never layers it. Reject it here, where the span
+        // points at the author's typo.
+        for c in &compounds {
+            for (axis, value) in &c.when {
+                let Some(declared) = variants.iter().find(|v| v.axis == *axis) else {
+                    return Err(syn::Error::new(
+                        axis.span(),
+                        format!(
+                            "compound names axis `{axis}`, which this sheet does not \
+                             declare; a compound on an undeclared axis can never match"
+                        ),
+                    ));
+                };
+                if !declared.arms.iter().any(|a| a.name == *value) {
+                    let known: Vec<String> =
+                        declared.arms.iter().map(|a| a.name.to_string()).collect();
+                    return Err(syn::Error::new(
+                        value.span(),
+                        format!(
+                            "axis `{axis}` has no arm `{value}`; expected one of: {}",
+                            known.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
+
         Ok(StyleSheetDecl {
             vis,
             name,
@@ -372,6 +464,7 @@ impl Parse for StyleSheetDecl {
             states,
             breakpoints,
             containers,
+            compounds,
         })
     }
 }
@@ -806,6 +899,28 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     // produces, so the runtime decodes the px value back via
     // `container_axis_threshold`. The framework realizes the namespace
     // per-backend (CSS `@container` on web, reactive merge on native).
+    // Compounds: layered by `resolve` AFTER every per-axis overlay, so
+    // this is how a sheet states which of two axes wins on a shared
+    // property instead of leaving it to alphabetical axis order.
+    let compound_chain = decl.compounds.iter().map(|arm| {
+        let pairs = arm.when.iter().map(|(axis, value)| {
+            let a = axis.to_string();
+            let v = value.to_string();
+            quote! { (#a, #v) }
+        });
+        let rules = emit_rules_struct(&arm.rules);
+        let bind = bind_tokens(&arm.theme_binding, &arm.rules);
+        quote! {
+            .compound(
+                ::std::vec![#(#pairs),*],
+                |_vs: &::runtime_core::VariantSet| {
+                    #bind
+                    #rules
+                },
+            )
+        }
+    });
+
     let container_chain = decl.containers.iter().map(|arm| {
         let axis = format!("__cq_minw_{:08x}", arm.threshold.to_bits());
         let rules = emit_rules_struct(&arm.rules);
@@ -838,6 +953,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
             #(#state_chain)*
             #(#breakpoint_chain)*
             #(#container_chain)*
+            #(#compound_chain)*
     };
     let finish_sheet = match premint_class {
         Some(class) => quote! { #sheet_expr.premint_with_class(#class) },
