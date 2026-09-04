@@ -144,6 +144,13 @@ IDEALYST_REGISTRY_DISTRIBUTION=EWTO387ZA9GEV \
 Commit the version bumps it writes; the next release compares against that
 commit. Run `plan` first to see what it would do — it touches nothing.
 
+The full procedure around those two commands — what to review before
+publishing, which packages and targets to verify (a bare `cargo test -p
+idea-ui` cannot build its `design_sync` example, and four `newcore::tests`
+fail on any host that has not linked AppKit), and how to confirm the result
+from outside the workspace — is the `release` skill in
+[`.claude/skills/release/`](../.claude/skills/release/SKILL.md).
+
 `.github/workflows/release.yml` holds the same steps for when there is CI. It
 is `workflow_dispatch` only and not wired up: a `push` trigger would fire on
 every merge and fail on the missing `AWS_RELEASE_ROLE` secret.
