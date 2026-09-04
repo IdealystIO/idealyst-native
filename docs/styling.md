@@ -977,6 +977,60 @@ bucket definitions and thresholds.
 
 ---
 
+## Compound variants
+
+Two axes that set the same property don't merge in the order you declared
+them — `StyleSheet::variants` is a `BTreeMap`, so the **alphabetically
+later axis name wins**. That is fine until it isn't: a `pinned` arm and a
+`row_hovered` arm both setting `background` resolve to `row_hovered`,
+because `"pinned" < "row_hovered"`, whatever order they appear in the
+source.
+
+A `compound` block states the combination outright. It applies only when
+*every* named axis holds its named value, and `resolve` layers it after
+all the per-axis overlays — so it decides the property regardless of how
+the names sort:
+
+```rust
+stylesheet! {
+    pub TableBodyCell<IdeaThemeRef> {
+        base(_t) { /* … */ }
+        variant pinned {
+            #[default]
+            none(_t) {}
+            left(t) { background: t.color.surface() }
+            right(t) { background: t.color.surface() }
+        }
+        variant row_hovered {
+            #[default]
+            off(_t) { background: Color("transparent".into()) }
+            on(t) { background: t.color.surface_alt() }
+        }
+        // A frozen column stays opaque at rest, and still takes the row
+        // tint with its row.
+        compound (pinned: left, row_hovered: off)(t) { background: t.color.surface() }
+        compound (pinned: left, row_hovered: on)(t)  { background: t.color.surface_alt() }
+    }
+}
+```
+
+The grammar mirrors `container (min_width: …)`: a parenthesized condition,
+then the token-vocabulary binding, then the rules. The condition is checked
+against the sheet's own axes **at macro time** — naming an axis the sheet
+doesn't declare, an arm that doesn't exist, or the same axis twice is a
+compile error, because each of those would otherwise fail silently by
+simply never matching. A one-pair compound is rejected too: that is just
+that axis's arm.
+
+Compounds **premint**. The runtime stamps one class per axis, so the
+condition is a CSS compound selector over those classes
+(`.iy-abc-pinned-left.iy-abc-row_hovered-on`) at specificity (0,2,0) —
+above the (0,1,0) single-axis arms, which reproduces the runtime's
+"compounds merge after every axis". Reaching for one does not push the
+sheet onto the live engine.
+
+---
+
 ## Backend caching
 
 Backends typically want to cache work that maps from `StyleRules`

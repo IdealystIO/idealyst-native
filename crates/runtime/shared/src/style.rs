@@ -2257,7 +2257,7 @@ pub fn cached_stylesheet(
 /// `"variant"` arm that both set `background` resolve to the `"variant"`
 /// one, because `"tone" < "variant"`.
 ///
-/// This is load-bearing and easy to trip over. Two ways to get a
+/// This is load-bearing and easy to trip over. Three ways to get a
 /// deterministic winner without depending on the names:
 ///
 /// - **Fold the conflicting axes into one.** idea-theme's Badge/Tag/Alert
@@ -2266,10 +2266,19 @@ pub fn cached_stylesheet(
 /// - **Use a later resolution step.** A computed layer (step 4) resolves
 ///   after every axis. idea-ui's `Card` tints via a computed layer because
 ///   its tint must beat the `variant` axis' surface background.
+/// - **State the combination in a compound.** Compound variants (step 3)
+///   resolve after every axis, so a compound decides the property outright
+///   instead of leaving it to how the axis names happen to sort. Declare
+///   one with `compound (axis: value, axis: value)(t) { … }` in
+///   `stylesheet!`, or `.compound(vec![…], …)` on the builder. This is what
+///   idea-ui's `TableBodyCell` uses so a frozen column stays opaque —
+///   `"pinned" < "row_hovered"`, so the hover axis' resting arm would
+///   otherwise erase the pinned background.
 ///
-/// Compound variants (step 3) also resolve after all axes, but they are
-/// runtime-API-only and the premint dump rejects them — reach for one only
-/// on a sheet that never premints.
+/// Compounds premint: the runtime stamps one class per axis, so a compound
+/// is just a CSS compound selector over those classes, landing at (0,2,0)
+/// above the single-axis arms. Using one does NOT push a sheet onto the
+/// live engine.
 pub struct StyleSheet {
     base: RulesFn,
     /// axis → axis definition (default + per-value closures).
