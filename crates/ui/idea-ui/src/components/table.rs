@@ -643,9 +643,23 @@ mod tests {
                 Some(Cursor::Pointer),
                 "interactive arm carries the pointer cursor"
             );
-            assert!(
-                resting.background.is_none(),
-                "resting (row_hovered=off) leaves the body cell's background untouched"
+            // Resting STATES a background — transparent — rather than
+            // saying nothing. That inversion is the fix for a stuck
+            // highlight: an arm that sets no background produces a
+            // re-resolve with no background in it, and a re-resolve that
+            // mentions no background cannot undo one an earlier resolve
+            // already applied to the view. The tint went on at press and
+            // stayed on after release, on every backend that applies a
+            // style by merging rather than replacing.
+            //
+            // Transparent, not a surface token: a body cell has no
+            // background of its own, so this is the resting appearance
+            // it always had — now spelled instead of implied.
+            assert_eq!(
+                resting.background.as_ref().map(|c| c.resolve().0),
+                Some("transparent".to_string()),
+                "resting (row_hovered=off) states a transparent background, so a \
+                 later resolve has something to overwrite the tint with"
             );
 
             // The hovered arm resolves to the themed row highlight — same

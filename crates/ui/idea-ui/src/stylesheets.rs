@@ -2123,9 +2123,16 @@ stylesheet! {
             off(_t) {}
             on(_t) { cursor: Cursor::Pointer }
         }
+        // Every arm STATES the background, including the resting one.
+        // An empty `off` arm sets nothing, and a style re-resolve that
+        // mentions no background cannot undo one a previous resolve
+        // applied — so the tint went on at press and stayed on after
+        // release. The `pinned` arms below always set a background,
+        // which is exactly why a frozen column looked immune while its
+        // neighbours stayed lit.
         variant row_hovered {
             #[default]
-            off(_t) {}
+            off(t) { background: t.color.table_header() }
             on(t) { background: t.color.surface_alt() }
         }
         // Frozen-column axis (`TableCell(pinned = …)` in a
@@ -2201,9 +2208,13 @@ stylesheet! {
             off(_t) {}
             on(_t) { cursor: Cursor::Pointer }
         }
+        // Explicit resting background — see `TableHeadCell`. A body cell
+        // has none of its own, so resting is TRANSPARENT rather than a
+        // token: the table surface shows through exactly as before, and
+        // the arm now has something to say instead of nothing.
         variant row_hovered {
             #[default]
-            off(_t) {}
+            off(_t) { background: Color("transparent".into()) }
             on(t) { background: t.color.surface_alt() }
         }
         // Frozen-column axis — see `TableHeadCell`. A body cell has no
