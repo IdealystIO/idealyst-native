@@ -182,7 +182,15 @@ struct Inner {
 
 impl Inner {
     fn drive_event(&mut self, ev: &TouchEvent) -> TouchResponse {
+        // Gate the whole group, not just each recognizer: a non-primary
+        // `Began` is `Began`-only by contract (no `Ended` ever follows), so
+        // recording it in `active_touches` would leave a finger the group
+        // believes is still down and it would never reset. The per-recognizer
+        // gate in `Recognizer::drive` covers the recognizers themselves.
         if ev.phase == TouchPhase::Began {
+            if !runtime_shared::pointer_button().is_primary() {
+                return TouchResponse::IGNORED;
+            }
             self.active_touches.insert(ev.id);
         }
 
@@ -199,7 +207,7 @@ impl Inner {
             let ctx = RecognizerCtx {
                 may_recognize: may,
             };
-            let upd = self.slots[idx].rec.update(ev, &ctx);
+            let upd = self.slots[idx].rec.drive(ev, &ctx);
             consumed |= upd.response.consumed;
             claim |= upd.response.claim;
             self.record_outcome(idx, upd.state, &mut winners);

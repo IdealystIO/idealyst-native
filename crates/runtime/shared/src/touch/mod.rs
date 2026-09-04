@@ -260,6 +260,19 @@ pub fn pointer_modifiers() -> PointerModifiers {
 /// drag/capture path: a browser context menu can swallow the matching
 /// `pointerup`, which would strand a claimed gesture (a dragged element
 /// following the cursor forever). Treat the `Began` as the whole click.
+///
+/// Because of that, **every gesture recognizer ignores a non-primary
+/// `Began`** — the gate lives in
+/// [`Recognizer::drive`](crate::touch::recognizer::Recognizer::drive), so a
+/// recognizer never consumes a press it cannot finish and the event bubbles
+/// to whatever is listening for a context menu. A hand-rolled `on_touch`
+/// handler that claims the touch owes the same check:
+///
+/// ```ignore
+/// if ev.phase == TouchPhase::Began && !pointer_button().is_primary() {
+///     return TouchResponse::IGNORED;
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PointerButton {
     /// Left mouse button, or any touch / pen contact.
@@ -280,6 +293,14 @@ impl PointerButton {
     /// Ctrl-click" (the OS has already folded the latter into `Secondary`).
     pub fn opens_context_menu(self) -> bool {
         matches!(self, PointerButton::Secondary)
+    }
+
+    /// Whether this press is the ordinary "activate" press — the one a tap,
+    /// a drag, or any other gesture is made of. Touch and pen contact are
+    /// always `Primary`, so a gate written against this is a no-op on a
+    /// touch-only backend.
+    pub fn is_primary(self) -> bool {
+        matches!(self, PointerButton::Primary)
     }
 }
 

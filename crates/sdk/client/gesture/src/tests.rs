@@ -6,8 +6,8 @@ use super::*;
 use runtime_shared::{
     scheduling::{install_scheduler, ScheduleHandle, Scheduler},
     LongPress, LongPressRecognizer, Pan, PanEvent, PanRecognizer, Pinch, PinchEvent,
-    PinchRecognizer, Rotate, RotateEvent, RotateRecognizer, Tap, TapRecognizer, TouchId,
-    TouchPoint,
+    PinchRecognizer, PointerButton, Rotate, RotateEvent, RotateRecognizer, Tap, TapRecognizer,
+    TouchId, TouchPoint,
 };
 use std::cell::{Cell, RefCell};
 
@@ -385,4 +385,38 @@ fn reset_test_clock() {
 
 fn install_test_scheduler_once() {
     install_scheduler(Box::new(TestScheduler));
+}
+
+/// The group is gated as a whole, not just each recognizer inside it.
+///
+/// A non-primary `Began` is `Began`-only by contract — no `Ended` follows —
+/// so recording it in `active_touches` would leave the group believing a
+/// finger is still down: it would never reset, and every gesture after it
+/// would be arbitrated against a phantom.
+#[test]
+fn regression_group_ignores_secondary_press_and_stays_resettable() {
+    let taps = Rc::new(Cell::new(0u32));
+    let mut g = GestureGroup::new();
+    let t = taps.clone();
+    g.add(Tap::new(TapRecognizer::new(), move || t.set(t.get() + 1)));
+    let h = g.handler();
+
+    runtime_shared::set_pointer_button(PointerButton::Secondary);
+    let r = h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+    runtime_shared::set_pointer_button(PointerButton::Primary);
+    assert!(
+        !r.consumed && !r.claim,
+        "a secondary Began must bubble out of the group untouched"
+    );
+    assert_eq!(taps.get(), 0, "a right-click is not a tap");
+
+    // The next real tap still works — nothing was left half-open.
+    h(&ev(TouchPhase::Began, 2, 0.0, 0.0, 1_000_000));
+    h(&ev(TouchPhase::Ended, 2, 0.0, 0.0, 2_000_000));
+    assert_eq!(taps.get(), 1);
+
+    // And the group really did reset after that tap: a second one fires too.
+    h(&ev(TouchPhase::Began, 3, 0.0, 0.0, 3_000_000));
+    h(&ev(TouchPhase::Ended, 3, 0.0, 0.0, 4_000_000));
+    assert_eq!(taps.get(), 2, "the group reset on the last lift");
 }

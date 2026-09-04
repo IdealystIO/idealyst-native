@@ -74,6 +74,14 @@ The recognizer constructors (`Tap::new`, `Pan::new`, `Pinch::new`,
 `Rotate::new`, `LongPress::new`, …) come from `runtime_core`; `add` accepts any
 `impl Recognizer`, including third-party FSMs and `dnd::DragRecognizer`.
 
+Writing your own: implement `Recognizer::update`. The group drives it through
+`Recognizer::drive`, the provided method that first applies the framework-wide
+input gate — a `Began` from a non-primary pointer button (right-click,
+middle-click) is ignored rather than consumed, so it bubbles to whatever is
+listening for a context menu, and the recognizer never starts tracking a press
+that will never deliver an `Ended`. Don't override `drive`, and don't re-check
+the button inside `update`.
+
 ## How arbitration resolves
 
 - **Priority** is add order — the earliest-added recognizer wins a tie when

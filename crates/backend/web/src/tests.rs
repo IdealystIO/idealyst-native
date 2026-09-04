@@ -2755,6 +2755,88 @@ fn web_contextmenu_consumed_secondary_does_not_leak_to_ancestor() {
     );
 }
 
+/// REGRESSION TEST (the clickable-row context menu).
+///
+/// The reported failure, end to end: a table cell made clickable by
+/// `TableRow(on_row_click = …)` installs a tap recognizer on EVERY cell.
+/// A recognizer consumes from `Began` — it has to, to be sure of hearing
+/// the motion it measures — and consuming is what commits the bubble
+/// decision. So a right-click on a data row was swallowed by the cell,
+/// found not to be a tap, and dropped; the ancestor's context-menu
+/// handler never heard it. The header row of the same table, which has no
+/// `on_row_click` and therefore no recognizer, opened the menu fine —
+/// which is what made it look like a table bug rather than a tap one.
+///
+/// `Recognizer::drive` now ignores a non-primary `Began`, so it bubbles.
+/// This drives the real DOM path, with a real `tap()` on the cell.
+#[wasm_bindgen_test]
+fn regression_web_secondary_press_on_a_tappable_cell_reaches_the_row_menu() {
+    use runtime_shared::{tap, PointerButton, TapRecognizer, TouchPhase, TouchResponse};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let row = doc.create_element("div").unwrap();
+    let cell = doc.create_element("div").unwrap();
+    row.append_child(&cell).unwrap();
+    doc.body().unwrap().append_child(&row).unwrap();
+
+    // The row's context-menu handler: answers a secondary press, ignores
+    // everything else so a primary press still falls through to the cell.
+    let menu_opens: Rc<RefCell<Vec<TouchPhase>>> = Rc::new(RefCell::new(Vec::new()));
+    let mo = menu_opens.clone();
+    backend.install_touch_handler_impl(
+        &row.clone().unchecked_into(),
+        Rc::new(move |ev| {
+            if runtime_shared::pointer_button().opens_context_menu() {
+                mo.borrow_mut().push(ev.phase);
+                return TouchResponse::CONSUMED;
+            }
+            TouchResponse::IGNORED
+        }),
+    );
+
+    // The cell is clickable — exactly what `set_cell_interaction` installs.
+    let taps = Rc::new(Cell::new(0u32));
+    let t = taps.clone();
+    backend.install_touch_handler_impl(
+        &cell.clone().unchecked_into(),
+        tap(TapRecognizer::new(), move || t.set(t.get() + 1)),
+    );
+
+    // Right-click the CELL.
+    dispatch_bubbling_secondary_pointerdown(&cell);
+    let menu = dispatch_bubbling_contextmenu(&cell, false);
+
+    assert_eq!(
+        *menu_opens.borrow(),
+        vec![TouchPhase::Began],
+        "the row's menu handler must hear the secondary press the cell ignored — once",
+    );
+    assert_eq!(taps.get(), 0, "and a right-click is never a tap");
+    assert!(menu.default_prevented(), "the native menu is still suppressed");
+
+    // The cell is still clickable: a primary press taps it and never
+    // reaches the row.
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(0);
+    init.set_pointer_id(7);
+    let down = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
+    cell.dispatch_event(&down).unwrap();
+    let up = web_sys::PointerEvent::new_with_event_init_dict("pointerup", &init).unwrap();
+    cell.dispatch_event(&up).unwrap();
+    assert_eq!(taps.get(), 1, "a left-click still taps the cell");
+    assert_eq!(
+        menu_opens.borrow().len(),
+        1,
+        "and the tap does not reach the row",
+    );
+}
+
 /// COMPANION. An interactive leaf's ancestor-touch swallow must extend to
 /// `contextmenu`: right-clicking a Pressable inside an `on_touch` row stops
 /// the `pointerdown` at the control, which leaves the row's flag unset —

@@ -230,6 +230,15 @@ pub fn Slider(props: &SliderProps) -> Element {
             if disabled {
                 return TouchResponse::IGNORED;
             }
+            // A non-primary press is not a drag on any platform, and it is
+            // `Began`-only by contract — claiming it would both jump the
+            // thumb on a right-click and swallow the press an ancestor's
+            // context menu is waiting for. Recognizer-backed primitives get
+            // this from `Recognizer::drive`; this handler is hand-rolled, so
+            // it states the same rule itself.
+            if ev.phase == TouchPhase::Began && !runtime_core::pointer_button().is_primary() {
+                return TouchResponse::IGNORED;
+            }
             if matches!(ev.phase, TouchPhase::Began | TouchPhase::Moved) {
                 let t = runtime_core::num::clamp_f32(ev.position.x / w, 0.0, 1.0);
                 let mut v = min + t * (max - min);
@@ -340,6 +349,68 @@ mod tests {
             P::View { children, .. } => children,
             _ => panic!("Slider renders a View"),
         }
+    }
+
+    /// Pull the drag container's real `on_touch` out of the built tree.
+    /// `classify` collapses handler presence to a `bool`, which is enough
+    /// for structure tests but can't exercise the handler itself.
+    fn drag_handler(el: Element) -> runtime_core::TouchHandler {
+        use runtime_vocabulary::prims::{PrimCell, ViewPrim};
+        match el {
+            Element::Item { data, .. } => data
+                .downcast_ref::<PrimCell<ViewPrim>>()
+                .expect("Slider renders a View")
+                .take()
+                .on_touch
+                .expect("the drag container carries on_touch"),
+            _ => panic!("Slider renders a View item"),
+        }
+    }
+
+    fn touch(phase: TouchPhase, x: f32) -> runtime_core::TouchEvent {
+        runtime_core::TouchEvent {
+            id: runtime_core::TouchId(1),
+            phase,
+            position: runtime_core::TouchPoint::new(x, 0.0),
+            window_position: runtime_core::TouchPoint::new(x, 0.0),
+            timestamp_ns: 0,
+            force: None,
+        }
+    }
+
+    /// A right-click on a slider is not a drag on any platform. Before the
+    /// gate this handler claimed the press unconditionally: the thumb
+    /// jumped to the cursor AND the press never reached the context-menu
+    /// handler above it. Recognizer-backed controls get this from
+    /// `Recognizer::drive`; the slider's handler is hand-rolled, so it
+    /// carries the same rule and this test pins it.
+    #[test]
+    fn regression_slider_ignores_secondary_press() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let changes = Rc::new(std::cell::Cell::new(0u32));
+            let h = {
+                let changes = changes.clone();
+                drag_handler(Slider(&SliderProps {
+                    on_change: Rc::new(move |_| changes.set(changes.get() + 1)),
+                    ..Default::default()
+                }))
+            };
+
+            runtime_shared::set_pointer_button(runtime_core::PointerButton::Secondary);
+            let r = h(&touch(TouchPhase::Began, 90.0));
+            runtime_shared::set_pointer_button(runtime_core::PointerButton::Primary);
+            assert!(
+                !r.consumed && !r.claim,
+                "a secondary press must bubble to an ancestor's context menu"
+            );
+            assert_eq!(changes.get(), 0, "and must not move the thumb");
+
+            // The primary press right after it still drags.
+            let r = h(&touch(TouchPhase::Began, 90.0));
+            assert!(r.claim, "a primary press still claims the drag");
+            assert_eq!(changes.get(), 1);
+        });
     }
 
     // Icons flank the track in an OUTER row (leading icon, slider, trailing

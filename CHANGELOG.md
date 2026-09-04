@@ -240,6 +240,35 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **A right-click on a tappable element reaches the context menu behind
+  it.** Every gesture recognizer consumes from `Began` — it has to, to be
+  sure of hearing the motion it measures — and consuming is what commits
+  the bubble decision for the whole interaction. So a secondary press
+  landing on a recognizer was swallowed, found not to be the gesture, and
+  dropped: nothing further out ever heard it. Anything that installed a
+  recognizer therefore blocked its own context menu. A clickable table
+  row (`TableRow(on_row_click = …)` puts a tap on every cell) could not
+  open a menu over itself, while the header row beside it — no
+  `on_row_click`, so no recognizer — could.
+
+  The gate now lives on the trait, in the new `Recognizer::drive`: a
+  `Began` from any button other than `PointerButton::Primary` is ignored
+  rather than consumed, and `drive` is what the standalone `tap`/`pan`/…
+  factories and the `gesture` arbiter call. Every recognizer gets it,
+  including third-party ones — implementors still write only `update`.
+  `Slider`, whose drag handler is hand-rolled rather than
+  recognizer-backed, carries the same check.
+
+  The same press also leaked state: a non-primary press is `Began`-only
+  by contract (no `Ended` ever follows), so a recognizer that started
+  tracking one sat in that state indefinitely, and a `GestureGroup`
+  recorded a finger in `active_touches` that never lifted — the group
+  then never reset, and every gesture after it was arbitrated against a
+  phantom.
+
+  Touch and pen contact always report `Primary`, so nothing on a
+  touch-only backend changes.
+
 - **Robot-on-web works for a full-stack project.** `idealyst dev --web
   --local` on a project declaring `server_bin` / `server_manifest` built
   its wasm bundle with NO cargo features and never advertised the relay,

@@ -259,7 +259,7 @@ where
     let rec = Rc::new(RefCell::new(Tap::new(config, on_tap)));
     let was_pressed = Rc::new(std::cell::Cell::new(false));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        let response = rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response;
+        let response = rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response;
         // Read AFTER the update and outside the mutable borrow: the
         // callback may write a signal whose subscribers re-enter here.
         let pressed = rec.borrow().is_pressed();
@@ -284,7 +284,7 @@ where
 pub fn tap<F: Fn() + 'static>(config: TapRecognizer, on_tap: F) -> TouchHandler {
     let rec = Rc::new(RefCell::new(Tap::new(config, on_tap)));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+        rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -553,7 +553,7 @@ impl Recognizer for Pan {
 pub fn pan<F: Fn(&PanEvent) + 'static>(config: PanRecognizer, on_pan: F) -> TouchHandler {
     let rec = Rc::new(RefCell::new(Pan::new(config, on_pan)));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+        rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -843,7 +843,7 @@ pub fn long_press<F: Fn() + 'static>(
             }
         }));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+        rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -1188,7 +1188,7 @@ impl Recognizer for Pinch {
 pub fn pinch<F: Fn(&PinchEvent) + 'static>(config: PinchRecognizer, on_pinch: F) -> TouchHandler {
     let rec = Rc::new(RefCell::new(Pinch::new(config, on_pinch)));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+        rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -1457,7 +1457,7 @@ pub fn swipe<F: Fn(SwipeDirection) + 'static>(
 ) -> TouchHandler {
     let rec = Rc::new(RefCell::new(Swipe::new(config, on_swipe)));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+        rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -1774,7 +1774,7 @@ pub fn rotate<F: Fn(&RotateEvent) + 'static>(
 ) -> TouchHandler {
     let rec = Rc::new(RefCell::new(Rotate::new(config, on_rotate)));
     Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-        rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+        rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
     })
 }
 
@@ -1782,6 +1782,7 @@ pub fn rotate<F: Fn(&RotateEvent) + 'static>(
 mod tests {
     use super::*;
     use crate::scheduling::{install_scheduler, ScheduleHandle, Scheduler};
+    use crate::touch::{pointer_button, set_pointer_button, PointerButton};
     use std::cell::{Cell, RefCell};
     use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -1940,6 +1941,159 @@ mod tests {
     /// scrollable surface: a touch that slides away must CLEAR the press
     /// even though the finger is still down, or every drag that starts
     /// on a row leaves it stuck looking pressed until the finger lifts.
+    // -----------------------------------------------------------------
+    // Non-primary press gate (`Recognizer::drive`)
+    // -----------------------------------------------------------------
+
+    /// Drive `h` with `button` held for the duration, restoring `Primary`
+    /// afterwards. The button rides out-of-band in a thread-local that the
+    /// backend sets right before each dispatch, so a test that leaves it
+    /// set would poison every later test on the same thread.
+    fn with_button(button: PointerButton, f: impl FnOnce()) {
+        set_pointer_button(button);
+        f();
+        set_pointer_button(PointerButton::Primary);
+    }
+
+    /// A right-click on a tappable element must reach whatever is behind
+    /// it. The recognizer consumes from `Began` — that is what commits the
+    /// bubble decision — so before the gate it swallowed the secondary
+    /// press, found it was not a tap, and dropped it. Anything that made a
+    /// row clickable therefore blocked its own context menu.
+    #[test]
+    fn regression_tap_ignores_secondary_press_so_context_menu_bubbles() {
+        let fires = Rc::new(Cell::new(0u32));
+        let h = {
+            let fires = fires.clone();
+            tap(TapRecognizer::new(), move || fires.set(fires.get() + 1))
+        };
+
+        with_button(PointerButton::Secondary, || {
+            // A secondary press is `Began`-only — no `Ended` ever follows.
+            let r = h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
+            assert!(
+                !r.consumed,
+                "a secondary Began must bubble to an ancestor's context-menu handler"
+            );
+            assert!(!r.claim, "and must not claim the touch either");
+        });
+        assert_eq!(fires.get(), 0, "a right-click is not a tap");
+
+        // And the ignored press left no state behind: the very next
+        // primary tap on the same element still fires.
+        let r1 = h(&ev(TouchPhase::Began, 2, 10.0, 10.0, 1_000_000));
+        assert!(r1.consumed, "the primary press after it is still tracked");
+        h(&ev(TouchPhase::Ended, 2, 10.0, 10.0, 2_000_000));
+        assert_eq!(fires.get(), 1, "and still taps");
+    }
+
+    /// The press channel must stay quiet too: a right-click that tinted the
+    /// row would leave the tint stuck, since no `Ended` arrives to clear it.
+    #[test]
+    fn regression_tap_with_press_ignores_secondary_press() {
+        let log: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let taps = Rc::new(Cell::new(0u32));
+        let h = {
+            let log = log.clone();
+            let taps = taps.clone();
+            tap_with_press(
+                TapRecognizer::new(),
+                move || taps.set(taps.get() + 1),
+                move |p| log.borrow_mut().push(p),
+            )
+        };
+
+        with_button(PointerButton::Secondary, || {
+            h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
+        });
+        assert!(
+            log.borrow().is_empty(),
+            "a right-click never presses the row — nothing would ever unpress it"
+        );
+        assert_eq!(taps.get(), 0);
+    }
+
+    /// Middle-click and the platform's extra buttons take the same path:
+    /// the gate is "primary or nothing", not "not secondary".
+    #[test]
+    fn tap_ignores_every_non_primary_button() {
+        for button in [
+            PointerButton::Secondary,
+            PointerButton::Middle,
+            PointerButton::Other(4),
+        ] {
+            let fires = Rc::new(Cell::new(0u32));
+            let h = {
+                let fires = fires.clone();
+                tap(TapRecognizer::new(), move || fires.set(fires.get() + 1))
+            };
+            with_button(button, || {
+                let r = h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+                assert!(!r.consumed, "{button:?} must bubble");
+            });
+            // Even a full stream behind it recognizes nothing: the `Began`
+            // that would have started tracking never landed.
+            h(&ev(TouchPhase::Ended, 1, 0.0, 0.0, 1_000_000));
+            assert_eq!(fires.get(), 0, "{button:?} is not a tap");
+        }
+    }
+
+    /// Touch and pen contact always report `Primary`, which is the whole
+    /// reason the gate is safe to apply on every backend. This pins that
+    /// the default — what a touch-only backend never overrides — passes.
+    #[test]
+    fn tap_still_fires_under_the_default_button() {
+        assert!(pointer_button().is_primary());
+        let fires = Rc::new(Cell::new(0u32));
+        let h = {
+            let fires = fires.clone();
+            tap(TapRecognizer::new(), move || fires.set(fires.get() + 1))
+        };
+        h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+        h(&ev(TouchPhase::Ended, 1, 0.0, 0.0, 1_000_000));
+        assert_eq!(fires.get(), 1);
+    }
+
+    /// The gate lives on the trait, so every recognizer gets it — a
+    /// right-click must not start a pan (which would then follow the
+    /// cursor forever, no `Ended` arriving to end it).
+    #[test]
+    fn pan_ignores_secondary_press() {
+        let log: Rc<RefCell<Vec<PanEvent>>> = Rc::new(RefCell::new(Vec::new()));
+        let h = {
+            let log = log.clone();
+            pan(PanRecognizer::new(), move |e| log.borrow_mut().push(*e))
+        };
+        with_button(PointerButton::Secondary, || {
+            let r = h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+            assert!(!r.consumed, "a secondary Began must bubble");
+        });
+        // Stray moves after it belong to no gesture here.
+        h(&ev(TouchPhase::Moved, 1, 100.0, 0.0, 16_000_000));
+        assert!(log.borrow().is_empty(), "a right-drag is not a pan");
+    }
+
+    /// Same for the long-press timer: a secondary press that armed it
+    /// would open a menu AND fire a long-press a moment later.
+    #[test]
+    fn long_press_ignores_secondary_press() {
+        install_test_scheduler_once();
+        reset_test_clock();
+        let fires = Rc::new(Cell::new(0u32));
+        let h = {
+            let fires = fires.clone();
+            long_press(LongPressRecognizer::new(), move || {
+                fires.set(fires.get() + 1)
+            })
+        };
+        with_button(PointerButton::Secondary, || {
+            let r = h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
+            assert!(!r.consumed, "a secondary Began must bubble");
+        });
+        advance_ms(2_000);
+        assert_eq!(fires.get(), 0, "the timer was never armed");
+    }
+
     #[test]
     fn tap_with_press_reports_down_up_and_slide_away() {
         let log: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));

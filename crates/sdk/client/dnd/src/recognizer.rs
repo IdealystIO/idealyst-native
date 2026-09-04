@@ -696,7 +696,7 @@ impl DragRecognizer {
             }
         }));
         Rc::new(move |ev: &TouchEvent| -> TouchResponse {
-            rec.borrow_mut().update(ev, &RecognizerCtx::UNGATED).response
+            rec.borrow_mut().drive(ev, &RecognizerCtx::UNGATED).response
         })
     }
 }

@@ -40,10 +40,18 @@
 //! Standalone use (the stock factory wrappers) passes
 //! [`RecognizerCtx::UNGATED`], so `may_recognize` is always `true` and the
 //! gate is a no-op — behaviour is identical to the pre-trait closures.
+//!
+//! ## Input gating: drivers call `drive`, implementors write `update`
+//!
+//! [`Recognizer::drive`] is the entry point every driver uses. It applies
+//! the one input rule that holds for all recognizers — a `Began` from a
+//! non-primary pointer button is ignored, never consumed — and then calls
+//! [`Recognizer::update`]. Implementing a recognizer means writing
+//! `update`; `drive` is provided and should not be overridden.
 
 use std::rc::Rc;
 
-use crate::touch::{TouchEvent, TouchResponse};
+use crate::touch::{pointer_button, TouchEvent, TouchPhase, TouchResponse};
 
 /// Installed by the arbiter so a recognizer that can recognize *off* the
 /// touch stream (the long-press timer is the only stock case) asks the
@@ -172,6 +180,44 @@ pub trait Recognizer {
     /// recognizer's user callback(s) for any transition it makes this
     /// event (subject to `ctx.may_recognize`, see module docs).
     fn update(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate;
+
+    /// **The driver entry point.** Applies the input gate every recognizer
+    /// owes the rest of the tree, then delegates to
+    /// [`update`](Recognizer::update). Implementors write `update`; drivers
+    /// (the standalone factory wrappers, the gesture arbiter) call this and
+    /// never `update` directly.
+    ///
+    /// The gate drops a [`Began`](TouchPhase::Began) produced by any button
+    /// other than [`PointerButton::Primary`]: the recognizer stays at its
+    /// current state and reports [`TouchResponse::IGNORED`], so the event
+    /// bubbles untouched.
+    ///
+    /// Why the gate has to live here rather than in each call site: a
+    /// recognizer consumes from `Began` — it has to, to be sure of hearing
+    /// the motion it measures — and consuming is what commits the bubble
+    /// decision for the whole interaction. So a secondary press landing on a
+    /// recognizer was swallowed, found not to be the gesture, and dropped;
+    /// nothing further out ever heard it. Anything that installs a
+    /// recognizer therefore blocked its own context menu — a clickable table
+    /// row could not open one over itself, while the header row beside it
+    /// (no recognizer, no gate needed) could.
+    ///
+    /// The state leak is the second half of the same bug: a non-primary
+    /// press is `Began`-only by contract (see [`PointerButton`]), so a
+    /// recognizer that started tracking one would sit in that state, no
+    /// `Ended` ever arriving to clear it.
+    ///
+    /// Touch and pen contact always report `Primary`, so this changes
+    /// nothing on a touch-only backend.
+    ///
+    /// [`PointerButton`]: crate::touch::PointerButton
+    /// [`PointerButton::Primary`]: crate::touch::PointerButton::Primary
+    fn drive(&mut self, ev: &TouchEvent, ctx: &RecognizerCtx) -> RecognizerUpdate {
+        if ev.phase == TouchPhase::Began && !pointer_button().is_primary() {
+            return RecognizerUpdate::new(self.state(), TouchResponse::IGNORED);
+        }
+        self.update(ev, ctx)
+    }
 
     /// Return to [`GestureState::Possible`] for a fresh interaction.
     ///
