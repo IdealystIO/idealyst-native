@@ -3338,6 +3338,31 @@ impl AndroidBackend {
             });
         }
 
+        // `scrollbar: Hidden` → `View.setHorizontalScrollBarEnabled` /
+        // `setVerticalScrollBarEnabled`. Same shape as the overscroll
+        // block above: applied on every style pass so a reactive flip
+        // back to `Auto` restores the bars, and both axes because the
+        // property names the surface rather than a direction.
+        {
+            let shows = !matches!(
+                style.scrollbar,
+                Some(runtime_shared::ScrollbarVisibility::Hidden)
+            );
+            with_env(|env| {
+                for setter in
+                    ["setHorizontalScrollBarEnabled", "setVerticalScrollBarEnabled"]
+                {
+                    let _ = env.call_method(
+                        node.as_obj(),
+                        setter,
+                        "(Z)V",
+                        &[JValue::Bool(shows as u8)],
+                    );
+                    let _ = env.exception_clear();
+                }
+            });
+        }
+
         match style.position {
             Some(runtime_shared::Position::Sticky) => {
                 // Per-axis thresholds (`top` → vertical off

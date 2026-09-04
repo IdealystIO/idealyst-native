@@ -258,8 +258,8 @@ pub use runtime_shared::premint;
 pub use runtime_shared::{
     AlignContent, AlignItems, AlignSelf, Cursor, Derive, DisplayKind, FlexDirection, FlexWrap,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
-    ObjectFit, Overflow, PointerEvents, Position, RadialExtent, Shadow, TextAlign, TextTransform,
-    TrackSize, Transform, UserSelect, VariantAxis, VariantValue,
+    ObjectFit, Overflow, PointerEvents, Position, RadialExtent, ScrollbarVisibility, Shadow,
+    TextAlign, TextTransform, TrackSize, Transform, UserSelect, VariantAxis, VariantValue,
 };
 
 // Typefaces + assets (fonts, images): shared asset model.

@@ -3292,6 +3292,23 @@ impl IosBackend {
                     Some(runtime_shared::OverscrollBehavior::None)
                 );
                 let _: () = unsafe { msg_send![view, setBounces: bounces] };
+                // `scrollbar: Hidden` — drop the transient indicator.
+                // Set on every style pass for the same reason as
+                // `bounces`: a reactive flip back to `Auto` must restore
+                // it rather than latch off. BOTH axes, because the
+                // property names the surface, not a direction — a
+                // horizontal strip has a horizontal indicator, and a
+                // caller that hides one means the scrollbar.
+                let shows = !matches!(
+                    style.scrollbar,
+                    Some(runtime_shared::ScrollbarVisibility::Hidden)
+                );
+                let _: () = unsafe {
+                    msg_send![view, setShowsHorizontalScrollIndicator: shows]
+                };
+                let _: () = unsafe {
+                    msg_send![view, setShowsVerticalScrollIndicator: shows]
+                };
             }
         }
 

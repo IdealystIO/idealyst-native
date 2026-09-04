@@ -399,6 +399,7 @@ pub use style::{
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, GridPlacement, TrackSize,
     IntoOverrideSource, IntoVariantSource, JustifyContent, Length, ObjectFit, RadialExtent, Overflow,
     OverscrollBehavior,
+    ScrollbarVisibility,
     PointerEvents, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
     TextTransform, UserSelect,
     NoTokens, ThemePalette, TokenEntry, TokenValue, TokenVocabulary, Tokenized, Transform,

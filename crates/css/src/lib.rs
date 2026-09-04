@@ -964,6 +964,17 @@ pub fn grid_placement_css(p: runtime_shared::GridPlacement) -> String {
     }
 }
 
+/// `scrollbar: Hidden` → `scrollbar-width: none`. `Auto` emits nothing
+/// (the shorthand's own default), so a rule that never sets the property
+/// stays out of the generated CSS.
+pub fn scrollbar_css(v: runtime_shared::ScrollbarVisibility) -> &'static str {
+    use runtime_shared::ScrollbarVisibility;
+    match v {
+        ScrollbarVisibility::Auto => "auto",
+        ScrollbarVisibility::Hidden => "none",
+    }
+}
+
 pub fn overscroll_behavior_css(v: runtime_shared::OverscrollBehavior) -> &'static str {
     use runtime_shared::OverscrollBehavior;
     match v {
@@ -1383,6 +1394,7 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
             "overscroll-behavior",
             V::Kw(rules.overscroll_behavior.map(overscroll_behavior_css)),
         ),
+        ("scrollbar-width", V::Kw(rules.scrollbar.map(scrollbar_css))),
         ("object-fit", V::Kw(rules.object_fit.map(object_fit_css))),
         ("box-shadow", V::Owned(rules.shadow.as_ref().map(|sh| {
             format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)

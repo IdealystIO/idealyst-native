@@ -827,6 +827,32 @@ pub enum OverscrollBehavior {
     None,
 }
 
+/// Whether a scrolling surface shows its scrollbar / scroll indicator.
+///
+/// Only meaningful on a scrolling surface (a `scroll_view`, or any box
+/// the backend realizes as one). Everywhere else it is ignored.
+///
+/// - **iOS / Android / macOS** — `Hidden` turns the transient scroll
+///   indicator off. The surface still scrolls; only the affordance goes.
+/// - **Web** — `scrollbar-width: none`.
+/// - **Terminal / Roku / CPU** — no scrollbar to hide; ignored.
+///
+/// The case this exists for is a control that happens to be built on a
+/// scroller and is not read as one: a scrolling tab strip, a chip rail,
+/// a segmented control too wide for its box. There the indicator is a
+/// stray line INSIDE the control — on a tab bar it lands between the
+/// tabs and their selection underline — and no amount of styling the
+/// control itself can remove it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ScrollbarVisibility {
+    /// Platform default — the surface shows a scrollbar / indicator.
+    #[default]
+    Auto,
+    /// No scrollbar. The surface still scrolls by gesture, wheel and
+    /// programmatic offset; only the affordance is suppressed.
+    Hidden,
+}
+
 /// How a replaced element's content (an `image`'s bitmap) is fitted into
 /// its layout box. Mirrors CSS `object-fit`. Only meaningful on the
 /// `image` primitive — every other primitive silently ignores it (there is
@@ -1287,6 +1313,9 @@ pub struct StyleRules {
     /// Scroll-chaining / edge-effect policy. Only meaningful on a
     /// scrolling surface; see [`OverscrollBehavior`].
     pub overscroll_behavior: Option<OverscrollBehavior>,
+    /// Scrollbar / scroll-indicator visibility. Only meaningful on a
+    /// scrolling surface; see [`ScrollbarVisibility`].
+    pub scrollbar: Option<ScrollbarVisibility>,
     /// How an `image`'s bitmap fits its box (CSS `object-fit`). `None` ⇒
     /// the framework default [`ObjectFit::Contain`] on every backend.
     /// Ignored by every primitive except `image` (no replaced content to
@@ -1451,6 +1480,7 @@ impl Clone for StyleRules {
             opacity: self.opacity.clone(),
             overflow: self.overflow.clone(),
             overscroll_behavior: self.overscroll_behavior.clone(),
+            scrollbar: self.scrollbar.clone(),
             object_fit: self.object_fit.clone(),
             shadow: self.shadow.clone(),
             text_shadow: self.text_shadow.clone(),
@@ -1528,7 +1558,7 @@ impl StyleRules {
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
-            opacity, overflow, overscroll_behavior, object_fit, shadow, text_shadow,
+            opacity, overflow, overscroll_behavior, scrollbar, object_fit, shadow, text_shadow,
             background_gradient,
             transform, transform_origin,
             cursor, user_select, pointer_events,
@@ -1676,6 +1706,7 @@ impl StyleRules {
         write_tokenized_f32(&mut s, "op", &self.opacity);
         write_enum(&mut s, "ov", self.overflow.map(|x| x as u8));
         write_enum(&mut s, "osb", self.overscroll_behavior.map(|x| x as u8));
+        write_enum(&mut s, "sbv", self.scrollbar.map(|x| x as u8));
         write_enum(&mut s, "objf", self.object_fit.map(|x| x as u8));
         if let Some(sh) = &self.shadow {
             s.push_str("sh=");
