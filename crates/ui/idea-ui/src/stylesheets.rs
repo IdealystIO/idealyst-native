@@ -1866,8 +1866,22 @@ stylesheet! {
     pub TabBarHost<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
-            width: Length::pct(100.0),
+            // Fill the space the parent offers rather than claiming
+            // `width: 100%`. A tab bar is mounted inside rows as often
+            // as columns (the app's context bar is a ROW), and a
+            // percentage width against a content-sized parent is
+            // circular; `flex_grow` + a zero `min_width` gives the
+            // scroller a bounded viewport in both.
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
             min_width: Length::Px(0.0),
+            // A FLOOR, not a height. A horizontal scroll_view has no
+            // definite cross-size of its own, and in a row that centres
+            // its children it can report none at all — which collapses
+            // the strip to nothing and makes the tabs vanish rather
+            // than overflow. The floor is one tab: `spacing-sm` above
+            // and below the body line, plus the 2px selection rule.
+            min_height: Length::Px(40.0),
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
         }
@@ -1890,6 +1904,12 @@ stylesheet! {
             flex_grow: 0.0,
             flex_basis: Length::Auto,
             min_width: Length::Px(0.0),
+            // Take the host's full height rather than negotiating one:
+            // the host already states the floor, and a scroller left to
+            // size itself across the axis it does NOT scroll is exactly
+            // what collapsed here.
+            align_self: runtime_core::AlignSelf::Stretch,
+            flex_shrink: 0.0,
         }
     }
 }
