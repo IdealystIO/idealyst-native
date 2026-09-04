@@ -190,12 +190,6 @@ const ANCHOR_POPOVER_WIDTH_FALLBACK: f32 = 200.0;
 /// rendering off-screen before the tracker corrects it.
 const ANCHOR_FALLBACK_MIN_INSET: f32 = 8.0;
 
-/// Gutter kept between a measured popover and every viewport edge when
-/// the tracker's clamp kicks in. Matches the web backend's `EDGE_GAP`,
-/// because the same author intent should not place differently per
-/// platform.
-const ANCHOR_EDGE_GAP: f32 = 8.0;
-
 /// Build the absolutely-positioned style for an anchored portal's
 /// content child based on the anchor's current viewport rect. Used
 /// at mount time for an initial frame before the display-link
@@ -313,32 +307,30 @@ pub(crate) fn start_anchor_tracker(
             unsafe { msg_send_id![&*popover_for_cb, superview] };
         let Some(container) = container else { return };
         let cbounds: objc2_foundation::CGRect = unsafe { msg_send![&*container, bounds] };
-        let vw = cbounds.size.width as f32;
-        let vh = cbounds.size.height as f32;
         // Not laid out yet — clamping against a zero viewport would
-        // stack every popover in the top-left corner.
-        if vw <= 0.0 || vh <= 0.0 {
+        // stack every popover in the top-left corner, so skip the tick.
+        let Some(viewport) = crate::portal_policy::anchor_tracker_viewport(
+            cbounds.size.width as f32,
+            cbounds.size.height as f32,
+        ) else {
             return;
-        }
+        };
 
-        // Shared placement resolver (runtime_shared) — one definition
-        // across web/iOS/Android (CLAUDE.md §7). This is the SAME call
-        // web makes: side-flip when the requested side has no room,
-        // measured position, then a clamp that keeps the whole rect
-        // inside the viewport. The tracker used to call `anchor_top_left`
-        // instead, which is the align/side math WITHOUT either — so a
-        // menu near an edge simply rendered off-screen on iOS while the
-        // identical author code stayed on-screen on web.
-        let placement = runtime_shared::primitives::portal::resolve_anchored_placement(
+        // The tracker's placement decision, host-tested in
+        // `portal_policy` — it delegates to the SAME `runtime_shared`
+        // resolver web calls (side-flip + measured position + viewport
+        // clamp), so one author intent places identically on both
+        // (CLAUDE.md §7). This used to call `anchor_top_left`, the
+        // align/side math WITHOUT either, which is why a menu near an
+        // edge rendered off-screen on iOS and on-screen on web.
+        let (top, left) = crate::portal_policy::anchor_tracker_placement(
             trigger,
             (pop_w, pop_h),
-            (vw, vh),
+            viewport,
             side,
             align,
             offset,
-            ANCHOR_EDGE_GAP,
         );
-        let (top, left) = (placement.y, placement.x);
         let cur_top = pop_frame.origin.y as f32;
         let cur_left = pop_frame.origin.x as f32;
         // Compare against the *live* frame rather than a stored "last

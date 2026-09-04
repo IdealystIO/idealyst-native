@@ -42,8 +42,33 @@
 //! [`teardown_plan`] produces the exact, de-duplicated key set to drop;
 //! the test asserts it covers the whole subtree exactly once and never
 //! lists a key that wasn't registered.
+//!
+//! ## Decision 3 — where the anchor tracker pins the popover
+//!
+//! The `CADisplayLink` callback used to call `anchor_top_left` — the
+//! align/side geometry WITHOUT collision handling — while web called
+//! `resolve_anchored_placement`, which composes that same math with a
+//! side-flip and a viewport clamp. Identical author code therefore
+//! placed differently per platform: a menu, tooltip or popover near a
+//! screen edge rendered off-screen on iOS and stayed on-screen on web,
+//! which is exactly the divergence CLAUDE.md §7 forbids.
+//!
+//! [`anchor_tracker_placement`] is the tracker's placement decision,
+//! host-testable because the geometry it delegates to is pure. The
+//! objc callback contributes only the two measurements it feeds in
+//! (the popover frame and the container bounds) — and the "is the
+//! container laid out yet?" half of that is [`anchor_tracker_viewport`].
 
 use std::collections::HashSet;
+
+use runtime_shared::primitives::portal::{
+    resolve_anchored_placement, ElementAlign, ElementSide, ViewportRect,
+};
+
+/// Gutter kept between a measured popover and every viewport edge when
+/// the clamp kicks in. Matches the web backend's `EDGE_GAP`, because
+/// the same author intent must not place differently per platform.
+pub(crate) const ANCHOR_EDGE_GAP: f32 = 8.0;
 
 /// What `insert(portal_parent, child)` should do with `child` for an
 /// anchored portal, given whether the entry already has a live tracker.
@@ -125,6 +150,45 @@ pub(crate) fn teardown_plan(
     plan
 }
 
+/// The viewport the anchor tracker clamps against, from the portal
+/// container's `bounds.size`.
+///
+/// `None` means "not laid out yet — skip this tick". Clamping against
+/// a zero viewport pins every popover into the top-left corner, which
+/// looks exactly like the off-screen bug this replaced, so the guard
+/// has to reject rather than substitute a default.
+// Consumed by `imp::start_anchor_tracker` (ios-only) and the tests below.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn anchor_tracker_viewport(width: f32, height: f32) -> Option<(f32, f32)> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some((width, height))
+}
+
+/// Where the tracker pins the popover's top-left this vsync, as
+/// `(top, left)`.
+///
+/// This is the SAME resolver the web backend calls, deliberately: one
+/// definition of side-flip + measured position + viewport clamp lives
+/// in `runtime_shared`, and every backend routes through it so the
+/// platforms cannot drift (CLAUDE.md §7). The resolved side is dropped
+/// here because iOS, like web, positions by origin alone.
+// Consumed by `imp::start_anchor_tracker` (ios-only) and the tests below.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn anchor_tracker_placement(
+    trigger: ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+) -> (f32, f32) {
+    let placement =
+        resolve_anchored_placement(trigger, content, viewport, side, align, offset, ANCHOR_EDGE_GAP);
+    (placement.y, placement.x)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +223,87 @@ mod tests {
     /// child), not be ignored. The pre-fix code returned "skip" for the
     /// second child, leaving the popover pinned to the backdrop and the
     /// content laid out top-left (the "empty / missing content" bug).
+    /// Regression: the tracker called `anchor_top_left` — align/side
+    /// math with NO side-flip and NO viewport clamp — while web called
+    /// `resolve_anchored_placement`, which has both. A menu whose
+    /// trigger sits near the right edge therefore rendered off-screen
+    /// on iOS and on-screen on web from identical author code.
+    ///
+    /// The assertion is written so it FAILS against the old call:
+    /// `align = Start` without a clamp returns `left == trigger.x`
+    /// exactly, so a left origin anywhere else is only reachable
+    /// through the clamp. Mirrors the on-device check (an iPhone 17 Pro
+    /// Max simulator, a row's menu 32pt from the right edge).
+    #[test]
+    fn regression_anchor_tracker_clamps_a_popover_into_the_viewport() {
+        // 200pt-wide popover under a trigger 32pt from a 440pt-wide
+        // screen's right edge: unclamped it starts at x=376 and runs
+        // 136pt past the edge.
+        let trigger = ViewportRect { x: 376.0, y: 100.0, width: 32.0, height: 32.0 };
+        let (_, left) = anchor_tracker_placement(
+            trigger,
+            (200.0, 120.0),
+            (440.0, 956.0),
+            ElementSide::Below,
+            ElementAlign::Start,
+            0.0,
+        );
+
+        assert!(
+            left < trigger.x,
+            "the clamp must pull the popover back from the right edge; \
+             unclamped `align = Start` would return left == {} exactly, got {left}",
+            trigger.x,
+        );
+        assert!(
+            left + 200.0 <= 440.0 - ANCHOR_EDGE_GAP + f32::EPSILON,
+            "the whole popover must sit inside the viewport with the edge gap, \
+             got right edge {} against {}",
+            left + 200.0,
+            440.0 - ANCHOR_EDGE_GAP,
+        );
+        assert!(left >= ANCHOR_EDGE_GAP - f32::EPSILON, "and not past the left edge either");
+    }
+
+    /// A popover with room on every side is placed by the plain
+    /// align/side geometry — the clamp must not perturb the common
+    /// case, or every centered menu would drift.
+    #[test]
+    fn anchor_tracker_leaves_a_popover_with_room_alone() {
+        let trigger = ViewportRect { x: 100.0, y: 100.0, width: 32.0, height: 32.0 };
+        let (top, left) = anchor_tracker_placement(
+            trigger,
+            (200.0, 120.0),
+            (440.0, 956.0),
+            ElementSide::Below,
+            ElementAlign::Start,
+            0.0,
+        );
+        assert_eq!(left, 100.0, "start-aligned with room: left edge meets the trigger's");
+        assert_eq!(top, 132.0, "below with room: top meets the trigger's bottom");
+    }
+
+    /// The container's bounds ARE the viewport (it is window-rooted and
+    /// the layout tree auto-fills it), but on the first ticks after
+    /// mount it has not been laid out. Clamping against `(0, 0)` would
+    /// stack every popover in the top-left corner, so a zero-sized
+    /// container skips the tick instead of falling back to a default.
+    #[test]
+    fn an_unlaid_container_yields_no_viewport() {
+        assert_eq!(anchor_tracker_viewport(0.0, 0.0), None);
+        assert_eq!(anchor_tracker_viewport(440.0, 0.0), None);
+        assert_eq!(anchor_tracker_viewport(0.0, 956.0), None);
+        assert_eq!(anchor_tracker_viewport(-1.0, 956.0), None);
+        assert_eq!(anchor_tracker_viewport(440.0, 956.0), Some((440.0, 956.0)));
+    }
+
+    /// The gutter is shared with web's `EDGE_GAP` on purpose: one
+    /// author intent, one placement, every backend (CLAUDE.md §7).
+    #[test]
+    fn the_edge_gap_matches_the_web_backend() {
+        assert_eq!(ANCHOR_EDGE_GAP, 8.0);
+    }
+
     #[test]
     fn regression_anchored_multichild_retracks_to_content() {
         // First child (backdrop): no tracker yet → start one.

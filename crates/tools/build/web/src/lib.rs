@@ -723,9 +723,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // which is what puts a web app in front of the MCP server /
         // inspector / evaluators. Same `</head>` splice and the same
         // pre-gzip ordering as the injections above.
-        if let Some(url) = opts.robot_relay_url.as_deref() {
-            inject_robot_relay_url_into_staged_index(&staged.join("index.html"), url)?;
-        }
+        stage_robot_relay_url(&staged.join("index.html"), opts.robot_relay_url.as_deref())?;
         // Stage any EXTERNAL dirs the app links in (e.g. a component
         // library's `fonts/`), copied under their final path component so
         // `../whiteboard/fonts` → `<bundle>/fonts/`. Lets a library own the
@@ -1047,6 +1045,19 @@ fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -
     fs::write(index_path, rewritten)
         .with_context(|| format!("write {}", index_path.display()))?;
     Ok(())
+}
+
+/// The staged-index relay step, gate included: `None` writes nothing at
+/// all.
+///
+/// The gate lives here rather than at the call site so it is reachable
+/// from a test. What it protects is not cosmetic — a deploy bundle that
+/// picked up a dev machine's relay port would ship an app that dials a
+/// developer's laptop, and every `idealyst build` path relies on this
+/// staying a no-op.
+fn stage_robot_relay_url(index_path: &Path, url: Option<&str>) -> Result<()> {
+    let Some(url) = url else { return Ok(()) };
+    inject_robot_relay_url_into_staged_index(index_path, url)
 }
 
 /// Splice `window.IDEALYST_ROBOT_RELAY_URL` into the staged
@@ -3894,12 +3905,22 @@ mod robot_relay_tests {
     #[test]
     fn relay_url_cannot_break_out_of_the_script_tag() {
         let tag = robot_relay_script_tag(r#"ws://x"</script><script>alert(1)"#);
-        assert!(!tag.contains("</script><script>"), "escaped: {tag}");
-        assert!(tag.contains(r#"\"#), "quote must be escaped: {tag}");
-        assert!(tag.contains(r"<"), "`<` must be escaped: {tag}");
-        // Exactly one script element, and it is ours.
-        assert_eq!(tag.matches("<script>").count(), 1);
-        assert_eq!(tag.matches("</script>").count(), 1);
+
+        // Exactly one script element, and it is ours — the payload's
+        // `</script><script>` must not have survived as markup.
+        assert_eq!(tag.matches("<script>").count(), 1, "escaped: {tag}");
+        assert_eq!(tag.matches("</script>").count(), 1, "escaped: {tag}");
+
+        // Assert on the ESCAPES themselves, not on the presence of
+        // characters our own `<script>` wrapper contributes anyway:
+        // `tag.contains("<")` is true of every tag ever produced and so
+        // tests nothing.
+        assert!(tag.contains(r#"\u003C/script"#), "`<` must become \\u003C: {tag}");
+        assert!(tag.contains(r#"ws://x\""#), "the quote must be backslash-escaped: {tag}");
+
+        // And nothing from the URL reaches the document as raw markup.
+        let body = tag.strip_prefix("\n    <script>").unwrap().strip_suffix("</script>").unwrap();
+        assert!(!body.contains('<'), "no raw `<` may survive into the script body: {body}");
     }
 
     /// A deploy bundle must never carry a dev machine's relay port —
@@ -3912,9 +3933,18 @@ mod robot_relay_tests {
         let original = "<html><head><title>App</title></head><body></body></html>";
         fs::write(&index, original).unwrap();
 
-        // What `build()` does when `robot_relay_url` is None: nothing.
+        // Drive the REAL gate `build()` calls. Asserting on a file we
+        // just wrote and never handed to production code would pass just
+        // as happily against an unconditional injection.
+        stage_robot_relay_url(&index, None).unwrap();
+
         let html = fs::read_to_string(&index).unwrap();
-        assert_eq!(html, original);
+        assert_eq!(html, original, "a None relay must leave the staged index byte-identical");
         assert!(!html.contains("IDEALYST_ROBOT_RELAY_URL"));
+
+        // And the same gate with Some(..) does inject — otherwise this
+        // test would also pass against a function that never writes.
+        stage_robot_relay_url(&index, Some("ws://127.0.0.1:44885")).unwrap();
+        assert!(fs::read_to_string(&index).unwrap().contains("IDEALYST_ROBOT_RELAY_URL"));
     }
 }
