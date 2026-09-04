@@ -7,6 +7,7 @@ pub(crate) mod handles;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod portal;
+pub(crate) mod press_state;
 pub(crate) mod phase_timer;
 pub(crate) mod keyboard;
 pub(crate) mod screenshot;
@@ -1774,6 +1775,15 @@ impl IosBackend {
             node.as_view(),
             Rc::new(move |on: bool| focus_setter(runtime_shared::StateBits::FOCUSED, on)),
         );
+        // PRESSED, for every node whose sheet declares states. iOS drove
+        // no interaction state at all until this — see `press_state`,
+        // which also says why it is a recognizer rather than a touch
+        // override. HOVERED stays unwired: a finger does not hover, and
+        // the pointer case (iPad trackpad, Pencil) wants
+        // `UIHoverGestureRecognizer` and its own think about what a
+        // hover means on a surface you can also touch.
+        let target = press_state::install(self.mtm, node.as_view(), setter);
+        self.retain_target(&target);
     }
 
     pub(crate) fn create_text_area_impl(

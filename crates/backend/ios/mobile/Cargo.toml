@@ -110,6 +110,7 @@ objc2-ui-kit = { version = "0.2", features = [
     "UINavigationController",
     "UIColor",
     "UIGestureRecognizer",
+    "UILongPressGestureRecognizer",
     "UITapGestureRecognizer",
     "UITextInputTraits",
     "UITouch",
