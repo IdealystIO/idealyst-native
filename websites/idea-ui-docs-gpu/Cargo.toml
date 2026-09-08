@@ -8,7 +8,7 @@
 # Run with: `cargo run -p idea-ui-docs-gpu`
 [package]
 name = "idea-ui-docs-gpu"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "idea-ui-docs rendered on the wgpu (GPU) backend as a native desktop window"

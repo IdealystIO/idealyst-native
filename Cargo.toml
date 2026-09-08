@@ -408,12 +408,12 @@ license = "MIT OR Apache-2.0"
 # The app-facing facade. An app depends on this, writes
 # `idealyst::entry!(<lib>)` in `src/main.rs`, and builds with plain
 # cargo — there is no CLI-generated web wrapper crate any more.
-idealyst = { path = "crates/idealyst", version = "1.5.2", registry = "idealyst" }
+idealyst = { path = "crates/idealyst", version = "1.5.3", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "1.5.2", registry = "idealyst" }
-runtime-shared = { path = "crates/runtime/shared", version = "1.7.1", registry = "idealyst" }
+runtime-shared = { path = "crates/runtime/shared", version = "1.8.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.5.2", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.5.3", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.7.1", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.7.2", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure
@@ -426,7 +426,7 @@ rustc-hash = "2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-css = { path = "crates/css", version = "1.5.4", registry = "idealyst" }
+css = { path = "crates/css", version = "1.5.5", registry = "idealyst" }
 premint-dump = { path = "crates/tools/premint-dump" }
 # Link-time distributed slices — the premint style-dump registry
 # (`runtime_core::premint`, `style-dump` feature). Link-section
@@ -481,7 +481,7 @@ icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core", version = "1.5.3", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "1.5.3", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "1.5.3", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.7.2", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.8.0", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "1.5.2", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "1.5.2", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "1.5.2", registry = "idealyst" }
@@ -492,7 +492,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.5.2", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.5.2", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "1.6.1", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "1.6.2", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.2", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.2", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.5.2", registry = "idealyst" }
@@ -525,15 +525,15 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "1.5.2", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.2", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "1.8.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "1.8.1", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.2", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "1.5.2", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "1.5.2", registry = "idealyst" }
 zoom = { path = "crates/sdk/client/zoom", version = "1.5.2", registry = "idealyst" }
-dnd = { path = "crates/sdk/client/dnd", version = "1.5.3", registry = "idealyst" }
-gesture = { path = "crates/sdk/client/gesture", version = "1.5.3", registry = "idealyst" }
+dnd = { path = "crates/sdk/client/dnd", version = "1.5.4", registry = "idealyst" }
+gesture = { path = "crates/sdk/client/gesture", version = "1.5.4", registry = "idealyst" }
 maps = { path = "crates/sdk/client/maps", version = "1.5.2", registry = "idealyst" }
 maps-core = { path = "crates/sdk/client/maps/core", version = "1.5.2", registry = "idealyst" }
 maps-web = { path = "crates/sdk/client/maps/web", version = "1.5.2", registry = "idealyst" }
@@ -548,13 +548,13 @@ canvas-core = { path = "crates/sdk/client/canvas/core", version = "1.5.2", regis
 charts-core = { path = "crates/sdk/client/charts/core", version = "1.5.2", registry = "idealyst" }
 charts = { path = "crates/sdk/client/charts", version = "1.5.3", registry = "idealyst" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.5.2", registry = "idealyst" }
-canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.5.2", registry = "idealyst" }
+canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.5.3", registry = "idealyst" }
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.2", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "1.5.2", registry = "idealyst" }
-table = { path = "crates/sdk/client/table", version = "1.5.3", registry = "idealyst" }
+table = { path = "crates/sdk/client/table", version = "1.5.4", registry = "idealyst" }
 virtualized = { path = "crates/sdk/client/virtualized", version = "1.5.2", registry = "idealyst" }
-offload = { path = "crates/sdk/client/offload", version = "1.5.2", registry = "idealyst" }
+offload = { path = "crates/sdk/client/offload", version = "1.5.3", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "1.5.2", registry = "idealyst" }
 net = { path = "crates/sdk/client/net", version = "1.5.3", registry = "idealyst" }
 storage = { path = "crates/sdk/client/storage", version = "1.5.2", registry = "idealyst" }
@@ -655,7 +655,7 @@ file-drop-demo = { path = "crates/sdk/client/file-picker/examples/file-drop-demo
 file-picker-demo = { path = "crates/sdk/client/file-picker/examples/file-picker-demo", version = "1.5.2", registry = "idealyst" }
 graphql-demo = { path = "crates/sdk/client/graphql/examples/graphql-demo", version = "1.5.2", registry = "idealyst" }
 i18n-demo = { path = "crates/sdk/client/i18n/examples/i18n-demo", version = "1.5.2", registry = "idealyst" }
-idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.2", registry = "idealyst" }
+idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.3", registry = "idealyst" }
 idea-ui-docs-gtk = { path = "examples/idea-ui-docs-gtk", version = "1.5.2", registry = "idealyst" }
 idealyst-macros = { path = "crates/idealyst-macros", version = "1.5.2", registry = "idealyst" }
 jobs-demo = { path = "crates/sdk/server/jobs/examples/jobs-demo", version = "1.5.2", registry = "idealyst" }

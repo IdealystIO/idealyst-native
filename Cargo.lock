@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.7.2"
+version = "1.8.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "css",
  "dev-client",
@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-vello"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-linux",
  "canvas-core",
@@ -3014,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "runtime-shared",
 ]
@@ -3517,7 +3517,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "runtime-core",
  "runtime-shared",
@@ -4468,7 +4468,7 @@ dependencies = [
 
 [[package]]
 name = "gesture"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "runtime-shared",
 ]
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6178,7 +6178,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6219,7 +6219,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-web",
  "console_error_panic_hook",
@@ -8511,7 +8511,7 @@ dependencies = [
 
 [[package]]
 name = "offload"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "futures-channel",
  "offload-macro",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "host-mock",
  "mcp-catalog",
@@ -11795,7 +11795,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
