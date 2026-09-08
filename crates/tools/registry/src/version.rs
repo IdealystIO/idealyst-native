@@ -189,14 +189,49 @@ fn run_git(root: &Path, args: &[String]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Does a unified diff change nothing but a top-level `version = "…"` line?
+/// Does a unified diff contain nothing but edits a RELEASE itself wrote?
 ///
-/// Deliberately strict: `version.workspace = true` has the key
-/// `version.workspace`, not `version`, and does not match — a publishable
-/// crate carries its own literal version, and anything else in that file is
-/// a change worth republishing for.
+/// Two shapes qualify, and both are artifacts of the previous release
+/// rather than changes anyone made to the crate:
+///
+/// 1. the crate's own top-level `version = "…"` line, and
+/// 2. an internal dependency whose floor moved — the same line either
+///    side, differing only inside its `version = "…"` field.
+///
+/// The second used to disqualify a commit, and that was the bug.
+/// `apply_plan` moves a released crate's floor in its dependents BEFORE
+/// packaging, so those edits are already inside the published tarball;
+/// git only records them afterwards, in the `chore(release):` commit. A
+/// dependent whose floor moved therefore looked "changed since the
+/// published commit" forever after, and every subsequent release
+/// dragged the previous release's crate set along with it — which is
+/// exactly what per-crate versions exist to stop. Seen on 2026-09-08: a
+/// one-file iOS fix planned `css` and `idealyst` too, because
+/// `53cbea1b` had moved their `runtime-shared` and `backend-web`
+/// floors.
+///
+/// Still deliberately strict about everything else. `version.workspace
+/// = true` has the key `version.workspace`, not `version`, and does not
+/// match — a publishable crate carries its own literal version. A
+/// dependency line that changed in any way OTHER than its version
+/// field (features added, a path repointed) is a real edit and
+/// republishes.
 fn is_version_only_patch(patch: &str) -> bool {
-    let mut saw_a_version_line = false;
+    let mut saw_a_release_line = false;
+    // Removed lines by key, so a `+` line can be compared against the
+    // `-` it replaced. `-U0` means every line here is one the commit
+    // actually changed.
+    let mut removed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for line in patch.lines() {
+        if line.starts_with("---") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('-') {
+            if let Some((key, val)) = rest.split_once('=') {
+                removed.insert(key.trim().to_string(), val.trim().to_string());
+            }
+        }
+    }
     for line in patch.lines() {
         if line.starts_with("+++") || line.starts_with("---") {
             continue;
@@ -204,13 +239,55 @@ fn is_version_only_patch(patch: &str) -> bool {
         let Some(rest) = line.strip_prefix('+').or_else(|| line.strip_prefix('-')) else {
             continue;
         };
-        let Some((key, _)) = rest.split_once('=') else { return false };
-        if key.trim() != "version" {
+        let Some((key, val)) = rest.split_once('=') else { return false };
+        let key = key.trim();
+        if key == "version" {
+            saw_a_release_line = true;
+            continue;
+        }
+        // A dependency line: it only counts as a release artifact when
+        // its counterpart differs from it solely inside `version`.
+        let Some(other) = removed.get(key) else { return false };
+        if !differs_only_in_version_field(other, val.trim()) {
             return false;
         }
-        saw_a_version_line = true;
+        saw_a_release_line = true;
     }
-    saw_a_version_line
+    saw_a_release_line
+}
+
+/// Are two dependency-table values identical once each one's
+/// `version = "…"` field is blanked out?
+///
+/// Compares the REST of the inline table, so a floor move reads as a
+/// release artifact while a features change, a renamed path or a new
+/// `default-features` key reads as a real edit.
+fn differs_only_in_version_field(a: &str, b: &str) -> bool {
+    fn blank_version(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("version") {
+            let after = &rest[i + "version".len()..];
+            let trimmed = after.trim_start();
+            // `version = "x"` — blank the quoted literal that follows.
+            if let Some(eq) = trimmed.strip_prefix('=') {
+                let v = eq.trim_start();
+                if let Some(open) = v.strip_prefix('"') {
+                    if let Some(close) = open.find('"') {
+                        out.push_str(&rest[..i]);
+                        out.push_str("version=\"\"");
+                        rest = &open[close + 1..];
+                        continue;
+                    }
+                }
+            }
+            out.push_str(&rest[..i + "version".len()]);
+            rest = after;
+        }
+        out.push_str(rest);
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    !a.is_empty() && !b.is_empty() && blank_version(a) == blank_version(b)
 }
 
 /// Arguments for the "what changed in this crate?" git query.
@@ -392,6 +469,56 @@ mod tests {
         assert!(!is_version_only_patch(""));
         // `version.workspace = true` is a different key and does not count.
         assert!(!is_version_only_patch("+version.workspace = true\n"));
+    }
+
+    /// Regression: a release's bump commit also moves its dependents' FLOORS,
+    /// and those edits are already inside the published tarball — `apply_plan`
+    /// writes them before packaging and git records them afterwards. Counting
+    /// them made every later release drag the previous release's crates along.
+    ///
+    /// This is the real `crates/css/Cargo.toml` patch from `53cbea1b`, which
+    /// on 2026-09-08 made a one-file iOS fix plan `css` and `idealyst` too.
+    #[test]
+    fn regression_a_moved_dependency_floor_is_a_release_artifact_not_a_change() {
+        let patch = concat!(
+            "--- a/crates/css/Cargo.toml\n+++ b/crates/css/Cargo.toml\n",
+            "@@ -3 +3 @@\n",
+            "-version = \"1.5.4\"\n",
+            "+version = \"1.5.5\"\n",
+            "@@ -14 +14 @@\n",
+            "-runtime-shared = { path = \"../runtime/shared\", default-features = false, version = \"1.7.1\", registry = \"idealyst\" }\n",
+            "+runtime-shared = { path = \"../runtime/shared\", default-features = false, version = \"1.8.0\", registry = \"idealyst\" }\n",
+        );
+        assert!(
+            is_version_only_patch(patch),
+            "a floor the release tool moved must not re-plan the dependent",
+        );
+    }
+
+    /// The other half of that: a dependency line that changed in any way
+    /// beyond its floor is a REAL edit. Without this the fix above would
+    /// swallow feature changes and repointed paths, which is worse than the
+    /// bug it replaces — a consumer would never get the new behavior.
+    #[test]
+    fn a_dependency_edit_beyond_the_floor_still_republishes() {
+        let features = concat!(
+            "@@ -14 +14 @@\n",
+            "-runtime-shared = { path = \"../runtime/shared\", version = \"1.7.1\" }\n",
+            "+runtime-shared = { path = \"../runtime/shared\", version = \"1.8.0\", features = [\"async-driver\"] }\n",
+        );
+        assert!(!is_version_only_patch(features), "a features change is a real edit");
+
+        let repointed = concat!(
+            "@@ -14 +14 @@\n",
+            "-runtime-shared = { path = \"../runtime/shared\", version = \"1.7.1\" }\n",
+            "+runtime-shared = { path = \"../runtime/other\", version = \"1.7.1\" }\n",
+        );
+        assert!(!is_version_only_patch(repointed), "a repointed path is a real edit");
+
+        // A dependency ADDED outright has no `-` counterpart to compare
+        // against, so it cannot be an artifact of moving a floor.
+        let added = "@@ -20 +20,2 @@\n+serde = { workspace = true }\n";
+        assert!(!is_version_only_patch(added), "a new dependency is a real edit");
     }
 
     /// Regression: a release records the commit it was cut from, then writes
