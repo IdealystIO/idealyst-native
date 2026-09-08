@@ -712,6 +712,39 @@ impl IosBackend {
     /// Get or create a layout node for a UIView. Called from every
     /// `create_*` method so each native view has a corresponding
     /// node in the layout tree.
+    /// Record a plain label's author-written text, safely.
+    ///
+    /// Registers the layout node FIRST and only then writes the side
+    /// table, because [`Self::layout_for_view`] clears every
+    /// pointer-keyed side table for an address it has not seen — the
+    /// defense against the allocator handing back a dead view's
+    /// pointer. A caller that recorded first would have its entry wiped
+    /// by the very next line, which is exactly how `text_transform`
+    /// shipped inert in 1.8.0.
+    ///
+    /// `layout_for_view` is idempotent (it returns the existing node
+    /// when the view is already registered), so calling it here costs
+    /// nothing when the caller has already done so — and makes the
+    /// ordering unbreakable when it hasn't. No unit test can pin this:
+    /// the whole invariant lives in UIKit-bound code with no host seam,
+    /// so it is enforced by construction instead.
+    pub(crate) fn record_label_text(
+        &mut self,
+        label: &Retained<UILabel>,
+        content: &str,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) {
+        self.layout_for_view(label);
+        self.label_texts.insert(
+            &**label as *const UILabel as usize,
+            LabelText {
+                raw: content.to_string(),
+                transform: TextTransform::None,
+                author_a11y_label: a11y.label.is_some(),
+            },
+        );
+    }
+
     pub(crate) fn layout_for_view(&mut self, view: &UIView) -> runtime_layout::LayoutNode {
         let key = view as *const UIView as usize;
         if let Some((_, node)) = self.view_to_layout.get(&key) {
@@ -1526,26 +1559,11 @@ impl IosBackend {
         // which both prevents wrap and breaks every flex sibling
         // around it.
         let layout = self.layout_for_view(&label);
-        // AFTER `layout_for_view`, and that ordering is the whole
-        // point. Registering a view's layout node clears every
-        // pointer-keyed side table for that address — the defense
-        // against the allocator handing us a dead view's pointer — and
-        // `label_texts` is one of them. Inserting before the call put
-        // the entry in and had it wiped two lines later, so
-        // `apply_style` found no entry and every `text_transform` in
-        // the app silently did nothing.
-        //
         // Untransformed, and correct: no style has been applied yet.
         // `apply_style` arrives after this and re-sets the text if the
-        // sheet asks for a transform.
-        self.label_texts.insert(
-            &*label as *const UILabel as usize,
-            LabelText {
-                raw: content.to_string(),
-                transform: TextTransform::None,
-                author_a11y_label: a11y.label.is_some(),
-            },
-        );
+        // sheet asks for a transform. `record_label_text` owns the
+        // ordering against `layout_for_view` — see its docs.
+        self.record_label_text(&label, content, a11y);
         let label_for_measure = label.clone();
         self.layout.set_measure_fn(
             layout,
