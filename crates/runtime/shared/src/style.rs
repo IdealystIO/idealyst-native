@@ -760,6 +760,52 @@ pub enum TextTransform {
     Capitalize,
 }
 
+impl TextTransform {
+    /// `text` as this transform renders it.
+    ///
+    /// Backends that have no text-transform property of their own
+    /// (UIKit and AppKit both set a plain string on a label) apply the
+    /// transform to the STRING and keep the original for the
+    /// accessibility label — the transform is presentational, exactly
+    /// as it is in CSS, and a screen reader should hear what the author
+    /// wrote rather than a shout.
+    ///
+    /// `Capitalize` follows CSS: it upcases the first letter of every
+    /// word and leaves the REST of each word as the author wrote it.
+    /// "iOS release" becomes "IOS release" — the `i` is upcased, the
+    /// `OS` is untouched. It never lowercases anything, which is why
+    /// it is not `to_lowercase` followed by a first-letter upcase.
+    pub fn apply(self, text: &str) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
+        match self {
+            TextTransform::None => Cow::Borrowed(text),
+            TextTransform::Uppercase => Cow::Owned(text.to_uppercase()),
+            TextTransform::Lowercase => Cow::Owned(text.to_lowercase()),
+            TextTransform::Capitalize => {
+                let mut out = String::with_capacity(text.len());
+                // "Word" = a run between whitespace, which is what CSS
+                // means by it. Splitting on `char::is_alphabetic`
+                // instead would capitalize after every apostrophe and
+                // hyphen ("O'Brien" -> "O'Brien" is right, "O'brien" is
+                // not what CSS does).
+                let mut at_word_start = true;
+                for ch in text.chars() {
+                    if ch.is_whitespace() {
+                        at_word_start = true;
+                        out.push(ch);
+                    } else if at_word_start {
+                        at_word_start = false;
+                        out.extend(ch.to_uppercase());
+                    } else {
+                        out.push(ch);
+                    }
+                }
+                Cow::Owned(out)
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Visual: Overflow / Shadow / Transform
 // =============================================================================

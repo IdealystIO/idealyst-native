@@ -33,6 +33,13 @@ mod portal_policy;
 // any host; the `UIView animateWithDuration:` half is ios-only.
 mod transform_transition_policy;
 
+// Pure decision for a plain label's `accessibilityLabel` under a
+// `text-transform`: UIKit has no such property, so the transform is the
+// STRING, and the untransformed text has to be pinned for VoiceOver.
+// Un-gated so the regression tests run from any host; the `setText:` /
+// `performSelector:` half is ios-only. See the module docs.
+mod label_text_policy;
+
 // Pure four-way decision for draining the coalesced layout pass (run /
 // retry / abandon / no-op). Un-gated so the regression tests run from
 // any host; the half that borrows the backend and runs Taffy is

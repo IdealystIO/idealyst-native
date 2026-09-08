@@ -436,6 +436,18 @@ fn set_string_or_clear(view: &UIView, sel: objc2::runtime::Sel, value: Option<&s
     }
 }
 
+/// Write (or clear, on `None`) `accessibilityLabel` on its own, outside
+/// a full [`apply`] pass.
+///
+/// The label text-transform path needs this: it knows the untransformed
+/// string that has to be announced, but not the author's
+/// `AccessibilityProps`. Precedence is decided upstream by
+/// [`crate::label_text_policy::a11y_label_write`], which never asks for
+/// a write over an author-supplied label.
+pub(crate) fn set_label_override(view: &UIView, value: Option<&str>) {
+    set_string_or_clear(view, sel_set_accessibility_label(), value);
+}
+
 /// `setAccessibilityIdentifier:` — uses the same nil-on-None
 /// semantics as the label/hint setters above. Pulled into its own
 /// function because `accessibilityIdentifier` lives on the

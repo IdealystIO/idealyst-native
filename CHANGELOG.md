@@ -7,6 +7,18 @@ each entry links to its migration guide.
 
 ### Added
 
+- **`text_transform` renders on iOS** — `uppercase` / `lowercase` /
+  `capitalize` now reach UILabel. UIKit has no text-transform property,
+  so the transform is applied to the STRING, and the untransformed text
+  is pinned as the label's `accessibilityLabel` — CSS treats
+  `text-transform` as presentational and a screen reader should hear
+  what the author wrote, not a shout. An explicit `a11y.label` still
+  wins. `TextTransform::apply` is public on `runtime_shared` so any
+  backend without a native property can share the semantics; it follows
+  CSS `capitalize`, which upcases each word's first letter and leaves
+  the rest alone ("iOS release" → "IOS Release", never "Ios Release").
+  macOS and Android still ignore the property.
+
 - **Dev web builds trim debug info and disable thin-local LTO** — a
   debug wasm no longer carries cargo's default `debug = 2`, which on wasm
   (no split-debuginfo, no sidecar) meant a *dev* bundle held more DWARF

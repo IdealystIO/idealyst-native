@@ -2262,3 +2262,69 @@ fn regression_empty_absolute_sheet_premints() {
         "and still resolves to the layout-neutral absolute position"
     );
 }
+
+// =============================================================================
+// TextTransform::apply
+// =============================================================================
+//
+// Backends with no text-transform property of their own (UIKit, AppKit)
+// transform the STRING. Whatever they render has to match what a
+// browser's `text-transform` would, or the same tree reads differently
+// per platform.
+
+use crate::TextTransform;
+
+#[test]
+fn text_transform_none_borrows_the_original() {
+    let out = TextTransform::None.apply("Crew Forge");
+    assert_eq!(out, "Crew Forge");
+    assert!(matches!(out, std::borrow::Cow::Borrowed(_)), "None must not allocate");
+}
+
+#[test]
+fn text_transform_upper_and_lower_match_css() {
+    assert_eq!(TextTransform::Uppercase.apply("Crew Forge"), "CREW FORGE");
+    assert_eq!(TextTransform::Lowercase.apply("Crew Forge"), "crew forge");
+}
+
+/// CSS `capitalize` upcases the first letter of every word and leaves
+/// the REST of each word exactly as authored. A `to_lowercase()` first
+/// — the obvious implementation — would render "iOS release" as "Ios
+/// Release", which is not what a browser does.
+#[test]
+fn text_transform_capitalize_never_lowercases() {
+    assert_eq!(TextTransform::Capitalize.apply("iOS release"), "IOS Release");
+    assert_eq!(TextTransform::Capitalize.apply("crew FORGE"), "Crew FORGE");
+}
+
+/// A "word" is a run between whitespace, per CSS. Splitting on
+/// non-alphabetic characters instead would capitalize after every
+/// apostrophe and hyphen — "O'Brien" would come back "O'Brien" by luck
+/// and "o'brien" would become "O'Brien" instead of "O'brien".
+#[test]
+fn text_transform_capitalize_splits_on_whitespace_only() {
+    assert_eq!(TextTransform::Capitalize.apply("o'brien"), "O'brien");
+    assert_eq!(TextTransform::Capitalize.apply("well-known fact"), "Well-known Fact");
+    assert_eq!(TextTransform::Capitalize.apply("  padded  words "), "  Padded  Words ");
+}
+
+/// Multi-char uppercase mappings must not be truncated: German ß
+/// uppercases to two characters, and `char::to_uppercase` yields an
+/// iterator precisely because of cases like it.
+#[test]
+fn text_transform_handles_multi_char_uppercase() {
+    assert_eq!(TextTransform::Uppercase.apply("straße"), "STRASSE");
+    assert_eq!(TextTransform::Capitalize.apply("ßeta"), "SSeta");
+}
+
+#[test]
+fn text_transform_tolerates_empty_input() {
+    for t in [
+        TextTransform::None,
+        TextTransform::Uppercase,
+        TextTransform::Lowercase,
+        TextTransform::Capitalize,
+    ] {
+        assert_eq!(t.apply(""), "");
+    }
+}

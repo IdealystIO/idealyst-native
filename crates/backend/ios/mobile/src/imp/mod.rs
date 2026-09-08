@@ -31,7 +31,46 @@ use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_shared::primitives::graphics::{OnLost, OnReady, OnResize};
 use runtime_shared::primitives::link::LinkConfig;
 use runtime_shared::primitives::navigator::NavigatorOps;
-use runtime_shared::{Color, StyleRules};
+use runtime_shared::{Color, StyleRules, TextTransform};
+use crate::label_text_policy::{a11y_label_write, A11yLabelWrite};
+
+/// A plain label's author text plus the transform currently baked into
+/// the string UIKit displays. Keyed by view pointer in
+/// [`IosBackend::label_texts`].
+pub(crate) struct LabelText {
+    /// Exactly what the author wrote. `setText:` is lossy under a
+    /// transform, so this is the only surviving copy.
+    pub(crate) raw: String,
+    /// The transform already applied to the displayed string.
+    pub(crate) transform: TextTransform,
+    /// The author supplied their own `a11y.label`. The transform's
+    /// untransformed-text fallback must not overwrite it.
+    pub(crate) author_a11y_label: bool,
+}
+
+/// Write `raw` to `label`, transformed for display, and keep the
+/// accessibility announcement on the author's own words.
+///
+/// UIKit has no text-transform property, so the transform IS the
+/// string — see [`crate::label_text_policy`] for why the
+/// `accessibilityLabel` half is a three-way decision rather than an
+/// unconditional write.
+fn set_label_text(
+    label: &UILabel,
+    raw: &str,
+    previous: TextTransform,
+    next: TextTransform,
+    author_labelled: bool,
+) {
+    let shown = next.apply(raw);
+    let ns = NSString::from_str(&shown);
+    unsafe { label.setText(Some(&ns)) };
+    match a11y_label_write(previous, next, author_labelled) {
+        A11yLabelWrite::Leave => {}
+        A11yLabelWrite::SetRaw => a11y::set_label_override(label, Some(raw)),
+        A11yLabelWrite::Clear => a11y::set_label_override(label, None),
+    }
+}
 
 /// No-op `NavigatorOps` returned by `make_navigator_handle` when no
 /// SDK handler is stored for the requested node (e.g. the node id
@@ -151,6 +190,20 @@ pub struct IosBackend {
     /// + deltas merged. Evicted on pointer reuse alongside
     /// `layout_style_keys` (same recycling defense).
     pub(crate) styled_texts: HashMap<usize, styled_text::StyledTextEntry>,
+    /// Plain labels' UNTRANSFORMED text, keyed by view pointer, with
+    /// the `text_transform` last applied to it.
+    ///
+    /// UIKit has no text-transform property — the only way to render
+    /// one is to transform the string we hand `setText:`. That makes
+    /// the displayed string lossy, so the author's own text is kept
+    /// here: a later `update_text` has to re-apply the transform to NEW
+    /// text, a later `apply_style` has to re-transform the SAME text,
+    /// and the accessibility label has to keep saying what the author
+    /// wrote. None of the three can be recovered from the label.
+    ///
+    /// Evicted on pointer reuse alongside `styled_texts` (same
+    /// recycling defense).
+    pub(crate) label_texts: HashMap<usize, LabelText>,
     /// Last-applied Taffy frame per view, keyed by the same view
     /// pointer that keys `view_to_layout`. `apply_frames` consults
     /// this and skips the `setBounds:` / `setCenter:` / gradient /
@@ -618,6 +671,7 @@ impl IosBackend {
             layout: runtime_layout::LayoutTree::new(),
             view_to_layout: HashMap::new(),
             styled_texts: HashMap::new(),
+            label_texts: HashMap::new(),
             applied_frames: HashMap::new(),
             layout_style_keys: HashMap::new(),
             last_viewport: None,
@@ -681,6 +735,10 @@ impl IosBackend {
         // ...and for styled-text runs: a recycled pointer must not make
         // the new label re-realize a dead label's runs on theme swap.
         self.styled_texts.remove(&key);
+        // ...and for a plain label's untransformed text, which would
+        // otherwise let a recycled pointer redisplay a dead label's
+        // string the next time this one is restyled.
+        self.label_texts.remove(&key);
         // ...and for the last-written frame. This is the one that bites
         // hardest, because the layout pass's short-circuit is an EQUALITY
         // test: `applied_frames.get(key) == Some(&frame_key)` skips the
@@ -1437,6 +1495,17 @@ impl IosBackend {
         let label: Retained<UILabel> = Retained::into_super(custom_label);
         let ns_text = NSString::from_str(content);
         unsafe { label.setText(Some(&ns_text)) };
+        // Untransformed, and correct: no style has been applied yet.
+        // `apply_style` arrives after this and re-sets the text if the
+        // sheet asks for a transform.
+        self.label_texts.insert(
+            &*label as *const UILabel as usize,
+            LabelText {
+                raw: content.to_string(),
+                transform: TextTransform::None,
+                author_a11y_label: a11y.label.is_some(),
+            },
+        );
         let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };
         // UILabel's default `lineBreakMode` is `byTruncatingTail` —
         // any line wider than the assigned frame becomes "…". That
@@ -3017,8 +3086,25 @@ impl IosBackend {
     pub(crate) fn update_text_impl(&mut self, node: &IosNode, content: &str) {
         match node {
             IosNode::Label(label) => {
-                let ns = NSString::from_str(content);
-                unsafe { label.setText(Some(&ns)) };
+                // New text, SAME transform: the sheet has not changed,
+                // so a label whose style upcases it must upcase this
+                // string too. Without the standing transform here, the
+                // first reactive text change silently un-styled the
+                // label.
+                let key = &**label as *const UILabel as usize;
+                let (transform, author_a11y_label) = self
+                    .label_texts
+                    .get(&key)
+                    .map(|e| (e.transform, e.author_a11y_label))
+                    .unwrap_or((TextTransform::None, false));
+                self.label_texts.insert(
+                    key,
+                    LabelText { raw: content.to_string(), transform, author_a11y_label },
+                );
+                // The transform is unchanged, so `previous == next`: no
+                // pin is being installed or dropped, only refreshed
+                // with the new text.
+                set_label_text(label, content, transform, transform, author_a11y_label);
             }
             IosNode::Button(button) => {
                 let ns = NSString::from_str(content);
@@ -3111,6 +3197,7 @@ impl IosBackend {
             self.layout_style_keys.remove(&k);
             self.external_content_measures.remove(&k);
             self.styled_texts.remove(&k);
+            self.label_texts.remove(&k);
             self.pending_sticky.remove(&k);
             self.impl_drop_animated_state(k);
         }
@@ -3492,6 +3579,35 @@ impl IosBackend {
         match node {
             IosNode::Label(_) => {
                 apply_text_style(view, style, true, &self.font_registry);
+                // UIKit has no text-transform, so the transform is the
+                // STRING. Re-applied here rather than at create time
+                // because the style arrives after the text does, and
+                // re-applied on every restyle because a breakpoint or
+                // a theme swap can change which arm resolves.
+                //
+                // Only when it actually CHANGED: `setText:` invalidates
+                // the label's intrinsic size, and a no-op write on
+                // every restyle would dirty layout for every label in
+                // the tree on every pass.
+                let text_key = view as *const UIView as usize;
+                let next = style.text_transform.unwrap_or(TextTransform::None);
+                if let Some(entry) = self.label_texts.get_mut(&text_key) {
+                    if entry.transform != next {
+                        let previous = entry.transform;
+                        entry.transform = next;
+                        let raw = entry.raw.clone();
+                        let author_labelled = entry.author_a11y_label;
+                        if let IosNode::Label(label) = node {
+                            set_label_text(label, &raw, previous, next, author_labelled);
+                        }
+                        // The glyph run just changed width — "CREW" is
+                        // not "Crew". Taffy's measure_fn asks the label
+                        // itself, so it has to be asked again.
+                        if let Some((_, layout_node)) = self.view_to_layout.get(&text_key) {
+                            self.layout.mark_dirty(*layout_node);
+                        }
+                    }
+                }
                 // Styled-text labels: the paragraph style is the BASE the
                 // run deltas layer over, so a (re)style must rebuild the
                 // attributed string AFTER the property writes above —
@@ -4140,6 +4256,22 @@ impl IosBackend {
         inferred_role: Option<runtime_shared::accessibility::Role>,
     ) {
         a11y::apply(node, a11y_props, inferred_role);
+        // `a11y::apply` CLEARS `accessibilityLabel` when the author
+        // supplies none, which would drop a transformed label's
+        // untransformed announcement. Same shape as the Link default in
+        // `create_link_impl`: re-assert afterwards, author overrides
+        // still win.
+        if let IosNode::Label(label) = node {
+            let key = &**label as *const UILabel as usize;
+            if let Some(entry) = self.label_texts.get_mut(&key) {
+                entry.author_a11y_label = a11y_props.label.is_some();
+                if a11y_label_write(entry.transform, entry.transform, entry.author_a11y_label)
+                    == A11yLabelWrite::SetRaw
+                {
+                    a11y::set_label_override(label, Some(&entry.raw));
+                }
+            }
+        }
     }
 
     pub(crate) fn announce_for_accessibility_impl(
