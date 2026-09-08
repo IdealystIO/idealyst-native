@@ -738,6 +738,13 @@ impl IosBackend {
         // ...and for a plain label's untransformed text, which would
         // otherwise let a recycled pointer redisplay a dead label's
         // string the next time this one is restyled.
+        //
+        // NOTE FOR CALLERS: this clears side tables for `key`, so
+        // anything a create path inserts BEFORE calling
+        // `layout_for_view` is wiped here. `create_text_impl` inserted
+        // its `label_texts` entry two lines early and lost it every
+        // time, which is how `text_transform` shipped doing nothing on
+        // iOS. Register the layout node first, then record.
         self.label_texts.remove(&key);
         // ...and for the last-written frame. This is the one that bites
         // hardest, because the layout pass's short-circuit is an EQUALITY
@@ -1498,14 +1505,6 @@ impl IosBackend {
         // Untransformed, and correct: no style has been applied yet.
         // `apply_style` arrives after this and re-sets the text if the
         // sheet asks for a transform.
-        self.label_texts.insert(
-            &*label as *const UILabel as usize,
-            LabelText {
-                raw: content.to_string(),
-                transform: TextTransform::None,
-                author_a11y_label: a11y.label.is_some(),
-            },
-        );
         let _: () = unsafe { msg_send![&label, setNumberOfLines: 0isize] };
         // UILabel's default `lineBreakMode` is `byTruncatingTail` —
         // any line wider than the assigned frame becomes "…". That
@@ -1527,6 +1526,26 @@ impl IosBackend {
         // which both prevents wrap and breaks every flex sibling
         // around it.
         let layout = self.layout_for_view(&label);
+        // AFTER `layout_for_view`, and that ordering is the whole
+        // point. Registering a view's layout node clears every
+        // pointer-keyed side table for that address — the defense
+        // against the allocator handing us a dead view's pointer — and
+        // `label_texts` is one of them. Inserting before the call put
+        // the entry in and had it wiped two lines later, so
+        // `apply_style` found no entry and every `text_transform` in
+        // the app silently did nothing.
+        //
+        // Untransformed, and correct: no style has been applied yet.
+        // `apply_style` arrives after this and re-sets the text if the
+        // sheet asks for a transform.
+        self.label_texts.insert(
+            &*label as *const UILabel as usize,
+            LabelText {
+                raw: content.to_string(),
+                transform: TextTransform::None,
+                author_a11y_label: a11y.label.is_some(),
+            },
+        );
         let label_for_measure = label.clone();
         self.layout.set_measure_fn(
             layout,
