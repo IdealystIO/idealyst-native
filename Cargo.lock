@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",

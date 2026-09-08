@@ -481,7 +481,7 @@ icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core", version = "1.5.3", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "1.5.3", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "1.5.3", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.8.0", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.8.1", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "1.5.2", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "1.5.2", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "1.5.2", registry = "idealyst" }
