@@ -5,6 +5,11 @@
 //!   registry build --out DIR    package + lay out a complete registry locally
 //!   registry publish            build, upload to S3, invalidate CloudFront
 //!
+//! `plan`, `build` and `publish` take `--force <CRATE>` to release a crate
+//! whose source is unchanged but whose PUBLISHED manifest is wrong. Nothing
+//! else can reach that case: the plan is driven by "did this directory
+//! change?", and correcting recorded metadata never changes a directory.
+//!
 //! The default host is set by `--bucket` / `IDEALYST_REGISTRY_BUCKET` and
 //! `--distribution-id` / `IDEALYST_REGISTRY_DISTRIBUTION`.
 
@@ -104,6 +109,12 @@ struct RemoteArgs {
     /// publish, and to rebuild a registry from scratch.
     #[arg(long)]
     from_scratch: bool,
+    /// Release these crates at a patch bump even though nothing in their
+    /// directory changed. For correcting a published manifest — the source is
+    /// fine, the recorded metadata is not — which no source diff will ever
+    /// trigger on its own.
+    #[arg(long = "force", value_name = "CRATE")]
+    force: Vec<String>,
     /// The registry's name as consumers spell it in `.cargo/config.toml`.
     #[arg(long, env = "IDEALYST_REGISTRY_NAME", default_value = "idealyst")]
     registry_name: String,
@@ -318,8 +329,8 @@ Currently <strong>{crates}</strong> crates.</p>
 index = "sparse+{url}/index/"</pre>
 <p>Then depend on crates by version:</p>
 <pre>[dependencies]
-idealyst = {{ version = "1.5", registry = "{registry}" }}
-idea-ui  = {{ version = "1.5", registry = "{registry}" }}</pre>
+idealyst = {{ version = "1.5.2", registry = "{registry}" }}
+idea-ui  = {{ version = "1.8.0", registry = "{registry}" }}</pre>
 <p><strong>Always include <code>registry = "{registry}"</code>.</strong> Many of these
 crates have short names that belong to unrelated packages on crates.io; without
 it cargo resolves the wrong one.</p>
@@ -399,25 +410,55 @@ fn write_cargo_config(root: &Path, r: &RemoteArgs) -> Result<()> {
 /// CI commits the result back, which is what makes the next release's
 /// "changed since" comparison meaningful.
 fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, r: &RemoteArgs) -> Result<()> {
+    // A dep resolves to the version it will HAVE after this release, not the
+    // one on disk: `gesture` packaged in the same run as runtime-shared 1.7.1
+    // has to record 1.7.1, not the 1.7.0 its manifest still said when the run
+    // started.
+    let after = |n: &str| -> Option<semver::Version> {
+        let p = ws.packages.get(n)?;
+        if !p.publish {
+            // Not publishable, so it has no registry version to name. Leaving
+            // it path-only is what makes `cargo package` drop it.
+            return None;
+        }
+        Some(plan.get(n).map(|r| r.to.clone()).unwrap_or_else(|| p.version.clone()))
+    };
+
     for (name, rel) in plan {
         let Some(p) = ws.packages.get(name) else { continue };
         let mut doc = manifest::read(&p.manifest_path)?;
         manifest::set_package_version(&mut doc, &rel.to)?;
+        // Most internal deps go through `[workspace.dependencies]`, but a
+        // handful — `crates/idealyst` among them — spell the path directly,
+        // and those requirements need the same floor.
+        let touched = manifest::version_literal_path_deps(&mut doc, &after, &r.registry_name)?;
+        if !touched.is_empty() {
+            println!("  {name} — literal path deps re-floored: {}", touched.join(", "));
+        }
         manifest::write(&p.manifest_path, &doc)?;
     }
 
-    // Dependents resolve through `[workspace.dependencies]`, so the caret
-    // requirement there has to follow a major bump. Minor and patch bumps
-    // leave it alone on purpose: `1.5` already admits 1.5.3, and rewriting it
-    // would republish dependents that have no reason to change.
+    // Dependents resolve through `[workspace.dependencies]`, so the floor
+    // there follows EVERY bump, patch included.
+    //
+    // This used to skip anything but a major, reasoning that `1.5` already
+    // admits 1.5.3 so a rewrite would only churn dependents. Both halves were
+    // wrong. Rewriting the floor does not republish anyone — the root manifest
+    // is not published, and `plan` forces dependents only on a *major* — it
+    // decides what a dependent records the next time it is published anyway.
+    // And the floor is what a dependent packaged in THIS release carries: skip
+    // it and the dependent ships a requirement below the sibling it was
+    // actually compiled against. That is exactly how `gesture 1.5.3` shipped
+    // `runtime-shared = "1.5"` while calling `Recognizer::drive`, which
+    // landed in runtime-shared 1.7.1 — a patch. See the regression test on
+    // `manifest::set_workspace_dep_version`.
+    //
+    // Order matters: this runs before `cargo package`, so a dependent in the
+    // same plan picks up the sibling's new floor.
     let root_manifest = ws.root.join("Cargo.toml");
     let mut root = manifest::read(&root_manifest)?;
     let mut moved = 0;
     for (name, rel) in plan {
-        let bumped_major = rel.from.as_ref().is_some_and(|f| f.major != rel.to.major);
-        if !bumped_major && !rel.initial {
-            continue;
-        }
         let Some(p) = ws.packages.get(name) else { continue };
         let dir = pathdiff(&p.manifest_path, &ws.root);
         if manifest::set_workspace_dep_version(&mut root, name, &rel.to, &dir, &r.registry_name)? {
@@ -480,9 +521,24 @@ struct Release {
     initial: bool,
     from: Option<semver::Version>,
     to: semver::Version,
-    /// True when nothing in this crate changed, but a dependency took a major
-    /// bump so its requirement had to be rewritten.
-    forced: bool,
+    /// Why this crate is in the plan despite nothing in it having changed.
+    forced: Forced,
+}
+
+/// A crate can be dragged into a release without a diff of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Forced {
+    /// It earned its own release — something in its directory changed.
+    No,
+    /// A dependency took a major bump, so the requirement this crate carries
+    /// had to be rewritten.
+    DependencyMajor,
+    /// `--force <CRATE>`: the published manifest is wrong even though the
+    /// source is not. The case this exists for is an under-declared internal
+    /// requirement — `gesture 1.5.3` shipped `runtime-shared = "1.5"` while
+    /// calling an API added in 1.7.1, and no amount of waiting for the source
+    /// to change would ever correct the published bytes.
+    Requested,
 }
 
 fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
@@ -510,7 +566,7 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
                     initial: true,
                     to: p.version.clone(),
                     from: None,
-                    forced: false,
+                    forced: Forced::No,
                 },
             );
             continue;
@@ -522,7 +578,7 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
         let from = semver::Version::parse(&prev.version).context("parsing a recorded version")?;
         plan.insert(
             p.name.clone(),
-            Release { bump, initial: false, to: bump.apply(&from), from: Some(from), forced: false },
+            Release { bump, initial: false, to: bump.apply(&from), from: Some(from), forced: Forced::No },
         );
     }
 
@@ -553,12 +609,61 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
                     initial: false,
                     to: Bump::Patch.apply(&base),
                     from,
-                    forced: true,
+                    forced: Forced::DependencyMajor,
                 },
             );
         }
     }
+    force_into_plan(ws, &state, &mut plan, &r.force)?;
     Ok(plan)
+}
+
+/// Add the `--force` crates to a plan that did not earn them.
+///
+/// The diff-driven path answers "did this crate's source change?", and for a
+/// wrong *published manifest* the answer is no and always will be — the source
+/// is correct, the recorded metadata is not. `gesture 1.5.3` recorded
+/// `runtime-shared = "^1.5"` while calling `Recognizer::drive`, which landed
+/// in 1.7.1; no future edit to `gesture` corrects the bytes already published
+/// under 1.5.3. So the crate has to be named.
+///
+/// A crate already in the plan keeps the bump it earned — forcing never
+/// downgrades a minor to a patch.
+fn force_into_plan(
+    ws: &Workspace,
+    state: &ReleaseState,
+    plan: &mut BTreeMap<String, Release>,
+    force: &[String],
+) -> Result<()> {
+    for name in force {
+        if plan.contains_key(name) {
+            continue;
+        }
+        let p = ws
+            .packages
+            .get(name)
+            .with_context(|| format!("--force {name}: no such workspace member"))?;
+        if !p.publish {
+            bail!("--force {name}: that crate is not publishable");
+        }
+        let from = state
+            .crates
+            .get(name)
+            .map(|rel| semver::Version::parse(&rel.version))
+            .transpose()?;
+        let base = from.clone().unwrap_or_else(|| p.version.clone());
+        plan.insert(
+            name.clone(),
+            Release {
+                bump: Bump::Patch,
+                initial: from.is_none(),
+                to: Bump::Patch.apply(&base),
+                from,
+                forced: Forced::Requested,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn report(ws: &Workspace, plan: &BTreeMap<String, Release>) {
@@ -570,7 +675,11 @@ fn report(ws: &Workspace, plan: &BTreeMap<String, Release>) {
     println!("releasing {} of {total} publishable crates:\n", plan.len());
     for (name, r) in plan {
         let from = r.from.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "new".into());
-        let why = if r.forced { "  (dependency major bump)" } else { "" };
+        let why = match r.forced {
+            Forced::No => "",
+            Forced::DependencyMajor => "  (dependency major bump)",
+            Forced::Requested => "  (--force)",
+        };
         let label = if r.initial { "initial" } else { r.bump.label() };
         println!("  {:<28} {:>7}  {} -> {}{}", name, label, from, r.to, why);
     }
@@ -759,6 +868,7 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::Package;
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("registry-test-{name}-{}", std::process::id()));
@@ -821,6 +931,170 @@ mod tests {
         assert_eq!(published_checksum(lines, "1.5.3").unwrap(), None);
         // Blank lines and a trailing newline must not derail the scan.
         assert_eq!(published_checksum("", "1.5.2").unwrap(), None);
+    }
+
+    /// Regression, `gesture 1.5.3`: `apply_plan` rewrote the
+    /// `[workspace.dependencies]` floor only for a MAJOR bump, so
+    /// runtime-shared's 1.7.0 -> 1.7.1 patch left the floor at `1.5`. Every
+    /// crate packaged in that same release — `gesture` among them, freshly
+    /// calling `Recognizer::drive`, which 1.7.1 had just added — shipped a
+    /// requirement below the sibling it was compiled against. A consumer
+    /// holding runtime-shared 1.7.0 kept it and the build broke inside
+    /// `gesture`. The floor must follow a patch bump too, and it must land
+    /// before the dependent is packaged.
+    #[test]
+    fn regression_patch_bump_lifts_the_floor_a_dependent_packages_with() {
+        let d = scratch("floor");
+        let shared = d.join("crates/runtime/shared");
+        let gesture = d.join("crates/sdk/client/gesture");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir_all(&gesture).unwrap();
+        std::fs::write(
+            d.join("Cargo.toml"),
+            "[workspace.dependencies]\n             runtime-shared = { path = \"crates/runtime/shared\", version = \"1.5\", registry = \"idealyst\" }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shared.join("Cargo.toml"),
+            "[package]\nname = \"runtime-shared\"\nversion = \"1.7.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            gesture.join("Cargo.toml"),
+            "[package]\nname = \"gesture\"\nversion = \"1.5.2\"\n\n             [dependencies]\nruntime-shared = { workspace = true }\n",
+        )
+        .unwrap();
+
+        let pkg = |name: &str, dir: &str, v: (u64, u64, u64)| Package {
+            name: name.into(),
+            version: semver::Version::new(v.0, v.1, v.2),
+            manifest_path: d.join(dir).join("Cargo.toml"),
+            rel_dir: dir.into(),
+            publish: true,
+            nested: vec![],
+            deps: Default::default(),
+        };
+        let ws = Workspace {
+            root: d.clone(),
+            packages: BTreeMap::from([
+                ("runtime-shared".to_string(), pkg("runtime-shared", "crates/runtime/shared", (1, 7, 0))),
+                ("gesture".to_string(), pkg("gesture", "crates/sdk/client/gesture", (1, 5, 2))),
+            ]),
+        };
+        let patch = |from: (u64, u64, u64), to: (u64, u64, u64)| Release {
+            bump: Bump::Patch,
+            initial: false,
+            from: Some(semver::Version::new(from.0, from.1, from.2)),
+            to: semver::Version::new(to.0, to.1, to.2),
+            forced: Forced::No,
+        };
+        let plan = BTreeMap::from([
+            ("runtime-shared".to_string(), patch((1, 7, 0), (1, 7, 1))),
+            ("gesture".to_string(), patch((1, 5, 2), (1, 5, 3))),
+        ]);
+        let r = RemoteArgs {
+            bucket: None,
+            distribution_id: None,
+            url: "https://crates.idealyst.io".into(),
+            from_scratch: false,
+            force: vec![],
+            registry_name: "idealyst".into(),
+        };
+
+        apply_plan(&ws, &plan, &r).unwrap();
+
+        let root = std::fs::read_to_string(d.join("Cargo.toml")).unwrap();
+        assert!(
+            root.contains(r#"version = "1.7.1""#),
+            "a patch bump must lift the floor, got:\n{root}"
+        );
+        assert!(!root.contains(r#"version = "1.5""#), "stale floor survived:\n{root}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    fn bare_ws(names: &[(&str, &str)]) -> Workspace {
+        Workspace {
+            root: PathBuf::from("/w"),
+            packages: names
+                .iter()
+                .map(|(n, v)| {
+                    (
+                        n.to_string(),
+                        Package {
+                            name: n.to_string(),
+                            version: semver::Version::parse(v).unwrap(),
+                            manifest_path: PathBuf::from(format!("/w/crates/{n}/Cargo.toml")),
+                            rel_dir: format!("crates/{n}"),
+                            publish: true,
+                            nested: vec![],
+                            deps: Default::default(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn released(pairs: &[(&str, &str)]) -> ReleaseState {
+        ReleaseState {
+            crates: pairs
+                .iter()
+                .map(|(n, v)| {
+                    (n.to_string(), Released { version: v.to_string(), commit: "deadbeef".into() })
+                })
+                .collect(),
+        }
+    }
+
+    /// `--force` exists for a published manifest that is wrong while the
+    /// source is right — `gesture 1.5.3` recording `runtime-shared = "^1.5"`
+    /// against an API added in 1.7.1. No source diff will ever put that crate
+    /// in the plan, so naming it must, and from the version the registry last
+    /// recorded rather than whatever the manifest happens to say.
+    #[test]
+    fn force_adds_an_unchanged_crate_at_a_patch_bump() {
+        let ws = bare_ws(&[("gesture", "1.5.3")]);
+        let state = released(&[("gesture", "1.5.3")]);
+        let mut plan = BTreeMap::new();
+        force_into_plan(&ws, &state, &mut plan, &["gesture".to_string()]).unwrap();
+        let rel = &plan["gesture"];
+        assert_eq!(rel.to, semver::Version::new(1, 5, 4));
+        assert_eq!(rel.forced, Forced::Requested);
+        assert!(!rel.initial);
+    }
+
+    /// Forcing must never downgrade a crate that earned a bigger bump on its
+    /// own — the plan entry it already has wins.
+    #[test]
+    fn force_does_not_override_an_earned_bump() {
+        let ws = bare_ws(&[("idea-ui", "1.8.0")]);
+        let state = released(&[("idea-ui", "1.8.0")]);
+        let mut plan = BTreeMap::from([(
+            "idea-ui".to_string(),
+            Release {
+                bump: Bump::Minor,
+                initial: false,
+                from: Some(semver::Version::new(1, 8, 0)),
+                to: semver::Version::new(1, 9, 0),
+                forced: Forced::No,
+            },
+        )]);
+        force_into_plan(&ws, &state, &mut plan, &["idea-ui".to_string()]).unwrap();
+        assert_eq!(plan["idea-ui"].to, semver::Version::new(1, 9, 0));
+        assert_eq!(plan["idea-ui"].forced, Forced::No);
+    }
+
+    #[test]
+    fn force_rejects_a_name_that_is_not_a_member() {
+        let ws = bare_ws(&[("gesture", "1.5.3")]);
+        let err = force_into_plan(
+            &ws,
+            &ReleaseState::default(),
+            &mut BTreeMap::new(),
+            &["gestrue".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no such workspace member"), "{err}");
     }
 
     #[test]

@@ -98,13 +98,30 @@ subject?
 - A crate in the plan whose directory the diff never touched means the change
   detection is wrong. That has happened: a release's own version-bump commit
   used to re-trigger every crate it had bumped. Chase it, don't publish it.
+  The one legitimate exception is a crate you named with `--force` yourself;
+  the plan labels those `(--force)`.
+- **`--force <CRATE>`** releases a crate at a patch bump although its directory
+  is unchanged. Reach for it only when the *published manifest* is wrong and
+  the source is right — an under-declared internal requirement is the case it
+  exists for. It works on `plan`, `build` and `publish`, and never downgrades a
+  crate that earned a bigger bump on its own.
 - The bump is classified from the commit **subject**, per crate. A `feat:` that
   lands an API in one crate and only a test in another bumps both alike. That's
   accepted (publishing is the safer half of the trade), but say so in the
   release message.
-- Only a **major** bump republishes dependents. Internal requirements are
-  `^1.5` in `[workspace.dependencies]`, which admits 1.6.0 and 1.7.0 — minors
-  and patches need no rewriting. Confirm with `grep -n '^<crate>' Cargo.toml`.
+- Only a **major** bump republishes dependents. That is about *who* gets
+  published, not about the requirement: `apply_plan` moves the released
+  crate's floor in `[workspace.dependencies]` for **every** bump, patch
+  included, before anything is packaged — so a dependent in the same release
+  records the sibling it was actually compiled against. Confirm with
+  `grep -n '^<crate> ' Cargo.toml` after the plan applies; the floor should
+  read the new full version.
+  - This is the `gesture 1.5.3` bug: the floor used to move only on a major,
+    so a `fix:` that added `Recognizer::drive` in runtime-shared **1.7.1**
+    shipped alongside a `gesture` that called it while declaring
+    `runtime-shared = "1.5"`. Consumers with 1.7.0 in their lock kept it and
+    the build broke. If you ever see a floor below the version of a crate
+    released in the same run, stop — that is the bug back.
 
 ## 4. Verify — per package, per target
 

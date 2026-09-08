@@ -55,9 +55,9 @@ Then depend on crates by version instead of by git. The `registry` key is
 
 ```toml
 [workspace.dependencies]
-idealyst       = { version = "1.5", registry = "idealyst" }
-runtime-core   = { version = "1.5", registry = "idealyst" }
-idea-ui        = { version = "1.5", registry = "idealyst" }
+idealyst       = { version = "1.5.2", registry = "idealyst" }
+runtime-core   = { version = "1.5.2", registry = "idealyst" }
+idea-ui        = { version = "1.8.0", registry = "idealyst" }
 ```
 
 > **Always name the registry.** Most of these crates have bare names that are
@@ -68,8 +68,14 @@ idea-ui        = { version = "1.5", registry = "idealyst" }
 > `.cargo/config.toml` and `[workspace.dependencies]` are set up this way for
 > the same reason; the workspace will not even load without them.
 
-Requirements are carets on `major.minor`, so a patch release is picked up by
-`cargo update -p <crate>` without touching anything else.
+Requirements are carets on the crate's full version. A caret is a floor, not a
+pin — `^1.7.1` still resolves 1.8.0 — so a later minor is picked up by
+`cargo update -p <crate>` without touching anything else. The floor names the
+full version rather than `major.minor` because a patch release here can add
+API: the bump level is classified from the commit subject, and a `fix:` commit
+that lands a new method is a patch. `runtime-shared 1.7.1` added
+`PointerButton::is_primary` and `Recognizer::drive` that way, and a
+`major.minor` floor let `gesture` ship calling both while declaring `1.5`.
 
 To test a local framework change against a consumer, patch the registry the
 same way you used to patch the git URL:
@@ -124,8 +130,24 @@ packaged until those deps are actually retrievable from the registry. Staging
 all of them first and uploading at the end fails on the third crate.
 
 A **major** bump republishes dependents too, because their requirement has to
-be rewritten. Minor and patch bumps deliberately do not: `1.5` already admits
-`1.5.3`, and that is exactly the reuse the migration buys.
+be rewritten. Minor and patch bumps deliberately do not, and that is exactly
+the reuse the migration buys.
+
+Separately from *who* gets republished, every bump — patch included — moves
+that crate's floor in `[workspace.dependencies]`, before anything is packaged.
+Moving the floor republishes nobody (the root manifest is not published); it
+decides what a dependent packaged in this release, or in any later one,
+records as its requirement. Skipping it is how `gesture 1.5.3` shipped
+`runtime-shared = "1.5"` while calling an API that only landed in 1.7.1 — a
+consumer whose lock already held 1.7.0 kept it, since the requirement was
+satisfied, and the build failed inside `gesture`.
+
+`--force <CRATE>` puts a crate in the plan at a patch bump although nothing in
+its directory changed. It is for a published manifest that is wrong while the
+source is right — an under-declared internal requirement, most likely — which
+the diff-driven plan can never reach, because correcting recorded metadata does
+not change any crate's source. It never downgrades a crate that earned a bigger
+bump on its own.
 
 `releases.json` in the bucket records the version and commit each crate was
 last cut from. It is our bookkeeping, not part of cargo's schema — an index

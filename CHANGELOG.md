@@ -252,6 +252,24 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **Published crates no longer under-declare their framework
+  dependencies.** The release tool wrote internal requirements as a caret
+  on `major.minor` and moved them only for a *major* bump. Neither holds
+  here: a bump level is classified from the commit subject, so a `fix:`
+  that adds a method ships as a patch — and skipping the rewrite means a
+  crate packaged in that same release records a floor below the sibling
+  it was compiled against. `gesture 1.5.3` shipped
+  `runtime-shared = "1.5"` while calling `Recognizer::drive`, which
+  landed in runtime-shared **1.7.1**; a consumer whose `Cargo.lock`
+  already held 1.7.0 kept it, since the requirement was satisfied, and
+  the build failed inside `gesture`. Floors now name the sibling's full
+  version and follow every bump, in `[workspace.dependencies]` and in
+  the literal `path = …` deps a few members spell directly — the latter
+  had frozen `crates/idealyst` at `backend-web = "1.5"` against 1.6.1.
+  New `--force <CRATE>` on `registry plan`/`build`/`publish` republishes
+  a crate whose source is right and whose published manifest is not,
+  which no source diff can ever trigger.
+
 - **A right-click on a tappable element reaches the context menu behind
   it.** Every gesture recognizer consumes from `Began` — it has to, to be
   sure of hearing the motion it measures — and consuming is what commits
