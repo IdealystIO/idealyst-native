@@ -234,13 +234,14 @@ pub struct Args {
 
     /// Web only: skip the `wasm-split` pass. `#[component(lazy)]`
     /// boundaries still work — their bodies ship in the main bundle and
-    /// resolve immediately instead of over the network. Trades bundle
-    /// size for packaging time: outside release, splitting is also the
-    /// only pass that compacts the module, so skipping it leaves the
-    /// relocs in and the served wasm several times larger (measured on
-    /// the `welcome` example: 2.2 MB split, 6.3 MB skipped, for 0.2s
-    /// saved). On a large app the browser then pays more to compile the
-    /// bigger module on every reload, which can outweigh the saving.
+    /// resolve immediately instead of over the network. Without a
+    /// splitter the build also drops the flags that only served it
+    /// (relocations from rustc, pinned exports and kept debug info into
+    /// wasm-bindgen), so wasm-bindgen's own gc compacts the module
+    /// instead: measured on a large app, the post-cargo tail fell from
+    /// 21-42 s to 6-10 s for a served module ~15% larger (79 MB vs 69 MB).
+    /// This is the posture `idealyst dev` uses by default; here it stays
+    /// opt-in because a deploy bundle wants its chunks.
     #[arg(long)]
     pub no_split: bool,
 

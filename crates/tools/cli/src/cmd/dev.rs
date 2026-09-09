@@ -276,15 +276,20 @@ pub struct Args {
     #[arg(long, default_value = "optimized")]
     pub dev_opt: String,
 
-    /// Web + `--local` only: skip the `wasm-split` pass on every
-    /// rebuild. `#[component(lazy)]` boundaries keep working — their
-    /// bodies stay in the main bundle and their loaders resolve
-    /// immediately, so `loading` flashes for a microtask instead of a
-    /// fetch. Buys packaging time and costs bundle size: outside release,
-    /// splitting is also the only pass that compacts the module, so the
-    /// served wasm keeps its relocs and gets several times larger — which
-    /// the browser then re-compiles on every reload.
-    #[arg(long)]
+    /// Web + `--local` only: run the `wasm-split` pass on every rebuild,
+    /// the way a release build does. OFF by default: lazy loading is a
+    /// deploy-time optimization, and in dev the splitter is a fixed cost
+    /// per save that scales with the whole module. `#[component(lazy)]`
+    /// boundaries keep working without it — their bodies stay in the
+    /// main bundle and their loaders resolve immediately, so `loading`
+    /// flashes for a microtask instead of a fetch. Turn it on to
+    /// exercise the real chunk boundaries before a release.
+    #[arg(long, conflicts_with = "no_split")]
+    pub split: bool,
+
+    /// Accepted for compatibility: dev builds no longer split unless
+    /// `--split` is passed, so this is the default.
+    #[arg(long, hide = true)]
     pub no_split: bool,
 
     /// Disable the Robot bridge in dev mode. By DEFAULT `idealyst dev` hosts a
@@ -1550,7 +1555,7 @@ fn launch_web(
                     // `--no-split`: skip the pass on every rebuild,
                     // trading a bigger served wasm for a shorter
                     // packaging tail. Splitting stays the default.
-                    wasm_split: !args.no_split,
+                    wasm_split: args.split,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 },
@@ -1842,7 +1847,7 @@ fn launch_ssr(
                 premint: false,
                 // Honors the same `--no-split` the local-web dev path
                 // does — this rebuilds the same wasm on every save.
-                wasm_split: !args.no_split,
+                wasm_split: args.split,
                 debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 // Follows the session's resolved core (runtime-v2
@@ -2001,7 +2006,7 @@ fn full_stack_bundle_options(
         premint_report: args.premint_report,
         // Same override the plain local-web path honors — the
         // full-stack loop rebuilds the same wasm on every save.
-        wasm_split: !args.no_split,
+        wasm_split: args.split,
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
     })
@@ -3003,6 +3008,7 @@ impl Args {
             premint_only: self.premint_only,
             premint_report: self.premint_report,
             no_split: self.no_split,
+            split: self.split,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,

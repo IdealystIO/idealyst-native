@@ -187,8 +187,11 @@ pub struct BuildOptions {
     /// with the same premint cfgs (build-ssr), so both sides stamp
     /// identical `iy-*` classes and adoption stays clean.
     pub premint: bool,
-    /// Run `wasm-split` over the bindgened module. **Default: `true`**
-    /// — `--no-split` is the opt-out.
+    /// Run `wasm-split` over the bindgened module. `idealyst build`
+    /// defaults to `true` (`--no-split` opts out); `idealyst dev` defaults
+    /// to `false` (`--split` opts in), because lazy loading is a
+    /// deploy-time optimization and the splitter is a per-save cost that
+    /// scales with the whole module.
     ///
     /// Off does not remove lazy boundaries; it declines to *extract*
     /// them. The bodies ship in the main module and their loaders resolve
@@ -197,21 +200,27 @@ pub struct BuildOptions {
     /// flashes). See [`write_inline_split_loader`] for how the imports
     /// the macro emitted get answered without a chunk.
     ///
-    /// It is a trade, not a free win, because outside release the
-    /// splitter is ALSO the only pass that compacts the module (there is
-    /// no `wasm-opt` there): it rebuilds the module and drops the
-    /// `--emit-relocs` payload and unreachable code along the way.
-    /// Measured on `examples/welcome`, which has no split points at all:
+    /// The flag changes the whole pipeline, not just one pass. A
+    /// splitting build emits relocations from rustc and runs wasm-bindgen
+    /// with `--keep-lld-exports --keep-debug --no-demangle` so the
+    /// splitter can match references — which also pins every export as a
+    /// GC root, so the splitter is then the only thing that compacts the
+    /// module. A non-splitting build emits no relocations and lets
+    /// wasm-bindgen's own dead-code pass and debug-strip do the
+    /// compaction. Measured on crewforge (a 217 MB dev module with
+    /// relocations, 157 MB without; ~200 K lines of app code; interleaved
+    /// UI-edit rebuilds on one loaded machine):
     ///
     /// ```text
-    /// split   : 1.69s   welcome_bg.wasm = 2,249,884 B
-    /// no-split: 1.51s   welcome_bg.wasm = 6,300,179 B
+    ///            post-cargo passes      served wasm
+    /// split      21-42 s                68.7 MB
+    /// no-split    6-10 s                79.1 MB   (bindgen + neutralize only)
     /// ```
     ///
-    /// So it buys packaging time and costs bundle size — and on a big app
-    /// the larger module also costs the browser more to compile on every
-    /// reload, which can eat the win. Which side wins depends on the app,
-    /// hence a flag rather than a heuristic.
+    /// So off buys most of the packaging tail and costs ~15% of served
+    /// bytes, which the browser compiles on every reload. The old
+    /// no-split — relocations still emitted, exports still pinned — served
+    /// 113.7 MB, which is why it used to read as a bad trade.
     pub wasm_split: bool,
 }
 
@@ -626,7 +635,12 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             .push(("passes-skipped", std::time::Duration::ZERO));
     } else {
         timings.time("wasm-bindgen", || {
-            wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
+            wasm_bindgen_build(
+                &original_wasm,
+                &wrapper_pkg,
+                &manifest.lib_name,
+                opts.wasm_split,
+            )
         })
         .with_context(|| "wasm-bindgen")?;
         timings.time("command-export-neutralize", || {
@@ -663,7 +677,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             if imports.is_empty() {
                 eprintln!(
                     "[build-web] wasm-split: skipped (--no-split); no lazy boundaries, \
-                     {}_bg.wasm keeps its relocs and is correspondingly larger",
+                     {}_bg.wasm is what wasm-bindgen's own gc left",
                     manifest.lib_name,
                 );
             } else {
@@ -2046,10 +2060,10 @@ fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
 }
 
 /// Run `cargo build --target wasm32-unknown-unknown` against the
-/// app crate. `-C link-args=--emit-relocs` is set so the rustc-emitted
-/// wasm carries the relocation info wasm-split-cli needs to identify
-/// indirect-call targets per chunk. Cost is a few KB of metadata
-/// pre-bindgen; stripped from the final bundle by wasm-opt.
+/// app crate. When splitting, `-C link-args=--emit-relocs` is set so the
+/// rustc-emitted wasm carries the relocation info wasm-split-cli needs
+/// to identify indirect-call targets per chunk; a non-splitting build
+/// leaves them out, because nothing downstream reads them.
 ///
 /// Flags reach cargo through `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated)
 /// rather than the space-separated `RUSTFLAGS`, because release builds add
@@ -2154,9 +2168,14 @@ fn cargo_build_wasm(
     // all evergreen browsers (Chrome/Firefox 2021+, Safari 16.4+).
     flags.push("-C".into());
     flags.push("target-feature=+simd128".into());
-    flags.push("-C".into());
-    flags.push("link-args=--emit-relocs".into());
-    if !wasm_split {
+    if wasm_split {
+        // Relocation records are the splitter's input and nothing else's:
+        // wasm-bindgen ignores them and the compaction drops them. Emitted
+        // without a splitter to consume them they only make the module
+        // bigger for every pass — and the browser — to read.
+        flags.push("-C".into());
+        flags.push("link-args=--emit-relocs".into());
+    } else {
         // `--no-split`'s inline loader wakes the Rust future through the
         // main module's function table, which LLD only exports when asked.
         // The splitter adds that export itself, so this rides the no-split
@@ -2234,43 +2253,59 @@ fn cargo_build_wasm(
     Ok(())
 }
 
-/// Run `wasm-bindgen --target web --keep-lld-exports` to turn the
-/// rustc-emitted wasm into the JS-callable wasm-bindgen output.
+/// Run `wasm-bindgen --target web` to turn the rustc-emitted wasm into
+/// the JS-callable wasm-bindgen output.
 ///
-/// `--keep-lld-exports` is the critical flag: without it,
-/// wasm-bindgen strips the LLD-emitted exports that wasm-split-cli
-/// uses to identify per-chunk reachable code. With them stripped,
-/// wasm-split conservatively keeps everything in the main bundle —
-/// which is exactly what was happening to the website's bundle in
-/// the wasm-pack pipeline.
+/// The three extra flags exist for the splitter, and ride only a
+/// splitting build (`split`):
 ///
-/// We also pass `--keep-debug` so wasm-split has the symbol info it
-/// needs to match function references across the relocations. The
-/// final wasm-opt pass strips debug info, so this doesn't bloat the
-/// shipped bundle.
-fn wasm_bindgen_build(original_wasm: &Path, out_dir: &Path, lib_name: &str) -> Result<()> {
+/// * `--keep-lld-exports` is the critical one: without it, wasm-bindgen
+///   strips the LLD-emitted exports that wasm-split-cli uses to identify
+///   per-chunk reachable code. With them stripped, wasm-split
+///   conservatively keeps everything in the main bundle — which is
+///   exactly what was happening to the website's bundle in the wasm-pack
+///   pipeline. It also pins every export as a GC root, which is why a
+///   non-splitting build must NOT pass it: wasm-bindgen's own dead-code
+///   pass is then the only compaction the module gets.
+/// * `--keep-debug` gives wasm-split the symbol info it needs to match
+///   function references across the relocations; the splitter (or, on
+///   release, wasm-opt) strips it again, so the served module never
+///   carries it. Without a splitter it is bytes bindgen reads for
+///   nothing.
+/// * `--no-demangle` keeps the mangled names reloc records carry, so the
+///   splitter's matching works. A non-splitting build gets demangled
+///   names, which is what a person wants in a stack trace anyway.
+fn wasm_bindgen_build(
+    original_wasm: &Path,
+    out_dir: &Path,
+    lib_name: &str,
+    split: bool,
+) -> Result<()> {
     if out_dir.exists() {
         fs::remove_dir_all(out_dir).with_context(|| format!("clear {}", out_dir.display()))?;
     }
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
+    let split_flags: &[&str] = if split {
+        // CRITICAL: --no-demangle. wasm-bindgen demangles Rust symbol
+        // names by default. wasm-split-cli matches reloc records (which
+        // carry MANGLED names from rustc) against the bindgened wasm's
+        // symbol table — demangled names there mean nothing matches, so
+        // wasm-split conservatively keeps everything in main and emits
+        // empty chunks. Without this flag the website's lazy
+        // hero-simulator chunk measured 469 bytes; with it, the
+        // wgpu/welcome/sim stack actually moves out of main.
+        &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
+    } else {
+        &[]
+    };
     eprintln!(
-        "[build-web] wasm-bindgen --target web --keep-lld-exports --keep-debug → {}",
+        "[build-web] wasm-bindgen --target web {} → {}",
+        if split { split_flags.join(" ") } else { "(no split: bindgen gc + strip)".to_string() },
         out_dir.display(),
     );
     let status = Command::new("wasm-bindgen")
         .args(["--target", "web"])
-        .arg("--keep-lld-exports")
-        .arg("--keep-debug")
-        // CRITICAL: --no-demangle. wasm-bindgen demangles Rust
-        // symbol names by default. wasm-split-cli matches reloc
-        // records (which carry MANGLED names from rustc) against
-        // the bindgened wasm's symbol table — demangled names
-        // there mean nothing matches, so wasm-split conservatively
-        // keeps everything in main and emits empty chunks. Without
-        // this flag the website's lazy hero-simulator chunk
-        // measured 469 bytes; with it, the wgpu/welcome/sim stack
-        // actually moves out of main.
-        .arg("--no-demangle")
+        .args(split_flags)
         .args(["--out-name", lib_name])
         .args(["--out-dir"])
         .arg(out_dir)
