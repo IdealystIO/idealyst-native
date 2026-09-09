@@ -34,19 +34,46 @@ each entry links to its migration guide.
   debugger; `--debuginfo none` drops line tables too. Release is
   untouched.
 
-- **`--no-split` on `idealyst build --web` and `idealyst dev`** — skip
-  the `wasm-split` packaging pass. Default behavior is unchanged (every
-  build still splits); this is an opt-out for iteration loops that would
-  rather have the packaging time. It does **not** drop lazy boundaries:
-  the build emits an inline `__wasm_split.js` whose loaders resolve on a
-  microtask and whose body imports forward to the `_export_` twins
-  already in the main module, so a `#[component(lazy)]` still mounts —
-  its body just ships in the main bundle. The cost is size: outside
-  release the splitter is also the only pass that compacts the module, so
-  skipping it keeps the `--emit-relocs` payload in the served wasm
-  (measured on `examples/welcome`, which has nothing to extract:
-  2,249,884 B split vs 6,300,179 B skipped, for 0.2s saved), and a bigger
-  module costs the browser more to compile on every reload.
+- **`idealyst dev` no longer splits; `--split` opts back in.** Lazy
+  loading is a deploy-time optimization, and in dev the splitter was a
+  fixed per-save cost that scaled with the whole module (~10 s on a
+  217 MB dev wasm for a 410-byte chunk, on an app that declares no lazy
+  boundaries). `idealyst build --web` still splits by default — a deploy
+  bundle wants its chunks — and `--no-split` opts out there; on `dev` the
+  flag is accepted, hidden, and now a no-op.
+
+  A non-splitting build no longer merely skips the pass, it stops
+  building *for* it: no `--emit-relocs` from rustc, and wasm-bindgen
+  without `--keep-lld-exports` / `--keep-debug` / `--no-demangle`, so its
+  own dead-code pass and debug strip compact the module and stack traces
+  get demangled names. That inverts the old trade — skipping used to
+  serve 113.7 MB against 68.7 MB split; it now serves 79.1 MB, with the
+  post-cargo tail down from 21–42 s to 6–10 s (measured on a large app,
+  interleaved UI-edit rebuilds on one loaded machine).
+
+  Not splitting does **not** drop lazy boundaries: the build emits an
+  inline `__wasm_split.js` whose loaders resolve on a microtask and whose
+  bodies forward to the `_export_` twins already in the main module, so a
+  `#[component(lazy)]` still mounts — its body just ships in the main
+  bundle. The target dir is keyed on the flag, so the two postures never
+  share a cache.
+
+- **Web rebuilds skip the packaging passes when cargo left the wasm
+  untouched.** Everything after `cargo` — wasm-bindgen, wasm-split,
+  wasm-opt — is O(module size) and ran unconditionally, so a save to
+  server-only code in the app crate triggered a bundle rebuild in which
+  cargo did nothing and the passes still ran over the identical module:
+  19–24 s per save (53 s under contention), on roughly half of one
+  afternoon's 52 rebuilds. Now 0.56 s. The module's identity is its
+  `(len, mtime)` taken around the cargo step; a stamp records that the
+  passes last finished over that exact module with this tooling version,
+  and is written only after every pass succeeds, so a build that died
+  mid-bindgen is never mistaken for a finished one. The stamp carries the
+  crate version, so a CLI upgrade never inherits an older bindgen's
+  output, and any doubt runs the passes. The dev loop reads the flag: an
+  unchanged module bumps no generation, so the browser is not asked to
+  reload a bundle it already has — except in premint sessions, where
+  `pkg/premint.css` is regenerated each rebuild and can move on its own.
 
 - **`TouchPhase::Hovered`** — unpressed pointer motion (mouse/trackpad
   hover) now flows through `on_touch`: the web backend forwards

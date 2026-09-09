@@ -115,23 +115,31 @@ idealyst build --web --release
 The release pipeline runs the wasm-split pass; the chunks land in
 `dist/web/pkg/` next to the main bundle and load over the network on demand.
 
-Dev builds split too. Outside release the splitter is also the only pass that
-compacts the module, so it earns its place even on an app with nothing to
-extract — on the `welcome` example, skipping it saves 0.2s of packaging and
-grows the served wasm from 2.2 MB to 6.3 MB.
-
-`--no-split` opts out, on both `idealyst build --web` and `idealyst dev`:
+**`idealyst dev` does not split.** Lazy loading is a deploy-time optimization,
+and in dev the splitter is a fixed cost on every save that scales with the whole
+module — on a large app, ~10 s for a handful of chunks. `--split` opts back in
+when you want to check the split posture before a release:
 
 ```bash
-idealyst dev --web --local --no-split
+idealyst dev --web --local --split
 ```
 
-It does not remove your lazy boundaries — it declines to extract them. The
-bodies ship inside the main bundle and their loaders resolve on a microtask
-instead of a network round trip, so a `#[component(lazy)]` still mounts and its
-`loading` state simply flashes by. What you give up is the smaller main bundle:
-skipping the pass also skips the only compaction a dev build gets, and on a
-large app the browser pays for that on every reload.
+A non-splitting build does not merely skip the pass — it stops building *for*
+the splitter. rustc emits no relocations and wasm-bindgen runs without
+`--keep-lld-exports` / `--keep-debug`, so its own dead-code pass and debug strip
+compact the module and stack traces get demangled names. Measured on a large
+app: the post-cargo tail falls from 21-42 s to 6-10 s, for a served module about
+15% larger (79 MB vs 69 MB).
+
+Not splitting does not remove your lazy boundaries — it declines to extract
+them. The bodies ship inside the main bundle and their loaders resolve on a
+microtask instead of a network round trip, so a `#[component(lazy)]` still
+mounts and its `loading` state simply flashes by.
+
+`idealyst build --web` still splits by default — a deploy bundle wants its
+chunks — and `--no-split` opts out there. (`--no-split` is still accepted on
+`dev`, where it is now the default and does nothing.) The target directory is
+keyed on the flag, so the two postures never share a build cache.
 Chunk-only **code** leaves `main.wasm` automatically. Chunk-only **data** (large
 `&'static` tables, an SDK's embedded payload) stays in `main.wasm` by default —
 dropping it requires the **experimental, opt-in** `--data-prune`:
