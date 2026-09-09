@@ -218,7 +218,9 @@ pub struct BuildOptions {
 /// Run a single rebuild. Useful for callers that want one build
 /// with specific features but don't need the watch loop.
 pub fn build_once(dir: &Path, opts: &BuildOptions) -> Result<()> {
-    build_wasm(dir, opts)
+    // A one-shot build has no browser to spare a reload; whether the
+    // passes ran is the dev loop's concern.
+    build_wasm(dir, opts).map(|_| ())
 }
 
 /// Run an initial build, then spawn a background thread that
@@ -261,7 +263,9 @@ pub fn start_with(
     opts: BuildOptions,
 ) -> Result<JoinHandle<()>> {
     eprintln!("[dev-reload] initial build…");
-    build_wasm(dir, &opts).context("initial web build failed")?;
+    // The initial build's result is irrelevant: gen 1 is the browsers'
+    // first bundle whether the passes ran or were skipped.
+    let _ = build_wasm(dir, &opts).context("initial web build failed")?;
     signal.set(1);
 
     let dir_owned = dir.to_path_buf();
@@ -470,9 +474,21 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
             eprintln!("[dev-reload] change detected, rebuilding…");
         }
         match build_wasm(&dir, &opts) {
-            Ok(()) => {
+            Ok(true) => {
                 let new_gen = signal.bump();
                 eprintln!("[dev-reload] rebuilt — gen={new_gen}");
+            }
+            // Cargo produced nothing new and the packaging passes were
+            // skipped, so the served bundle is the one the browser
+            // already has. A premint session is the exception: its
+            // `pkg/premint.css` is regenerated from a native dump on
+            // every rebuild and can move without the wasm moving.
+            Ok(false) if !(opts.premint || opts.premint_only || opts.premint_report) => {
+                eprintln!("[dev-reload] wasm unchanged — packaging skipped, nothing to reload")
+            }
+            Ok(false) => {
+                let new_gen = signal.bump();
+                eprintln!("[dev-reload] wasm unchanged, premint refreshed — gen={new_gen}");
             }
             Err(e) => eprintln!("[dev-reload] rebuild failed: {e}"),
         }
@@ -646,12 +662,15 @@ where
         .context("spawn watch thread")
 }
 
-fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<()> {
+/// Run one bundle build. `Ok(true)` when the packaging passes ran and
+/// `pkg/` may differ; `Ok(false)` when cargo left the `.wasm` untouched
+/// and `build_web` skipped straight to restaging.
+fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<bool> {
     // Delegate to `build_web::build` — it generates the wrapper,
     // runs wasm-pack against it, and copies `pkg/` into `dir`.
     // Same path `idealyst build web` uses; the dev loop is just
     // "do that, but on debounced file changes".
-    build_web::build(dir, to_build_web_options(opts)).map(|_| ())
+    build_web::build(dir, to_build_web_options(opts)).map(|a| a.wasm_changed)
 }
 
 /// Map the dev-loop options onto a full `build_web::BuildOptions`.

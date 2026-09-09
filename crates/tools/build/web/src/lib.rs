@@ -377,6 +377,12 @@ pub struct BuildArtifact {
     /// `None` on the dev-loop path, whose pkg keeps plain names and
     /// is served with `Cache-Control: no-store`.
     pub entry_js: Option<String>,
+    /// Whether this build ran the post-cargo passes (wasm-bindgen,
+    /// wasm-split, wasm-opt) — i.e. whether `pkg/` may differ from the
+    /// previous build's. `false` means cargo left the `.wasm` untouched
+    /// and the passes were skipped; the staged bundle was refreshed from
+    /// the existing `pkg/`, so nothing downstream needs to reload.
+    pub wasm_changed: bool,
 }
 
 /// The primitives `--primitives` accepts — one per method on
@@ -528,10 +534,11 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     //
     // The config key is what stops the far nastier version of the same
     // problem — see [`config_key`].
+    let key = config_key(&opts);
     let target_dir = opts
         .source
         .cargo_target_dir(&project_dir)
-        .join(format!("idealyst-web-{}", config_key(&opts)));
+        .join(format!("idealyst-web-{key}"));
     eprintln!(
         "[build-web] target dir: {} ({})",
         target_dir.display(),
@@ -570,6 +577,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     // classes and hydration's `classList.add` re-stamp is a no-op. The
     // historical bail here refused the combination back when the server
     // could only emit live-minted classes.
+    // Everything after `cargo` is O(module size) and blind to whether
+    // cargo actually produced a new module — see [`passes_skippable`].
+    let stamp_file = build_dir.join(format!(".wasm-stamp-{key}"));
+    let before = WasmStamp::of(&original_wasm);
     let mut timings = BuildTimings::default();
     timings.time("cargo", || {
         cargo_build_wasm(
@@ -590,61 +601,91 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             &project_dir,
         )
     })?;
-    timings.time("wasm-bindgen", || {
-        wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
-    })
-    .with_context(|| "wasm-bindgen")?;
-    timings.time("command-export-neutralize", || {
-        neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
-    })
-    .with_context(|| "wasm-bindgen command_export neutralize")?;
-    if opts.wasm_split {
-        timings.time("wasm-split", || {
-            run_wasm_split(
-                &original_wasm,
-                &wrapper_pkg,
-                &manifest.lib_name,
-                opts.prune_dead_data_min,
-            )
-        })
-        .with_context(|| "wasm-split-cli post-build")?;
-    } else {
-        // `--no-split` means "bundle it anyway", not "drop it": the module
-        // still declares whatever imports `#[wasm_split]` emitted, and an
-        // unsatisfied import is a module the browser refuses to
-        // instantiate. So read them back off the module and answer them
-        // locally.
-        let bindgened = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
-        let imports = wasm_split_imports(
-            &fs::read(&bindgened).with_context(|| format!("read {}", bindgened.display()))?,
-        )
-        .with_context(|| "wasm-split: scan for split-loader imports")?;
-        // Stale chunks + loader from an earlier splitting build go FIRST —
-        // `fingerprint_pkg` digests every file under pkg/ and `stage_bundle`
-        // copies them, so an orphan would ship. This also clears the path
-        // the inline loader is about to be written to.
-        clear_wasm_split_artifacts(&wrapper_pkg)
-            .with_context(|| "wasm-split: clear stale chunk artifacts")?;
-        if imports.is_empty() {
-            eprintln!(
-                "[build-web] wasm-split: skipped (--no-split); no lazy boundaries, \
-                 {}_bg.wasm keeps its relocs and is correspondingly larger",
-                manifest.lib_name,
-            );
-        } else {
-            let inlined =
-                write_inline_split_loader(&wrapper_pkg, &manifest.lib_name, &imports)?;
-            eprintln!(
-                "[build-web] wasm-split: skipped (--no-split); {inlined} lazy \
-                 boundary(ies) stay in {}_bg.wasm and resolve immediately",
-                manifest.lib_name,
-            );
-        }
-    }
-    if opts.release {
+    let after = WasmStamp::of(&original_wasm);
+    let outputs_present = wrapper_pkg
+        .join(format!("{}_bg.wasm", manifest.lib_name))
+        .is_file()
+        && wrapper_pkg
+            .join(format!("{}.js", manifest.lib_name))
+            .is_file();
+    let skip_passes = passes_skippable(
+        before.as_ref(),
+        after.as_ref(),
+        WasmStamp::read(&stamp_file).as_ref(),
+        outputs_present,
+    );
+    if skip_passes {
+        let bytes = after.as_ref().map(|s| s.len).unwrap_or(0);
+        eprintln!(
+            "[build-web] {}.wasm unchanged since the last build ({bytes} bytes, same mtime) — \
+             wasm-bindgen / wasm-split skipped, restaging the existing pkg/",
+            bin_name,
+        );
         timings
-            .time("wasm-opt", || wasm_opt_pkg(&wrapper_pkg))
-            .with_context(|| "wasm-opt post-split")?;
+            .phases
+            .push(("passes-skipped", std::time::Duration::ZERO));
+    } else {
+        timings.time("wasm-bindgen", || {
+            wasm_bindgen_build(&original_wasm, &wrapper_pkg, &manifest.lib_name)
+        })
+        .with_context(|| "wasm-bindgen")?;
+        timings.time("command-export-neutralize", || {
+            neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
+        })
+        .with_context(|| "wasm-bindgen command_export neutralize")?;
+        if opts.wasm_split {
+            timings.time("wasm-split", || {
+                run_wasm_split(
+                    &original_wasm,
+                    &wrapper_pkg,
+                    &manifest.lib_name,
+                    opts.prune_dead_data_min,
+                )
+            })
+            .with_context(|| "wasm-split-cli post-build")?;
+        } else {
+            // `--no-split` means "bundle it anyway", not "drop it": the module
+            // still declares whatever imports `#[wasm_split]` emitted, and an
+            // unsatisfied import is a module the browser refuses to
+            // instantiate. So read them back off the module and answer them
+            // locally.
+            let bindgened = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
+            let imports = wasm_split_imports(
+                &fs::read(&bindgened).with_context(|| format!("read {}", bindgened.display()))?,
+            )
+            .with_context(|| "wasm-split: scan for split-loader imports")?;
+            // Stale chunks + loader from an earlier splitting build go FIRST —
+            // `fingerprint_pkg` digests every file under pkg/ and `stage_bundle`
+            // copies them, so an orphan would ship. This also clears the path
+            // the inline loader is about to be written to.
+            clear_wasm_split_artifacts(&wrapper_pkg)
+                .with_context(|| "wasm-split: clear stale chunk artifacts")?;
+            if imports.is_empty() {
+                eprintln!(
+                    "[build-web] wasm-split: skipped (--no-split); no lazy boundaries, \
+                     {}_bg.wasm keeps its relocs and is correspondingly larger",
+                    manifest.lib_name,
+                );
+            } else {
+                let inlined =
+                    write_inline_split_loader(&wrapper_pkg, &manifest.lib_name, &imports)?;
+                eprintln!(
+                    "[build-web] wasm-split: skipped (--no-split); {inlined} lazy \
+                     boundary(ies) stay in {}_bg.wasm and resolve immediately",
+                    manifest.lib_name,
+                );
+            }
+        }
+        if opts.release {
+            timings
+                .time("wasm-opt", || wasm_opt_pkg(&wrapper_pkg))
+                .with_context(|| "wasm-opt post-split")?;
+        }
+        // Recorded only after every pass succeeded, so a build that died
+        // mid-bindgen can never be mistaken for a finished one.
+        if let Some(after) = &after {
+            after.write(&stamp_file);
+        }
     }
 
     if opts.premint {
@@ -768,6 +809,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     timings.report();
 
     Ok(BuildArtifact {
+        wasm_changed: !skip_passes,
         pkg_dir,
         // No longer a generated crate — the per-app staging dir that
         // holds `pkg/` and the premint dump. Field name kept so the
@@ -1741,6 +1783,104 @@ impl BuildTimings {
     }
 }
 
+/// Identity of the `.wasm` cargo produced, cheap enough to take twice
+/// per build.
+///
+/// Cargo never rewrites an artifact whose fingerprint is fresh, so an
+/// unchanged `(len, mtime)` across the `cargo` step means the module the
+/// post-cargo passes would consume is byte-for-byte the one they consumed
+/// last time. Everything after cargo — wasm-bindgen, wasm-split, wasm-opt
+/// — is O(module size) and was running unconditionally: measured on a
+/// 217 MB dev module, ~23 s per save with cargo itself reporting 0.3 s,
+/// because a save to server-only code (`#[cfg(feature = "server")]`)
+/// changes nothing the wasm target compiles yet still triggers the
+/// bundle watcher.
+///
+/// `version` pins the stamp to the build tooling that wrote it: a CLI
+/// upgrade that changes what bindgen or split emit must not inherit a
+/// `pkg/` produced by the old one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WasmStamp {
+    len: u64,
+    mtime_secs: u64,
+    mtime_nanos: u32,
+}
+
+impl WasmStamp {
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    fn of(path: &Path) -> Option<Self> {
+        let md = fs::metadata(path).ok()?;
+        let mtime = md.modified().ok()?;
+        let since = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(Self {
+            len: md.len(),
+            mtime_secs: since.as_secs(),
+            mtime_nanos: since.subsec_nanos(),
+        })
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "{}\n{}\n{}.{:09}\n",
+            Self::VERSION,
+            self.len,
+            self.mtime_secs,
+            self.mtime_nanos
+        )
+    }
+
+    /// `None` for anything but a stamp this exact tooling version wrote.
+    fn decode(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        if lines.next()? != Self::VERSION {
+            return None;
+        }
+        let len = lines.next()?.trim().parse().ok()?;
+        let (secs, nanos) = lines.next()?.trim().split_once('.')?;
+        Some(Self {
+            len,
+            mtime_secs: secs.parse().ok()?,
+            mtime_nanos: nanos.parse().ok()?,
+        })
+    }
+
+    fn read(path: &Path) -> Option<Self> {
+        fs::read_to_string(path).ok().and_then(|t| Self::decode(&t))
+    }
+
+    /// Best effort: a stamp that fails to write costs one redundant set
+    /// of passes next time, which is exactly today's behaviour.
+    fn write(&self, path: &Path) {
+        if let Err(e) = fs::write(path, self.encode()) {
+            eprintln!(
+                "[build-web] could not record the wasm stamp at {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// May the post-cargo passes be skipped?
+///
+/// Only when all four hold: cargo left the module exactly as it found it
+/// (`before == after`, both present), the passes last ran to completion
+/// over that same module (`recorded == after` — the stamp is written only
+/// after they succeed), and their outputs are still in `pkg/`. Any doubt
+/// runs the passes: the failure mode of a wrong `true` is a stale bundle
+/// that looks built, and that is worse than 20 s.
+fn passes_skippable(
+    before: Option<&WasmStamp>,
+    after: Option<&WasmStamp>,
+    recorded: Option<&WasmStamp>,
+    outputs_present: bool,
+) -> bool {
+    match (before, after, recorded) {
+        (Some(b), Some(a), Some(r)) => outputs_present && b == a && r == a,
+        _ => false,
+    }
+}
+
 /// Short stable key for every option that invalidates the WHOLE cargo
 /// build graph, used to give each build configuration its own target dir.
 ///
@@ -2519,6 +2659,34 @@ mod regression_tests {
     use super::*;
     use std::io::Read;
 
+
+    #[test]
+    fn passes_skip_only_when_cargo_left_the_module_and_the_passes_finished() {
+        let a = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 2 };
+        let b = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 3 };
+        // The one shape that skips.
+        assert!(passes_skippable(Some(&a), Some(&a), Some(&a), true));
+        // cargo rewrote the module (mtime moved).
+        assert!(!passes_skippable(Some(&a), Some(&b), Some(&a), true));
+        // Module unchanged but the last passes never finished over it.
+        assert!(!passes_skippable(Some(&a), Some(&a), Some(&b), true));
+        assert!(!passes_skippable(Some(&a), Some(&a), None, true));
+        // Outputs gone (someone cleaned pkg/).
+        assert!(!passes_skippable(Some(&a), Some(&a), Some(&a), false));
+        // First build: nothing to compare against.
+        assert!(!passes_skippable(None, Some(&a), None, true));
+        assert!(!passes_skippable(None, None, None, true));
+    }
+
+    #[test]
+    fn wasm_stamp_round_trips_and_refuses_another_tooling_version() {
+        let s = WasmStamp { len: 217_610_466, mtime_secs: 1_788_970_000, mtime_nanos: 123 };
+        assert_eq!(WasmStamp::decode(&s.encode()), Some(s));
+        let foreign = s.encode().replacen(WasmStamp::VERSION, "0.0.0-other", 1);
+        assert_eq!(WasmStamp::decode(&foreign), None);
+        assert_eq!(WasmStamp::decode(""), None);
+        assert_eq!(WasmStamp::decode("garbage\n\n"), None);
+    }
     /// Framework features resolve against the facade; the app's own
     /// features pass through untouched. Getting this backwards fails at
     /// cargo time with a message that names neither the app nor the
