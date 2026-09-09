@@ -529,6 +529,20 @@ each entry links to its migration guide.
   static fn-pointer catalog, wired into the `prune-regression` browser
   suite.
 
+### Fixed
+
+- **A horizontal scroller no longer swallows the page's vertical wheel
+  (web)** — `scroll_view(...).bounces(false)` wrote the
+  `overscroll-behavior` shorthand, which sets BOTH axes, on a `<div>`
+  that is still a scroll container on its cross axis
+  (`overflow-y: hidden`). Every vertical wheel that started over a
+  `Table(scroll_x = true)` was contained by the table's column scroller
+  and the page behind it stopped moving. `apply_bounces` now writes the
+  two longhands: the scroller's own axis carries the `bounces` verdict
+  and the cross axis is always `auto`, so a gesture the pane cannot use
+  chains to the page. The decision is a pure `overscroll_declarations`
+  with host-side tests in `backend-web`.
+
 ## 1.0.1
 
 ### Added
