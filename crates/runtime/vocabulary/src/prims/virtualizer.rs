@@ -56,4 +56,17 @@ pub struct VirtualizerPrim {
     /// verbatim into `VirtualizerCallbacks::on_scroll`; see there for
     /// the contract.
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// Called when the reader arrives within `end_reached_threshold` of
+    /// the last item. The virtualizer's whole point is that the item
+    /// count is large and unbounded, so "fetch the next page as they
+    /// approach the end" is the paging idiom it exists to serve — and
+    /// it cannot be spelled from `on_scroll`, which reports an offset
+    /// and never the content extent it is an offset INTO.
+    ///
+    /// Same contract as `scroll_view`'s: edge-triggered (once per
+    /// arrival, re-arming when the reader leaves the zone) and silent
+    /// on a backend that does not answer `observe_scroll_end`.
+    pub on_end_reached: Option<Rc<dyn Fn()>>,
+    /// How close to the end counts as arriving, in logical px.
+    pub end_reached_threshold: f32,
 }

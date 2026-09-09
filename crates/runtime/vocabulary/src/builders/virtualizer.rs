@@ -36,6 +36,8 @@ pub fn virtualizer(
             a11y: AccessibilityProps::default(),
             ref_fill: None,
             on_scroll: None,
+            on_end_reached: None,
+            end_reached_threshold: 0.0,
         },
     }
 }
@@ -101,8 +103,10 @@ impl VirtualizerBuilder {
     ///
     /// A virtualizer owns its scroller, so this is the only way a
     /// sibling can align to it — a sticky header that tracks the list,
-    /// an edge-triggered "load more", a second pane synced to the same
-    /// offset. Without it those all force the app to hand-roll
+    /// a second pane synced to the same offset. (For "load more", reach
+    /// for [`on_end_reached`](Self::on_end_reached) instead: an offset
+    /// alone cannot say how much is left.) Without it those force the
+    /// app to hand-roll
     /// virtualization over a `scroll_view` purely to get the offset
     /// back.
     ///
@@ -111,6 +115,26 @@ impl VirtualizerBuilder {
     /// — it fires at scroll frequency.
     pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
         self.prim.on_scroll = Some(Rc::new(handler));
+        self
+    }
+
+    /// Fetch-ahead hook: fires once when the reader comes within
+    /// `threshold` px of the last item, and re-arms when they leave.
+    ///
+    /// Pair it with [`end_reached_threshold`](Self::end_reached_threshold).
+    /// A backend that does not implement `observe_scroll_end` never
+    /// fires it, so a list that grows ONLY this way stops growing —
+    /// keep a manual control as the fallback.
+    pub fn on_end_reached(mut self, handler: impl Fn() + 'static) -> Self {
+        self.prim.on_end_reached = Some(Rc::new(handler));
+        self
+    }
+
+    /// How close to the end counts as arriving, in logical px. Default
+    /// `0.0` — the very end. A screenful is the usual choice, so the
+    /// next page is there before the reader is.
+    pub fn end_reached_threshold(mut self, px: f32) -> Self {
+        self.prim.end_reached_threshold = px;
         self
     }
 

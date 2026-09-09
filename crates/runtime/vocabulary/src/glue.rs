@@ -2460,6 +2460,19 @@ pub mod primitives {
                 self.b = self.b.on_scroll(handler);
                 self
             }
+
+            /// Fetch the next page as the reader nears the last item —
+            /// see `builders::VirtualizerBuilder::on_end_reached`.
+            pub fn on_end_reached(mut self, handler: impl Fn() + 'static) -> Self {
+                self.b = self.b.on_end_reached(handler);
+                self
+            }
+
+            /// How close to the end counts as arriving, in logical px.
+            pub fn end_reached_threshold(mut self, px: f32) -> Self {
+                self.b = self.b.end_reached_threshold(px);
+                self
+            }
         }
 
         glue_wrapper_common!(GlueFlatList, test_id_ignored);

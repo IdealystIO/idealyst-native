@@ -18,14 +18,14 @@ use runtime_shared::VirtualizerCallbacks;
 use runtime_scene::{realize, Element, MountCx, Realized, Registry};
 use runtime_world::{collect_owned, effect, untrack, Owned};
 
-use crate::caps::VirtualizerOps;
+use crate::caps::{ScrollOps, VirtualizerOps};
 use crate::prims::{PrimCell, VirtualizerPrim};
 use crate::style_attach::{attach_style, on_teardown, StyleServices};
 
 /// Register the `virtualizer` handler (called from `register_builtins`).
 pub fn register_virtualizer<H>(registry: &mut Registry<H>)
 where
-    H: VirtualizerOps + StyleServices + 'static,
+    H: VirtualizerOps + ScrollOps + StyleServices + 'static,
 {
     registry.register::<PrimCell<VirtualizerPrim>, _>(|cx, p, children| {
         mount_virtualizer(cx, p.take(), children)
@@ -96,7 +96,7 @@ pub fn mount_virtualizer<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: VirtualizerOps + StyleServices,
+    H: VirtualizerOps + ScrollOps + StyleServices,
 {
     let backend = cx.backend().clone();
     let registry: Rc<Registry<H>> = cx.registry().clone();
@@ -234,6 +234,24 @@ where
     let node = backend
         .borrow_mut()
         .create_virtualizer(callbacks, prim.overscan, prim.layout, &prim.a11y);
+
+    // End-of-scroll observation, on the virtualizer's OWN scroller —
+    // the same capability `scroll_view` uses, because a virtualizer's
+    // node IS a scroller on every backend that has one (a
+    // `UICollectionView` is a `UIScrollView`; on web the node is the
+    // overflow box). Guarded for post-teardown delivery for the reason
+    // `scroll_view`'s copy is: the observer outlives nothing in
+    // particular, so a route change can land it on a dead scope.
+    if let Some(on_end) =
+        crate::callback_guard::ScopeAlive::current().wrap0_opt(prim.on_end_reached)
+    {
+        backend.borrow_mut().observe_scroll_end(
+            &node,
+            prim.layout.axis.is_horizontal(),
+            prim.end_reached_threshold,
+            on_end,
+        );
+    }
 
     // Data effect: touching item_count subscribes to whatever signals
     // the count closure reads; each change tells the backend to

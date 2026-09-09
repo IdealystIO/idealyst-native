@@ -129,6 +129,12 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// into the layout. `AutoFit` resolves against the live container
     /// bounds inside `sizeForItemAt`, so a rotation re-lanes the grid.
     layout: VirtualLayout,
+    /// End-of-scroll observation, when the author asked for one.
+    /// Lives HERE rather than on a second delegate object because
+    /// UIKit allows exactly one `delegate` and this object already
+    /// holds it — installing a `ScrollDelegate` over the top would
+    /// take the data source down with it and empty the list.
+    end: RefCell<Option<crate::imp::callbacks::EndObserver>>,
 }
 
 declare_class!(
@@ -243,6 +249,50 @@ declare_class!(
             if !*self.ivars().alive.borrow() {
                 return;
             }
+            // The end-reach check comes FIRST because it must not sit
+            // behind `on_scroll`'s early return: a list that pages on
+            // scroll and never asked for an offset is the common case,
+            // and gating one on the other is how it silently never
+            // fires.
+            //
+            // `fire` is computed in a scope that ends before the call,
+            // so no borrow of `end` is held while author code runs —
+            // the callback re-enters this object through a data change.
+            let fire = {
+                let obs = self.ivars().end.borrow();
+                match obs.as_ref() {
+                    Some(o) => {
+                        let bounds: objc2_foundation::CGRect =
+                            unsafe { msg_send![scroll_view, bounds] };
+                        let content: CGSize =
+                            unsafe { msg_send![scroll_view, contentSize] };
+                        let (offset, viewport, extent) = if o.horizontal {
+                            (
+                                bounds.origin.x as f32,
+                                bounds.size.width as f32,
+                                content.width as f32,
+                            )
+                        } else {
+                            (
+                                bounds.origin.y as f32,
+                                bounds.size.height as f32,
+                                content.height as f32,
+                            )
+                        };
+                        o.reach
+                            .borrow_mut()
+                            .update(offset, viewport, extent)
+                            .then(|| o.on_end.clone())
+                    }
+                    None => None,
+                }
+            };
+            if let Some(on_end) = fire {
+                crate::imp::ffi_guard::guard_ffi(
+                    "VirtualizerDataSource::endReached",
+                    || on_end(),
+                );
+            }
             let on_scroll = {
                 let cb_opt = self.ivars().callbacks.borrow();
                 cb_opt.as_ref().and_then(|c| c.on_scroll.clone())
@@ -352,6 +402,19 @@ unsafe impl objc2::RefEncode for UIEdgeInsets {
 }
 
 impl VirtualizerDataSource {
+    /// Install (or replace) the end-of-scroll observer. Mirrors
+    /// `ScrollDelegate::set_end` — same `EndReach` state machine, so
+    /// the arm/re-arm behaviour is identical on both scrollers.
+    pub(crate) fn set_end(&self, horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
+        *self.ivars().end.borrow_mut() = Some(crate::imp::callbacks::EndObserver {
+            horizontal,
+            reach: RefCell::new(runtime_shared::primitives::scroll_view::EndReach::new(
+                threshold,
+            )),
+            on_end,
+        });
+    }
+
     /// Dequeue + mount helper. Lives outside the `declare_class!`
     /// block so it can use early `return`s + question marks without
     /// fighting the macro's `IdReturnValue` conversion.
@@ -459,6 +522,7 @@ impl VirtualizerDataSource {
             mounts: Rc::new(RefCell::new(HashMap::new())),
             alive: Rc::new(RefCell::new(true)),
             layout,
+            end: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
     }
