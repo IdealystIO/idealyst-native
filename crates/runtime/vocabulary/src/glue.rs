@@ -1888,6 +1888,20 @@ pub mod primitives {
                 self
             }
 
+            /// Fire when the reader arrives at the end of the scroll
+            /// axis — once per arrival. See `ScrollViewPrim` for which
+            /// backends answer it.
+            pub fn on_end_reached(mut self, handler: impl Fn() + 'static) -> Self {
+                self.b = self.b.on_end_reached(handler);
+                self
+            }
+
+            /// How close to the end counts as arriving, in logical px.
+            pub fn end_reached_threshold(mut self, px: f32) -> Self {
+                self.b = self.b.end_reached_threshold(px);
+                self
+            }
+
             /// Mirror of `Bound::<ScrollViewHandle>::bind`.
             pub fn bind(mut self, r: super::super::Ref<ScrollViewHandle>) -> Self {
                 self.b = self.b.on_handle(move |h| r.fill(h));
