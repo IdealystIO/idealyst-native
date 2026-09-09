@@ -436,7 +436,7 @@ premint-dump = { path = "crates/tools/premint-dump" }
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.5.2", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.6.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.5.2", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.5.3", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.5.3", registry = "idealyst" }
@@ -492,7 +492,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.5.2", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.5.2", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "1.6.2", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "1.6.3", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.2", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.2", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.5.2", registry = "idealyst" }
