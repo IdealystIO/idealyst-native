@@ -82,6 +82,7 @@ static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
+use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
     UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIButton, UIButtonType,
     UILabel, UIScrollView, UISlider, UISwitch,
@@ -3930,6 +3931,38 @@ impl IosBackend {
         // still writes author-set label / identifier when present.
         a11y::apply(&node, a11y, None);
         node
+    }
+
+    /// Watch a scroller for the reader arriving at its end.
+    ///
+    /// Reuses the view's EXISTING delegate when there is one. A
+    /// UIScrollView has a single `delegate`, so installing a second
+    /// would silently unhook the first — and a list with both an
+    /// `on_scroll` and an `on_end_reached` is the ordinary case, not an
+    /// exotic one.
+    pub(crate) fn observe_scroll_end_impl(
+        &mut self,
+        node: &IosNode,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        let view = node.as_view();
+        let scroll: &UIScrollView =
+            unsafe { &*(view as *const UIView as *const UIScrollView) };
+        let existing: Option<Retained<NSObject>> = unsafe { msg_send_id![scroll, delegate] };
+        if let Some(obj) = existing {
+            if obj.is_kind_of::<crate::imp::callbacks::ScrollDelegate>() {
+                let ours: &crate::imp::callbacks::ScrollDelegate =
+                    unsafe { &*(Retained::as_ptr(&obj) as *const _) };
+                ours.set_end(horizontal, threshold, on_end);
+                return;
+            }
+        }
+        let delegate = crate::imp::callbacks::ScrollDelegate::new_watcher(self.mtm);
+        delegate.set_end(horizontal, threshold, on_end);
+        let _: () = unsafe { msg_send![scroll, setDelegate: &*delegate] };
+        self.retain_target(&delegate);
     }
 
     pub(crate) fn release_portal_impl(&mut self, node: &IosNode) {

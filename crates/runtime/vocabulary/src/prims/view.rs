@@ -65,6 +65,23 @@ pub struct ScrollViewPrim {
     pub test_id: Option<&'static str>,
     pub horizontal: bool,
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// Called when the reader arrives within `end_reached_threshold` of
+    /// the end of the scroll axis — once per arrival, not per event.
+    ///
+    /// This exists because `on_scroll` cannot answer it. An offset says
+    /// where the reader is, and "how much is left" needs the viewport
+    /// and the content extent too, neither of which an app can measure.
+    ///
+    /// Answered today by the iOS-mobile and web backends. Elsewhere the
+    /// default `ScrollOps::observe_scroll_end` is a no-op and this
+    /// never fires — so a list that ONLY grows this way stops growing,
+    /// rather than degrading to something.
+    pub on_end_reached: Option<Rc<dyn Fn()>>,
+    /// How close to the end counts as arriving, in logical px. `0`
+    /// means the very end; a screenful is the usual choice for
+    /// prefetching a list so the next page is there before the reader
+    /// is.
+    pub end_reached_threshold: f32,
     /// Safe-area treatment, as a THREE-state value.
     ///
     /// - `None` — the author said nothing. The backend is not called and

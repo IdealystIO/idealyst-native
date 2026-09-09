@@ -210,6 +210,14 @@ where
     let mut node = backend
         .borrow_mut()
         .create_scroll_view(prim.horizontal, on_scroll, &prim.a11y);
+    // Same teardown guard as `on_scroll`, and for the same reason: this
+    // one is delivered from a backend observer that outlives nothing in
+    // particular, so a route change can land it on a dead scope.
+    if let Some(on_end) = alive.wrap0_opt(prim.on_end_reached) {
+        backend
+            .borrow_mut()
+            .observe_scroll_end(&node, prim.horizontal, prim.end_reached_threshold, on_end);
+    }
     // Robot `set_scroll` routes through the scroll HANDLE (whose ops
     // take no backend borrow), NOT `set_node_scroll` under a live
     // `borrow_mut`: native scroll writes fire scroll notifications

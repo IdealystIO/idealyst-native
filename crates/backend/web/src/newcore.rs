@@ -1231,6 +1231,16 @@ impl caps::ScrollOps for WebBackend {
         WebBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
     }
 
+    fn observe_scroll_end(
+        &mut self,
+        node: &Self::Node,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        WebBackend::observe_scroll_end_impl(self, node, horizontal, threshold, on_end)
+    }
+
     fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
         WebBackend::node_scroll_impl(self, node)
     }

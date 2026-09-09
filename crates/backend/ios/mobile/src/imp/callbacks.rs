@@ -1,4 +1,5 @@
 use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::scroll_view::EndReach;
 use runtime_shared::primitives::text_input::{BlurHandler, BlurOutcome};
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
@@ -1307,6 +1308,20 @@ impl KeyboardDismissTarget {
 
 pub(crate) struct ScrollDelegateIvars {
     callback: RefCell<Option<Rc<dyn Fn(f32, f32)>>>,
+    /// The end-of-scroll observer, when one has been installed: the
+    /// axis, the arrival rule, and what to call on arrival.
+    ///
+    /// It rides the SAME delegate as `callback` because a UIScrollView
+    /// has exactly one, and a second `setDelegate:` would silently
+    /// unhook the first — a scroller with both an `on_scroll` and an
+    /// `on_end_reached` would lose whichever was installed first.
+    end: RefCell<Option<EndObserver>>,
+}
+
+pub(crate) struct EndObserver {
+    pub(crate) horizontal: bool,
+    pub(crate) reach: RefCell<EndReach>,
+    pub(crate) on_end: Rc<dyn Fn()>,
 }
 
 declare_class!(
@@ -1326,10 +1341,39 @@ declare_class!(
         #[method(scrollViewDidScroll:)]
         fn scroll_view_did_scroll(&self, scroll_view: &UIScrollView) {
             let ivars = self.ivars();
+            let offset: objc2_foundation::CGPoint =
+                unsafe { msg_send![scroll_view, contentOffset] };
             if let Some(cb) = ivars.callback.borrow().as_ref() {
-                let offset: objc2_foundation::CGPoint =
-                    unsafe { msg_send![scroll_view, contentOffset] };
                 cb(offset.x as f32, offset.y as f32);
+            }
+            // The three numbers an app cannot get for itself: where the
+            // reader is, how much they can see, and how much there is.
+            let fire = {
+                let end = ivars.end.borrow();
+                match end.as_ref() {
+                    None => None,
+                    Some(obs) => {
+                        let bounds: objc2_foundation::CGRect =
+                            unsafe { msg_send![scroll_view, bounds] };
+                        let content: objc2_foundation::CGSize =
+                            unsafe { msg_send![scroll_view, contentSize] };
+                        let (o, v, c) = if obs.horizontal {
+                            (offset.x, bounds.size.width, content.width)
+                        } else {
+                            (offset.y, bounds.size.height, content.height)
+                        };
+                        obs.reach
+                            .borrow_mut()
+                            .update(o as f32, v as f32, c as f32)
+                            .then(|| obs.on_end.clone())
+                    }
+                }
+            };
+            // Called with NO borrow held: the callback loads a page,
+            // which re-enters the runtime and can reach this delegate
+            // again through a relayout.
+            if let Some(on_end) = fire {
+                on_end();
             }
         }
     }
@@ -1343,8 +1387,29 @@ impl ScrollDelegate {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(ScrollDelegateIvars {
             callback: RefCell::new(Some(callback)),
+            end: RefCell::new(None),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// A delegate that only watches for the end — for a scroller with
+    /// an `on_end_reached` and no `on_scroll`.
+    pub(crate) fn new_watcher(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(ScrollDelegateIvars {
+            callback: RefCell::new(None),
+            end: RefCell::new(None),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Install (or replace) the end-of-scroll observer.
+    pub(crate) fn set_end(&self, horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
+        *self.ivars().end.borrow_mut() = Some(EndObserver {
+            horizontal,
+            reach: RefCell::new(EndReach::new(threshold)),
+            on_end,
+        });
     }
 }
 

@@ -1160,6 +1160,23 @@ mod ios_impl {
             IosBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
         }
 
+        fn observe_scroll_end(
+            &mut self,
+            node: &Self::Node,
+            horizontal: bool,
+            threshold: f32,
+            on_end: Rc<dyn Fn()>,
+        ) {
+            // Same flush the other author callbacks get: the arrival
+            // handler loads a page, and its writes have to reach a
+            // commit.
+            let on_end: Rc<dyn Fn()> = Rc::new(move || {
+                on_end();
+                schedule_flush();
+            });
+            IosBackend::observe_scroll_end_impl(self, node, horizontal, threshold, on_end)
+        }
+
         fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
             IosBackend::node_scroll_impl(self, node)
         }
