@@ -81,7 +81,17 @@ impl EndReach {
     /// looks like an infinite loop rather than a scroll bug.
     pub fn update(&mut self, offset: f32, viewport: f32, content: f32) -> bool {
         if content <= viewport {
-            self.armed = false;
+            // Nothing to scroll, so nothing to arrive at — but stay
+            // ARMED. Disarming here is a dead end: the reader can only
+            // re-arm by leaving the zone, and when the content next
+            // grows to within `threshold` of the viewport the zone
+            // spans the whole travel, so there is nowhere to leave to.
+            // A list that mounts empty and is handed a first page
+            // shorter than its own prefetch threshold would then never
+            // ask for a second one. `new` starts armed for the same
+            // reason: a scroller with nothing to scroll is in the same
+            // state as one that has not scrolled.
+            self.armed = true;
             return false;
         }
         // Clamped: iOS rubber-banding reports offsets past the end and
@@ -137,6 +147,44 @@ mod end_reach_tests {
         let mut e = EndReach::new(200.0);
         assert!(!e.update(1200.0, 500.0, 2000.0), "300 to go");
         assert!(e.update(1350.0, 500.0, 2000.0), "150 to go");
+    }
+
+    /// Regression: a paging list that mounts empty and is then handed a
+    /// first page shorter than its own prefetch threshold must still ask
+    /// for the second one.
+    ///
+    /// The empty mount used to DISARM (`content <= viewport`), and the
+    /// only way back to armed is leaving the zone. When the threshold is
+    /// wider than the travel — 500pt of prefetch over 300pt of
+    /// scrollable content, which is what "a screenful" means on a short
+    /// page — there is nowhere to leave to, so it stayed disarmed
+    /// forever and the list stopped at page 1. `end_reached_threshold`'s
+    /// own docs recommend the configuration that triggered it.
+    #[test]
+    fn regression_a_short_first_page_after_an_empty_mount_still_fires() {
+        let mut e = EndReach::new(500.0);
+        assert!(!e.update(0.0, 500.0, 0.0), "mounts empty: nothing to scroll");
+        assert!(
+            e.update(0.0, 500.0, 800.0),
+            "page 1 lands entirely inside the prefetch zone — ask for page 2"
+        );
+        // Still edge-triggered: sitting there does not re-ask.
+        assert!(!e.update(0.0, 500.0, 800.0));
+        assert!(!e.update(300.0, 500.0, 800.0), "scrolled to the very end");
+        // Page 2 lands and the end moves out of reach again, so the next
+        // approach is a fresh arrival.
+        assert!(!e.update(300.0, 500.0, 3000.0));
+        assert!(e.update(2100.0, 500.0, 3000.0));
+    }
+
+    /// A list emptied back to nothing (a filter clearing it) returns to
+    /// the state a fresh scroller is in, so refilling it asks again.
+    #[test]
+    fn emptying_a_list_re_arms_it() {
+        let mut e = EndReach::new(0.0);
+        assert!(e.update(1500.0, 500.0, 2000.0), "arrived once");
+        assert!(!e.update(0.0, 500.0, 0.0), "filtered down to nothing");
+        assert!(e.update(1500.0, 500.0, 2000.0), "refilled and back at the end");
     }
 
     /// Content that fits its viewport has no end to arrive at. Firing

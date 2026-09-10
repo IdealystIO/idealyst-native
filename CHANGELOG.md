@@ -7,6 +7,49 @@ each entry links to its migration guide.
 
 ### Added
 
+- **`on_end_reached` on `scroll_view` and the virtualizer** — a scroller
+  can now say when the reader has arrived at its end, which no app could
+  previously work out: `on_scroll` reports the content OFFSET, and "how
+  much is left" needs the viewport and content extents too, neither of
+  which is reachable. Load-on-scroll, a progress rail, a sticky "you are
+  here" were all unbuildable on top of a scroller. `end_reached_threshold`
+  (logical px from the end, `0` by default; a screenful is the usual
+  choice for prefetching) says how early to fire.
+
+  The arm/re-arm rule lives in `runtime_shared` as `EndReach`, not in the
+  backends, so all three cannot disagree about it. It is EDGE-TRIGGERED —
+  a scroller resting at its end delivers an event per rubber-band twitch,
+  and firing on each turns "load the next page" into a request storm — and
+  it RE-ARMS on leaving, which is what serves a list that grew because of
+  the last arrival. Content that fits its viewport never fires.
+
+  Answered today by the **iOS-mobile and web** backends. `ScrollOps::observe_scroll_end`
+  is a defaulted no-op elsewhere, so on macOS, Android, Linux and Windows
+  this never fires and a list that ONLY grows this way stops growing
+  rather than degrading. The primitive's docs name which backends answer.
+
+### Fixed
+
+- **A virtualizer is now seeded as a scroll viewport.** It never called
+  `set_overflow_scroll`, whose own docs make it mandatory for any backend
+  rendering a viewport. Without it the node's automatic minimum is its
+  CONTENT, so a `UICollectionView` in a flex column grew to the summed
+  height of every item, overflowed its bounded parent, and had nothing
+  left to scroll — the list then windowed against a viewport the size of
+  its own content, mounted all of it, and virtualizing bought nothing.
+  Measured on a 50-row list in a 725pt parent: the node took a frame of
+  2330pt and pushed the page past its scrollport; it now takes 694pt and
+  scrolls itself at 57fps. **iOS only so far** — macOS and Android's
+  virtualizers, and `create_virtual_grid` on iOS, have the same missing
+  call and are unchanged, because this was verified on the iOS simulator
+  alone.
+
+- **`observe_scroll_end` could empty a collection view.** It installed its
+  own delegate unconditionally, and a `UICollectionView`'s delegate is
+  also its DATA SOURCE, so the first caller to use it on a `flat_list`
+  would have got a list with no cells and no diagnostic. It now dispatches
+  on the delegate's class and leaves one it does not recognise alone.
+
 - **`text_transform` renders on iOS** — `uppercase` / `lowercase` /
   `capitalize` now reach UILabel. UIKit has no text-transform property,
   so the transform is applied to the STRING, and the untransformed text
