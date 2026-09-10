@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -5564,7 +5564,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -7308,7 +7308,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10065,7 +10065,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10073,7 +10073,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "host-mock",
  "mcp-catalog",
