@@ -181,16 +181,23 @@ The dev loop runs two independent watchers and they do different things:
 
 | what changed | what happens | is the port down? |
 |---|---|---|
-| client bundle only | bundle restaged into `dist/web`, "refresh the browser" | no |
+| client bundle only | bundle restaged into the dev staging dir, "refresh the browser" | no |
 | server sources | server rebuilt, **then** the process is restarted | only for the rebind |
 | a crate they share | both — rebuild, restage, restart | only for the rebind |
 
 Two properties are load-bearing:
 
 - **A bundle-only rebuild never restarts the server.** Both server shapes
-  serve `dist/web` through a runtime `ServeDir` — the in-crate shape bakes
-  only the *path* (`env!("CARGO_MANIFEST_DIR")`), never the contents — so
-  the running process already serves the new files.
+  serve the directory the CLI hands them as `WEB_DIST` through a runtime
+  `ServeDir` — resolved once at startup, never the contents — so the
+  running process already serves the new files.
+- **`idealyst dev` never writes `dist/web`.** The dev session stages its
+  (debug, dev-reload-wired) bundle at `target/idealyst/dev/dist/web` and
+  exports that path as `WEB_DIST`; `dist/web` is written only by
+  `idealyst build --web` and `idealyst run server`, so a deploy script can
+  snapshot it while a dev session is running in the same tree. A server
+  that ignores `WEB_DIST` and serves a baked `dist/web` will 404 under
+  dev — resolve the variable first, as every in-tree example does.
 - **The server is rebuilt before it is killed, never after.** A save that
   doesn't compile leaves the running server up and costs a log line. The
   restart itself only happens once a build has succeeded *and* actually

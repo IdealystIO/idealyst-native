@@ -1811,13 +1811,16 @@ fn launch_ssr(
 
     let source = crate::framework_source::resolve(dir)?;
 
-    // Stage the bundle at `<project>/dist/web`. SSR (hydrate) needs
-    // `/pkg/<lib>.js` so the page can boot; `--static` doesn't need
-    // the JS but still needs the fonts in `<project>/dist/web/fonts/`
-    // for the first paint to use the real typeface. One build covers
-    // both — same flags as `idealyst build --web` (local-mode bundle,
-    // no `aas` / `hot-reload`).
-    let bundle_dir = dir.join("dist").join("web");
+    // Stage the bundle in the dev session's scratch dir
+    // (`dev_web_bundle_dir` — NEVER `<project>/dist/web`, see there).
+    // SSR (hydrate) needs `/pkg/<lib>.js` so the page can boot;
+    // `--static` doesn't need the JS but still needs the fonts in
+    // `<bundle>/fonts/` for the first paint to use the real typeface.
+    // One build covers both — same flags as `idealyst build --web`
+    // (local-mode bundle, no `aas` / `hot-reload`). The SSR binary is
+    // handed the dir as `--static-dir`, so it follows wherever this
+    // stages.
+    let bundle_dir = dev_web_bundle_dir(dir);
     if !args.no_build {
         crate::dlog!(label, "building wasm bundle (for hydration / fonts)…");
         let _ = build_web::build(
@@ -1913,34 +1916,33 @@ fn launch_ssr(
 /// browser loads from the server's origin and server-fn calls + the
 /// session cookie are same-origin.
 ///
-/// Both server shapes serve the bundle from `<project>/dist/web` — the
-/// same dir `idealyst build --web` and `idealyst run server` stage into —
-/// so dev stages there too (see [`full_stack_web_bundle_dir`]). What
-/// differs is only *how* we refresh after a rebuild:
+/// Both server shapes serve the bundle from the directory the CLI hands
+/// them as `WEB_DIST` — the dev session's own staging dir
+/// ([`dev_web_bundle_dir`]), never `<project>/dist/web`. What differs is
+/// only *how* we refresh after a rebuild:
 ///
-/// - **In-crate** (`server_bin` only): the server serves
-///   `CARGO_MANIFEST_DIR/dist/web` (baked at compile time; see
-///   `crates/api/server/examples/server-fn-demo/src/bin/server.rs`). We stage the full
-///   bundle there and **restart the server** on each rebuild (cargo
-///   re-runs, picking up server-code changes too), then refresh.
+/// - **In-crate** (`server_bin` only): the server resolves `WEB_DIST`
+///   first and falls back to `CARGO_MANIFEST_DIR/dist/web` for a plain
+///   `cargo run` (see
+///   `crates/api/server/examples/server-fn-demo/src/bin/server.rs`).
+///   We stage the full bundle into the dev dir and **restart the
+///   server** on each rebuild (cargo re-runs, picking up server-code
+///   changes too), then refresh.
 /// - **Standalone** (`server_manifest`): the server is its own workspace
-///   serving a fully-staged `dist/web` (`WEB_DIST`) over `ServeDir`, so
-///   we stage the **full** bundle there each rebuild and leave the server
+///   serving a fully-staged bundle (`WEB_DIST`) over `ServeDir`, so we
+///   stage the **full** bundle there each rebuild and leave the server
 ///   running — it serves the files statically, so a browser refresh
 ///   picks up the new wasm with no restart.
 ///
-/// The invariant either way: dev stages where the server reads. Before
-/// this was fixed the in-crate path staged to `<project>/pkg` (the
-/// `dev_reload` default) while its server read `dist/web`, so every save
-/// rebuilt a bundle the browser never loaded — stale content across
-/// refreshes and restarts.
+/// The invariant either way: dev stages where the server reads, and the
+/// server reads where dev tells it to. Before this was fixed the in-crate
+/// path staged to `<project>/pkg` (the `dev_reload` default) while its
+/// server read `dist/web`, so every save rebuilt a bundle the browser
+/// never loaded — stale content across refreshes and restarts. The fix
+/// for THAT staged dev into `dist/web` itself, which is the artifact dir
+/// `idealyst build --web` writes — and produced the race documented on
+/// [`dev_web_bundle_dir`].
 ///
-/// Where `idealyst dev --web` stages the full-stack web bundle — always
-/// `<project>/dist/web`, for BOTH the in-crate (`server_bin`) and
-/// standalone (`server_manifest`) shapes. This is the dir `build --web`
-/// and `run server` stage into, and the dir both servers serve (in-crate
-/// bakes `CARGO_MANIFEST_DIR/dist/web`; standalone reads `WEB_DIST`),
-/// so dev never diverges from build/run regardless of server shape.
 /// Where the dev loop builds AND runs the project's server.
 ///
 /// Never the workspace's own `target/`. Cargo takes an exclusive lock on
@@ -1966,8 +1968,46 @@ fn server_target_dir(project_dir: &Path) -> PathBuf {
     .join("idealyst-dev-server")
 }
 
-fn full_stack_web_bundle_dir(project_dir: &Path) -> PathBuf {
-    project_dir.join("dist").join("web")
+/// Where `idealyst dev` stages the web bundle it serves — for the
+/// full-stack (`server_bin` / `server_manifest`) and the SSR / static
+/// shapes alike: `<project>/target/idealyst/dev/dist/web`.
+///
+/// NEVER `<project>/dist/web`. That directory is the output of
+/// `idealyst build --web` (and `run server`) — the build ARTIFACT a
+/// deploy script snapshots — while the dev loop restages on every save,
+/// from a process that is running whenever anyone is working on the
+/// tree. When both wrote the same directory the collision was the normal
+/// state of a tree with a dev session in it, not a corner case: the
+/// window between `idealyst build --web --release` returning and the
+/// deploy script copying is minutes long on a real app, and a save
+/// inside it replaced the release bundle with a debug one. CrewForge
+/// shipped an 83 MB debug wasm whose `index.html` dialled the dev-reload
+/// socket on `127.0.0.1` (2026-09-10), and the same race overwrote its
+/// SSG output mid-deploy on 2026-08-19. Nothing in the pipeline could
+/// notice, because the directory it trusted was being written by two
+/// tools.
+///
+/// The dev bundle is scratch and lives with the session's other scratch
+/// — `target/idealyst/dev/web` already holds the static path's overlay
+/// (icons, injected head) — so `dist/` is written only by `build` and
+/// `run server`. Project-local `target/` rather than the framework's
+/// `cargo_target_dir`: sibling apps in one workspace share the latter,
+/// and two dev sessions (CrewForge runs `app-main` and `app-checkin`
+/// side by side) would restage over each other.
+///
+/// Both server shapes learn the dir through `WEB_DIST` (`spawn_backend`
+/// exports it), which every in-tree full-stack server resolves before
+/// its baked fallback — `full_stack_example_servers_serve_where_the_cli_stages`
+/// pins that. A server that ignores `WEB_DIST` and serves the baked
+/// `dist/web` will 404 under dev; that is the server's bug to fix, not
+/// a reason to stage into the artifact dir again.
+fn dev_web_bundle_dir(project_dir: &Path) -> PathBuf {
+    project_dir
+        .join("target")
+        .join("idealyst")
+        .join("dev")
+        .join("dist")
+        .join("web")
 }
 
 /// Build options for the full-stack path's web bundle.
@@ -1987,12 +2027,13 @@ fn full_stack_bundle_options(
         // Robot-on-web, same as the static path — see
         // `web_dev_features`.
         features: web_dev_features(args.no_robot),
-        // Stage the full bundle into `dist/web` for BOTH shapes —
-        // it's the dir the server serves. `None` here (the old
-        // in-crate value) would sync `pkg/` into the project root
-        // instead, which no server reads → stale browser.
+        // Stage the full bundle into the dev staging dir for BOTH
+        // shapes — it's the dir the server is told to serve (`WEB_DIST`).
+        // `None` here (the old in-crate value) would sync `pkg/` into
+        // the project root instead, which no server reads → stale
+        // browser.
         bundle_out_dir: Some(dist_web),
-        // This project's own server hands out `dist/web/index.html` as
+        // This project's own server hands out the staged `index.html` as
         // a plain file, so the relay URL has to be written INTO the
         // staged copy — there is no `dev-http` in this path to inject
         // it at serve time. Restaged (and so re-injected) every
@@ -2026,10 +2067,11 @@ fn launch_web_with_backend(
     // server for the session (bundle + API, same-origin), so the flag
     // that moves the site has to move it.
     let port = dev_server_port(args, &manifest.app);
-    // Both server shapes read the bundle from here (`build --web` /
-    // `run server` stage into the same dir). We stage into it on every
-    // rebuild and hand it to the server as `WEB_DIST`.
-    let dist_web = full_stack_web_bundle_dir(dir);
+    // Both server shapes read the bundle from here: we stage into it on
+    // every rebuild and hand it to the server as `WEB_DIST`. Distinct
+    // from `build --web`'s `dist/web` on purpose — see
+    // `dev_web_bundle_dir`.
+    let dist_web = dev_web_bundle_dir(dir);
     let server_target = server_target_dir(dir);
     // The relay `run()` already started and exported (`--no-robot`
     // leaves it unset). Read once: the port is fixed for the session,
@@ -2154,13 +2196,13 @@ fn launch_web_with_backend(
         last_server_gen = server_gen;
 
         if action.refresh_browser() {
-            // The bundle was restaged into `dist/web`. BOTH server
-            // shapes serve that directory through a runtime `ServeDir`
-            // (the in-crate shape bakes only the *path*, via
-            // `env!("CARGO_MANIFEST_DIR")` — never the contents), so the
-            // process already on the port serves the new files on the
-            // next request. Restarting here would take the port down to
-            // publish files the running server had picked up anyway.
+            // The bundle was restaged into the dev staging dir. BOTH
+            // server shapes serve that directory (`WEB_DIST`) through a
+            // runtime `ServeDir` — they resolve the path at startup,
+            // never the contents — so the process already on the port
+            // serves the new files on the next request. Restarting here
+            // would take the port down to publish files the running
+            // server had picked up anyway.
             eprintln!("[dev web] bundle rebuilt → refresh the browser");
         }
 
@@ -2214,8 +2256,9 @@ enum DevAction {
     /// Neither watcher moved — fall through to the child liveness check.
     Idle,
     /// Only the client bundle was restaged. Both server shapes serve
-    /// `dist/web` through a runtime `ServeDir`, so the process on the
-    /// port already serves it: tell the user to refresh, touch nothing.
+    /// the staging dir (`WEB_DIST`) through a runtime `ServeDir`, so the
+    /// process on the port already serves it: tell the user to refresh,
+    /// touch nothing.
     RefreshBrowser,
     /// Server sources rebuilt (successfully, and the binary relinked —
     /// the watcher only bumps on both). Restart so the new binary binds.
@@ -3322,18 +3365,20 @@ mod tests {
     /// bin serving a directory the CLI does not stage into.
     ///
     /// `idealyst dev --web` stages the bundle at
-    /// [`full_stack_web_bundle_dir`] (`<project>/dist/web`) and exports
-    /// that path as `WEB_DIST`. When staging moved there from the older
-    /// `<project>/pkg`, only ONE of the six in-tree full-stack examples
-    /// was updated — the other five kept serving `<crate>/pkg`, so every
-    /// `idealyst dev --web` session on them answered `/` with a 404 while
-    /// reporting a successful build on every save. Nothing failed; the
-    /// page was just never there.
+    /// [`dev_web_bundle_dir`] and exports that path as `WEB_DIST`. When
+    /// staging first moved off the older `<project>/pkg`, only ONE of
+    /// the six in-tree full-stack examples was updated — the other five
+    /// kept serving `<crate>/pkg`, so every `idealyst dev --web` session
+    /// on them answered `/` with a 404 while reporting a successful build
+    /// on every save. Nothing failed; the page was just never there.
     ///
     /// The fix was to resolve `WEB_DIST` first and fall back to the baked
-    /// `dist/web`, so the bin follows the CLI instead of duplicating a
-    /// guess about it. This pins that: a server bin must not reconstruct
-    /// the bundle path from the crate root, and must consult `WEB_DIST`.
+    /// `dist/web` (for a plain `cargo run`), so the bin follows the CLI
+    /// instead of duplicating a guess about it. This pins that: a server
+    /// bin must not reconstruct the bundle path from the crate root, and
+    /// must consult `WEB_DIST`. It is also what lets the staging dir move
+    /// out of `dist/web` (see [`dev_web_bundle_dir`]) without touching a
+    /// single server.
     ///
     /// Source-level rather than behavioural because the alternative is
     /// booting six servers and issuing HTTP requests; this catches the
@@ -3386,9 +3431,9 @@ mod tests {
     /// for the whole recompile — minutes, whenever a framework crate was
     /// dirty — even though nothing the server does had changed.
     ///
-    /// Both shapes serve `dist/web` through a runtime `ServeDir`, so a
-    /// restaged bundle needs no restart at all. This pins that: bundle
-    /// movement alone must never restart the server.
+    /// Both shapes serve the staging dir through a runtime `ServeDir`,
+    /// so a restaged bundle needs no restart at all. This pins that:
+    /// bundle movement alone must never restart the server.
     #[test]
     fn regression_bundle_rebuild_alone_never_restarts_server() {
         let action = dev_action(true, false);
@@ -3546,28 +3591,50 @@ mod tests {
         );
     }
 
-    /// Regression guard for the "stale bundle" bug: `idealyst dev --web`
-    /// staged the in-crate (`server_bin`) bundle into `<project>/pkg`,
-    /// but that server serves `<project>/dist/web` — so every save
-    /// rebuilt a bundle the browser never loaded. dev must stage into the
-    /// dir the server serves, which is the SAME dir `build --web` and
-    /// `run server` stage into, for BOTH the in-crate and standalone
-    /// shapes. Pinning the staging-dir helper directly (the full
-    /// `launch_web_with_backend` flow needs `cargo` + the framework
-    /// toolchain, which isn't reachable in a unit test).
+    /// Regression guard for the dev-bundle-in-production bug: `idealyst
+    /// dev` staged (and restaged, on every save) into `<project>/dist/web`
+    /// — the very directory `idealyst build --web --release` writes and a
+    /// deploy script snapshots. A save landing between the release build
+    /// returning and the upload replaced the release bundle with a debug
+    /// one; CrewForge shipped an 83 MB debug wasm dialling
+    /// `ws://127.0.0.1` that way (2026-09-10). The dev bundle must live
+    /// under the project's `target/`, where nothing deployable is read
+    /// from. Pinning the staging-dir helper directly (the full
+    /// `launch_web_with_backend` / `launch_ssr` flows need `cargo` + the
+    /// framework toolchain, which isn't reachable in a unit test).
     #[test]
-    fn dev_web_stages_bundle_where_the_server_serves() {
+    fn regression_dev_web_never_stages_into_the_build_artifact_dir() {
         let project = Path::new("/tmp/some-project");
-        let served = project.join("dist").join("web");
+        let staged = dev_web_bundle_dir(project);
 
-        // The dir dev stages into must equal the dir `build --web` /
-        // `run server` use — `<project>/dist/web` — not the `pkg/`
-        // default that `dev_reload` writes on `bundle_out_dir: None`.
-        assert_eq!(full_stack_web_bundle_dir(project), served);
-        assert_ne!(
-            full_stack_web_bundle_dir(project),
-            project.join("pkg"),
-            "staging into `pkg/` is the stale-bundle bug: no server reads it",
+        assert!(
+            staged.starts_with(project.join("target")),
+            "the dev bundle is session scratch and belongs under target/, got {}",
+            staged.display(),
         );
+        assert!(
+            !staged.starts_with(project.join("dist")),
+            "dist/ is `idealyst build`'s artifact dir — a dev loop writing into \
+             it races every deploy script that trusts it: {}",
+            staged.display(),
+        );
+        // The older stale-bundle bug, still pinned: `pkg/` is the
+        // `dev_reload` default on `bundle_out_dir: None`, which no
+        // server reads.
+        assert_ne!(staged, project.join("pkg"));
+    }
+
+    /// The dir dev stages into is the dir the server is TOLD to serve —
+    /// `full_stack_bundle_options` must pass it through unchanged as
+    /// `bundle_out_dir`, since `spawn_backend` exports the same value as
+    /// `WEB_DIST`. A helper that staged somewhere and told the server
+    /// somewhere else would be the stale-bundle bug with extra steps.
+    #[test]
+    fn dev_web_stages_where_it_tells_the_server_to_serve() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        let project = Path::new("/tmp/some-project");
+        let staged = dev_web_bundle_dir(project);
+        let opts = full_stack_bundle_options(&args, &test_source(), staged.clone(), None).unwrap();
+        assert_eq!(opts.bundle_out_dir.as_deref(), Some(staged.as_path()));
     }
 }

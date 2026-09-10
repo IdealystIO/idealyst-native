@@ -35,6 +35,27 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **`idealyst dev` no longer stages its bundle into `dist/web`.** The
+  dev loop built and restaged its debug, dev-reload-wired bundle at
+  `<project>/dist/web` on every save — the same directory
+  `idealyst build --web --release` writes and a deploy script snapshots.
+  A save landing in the minutes between the release build returning and
+  the upload replaced the release bundle with the dev one, and nothing in
+  a pipeline could tell: CrewForge shipped an 83 MB debug wasm whose
+  `index.html` dialled `ws://127.0.0.1` (2026-09-10), and the same race
+  overwrote its SSG output mid-deploy on 2026-08-19. The full-stack and
+  SSR / static dev shapes now stage at
+  `<project>/target/idealyst/dev/dist/web` — beside the static path's
+  existing overlay scratch — and hand that dir to the server as
+  `WEB_DIST` (the SSR binary as `--static-dir`). `dist/web` is written
+  only by `build` and `run server`. Every in-tree full-stack server
+  already resolved `WEB_DIST` before its baked fallback (pinned by
+  `full_stack_example_servers_serve_where_the_cli_stages`), so no
+  server changed; one that ignores the variable will 404 under dev,
+  which is its bug. `idealyst build --web --out-dir <path>` remains
+  available for pipelines that want the release bundle somewhere of
+  their own.
+
 - **The Android backend compiles for `aarch64-linux-android` again.**
   `Length::Full` was added without three matches in `imp/style.rs`
   learning about it — two resolving `width`/`height` to `LayoutParams`,
