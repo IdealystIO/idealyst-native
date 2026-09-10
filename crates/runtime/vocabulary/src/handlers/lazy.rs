@@ -51,6 +51,8 @@ use std::rc::Rc;
 use runtime_shared::primitives::lazy::LazyError;
 use runtime_shared::primitives::lazy::LazyState;
 #[cfg(feature = "async-driver")]
+use runtime_shared::primitives::navigator::capture_ambient_nav_context;
+#[cfg(feature = "async-driver")]
 use runtime_scene::{component_scope, realize, Realized};
 use runtime_scene::{Element, MountCx, Registry};
 #[cfg(feature = "async-driver")]
@@ -61,19 +63,39 @@ use crate::prims::{LazyPrim, PrimCell};
 use crate::style_attach::{attach_style, StyleServices};
 
 // ---------------------------------------------------------------------------
-// Robot-registry parenting for the ASYNC mount
+// Ambient dynamic scope for the ASYNC mount
 //
 // `swap_to` realizes its subtree from a callback, long after the mount's
-// dynamic scope is gone — so without help every state UI it mounts registers as
-// a DETACHED registry root. The elements stay individually addressable, but
-// `get_parent`/`get_children` link them to nothing and any tooling that scopes
-// by a `test_id` ancestor sees an empty subtree. Measured on the `idea-ui-docs`
-// web build (page bodies are all `#[component(lazy)]`): the `page-content`
-// anchor reported 0 children while a detached 399-element root held the page.
+// dynamic scope is gone. Everything the enclosing build published through a
+// thread-local RAII guard is therefore ABSENT when the chunk body realizes,
+// and each such consumer fails in its own way:
 //
-// Fix: capture the ambient parent at MOUNT time and re-establish it around each
-// realize. Shimmed rather than `cfg`-ed at the call sites so the closure body
-// reads the same in both builds.
+// - **Robot registry parent.** Without help every state UI it mounts registers
+//   as a DETACHED registry root. The elements stay individually addressable,
+//   but `get_parent`/`get_children` link them to nothing and any tooling that
+//   scopes by a `test_id` ancestor sees an empty subtree. Measured on the
+//   `idea-ui-docs` web build (page bodies are all `#[component(lazy)]`): the
+//   `page-content` anchor reported 0 children while a detached 399-element
+//   root held the page.
+// - **Navigator guards** (`NavBaseGuard` / `ScreenStateGuard` /
+//   `ScreenRouteGuard`, pushed by `mount_screen` for the synchronous duration
+//   of a screen build). A navigator nested in a lazily-loaded screen body read
+//   an EMPTY base, believed it was the root, and resolved the whole live URL
+//   against its own routes: CrewForge's Projects area at `/projects` mounted
+//   its `/:id` detail screen with `id = "projects"` — every route-level split
+//   containing a navigator failed the same way. `screen_query()` /
+//   `current_screen_route()` inside the body were lost too, the navigator was
+//   just the loudest consumer. Authors cannot work around this: the guards are
+//   not on the author surface, and they would have to be held around the
+//   REALIZE, not the body build.
+//
+// Fix, same shape for both: capture the ambient values at MOUNT time — the
+// lazy primitive itself is an ordinary item in the screen body, so it realizes
+// synchronously inside `mount_screen` where they are all present — and
+// re-establish them around each realize. The robot half is shimmed rather than
+// `cfg`-ed at the call sites so the closure body reads the same in both builds;
+// the navigator half is `AmbientNavContext`, the capture reactive regions
+// already use for the same reason.
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "robot")]
@@ -195,8 +217,11 @@ where
         // clear (freshly empty container — the walker's
         // `show_loading(false)` contract).
         // The element this lazy boundary sits under, as the robot registry saw it
-        // at mount. Re-established around every async realize below.
+        // at mount, and the navigator scope (base / screen state / route) the
+        // enclosing screen build had pushed. Both re-established around every
+        // async realize below — see the module note above.
         let robot_parent = capture_robot_parent();
+        let ambient_nav = capture_ambient_nav_context();
         let swap_to: Rc<dyn Fn(Element)> = {
             let backend = backend.clone();
             let registry = registry.clone();
@@ -208,8 +233,10 @@ where
                     drop(old);
                     backend.borrow_mut().clear_children(&container);
                 }
-                let realized =
-                    with_robot_parent(robot_parent, || realize(&backend, &registry, element));
+                let realized = {
+                    let _nav = ambient_nav.enter();
+                    with_robot_parent(robot_parent, || realize(&backend, &registry, element))
+                };
                 {
                     let mut b = backend.borrow_mut();
                     let mut c = container.clone();

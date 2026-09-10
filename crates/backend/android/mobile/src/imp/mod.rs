@@ -2975,7 +2975,18 @@ impl AndroidBackend {
         layout: runtime_shared::VirtualLayout,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
+        let horizontal = layout.axis.is_horizontal();
         let node = primitives::virtualizer::create(self, callbacks, overscan, layout);
+        // `layout_for_view` is lazy here, so until now this
+        // `RecyclerView` only got a Taffy node when something else asked
+        // for one — and then a bare one: no children, no measure_fn,
+        // 0dp tall in a flex column, invisible unless the author sized
+        // it by hand. Same seeding `scroll_view` gives its outer node
+        // (`overflow: scroll` + `flex_basis: 0` / `flex_grow: 1`). An
+        // author's own height still wins. Pinned by the viewport tests
+        // in runtime-layout.
+        let taffy = self.layout_for_view(&node);
+        self.layout.set_overflow_scroll(taffy, horizontal);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
     }
@@ -3132,6 +3143,12 @@ impl AndroidBackend {
         let mut registry = std::mem::take(&mut self.virtual_grid_registry);
         let node = primitives::virtual_grid::create(self, &mut registry, callbacks, overscan);
         self.virtual_grid_registry = registry;
+        // Two-axis viewport with no Taffy children and no measure_fn:
+        // seed both axes or it is 0dp in a flex column. See
+        // `create_virtualizer_impl`.
+        let taffy = self.layout_for_view(&node);
+        self.layout.set_overflow_scroll(taffy, false);
+        self.layout.set_overflow_scroll(taffy, true);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
     }

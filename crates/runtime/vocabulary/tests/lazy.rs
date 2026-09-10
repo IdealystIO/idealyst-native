@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 
 use host_mock::pump::{install_executor, pending_tasks, pump_tasks};
 use host_mock::Harness;
-use runtime_scene::Element;
+use runtime_scene::{Element, Realized};
 use runtime_vocabulary::glue::primitives::lazy::{lazy_split, LazyBodyThunk, LazyFuture};
 use runtime_vocabulary::glue::IntoElement as _;
 
@@ -534,4 +534,222 @@ fn regression_pending_loader_still_streams_on_native() {
     );
 
     drop(realized);
+}
+
+// ===========================================================================
+// Ambient navigator scope across the async swap
+// ===========================================================================
+
+mod nav_scope {
+    //! A `lazy` boundary inside a screen body realizes its chunk from a
+    //! callback, long after `mount_screen` returned — so the RAII guards
+    //! that build pushed (`NavBaseGuard`, `ScreenStateGuard`,
+    //! `ScreenRouteGuard`) are gone when the body finally builds. The
+    //! handler must capture them at mount and re-enter them around the
+    //! realize; these tests pin each consumer that broke when it didn't.
+
+    use super::*;
+    use runtime_shared::primitives::navigator::{
+        current_screen_route, screen_query, set_initial_path, NavCommand, Route, RouteParams,
+    };
+    use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, swap_navigator, view};
+    use runtime_vocabulary::handlers::nav_url_sync::{
+        clear_url_sync_service, install_url_sync_service, CommittedKind, NavSyncRegistration,
+        UrlSyncService,
+    };
+    use runtime_vocabulary::prims::StackNav;
+    use runtime_world::inject;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct IdParams {
+        id: String,
+    }
+
+    impl RouteParams for IdParams {
+        fn to_path(&self, pattern: &str) -> String {
+            pattern.replace(":id", &self.id)
+        }
+        fn from_segments(
+            segments: &std::collections::HashMap<String, String>,
+        ) -> Option<Self> {
+            segments.get("id").map(|id| IdParams { id: id.clone() })
+        }
+    }
+
+    /// The root swap navigator's section — CrewForge's sidebar area.
+    const SECTION: Route<()> = Route::new("section", "/section");
+    /// The nested stack inside the lazily-loaded area body: an index
+    /// route and a parameterized detail route, the shape that turned
+    /// `/projects` into "project not found".
+    const LIST: Route<()> = Route::new("list", "");
+    const ITEM: Route<IdParams> = Route::new("item", "/:id");
+
+    /// A URL-bearing host with an address bar that reads `live` — the
+    /// second initial-resolution source, which a navigator mounting
+    /// AFTER boot (a lazy body is exactly that) consults once the root
+    /// has consumed the launch slot. Declines registration so no sync
+    /// hooks fire; only `current_url` matters here.
+    struct AddressBar(String);
+
+    impl UrlSyncService for AddressBar {
+        fn register(&self, _reg: NavSyncRegistration) -> Option<u64> {
+            None
+        }
+        fn current_url(&self) -> Option<String> {
+            Some(self.0.clone())
+        }
+        fn before_command(&self, _id: u64, _cmd: &NavCommand) -> bool {
+            false
+        }
+        fn after_commit(&self, _id: u64, _kind: CommittedKind) {}
+        fn deregister(&self, _id: u64) {}
+    }
+
+    /// What the lazily-loaded body observed of its enclosing screen's
+    /// ambient scope when it finally built.
+    #[derive(Default)]
+    struct Seen {
+        route: Cell<Option<&'static str>>,
+        query_tab: RefCell<Option<String>>,
+        stack: RefCell<Option<StackNav>>,
+    }
+
+    /// Mount `swap(/section) → screen body = lazy → stack(list "", item
+    /// /:id)` with the app launched at `url`, land the chunk, and return
+    /// what the body saw.
+    fn mount_section_with_lazy_stack(url: &str) -> (Harness, Realized<u32>, Rc<Seen>) {
+        let h = harness(true);
+        let ready = Rc::new(Cell::new(false));
+        let seen: Rc<Seen> = Rc::default();
+
+        // Cold load at `url`: the launch slot answers the root's initial
+        // resolution; the address bar answers everything mounted later.
+        set_initial_path(Some(url.to_string()));
+        install_url_sync_service(Rc::new(AddressBar(url.to_string())));
+
+        let el = {
+            let seen = seen.clone();
+            let ready = ready.clone();
+            swap_navigator(&SECTION)
+                .screen(SECTION, move |_| {
+                    let seen = seen.clone();
+                    lazy_split(gated_loader(ready.clone(), move || {
+                        let seen = seen.clone();
+                        Ok(Box::new(move || {
+                            // The body build itself — where `screen_state`
+                            // / `current_screen_route` / `use_focus` run in
+                            // an author's `#[component(lazy)]`.
+                            seen.route.set(current_screen_route());
+                            *seen.query_tab.borrow_mut() =
+                                screen_query().get("tab").map(str::to_string);
+                            let seen = seen.clone();
+                            stack_navigator(&LIST)
+                                .screen(LIST, |_| text_el("list"))
+                                .screen(ITEM, |_p: IdParams| text_el("item"))
+                                .layout(move || {
+                                    *seen.stack.borrow_mut() = inject::<StackNav>();
+                                    view().child(navigator_outlet()).build()
+                                })
+                                .build()
+                        }) as LazyBodyThunk)
+                    }))
+                    .placeholder(|| text_el("loading"))
+                    .into_element()
+                })
+                .layout(|| view().child(navigator_outlet()).build())
+                .build()
+        };
+        let realized = h.mount(el);
+        h.world.flush();
+
+        // Land the chunk — the body realizes from the swap callback, with
+        // `mount_screen` long returned.
+        ready.set(true);
+        pump_tasks();
+        h.world.flush();
+        assert!(
+            h.ops().iter().any(|o| o.contains("text \"list\"") || o.contains("text \"item\"")),
+            "the nested navigator mounted a screen: {:?}",
+            h.ops()
+        );
+        (h, realized, seen)
+    }
+
+    /// Regression: a navigator inside a lazily-loaded screen body must
+    /// resolve the URL relative to the screen it sits in, not as the
+    /// root.
+    ///
+    /// Before the fix the nested stack read `current_nav_base() == ""`
+    /// at realize, treated the whole address bar as its own URL, and
+    /// matched `/section` against `/:id` with `id = "section"` — every
+    /// CrewForge area with a nested navigator opened on its detail
+    /// screen ("Project not found") the moment the area went lazy, 122
+    /// of 308 e2e specs. The three areas without a nested navigator
+    /// were unaffected, which is what pointed at the base.
+    #[test]
+    fn regression_navigator_inside_a_lazy_body_keeps_the_screens_base() {
+        let (h, realized, seen) = mount_section_with_lazy_stack("/section");
+
+        let stack = seen.stack.borrow().clone().expect("the nested stack mounted");
+        assert_eq!(
+            stack.active_route.get(),
+            "list",
+            "`/section` is the section's INDEX — the nested stack must not \
+             read it as `/:id` with id = \"section\""
+        );
+        assert_eq!(
+            stack.active_path.get(),
+            "/section",
+            "the nested stack composes its paths onto the screen's base"
+        );
+        assert!(
+            h.ops().iter().any(|o| o.contains("text \"list\"")),
+            "the list screen is what mounted: {:?}",
+            h.ops()
+        );
+
+        drop(realized);
+        clear_url_sync_service();
+        set_initial_path(None);
+    }
+
+    /// The other two guards `mount_screen` pushes are lost the same way
+    /// and must be restored the same way: the body sees the route name
+    /// and the query the navigation carried, exactly as an inline body
+    /// would.
+    #[test]
+    fn regression_lazy_body_sees_its_screens_route_and_query() {
+        let (_h, realized, seen) = mount_section_with_lazy_stack("/section?tab=notes");
+
+        assert_eq!(
+            seen.route.get(),
+            Some("section"),
+            "`current_screen_route()` inside a lazy body names the enclosing screen"
+        );
+        assert_eq!(
+            seen.query_tab.borrow().as_deref(),
+            Some("notes"),
+            "`screen_query()` inside a lazy body is the query the screen was navigated with"
+        );
+
+        drop(realized);
+        clear_url_sync_service();
+        set_initial_path(None);
+    }
+
+    /// A deep link BELOW the section still reaches the nested detail
+    /// route — the base restore must not over-correct into "always the
+    /// index".
+    #[test]
+    fn deep_link_below_the_section_still_selects_the_nested_detail() {
+        let (_h, realized, seen) = mount_section_with_lazy_stack("/section/p1");
+
+        let stack = seen.stack.borrow().clone().expect("the nested stack mounted");
+        assert_eq!(stack.active_route.get(), "item");
+        assert_eq!(stack.active_path.get(), "/section/p1");
+
+        drop(realized);
+        clear_url_sync_service();
+        set_initial_path(None);
+    }
 }

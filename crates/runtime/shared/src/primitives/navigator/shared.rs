@@ -510,14 +510,20 @@ pub fn join_path(base: &str, rel: &str) -> String {
     }
 }
 
-/// Snapshot of the ambient navigator context (nav control, screen
-/// state, screen route) at a point in the build. Reactive regions
-/// (`when`/`switch`/`for`) capture this when first built — inside the
-/// screen's ambient scope — and re-establish it around every rebuild,
-/// so a subtree rebuilt by a signal change (e.g. a `link` whose active
-/// styling flips) keeps the same ambient navigator it was born with.
-/// Without this, a reactively-remounted `link` captures `None` and
-/// silently stops navigating.
+/// Snapshot of the ambient navigator context (nav control, nav base,
+/// screen state, screen route) at a point in the build. Anything that
+/// realizes a subtree LATER than the screen build that lexically
+/// contains it — a reactive region (`when`/`switch`/`for`) rebuilding
+/// on a signal change, a `lazy` boundary swapping its chunk body in
+/// after the fetch lands — captures this synchronously while the
+/// screen's guards are still on the stack and re-establishes it around
+/// each deferred realize, so the subtree sees the same ambient values
+/// it would have seen had it been built inline. Without this a
+/// reactively-remounted `link` captures `None` and silently stops
+/// navigating, and a navigator inside a lazily-loaded screen body reads
+/// an EMPTY base, believes it is the root, and resolves the whole URL
+/// against its own routes (`/projects` → its `/:id` route with
+/// `id = "projects"`).
 ///
 /// The navigator control is held WEAK on purpose: the navigator owns
 /// the screen scopes, a screen scope owns the reactive region's Effect,
@@ -528,9 +534,12 @@ pub fn join_path(base: &str, rel: &str) -> String {
 #[derive(Clone, Default)]
 pub struct AmbientNavContext {
     nav: Option<std::rc::Weak<NavigatorControl>>,
-    // `Option` = "was a screen-state guard present at capture". An empty
-    // `QueryParams` is a real value (a navigation with no state), so it
-    // must stay distinguishable from "no guard, don't re-push one".
+    // `Option` = "was a guard present at capture" for each of these. An
+    // empty `QueryParams` is a real value (a navigation with no state)
+    // and `""` is a real base (a screen at the root navigator's index),
+    // so both must stay distinguishable from "no guard, don't re-push
+    // one".
+    base: Option<String>,
     state: Option<QueryParams>,
     route: Option<&'static str>,
 }
@@ -541,6 +550,7 @@ pub struct AmbientNavContext {
 pub fn capture_ambient_nav_context() -> AmbientNavContext {
     AmbientNavContext {
         nav: AMBIENT_NAV.with(|s| s.borrow().last().map(Rc::downgrade)),
+        base: NAV_BASE.with(|s| s.borrow().last().cloned()),
         state: SCREEN_STATE.with(|s| s.borrow().last().cloned()),
         route: SCREEN_ROUTE.with(|s| s.borrow().last().copied()),
     }
@@ -550,14 +560,15 @@ impl AmbientNavContext {
     /// True when there is no navigator context to restore — lets callers
     /// cheaply skip when used outside any navigator.
     pub fn is_empty(&self) -> bool {
-        self.nav.is_none() && self.state.is_none() && self.route.is_none()
+        self.nav.is_none() && self.base.is_none() && self.state.is_none() && self.route.is_none()
     }
 
-    /// Re-push the captured context. The returned guard pops all three
+    /// Re-push the captured context. The returned guard pops all four
     /// stacks on drop. Hold it across the subtree rebuild.
     pub fn enter(&self) -> AmbientNavContextGuard {
         AmbientNavContextGuard {
             _nav: self.nav.as_ref().and_then(|w| w.upgrade()).map(AmbientNavGuard::push),
+            _base: self.base.clone().map(NavBaseGuard::push),
             _state: self.state.clone().map(ScreenStateGuard::push),
             _route: self.route.map(ScreenRouteGuard::push),
         }
@@ -568,8 +579,56 @@ impl AmbientNavContext {
 /// stack, so order is irrelevant for correctness.
 pub struct AmbientNavContextGuard {
     _nav: Option<AmbientNavGuard>,
+    _base: Option<NavBaseGuard>,
     _state: Option<ScreenStateGuard>,
     _route: Option<ScreenRouteGuard>,
+}
+
+#[cfg(test)]
+mod ambient_nav_context_tests {
+    use super::*;
+
+    /// A screen-time capture re-entered from a callback must restore the
+    /// nav base along with the state and route — the three values
+    /// `mount_screen` pushes, all of which a deferred realize otherwise
+    /// loses. Pins the base half: before it was captured, a navigator
+    /// realized inside `enter()` still read `""`.
+    #[test]
+    fn regression_enter_restores_the_nav_base_captured_at_screen_build() {
+        let captured = {
+            let _base = NavBaseGuard::push("/projects".to_string());
+            let _state = ScreenStateGuard::push(QueryParams::default());
+            let _route = ScreenRouteGuard::push("projects");
+            capture_ambient_nav_context()
+        };
+        assert_eq!(current_nav_base(), "", "guards popped with the build");
+        assert_eq!(current_screen_route(), None);
+
+        {
+            let _g = captured.enter();
+            assert_eq!(
+                current_nav_base(),
+                "/projects",
+                "a deferred realize must see the base the screen build pushed"
+            );
+            assert_eq!(current_screen_route(), Some("projects"));
+        }
+        assert_eq!(current_nav_base(), "", "enter's guard pops the base it pushed");
+        assert_eq!(current_screen_route(), None);
+    }
+
+    /// `""` is the root navigator's index — a REAL base that must be
+    /// re-pushed, distinct from "captured outside any screen build".
+    #[test]
+    fn root_index_base_is_captured_as_a_real_value() {
+        let inside = {
+            let _base = NavBaseGuard::push(String::new());
+            capture_ambient_nav_context()
+        };
+        assert!(!inside.is_empty(), "an empty base is still a captured base");
+        let outside = capture_ambient_nav_context();
+        assert!(outside.is_empty(), "no guard at capture → nothing to restore");
+    }
 }
 
 // ---------------------------------------------------------------------------

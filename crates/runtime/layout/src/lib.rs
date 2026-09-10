@@ -1022,9 +1022,13 @@ impl LayoutTree {
             // available main-axis space from the parent" rather than
             // "be as big as your content". Without this the ScrollView
             // would size itself to its content (and so have zero
-            // scrollable area). Author styles can still override these
-            // — `set_style` preserves Taffy state and only writes the
-            // fields their `StyleRules` explicitly set.
+            // scrollable area). `set_style` is a partial merge, so an
+            // author can still pin the size — but NOT with a bare
+            // `height`: in a flex column `flex_basis` shadows `height`
+            // for the base size (CSS rule), so `height: 200` on a seeded
+            // viewport still fills. `max_height` bounds it; `flex_basis`
+            // with `flex_grow: 0` pins it. Pinned by
+            // `an_author_pins_a_seeded_viewport_with_max_height_or_flex_basis_not_height`.
             style.flex_basis = taffy::Dimension::from_length(0.0);
             style.flex_grow = 1.0;
             style
@@ -1708,6 +1712,135 @@ mod tests {
     /// so wide columns can shrink and wrap. This is the exact behavior
     /// the SDK's native table relies on; it regressed when columns were
     /// split evenly (`1fr`) or overflowed (`auto` without the reset).
+
+    // -----------------------------------------------------------------
+    // Viewport seeding — what `set_overflow_scroll` is FOR.
+    //
+    // Every backend that renders a scroll viewport (`scroll_view`, the
+    // virtualizer, the virtual grid) registers a Taffy node for it and
+    // must seed that node. These pin what happens when one does not, so
+    // the next viewport a backend grows cannot skip the call unnoticed.
+    // The two failure modes are opposite in symptom and identical in
+    // cause, which is why they went unrecognised as the same bug.
+    // -----------------------------------------------------------------
+
+    /// A bounded 725pt column with a 60pt header and the viewport below.
+    /// `measure` is what the viewport reports as its own content size;
+    /// the iOS virtualizer installs one (total item extent), the grids
+    /// and the macOS/Android virtualizers install none.
+    fn viewport_in_bounded_column(measure: Option<MeasureFn>, seed: impl Fn(&mut LayoutTree, LayoutNode)) -> Frame {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let mut rs = StyleRules::default();
+        rs.width = Some(runtime_shared::Length::Px(390.0).into());
+        rs.height = Some(runtime_shared::Length::Px(725.0).into());
+        t.set_style(root, &rs);
+        let header = t.new_node();
+        let mut hs = StyleRules::default();
+        hs.height = Some(runtime_shared::Length::Px(60.0).into());
+        t.set_style(header, &hs);
+        let viewport = t.new_node();
+        if let Some(m) = measure {
+            t.set_measure_fn(viewport, m);
+        }
+        seed(&mut t, viewport);
+        t.add_child(root, header);
+        t.add_child(root, viewport);
+        t.compute(root, 390.0, 725.0);
+        t.frame_of(viewport)
+    }
+
+    fn reports_content(total: f32) -> MeasureFn {
+        Rc::new(move |known: Size<Option<f32>>, _: Size<AvailableSpace>| Size {
+            width: known.width.unwrap_or(390.0),
+            height: total,
+        })
+    }
+
+    /// Regression (iOS virtualizer, 1700b1a3): a viewport that reports
+    /// its content extent through a measure_fn and is NOT seeded takes
+    /// that extent as its automatic minimum, grows to it, and pushes the
+    /// page past its scrollport. A 50-row list in a 725pt parent took a
+    /// 2330pt frame. Seeded, the parent bounds it and it scrolls itself.
+    #[test]
+    fn regression_unseeded_viewport_with_measure_fn_overflows_its_parent() {
+        let unseeded = viewport_in_bounded_column(Some(reports_content(2330.0)), |_, _| {});
+        assert_eq!(unseeded.height, 2330.0, "grows to its content and overflows the 725pt parent");
+
+        let seeded = viewport_in_bounded_column(Some(reports_content(2330.0)), |t, n| {
+            t.set_overflow_scroll(n, false)
+        });
+        assert_eq!(seeded.height, 665.0, "725 minus the 60pt header: bounded by the parent");
+    }
+
+    /// The other failure mode, same cause: a viewport with NO measure_fn
+    /// (the virtual grids; the macOS and Android virtualizers) and no
+    /// seeding has no content to grow to and no flex to fill with, so it
+    /// collapses to 0pt and is invisible unless the author sizes it by
+    /// hand. Seeded, it fills the parent exactly as the measured one
+    /// does — the seeding is what makes every viewport size the same
+    /// way regardless of how it reports content.
+    #[test]
+    fn regression_unseeded_viewport_without_measure_fn_collapses_to_zero() {
+        let unseeded = viewport_in_bounded_column(None, |_, _| {});
+        assert_eq!(unseeded.height, 0.0, "nothing to grow to, nothing to fill with");
+
+        let seeded = viewport_in_bounded_column(None, |t, n| t.set_overflow_scroll(n, false));
+        assert_eq!(seeded.height, 665.0);
+    }
+
+    /// A two-axis viewport (the virtual grids) is seeded once per axis.
+    /// The second call must not disturb the cross-axis stretch or the
+    /// fill the first call established.
+    #[test]
+    fn two_axis_viewport_is_seeded_on_both_and_still_fills() {
+        let f = viewport_in_bounded_column(None, |t, n| {
+            t.set_overflow_scroll(n, false);
+            t.set_overflow_scroll(n, true);
+        });
+        assert_eq!((f.width, f.height), (390.0, 665.0));
+    }
+
+    /// An author's own size still wins over the seed: `set_style` is a
+    /// partial merge, so a viewport given `height: 200` stays 200 after
+    /// seeding rather than being forced to fill.
+    /// How an author pins a seeded viewport to an explicit size — and
+    /// how they do NOT. The seed is `flex_basis: 0` + `flex_grow: 1`, and
+    /// in a flex column `flex_basis` shadows `height` for the main-axis
+    /// base size, exactly as CSS specifies. So a bare `height: 200` on a
+    /// `scroll_view` or a virtualizer in a column still fills the parent
+    /// — it always has for `scroll_view`; the virtualizers now match.
+    /// `max_height` is the plain way to bound one; `flex_basis` with
+    /// `flex_grow: 0` is the flex-native way.
+    #[test]
+    fn an_author_pins_a_seeded_viewport_with_max_height_or_flex_basis_not_height() {
+        fn seeded_with(f: impl Fn(&mut StyleRules)) -> f32 {
+            viewport_in_bounded_column(None, |t, n| {
+                t.set_overflow_scroll(n, false);
+                let mut s = StyleRules::default();
+                f(&mut s);
+                t.set_style(n, &s);
+            })
+            .height
+        }
+        let px = |v: f32| Some(runtime_shared::Length::Px(v).into());
+
+        assert_eq!(seeded_with(|s| s.max_height = px(200.0)), 200.0, "max_height bounds it");
+        assert_eq!(
+            seeded_with(|s| {
+                s.flex_basis = px(200.0);
+                s.flex_grow = Some(0.0f32.into());
+            }),
+            200.0,
+            "flex_basis + flex_grow: 0 pins it"
+        );
+        assert_eq!(
+            seeded_with(|s| s.height = px(200.0)),
+            665.0,
+            "a bare height is shadowed by the flex_basis: 0 seed and it still fills"
+        );
+    }
+
     #[test]
     fn grid_text_columns_match_table_layout_auto() {
         // single-line (max-content) width and longest-word (min-content)

@@ -5310,7 +5310,11 @@ impl MacosBackend {
         // Taffy owns the scroller's OUTER frame; cell frames live in
         // content space and are the grid engine's, so cells are
         // deliberately not Taffy nodes.
-        let _ = self.layout_for_view(&view);
+        let taffy = self.layout_for_view(&view);
+        // Two-axis viewport, no Taffy children, no measure_fn: seed both
+        // axes or it is 0pt in a flex column. See `create_virtualizer_impl`.
+        self.layout.set_overflow_scroll(taffy, false);
+        self.layout.set_overflow_scroll(taffy, true);
         let node = MacosNode::View(view);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
@@ -5428,6 +5432,7 @@ impl MacosBackend {
         // from a reuse pool, per-item Scope released on
         // displayEnd / reuse / teardown. Single-section lists +
         // uniform grids (`lanes > 1`).
+        let horizontal = layout.axis.is_horizontal();
         let view = virtualizer::create(
             self.mtm,
             &mut self.virtualizer_instances,
@@ -5435,7 +5440,16 @@ impl MacosBackend {
             overscan,
             layout,
         );
-        let _ = self.layout_for_view(&view);
+        let taffy = self.layout_for_view(&view);
+        // This IS an `NSScrollView` — the very class `create_scroll_view`
+        // seeds a few hundred lines up — and a viewport with no Taffy
+        // children and no measure_fn is 0pt tall in a flex column until
+        // seeded: nothing to grow to, nothing to fill with. `overflow:
+        // scroll` + `flex_basis: 0` / `flex_grow: 1`, exactly as every
+        // other viewport. An author's own height still wins (`set_style`
+        // is a partial merge). Pinned by the viewport tests in
+        // runtime-layout.
+        self.layout.set_overflow_scroll(taffy, horizontal);
         let node = MacosNode::View(view);
         a11y::apply(
             &node,

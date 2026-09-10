@@ -4278,7 +4278,17 @@ impl IosBackend {
         // owned by the grid engine (content space), so cells are
         // deliberately not Taffy nodes — same split the virtualizer
         // uses for its collection-view cells.
-        let _ = self.layout_for_view(&view);
+        let layout = self.layout_for_view(&view);
+        // A viewport with no Taffy children and no measure_fn has
+        // nothing to grow to and nothing to fill with: unseeded it is
+        // 0pt tall in a flex column and invisible unless the author
+        // sizes it by hand. Same seeding as the virtualizer above, on
+        // BOTH axes — this scroller travels in two directions. Pinned
+        // by `regression_unseeded_viewport_without_measure_fn_collapses_to_zero`
+        // and `two_axis_viewport_is_seeded_on_both_and_still_fills`
+        // in runtime-layout.
+        self.layout.set_overflow_scroll(layout, false);
+        self.layout.set_overflow_scroll(layout, true);
         let node = IosNode::View(view);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node

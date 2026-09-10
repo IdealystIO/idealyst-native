@@ -43,19 +43,31 @@ each entry links to its migration guide.
   arms moved into the un-gated `layout_policy` so they are one arm-set
   rather than two, and are covered from any host.
 
-- **A virtualizer is now seeded as a scroll viewport.** It never called
-  `set_overflow_scroll`, whose own docs make it mandatory for any backend
-  rendering a viewport. Without it the node's automatic minimum is its
-  CONTENT, so a `UICollectionView` in a flex column grew to the summed
-  height of every item, overflowed its bounded parent, and had nothing
-  left to scroll — the list then windowed against a viewport the size of
-  its own content, mounted all of it, and virtualizing bought nothing.
-  Measured on a 50-row list in a 725pt parent: the node took a frame of
-  2330pt and pushed the page past its scrollport; it now takes 694pt and
-  scrolls itself at 57fps. **iOS only so far** — macOS and Android's
-  virtualizers, and `create_virtual_grid` on iOS, have the same missing
-  call and are unchanged, because this was verified on the iOS simulator
-  alone.
+- **Every virtualizer and virtual grid is now seeded as a scroll
+  viewport, on every native backend.** None called `set_overflow_scroll`,
+  whose own docs make it mandatory for a viewport. The consequence
+  depended on whether the node reported a content size: the iOS
+  virtualizer does (a measure_fn returning the total item extent), so it
+  took its content as its automatic minimum and grew to it — a 50-row
+  list in a 725pt parent took a 2330pt frame, pushed the page past its
+  scrollport, and windowed against a viewport the size of its own content,
+  so virtualizing bought nothing. The iOS grid and the macOS and Android
+  virtualizers and grids report none, so they went the other way: 0pt
+  tall in a flex column, invisible unless the author sized them by hand.
+  Same cause, opposite symptoms, which is why they went unrecognised as
+  one bug. Seeded, both shapes converge on filling the parent — the iOS
+  list now takes 694pt and scrolls itself at 57fps.
+
+  The mechanism is pure Taffy and is pinned in `runtime-layout` for both
+  shapes, the two-axis grids, and the override rule: an author pins a
+  seeded viewport with `max_height`, or `flex_basis` + `flex_grow: 0`. A
+  bare `height` is shadowed by the `flex_basis: 0` seed, as CSS specifies
+  — `scroll_view` has always behaved this way, and the virtualizers now
+  match. **On macOS and Android this is a behaviour change**: a list that
+  was given `height: N` to work around the 0pt collapse will now fill its
+  parent; use `max_height` to keep the bound. (`set_overflow_scroll`'s
+  own comment used to claim a bare `height` overrode the seed. It does
+  not, and never did.)
 
 - **`observe_scroll_end` could empty a collection view.** It installed its
   own delegate unconditionally, and a `UICollectionView`'s delegate is
