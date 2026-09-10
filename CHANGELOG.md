@@ -30,6 +30,19 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **The Android backend compiles for `aarch64-linux-android` again.**
+  `Length::Full` was added without three matches in `imp/style.rs`
+  learning about it — two resolving `width`/`height` to `LayoutParams`,
+  one over `Transform::Translate*` — so the whole backend had been dark
+  since 2026-08-28. `cargo test` could not see it: `imp/` is
+  `target_os = "android"`, so a host build skips the file entirely.
+  `Full` folds in with `Auto` at all three, which is what the
+  framework's own shared mapping already does
+  (`runtime_layout`: `FwLength::Auto | FwLength::Full => Dimension::Auto`)
+  and what iOS and macOS already do for transforms. The `LayoutParams`
+  arms moved into the un-gated `layout_policy` so they are one arm-set
+  rather than two, and are covered from any host.
+
 - **A virtualizer is now seeded as a scroll viewport.** It never called
   `set_overflow_scroll`, whose own docs make it mandatory for any backend
   rendering a viewport. Without it the node's automatic minimum is its

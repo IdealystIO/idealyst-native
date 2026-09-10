@@ -131,15 +131,25 @@ pub(crate) fn apply_rules(
         // token signal for any tokenized width/height — native has no
         // CSS-variable equivalent, so we always materialize to the
         // current value.
-        let w_lp = rules.width.as_ref().map(|tok| match tok.resolve() {
-            runtime_shared::Length::Px(v) => dp_to_px(env, &view, v),
-            runtime_shared::Length::Percent(_) => -1,
-            runtime_shared::Length::Auto => -2,
+        // The non-`Px` arms live in `layout_policy` so they are one
+        // arm-set instead of two, and host-testable: these were the
+        // matches that never learned about `Length::Full`, and the whole
+        // backend stopped compiling for its own target as a result.
+        let w_lp = rules.width.as_ref().map(|tok| {
+            let l = tok.resolve();
+            crate::layout_policy::non_px_layout_param(&l)
+                .unwrap_or_else(|| match l {
+                    runtime_shared::Length::Px(v) => dp_to_px(env, &view, v),
+                    _ => unreachable!("non_px_layout_param covers every non-Px length"),
+                })
         });
-        let h_lp = rules.height.as_ref().map(|tok| match tok.resolve() {
-            runtime_shared::Length::Px(v) => dp_to_px(env, &view, v),
-            runtime_shared::Length::Percent(_) => -1,
-            runtime_shared::Length::Auto => -2,
+        let h_lp = rules.height.as_ref().map(|tok| {
+            let l = tok.resolve();
+            crate::layout_policy::non_px_layout_param(&l)
+                .unwrap_or_else(|| match l {
+                    runtime_shared::Length::Px(v) => dp_to_px(env, &view, v),
+                    _ => unreachable!("non_px_layout_param covers every non-Px length"),
+                })
         });
         // getLayoutParams() may return null if the view hasn't been
         // attached to a parent yet. Build a fresh
@@ -508,8 +518,11 @@ fn apply_transform(
                     pct_y = Some(*v);
                     style_writes_ty = true;
                 }
-                Transform::TranslateX(Length::Auto) | Transform::TranslateY(Length::Auto) => {
-                    // `Auto` makes no sense for translate — treat as 0.
+                Transform::TranslateX(Length::Auto | Length::Full)
+                | Transform::TranslateY(Length::Auto | Length::Full) => {
+                    // Neither makes sense for translate — treat as 0.
+                    // `Full` is a corner-radius idea, and iOS and macOS
+                    // group it with `Auto` here for the same reason.
                 }
                 Transform::Scale(v) => {
                     sx = *v;

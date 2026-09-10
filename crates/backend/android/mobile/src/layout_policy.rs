@@ -37,6 +37,73 @@ pub(crate) fn insert_needs_layout_pass(
     is_portal_parent || parent_attached_to_window
 }
 
+/// Android `ViewGroup.LayoutParams` sentinels. Named because `-1` and `-2`
+/// in a size field are the two magic numbers this file exists to keep honest.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const MATCH_PARENT: i32 = -1;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) const WRAP_CONTENT: i32 = -2;
+
+/// What a style `width`/`height` becomes in `LayoutParams`, for every
+/// `Length` that is not `Px` (which needs a live `View` for the dp→px
+/// conversion and so is resolved by the caller).
+///
+/// `Full` maps to `WRAP_CONTENT`, with `Auto`. It is a corner-radius
+/// concept — "half the shorter side, resolved when painted" — and carries
+/// no meaning as a box dimension, so the framework's own shared mapping
+/// in `runtime_layout` already folds the two together
+/// (`FwLength::Auto | FwLength::Full => Dimension::Auto`). Android agreeing
+/// is what keeps the same style tree the same size on every backend.
+///
+/// This exists as a function rather than a `match` at each call site
+/// because it was two hand-rolled matches, and when `Length::Full` was
+/// added they were the sites that did not learn about it — the Android
+/// backend stopped compiling for `aarch64-linux-android` and stayed that
+/// way. One arm-set, host-testable, is the fix that does not rot.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn non_px_layout_param(length: &runtime_shared::Length) -> Option<i32> {
+    match length {
+        runtime_shared::Length::Px(_) => None,
+        runtime_shared::Length::Percent(_) => Some(MATCH_PARENT),
+        runtime_shared::Length::Auto | runtime_shared::Length::Full => Some(WRAP_CONTENT),
+    }
+}
+
+#[cfg(test)]
+mod length_param_tests {
+    use super::*;
+    use runtime_shared::Length;
+
+    /// Regression: `Length::Full` was added without these two matches
+    /// learning about it, and `backend-android-mobile` stopped compiling
+    /// for `aarch64-linux-android` — a whole backend dark, with the break
+    /// invisible to `cargo test` because `imp/style.rs` is android-only.
+    ///
+    /// It folds in with `Auto` because that is what the framework's own
+    /// shared mapping does (`runtime_layout`:
+    /// `FwLength::Auto | FwLength::Full => Dimension::Auto`). `Full` is a
+    /// corner-radius idea with no meaning as a box dimension.
+    #[test]
+    fn regression_full_sizes_like_auto() {
+        assert_eq!(non_px_layout_param(&Length::Full), Some(WRAP_CONTENT));
+        assert_eq!(
+            non_px_layout_param(&Length::Full),
+            non_px_layout_param(&Length::Auto),
+            "Full and Auto must not diverge as dimensions"
+        );
+    }
+
+    #[test]
+    fn percent_fills_the_parent_and_px_defers_to_the_caller() {
+        assert_eq!(non_px_layout_param(&Length::Percent(50.0)), Some(MATCH_PARENT));
+        assert_eq!(
+            non_px_layout_param(&Length::Px(12.0)),
+            None,
+            "Px needs a live View for dp->px, so the caller resolves it"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::insert_needs_layout_pass;
