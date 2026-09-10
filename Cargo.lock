@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "host-mock",
  "mcp-catalog",
