@@ -75,6 +75,14 @@ struct RowScope<N> {
 ///   `create_virtualizer` (the backend is mutably borrowed there; the
 ///   old core had the identical constraint — web/iOS/Android all defer
 ///   the initial window fill).
+/// - **`release_item` inside `release_virtualizer` is allowed, and is a
+///   no-op.** The backend IS mutably borrowed there, so the mirror of
+///   the `mount_item` rule would forbid it — but dropping the callbacks
+///   bundle releases the rows whether the backend asks or not, so the
+///   rule was unenforceable. The teardown probe therefore drains the
+///   scope map before it takes the borrow: by the time any backend
+///   releases its cells there is nothing left to free, and no row
+///   teardown can re-enter `backend.borrow_mut()`. See the probe.
 /// - **Rows realize DETACHED.** Nothing here attaches a row to the
 ///   scene tree or assumes in-tree layout — macOS mounts rows as
 ///   Taffy-orphan cells laid out via `layout_detached_root`
@@ -271,16 +279,39 @@ where
         attach_style(&backend, &node, style);
     }
 
-    // Teardown: tell the backend to drop its listeners + callback
-    // handles so queued scroll/resize events can't call into freed
-    // per-item scopes ("signal used after its scope was dropped") —
-    // the old `VirtualizerHandleCleanup` empty-Effect, as a probe.
+    // Teardown: drop the live rows, then release the backend's side.
     // Registered AFTER attach_style so teardown order matches the old
     // effect-creation order (unstyle first, then release).
     {
         let b = backend.clone();
         let n = node.clone();
+        let scopes = scopes.clone();
         on_teardown(move || {
+            // Kill every LIVE row FIRST, with no backend borrow held.
+            //
+            // A row's nodes are styled, and a styled node's own teardown
+            // takes `backend.borrow_mut()` (`style_attach`'s
+            // `on_node_unstyled`). The callbacks bundle OWNS this map,
+            // and every backend drops that bundle inside
+            // `release_virtualizer` — iOS also calls `release_item` for
+            // each mounted cell on the way — so before this drain the
+            // live rows died *under* the borrow taken on the next line.
+            // On iOS the panic then crossed an ObjC frame, which cannot
+            // unwind, so it escalated to `abort`: rebuilding any subtree
+            // containing a `flat_list` (typing in a search box above the
+            // list is enough) took the whole app down.
+            //
+            // Draining here also makes the backends' own `release_item`
+            // calls no-ops — the map is empty by the time they run — so
+            // no backend has to change and none can reintroduce the
+            // abort by releasing its cells eagerly.
+            let rows = std::mem::take(&mut *scopes.borrow_mut());
+            drop(rows);
+
+            // Now the backend drops its listeners + callback handles so
+            // queued scroll/resize events can't call into freed per-item
+            // scopes ("signal used after its scope was dropped") — the
+            // old `VirtualizerHandleCleanup` empty-Effect, as a probe.
             b.borrow_mut().release_virtualizer(&n);
         });
     }

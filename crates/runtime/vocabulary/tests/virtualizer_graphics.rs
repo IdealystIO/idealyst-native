@@ -14,7 +14,7 @@ use runtime_shared::primitives::graphics::OnResizeEvent;
 use runtime_shared::primitives::virtualizer::{Axis, ItemSize, Lanes, VirtualLayout};
 use runtime_shared::{StyleRules, Tokenized};
 use runtime_scene::realize;
-use runtime_vocabulary::builders::{graphics, text, virtualizer};
+use runtime_vocabulary::builders::{graphics, text, view, virtualizer};
 use runtime_world::signal;
 
 fn px(w: f32) -> StyleRules {
@@ -317,6 +317,81 @@ fn multi_root_row_panics_with_diagnostic() {
     assert!(
         msg.contains("single-root"),
         "diagnostic names the contract: {msg}"
+    );
+}
+
+/// **Hard-abort regression.** A live row must not survive into the
+/// release probe's `backend.borrow_mut()`.
+///
+/// A row's nodes are styled, and a styled node's teardown takes that
+/// same borrow (`style_attach`'s `on_node_unstyled`). The callbacks
+/// bundle owns the handler's scope map, and every backend drops the
+/// bundle inside `release_virtualizer` — iOS additionally calls
+/// `release_item` for each mounted cell first — so the rows used to die
+/// UNDER the borrow. "RefCell already borrowed", raised across an ObjC
+/// frame that cannot unwind, is an `abort`: rebuilding any subtree
+/// holding a `flat_list` killed the app, and a search box above the list
+/// is enough to rebuild it.
+///
+/// Two observables, both of them the fix:
+/// - every live row is unstyled BEFORE `release_virtualizer` reaches the
+///   backend (pre-fix the rows outlived the probe entirely — the mock
+///   keeps its bundle, so they were never freed at all), and
+/// - a backend's own late `release_item` finds nothing left to free, so
+///   an eager shutdown loop can't reintroduce the abort.
+#[test]
+fn regression_live_rows_die_before_the_release_probe_takes_the_backend() {
+    let h = harness();
+    let world = h.world.clone();
+    let realized = world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtualizer(
+                || 10,
+                |i| i as u64,
+                ItemSize::Known(Rc::new(|_| 40.0)),
+                |idx| {
+                    view()
+                        .style(px(100.0))
+                        .children(vec![text().content(format!("row {idx}")).build()])
+                        .build()
+                },
+            )
+            .build(),
+        )
+    });
+    h.take_log();
+
+    // The platform mounts two rows, as UIKit would before a rebuild.
+    let cbs = h.virtualizer(0);
+    let ((n0, s0), (n1, s1)) = world.enter(|| ((cbs.mount_item)(0), (cbs.mount_item)(1)));
+    h.take_log();
+
+    drop(realized);
+    let log = h.take_log();
+    let at = |needle: String| {
+        log.iter()
+            .position(|l| *l == needle)
+            .unwrap_or_else(|| panic!("{needle} missing from teardown log: {log:?}"))
+    };
+    let release = log
+        .iter()
+        .position(|l| l.starts_with("release_virtualizer"))
+        .unwrap_or_else(|| panic!("release probe never ran: {log:?}"));
+    assert!(
+        at(format!("on_node_unstyled n{n0}")) < release
+            && at(format!("on_node_unstyled n{n1}")) < release,
+        "live rows must unstyle before the probe takes the backend: {log:?}"
+    );
+
+    // The backend's own shutdown loop, arriving late: nothing to free.
+    (cbs.release_item)(s0);
+    (cbs.release_item)(s1);
+    assert_eq!(
+        h.take_log(),
+        Vec::<String>::new(),
+        "a drained scope map makes the backend's release_item a no-op"
     );
 }
 
