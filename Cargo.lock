@@ -10073,7 +10073,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.9.1"
+version = "1.10.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "host-mock",
  "mcp-catalog",
@@ -10744,7 +10744,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "axum",
  "futures-channel",
