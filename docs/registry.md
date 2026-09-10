@@ -149,6 +149,14 @@ the diff-driven plan can never reach, because correcting recorded metadata does
 not change any crate's source. It never downgrades a crate that earned a bigger
 bump on its own.
 
+`--bump <CRATE>=<LEVEL>` raises a crate's bump level. The level is classified
+from commit SUBJECTS, and a subject is a sentence someone wrote rather than a
+contract — additive public API lands under a free-form subject and reads as a
+patch. The version is the only thing a consumer sees, so it should say that API
+arrived. Raise-only: asking for less than a crate earned is refused, because
+silently under-publishing API is the failure the flag exists to prevent. A
+crate that is not already in the plan is refused too — use `--force` for that.
+
 `releases.json` in the bucket records the version and commit each crate was
 last cut from. It is our bookkeeping, not part of cargo's schema — an index
 entry records a version but not the commit that produced it, and "what changed

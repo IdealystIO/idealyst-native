@@ -115,6 +115,13 @@ struct RemoteArgs {
     /// trigger on its own.
     #[arg(long = "force", value_name = "CRATE")]
     force: Vec<String>,
+    /// Raise a crate's bump level: `--bump runtime-shared=minor`. For work
+    /// whose commit subjects under-classify it — additive public API landing
+    /// under a free-form subject reads as a patch, because the level comes
+    /// from the subject. Raise-only: asking for less than the crate earned is
+    /// an error, not a silent downgrade.
+    #[arg(long = "bump", value_name = "CRATE=LEVEL")]
+    bump: Vec<String>,
     /// The registry's name as consumers spell it in `.cargo/config.toml`.
     #[arg(long, env = "IDEALYST_REGISTRY_NAME", default_value = "idealyst")]
     registry_name: String,
@@ -523,6 +530,8 @@ struct Release {
     to: semver::Version,
     /// Why this crate is in the plan despite nothing in it having changed.
     forced: Forced,
+    /// `--bump` raised this level past what the commit subjects earned.
+    overridden: bool,
 }
 
 /// A crate can be dragged into a release without a diff of its own.
@@ -567,6 +576,7 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
                     to: p.version.clone(),
                     from: None,
                     forced: Forced::No,
+                    overridden: false,
                 },
             );
             continue;
@@ -578,9 +588,20 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
         let from = semver::Version::parse(&prev.version).context("parsing a recorded version")?;
         plan.insert(
             p.name.clone(),
-            Release { bump, initial: false, to: bump.apply(&from), from: Some(from), forced: Forced::No },
+            Release {
+                bump,
+                initial: false,
+                to: bump.apply(&from),
+                from: Some(from),
+                forced: Forced::No,
+                overridden: false,
+            },
         );
     }
+
+    // Before the majors sweep below, so `--bump X=major` correctly drags X's
+    // dependents in with it.
+    apply_bump_overrides(&mut plan, &r.bump)?;
 
     // A major bump changes the requirement dependents carry, so they must be
     // republished too. Minor and patch bumps do not: the caret requirement
@@ -610,12 +631,65 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
                     to: Bump::Patch.apply(&base),
                     from,
                     forced: Forced::DependencyMajor,
+                    overridden: false,
                 },
             );
         }
     }
     force_into_plan(ws, &state, &mut plan, &r.force)?;
     Ok(plan)
+}
+
+/// Raise the bump level of crates named by `--bump CRATE=LEVEL`.
+///
+/// The level a crate earns is classified from its commits' SUBJECTS, and a
+/// subject is a sentence someone wrote, not a contract. Additive public API
+/// lands under a free-form subject and reads as a patch — `EndReach` and the
+/// `on_end_reached` setters arrived that way, under "scroll_view can say when
+/// the reader has reached the end". The version is the only thing a consumer
+/// sees, so it should say API arrived.
+///
+/// **Raise-only.** Asking for less than the crate earned is refused rather
+/// than applied: a subject that says `feat:` while the override says `patch`
+/// is a disagreement worth stopping on, and silently under-publishing API is
+/// the failure this flag exists to prevent. A crate that is not already in the
+/// plan is refused too — nothing changed in it, so there is no level to raise;
+/// `--force` is the flag for republishing an unchanged crate.
+fn apply_bump_overrides(plan: &mut BTreeMap<String, Release>, specs: &[String]) -> Result<()> {
+    for spec in specs {
+        let (name, level) = spec
+            .split_once('=')
+            .with_context(|| format!("--bump {spec}: expected CRATE=LEVEL, e.g. idea-ui=minor"))?;
+        let want = match level.trim().to_ascii_lowercase().as_str() {
+            "patch" => Bump::Patch,
+            "minor" => Bump::Minor,
+            "major" => Bump::Major,
+            other => bail!("--bump {spec}: unknown level {other:?} (patch, minor or major)"),
+        };
+        let rel = plan.get_mut(name).with_context(|| {
+            format!(
+                "--bump {spec}: {name} is not in the plan — nothing in it changed. \
+                 Use --force to republish an unchanged crate."
+            )
+        })?;
+        if want < rel.bump {
+            bail!(
+                "--bump {spec}: {name} earned a {} from its commit subjects; \
+                 this flag raises a level, it does not lower one",
+                rel.bump.label()
+            );
+        }
+        if want == rel.bump {
+            continue;
+        }
+        let Some(from) = rel.from.clone() else {
+            bail!("--bump {spec}: {name} is unpublished, so its manifest version ships as-is");
+        };
+        rel.bump = want;
+        rel.to = want.apply(&from);
+        rel.overridden = true;
+    }
+    Ok(())
 }
 
 /// Add the `--force` crates to a plan that did not earn them.
@@ -660,6 +734,7 @@ fn force_into_plan(
                 to: Bump::Patch.apply(&base),
                 from,
                 forced: Forced::Requested,
+                overridden: false,
             },
         );
     }
@@ -681,6 +756,7 @@ fn report(ws: &Workspace, plan: &BTreeMap<String, Release>) {
             Forced::Requested => "  (--force)",
         };
         let label = if r.initial { "initial" } else { r.bump.label() };
+        let why = if r.overridden { "  (--bump)" } else { why };
         println!("  {:<28} {:>7}  {} -> {}{}", name, label, from, r.to, why);
     }
     println!("\n{} crates unchanged and NOT republished — consumers keep their cached builds",
@@ -987,6 +1063,7 @@ mod tests {
             from: Some(semver::Version::new(from.0, from.1, from.2)),
             to: semver::Version::new(to.0, to.1, to.2),
             forced: Forced::No,
+            overridden: false,
         };
         let plan = BTreeMap::from([
             ("runtime-shared".to_string(), patch((1, 7, 0), (1, 7, 1))),
@@ -998,6 +1075,7 @@ mod tests {
             url: "https://crates.idealyst.io".into(),
             from_scratch: false,
             force: vec![],
+            bump: vec![],
             registry_name: "idealyst".into(),
         };
 
@@ -1046,6 +1124,73 @@ mod tests {
         }
     }
 
+    fn planned(bump: Bump, from: (u64, u64, u64)) -> Release {
+        let from = semver::Version::new(from.0, from.1, from.2);
+        Release {
+            bump,
+            initial: false,
+            to: bump.apply(&from),
+            from: Some(from),
+            forced: Forced::No,
+            overridden: false,
+        }
+    }
+
+    /// The case the flag exists for: additive public API landed under a
+    /// free-form subject, so the planner read it as a patch. `EndReach` and
+    /// the `on_end_reached` setters arrived exactly that way.
+    #[test]
+    fn bump_raises_a_patch_to_a_minor() {
+        let mut plan =
+            BTreeMap::from([("runtime-shared".to_string(), planned(Bump::Patch, (1, 8, 0)))]);
+        apply_bump_overrides(&mut plan, &["runtime-shared=minor".to_string()]).unwrap();
+        let rel = &plan["runtime-shared"];
+        assert_eq!(rel.bump, Bump::Minor);
+        assert_eq!(rel.to, semver::Version::new(1, 9, 0), "recomputed from `from`, not from `to`");
+        assert!(rel.overridden);
+    }
+
+    /// Raising must recompute from the PUBLISHED version. Applying a minor to
+    /// the already-patched `to` would ship 1.8.1 -> 1.9.0 as though the patch
+    /// had happened, skipping a version and lying about the base.
+    #[test]
+    fn bump_recomputes_from_the_published_version() {
+        let mut plan = BTreeMap::from([("css".to_string(), planned(Bump::Patch, (1, 5, 4)))]);
+        assert_eq!(plan["css"].to, semver::Version::new(1, 5, 5));
+        apply_bump_overrides(&mut plan, &["css=major".to_string()]).unwrap();
+        assert_eq!(plan["css"].to, semver::Version::new(2, 0, 0));
+    }
+
+    /// Lowering is refused, not applied. A subject that says `feat:` against
+    /// an override that says `patch` is a disagreement worth stopping on —
+    /// silently under-publishing API is the failure this flag prevents.
+    #[test]
+    fn bump_refuses_to_lower_a_level() {
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Minor, (1, 8, 1)))]);
+        let err = apply_bump_overrides(&mut plan, &["idea-ui=patch".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("raises a level"), "{err}");
+        assert_eq!(plan["idea-ui"].bump, Bump::Minor, "left untouched");
+    }
+
+    /// A crate with no changes has no level to raise. `--force` is the flag
+    /// for republishing one, and the error should say so rather than leaving
+    /// the user to guess why nothing happened.
+    #[test]
+    fn bump_refuses_a_crate_that_is_not_in_the_plan() {
+        let mut plan = BTreeMap::new();
+        let err = apply_bump_overrides(&mut plan, &["table=minor".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("not in the plan"), "{err}");
+        assert!(err.to_string().contains("--force"), "points at the right flag: {err}");
+    }
+
+    #[test]
+    fn bump_rejects_a_malformed_spec() {
+        let mut plan = BTreeMap::from([("css".to_string(), planned(Bump::Patch, (1, 5, 4)))]);
+        assert!(apply_bump_overrides(&mut plan, &["css".to_string()]).is_err(), "no level");
+        assert!(apply_bump_overrides(&mut plan, &["css=huge".to_string()]).is_err(), "bad level");
+        assert_eq!(plan["css"].bump, Bump::Patch, "a rejected spec changes nothing");
+    }
+
     /// `--force` exists for a published manifest that is wrong while the
     /// source is right — `gesture 1.5.3` recording `runtime-shared = "^1.5"`
     /// against an API added in 1.7.1. No source diff will ever put that crate
@@ -1077,6 +1222,7 @@ mod tests {
                 from: Some(semver::Version::new(1, 8, 0)),
                 to: semver::Version::new(1, 9, 0),
                 forced: Forced::No,
+                overridden: false,
             },
         )]);
         force_into_plan(&ws, &state, &mut plan, &["idea-ui".to_string()]).unwrap();

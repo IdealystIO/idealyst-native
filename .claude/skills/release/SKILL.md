@@ -100,6 +100,13 @@ subject?
   used to re-trigger every crate it had bumped. Chase it, don't publish it.
   The one legitimate exception is a crate you named with `--force` yourself;
   the plan labels those `(--force)`.
+- **`--bump <CRATE>=<LEVEL>`** raises a bump level the subjects under-called.
+  The classifier reads the commit SUBJECT, so a branch that lands new public
+  API under a free-form subject ("scroll_view can say when the reader has
+  reached the end") cuts as a patch. Check the plan against what the diff
+  actually ADDED — `git diff <last-release>..HEAD -- <crate> | grep '^+\s*pub '`
+  is the quick version — and raise it when the two disagree. Raise-only, and
+  refuses a crate that is not already in the plan.
 - **`--force <CRATE>`** releases a crate at a patch bump although its directory
   is unchanged. Reach for it only when the *published manifest* is wrong and
   the source is right — an under-declared internal requirement is the case it
