@@ -2,7 +2,7 @@
 //! requested axis.
 
 use crate::WebBackend;
-use runtime_shared::primitives::scroll_view::{ScrollViewHandle, ScrollViewOps};
+use runtime_shared::primitives::scroll_view::{EndReach, ScrollViewHandle, ScrollViewOps};
 use std::any::Any;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -84,6 +84,53 @@ pub(crate) fn create(
     }
 
     div.unchecked_into::<Node>()
+}
+
+/// Watch for the reader arriving at the end of the scroll axis.
+///
+/// Its own listener rather than a branch inside `on_scroll`'s: the DOM
+/// takes as many `scroll` listeners as you give it, so the two features
+/// stay independent and either can be present without the other. (The
+/// iOS backend cannot do this — a UIScrollView has one delegate — which
+/// is why that side has to share.)
+///
+/// `scrollHeight`/`clientHeight` are the two numbers the app cannot
+/// reach for itself: an author has the offset from `on_scroll` and no
+/// way to ask how much content is under it.
+pub(crate) fn observe_end(
+    node: &Node,
+    horizontal: bool,
+    threshold: f32,
+    on_end: Rc<dyn Fn()>,
+) {
+    let el: web_sys::Element = node.clone().unchecked_into();
+    let el_for_handler = el.clone();
+    let reach = std::cell::RefCell::new(EndReach::new(threshold));
+    // Same `Fn` + `.forget()` trade as the `on_scroll` closure above,
+    // and for the same two reasons — see the note there.
+    let handler: Closure<dyn Fn(web_sys::Event)> =
+        Closure::wrap(Box::new(move |_evt: web_sys::Event| {
+            if let Some(html) = el_for_handler.dyn_ref::<web_sys::HtmlElement>() {
+                let (offset, viewport, content) = if horizontal {
+                    (
+                        html.scroll_left() as f32,
+                        html.client_width() as f32,
+                        html.scroll_width() as f32,
+                    )
+                } else {
+                    (
+                        html.scroll_top() as f32,
+                        html.client_height() as f32,
+                        html.scroll_height() as f32,
+                    )
+                };
+                if reach.borrow_mut().update(offset, viewport, content) {
+                    on_end();
+                }
+            }
+        }));
+    let _ = el.add_event_listener_with_callback("scroll", handler.as_ref().unchecked_ref());
+    handler.forget();
 }
 
 pub(crate) fn make_handle(node: &Node) -> ScrollViewHandle {

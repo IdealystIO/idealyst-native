@@ -196,6 +196,8 @@ pub fn scroll_view() -> ScrollViewBuilder {
             test_id: None,
             horizontal: false,
             on_scroll: None,
+            on_end_reached: None,
+            end_reached_threshold: 0.0,
             safe_area: None,
             bounces: None,
             style: None,
@@ -230,6 +232,21 @@ impl ScrollViewBuilder {
     /// Per-offset-change scroll notifications (CSS px / native points).
     pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
         self.prim.on_scroll = Some(Rc::new(handler));
+        self
+    }
+
+    /// Fire `handler` when the reader arrives at the end of the scroll
+    /// axis — once per arrival. See `ScrollViewPrim::on_end_reached`
+    /// for which backends answer it.
+    pub fn on_end_reached(mut self, handler: impl Fn() + 'static) -> Self {
+        self.prim.on_end_reached = Some(Rc::new(handler));
+        self
+    }
+
+    /// How close to the end counts as arriving, in logical px.
+    /// Defaults to 0 — the very end.
+    pub fn end_reached_threshold(mut self, px: f32) -> Self {
+        self.prim.end_reached_threshold = px;
         self
     }
 

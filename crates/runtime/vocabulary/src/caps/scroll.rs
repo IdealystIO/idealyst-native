@@ -28,6 +28,33 @@ pub trait ScrollOps: Host {
         unimplemented!("create_scroll_view not implemented for this backend")
     }
 
+    /// Watch `node` for the reader arriving within `threshold` logical
+    /// px of the end of its scroll axis, and call `on_end` when they
+    /// do.
+    ///
+    /// Separate from `create_scroll_view` rather than another argument
+    /// to it: this is additive, and a backend that cannot answer it
+    /// keeps compiling and simply never fires.
+    ///
+    /// Implementors must not fire per scroll event — a scroller resting
+    /// at its end delivers one per rubber-band twitch. Use
+    /// [`runtime_shared::primitives::scroll_view::EndReach`], which
+    /// holds the edge-triggering and the re-arm so every backend agrees
+    /// on what "arrived" means.
+    ///
+    /// Default: no-op. `on_end_reached` is silent on a backend that has
+    /// not implemented this, which is a REAL gap for a caller relying
+    /// on it — see the primitive's docs for which backends answer.
+    #[allow(unused_variables)]
+    fn observe_scroll_end(
+        &mut self,
+        node: &Self::Node,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+    }
+
     /// Read `node`'s scroll offset `(x, y)`; `(0, 0)` when the node
     /// isn't a scroll surface.
     #[allow(unused_variables)]

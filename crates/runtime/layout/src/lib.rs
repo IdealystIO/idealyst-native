@@ -1488,6 +1488,9 @@ impl LayoutTree {
             s.padding.top, s.padding.right, s.padding.bottom, s.padding.left,
             s.size.width, s.size.height,
             s.min_size.width, s.min_size.height,
+        ) + &format!(
+            " grow={} shrink={} basis={:?} overflow=({:?},{:?})",
+            s.flex_grow, s.flex_shrink, s.flex_basis, s.overflow.x, s.overflow.y
         )
     }
 

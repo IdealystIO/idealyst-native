@@ -2935,6 +2935,16 @@ impl WebBackend {
         node
     }
 
+    pub(crate) fn observe_scroll_end_impl(
+        &mut self,
+        node: &Node,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        primitives::scroll_view::observe_end(node, horizontal, threshold, on_end)
+    }
+
     pub(crate) fn create_slider_impl(
         &mut self,
         initial_value: f32,

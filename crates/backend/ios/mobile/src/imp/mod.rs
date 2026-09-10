@@ -82,6 +82,7 @@ static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_foundation::{MainThreadMarker, NSObject, NSString};
+use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
     UIActivityIndicatorView, UIActivityIndicatorViewStyle, UIButton, UIButtonType,
     UILabel, UIScrollView, UISlider, UISwitch,
@@ -2429,6 +2430,24 @@ impl IosBackend {
         // an outer frame. Cells inside the collection view are NOT
         // Taffy-managed — UICollectionViewLayout owns their layout.
         let layout = self.layout_for_view(&view);
+        // A virtualizer IS a scroll viewport, so it takes the same Taffy
+        // seeding every `scroll_view` backend applies — `overflow:
+        // scroll` plus `flex_basis: 0` / `flex_grow: 1`.
+        // `set_overflow_scroll`'s own docs make this mandatory for any
+        // backend rendering a viewport ("MUST call this"), and the
+        // virtualizer is the one that never did.
+        //
+        // Without it the node's automatic minimum is its CONTENT, so a
+        // `UICollectionView` in a flex column grows to the summed height
+        // of every item, overflows whatever bounded parent it was given,
+        // and has nothing left to scroll. The list then windows against
+        // a viewport the size of its own content — which is to say it
+        // mounts all of it, and virtualizing buys nothing.
+        //
+        // Measured before this line existed: a 50-row card list inside a
+        // 725pt parent took a frame of 2330pt and pushed the PAGE past
+        // its scrollport instead of scrolling itself.
+        self.layout.set_overflow_scroll(layout, horizontal);
         // Give the node a measure_fn that returns the list's total content
         // size along the scroll axis (sum of item sizes), mirroring the web
         // backend's content-driven height. A `UICollectionView` has no
@@ -3930,6 +3949,59 @@ impl IosBackend {
         // still writes author-set label / identifier when present.
         a11y::apply(&node, a11y, None);
         node
+    }
+
+    /// Watch a scroller for the reader arriving at its end.
+    ///
+    /// Reuses the view's EXISTING delegate when there is one. A
+    /// UIScrollView has a single `delegate`, so installing a second
+    /// would silently unhook the first — and a list with both an
+    /// `on_scroll` and an `on_end_reached` is the ordinary case, not an
+    /// exotic one.
+    pub(crate) fn observe_scroll_end_impl(
+        &mut self,
+        node: &IosNode,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        let view = node.as_view();
+        let scroll: &UIScrollView =
+            unsafe { &*(view as *const UIView as *const UIScrollView) };
+        // Whose delegate is it? UIKit allows exactly ONE, so installing
+        // ours unconditionally is how you silently break whatever held
+        // it. Two classes here already do:
+        //
+        //  - `ScrollDelegate` — a plain `scroll_view`'s, ours to extend.
+        //  - `VirtualizerDataSource` — a `UICollectionView` IS a
+        //    `UIScrollView`, and its delegate is also its DATA SOURCE.
+        //    Replacing that empties the list: no sections, no cells, no
+        //    diagnostic. Route to its own `set_end` instead.
+        //
+        // Anything else is a delegate we do not know, and taking it is
+        // never right; leave it alone and let the callback stay silent,
+        // which is the documented degradation for a backend that cannot
+        // observe.
+        let existing: Option<Retained<NSObject>> = unsafe { msg_send_id![scroll, delegate] };
+        if let Some(obj) = existing {
+            if obj.is_kind_of::<crate::imp::callbacks::ScrollDelegate>() {
+                let ours: &crate::imp::callbacks::ScrollDelegate =
+                    unsafe { &*(Retained::as_ptr(&obj) as *const _) };
+                ours.set_end(horizontal, threshold, on_end);
+                return;
+            }
+            if obj.is_kind_of::<crate::imp::virtualizer::VirtualizerDataSource>() {
+                let ours: &crate::imp::virtualizer::VirtualizerDataSource =
+                    unsafe { &*(Retained::as_ptr(&obj) as *const _) };
+                ours.set_end(horizontal, threshold, on_end);
+                return;
+            }
+            return;
+        }
+        let delegate = crate::imp::callbacks::ScrollDelegate::new_watcher(self.mtm);
+        delegate.set_end(horizontal, threshold, on_end);
+        let _: () = unsafe { msg_send![scroll, setDelegate: &*delegate] };
+        self.retain_target(&delegate);
     }
 
     pub(crate) fn release_portal_impl(&mut self, node: &IosNode) {
