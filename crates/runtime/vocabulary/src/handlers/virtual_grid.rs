@@ -162,14 +162,27 @@ where
         attach_style(&backend, &node, style);
     }
 
-    // Teardown: drop backend listeners + callback handles so queued
-    // scroll/resize events can't call into freed per-cell scopes.
+    // Teardown: drop the live cells, then release the backend's side.
     // Registered AFTER attach_style so teardown order matches the
     // virtualizer's (unstyle first, then release).
     {
         let b = backend.clone();
         let n = node.clone();
+        let scopes = scopes.clone();
         on_teardown(move || {
+            // Cells die FIRST, with no backend borrow held — the same
+            // hard-abort the virtualizer's probe carries in full. A
+            // cell's nodes are styled, a styled node's teardown takes
+            // `backend.borrow_mut()`, and the callbacks bundle every
+            // backend drops inside `release_virtual_grid` OWNS this
+            // map. Draining here also makes a backend's own
+            // `release_cell` calls no-ops.
+            let cells = std::mem::take(&mut *scopes.borrow_mut());
+            drop(cells);
+
+            // Now the backend drops its listeners + callback handles so
+            // queued scroll/resize events can't call into freed
+            // per-cell scopes.
             b.borrow_mut().release_virtual_grid(&n);
         });
     }

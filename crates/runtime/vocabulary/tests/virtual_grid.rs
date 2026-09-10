@@ -15,7 +15,7 @@ use std::rc::Rc;
 use host_mock::harness;
 use runtime_shared::{StyleRules, Tokenized};
 use runtime_scene::realize;
-use runtime_vocabulary::builders::{text, virtual_grid};
+use runtime_vocabulary::builders::{text, view, virtual_grid};
 use runtime_world::signal;
 
 fn px(w: f32) -> StyleRules {
@@ -335,4 +335,68 @@ fn handle_is_inert_but_safe_without_backend_ops() {
     assert_eq!(handle.scroll_offset(), (0.0, 0.0));
     handle.scroll_to(10.0, 20.0);
     handle.scroll_to_cell(3, 4);
+}
+
+/// **Hard-abort regression** — the virtualizer's, on the two-axis
+/// sibling. A live cell must not survive into the release probe's
+/// `backend.borrow_mut()`: a cell's nodes are styled, a styled node's
+/// teardown takes that same borrow, and the callbacks bundle every
+/// backend drops inside `release_virtual_grid` OWNS the cell scopes.
+/// The second borrow panics, and on a backend whose frame cannot unwind
+/// the panic escalates to `abort`.
+#[test]
+fn regression_live_cells_die_before_the_release_probe_takes_the_backend() {
+    let h = harness();
+    let world = h.world.clone();
+    let realized = world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtual_grid(
+                || 4,
+                || 3,
+                |_| 100.0,
+                |_| 40.0,
+                |c, r| (c * 1000 + r) as u64,
+                |c, r| {
+                    view()
+                        .style(px(100.0))
+                        .children(vec![text().content(format!("c{c}r{r}")).build()])
+                        .build()
+                },
+            )
+            .build(),
+        )
+    });
+    h.take_log();
+
+    let cbs = h.virtual_grid(0);
+    let ((n0, s0), (n1, s1)) =
+        world.enter(|| ((cbs.mount_cell)(0, 0), (cbs.mount_cell)(1, 0)));
+    h.take_log();
+
+    drop(realized);
+    let log = h.take_log();
+    let at = |needle: String| {
+        log.iter()
+            .position(|l| *l == needle)
+            .unwrap_or_else(|| panic!("{needle} missing from teardown log: {log:?}"))
+    };
+    let release = log
+        .iter()
+        .position(|l| l.starts_with("release_virtual_grid"))
+        .unwrap_or_else(|| panic!("release probe never ran: {log:?}"));
+    assert!(
+        at(format!("on_node_unstyled n{n0}")) < release
+            && at(format!("on_node_unstyled n{n1}")) < release,
+        "live cells must unstyle before the probe takes the backend: {log:?}"
+    );
+
+    (cbs.release_cell)(s0);
+    (cbs.release_cell)(s1);
+    assert_eq!(
+        h.take_log(),
+        Vec::<String>::new(),
+        "a drained scope map makes the backend's release_cell a no-op"
+    );
 }
