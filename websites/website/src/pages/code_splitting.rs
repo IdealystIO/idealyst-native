@@ -136,6 +136,15 @@ fn loading_and_error() -> Element {
                  so it requires them to be `Clone`. `#[component(lazy, retryable)]` \
                  opts in and derives the bound; the default moves the props into \
                  the loader once.".to_string(),
+                "A third generated prop, `style`, styles the boundary's container \
+                 \u{2014} the view that wraps whichever of the three states is \
+                 showing. By default that container is a bounded, fillable flex \
+                 column, like a navigator outlet, so a route body behind the \
+                 boundary lays out exactly as it would inline; set `style` to \
+                 replace that for a boundary that should size differently, such \
+                 as a widget in a row. A component that declares its own `style` \
+                 parameter keeps it for its body, and the container stays on the \
+                 default.".to_string(),
             ],
             code = Some(example.to_string()),
         )

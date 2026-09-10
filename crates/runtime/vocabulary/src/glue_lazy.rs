@@ -83,6 +83,38 @@ impl LazyErrorUi {
     }
 }
 
+/// The `style` slot on a lazy component's props: the style of the
+/// boundary's CONTAINER view (the wrapper around the loading / body /
+/// error state), not of the component's own root. Accepts anything a
+/// builder's `.style(...)` does — `StyleRules`, `Rc<StyleRules>`, a
+/// sheet application, a `Clone` closure — and REPLACES the default
+/// fill (`runtime_shared::primitives::lazy::lazy_boundary_fill_rules`).
+/// Default: unset, so the boundary lays out as a bounded, fillable flex
+/// column like a navigator outlet.
+///
+/// Holds a `Clone`-able factory rather than a `StyleProp` (which is not
+/// `Clone`: its dynamic form is a boxed closure) so `#[component(lazy,
+/// retryable)]` can derive `Clone` on the props.
+#[derive(Default, Clone)]
+pub struct LazyBoundaryStyle(Option<Rc<dyn Fn() -> crate::style_attach::StyleProp>>);
+
+impl<S> From<S> for LazyBoundaryStyle
+where
+    S: IntoStyleProp + Clone + 'static,
+{
+    fn from(style: S) -> Self {
+        LazyBoundaryStyle(Some(Rc::new(move || style.clone().into_style_prop())))
+    }
+}
+
+impl LazyBoundaryStyle {
+    /// Framework-internal: materialize the style for the emission.
+    #[doc(hidden)]
+    pub fn __into_style_prop(self) -> Option<crate::style_attach::StyleProp> {
+        self.0.map(|f| f())
+    }
+}
+
 /// Builder produced by [`lazy_split`] — the new-core mirror of
 /// `runtime_shared::primitives::lazy::LazyBuilder`. Constructed by the
 /// `#[component(lazy)]` emission; public so the expansion (in user
@@ -130,7 +162,9 @@ impl LazyBuilder {
         self
     }
 
-    /// Attach a style to the container view.
+    /// Attach a style to the container view, REPLACING the default fill
+    /// (`lazy_boundary_fill_rules`) — one source of truth for the
+    /// wrapper, like any other view.
     pub fn with_style<S: IntoStyleProp>(mut self, style: S) -> Self {
         self.prim.style = Some(style.into_style_prop());
         self

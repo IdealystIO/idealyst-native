@@ -24,6 +24,13 @@
 //! }
 //! ```
 //!
+//! The boundary mounts a container view around whichever state is
+//! showing. By default it is a bounded, fillable flex column
+//! ([`lazy_boundary_fill_rules`]) so a route body behind it lays out
+//! exactly as it would inline; the generated `style` prop (or
+//! `LazyBuilder::with_style`) replaces that for a boundary that should
+//! size differently.
+//!
 //! `#[component(lazy)]` (alias `#[lazy_component]`) compiles the component's
 //! body into a `#[wasm_split]`-annotated async function and emits a
 //! [`Element::Lazy`] that drives the load+mount lifecycle; the props cross
@@ -33,6 +40,53 @@
 //! [`wasm-split`]: https://crates.io/crates/wasm-splitter
 
 use std::rc::Rc;
+
+// ---------------------------------------------------------------------------
+// Container sizing — the boundary wrapper's default layout
+// ---------------------------------------------------------------------------
+
+/// The default style of a lazy boundary's container view (the wrapper
+/// every backend mounts around the loading / body / error state): a
+/// **bounded, fillable flex column** — the same contract as a navigator
+/// outlet, and for the same reason.
+///
+/// A lazy boundary is a code-splitting seam, not a layout decision, and
+/// overwhelmingly wraps a route body: the screen's root sits INSIDE the
+/// wrapper, so the wrapper is what the parent's flex chain actually
+/// sees. Left unstyled it is a plain block box (`display: block`,
+/// `flex: 0 1 auto` on web; an auto-sized node on Taffy) that breaks
+/// that chain — every `flex: 1 1 0; min-height: 0` body below it
+/// collapses to 0 px and its toolbar overflows into an ancestor that
+/// intercepts every click. Measured on CrewForge (FRAMEWORK-NOTES
+/// #116): converting 14 sidebar areas to `#[component(lazy)]` turned
+/// every spec that clicks inside an area body red (69 of 308), and only
+/// a body with explicit pixel dimensions survived.
+///
+/// `flex: 1 1 0` absorbs the parent column's remaining space;
+/// `min-height: 0` lets a tall body scroll instead of blowing the column
+/// open; `width: 100%` fills the cross axis; the explicit column
+/// direction makes the contract visible rather than inherited. In an
+/// UNBOUNDED parent (a scroll view's content, an auto-height card) the
+/// same rules degrade to content height — flex-basis 0 with no free
+/// space to distribute sizes the item by its content — so a widget-sized
+/// boundary is not stretched, only a boundary whose parent has space to
+/// give. An author who wants something else sets the boundary's `style`
+/// (`#[component(lazy)]` props / `LazyBuilder::with_style`), which
+/// REPLACES these rules — one source of truth for the wrapper, like any
+/// other view.
+pub fn lazy_boundary_fill_rules() -> Rc<crate::style::StyleRules> {
+    use crate::style::Length;
+    Rc::new(crate::style::StyleRules {
+        display: Some(crate::DisplayKind::Flex),
+        flex_direction: Some(crate::style::FlexDirection::Column),
+        width: Some(Length::Percent(100.0).into()),
+        flex_grow: Some(1.0.into()),
+        flex_shrink: Some(1.0.into()),
+        flex_basis: Some(Length::Px(0.0).into()),
+        min_height: Some(Length::Px(0.0).into()),
+        ..Default::default()
+    })
+}
 
 // ---------------------------------------------------------------------------
 // LazyState — lifecycle observable to author code via on_state.

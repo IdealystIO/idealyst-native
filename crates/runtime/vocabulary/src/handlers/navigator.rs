@@ -287,17 +287,21 @@ macro_rules! try_fold_payload {
 /// were skipped the same way) — give such screens an `Item` root.
 fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
     use crate::prims::{
-        ActivityIndicatorPrim, ButtonPrim, IconPrim, ImagePrim, LinkPrim, PressablePrim,
-        ScrollViewPrim, SliderPrim, TextAreaPrim, TextInputPrim, TextPrim, TogglePrim, ViewPrim,
+        ActivityIndicatorPrim, ButtonPrim, IconPrim, ImagePrim, LazyPrim, LinkPrim,
+        PressablePrim, ScrollViewPrim, SliderPrim, TextAreaPrim, TextInputPrim, TextPrim,
+        TogglePrim, ViewPrim,
     };
     match element {
         Element::Item { data, .. } => {
+            // `LazyPrim` is in the list because a `#[component(lazy)]`
+            // screen's root IS the lazy container — the overlay has to
+            // land on it, not on the body that mounts inside it later.
             try_fold_payload!(
                 data, rules,
                 ViewPrim, PressablePrim, ScrollViewPrim, TextPrim, ButtonPrim, ImagePrim,
                 IconPrim, TogglePrim, SliderPrim, ActivityIndicatorPrim, LinkPrim,
                 TextInputPrim, TextAreaPrim, SwapNavigatorPrim, StackNavigatorPrim,
-                NavigatorOutletPrim,
+                NavigatorOutletPrim, LazyPrim,
             );
         }
         // A component boundary wraps the real root — fold through it.

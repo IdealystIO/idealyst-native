@@ -105,6 +105,35 @@ each entry links to its migration guide.
   live URL of `/section`: index, not `/:id`; route name and query seen;
   a deep link below the section still reaches the detail.
 
+- **A lazy boundary's container now fills its flex parent, and
+  `#[component(lazy)]` gained a `style` prop for it.** The boundary
+  mounts a wrapper view around whichever of loading / body / error is
+  showing, and that wrapper is what the parent's flex chain sees. It
+  received no style at all — `LazyPrim.style` was never set and the
+  generated props offered no way to set it — so on web it was a plain
+  `display: block; flex: 0 1 auto` box, and every `flex: 1 1 0;
+  min-height: 0` route body inside collapsed to 0 px while its toolbar
+  overflowed into an ancestor that intercepted every click. CrewForge
+  (FRAMEWORK-NOTES #116): 69 of 308 specs, every one that clicks inside a
+  lazily-loaded area; only a body with explicit pixel dimensions
+  survived. The container now defaults to
+  `runtime_shared::primitives::lazy::lazy_boundary_fill_rules()` — the
+  outlet's bounded-fillable-column contract (`flex: 1 1 0; min-height:
+  0; width: 100%`, explicit column), which degrades to content height in
+  an unbounded parent, so widget-sized boundaries are not stretched.
+  Same rules on every backend; no per-platform branch. `#[component(lazy)]`
+  props gain `style` (`LazyBoundaryStyle`, accepting anything a
+  builder's `.style(...)` does), which REPLACES the default; a component
+  that declares its own `style` parameter keeps it for the body and the
+  container stays on the default. `LazyBuilder::with_style` is
+  unchanged in meaning. The stack navigator's flow-fill screen overlay
+  also now reaches a lazy screen root: `fold_style_overrides` enumerates
+  the payloads it can fold into and silently skipped `LazyPrim`.
+  Regressions in `runtime-vocabulary`'s `tests/lazy.rs::container_sizing`
+  (default fill applied at mount; author style replaces it; the stack
+  overlay lands on a lazy root) and the macro's
+  `lazy_author_style_param_suppresses_the_container_style_slot`.
+
 - **`idealyst dev` no longer stages its bundle into `dist/web`.** The
   dev loop built and restaged its debug, dev-reload-wired bundle at
   `<project>/dist/web` on every save — the same directory

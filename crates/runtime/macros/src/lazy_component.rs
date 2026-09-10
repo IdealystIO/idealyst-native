@@ -109,6 +109,49 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
         }
     };
 
+    // The boundary's container style — generated unless the component
+    // declares its own `style` param, which then belongs to the BODY (it
+    // crosses the chunk boundary with the other props) and the container
+    // keeps its default fill. Two `style`s on one struct would not
+    // compile; silently renaming the author's would be worse.
+    let author_declares_style = arg_names.iter().any(|n| *n == "style");
+    let style_doc = "Style of this boundary's CONTAINER view (the wrapper around the \
+                     loading / body / error state), REPLACING its default fill — a \
+                     bounded, fillable flex column, like a navigator outlet. Accepts \
+                     anything a builder's `.style(...)` does. Unset: the default fill.";
+    let style_field = if author_declares_style {
+        quote! {}
+    } else {
+        quote! {
+            #[doc = #style_doc]
+            pub style: ::runtime_core::primitives::lazy::LazyBoundaryStyle,
+        }
+    };
+    let style_default = if author_declares_style {
+        quote! {}
+    } else {
+        quote! { style: ::core::default::Default::default(), }
+    };
+    // Read out BEFORE the loader takes `self` (the one-shot loader moves
+    // the whole props struct into its take-once cell), alongside
+    // `loading` / `error`; applied to the builder after.
+    let style_take = if author_declares_style {
+        quote! {}
+    } else {
+        quote! {
+            let __style = ::core::clone::Clone::clone(&self.style).__into_style_prop();
+        }
+    };
+    let style_apply = if author_declares_style {
+        quote! {}
+    } else {
+        quote! {
+            if let ::core::option::Option::Some(__s) = __style {
+                __b = __b.with_style(__s);
+            }
+        }
+    };
+
     let loading_doc = "Loading UI shown while this component's chunk loads. \
                        A `Fn() -> impl IntoElement` closure. Default: empty.";
     let error_doc = "Error UI shown if this component's chunk fails to load. \
@@ -158,6 +201,7 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
             pub loading: ::runtime_core::primitives::lazy::LazyLoadingUi,
             #[doc = #error_doc]
             pub error: ::runtime_core::primitives::lazy::LazyErrorUi,
+            #style_field
         }
 
         #[automatically_derived]
@@ -167,6 +211,7 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                     #(#default_fields)*
                     loading: ::core::default::Default::default(),
                     error: ::core::default::Default::default(),
+                    #style_default
                 }
             }
         }
@@ -195,6 +240,7 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                 // the props move into the loader.
                 let __loading = ::core::clone::Clone::clone(&self.loading).__into_handler();
                 let __error = ::core::clone::Clone::clone(&self.error).__into_handler();
+                #style_take
 
                 let __loader = #loader_expr;
                 let mut __b = ::runtime_core::primitives::lazy::lazy_split(__loader);
@@ -204,6 +250,7 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                 if let ::core::option::Option::Some(__e) = __error {
                     __b = __b.on_error(move |__err| __e(__err));
                 }
+                #style_apply
                 ::runtime_core::IntoElement::into_element(__b)
             }
         }

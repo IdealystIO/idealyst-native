@@ -593,6 +593,12 @@ mod tests {
             glue.contains("puberror:::runtime_core::primitives::lazy::LazyErrorUi"),
             "{glue}"
         );
+        // …and the boundary-container style slot, wired to the builder.
+        assert!(
+            glue.contains("pubstyle:::runtime_core::primitives::lazy::LazyBoundaryStyle"),
+            "{glue}"
+        );
+        assert!(glue.contains("__b=__b.with_style(__s)"), "{glue}");
         // One-shot loader (no `retryable`): take-once cell, loud on reuse.
         assert!(glue.contains("invokedtwicewithout`retryable`"), "{glue}");
         assert!(!glue.contains("derive(::core::clone::Clone)"), "{glue}");
@@ -601,6 +607,26 @@ mod tests {
             glue.contains("::runtime_core::primitives::lazy::lazy_split"),
             "{glue}"
         );
+    }
+
+    /// A component that declares its own `style` param keeps it — it is
+    /// the BODY's prop and crosses the chunk boundary like any other —
+    /// and the container is left on its default fill. Generating a
+    /// second `style` field would not compile; this pins that the glue
+    /// steps aside instead.
+    #[test]
+    fn lazy_author_style_param_suppresses_the_container_style_slot() {
+        let glue = expand_lazy(
+            quote! { lazy },
+            quote! { fn Panel(style: StyleRules) -> Element { body() } },
+        );
+        // Reactive-by-default props wrap the author's param; it is still THEIR field.
+        assert!(glue.contains("pubstyle:::runtime_core::Reactive<StyleRules>"), "{glue}");
+        assert!(
+            !glue.contains("LazyBoundaryStyle"),
+            "author-declared `style` must not be shadowed by the container slot: {glue}"
+        );
+        assert!(!glue.contains("with_style"), "{glue}");
     }
 
     #[test]

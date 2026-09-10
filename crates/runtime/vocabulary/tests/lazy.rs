@@ -537,6 +537,154 @@ fn regression_pending_loader_still_streams_on_native() {
 }
 
 // ===========================================================================
+// Container sizing — the boundary must not break the parent's flex chain
+// ===========================================================================
+
+mod container_sizing {
+    //! The lazy boundary mounts a wrapper view around whichever state is
+    //! showing, and that wrapper is what the parent's flex chain sees.
+    //! Unstyled it was a plain block box: every `flex: 1 1 0; min-height:
+    //! 0` route body inside collapsed to 0 px and its toolbar overflowed
+    //! into an ancestor that intercepted every click — CrewForge
+    //! FRAMEWORK-NOTES #116, 69 of 308 specs, every one that clicks inside
+    //! a lazily-loaded area body.
+
+    use super::*;
+    use runtime_shared::primitives::lazy::lazy_boundary_fill_rules;
+    use runtime_shared::primitives::navigator::{screen_flow_fill_rules, Route};
+    use runtime_shared::{Length, StyleRules, Tokenized};
+    use runtime_vocabulary::builders::{navigator_outlet, stack_navigator, view};
+
+    /// A digest of the fields the fill contract is made of. `width`
+    /// alone (the mock's default line) cannot tell a fill from a plain
+    /// 100%-wide view.
+    fn sizing_digest(h: &Harness) {
+        h.set_style_line(|node, s| {
+            let f = |v: &Option<Tokenized<f32>>| v.as_ref().map(|v| format!("{v:?}"));
+            let l = |v: &Option<Tokenized<Length>>| v.as_ref().map(|v| format!("{v:?}"));
+            format!(
+                "apply_style n{node} display={:?} dir={:?} width={:?} grow={:?} shrink={:?} \
+                 basis={:?} min_h={:?}",
+                s.display,
+                s.flex_direction,
+                l(&s.width),
+                f(&s.flex_grow),
+                f(&s.flex_shrink),
+                l(&s.flex_basis),
+                l(&s.min_height),
+            )
+        });
+    }
+
+    fn digest_of(h: &Harness, node: u32, rules: &StyleRules) -> String {
+        let line = h.shared.style_line.borrow().clone().expect("digest installed");
+        line(node, rules)
+    }
+
+    /// Regression: the container carries the fill contract by default —
+    /// `flex: 1 1 0; min-height: 0; width: 100%`, an explicit flex
+    /// column — so a route body behind the boundary lays out exactly as
+    /// it would inline. Before the fix the container received NO style
+    /// at all (`prim.style` was `None` and nothing set it), which on web
+    /// is `display: block; flex: 0 1 auto`.
+    #[test]
+    fn regression_container_fills_its_flex_parent_by_default() {
+        let h = harness(true);
+        sizing_digest(&h);
+        let ready = Rc::new(Cell::new(false));
+        let el = lazy_split(gated_loader(ready.clone(), || {
+            Ok(Box::new(|| text_el("chunk-body")) as LazyBodyThunk)
+        }))
+        .placeholder(|| text_el("loading"))
+        .into_element();
+        let realized = h.mount(el);
+
+        let ops = h.ops();
+        assert_eq!(ops[0], "create n0 view", "{ops:?}");
+        assert_eq!(
+            ops[1],
+            digest_of(&h, 0, &lazy_boundary_fill_rules()),
+            "the container must be styled with the fill contract, right after \
+             creation and before any state UI mounts: {ops:?}"
+        );
+        let fill = lazy_boundary_fill_rules();
+        assert_eq!(fill.flex_grow.as_ref().map(|g| format!("{g:?}")).as_deref(), Some("Literal(1.0)"));
+        assert!(matches!(fill.flex_basis, Some(Tokenized::Literal(Length::Px(b))) if b == 0.0));
+        assert!(matches!(fill.min_height, Some(Tokenized::Literal(Length::Px(m))) if m == 0.0));
+        assert!(matches!(fill.width, Some(Tokenized::Literal(Length::Percent(w))) if w == 100.0));
+
+        drop(realized);
+    }
+
+    /// An author style REPLACES the default — one source of truth for
+    /// the wrapper, like any other view. A boundary that must not
+    /// stretch (a widget in a row) opts out this way.
+    #[test]
+    fn with_style_replaces_the_default_fill() {
+        let h = harness(true);
+        sizing_digest(&h);
+        let own = StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(120.0))),
+            ..Default::default()
+        };
+        let el = lazy_split(ready_loader(|| {
+            Ok(Box::new(|| text_el("chunk-body")) as LazyBodyThunk)
+        }))
+        .with_style(own.clone())
+        .into_element();
+        let realized = h.mount(el);
+
+        let ops = h.ops();
+        assert_eq!(ops[1], digest_of(&h, 0, &own), "{ops:?}");
+        assert!(
+            !ops[1].contains("grow=Some"),
+            "the default fill must not leak under an author style: {ops:?}"
+        );
+        drop(realized);
+    }
+
+    /// A `#[component(lazy)]` screen under a stack navigator: the
+    /// screen's ROOT is the lazy container, so the stack's flow-fill
+    /// overlay has to land on it. `fold_style_overrides` enumerates the
+    /// built-in payloads it can fold into and silently skipped
+    /// `LazyPrim` — the overlay reached nothing, and the body mounting
+    /// inside later never saw it either.
+    #[test]
+    fn regression_stack_flow_fill_overlay_reaches_a_lazy_screen_root() {
+        const HOME: Route<()> = Route::new("home", "/");
+        let h = harness(true);
+        sizing_digest(&h);
+
+        let el = stack_navigator(&HOME)
+            .screen(HOME, |_| {
+                lazy_split(ready_loader(|| {
+                    Ok(Box::new(|| text_el("chunk-body")) as LazyBodyThunk)
+                }))
+                .into_element()
+            })
+            .layout(|| view().child(navigator_outlet()).build())
+            .build();
+        let realized = h.mount(el);
+        h.world.flush();
+
+        // The overlay folds onto `None` as a plain static style, so the
+        // container's line is exactly the flow-fill digest — not the
+        // lazy default (which carries an explicit column direction the
+        // overlay does not), and not nothing.
+        let expected_container = digest_of(&h, 0, &screen_flow_fill_rules());
+        let ops = h.ops();
+        let hit = ops.iter().find(|o| {
+            o.starts_with("apply_style") && o.ends_with(&expected_container["apply_style n0".len()..])
+        });
+        assert!(
+            hit.is_some(),
+            "the stack's flow-fill overlay must land on the lazy container: {ops:?}"
+        );
+        drop(realized);
+    }
+}
+
+// ===========================================================================
 // Ambient navigator scope across the async swap
 // ===========================================================================
 

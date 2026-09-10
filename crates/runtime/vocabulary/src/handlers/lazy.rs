@@ -49,7 +49,7 @@ use std::rc::Rc;
 
 #[cfg(feature = "async-driver")]
 use runtime_shared::primitives::lazy::LazyError;
-use runtime_shared::primitives::lazy::LazyState;
+use runtime_shared::primitives::lazy::{lazy_boundary_fill_rules, LazyState};
 #[cfg(feature = "async-driver")]
 use runtime_shared::primitives::navigator::capture_ambient_nav_context;
 #[cfg(feature = "async-driver")]
@@ -60,7 +60,7 @@ use runtime_world::{effect, signal, untrack};
 
 use crate::caps::{LifecycleOps, ViewOps};
 use crate::prims::{LazyPrim, PrimCell};
-use crate::style_attach::{attach_style, StyleServices};
+use crate::style_attach::{attach_style, StyleProp, StyleServices};
 
 // ---------------------------------------------------------------------------
 // Ambient dynamic scope for the ASYNC mount
@@ -129,10 +129,19 @@ where
 
     // Container view hosting one state at a time. Old-core order:
     // create_view → attach_style → loading UI.
+    //
+    // ALWAYS styled. An unstyled container is a plain block box that
+    // breaks the parent's flex chain — the route body inside collapses
+    // to 0 px and its toolbar overflows into an ancestor that swallows
+    // every click (`lazy_boundary_fill_rules` docs, CrewForge
+    // FRAMEWORK-NOTES #116). The default is the outlet-style fill
+    // contract; an author `style` replaces it wholesale, the same
+    // one-source-of-truth rule every other view follows.
     let mut container = backend.borrow_mut().create_view(&prim.a11y);
-    if let Some(style) = prim.style {
-        attach_style(&backend, &container, style);
-    }
+    let style = prim
+        .style
+        .unwrap_or_else(|| StyleProp::Static(lazy_boundary_fill_rules()));
+    attach_style(&backend, &container, style);
 
     let on_state = prim.on_state;
     let placeholder = prim.placeholder;
