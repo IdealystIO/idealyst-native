@@ -5369,6 +5369,35 @@ impl MacosBackend {
     // `ScrollDocumentView`, so `y` grows downward — same coordinate meaning
     // as iOS/web scroll offsets. Non-scroll nodes read (0,0) / ignore writes,
     // matching the trait defaults.
+    /// `on_end_reached`, for anything that wraps an `NSScrollView` —
+    /// `scroll_view` and the virtualizer both do, so one observer serves
+    /// both and they agree on what "arrived" means. See
+    /// [`callbacks::install_end_observer`]. Not a scroll view: nothing
+    /// to observe, and the callback stays silent, which is the
+    /// documented degradation.
+    ///
+    /// Retained in `callback_targets` for the process lifetime — the
+    /// same trade `scroll_view`'s `on_scroll` observer makes, and the
+    /// clip view dying with its scroll view is what stops the
+    /// notifications.
+    pub(crate) fn observe_scroll_end_impl(
+        &mut self,
+        node: &MacosNode,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        let view = node.as_view();
+        if !is_scroll_view(view) {
+            return;
+        }
+        if let Some(target) =
+            callbacks::install_end_observer(self.mtm, view, horizontal, threshold, on_end)
+        {
+            self.callback_targets.push(target);
+        }
+    }
+
     pub(crate) fn node_scroll_impl(&self, node: &MacosNode) -> (f32, f32) {
         let view = node.as_view();
         if !is_scroll_view(view) {

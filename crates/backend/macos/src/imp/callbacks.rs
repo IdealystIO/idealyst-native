@@ -373,6 +373,151 @@ pub(crate) fn install_scroll_observer(
 }
 
 // =========================================================================
+// EndReachObserverTarget — `on_end_reached` for anything wrapping an
+// `NSScrollView`: `scroll_view` and the virtualizer alike.
+//
+// Rides the SAME clip-view `NSViewBoundsDidChangeNotification` the
+// `on_scroll` observer does, as its own observer rather than a branch
+// inside `ScrollObserverTarget`. NSNotificationCenter takes any number
+// of observers on one notification — the web adds a second `scroll`
+// listener for the same reason — so unlike iOS, where `UIScrollView`
+// has one `delegate` and the end check has to share it, nothing here
+// has to be threaded through an existing object. It also means a list
+// with `on_end_reached` and no `on_scroll` (the common case: paging
+// without caring about the offset) installs exactly what it needs.
+//
+// The three numbers the app cannot reach for itself: the clip view's
+// `bounds.origin` is the offset (the same reading `on_scroll` reports),
+// its `bounds.size` is the viewport, and the `documentView`'s frame is
+// the content extent. The arm / re-arm rule lives in `EndReach`, shared
+// with every backend, so "arrived" means the same thing on all of them.
+// =========================================================================
+
+pub(crate) struct EndReachObserverTargetIvars {
+    pub(crate) horizontal: bool,
+    pub(crate) reach: RefCell<runtime_shared::primitives::scroll_view::EndReach>,
+    pub(crate) on_end: Rc<dyn Fn()>,
+}
+
+declare_class!(
+    pub(crate) struct EndReachObserverTarget;
+
+    unsafe impl ClassType for EndReachObserverTarget {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystEndReachObserverTarget";
+    }
+
+    impl DeclaredClass for EndReachObserverTarget {
+        type Ivars = EndReachObserverTargetIvars;
+    }
+
+    unsafe impl NSObjectProtocol for EndReachObserverTarget {}
+
+    unsafe impl EndReachObserverTarget {
+        #[method(boundsDidChange:)]
+        fn bounds_did_change(&self, notification: &NSObjectRuntime) {
+            let clip: *mut objc2::runtime::AnyObject =
+                unsafe { msg_send![notification, object] };
+            if clip.is_null() {
+                return;
+            }
+            let bounds: objc2_foundation::CGRect = unsafe { msg_send![clip, bounds] };
+            let doc: *mut objc2::runtime::AnyObject = unsafe { msg_send![clip, documentView] };
+            if doc.is_null() {
+                return;
+            }
+            let content: objc2_foundation::CGRect = unsafe { msg_send![doc, frame] };
+            let iv = self.ivars();
+            let (offset, viewport, extent) = if iv.horizontal {
+                (
+                    bounds.origin.x as f32,
+                    bounds.size.width as f32,
+                    content.size.width as f32,
+                )
+            } else {
+                (
+                    bounds.origin.y as f32,
+                    bounds.size.height as f32,
+                    content.size.height as f32,
+                )
+            };
+            // The borrow ends before the callback runs: the arrival
+            // handler loads a page, which re-enters the runtime and can
+            // reach this scroller again through the relayout that
+            // follows.
+            let fire = iv.reach.borrow_mut().update(offset, viewport, extent);
+            if fire {
+                // Deferred for the same reason `on_scroll` is (see
+                // `install_scroll_observer`): the bounds notification is
+                // synchronous, and firing inline re-enters the reactive
+                // system while the scrolling caller may still hold an
+                // arena borrow.
+                let cb = iv.on_end.clone();
+                runtime_shared::schedule_microtask(move || cb());
+            }
+        }
+    }
+);
+
+impl EndReachObserverTarget {
+    pub(crate) fn new(
+        mtm: MainThreadMarker,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(EndReachObserverTargetIvars {
+            horizontal,
+            reach: RefCell::new(runtime_shared::primitives::scroll_view::EndReach::new(
+                threshold,
+            )),
+            on_end,
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+/// Observe the end of `scroll_view`'s travel and return the observer
+/// target for the caller to retain. `scroll_view` must wrap a clip view
+/// — every `NSScrollView` does, and both `create_scroll_view` and the
+/// virtualizer hand one in. Returns `None` when there is no clip view
+/// to observe.
+pub(crate) fn install_end_observer(
+    mtm: MainThreadMarker,
+    scroll_view: &objc2_app_kit::NSView,
+    horizontal: bool,
+    threshold: f32,
+    on_end: Rc<dyn Fn()>,
+) -> Option<Retained<NSObject>> {
+    let target = EndReachObserverTarget::new(mtm, horizontal, threshold, on_end);
+    let clip_view: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![scroll_view, contentView] };
+    if clip_view.is_null() {
+        return None;
+    }
+    // Idempotent — `install_scroll_observer` may already have flipped
+    // it, and a list without `on_scroll` needs it flipped here.
+    let _: () = unsafe { msg_send![clip_view, setPostsBoundsChangedNotifications: true] };
+    let center: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+    let name: Retained<objc2_foundation::NSString> =
+        objc2_foundation::NSString::from_str("NSViewBoundsDidChangeNotification");
+    let sel = objc2::sel!(boundsDidChange:);
+    let _: () = unsafe {
+        msg_send![
+            center,
+            addObserver: &*target,
+            selector: sel,
+            name: &*name,
+            object: clip_view,
+        ]
+    };
+    Some(unsafe { Retained::cast::<NSObject>(target) })
+}
+
+// =========================================================================
 // PrivateLayerPassthroughView — the screen_recorder `PrivateLayer` overlay
 // window's root content view. The macOS analogue of iOS's
 // `PrivateLayerPassthroughView` + `PassthroughWindow` (one view does both
@@ -780,5 +925,179 @@ impl LayoutObserverView {
             last_size: std::cell::Cell::new((seed.width as f32, seed.height as f32)),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+#[cfg(test)]
+mod end_reach_tests {
+    //! `on_end_reached` on macOS, against a REAL `NSScrollView`.
+    //!
+    //! Host tests here can build AppKit objects (see the virtualizer's
+    //! tests), and an `NSClipView` posts `NSViewBoundsDidChangeNotification`
+    //! synchronously on `setBoundsOrigin:`, so the whole path — the
+    //! notification, the three geometry reads, the `EndReach` decision —
+    //! runs inside the test.
+    //!
+    //! The callback is delivered through `schedule_microtask`. With no
+    //! scheduler installed that runs inline; but the global scheduler is
+    //! first-wins and another test in this binary (the `newcore` suite)
+    //! installs the real one, after which microtasks go to libdispatch's
+    //! main queue and no test ever sees them. So each test opens the
+    //! scheduler's mount-buffering window — microtasks then queue on
+    //! THIS thread — and drains after every scroll. Both helpers are
+    //! no-ops with no scheduler, so the tests pass in either order.
+    //! Only the arm/re-arm rule itself is not re-tested here; that is
+    //! `EndReach`'s own suite in runtime-shared.
+    use super::*;
+    use objc2_foundation::{CGPoint, CGRect, CGSize};
+    use std::cell::Cell;
+
+    /// Keep this test's microtasks on this thread for its duration.
+    struct OnThread;
+    impl OnThread {
+        fn begin() -> Self {
+            backend_apple_core::scheduler::begin_mount_buffering();
+            OnThread
+        }
+    }
+    impl Drop for OnThread {
+        fn drop(&mut self) {
+            backend_apple_core::scheduler::end_mount_buffering();
+        }
+    }
+
+    /// A 100pt-tall viewport over 400pt of flipped content — the same
+    /// assembly `create_scroll_view` performs, minus the chrome.
+    fn scroll_view_over(content_height: f64) -> Retained<objc2_app_kit::NSView> {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let scroll: Retained<objc2_app_kit::NSView> = unsafe {
+            let allocated: *mut objc2::runtime::AnyObject =
+                msg_send![objc2::class!(NSScrollView), alloc];
+            let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(200.0, 100.0));
+            let inited: *mut objc2::runtime::AnyObject =
+                msg_send![allocated, initWithFrame: frame];
+            Retained::from_raw(inited.cast::<objc2_app_kit::NSView>()).expect("NSScrollView")
+        };
+        let doc = crate::imp::view::FlippedView::new(mtm);
+        let _: () = unsafe {
+            msg_send![&doc, setFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(200.0, content_height))]
+        };
+        let _: () = unsafe { msg_send![&scroll, setDocumentView: &*doc] };
+        scroll
+    }
+
+    fn scroll_to(scroll: &objc2_app_kit::NSView, y: f64) {
+        let clip: *mut objc2::runtime::AnyObject = unsafe { msg_send![scroll, contentView] };
+        assert!(!clip.is_null());
+        let _: () = unsafe { msg_send![clip, setBoundsOrigin: CGPoint::new(0.0, y)] };
+        runtime_shared::scheduling::drain_buffered_microtasks();
+    }
+
+    /// The path a paging list takes: nothing at the top, one arrival at
+    /// the bottom, silence while resting there, and a fresh arrival
+    /// after leaving and returning.
+    #[test]
+    fn fires_once_on_arrival_and_re_arms_on_leaving() {
+        let _on_thread = OnThread::begin();
+        let scroll = scroll_view_over(400.0);
+        let fired = Rc::new(Cell::new(0u32));
+        let counter = fired.clone();
+        let target = install_end_observer(
+            unsafe { MainThreadMarker::new_unchecked() },
+            &scroll,
+            false,
+            0.0,
+            Rc::new(move || counter.set(counter.get() + 1)),
+        )
+        .expect("an NSScrollView always has a clip view");
+
+        scroll_to(&scroll, 0.0);
+        assert_eq!(fired.get(), 0, "top of the list");
+        scroll_to(&scroll, 150.0);
+        assert_eq!(fired.get(), 0, "halfway");
+        scroll_to(&scroll, 300.0);
+        assert_eq!(fired.get(), 1, "400 - 100 = 300 is the end: arrived");
+        scroll_to(&scroll, 300.0);
+        scroll_to(&scroll, 302.0);
+        assert_eq!(fired.get(), 1, "resting there, rubber-banding past it: still one");
+        scroll_to(&scroll, 100.0);
+        scroll_to(&scroll, 300.0);
+        assert_eq!(fired.get(), 2, "left and came back");
+        drop(target);
+    }
+
+    /// The threshold is measured from the end, in the same points the
+    /// content is laid out in.
+    #[test]
+    fn threshold_fires_early() {
+        let _on_thread = OnThread::begin();
+        let scroll = scroll_view_over(400.0);
+        let fired = Rc::new(Cell::new(0u32));
+        let counter = fired.clone();
+        let _target = install_end_observer(
+            unsafe { MainThreadMarker::new_unchecked() },
+            &scroll,
+            false,
+            80.0,
+            Rc::new(move || counter.set(counter.get() + 1)),
+        )
+        .unwrap();
+        scroll_to(&scroll, 200.0);
+        assert_eq!(fired.get(), 0, "100 to go");
+        scroll_to(&scroll, 230.0);
+        assert_eq!(fired.get(), 1, "70 to go, inside the 80pt threshold");
+    }
+
+    /// Content that fits the viewport has no end to arrive at — the
+    /// "asks for its next page the moment it mounts" bug, checked
+    /// against real geometry rather than only `EndReach`'s numbers.
+    #[test]
+    fn content_that_fits_never_fires() {
+        let _on_thread = OnThread::begin();
+        let scroll = scroll_view_over(60.0);
+        let fired = Rc::new(Cell::new(0u32));
+        let counter = fired.clone();
+        let _target = install_end_observer(
+            unsafe { MainThreadMarker::new_unchecked() },
+            &scroll,
+            false,
+            0.0,
+            Rc::new(move || counter.set(counter.get() + 1)),
+        )
+        .unwrap();
+        scroll_to(&scroll, 0.0);
+        scroll_to(&scroll, 10.0);
+        assert_eq!(fired.get(), 0);
+    }
+
+    /// Horizontal reads the other axis. A wide document scrolled to its
+    /// right edge arrives; the same offsets on a vertical observer do
+    /// not.
+    #[test]
+    fn horizontal_reads_the_x_axis() {
+        let _on_thread = OnThread::begin();
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let scroll: Retained<objc2_app_kit::NSView> = unsafe {
+            let allocated: *mut objc2::runtime::AnyObject =
+                msg_send![objc2::class!(NSScrollView), alloc];
+            let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(100.0, 50.0));
+            let inited: *mut objc2::runtime::AnyObject =
+                msg_send![allocated, initWithFrame: frame];
+            Retained::from_raw(inited.cast::<objc2_app_kit::NSView>()).unwrap()
+        };
+        let doc = crate::imp::view::FlippedView::new(mtm);
+        let _: () = unsafe {
+            msg_send![&doc, setFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(500.0, 50.0))]
+        };
+        let _: () = unsafe { msg_send![&scroll, setDocumentView: &*doc] };
+        let fired = Rc::new(Cell::new(0u32));
+        let counter = fired.clone();
+        let _target =
+            install_end_observer(mtm, &scroll, true, 0.0, Rc::new(move || counter.set(counter.get() + 1)))
+                .unwrap();
+        let clip: *mut objc2::runtime::AnyObject = unsafe { msg_send![&scroll, contentView] };
+        let _: () = unsafe { msg_send![clip, setBoundsOrigin: CGPoint::new(400.0, 0.0)] };
+        runtime_shared::scheduling::drain_buffered_microtasks();
+        assert_eq!(fired.get(), 1, "500 - 100 = 400 is the right edge");
     }
 }

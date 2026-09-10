@@ -185,7 +185,6 @@ where
         // fast path is an optimisation that proves itself, not a cfg guess.
         #[cfg(not(target_arch = "wasm32"))]
         let primed: Option<crate::prims::lazy::LazyFuture> = {
-            use std::future::Future;
             let mut fut = (loader)();
             let mut ctx = std::task::Context::from_waker(std::task::Waker::noop());
             match fut.as_mut().poll(&mut ctx) {
@@ -211,23 +210,33 @@ where
         // cleanups, through the standard drop-as-unmount path.
         let mounted: Rc<RefCell<Option<Realized<H::Node>>>> = Rc::new(RefCell::new(None));
 
-        // Swap the container to `element`. Anchored dispose order: old
-        // scope drops FIRST, then the container clears, then the new
-        // subtree realizes and inserts. The initial paint skips the
-        // clear (freshly empty container — the walker's
-        // `show_loading(false)` contract).
+        // Swap the container to the state UI `build` produces. Anchored
+        // dispose order: old scope drops FIRST, then the container
+        // clears, then the new subtree builds + realizes and inserts.
+        // The initial paint skips the clear (freshly empty container —
+        // the walker's `show_loading(false)` contract).
+        //
+        // Takes the BUILD THUNK, not a built `Element`: `component_scope`
+        // runs the author's body eagerly at construction, and that body
+        // is where `screen_query()` / `current_screen_route()` /
+        // `use_focus()` read the ambient guards — so the construction
+        // has to sit inside the re-entered scope just like the realize
+        // does. Handing in a pre-built element would restore the scope
+        // for the mount handlers only (a nested navigator's base) and
+        // leave the author's own reads empty.
+        //
         // The element this lazy boundary sits under, as the robot registry saw it
         // at mount, and the navigator scope (base / screen state / route) the
         // enclosing screen build had pushed. Both re-established around every
-        // async realize below — see the module note above.
+        // async build + realize below — see the module note above.
         let robot_parent = capture_robot_parent();
         let ambient_nav = capture_ambient_nav_context();
-        let swap_to: Rc<dyn Fn(Element)> = {
+        let swap_to: Rc<dyn Fn(crate::prims::lazy::LazyBodyThunk)> = {
             let backend = backend.clone();
             let registry = registry.clone();
             let container = container.clone();
             let mounted = mounted.clone();
-            Rc::new(move |element: Element| {
+            Rc::new(move |build: crate::prims::lazy::LazyBodyThunk| {
                 let old = mounted.borrow_mut().take();
                 if old.is_some() {
                     drop(old);
@@ -235,7 +244,9 @@ where
                 }
                 let realized = {
                     let _nav = ambient_nav.enter();
-                    with_robot_parent(robot_parent, || realize(&backend, &registry, element))
+                    with_robot_parent(robot_parent, || {
+                        realize(&backend, &registry, component_scope(build))
+                    })
                 };
                 {
                     let mut b = backend.borrow_mut();
@@ -259,14 +270,14 @@ where
                 }
                 if let Some(build) = placeholder.as_ref() {
                     let build = build.clone();
-                    swap_to(component_scope(move || build()));
+                    swap_to(Box::new(move || build()));
                 }
             })
         };
         // Initial paint (Loading already fired above — build only).
         if let Some(build) = placeholder.as_ref() {
             let build = build.clone();
-            swap_to(component_scope(move || build()));
+            swap_to(Box::new(move || build()));
         }
 
         // Load outcome mailbox + tick. The continuation only writes
@@ -335,11 +346,12 @@ where
         }
 
         // The swap effect: consumes the mailbox when the tick commits.
-        // Construction runs inside `component_scope` so state the chunk
-        // creates eagerly (an External extension allocating signals in
-        // its constructor) is owned by the chunk subtree — the
-        // `ScopedLoad` invariant, at the mount site (prims/lazy.rs
-        // module docs). Owns `mounted` + `retry_holder` for teardown.
+        // Construction runs inside `component_scope` (in `swap_to`) so
+        // state the chunk creates eagerly (an External extension
+        // allocating signals in its constructor) is owned by the chunk
+        // subtree — the `ScopedLoad` invariant, at the mount site
+        // (prims/lazy.rs module docs). Owns `mounted` + `retry_holder`
+        // for teardown.
         let _swap = effect(move || {
             let _ = tick.get();
             let _keep = (&retry_holder, &mounted);
@@ -348,7 +360,7 @@ where
             };
             untrack(|| match outcome {
                 Ok(thunk) => {
-                    swap_to(component_scope(thunk));
+                    swap_to(thunk);
                     if let Some(cb) = on_state.as_ref() {
                         cb(LazyState::Rendered);
                     }
@@ -361,7 +373,7 @@ where
                         Some(build_err) => {
                             let err = LazyError::__new(message, retry_weak.clone());
                             let build_err = build_err.clone();
-                            swap_to(component_scope(move || build_err(&err)));
+                            swap_to(Box::new(move || build_err(&err)));
                         }
                         None => {
                             runtime_shared::logging::log(

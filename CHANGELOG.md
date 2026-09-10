@@ -23,10 +23,15 @@ each entry links to its migration guide.
   it RE-ARMS on leaving, which is what serves a list that grew because of
   the last arrival. Content that fits its viewport never fires.
 
-  Answered today by the **iOS-mobile and web** backends. `ScrollOps::observe_scroll_end`
-  is a defaulted no-op elsewhere, so on macOS, Android, Linux and Windows
-  this never fires and a list that ONLY grows this way stops growing
-  rather than degrading. The primitive's docs name which backends answer.
+  Answered today by the **iOS-mobile, web and macOS** backends — macOS
+  observes the same clip-view bounds notification `on_scroll` rides, as
+  its own observer (NSNotificationCenter takes any number, so unlike
+  iOS's single `UIScrollView.delegate` nothing has to be shared), and
+  one observer serves both `scroll_view` and the virtualizer since both
+  wrap an `NSScrollView`. `ScrollOps::observe_scroll_end` is a defaulted
+  no-op on Android, Linux and Windows, so there this never fires and a
+  list that ONLY grows this way stops growing rather than degrading. The
+  primitive's docs name which backends answer.
 
 ### Fixed
 

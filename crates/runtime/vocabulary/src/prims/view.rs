@@ -72,10 +72,14 @@ pub struct ScrollViewPrim {
     /// where the reader is, and "how much is left" needs the viewport
     /// and the content extent too, neither of which an app can measure.
     ///
-    /// Answered today by the iOS-mobile and web backends. Elsewhere the
-    /// default `ScrollOps::observe_scroll_end` is a no-op and this
-    /// never fires — so a list that ONLY grows this way stops growing,
-    /// rather than degrading to something.
+    /// Answered today by the **iOS-mobile, web and macOS** backends.
+    /// Elsewhere — Android, Linux, Windows — the default
+    /// `ScrollOps::observe_scroll_end` is a no-op and this never fires,
+    /// so a list that ONLY grows this way stops growing rather than
+    /// degrading to something. (Android needs its Kotlin scroll
+    /// listeners to carry the content extent, and to install on an
+    /// `observe_scroll_end` that arrives after creation; neither is in
+    /// place yet.)
     pub on_end_reached: Option<Rc<dyn Fn()>>,
     /// How close to the end counts as arriving, in logical px. `0`
     /// means the very end; a screenful is the usual choice for
