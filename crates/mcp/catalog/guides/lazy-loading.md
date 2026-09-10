@@ -126,8 +126,9 @@ idealyst dev --web --local --split
 
 A non-splitting build does not merely skip the pass — it stops building *for*
 the splitter. rustc emits no relocations and wasm-bindgen runs without
-`--keep-lld-exports` / `--keep-debug`, so its own dead-code pass and debug strip
-compact the module and stack traces get demangled names. Measured on a large
+`--keep-debug` / `--no-demangle`, so its debug strip runs and stack traces get
+demangled names. (It keeps `--keep-lld-exports`: the inline lazy loader calls
+through the main module's function table, which is an LLD export.) Measured on a large
 app: the post-cargo tail falls from 21-42 s to 6-10 s, for a served module about
 15% larger (79 MB vs 69 MB).
 

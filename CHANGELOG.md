@@ -257,9 +257,13 @@ each entry links to its migration guide.
 
   A non-splitting build no longer merely skips the pass, it stops
   building *for* it: no `--emit-relocs` from rustc, and wasm-bindgen
-  without `--keep-lld-exports` / `--keep-debug` / `--no-demangle`, so its
-  own dead-code pass and debug strip compact the module and stack traces
-  get demangled names. That inverts the old trade — skipping used to
+  without `--keep-debug` / `--no-demangle`, so its debug strip runs and
+  stack traces get demangled names. It does keep `--keep-lld-exports`:
+  the inline lazy loader wakes each future through the main module's
+  `__indirect_function_table`, which is an LLD export, and bindgen's gc
+  drops every one it is not told to keep — without it every
+  `#[component(lazy)]` in a dev session sat on its loading UI forever
+  (CrewForge, the day its 14 sidebar areas went lazy). That inverts the old trade — skipping used to
   serve 113.7 MB against 68.7 MB split; it now serves 79.1 MB, with the
   post-cargo tail down from 21–42 s to 6–10 s (measured on a large app,
   interleaved UI-edit rebuilds on one loaded machine).

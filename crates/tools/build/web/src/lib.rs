@@ -2253,28 +2253,52 @@ fn cargo_build_wasm(
     Ok(())
 }
 
-/// Run `wasm-bindgen --target web` to turn the rustc-emitted wasm into
-/// the JS-callable wasm-bindgen output.
+/// The flags `wasm-bindgen --target web` gets beyond the target, by
+/// whether the splitter runs afterwards. Pure, so the decision is
+/// pinned by `wasm_bindgen_flag_tests` — it was wrong once, invisibly:
+/// nothing lazy was exercised in a dev session for weeks.
 ///
-/// The three extra flags exist for the splitter, and ride only a
-/// splitting build (`split`):
+/// `--keep-lld-exports` rides BOTH paths, for two different reasons:
 ///
-/// * `--keep-lld-exports` is the critical one: without it, wasm-bindgen
-///   strips the LLD-emitted exports that wasm-split-cli uses to identify
-///   per-chunk reachable code. With them stripped, wasm-split
-///   conservatively keeps everything in the main bundle — which is
-///   exactly what was happening to the website's bundle in the wasm-pack
-///   pipeline. It also pins every export as a GC root, which is why a
-///   non-splitting build must NOT pass it: wasm-bindgen's own dead-code
-///   pass is then the only compaction the module gets.
+/// * Splitting: without it wasm-bindgen strips the LLD-emitted exports
+///   wasm-split-cli uses to identify per-chunk reachable code, and the
+///   splitter conservatively keeps everything in main — which is what
+///   was happening to the website's bundle in the wasm-pack pipeline.
+/// * Not splitting: the inline `__wasm_split.js` wakes each lazy future
+///   through the main module's `__indirect_function_table`, which
+///   `cargo_build_wasm` asks LLD to export (`--export-table`) on exactly
+///   this path — and wasm-bindgen's gc drops every LLD export it is not
+///   told to keep. Without it the table never reaches JS, the loader's
+///   `main().__indirect_function_table.get(...)` throws `Cannot read
+///   properties of undefined (reading 'get')`, and every
+///   `#[component(lazy)]` in a dev session sits on its loading UI
+///   forever. Measured on CrewForge the day its 14 areas went lazy: 54
+///   exports, no table. The flag pins every export as a GC root, so the
+///   no-split module is larger than bindgen's own dead-code pass alone
+///   would make it; that is the price of a working loader.
+///
+/// The other two are the splitter's alone:
+///
 /// * `--keep-debug` gives wasm-split the symbol info it needs to match
 ///   function references across the relocations; the splitter (or, on
 ///   release, wasm-opt) strips it again, so the served module never
 ///   carries it. Without a splitter it is bytes bindgen reads for
 ///   nothing.
-/// * `--no-demangle` keeps the mangled names reloc records carry, so the
-///   splitter's matching works. A non-splitting build gets demangled
-///   names, which is what a person wants in a stack trace anyway.
+/// * `--no-demangle` keeps the mangled names reloc records carry, so
+///   the splitter's matching works — without it the website's lazy
+///   hero-simulator chunk measured 469 bytes. A non-splitting build gets
+///   demangled names, which is what a person wants in a stack trace.
+fn wasm_bindgen_flags(split: bool) -> &'static [&'static str] {
+    if split {
+        &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
+    } else {
+        &["--keep-lld-exports"]
+    }
+}
+
+/// Run `wasm-bindgen --target web` to turn the rustc-emitted wasm into
+/// the JS-callable wasm-bindgen output. The flags are
+/// [`wasm_bindgen_flags`]'s decision.
 fn wasm_bindgen_build(
     original_wasm: &Path,
     out_dir: &Path,
@@ -2285,34 +2309,10 @@ fn wasm_bindgen_build(
         fs::remove_dir_all(out_dir).with_context(|| format!("clear {}", out_dir.display()))?;
     }
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-    let split_flags: &[&str] = if split {
-        // CRITICAL: --no-demangle. wasm-bindgen demangles Rust symbol
-        // names by default. wasm-split-cli matches reloc records (which
-        // carry MANGLED names from rustc) against the bindgened wasm's
-        // symbol table — demangled names there mean nothing matches, so
-        // wasm-split conservatively keeps everything in main and emits
-        // empty chunks. Without this flag the website's lazy
-        // hero-simulator chunk measured 469 bytes; with it, the
-        // wgpu/welcome/sim stack actually moves out of main.
-        &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
-    } else {
-        // `--no-split` still needs `--keep-lld-exports`: the inline
-        // loader wakes each lazy future through the main module's
-        // `__indirect_function_table`, which `cargo_build_wasm` asks LLD
-        // to export (`--export-table`) on exactly this path — and
-        // wasm-bindgen's gc drops every LLD export it is not told to
-        // keep. Without it the table never reaches the JS side, the
-        // loader's `main().__indirect_function_table.get(...)` throws
-        // `Cannot read properties of undefined (reading 'get')`, and
-        // every `#[component(lazy)]` in a dev session stays on its
-        // loading UI forever. Measured on CrewForge the day its 14 areas
-        // went lazy: 54 exports, no table. Debug info and mangling are
-        // the splitter's concerns, not this path's.
-        &["--keep-lld-exports"]
-    };
+    let split_flags = wasm_bindgen_flags(split);
     eprintln!(
         "[build-web] wasm-bindgen --target web {} → {}",
-        if split { split_flags.join(" ") } else { "(no split: bindgen gc + strip)".to_string() },
+        split_flags.join(" "),
         out_dir.display(),
     );
     let status = Command::new("wasm-bindgen")
@@ -4161,5 +4161,46 @@ mod robot_relay_tests {
         // test would also pass against a function that never writes.
         stage_robot_relay_url(&index, Some("ws://127.0.0.1:44885")).unwrap();
         assert!(fs::read_to_string(&index).unwrap().contains("IDEALYST_ROBOT_RELAY_URL"));
+    }
+}
+
+#[cfg(test)]
+mod wasm_bindgen_flag_tests {
+    use super::wasm_bindgen_flags;
+
+    /// Regression (37bdef45): the no-split path dropped
+    /// `--keep-lld-exports` when it dropped the other two splitter
+    /// flags, and wasm-bindgen's gc then removed the
+    /// `__indirect_function_table` export that `cargo_build_wasm` had
+    /// asked LLD for on that very path. The inline lazy loader calls
+    /// through that table, so every `#[component(lazy)]` in a dev
+    /// session sat on its loading UI forever. Nothing lazy was exercised
+    /// in dev for weeks, so nothing caught it.
+    #[test]
+    fn regression_no_split_keeps_the_lld_exports_the_inline_loader_calls_through() {
+        assert!(
+            wasm_bindgen_flags(false).contains(&"--keep-lld-exports"),
+            "without this the function table never reaches JS"
+        );
+    }
+
+    /// And ONLY that one: `--keep-debug` and `--no-demangle` serve the
+    /// splitter's symbol matching, and a non-splitting build wants
+    /// bindgen's debug strip and demangled stack traces.
+    #[test]
+    fn no_split_does_not_carry_the_splitter_only_flags() {
+        let flags = wasm_bindgen_flags(false);
+        assert!(!flags.contains(&"--keep-debug"), "{flags:?}");
+        assert!(!flags.contains(&"--no-demangle"), "{flags:?}");
+    }
+
+    /// The splitting path needs all three; losing any one silently
+    /// degrades to "everything stays in main" with empty chunks.
+    #[test]
+    fn split_carries_all_three() {
+        let flags = wasm_bindgen_flags(true);
+        for f in ["--keep-lld-exports", "--keep-debug", "--no-demangle"] {
+            assert!(flags.contains(&f), "missing {f} in {flags:?}");
+        }
     }
 }
