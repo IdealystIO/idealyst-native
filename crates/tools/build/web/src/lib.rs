@@ -2296,7 +2296,19 @@ fn wasm_bindgen_build(
         // wgpu/welcome/sim stack actually moves out of main.
         &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
     } else {
-        &[]
+        // `--no-split` still needs `--keep-lld-exports`: the inline
+        // loader wakes each lazy future through the main module's
+        // `__indirect_function_table`, which `cargo_build_wasm` asks LLD
+        // to export (`--export-table`) on exactly this path — and
+        // wasm-bindgen's gc drops every LLD export it is not told to
+        // keep. Without it the table never reaches the JS side, the
+        // loader's `main().__indirect_function_table.get(...)` throws
+        // `Cannot read properties of undefined (reading 'get')`, and
+        // every `#[component(lazy)]` in a dev session stays on its
+        // loading UI forever. Measured on CrewForge the day its 14 areas
+        // went lazy: 54 exports, no table. Debug info and mangling are
+        // the splitter's concerns, not this path's.
+        &["--keep-lld-exports"]
     };
     eprintln!(
         "[build-web] wasm-bindgen --target web {} → {}",
