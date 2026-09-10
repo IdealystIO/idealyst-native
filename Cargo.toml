@@ -436,7 +436,7 @@ premint-dump = { path = "crates/tools/premint-dump" }
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.5.2", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.7.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.5.4", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.5.5", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.5.5", registry = "idealyst" }

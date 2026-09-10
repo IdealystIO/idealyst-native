@@ -7308,7 +7308,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "inventory",
  "runtime-core",
