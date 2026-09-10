@@ -7,6 +7,26 @@ each entry links to its migration guide.
 
 ### Added
 
+- **`idealyst check` checks the server half.** A full-stack project
+  (`server_bin` / `server_manifest`) now gets one more check after the
+  per-triple client sweep: its server, on the host, with the `server`
+  feature — the `#[server]` bodies and the db layer behind them, which no
+  client triple ever compiled. Until this there was no single command
+  that checked such a project. `--server` asks for it under a narrowed
+  `--platform`; `--no-server` skips it. The selection (package, manifest,
+  feature, bin) is the one function `idealyst dev` builds from, so the
+  check cannot be green about a binary the dev loop does not run.
+
+- **`idealyst dev --shared-target`** builds the project's server into the
+  workspace's own `target/` instead of the isolated
+  `target/idealyst-dev-server/`, so the dev server, `cargo test` and
+  `cargo check` hold one copy of every dependency and warm each other.
+  The isolated default stays: it keeps an IDE's background `cargo check`
+  off the dev server's build lock. On an unattended box that lock is a
+  feature — it serialises the only two builds in the tree instead of
+  letting them run concurrently into swap — and the isolation had cost
+  every CrewForge box a second and third cold compile of the same crate.
+
 - **`server`'s client surface is present on every build — the `server`
   feature is now additive.** `configure`, `ClientConfig`, `use_socket`,
   `use_sse`, `batch`, `with_cancel` and `Socket::connect` no longer

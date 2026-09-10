@@ -16,6 +16,15 @@
 //! target std installed (`rustup target add <triple>`). A missing
 //! target std is reported per-triple and counted as a failure rather
 //! than aborting the whole sweep.
+//!
+//! A full-stack project (`server_bin` / `server_manifest`) gets one more
+//! check: its SERVER half, on the host, with the `server` feature. That
+//! half is the one no per-triple client check ever compiles — the
+//! `#[server]` bodies, the db layer behind them — and until this ran it
+//! there was no single command that checked such a project at all.
+//! CrewForge carried "no single cargo command checks this workspace" as
+//! a standing rule for its agents, and the agents paid for it in
+//! guessed feature sets and builds that landed in the wrong target dir.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -53,7 +62,19 @@ pub struct Args {
     /// (`aarch64-apple-ios`) instead of the simulator triple.
     #[arg(long)]
     pub device: bool,
+
+    /// Also check the project's server half (host, `--features server`)
+    /// when `--platform` narrows the sweep. Without `--platform` the
+    /// server is checked whenever the manifest declares one.
+    #[arg(long)]
+    pub server: bool,
+
+    /// Skip the server half even though the manifest declares one.
+    #[arg(long, conflicts_with = "server")]
+    pub no_server: bool,
 }
+
+const SERVER_LABEL: &str = "<host, server>";
 
 pub fn run(args: Args) -> Result<()> {
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
@@ -96,16 +117,41 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    // The server half, when there is one. Skipped under `--platform`
+    // unless the caller named it: a request for "just web" should not
+    // silently grow a host compile of the db layer.
+    let mut total = triples.len();
+    let server_declared =
+        manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some();
+    let want_server = args.platform.is_empty() || args.server;
+    if server_declared && want_server && !args.no_server {
+        total += 1;
+        eprintln!("[check] cargo check {SERVER_LABEL}");
+        match check_server(&dir, &manifest, args.release) {
+            Ok(()) => eprintln!("[check] {SERVER_LABEL} OK"),
+            Err(e) => {
+                eprintln!("[check] {SERVER_LABEL} FAILED: {e}");
+                failures.push(SERVER_LABEL.to_string());
+            }
+        }
+    } else if args.server && !server_declared {
+        anyhow::bail!(
+            "--server given, but the manifest declares no server \
+             (set `server_bin` or `server_manifest` under \
+             [package.metadata.idealyst.app])"
+        );
+    }
+
     if !failures.is_empty() {
         anyhow::bail!(
-            "`idealyst check` failed for {} of {} triple(s): {}",
+            "`idealyst check` failed for {} of {} check(s): {}",
             failures.len(),
-            triples.len(),
+            total,
             failures.join(", "),
         );
     }
 
-    eprintln!("[check] all {} triple(s) passed", triples.len());
+    eprintln!("[check] all {total} check(s) passed");
     Ok(())
 }
 
@@ -230,6 +276,31 @@ fn check_one(dir: &std::path::Path, triple: &CheckTriple, release: bool) -> Resu
                  `rustup target add {t}` and retry."
             );
         }
+        anyhow::bail!("cargo check exited {status}");
+    }
+    Ok(())
+}
+
+/// Type-check the server half: the same package/manifest/feature/bin
+/// selection the dev loop builds (`dev::server_build_args`), under
+/// `cargo check` on the host. Same selection on purpose — a check that
+/// picked a different feature set from the build would be green about a
+/// binary nobody runs.
+///
+/// No `--target-dir` override: this lands in the workspace's own
+/// `target/`, beside `cargo test`, which is where a project's tests
+/// already compile the same artifact.
+fn check_server(dir: &std::path::Path, manifest: &build_ios::Manifest, release: bool) -> Result<()> {
+    let (_watched, args) = super::dev::server_build_args(dir, manifest)?;
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(dir).arg("check").args(&args);
+    if release {
+        cmd.arg("--release");
+    }
+    let status = cmd
+        .status()
+        .with_context(|| format!("spawn `cargo check` for {SERVER_LABEL}"))?;
+    if !status.success() {
         anyhow::bail!("cargo check exited {status}");
     }
     Ok(())

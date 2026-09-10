@@ -300,6 +300,19 @@ pub struct Args {
     #[arg(long)]
     pub no_robot: bool,
 
+    /// Build the project's server into the workspace's own `target/`
+    /// instead of an isolated `target/idealyst-dev-server/`, so the dev
+    /// server, `cargo test` and `cargo check` share one copy of every
+    /// dependency and warm each other.
+    ///
+    /// The isolated default exists so an IDE's background `cargo check`
+    /// cannot hold the dev server's rebuild on the build lock. On an
+    /// unattended box that lock is a feature: it serialises the only
+    /// two builds in the tree instead of letting them run concurrently
+    /// into swap. Use this there; keep the default on a laptop.
+    #[arg(long)]
+    pub shared_target: bool,
+
     /// Launch a headless Chromium at the served web URL so the app runs (and
     /// dials the robot relay) without any display. AUTO-enabled when the
     /// relay is active and no display is present (container/CI/SSH) — this
@@ -737,7 +750,7 @@ pub fn run(args: Args) -> Result<()> {
     let mut backend_pid: Option<u32> = None;
     let backend_port = dev_server_port(&args, &manifest.app);
     if backend_declared && !active_targets.contains(&Target::Web) {
-        match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir), backend_port) {
+        match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir, args.shared_target), backend_port) {
             Ok(child) => {
                 let pid = child.id();
                 eprintln!(
@@ -1957,15 +1970,33 @@ fn launch_ssr(
 /// cache. `server_watch_setup`'s `cargo build` and `spawn_backend`'s
 /// `cargo run` MUST both go through here — pointing them at different
 /// dirs would make every respawn a fresh compile with the port closed.
-fn server_target_dir(project_dir: &Path) -> PathBuf {
-    match crate::framework_source::resolve(project_dir) {
+///
+/// EXCEPT with `--shared-target`, which puts the server build in the
+/// workspace's own `target/` on purpose. The isolation above trades one
+/// lock wait for a second copy of every host dependency, and on an
+/// unattended cloud box that trade is backwards: nothing there runs
+/// rust-analyzer, the agent's own `cargo test` is the only other cargo
+/// in the tree, and serialising the two on one lock is what stops them
+/// running concurrently into swap. Measured on the CrewForge fleet
+/// (agentstats, 2026-09-10): the isolated dir cost every box a 344-crate
+/// cold build of `crewforge-api --features server` that the workspace
+/// target already held, and the same artifact a third time for
+/// `cargo test`. Shared, the seed's one warm build serves all three.
+///
+/// A laptop with an IDE open keeps the default.
+fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
+    let base = match crate::framework_source::resolve(project_dir) {
         Ok(source) => source.cargo_target_dir(project_dir),
         // Resolution only fails when the framework source can't be
         // determined at all. Isolation matters more than the cross-app
         // sharing, so fall back to a project-local dir — never `target/`.
         Err(_) => project_dir.join("target"),
+    };
+    if shared {
+        base
+    } else {
+        base.join("idealyst-dev-server")
     }
-    .join("idealyst-dev-server")
 }
 
 /// Where `idealyst dev` stages the web bundle it serves — for the
@@ -2072,7 +2103,7 @@ fn launch_web_with_backend(
     // from `build --web`'s `dist/web` on purpose — see
     // `dev_web_bundle_dir`.
     let dist_web = dev_web_bundle_dir(dir);
-    let server_target = server_target_dir(dir);
+    let server_target = server_target_dir(dir, args.shared_target);
     // The relay `run()` already started and exported (`--no-robot`
     // leaves it unset). Read once: the port is fixed for the session,
     // and every rebuild restages the `index.html` that advertises it.
@@ -2356,13 +2387,25 @@ impl BinStamp {
 /// readable in the dev log) while stdout carries one JSON record per
 /// artifact, and the `executable` field of the last `compiler-artifact`
 /// names exactly what was produced.
-fn server_watch_setup(
+/// The cargo arguments that select the project's server for a build —
+/// the package, the manifest, the feature, the bin — WITHOUT the verb or
+/// the target dir, so `build`, `check` and `run` can all agree on what
+/// "the server" is.
+///
+/// One function, because it used to be written out in
+/// `server_watch_setup` and again in `spawn_backend`, and the comment
+/// beside each said the other must match or `cargo run` recompiles
+/// what `cargo build` just produced. `idealyst check` needed a third
+/// copy to type-check the server half at all, which is one copy past
+/// the point where a comment is a substitute for a function.
+///
+/// Returns the manifest whose source tree owns the server (what the
+/// dev loop watches) alongside the args.
+pub(crate) fn server_build_args(
     dir: &Path,
     manifest: &build_ios::Manifest,
-    target_dir: &Path,
-) -> Result<(Vec<PathBuf>, impl FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static)> {
+) -> Result<(PathBuf, Vec<String>)> {
     let app = &manifest.app;
-    // Base command + the manifest whose local closure we watch.
     let (watched_manifest, mut base_args): (PathBuf, Vec<String>) =
         if let Some(rel) = &app.server_manifest {
             let joined = dir.join(rel);
@@ -2387,8 +2430,6 @@ fn server_watch_setup(
                 manifest_path.display(),
             );
             // In-crate: same package as the app, gated behind `server`.
-            // Mirrors `spawn_backend`'s in-crate arm exactly — the two
-            // must agree or `cargo run` recompiles what we just built.
             let args = vec![
                 "-p".to_string(),
                 manifest.name.clone(),
@@ -2403,6 +2444,16 @@ fn server_watch_setup(
         base_args.push("--bin".to_string());
         base_args.push(b.clone());
     }
+    Ok((watched_manifest, base_args))
+}
+
+fn server_watch_setup(
+    dir: &Path,
+    manifest: &build_ios::Manifest,
+    target_dir: &Path,
+) -> Result<(Vec<PathBuf>, impl FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static)> {
+    // Base command + the manifest whose local closure we watch.
+    let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
 
     let roots = dev_reload::watch_roots(&watched_manifest);
     let target_dir = target_dir.to_path_buf();
@@ -3055,6 +3106,7 @@ impl Args {
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
+            shared_target: self.shared_target,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,
             screenshot_dir: self.screenshot_dir.clone(),
@@ -3530,7 +3582,7 @@ mod tests {
         // fallback arm; both arms must land somewhere that is NOT the
         // plain `target/` cargo locks for everything else in the tree.
         let dir = Path::new("/nonexistent-project-root/apps/demo");
-        let target = server_target_dir(dir);
+        let target = server_target_dir(dir, false);
         assert!(
             target.ends_with("idealyst-dev-server"),
             "got {}",
@@ -3541,6 +3593,15 @@ mod tests {
             dir.join("target"),
             "the dev server must not share the workspace build lock",
         );
+    }
+
+    /// `--shared-target` is the deliberate opposite: the workspace's own
+    /// `target/`, so a box's seed build, dev server and `cargo test`
+    /// hold one copy of every dependency.
+    #[test]
+    fn shared_target_is_the_workspace_target() {
+        let dir = Path::new("/nonexistent-project-root/apps/demo");
+        assert_eq!(server_target_dir(dir, true), dir.join("target"));
     }
 
     /// Regression guard for the "android blank screen" bug: in
