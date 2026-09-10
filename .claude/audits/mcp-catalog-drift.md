@@ -41,6 +41,34 @@ Five drift surfaces matter:
 - [ ] For each variant, search `crates/mcp/catalog/src/primitives.rs` for an `inventory::submit!` whose `pascal_name` matches the variant ident, or `name` matches the snake_case form of the variant.
 - [ ] Flag any variant with no matching entry. Suggest the matching `PrimitiveEntry { name, pascal_name, docs, props, category, backends, _seal: () }` block.
 
+### Primitive PROP coverage
+
+Entry existence is not enough. `scroll_view` had an entry for as long as the
+table existed and advertised `children` + the three common fields — no
+`horizontal`, no `on_scroll`, no `on_end_reached` — so an agent working from
+the MCP could not learn that a scroller reports its end, and one commit
+(47d014a2) exists because an author could not find a setter and reached for
+a spelling that silently did nothing.
+
+- [ ] For each `PrimitiveEntry`, open the prim struct it describes
+  (`crates/runtime/vocabulary/src/prims/<name>.rs`) and list its `pub` fields.
+- [ ] Every field an author sets — anything with a builder setter in
+  `crates/runtime/vocabulary/src/glue.rs` on the matching `Glue*` type, or
+  an inline prop the `ui!` emitter in `crates/runtime/macros/src/ui.rs`
+  lowers — must have a `PropFieldSpec` with a `doc` that says what it is
+  FOR, not only what it is.
+- [ ] A prop that only some backends answer (a defaulted no-op cap method,
+  e.g. `ScrollOps::observe_scroll_end`) must name them in `constraint`
+  (`backends: ios, web, macos`) and say in `doc` what happens elsewhere.
+- [ ] A prop that is builder-only (the `ui!` emitter does not lower it) must
+  say so in `constraint` — see `text_input.on_key_down` for the wording.
+  Better: make the emitter lower it (`builder_calls` in `ui.rs` is a table
+  for exactly this) and drop the caveat.
+- [ ] Search must find a primitive by a prop name: `search("<prop>")` in
+  `mcp-server` indexes prop names and docs into the primitive's body
+  (`search_finds_a_primitive_by_one_of_its_props`). If a prop is in the table
+  and a search for it returns nothing, that indexing regressed.
+
 ### Utility coverage
 
 - [ ] Inspect `crates/mcp/catalog/src/utilities.rs`. For each entry, verify the named function actually exists in `runtime_core` (or the named module). Grep the codebase for `pub fn <name>` under `module_path`.
@@ -87,8 +115,8 @@ Five drift surfaces matter:
 
 ### Test coverage
 
-- [ ] `cargo test -p mcp-catalog` should still pass. In particular: `catalog_json_v2_includes_every_new_slice`, `catalog_json_round_trips_through_build_from_json`, `primitives_table_includes_core_set`, `states_table_has_exactly_the_four_interaction_states`, `utilities_table_includes_platform_accessor`, `macros_table_documents_effect_and_signal`, `guides_table_includes_getting_started`, `sdks_table_indexes_non_ui_capability_crates`, `sdks_guide_enumerates_the_data_crates`.
-- [ ] `cargo test -p mcp-server` should still pass. In particular the server-tool regressions: `search_multi_word_query_tokenizes_and_ranks`, `search_covers_non_guide_slices`, `list_and_describe_macros_are_populated`, `list_and_describe_sdks_expose_non_ui_crates`.
+- [ ] `cargo test -p mcp-catalog` should still pass. In particular: `catalog_json_v2_includes_every_new_slice`, `catalog_json_round_trips_through_build_from_json`, `primitives_table_includes_core_set`, the `scroll_props_advertised` suite, `states_table_has_exactly_the_four_interaction_states`, `utilities_table_includes_platform_accessor`, `macros_table_documents_effect_and_signal`, `guides_table_includes_getting_started`, `sdks_table_indexes_non_ui_capability_crates`, `sdks_guide_enumerates_the_data_crates`.
+- [ ] `cargo test -p mcp-server` should still pass. In particular the server-tool regressions: `search_multi_word_query_tokenizes_and_ranks`, `search_covers_non_guide_slices`, `search_finds_a_primitive_by_one_of_its_props`, `list_and_describe_macros_are_populated`, `list_and_describe_sdks_expose_non_ui_crates`.
 
 ## Output format
 

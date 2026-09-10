@@ -35,6 +35,20 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **`scroll_view(on_end_reached = …)` inside `ui!` now works.** The
+  emitter lowered only `horizontal`; every other attribute — `on_scroll`,
+  `on_end_reached`, `end_reached_threshold`, `bounces`, `safe_area` — was
+  dropped in silence, no warning, no error, and the prop simply stayed
+  `None`. `flat_list` dropped its three scroll props the same way. Both
+  now lower every setter on their builder; the table they lower from is
+  the one place to add a new one. The MCP catalog's `scroll_view` and
+  `virtualizer` entries advertise these props for the first time (they
+  listed only their content and the common fields), each says which
+  backends answer `on_end_reached`, and `search` indexes primitive prop
+  names and docs, so `search("on_end_reached")` — or `"infinite paging"`
+  — surfaces both. The catalog-drift audit now checks props, not only
+  entries.
+
 - **A navigator inside a `#[component(lazy)]` body now resolves the URL
   relative to the screen it sits in.** A lazy boundary realizes its chunk
   from a callback, long after the screen build that contains it has

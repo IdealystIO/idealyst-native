@@ -157,6 +157,10 @@ pub struct Shared {
     pub link_activations: RefCell<Vec<Rc<dyn Fn()>>>,
     /// Scroll-view `on_scroll` handlers (None when absent).
     pub scroll_handlers: RefCell<Vec<Option<Rc<dyn Fn(f32, f32)>>>>,
+    /// `on_end_reached` observers, keyed by node, exactly as
+    /// `observe_scroll_end` delivered them: `(horizontal, threshold,
+    /// callback)`. A test fires one to stand in for the reader arriving.
+    pub end_observers: RefCell<Vec<(Node, bool, f32, Rc<dyn Fn()>)>>,
     /// Virtualizer callback bundles.
     pub virtualizers: RefCell<Vec<VirtualizerCallbacks<Node>>>,
     /// `virtual_grid` callback bundles (two-axis).
@@ -227,6 +231,7 @@ impl Default for Shared {
             key_down_handlers: RefCell::new(Vec::new()),
             link_activations: RefCell::new(Vec::new()),
             scroll_handlers: RefCell::new(Vec::new()),
+            end_observers: RefCell::new(Vec::new()),
             virtualizers: RefCell::new(Vec::new()),
             virtual_grids: RefCell::new(Vec::new()),
             graphics: RefCell::new(Vec::new()),
@@ -848,6 +853,20 @@ impl caps::ScrollOps for HostMock {
     ) -> Node {
         self.s.scroll_handlers.borrow_mut().push(on_scroll);
         self.mint("scroll_view".into())
+    }
+
+    fn observe_scroll_end(
+        &mut self,
+        node: &Node,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
+        self.s.rec(
+            "observe_scroll_end",
+            format!("observe_scroll_end n{node} horizontal={horizontal} threshold={threshold}"),
+        );
+        self.s.end_observers.borrow_mut().push((*node, horizontal, threshold, on_end));
     }
 
     fn node_scroll(&self, node: &Node) -> (f32, f32) {

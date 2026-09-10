@@ -2764,12 +2764,27 @@ impl CatalogService {
             consider("component", e.name.to_string(), fqn, &[e.name], e.docs, &mut hits);
         }
         for p in cat.primitives() {
+            // A primitive's props are part of its searchable text. The
+            // question an author actually has is "which primitive takes
+            // `on_end_reached`?", and with only the name and the summary
+            // indexed that query returned nothing — the setter was
+            // undiscoverable from the MCP even once the table listed it,
+            // and one commit (47d014a2) exists because an author could
+            // not find it. Prop docs ride along so "infinite paging"
+            // finds it too.
+            let mut body = String::from(p.docs);
+            for f in p.props {
+                body.push('\n');
+                body.push_str(f.name);
+                body.push_str(": ");
+                body.push_str(f.doc);
+            }
             consider(
                 "primitive",
                 p.name.to_string(),
                 p.name.to_string(),
                 &[p.name, p.pascal_name],
-                p.docs,
+                &body,
                 &mut hits,
             );
         }
@@ -4159,6 +4174,46 @@ mod tests {
     /// A2 (coverage half): the search index must span more than guide
     /// prose — a query that only matches a macro name surfaces a `macro`
     /// kind, proving non-guide slices are indexed.
+    /// Regression: searching for a PROP name must surface the primitives
+    /// that take it. `on_end_reached` was listed on `scroll_view` and the
+    /// virtualizer and still unfindable, because the primitive slice
+    /// indexed only the name and the summary. That is the MCP-side half
+    /// of 47d014a2 — an author who cannot find the setter reaches for a
+    /// spelling that silently does nothing.
+    #[tokio::test]
+    async fn search_finds_a_primitive_by_one_of_its_props() {
+        let svc = CatalogService::new();
+        let r = svc
+            .search(Parameters(SearchRequest { query: "on_end_reached".into(), app: None }))
+            .await
+            .unwrap();
+        let v = parse_array(&r);
+        let prims: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["kind"] == "primitive")
+            .filter_map(|h| h["name"].as_str())
+            .collect();
+        assert!(prims.contains(&"scroll_view"), "scroll_view takes it; got {prims:?}");
+        assert!(prims.contains(&"virtualizer"), "the virtualizer takes it; got {prims:?}");
+
+        // And by what the prop is FOR, not only its identifier.
+        let r = svc
+            .search(Parameters(SearchRequest { query: "infinite paging".into(), app: None }))
+            .await
+            .unwrap();
+        let v = parse_array(&r);
+        let prims: Vec<&str> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["kind"] == "primitive")
+            .filter_map(|h| h["name"].as_str())
+            .collect();
+        assert!(prims.contains(&"scroll_view"), "got {prims:?}");
+    }
+
     #[tokio::test]
     async fn search_covers_non_guide_slices() {
         let svc = CatalogService::new();

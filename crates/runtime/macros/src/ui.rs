@@ -2154,24 +2154,54 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     quote! { ::runtime_core::primitives::toggle::toggle(#value, #on_change) }
 }
 
-/// `ScrollView(horizontal = bool) { children }`. Children list works
-/// just like `View`.
+/// Lower each named inline prop to the builder call of the same name,
+/// `name = v` → `.name(v)`, skipping any the author did not write.
+///
+/// The primitive emitters used to hand-roll one `if let Some(p) =
+/// props.iter().find(..)` per prop, and every prop that was NOT
+/// hand-rolled was dropped in silence — an unknown attribute on a
+/// primitive is not an error. That is how `scroll_view(on_end_reached
+/// = cb)` compiled and reached nothing, and cost an instrumented device
+/// build to diagnose (47d014a2). A table is harder to leave a setter
+/// out of than a chain of `if let`s.
+fn builder_calls(props: &[Prop], names: &[&str]) -> TokenStream2 {
+    let calls = names.iter().filter_map(|name| {
+        props.iter().find(|p| p.name == *name).map(|p| {
+            let m = syn::Ident::new(name, proc_macro2::Span::call_site());
+            let v = &p.value;
+            quote! { .#m(#v) }
+        })
+    });
+    quote! { #(#calls)* }
+}
+
+/// The inline props `scroll_view` lowers, each to the `GlueScrollView`
+/// setter of the same name. Every entry here is a setter on that
+/// builder; adding a setter there means adding it here, or the inline
+/// spelling is dropped in silence.
+const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
+    "horizontal",
+    "on_scroll",
+    "on_end_reached",
+    "end_reached_threshold",
+    "bounces",
+    "safe_area",
+];
+
+/// `scroll_view(horizontal = bool, on_scroll = …, on_end_reached = …,
+/// end_reached_threshold = px, bounces = bool, safe_area = …) { children }`.
+/// Children list works just like `view`.
 fn emit_scroll_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
-    let horizontal_call = if let Some(p) = props.iter().find(|p| p.name == "horizontal") {
-        let v = &p.value;
-        quote! { .horizontal(#v) }
-    } else {
-        quote! {}
-    };
+    let setters = builder_calls(props, SCROLL_VIEW_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::scroll_view::scroll_view({
             let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
-        }) #horizontal_call
+        }) #setters
     }
 }
 
@@ -2615,6 +2645,12 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
         }
     };
 
+    // Paging is the idiom a virtualizer exists to serve, and the
+    // inline spelling of it was dropped in silence — see
+    // `builder_calls`.
+    let scroll_setters =
+        builder_calls(props, &["on_scroll", "on_end_reached", "end_reached_threshold"]);
+
     // The third generic on flat_list is unused — fall through.
     quote! {
         ::runtime_core::primitives::flat_list::flat_list::<_, _, (), _>(#data, #key, #size, #render)
@@ -2622,6 +2658,7 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
             #axis_call
             #lanes_call
             #spacing_call
+            #scroll_setters
     }
 }
 
@@ -3524,6 +3561,68 @@ mod tests {
             out.contains(". test_id ("),
             "the emitted link must carry a `.test_id(…)` CALL; got:\n{out}"
         );
+    }
+
+    /// Regression (47d014a2): `scroll_view(on_end_reached = cb)` compiled
+    /// and reached nothing. The emitter lowered only `horizontal`, and an
+    /// attribute it did not know was dropped in silence — no warning, no
+    /// error, the prop simply stayed `None` and the observer was never
+    /// installed. Diagnosing it took an instrumented device build. Every
+    /// setter on `GlueScrollView` must now lower from its inline
+    /// spelling. Asserted as method CALLS — the salvage copy of the input
+    /// would make a bare `contains(name)` vacuous (see `parse_and_emit`).
+    #[test]
+    fn regression_scroll_view_lowers_every_builder_prop_inline() {
+        let out = parse_and_emit(quote::quote! {
+            scroll_view(
+                horizontal = false,
+                on_scroll = |x, y| {},
+                on_end_reached = || {},
+                end_reached_threshold = 400.0,
+                bounces = false,
+                safe_area = SafeAreaSides::all(),
+            ) {
+                text("row")
+            }
+        });
+        for call in [
+            ". horizontal (",
+            ". on_scroll (",
+            ". on_end_reached (",
+            ". end_reached_threshold (",
+            ". bounces (",
+            ". safe_area (",
+        ] {
+            assert!(out.contains(call), "missing `{call}` in:\n{out}");
+        }
+    }
+
+    /// A `scroll_view` that sets none of them must emit none of them —
+    /// the pass-through lowers only what the author wrote.
+    #[test]
+    fn scroll_view_emits_only_the_props_it_was_given() {
+        let out = parse_and_emit(quote::quote! {
+            scroll_view() { text("row") }
+        });
+        assert!(!out.contains(". on_end_reached ("), "{out}");
+        assert!(!out.contains(". horizontal ("), "{out}");
+    }
+
+    /// Same trap on the virtualizer, where paging is the whole point.
+    #[test]
+    fn regression_flat_list_lowers_its_scroll_props_inline() {
+        let out = parse_and_emit(quote::quote! {
+            flat_list(
+                data = items,
+                render = |_i, item| text("x"),
+                on_scroll = |x, y| {},
+                on_end_reached = || {},
+                end_reached_threshold = 800.0,
+            )
+        });
+        for call in [". on_scroll (", ". on_end_reached (", ". end_reached_threshold ("] {
+            assert!(out.contains(call), "missing `{call}` in:\n{out}");
+        }
     }
 
     /// Same for an off-app link, which takes the other branch of the emitter.
