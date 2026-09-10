@@ -356,6 +356,15 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     // outer `backend.borrow_mut()` (held by the cleanup Effect's
     // Drop) is released before the microtask runs, so the
     // re-entrant `borrow_mut()` from per-item scope drops is safe.
+    //
+    // That re-entrancy is no longer reachable: the handler's teardown
+    // probe now drops every live row BEFORE it takes the borrow, so by
+    // the time this runs the scope map is empty (see
+    // `handlers::virtualizer`'s probe — the same hazard, aborting on a
+    // backend whose frames cannot unwind, which is why iOS died where
+    // web only got this workaround). The deferral stays for its other
+    // half: the JS-side `release()` loop is heavy and has no business
+    // running inside a teardown.
     runtime_shared::schedule_microtask(move || {
         // Best-effort `release()` call on the JS side. If the
         // method is missing (older shim version), we silently
