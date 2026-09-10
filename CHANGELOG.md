@@ -26,6 +26,10 @@ each entry links to its migration guide.
   feature — it serialises the only two builds in the tree instead of
   letting them run concurrently into swap — and the isolation had cost
   every CrewForge box a second and third cold compile of the same crate.
+  "Workspace" is the CARGO workspace the app sits in, resolved through
+  `cargo metadata` — for a member crate that is the root's `target/`,
+  never `<app crate>/target/`, which is a third cold directory that
+  nothing else builds into.
 
 - **`server`'s client surface is present on every build — the `server`
   feature is now additive.** `configure`, `ClientConfig`, `use_socket`,

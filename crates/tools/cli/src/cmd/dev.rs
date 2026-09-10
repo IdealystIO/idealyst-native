@@ -1985,6 +1985,20 @@ fn launch_ssr(
 ///
 /// A laptop with an IDE open keeps the default.
 fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
+    if shared {
+        // The PROJECT's workspace target, as cargo itself resolves it —
+        // NOT `framework_source::cargo_target_dir`, which for a
+        // registry-sourced app is `<app crate>/target`, a directory
+        // nothing else in the tree builds into. Measured on the
+        // CrewForge probe box (2026-09-10): that path gave the dev
+        // server a cold 19-minute build of the server binary into a
+        // third 7 GB copy of the dependency graph, concurrent with the
+        // agent's `cargo test`, which is the exact contention the flag
+        // exists to remove.
+        if let Some(dir) = cargo_workspace_target_dir(project_dir) {
+            return dir;
+        }
+    }
     let base = match crate::framework_source::resolve(project_dir) {
         Ok(source) => source.cargo_target_dir(project_dir),
         // Resolution only fails when the framework source can't be
@@ -1993,10 +2007,31 @@ fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
         Err(_) => project_dir.join("target"),
     };
     if shared {
+        // `cargo metadata` failed (no cargo on PATH, or a manifest that
+        // does not parse). Sharing the framework-source dir is the
+        // closest thing left; it at least matches what the web build
+        // beside it uses.
         base
     } else {
         base.join("idealyst-dev-server")
     }
+}
+
+/// `target_directory` from `cargo metadata` for the workspace that
+/// contains `project_dir` — honours `CARGO_TARGET_DIR` and
+/// `.cargo/config.toml` the same way every other cargo invocation in
+/// that tree does, which is the whole point of sharing.
+fn cargo_workspace_target_dir(project_dir: &Path) -> Option<PathBuf> {
+    let out = Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1", "--manifest-path"])
+        .arg(project_dir.join("Cargo.toml"))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    meta.get("target_directory")?.as_str().map(PathBuf::from)
 }
 
 /// Where `idealyst dev` stages the web bundle it serves — for the
@@ -3597,9 +3632,35 @@ mod tests {
 
     /// `--shared-target` is the deliberate opposite: the workspace's own
     /// `target/`, so a box's seed build, dev server and `cargo test`
-    /// hold one copy of every dependency.
+    /// hold one copy of every dependency. "Workspace" means the CARGO
+    /// workspace the app sits in — for a member crate that is the root's
+    /// `target/`, never the member's own.
     #[test]
-    fn shared_target_is_the_workspace_target() {
+    fn shared_target_is_the_cargo_workspace_target() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/demo\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        let app = root.join("apps/demo");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(app.join("src/lib.rs"), "").unwrap();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        assert_eq!(server_target_dir(&app, true), root.join("target"));
+        // And the isolated default still keeps out of that lock.
+        assert_ne!(server_target_dir(&app, false), root.join("target"));
+    }
+
+    /// With nothing for cargo to resolve, `--shared-target` still
+    /// returns SOMETHING usable rather than failing the dev session.
+    #[test]
+    fn shared_target_falls_back_without_a_manifest() {
         let dir = Path::new("/nonexistent-project-root/apps/demo");
         assert_eq!(server_target_dir(dir, true), dir.join("target"));
     }
