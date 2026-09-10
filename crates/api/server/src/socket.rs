@@ -10,9 +10,11 @@
 //! ends mirror: the client holds `Socket<ServerMsg, ClientMsg>`, the
 //! server handler holds `Socket<ClientMsg, ServerMsg>`.
 //!
-//! It cfg-splits exactly like the rest of the SDK:
-//! - **client build**: wraps [`net::WebSocket`] (the per-platform socket).
-//! - **server build**: wraps the axum WebSocket from an upgrade.
+//! One type on every build, over either transport:
+//! - [`Socket::connect`] opens a client socket over [`net::WebSocket`]
+//!   (the per-platform socket) — available everywhere.
+//! - [`accept`] (feature `server`) wraps the axum WebSocket from an
+//!   upgrade — what the feature ADDS, without taking `connect` away.
 //!
 //! The frame format is JSON text (matching the HTTP layer); binary
 //! frames are accepted on recv for forward-compat with a postcard codec.
@@ -57,101 +59,116 @@ pub struct Socket<In, Out> {
 }
 
 // ---------------------------------------------------------------------------
-// Client build: wraps net::WebSocket.
+// The transport underneath. ONE type on every build.
+//
+// This was two `struct Inner` definitions behind opposite cfgs — the
+// client's around `net::WebSocket`, the server's around axum's — and so
+// `Socket` itself was a different type depending on the feature, and
+// `connect` / `sender` / `use_socket` vanished from a server build. That
+// made the `server` feature non-additive, with the consequences the
+// crate root describes.
+//
+// An enum keeps both: `connect` builds the `Client` arm, `accept` the
+// `Server` arm, and the shared methods match. The `Server` arm only
+// exists with the feature (axum is an optional dep), so a client build
+// carries no dead weight. `net::WebSocket` on a native host is channels
+// and an `Arc`, so the enum stays `Send` where axum needs it to be.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(feature = "server"))]
-struct Inner(net::WebSocket);
+enum Inner {
+    Client(net::WebSocket),
+    #[cfg(feature = "server")]
+    Server(axum::extract::ws::WebSocket),
+}
 
-#[cfg(not(feature = "server"))]
 impl<In, Out> Socket<In, Out>
 where
     In: serde::de::DeserializeOwned,
     Out: serde::Serialize,
 {
-    /// Open a typed connection to `url` (`ws://…`).
+    /// Open a typed client connection to `url` (`ws://…`).
     pub async fn connect(url: &str) -> Result<Self, SocketError> {
         let ws = net::WebSocket::connect(url)
             .await
             .map_err(|e| SocketError::Transport(e.to_string()))?;
         Ok(Self {
-            inner: Inner(ws),
+            inner: Inner::Client(ws),
             _marker: PhantomData,
         })
     }
 
-    /// Encode and queue `msg`. Returns once queued (the write happens on
-    /// the transport's I/O source); `async` to mirror the server side.
-    pub async fn send(&mut self, msg: Out) -> Result<(), SocketError> {
-        let json = serde_json::to_string(&msg).map_err(|e| SocketError::Codec(e.to_string()))?;
-        self.inner
-            .0
-            .send(net::WsMessage::Text(json))
-            .map_err(|e| SocketError::Transport(e.to_string()))
-    }
-
-    /// Await and decode the next inbound message. `None` = closed.
-    pub async fn recv(&mut self) -> Option<Result<In, SocketError>> {
-        match self.inner.0.recv().await {
-            Some(Ok(net::WsMessage::Text(s))) => Some(decode(s.as_bytes())),
-            Some(Ok(net::WsMessage::Binary(b))) => Some(decode(&b)),
-            Some(Err(e)) => Some(Err(SocketError::Transport(e.to_string()))),
-            None => None,
-        }
-    }
-
-    /// A cloneable [`SocketSender`] — so a UI scope can send while a recv
-    /// loop owns the socket (`recv` needs `&mut self`). Powers [`use_socket`].
-    pub fn sender(&self) -> SocketSender<Out> {
-        SocketSender {
-            inner: std::rc::Rc::new(self.inner.0.sender()),
-            _marker: PhantomData,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Server build: wraps the axum WebSocket.
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "server")]
-struct Inner(axum::extract::ws::WebSocket);
-
-#[cfg(feature = "server")]
-impl<In, Out> Socket<In, Out>
-where
-    In: serde::de::DeserializeOwned,
-    Out: serde::Serialize,
-{
+    #[cfg(feature = "server")]
     fn from_axum(ws: axum::extract::ws::WebSocket) -> Self {
         Self {
-            inner: Inner(ws),
+            inner: Inner::Server(ws),
             _marker: PhantomData,
         }
     }
 
-    /// Encode and send `msg` to the peer.
+    /// Encode and send `msg`. On a client socket this returns once the
+    /// frame is queued (the write happens on the transport's I/O
+    /// source); on a server socket it awaits the write.
     pub async fn send(&mut self, msg: Out) -> Result<(), SocketError> {
         let json = serde_json::to_string(&msg).map_err(|e| SocketError::Codec(e.to_string()))?;
-        self.inner
-            .0
-            .send(axum::extract::ws::Message::Text(json))
-            .await
-            .map_err(|e| SocketError::Transport(e.to_string()))
+        match &mut self.inner {
+            Inner::Client(ws) => ws
+                .send(net::WsMessage::Text(json))
+                .map_err(|e| SocketError::Transport(e.to_string())),
+            #[cfg(feature = "server")]
+            Inner::Server(ws) => ws
+                .send(axum::extract::ws::Message::Text(json))
+                .await
+                .map_err(|e| SocketError::Transport(e.to_string())),
+        }
     }
 
     /// Await and decode the next inbound message. `None` = closed.
     /// Control frames (ping/pong/close) are skipped.
     pub async fn recv(&mut self) -> Option<Result<In, SocketError>> {
-        use axum::extract::ws::Message;
-        loop {
-            match self.inner.0.recv().await {
-                Some(Ok(Message::Text(s))) => return Some(decode(s.as_bytes())),
-                Some(Ok(Message::Binary(b))) => return Some(decode(&b)),
-                Some(Ok(_)) => continue, // ping / pong / close → skip
-                Some(Err(e)) => return Some(Err(SocketError::Transport(e.to_string()))),
-                None => return None,
+        match &mut self.inner {
+            Inner::Client(ws) => match ws.recv().await {
+                Some(Ok(net::WsMessage::Text(s))) => Some(decode(s.as_bytes())),
+                Some(Ok(net::WsMessage::Binary(b))) => Some(decode(&b)),
+                Some(Err(e)) => Some(Err(SocketError::Transport(e.to_string()))),
+                None => None,
+            },
+            #[cfg(feature = "server")]
+            Inner::Server(ws) => {
+                use axum::extract::ws::Message;
+                loop {
+                    match ws.recv().await {
+                        Some(Ok(Message::Text(s))) => return Some(decode(s.as_bytes())),
+                        Some(Ok(Message::Binary(b))) => return Some(decode(&b)),
+                        Some(Ok(_)) => continue, // ping / pong / close → skip
+                        Some(Err(e)) => return Some(Err(SocketError::Transport(e.to_string()))),
+                        None => return None,
+                    }
+                }
             }
+        }
+    }
+
+    /// A cloneable [`SocketSender`] — so a UI scope can send while a recv
+    /// loop owns the socket (`recv` needs `&mut self`). Powers [`use_socket`].
+    ///
+    /// # Panics
+    ///
+    /// On a server-side socket (one handed to an [`accept`] handler).
+    /// That socket has no detached send half — a handler sends with
+    /// [`send`](Self::send) — and asking for one is a programming error
+    /// rather than a runtime condition, so it fails loudly instead of
+    /// returning a sender that could never deliver.
+    pub fn sender(&self) -> SocketSender<Out> {
+        match &self.inner {
+            Inner::Client(ws) => SocketSender {
+                inner: std::rc::Rc::new(ws.sender()),
+                _marker: PhantomData,
+            },
+            #[cfg(feature = "server")]
+            Inner::Server(_) => panic!(
+                "Socket::sender() is for client sockets opened with connect(); \
+                 a server-side Socket from accept() sends with Socket::send()"
+            ),
         }
     }
 }
@@ -197,7 +214,6 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, SocketError
 /// A cloneable send handle for a client [`Socket`]. Sending is
 /// independent of the receive loop, so the UI scope can hold this while a
 /// spawned task owns the socket for `recv`.
-#[cfg(not(feature = "server"))]
 pub struct SocketSender<Out> {
     // `Rc` for IDENTITY, not for sharing: `WsSender` is already a cheap
     // cloneable handle. The world kernel bounds every `Signal<T>` on
@@ -210,7 +226,6 @@ pub struct SocketSender<Out> {
     _marker: PhantomData<fn(Out)>,
 }
 
-#[cfg(not(feature = "server"))]
 impl<Out> Clone for SocketSender<Out> {
     fn clone(&self) -> Self {
         Self {
@@ -222,14 +237,12 @@ impl<Out> Clone for SocketSender<Out> {
 
 /// Pointer identity — see the `inner` field comment. Deliberately NOT
 /// derived: `net::WsSender` has no value equality on either arm.
-#[cfg(not(feature = "server"))]
 impl<Out> PartialEq for SocketSender<Out> {
     fn eq(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
-#[cfg(not(feature = "server"))]
 impl<Out: serde::Serialize> SocketSender<Out> {
     /// Encode and queue `msg`.
     pub fn send(&self, msg: Out) -> Result<(), SocketError> {
@@ -246,7 +259,6 @@ impl<Out: serde::Serialize> SocketSender<Out> {
 }
 
 /// Lifecycle of a [`use_socket`] connection.
-#[cfg(not(feature = "server"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SocketStatus {
     Connecting,
@@ -259,13 +271,11 @@ pub enum SocketStatus {
 /// loop: `on_cleanup` (unmount) sets `cancelled` and closes the live
 /// sender; the loop, once connected, registers its sender here (and bails
 /// immediately if the scope already unmounted before the connect landed).
-#[cfg(not(feature = "server"))]
 struct CloseCoord<Out> {
     cancelled: bool,
     sender: Option<SocketSender<Out>>,
 }
 
-#[cfg(not(feature = "server"))]
 impl<Out: serde::Serialize> CloseCoord<Out> {
     fn close(&mut self) {
         self.cancelled = true;
@@ -277,24 +287,20 @@ impl<Out: serde::Serialize> CloseCoord<Out> {
 
 /// The reactive handle returned by [`use_socket`]. Cheap (`Copy`) — it's
 /// three signal ids — so clone it freely into closures.
-#[cfg(not(feature = "server"))]
 pub struct UseSocket<In, Out> {
     incoming: runtime_core::Signal<Option<In>>,
     status: runtime_core::Signal<SocketStatus>,
     sender: runtime_core::Signal<Option<SocketSender<Out>>>,
 }
 
-#[cfg(not(feature = "server"))]
 impl<In, Out> Clone for UseSocket<In, Out> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-#[cfg(not(feature = "server"))]
 impl<In, Out> Copy for UseSocket<In, Out> {}
 
-#[cfg(not(feature = "server"))]
 impl<In: Clone + PartialEq + 'static, Out: serde::Serialize + 'static> UseSocket<In, Out> {
     /// The latest-message signal — read it in `ui!`/`rx!` to re-render on
     /// each inbound message. `None` until the first arrives.
@@ -345,7 +351,6 @@ impl<In: Clone + PartialEq + 'static, Out: serde::Serialize + 'static> UseSocket
 ///
 /// `Socket<In, Out>` mirrors as always — the client receives `In`
 /// (`ServerMsg`) and sends `Out` (`ClientMsg`).
-#[cfg(not(feature = "server"))]
 pub fn use_socket<In, Out>(url: impl Into<String>) -> UseSocket<In, Out>
 where
     // `PartialEq` on `In` is the world kernel's `Signal<T>` bound — every
@@ -473,7 +478,6 @@ where
 // ---------------------------------------------------------------------------
 
 /// Lifecycle of a [`use_sse`] connection.
-#[cfg(not(feature = "server"))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SseStatus {
     Connecting,
@@ -482,13 +486,11 @@ pub enum SseStatus {
     Error,
 }
 
-#[cfg(not(feature = "server"))]
 struct SseCloseCoord {
     cancelled: bool,
     closer: Option<net::EventSourceCloser>,
 }
 
-#[cfg(not(feature = "server"))]
 impl SseCloseCoord {
     fn close(&mut self) {
         self.cancelled = true;
@@ -499,23 +501,19 @@ impl SseCloseCoord {
 }
 
 /// The reactive handle from [`use_sse`]. Cheap (`Copy`) — two signal ids.
-#[cfg(not(feature = "server"))]
 pub struct UseSse<T> {
     incoming: runtime_core::Signal<Option<T>>,
     status: runtime_core::Signal<SseStatus>,
 }
 
-#[cfg(not(feature = "server"))]
 impl<T> Clone for UseSse<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-#[cfg(not(feature = "server"))]
 impl<T> Copy for UseSse<T> {}
 
-#[cfg(not(feature = "server"))]
 impl<T: Clone + PartialEq + 'static> UseSse<T> {
     /// The latest-event signal — read it in `ui!`/`rx!` to re-render per
     /// event. `None` until the first arrives.
@@ -546,7 +544,6 @@ impl<T: Clone + PartialEq + 'static> UseSse<T> {
 ///     ui! { text(move || format!("{:?}", feed.incoming().get())) }
 /// }
 /// ```
-#[cfg(not(feature = "server"))]
 pub fn use_sse<T>(url: impl Into<String>) -> UseSse<T>
 where
     // See `use_socket` — the world kernel bounds every signal payload on

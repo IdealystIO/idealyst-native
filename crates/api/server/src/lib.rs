@@ -73,28 +73,38 @@ mod socket;
 pub use socket::{Socket, SocketError};
 #[cfg(feature = "server")]
 pub use socket::accept;
-// Client-only: the cloneable sender + the scope-bound `use_socket`
-// (WebSocket) and `use_sse` (Server-Sent Events) reactive hooks.
-#[cfg(not(feature = "server"))]
+// The cloneable sender + the scope-bound `use_socket` (WebSocket) and
+// `use_sse` (Server-Sent Events) reactive hooks. Present on every build
+// — see the note on the client surface below.
 pub use socket::{
     use_socket, use_sse, SocketSender, SocketStatus, SseStatus, UseSocket, UseSse,
 };
 
 // =============================================================================
-// Client-only surface: configuration + the `call()` the macro emits.
+// Client surface: configuration + the `call()` the macro emits.
+//
+// PRESENT ON EVERY BUILD, including `server`. It used to be gated
+// `#[cfg(not(feature = "server"))]`, which made the feature NON-ADDITIVE:
+// turning `server` on REMOVED `configure`/`ClientConfig`/`use_socket`
+// from the crate. Cargo unifies features across a workspace, so any
+// project whose server binary and app crates shared one — a plain
+// `cargo check --workspace`, or rust-analyzer — saw the app's calls to
+// `server::configure` fail to resolve. CrewForge's answer was to exile
+// its server binary into a second workspace with its own lockfile and
+// its own target directory, and the price of THAT was every host
+// dependency compiled twice and 92 of 384 shared crates resolving to
+// different versions, so nothing one build produced warmed the other.
+//
+// Nothing here needs the gate: these modules depend on `net` and
+// `runtime_core`, both unconditional deps. The server-side machinery
+// below is what the feature ADDS; it takes nothing away.
 // =============================================================================
 
-#[cfg(not(feature = "server"))]
 mod batch;
-#[cfg(not(feature = "server"))]
 mod cancel;
-#[cfg(not(feature = "server"))]
 mod client;
-#[cfg(not(feature = "server"))]
 pub use batch::{batch, BatchScope};
-#[cfg(not(feature = "server"))]
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
-#[cfg(not(feature = "server"))]
 pub use client::{
     bearer, configure, credentials_from_fn, dev_base_url, BearerCredentials, ClientConfig,
     CredentialProvider, FnCredentials,
@@ -145,7 +155,6 @@ pub mod __private {
     pub use inventory;
 
     use crate::error::TransportError;
-    #[cfg(not(feature = "server"))]
     use crate::error::ServerFnReturn;
     use serde::{de::DeserializeOwned, Serialize};
     use std::future::Future;
@@ -248,22 +257,18 @@ pub mod __private {
 
     /// Build the `ws(s)://…/_srv/_ws/<path>` URL from the configured
     /// client base URL. Used by the `#[channel]` client stub.
-    #[cfg(not(feature = "server"))]
     pub fn ws_url(path: &str) -> String {
         crate::client::ws_url(path)
     }
 
     /// Encode a channel/subscription's open args + append them to the
     /// connect URL. Used by the `#[channel]`/`#[subscription]` client stubs.
-    #[cfg(not(feature = "server"))]
     pub fn encode_ws_args<T: serde::Serialize>(args: &T) -> String {
         crate::client::encode_ws_args(args)
     }
-    #[cfg(not(feature = "server"))]
     pub fn ws_url_args(path: &str, args_hex: &str) -> String {
         crate::client::ws_url_args(path, args_hex)
     }
-    #[cfg(not(feature = "server"))]
     pub fn sse_url_args(path: &str, args_hex: &str) -> String {
         crate::client::sse_url_args(path, args_hex)
     }
@@ -277,7 +282,6 @@ pub mod __private {
     /// which is how `Result<T, ServerError>` (and any user type
     /// implementing the trait) folds network errors into its own
     /// error variant.
-    #[cfg(not(feature = "server"))]
     pub async fn call<Args, Ret>(path: &str, schema: u64, args: &Args) -> Ret
     where
         Args: Serialize,

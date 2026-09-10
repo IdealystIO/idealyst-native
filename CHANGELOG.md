@@ -7,6 +7,30 @@ each entry links to its migration guide.
 
 ### Added
 
+- **`server`'s client surface is present on every build — the `server`
+  feature is now additive.** `configure`, `ClientConfig`, `use_socket`,
+  `use_sse`, `batch`, `with_cancel` and `Socket::connect` no longer
+  disappear when the feature is on; the feature ADDS the axum router,
+  `accept`, the extractors and the rest, and takes nothing away.
+
+  Why it matters: cargo unifies features across a workspace, so a
+  project whose server binary and app crates shared one saw
+  `server::configure` stop resolving in any combined host check —
+  `cargo check --workspace`, rust-analyzer. The only defence was to exile
+  the server binary into a second workspace with its own lockfile and its
+  own target directory, and the price of THAT was every host dependency
+  compiled twice: measured on CrewForge, 92 of 384 shared crates resolved
+  to different versions across the two lockfiles, so nothing one build
+  produced ever warmed the other, and every fresh cloud box paid a
+  344-crate cold build before its first test ran.
+
+  `Socket` is one type over either transport now (an internal enum) rather
+  than two definitions behind opposite cfgs. One consequence:
+  `Socket::sender()` exists on a server build and panics if called on a
+  socket handed to an `accept` handler — that socket has no detached send
+  half, and asking for one is a programming error rather than a runtime
+  condition. Nothing that compiled before can reach it.
+
 - **`on_end_reached` on `scroll_view` and the virtualizer** — a scroller
   can now say when the reader has arrived at its end, which no app could
   previously work out: `on_scroll` reports the content OFFSET, and "how
