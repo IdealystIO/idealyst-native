@@ -96,6 +96,35 @@ struct CellMount {
     child: Retained<UIView>,
 }
 
+/// Retire a cell's hosted subtree: drop its layout-side registration
+/// FIRST, then detach it, then free the framework scope.
+///
+/// The order is load-bearing. `unregister_subtree` walks `subviews()`
+/// to find the descendants, so it must run while the row is still
+/// attached — and it is what stops the row from leaking. Without it a
+/// released row keeps its `view_to_layout` entry (a STRONG
+/// `Retained<UIView>`) and its Taffy node, and because the row was
+/// mounted DETACHED its node is a Taffy ROOT: every later
+/// `run_layout_pass_global` finds the dead root and recomputes it
+/// against the viewport. That is the same leak `unregister_subtree`
+/// was written for on the tab-switch path, and the virtualizer had it
+/// far worse — measured on a phone, scrolling a 50-row list took
+/// `registered_views` from 161 to 13801 and the Taffy root count from
+/// 3 to 123, neither ever falling, with layout passes stalling the
+/// main thread for up to 438 ms.
+///
+/// `with_backend` takes the backend only if it is free (`try_borrow_mut`),
+/// so this is a no-op on the teardown path, where the whole collection
+/// view is being released under a live borrow and its subtree is
+/// unregistered by the parent's own `clear_children`.
+fn retire_mount(mount: &CellMount, release: Option<&Rc<dyn Fn(u64)>>) {
+    crate::imp::with_backend(|b| b.unregister_subtree(&mount.child));
+    unsafe { mount.child.removeFromSuperview() };
+    if let Some(release) = release {
+        (release)(mount.scope_id);
+    }
+}
+
 // =========================================================================
 // VirtualizerDataSource — NSObject subclass implementing
 // UICollectionViewDataSource + UICollectionViewDelegateFlowLayout.
@@ -204,35 +233,46 @@ declare_class!(
         fn did_end_displaying_cell(
             &self,
             _cv: &NSObject,
-            cell: &NSObject,
+            _cell: &NSObject,
             _index_path: &NSObject,
         ) {
-            // Cell scrolled out of the visible window. UIKit will
-            // either drop it (low memory) or hand it back via
-            // `cellForItemAt` for another index; either way the
-            // currently mounted item won't be visible again under
-            // its current scope. Release the per-item Scope now so
-            // the data signals it owns are freed promptly instead
-            // of waiting for the next `cellForItemAt`.
-            if !*self.ivars().alive.borrow() {
-                return;
-            }
-            let cell_ptr = cell as *const NSObject as usize;
-            let previous = self.ivars().mounts.borrow_mut().remove(&cell_ptr);
-            if let Some(prev) = previous {
-                let release_fn = {
-                    let cb_opt = self.ivars().callbacks.borrow();
-                    cb_opt.as_ref().map(|c| c.release_item.clone())
-                };
-                unsafe { prev.child.removeFromSuperview() };
-                if let Some(release) = release_fn {
-                    // Guard the framework teardown callback (extern "C" IMP).
-                    crate::imp::ffi_guard::guard_ffi(
-                        "VirtualizerDataSource::didEndDisplaying",
-                        || (release)(prev.scope_id),
-                    );
-                }
-            }
+            // DELIBERATELY EMPTY. A cell's mount is released when the
+            // cell is REUSED (`cellForItemAt`, which releases the
+            // previous mount before installing the new one) and at
+            // teardown (`shutdown`). Not here.
+            //
+            // This used to release the mount, and it is what produced
+            // the "gaps appear when scrolling up and down" bug. UIKit
+            // delivers this callback for a cell it has ALREADY handed
+            // back out through `cellForItemAt` for the SAME index path
+            // — reproducibly, when a fast scroll reverses and the
+            // window refills from the other end. Releasing there tore
+            // the freshly mounted child out of an on-screen cell:
+            //
+            //     MOUNT        idx=3 cell=…5b00 scope=294
+            //     MOUNT        idx=2 cell=…6a00 scope=295
+            //     END-DISPLAY  idx=3 cell=…5b00 scope=294   <- kills 3
+            //     END-DISPLAY  idx=2 cell=…6a00 scope=295   <- kills 2
+            //
+            // and nothing re-mounts those rows, so they stay blank
+            // until they are scrolled far enough away to be recycled.
+            // The cell keeps its `sizeForItemAt` height, so the list
+            // shows a correctly-sized hole with nothing in it.
+            //
+            // There is no usable in-callback test for "is this cell
+            // still live". Both `indexPathForCell:` and
+            // `cellForItemAtIndexPath:` answer with the ending index
+            // path in the healthy case AND the stale one — measured
+            // over 613 consecutive callbacks, every single one looked
+            // "still displayed", so a guard built on either is just
+            // this empty body with extra steps.
+            //
+            // What is lost is promptness: a row that scrolls off keeps
+            // its scope until its cell is reused. That is bounded by
+            // the reuse pool (measured: `registered_views` plateaus
+            // ~360 either way) rather than unbounded, and the pool is
+            // small. Correctness on screen beats freeing a handful of
+            // signals a few hundred milliseconds sooner.
         }
     }
 
@@ -457,10 +497,7 @@ impl VirtualizerDataSource {
                 let cb_opt = self.ivars().callbacks.borrow();
                 cb_opt.as_ref().map(|c| c.release_item.clone())
             };
-            unsafe { prev.child.removeFromSuperview() };
-            if let Some(release) = release_fn {
-                (release)(prev.scope_id);
-            }
+            retire_mount(&prev, release_fn.as_ref());
         }
 
         // Mount the fresh item. The framework's mount_item builds
@@ -493,6 +530,7 @@ impl VirtualizerDataSource {
         let mask: UIViewAutoresizing = UIViewAutoresizing::from_bits_truncate(0x12);
         let _: () = unsafe { msg_send![child_view, setAutoresizingMask: mask] };
         unsafe { content_view.addSubview(child_view) };
+
 
         // Retain the child so the cell-mount map owns it even after
         // the caller's IosNode (which is itself a Retained) is dropped.
@@ -543,10 +581,7 @@ impl VirtualizerDataSource {
         };
         let mounts = std::mem::take(&mut *self.ivars().mounts.borrow_mut());
         for (_cell_ptr, mount) in mounts.into_iter() {
-            unsafe { mount.child.removeFromSuperview() };
-            if let Some(ref release) = release_fn {
-                (release)(mount.scope_id);
-            }
+            retire_mount(&mount, release_fn.as_ref());
         }
         // Drop the callbacks bundle — frees the Rc<dyn Fn> closures
         // and, transitively, any framework state they captured (data
