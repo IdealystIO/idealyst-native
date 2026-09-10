@@ -83,6 +83,32 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **iOS: scrolling a `flat_list` no longer leaks every row it passes.**
+  Rows mount detached, so each row's layout node is its own Taffy root —
+  and releasing a cell only did `removeFromSuperview()`, never dropping
+  the `view_to_layout` registration that holds a strong reference. Every
+  row ever scrolled past stayed alive, registered, and re-examined by
+  every layout pass. Measured on a phone over a 50-row list: registered
+  views 161 → 13,801 and Taffy roots 3 → 123, both monotonic, worst frame
+  438ms. All three release paths (reuse, end-of-display, teardown) now
+  unregister the row's subtree before detaching it: ~240 views, 6 roots,
+  35ms worst frame across the same sweep.
+
+- **iOS: a `flat_list` scrolled up and down no longer leaves blank
+  rows.** UIKit delivers `didEndDisplayingCell:` for a cell it has
+  ALREADY handed back out through `cellForItemAt` for the same index
+  path — reproducibly, when a fast scroll reverses and the window refills
+  from the other end. Releasing the mount there tore the freshly mounted
+  child out of an on-screen cell, leaving a correctly-sized hole with no
+  accessibility element in it, until the cell was recycled. The mount is
+  now released only where the cell's contents are actually replaced: on
+  reuse and at teardown. There is no usable in-callback test for "is this
+  cell still live" — `indexPathForCell:` and `cellForItemAtIndexPath:`
+  both answer the same in the healthy and the stale case, over 613
+  callbacks — so the method is empty rather than guarded. The cost is
+  promptness: a row keeps its scope until its cell is reused, bounded by
+  the reuse pool. Ten down-and-up sweeps: 0 gaps.
+
 - **`scroll_view(on_end_reached = …)` inside `ui!` now works.** The
   emitter lowered only `horizontal`; every other attribute — `on_scroll`,
   `on_end_reached`, `end_reached_threshold`, `bounces`, `safe_area` — was
