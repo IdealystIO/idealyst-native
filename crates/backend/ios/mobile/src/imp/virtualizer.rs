@@ -96,6 +96,35 @@ struct CellMount {
     child: Retained<UIView>,
 }
 
+/// Retire a cell's hosted subtree: drop its layout-side registration
+/// FIRST, then detach it, then free the framework scope.
+///
+/// The order is load-bearing. `unregister_subtree` walks `subviews()`
+/// to find the descendants, so it must run while the row is still
+/// attached — and it is what stops the row from leaking. Without it a
+/// released row keeps its `view_to_layout` entry (a STRONG
+/// `Retained<UIView>`) and its Taffy node, and because the row was
+/// mounted DETACHED its node is a Taffy ROOT: every later
+/// `run_layout_pass_global` finds the dead root and recomputes it
+/// against the viewport. That is the same leak `unregister_subtree`
+/// was written for on the tab-switch path, and the virtualizer had it
+/// far worse — measured on a phone, scrolling a 50-row list took
+/// `registered_views` from 161 to 13801 and the Taffy root count from
+/// 3 to 123, neither ever falling, with layout passes stalling the
+/// main thread for up to 438 ms.
+///
+/// `with_backend` takes the backend only if it is free (`try_borrow_mut`),
+/// so this is a no-op on the teardown path, where the whole collection
+/// view is being released under a live borrow and its subtree is
+/// unregistered by the parent's own `clear_children`.
+fn retire_mount(mount: &CellMount, release: Option<&Rc<dyn Fn(u64)>>) {
+    crate::imp::with_backend(|b| b.unregister_subtree(&mount.child));
+    unsafe { mount.child.removeFromSuperview() };
+    if let Some(release) = release {
+        (release)(mount.scope_id);
+    }
+}
+
 // =========================================================================
 // VirtualizerDataSource — NSObject subclass implementing
 // UICollectionViewDataSource + UICollectionViewDelegateFlowLayout.
@@ -224,14 +253,11 @@ declare_class!(
                     let cb_opt = self.ivars().callbacks.borrow();
                     cb_opt.as_ref().map(|c| c.release_item.clone())
                 };
-                unsafe { prev.child.removeFromSuperview() };
-                if let Some(release) = release_fn {
-                    // Guard the framework teardown callback (extern "C" IMP).
-                    crate::imp::ffi_guard::guard_ffi(
-                        "VirtualizerDataSource::didEndDisplaying",
-                        || (release)(prev.scope_id),
-                    );
-                }
+                // Guard the framework teardown callback (extern "C" IMP).
+                crate::imp::ffi_guard::guard_ffi(
+                    "VirtualizerDataSource::didEndDisplaying",
+                    || retire_mount(&prev, release_fn.as_ref()),
+                );
             }
         }
     }
@@ -457,10 +483,7 @@ impl VirtualizerDataSource {
                 let cb_opt = self.ivars().callbacks.borrow();
                 cb_opt.as_ref().map(|c| c.release_item.clone())
             };
-            unsafe { prev.child.removeFromSuperview() };
-            if let Some(release) = release_fn {
-                (release)(prev.scope_id);
-            }
+            retire_mount(&prev, release_fn.as_ref());
         }
 
         // Mount the fresh item. The framework's mount_item builds
@@ -493,6 +516,7 @@ impl VirtualizerDataSource {
         let mask: UIViewAutoresizing = UIViewAutoresizing::from_bits_truncate(0x12);
         let _: () = unsafe { msg_send![child_view, setAutoresizingMask: mask] };
         unsafe { content_view.addSubview(child_view) };
+
 
         // Retain the child so the cell-mount map owns it even after
         // the caller's IosNode (which is itself a Retained) is dropped.
@@ -543,10 +567,7 @@ impl VirtualizerDataSource {
         };
         let mounts = std::mem::take(&mut *self.ivars().mounts.borrow_mut());
         for (_cell_ptr, mount) in mounts.into_iter() {
-            unsafe { mount.child.removeFromSuperview() };
-            if let Some(ref release) = release_fn {
-                (release)(mount.scope_id);
-            }
+            retire_mount(&mount, release_fn.as_ref());
         }
         // Drop the callbacks bundle — frees the Rc<dyn Fn> closures
         // and, transitively, any framework state they captured (data

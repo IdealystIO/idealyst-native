@@ -3211,7 +3211,7 @@ impl IosBackend {
     ///
     /// Call this while the subtree is still attached — it walks
     /// `subviews()` to find the descendants.
-    fn unregister_subtree(&mut self, view: &UIView) {
+    pub(crate) fn unregister_subtree(&mut self, view: &UIView) {
         let root_key = view as *const UIView as usize;
         let mut descendant_keys: Vec<usize> = Vec::new();
         fn collect(view: &UIView, out: &mut Vec<usize>) {
