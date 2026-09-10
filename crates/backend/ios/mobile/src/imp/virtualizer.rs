@@ -233,32 +233,46 @@ declare_class!(
         fn did_end_displaying_cell(
             &self,
             _cv: &NSObject,
-            cell: &NSObject,
+            _cell: &NSObject,
             _index_path: &NSObject,
         ) {
-            // Cell scrolled out of the visible window. UIKit will
-            // either drop it (low memory) or hand it back via
-            // `cellForItemAt` for another index; either way the
-            // currently mounted item won't be visible again under
-            // its current scope. Release the per-item Scope now so
-            // the data signals it owns are freed promptly instead
-            // of waiting for the next `cellForItemAt`.
-            if !*self.ivars().alive.borrow() {
-                return;
-            }
-            let cell_ptr = cell as *const NSObject as usize;
-            let previous = self.ivars().mounts.borrow_mut().remove(&cell_ptr);
-            if let Some(prev) = previous {
-                let release_fn = {
-                    let cb_opt = self.ivars().callbacks.borrow();
-                    cb_opt.as_ref().map(|c| c.release_item.clone())
-                };
-                // Guard the framework teardown callback (extern "C" IMP).
-                crate::imp::ffi_guard::guard_ffi(
-                    "VirtualizerDataSource::didEndDisplaying",
-                    || retire_mount(&prev, release_fn.as_ref()),
-                );
-            }
+            // DELIBERATELY EMPTY. A cell's mount is released when the
+            // cell is REUSED (`cellForItemAt`, which releases the
+            // previous mount before installing the new one) and at
+            // teardown (`shutdown`). Not here.
+            //
+            // This used to release the mount, and it is what produced
+            // the "gaps appear when scrolling up and down" bug. UIKit
+            // delivers this callback for a cell it has ALREADY handed
+            // back out through `cellForItemAt` for the SAME index path
+            // — reproducibly, when a fast scroll reverses and the
+            // window refills from the other end. Releasing there tore
+            // the freshly mounted child out of an on-screen cell:
+            //
+            //     MOUNT        idx=3 cell=…5b00 scope=294
+            //     MOUNT        idx=2 cell=…6a00 scope=295
+            //     END-DISPLAY  idx=3 cell=…5b00 scope=294   <- kills 3
+            //     END-DISPLAY  idx=2 cell=…6a00 scope=295   <- kills 2
+            //
+            // and nothing re-mounts those rows, so they stay blank
+            // until they are scrolled far enough away to be recycled.
+            // The cell keeps its `sizeForItemAt` height, so the list
+            // shows a correctly-sized hole with nothing in it.
+            //
+            // There is no usable in-callback test for "is this cell
+            // still live". Both `indexPathForCell:` and
+            // `cellForItemAtIndexPath:` answer with the ending index
+            // path in the healthy case AND the stale one — measured
+            // over 613 consecutive callbacks, every single one looked
+            // "still displayed", so a guard built on either is just
+            // this empty body with extra steps.
+            //
+            // What is lost is promptness: a row that scrolls off keeps
+            // its scope until its cell is reused. That is bounded by
+            // the reuse pool (measured: `registered_views` plateaus
+            // ~360 either way) rather than unbounded, and the pool is
+            // small. Correctness on screen beats freeing a handful of
+            // signals a few hundred milliseconds sooner.
         }
     }
 
