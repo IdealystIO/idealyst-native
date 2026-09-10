@@ -35,6 +35,38 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **A navigator inside a `#[component(lazy)]` body now resolves the URL
+  relative to the screen it sits in.** A lazy boundary realizes its chunk
+  from a callback, long after the screen build that contains it has
+  returned — and with it the RAII guards `mount_screen` pushes for the
+  duration of that build: the nav base a nested navigator reads, the
+  query `screen_state()` decodes, the route name `current_screen_route()`
+  / `use_focus()` report. A nested navigator therefore read an EMPTY
+  base, believed it was the root, and matched the whole address bar
+  against its own routes: CrewForge's Projects area at `/projects` opened
+  its `/:id` detail screen with `id = "projects"` ("Project not found"),
+  and every one of its 14 sidebar areas with a nested navigator failed
+  the same way the moment the areas went lazy — 122 of 308 e2e specs.
+  Only the areas without a navigator inside survived, which is what
+  pointed at the base. Authors could not work around it: the guards are
+  not on the author surface, and they would have to be held around the
+  REALIZE, not the body build.
+
+  The lazy handler now captures the ambient navigator context at mount —
+  the lazy primitive is an ordinary item in the screen body, so it
+  realizes synchronously inside `mount_screen` where all three values
+  are present — and re-enters it around every deferred build + realize,
+  the same shape as its robot-registry parent capture. `AmbientNavContext`
+  (the capture reactive regions use for the same reason) grew the nav
+  base. The author's body is built INSIDE the re-entered scope, not just
+  mounted there, because `component_scope` runs the body eagerly and
+  that body is where `screen_state()` / `current_screen_route()` read.
+  No new API; `#[component(lazy)]` is unchanged. Regression trio in
+  `runtime-vocabulary`'s `tests/lazy.rs::nav_scope` — a lazy body holding
+  a stack with `""` and `/:id` routes, under a swap at `/section`, with a
+  live URL of `/section`: index, not `/:id`; route name and query seen;
+  a deep link below the section still reaches the detail.
+
 - **`idealyst dev` no longer stages its bundle into `dist/web`.** The
   dev loop built and restaged its debug, dev-reload-wired bundle at
   `<project>/dist/web` on every save — the same directory
