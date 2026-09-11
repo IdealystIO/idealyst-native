@@ -2189,6 +2189,14 @@ const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
     "safe_area",
 ];
 
+/// `GlueScrollView` setters that are builder-only BY DECISION, so
+/// `setter_tables_cover_every_glue_setter` does not flag them. Every
+/// name here needs a reason.
+///
+/// - `bind` takes a `Ref<ScrollViewHandle>`; every primitive spells
+///   that as `.bind(r)` after the call, never inline.
+const SCROLL_VIEW_BUILDER_ONLY: &[&str] = &["bind"];
+
 /// `scroll_view(horizontal = bool, on_scroll = …, on_end_reached = …,
 /// end_reached_threshold = px, bounces = bool, safe_area = …) { children }`.
 /// Children list works just like `view`.
@@ -2604,24 +2612,11 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { |_idx, _item| ::runtime_core::view(::std::vec::Vec::new()).into() });
 
-    let overscan_call = if let Some(p) = props.iter().find(|p| p.name == "overscan") {
-        let v = &p.value;
-        quote! { .overscan(#v) }
-    } else {
-        quote! {}
-    };
-    let axis_call = if let Some(p) = props.iter().find(|p| p.name == "axis") {
-        let v = &p.value;
-        quote! { .axis(#v) }
-    } else {
-        quote! {}
-    };
-    let lanes_call = if let Some(p) = props.iter().find(|p| p.name == "lanes") {
-        let v = &p.value;
-        quote! { .lanes(#v) }
-    } else {
-        quote! {}
-    };
+    // Every pass-through setter, from one table — see `builder_calls`
+    // for why a table and not a chain of `if let`s. `spacing` is the one
+    // setter with its own lowering (below), because it is spelled inline
+    // as `gap` OR `main_spacing`/`cross_spacing`.
+    let setters = builder_calls(props, FLAT_LIST_BUILDER_PROPS);
     let spacing_call = match (
         props.iter().find(|p| p.name == "gap"),
         props.iter().find(|p| p.name == "main_spacing"),
@@ -2646,22 +2641,36 @@ fn emit_flat_list(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 
         }
     };
 
-    // Paging is the idiom a virtualizer exists to serve, and the
-    // inline spelling of it was dropped in silence — see
-    // `builder_calls`.
-    let scroll_setters =
-        builder_calls(props, &["on_scroll", "on_end_reached", "end_reached_threshold"]);
-
     // The third generic on flat_list is unused — fall through.
     quote! {
         ::runtime_core::primitives::flat_list::flat_list::<_, _, (), _>(#data, #key, #size, #render)
-            #overscan_call
-            #axis_call
-            #lanes_call
+            #setters
             #spacing_call
-            #scroll_setters
     }
 }
+
+/// The inline props `flat_list` lowers straight to the `GlueFlatList`
+/// setter of the same name. `gap` is here because `gap = v` IS
+/// `.gap(v)`; `main_spacing`/`cross_spacing` are not, because together
+/// they lower to one `.spacing(m, c)` call — see `emit_flat_list`.
+const FLAT_LIST_BUILDER_PROPS: &[&str] = &[
+    "overscan",
+    "axis",
+    "lanes",
+    "gap",
+    "safe_area",
+    "on_scroll",
+    "on_end_reached",
+    "end_reached_threshold",
+];
+
+/// `GlueFlatList` setters that are not lowered by name, with the reason.
+///
+/// - `on_handle` takes a `FnOnce(VirtualizerHandle)` and is spelled
+///   after the call like every `on_handle`.
+/// - `spacing(main, cross)` is two inline props, `main_spacing` and
+///   `cross_spacing`, not one — `emit_flat_list` lowers those itself.
+const FLAT_LIST_BUILDER_ONLY: &[&str] = &["on_handle", "spacing"];
 
 /// Emit a user-defined component invocation as a `BuildElement` struct
 /// literal (see the function body for the full rationale). A children
@@ -3564,6 +3573,76 @@ mod tests {
         );
     }
 
+    /// Every setter on the glue builder is either lowered inline by name
+    /// or declared builder-only with a reason. Three times in one week a
+    /// new `scroll_view` / `flat_list` setter landed without an entry in
+    /// the lowering table — `on_end_reached`, `always_bounce`,
+    /// `safe_area` — and each time `name = v` inside `ui!` compiled and
+    /// reached nothing. The table's own comment asked authors to keep it
+    /// in step; this asks the compiler to.
+    ///
+    /// Reads `glue.rs` as text. That is deliberate: the macro crate
+    /// cannot depend on the vocabulary, and a setter is a `pub fn` in a
+    /// known `impl` block. If the glue is restructured this fails loudly
+    /// with the block it could not find, which is the right failure.
+    #[test]
+    fn setter_tables_cover_every_glue_setter() {
+        let glue = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../vocabulary/src/glue.rs"
+        ))
+        .expect("read runtime-vocabulary/src/glue.rs");
+
+        fn setters_of(glue: &str, ty: &str) -> Vec<String> {
+            let start = glue
+                .find(&format!("impl {ty} {{"))
+                .unwrap_or_else(|| panic!("no `impl {ty} {{` block in glue.rs"));
+            let body = &glue[start..];
+            // The impl ends at the first line that is exactly the block's
+            // closing brace at its indentation; glue nests these two
+            // levels deep.
+            let end = body.find("\n        }\n").map(|i| i + 1).unwrap_or(body.len());
+            let body = &body[..end];
+            let mut out = Vec::new();
+            for line in body.lines() {
+                let t = line.trim_start();
+                if let Some(rest) = t.strip_prefix("pub fn ") {
+                    let name: String =
+                        rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                    // Setters take `mut self`; constructors and accessors do not.
+                    if rest.contains("(mut self") {
+                        out.push(name);
+                    }
+                }
+            }
+            assert!(!out.is_empty(), "found no setters in `impl {ty}` — parser drifted from glue.rs");
+            out
+        }
+
+        for (ty, inline, builder_only) in [
+            ("GlueScrollView", SCROLL_VIEW_BUILDER_PROPS, SCROLL_VIEW_BUILDER_ONLY),
+            ("GlueFlatList", FLAT_LIST_BUILDER_PROPS, FLAT_LIST_BUILDER_ONLY),
+        ] {
+            for setter in setters_of(&glue, ty) {
+                let covered = inline.contains(&setter.as_str()) || builder_only.contains(&setter.as_str());
+                assert!(
+                    covered,
+                    "`{ty}::{setter}` is a setter the `ui!` emitter does not know: `{setter} = v` \
+                     would compile and be dropped in silence. Add it to the inline table, or to \
+                     the BUILDER_ONLY list with a reason."
+                );
+            }
+            // And the tables must not name setters that no longer exist.
+            let existing = setters_of(&glue, ty);
+            for name in inline.iter().chain(builder_only.iter()) {
+                assert!(
+                    existing.iter().any(|s| s == name),
+                    "the `{ty}` tables name `{name}`, which is not a setter on the glue any more"
+                );
+            }
+        }
+    }
+
     /// Regression (47d014a2): `scroll_view(on_end_reached = cb)` compiled
     /// and reached nothing. The emitter lowered only `horizontal`, and an
     /// attribute it did not know was dropped in silence — no warning, no
@@ -3621,9 +3700,17 @@ mod tests {
                 on_scroll = |x, y| {},
                 on_end_reached = || {},
                 end_reached_threshold = 800.0,
+                safe_area = SafeAreaSides::all(),
+                overscan = 1.5,
             )
         });
-        for call in [". on_scroll (", ". on_end_reached (", ". end_reached_threshold ("] {
+        for call in [
+            ". on_scroll (",
+            ". on_end_reached (",
+            ". end_reached_threshold (",
+            ". safe_area (",
+            ". overscan (",
+        ] {
             assert!(out.contains(call), "missing `{call}` in:\n{out}");
         }
     }

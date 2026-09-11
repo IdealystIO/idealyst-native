@@ -48,6 +48,7 @@ fn virtualizer_advertises_paging_and_layout_props() {
         "lanes",
         "gap",
         "overscan",
+        "safe_area",
         "on_scroll",
         "on_end_reached",
         "end_reached_threshold",

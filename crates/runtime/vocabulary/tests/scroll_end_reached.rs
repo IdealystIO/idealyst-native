@@ -177,3 +177,27 @@ fn a_scroll_view_that_says_nothing_about_bouncing_leaves_it_alone() {
     let log = h.shared.log.borrow();
     assert!(!log.iter().any(|l| l.starts_with("bounces ") || l.starts_with("always_bounce ")), "{log:?}");
 }
+
+/// `safe_area` on the virtualizer (d171b067) — the third setter in a
+/// week to land without an entry in the `ui!` lowering table. The
+/// inline spelling reaches the backend's `apply_virtualizer_safe_area_inset`.
+#[test]
+fn regression_flat_list_safe_area_spelled_inline_reaches_the_backend() {
+    use runtime_shared::SafeAreaSides;
+    let h = harness();
+    let tree: Element = h.world.enter(|| {
+        let items = signal(vec![1u32, 2, 3]);
+        ui! {
+            flat_list(
+                data = items,
+                render = |_i, n: &u32| text(format!("{n}")).into(),
+                safe_area = SafeAreaSides::ALL,
+            )
+        }
+    });
+    let _realized = h.mount(tree);
+    h.flush();
+    let log = h.shared.log.borrow();
+    let hit = log.iter().find(|l| l.starts_with("virtualizer_safe_area "));
+    assert!(hit.is_some(), "safe_area never reached the backend; log:\n{log:?}");
+}

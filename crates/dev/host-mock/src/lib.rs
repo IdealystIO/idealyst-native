@@ -863,6 +863,13 @@ impl caps::ScrollOps for HostMock {
         self.s.rec("always_bounce", format!("always_bounce n{node} {always}"));
     }
 
+    fn apply_virtualizer_safe_area_inset(&mut self, node: &Node, sides: SafeAreaSides) {
+        self.s.rec(
+            "virtualizer_safe_area",
+            format!("virtualizer_safe_area n{node} {sides:?}"),
+        );
+    }
+
     fn observe_scroll_end(
         &mut self,
         node: &Node,

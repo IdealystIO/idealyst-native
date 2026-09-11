@@ -539,6 +539,12 @@ inventory::submit! {
                 constraint: "",
             },
             PropFieldSpec {
+                name: "safe_area",
+                type_str: "SafeAreaSides",
+                doc: "Inset the list's own CONTENT by the safe area on the named sides — the first and last rows clear the notch / home indicator while the scroller itself still runs edge to edge. Unset: no inset. Same three-state contract as `scroll_view`'s.",
+                constraint: "inline prop or builder method `.safe_area(..)`; backends: ios",
+            },
+            PropFieldSpec {
                 name: "on_scroll",
                 type_str: "Fn(f32, f32)",
                 doc: "Content offset `(x, y)` in logical px per scroll event. Installed only when given — a listener costs a native crossing per frame of a fling.",
