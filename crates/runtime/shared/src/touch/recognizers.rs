@@ -337,6 +337,9 @@ pub enum PanEvent {
     /// touch's view-local position when the threshold was crossed.
     /// The handler typically stashes the current value being
     /// dragged so subsequent `Moved` events can offset from it.
+    ///
+    /// Informational only: see `Moved` on why the view-local space is
+    /// not the one `delta` is measured in.
     Began { position: TouchPoint },
     /// Pan in progress. `delta` is total movement from the
     /// `Began`-time position (NOT incremental from the previous
@@ -344,6 +347,22 @@ pub enum PanEvent {
     /// `velocity` is in pixels-per-second, smoothed via an
     /// exponential moving average so single-frame jitter doesn't
     /// produce a wildly different value.
+    ///
+    /// `delta` and `velocity` are measured in WINDOW space, not in the
+    /// view-local space `position` reports. The whole point of a pan is
+    /// usually to move the view it started on, and a view-local origin
+    /// travels with it: the delta would then be measured against a
+    /// frame the previous delta just displaced. That feedback loop is
+    /// not a wobble, it is an oscillation — with the handler applying
+    /// `delta` as a translate, the offsets follow `t(n) = u(n) - t(n-1)`
+    /// for a finger at `u(n)`, so a steady 1px-per-event drag comes out
+    /// as 9, 1, 10, 2, 11, 3 … (measured on iOS, and the reason a
+    /// bottom sheet's drag-to-dismiss "jumped back to the top before
+    /// moving back down to my finger").
+    ///
+    /// `position` stays view-local because it answers a different
+    /// question — WHERE on the view the finger is — and that is what a
+    /// grab offset needs. Use `delta` for movement, always.
     Moved {
         position: TouchPoint,
         delta: TouchPoint,
@@ -372,14 +391,18 @@ enum PanState {
     /// fired; if the finger lifts here, nothing fires.
     Tracking {
         id: TouchId,
-        start: TouchPoint,
+        /// WINDOW space — see `PanEvent::Moved`.
+        start_window: TouchPoint,
     },
     /// Pan active — `Began` already fired. Each subsequent `Moved`
     /// fires `PanEvent::Moved` and updates the velocity estimate.
     Active {
         id: TouchId,
-        start: TouchPoint,
-        last_position: TouchPoint,
+        /// WINDOW space, both of them — see `PanEvent::Moved`. A
+        /// view-local origin would move with the view the handler is
+        /// dragging and feed back into the next delta.
+        start_window: TouchPoint,
+        last_window: TouchPoint,
         last_ts_ns: u64,
         velocity: TouchPoint,
     },
@@ -445,15 +468,15 @@ impl Recognizer for Pan {
             (TouchPhase::Began, PanState::Idle) => {
                 self.state = PanState::Tracking {
                     id: ev.id,
-                    start: ev.position,
+                    start_window: ev.window_position,
                 };
                 (G::Possible, TouchResponse::CONSUMED)
             }
             (TouchPhase::Began, _) => (self.state(), TouchResponse::IGNORED),
 
-            (TouchPhase::Moved, PanState::Tracking { id, start }) if id == ev.id => {
-                let dx = ev.position.x - start.x;
-                let dy = ev.position.y - start.y;
+            (TouchPhase::Moved, PanState::Tracking { id, start_window }) if id == ev.id => {
+                let dx = ev.window_position.x - start_window.x;
+                let dy = ev.window_position.y - start_window.y;
                 let dist2 = dx * dx + dy * dy;
                 // Past slop AND permitted to begin: go active. If gated
                 // (a prerequisite hasn't failed yet), stay tracking and
@@ -461,8 +484,8 @@ impl Recognizer for Pan {
                 if dist2 > config.slop_px * config.slop_px && ctx.may_recognize {
                     self.state = PanState::Active {
                         id: ev.id,
-                        start,
-                        last_position: ev.position,
+                        start_window,
+                        last_window: ev.window_position,
                         last_ts_ns: ev.timestamp_ns,
                         velocity: TouchPoint::ZERO,
                     };
@@ -479,15 +502,15 @@ impl Recognizer for Pan {
             }
             (TouchPhase::Moved, PanState::Active {
                 id,
-                start,
-                last_position,
+                start_window,
+                last_window,
                 last_ts_ns,
                 velocity: old_velocity,
             }) if id == ev.id => {
-                let dx = ev.position.x - start.x;
-                let dy = ev.position.y - start.y;
-                let frame_dx = ev.position.x - last_position.x;
-                let frame_dy = ev.position.y - last_position.y;
+                let dx = ev.window_position.x - start_window.x;
+                let dy = ev.window_position.y - start_window.y;
+                let frame_dx = ev.window_position.x - last_window.x;
+                let frame_dy = ev.window_position.y - last_window.y;
                 let dt_sec = if ev.timestamp_ns > last_ts_ns {
                     ((ev.timestamp_ns - last_ts_ns) as f32) / 1_000_000_000.0
                 } else {
@@ -506,8 +529,8 @@ impl Recognizer for Pan {
                 );
                 self.state = PanState::Active {
                     id: ev.id,
-                    start,
-                    last_position: ev.position,
+                    start_window,
+                    last_window: ev.window_position,
                     last_ts_ns: ev.timestamp_ns,
                     velocity: new_velocity,
                 };
@@ -2052,6 +2075,87 @@ mod tests {
         h(&ev(TouchPhase::Began, 1, 0.0, 0.0, 0));
         h(&ev(TouchPhase::Ended, 1, 0.0, 0.0, 1_000_000));
         assert_eq!(fires.get(), 1);
+    }
+
+    /// A pan whose handler moves the view it started on must keep
+    /// tracking the finger.
+    ///
+    /// This is the regression test for the oscillation described on
+    /// `PanEvent::Moved`. `delta` used to be measured from the
+    /// VIEW-LOCAL position, and the view-local origin travels with the
+    /// view — so a handler that applies `delta` as a translate measures
+    /// the next delta against a frame its own last write displaced.
+    /// The offsets then follow `t(n) = u(n) - t(n-1)`, which for a
+    /// steady 1px-per-event finger is 9, 1, 10, 2, 11, 3 … — two
+    /// interleaved series, the surface driven to two different places
+    /// on consecutive frames. On iOS that is a bottom sheet that
+    /// "jumps back to the top before moving back down to my finger".
+    ///
+    /// The helper `ev()` reports the same point in both spaces, so no
+    /// existing test could see this: the two only diverge once
+    /// something MOVES the view. Hence the hand-built events below.
+    #[test]
+    fn pan_delta_survives_a_handler_that_moves_its_own_view() {
+        let applied: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+        // The translate the handler has written so far — i.e. how far
+        // the view (and with it the view-local origin) has travelled.
+        let translate = Rc::new(Cell::new(0.0_f32));
+        let h = {
+            let applied = applied.clone();
+            let translate = translate.clone();
+            pan(PanRecognizer::new(), move |e| {
+                if let PanEvent::Moved { delta, .. } = e {
+                    applied.borrow_mut().push(delta.y);
+                    // What the CrewForge sheet did: apply the delta as
+                    // the surface's translate.
+                    translate.set(delta.y);
+                }
+            })
+        };
+
+        // One finger, dragging down 1px per event from y=100 in window
+        // space. `position` is view-local, so it is the window point
+        // MINUS however far the handler has already moved the view.
+        let mut send = |phase, finger_y: f32, ts_ns| {
+            let local_y = finger_y - translate.get();
+            h(&TouchEvent {
+                id: TouchId(1),
+                phase,
+                position: TouchPoint::new(0.0, local_y),
+                window_position: TouchPoint::new(0.0, finger_y),
+                timestamp_ns: ts_ns,
+                force: None,
+            });
+        };
+
+        send(TouchPhase::Began, 100.0, 0);
+        for i in 1..=20u64 {
+            send(TouchPhase::Moved, 100.0 + i as f32, i * 16_000_000);
+        }
+
+        let deltas = applied.borrow().clone();
+        assert!(!deltas.is_empty(), "the drag must cross slop and report");
+
+        // The finger only ever moved down, so every delta must be at
+        // least the one before it. The old code failed here on the
+        // SECOND report (9 then 1).
+        for pair in deltas.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "pan delta went backwards while the finger moved forwards: \
+                 {deltas:?} — the handler's own translate is feeding back \
+                 into the delta (see `PanEvent::Moved`)"
+            );
+        }
+
+        // And it tracks the finger absolutely, not just monotonically:
+        // 20px of finger travel, reported from the point slop was
+        // crossed, lands within a pixel of 20.
+        let last = *deltas.last().unwrap();
+        assert!(
+            (last - 20.0).abs() < 1.0,
+            "after 20px of finger travel the delta should be ~20, got {last}"
+        );
     }
 
     /// The gate lives on the trait, so every recognizer gets it — a

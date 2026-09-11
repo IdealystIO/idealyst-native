@@ -118,6 +118,33 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **A pan that moves its own view now tracks the finger.**
+  `PanEvent`'s `delta` and `velocity` are measured in WINDOW space; they
+  used to come from the view-local position, and the view-local origin
+  travels with the view. A handler applying `delta` as a translate —
+  which is what `pan`'s own SDK does, `x.set(base + delta.x)` — was
+  therefore measuring each delta against a frame its previous write had
+  just displaced.
+
+  That is an oscillation, not a wobble: the offsets follow
+  `t(n) = u(n) - t(n-1)` for a finger at `u(n)`, so a steady
+  1px-per-event drag reports 9, 1, 10, 2, 11, 3 … — two interleaved
+  series, the view driven to two different places on consecutive frames.
+  Measured on iOS, where it read as a bottom sheet that "jumps back to
+  the top before moving back down to my finger"; the unit test now
+  reproduces those exact numbers.
+
+  The macOS backend had already hit this from the other side and says so
+  where it builds `window_position` ("a drag handler that moves its own
+  view … would feed the moving frame back into the delta"), and both the
+  tap handler and the dnd SDK were already using window space. `Pan` was
+  the one recognizer left measuring in a frame it was moving.
+
+  `PanEvent::position` is unchanged and stays view-local — it answers
+  "where ON the view is the finger", which is what a grab offset needs.
+  Use `delta` for movement. Existing handlers need no change; ones that
+  were fighting this can drop their workarounds.
+
 - **A sheet leaves by the edge it came from.** Its exit was a card's —
   a 32px nudge plus an opacity fade over 150ms — and a fade that short
   reads as a vanishing rather than a departure; the reported symptom was
