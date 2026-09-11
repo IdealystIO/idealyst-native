@@ -92,17 +92,39 @@ const ENTER_MS: u64 = 180;
 /// Exit animation duration. The modal stays mounted this long after `open`
 /// flips false so the fade/slide-out can play before `presence` unmounts it.
 const EXIT_MS: u64 = 150;
+/// A SHEET's exit takes longer than a card's, because it travels further:
+/// it leaves by the edge it came from rather than fading where it stands.
+const SHEET_EXIT_MS: u64 = 240;
 /// How far below its resting position the card starts before sliding up.
 const CARD_SLIDE_PX: f32 = 14.0;
 /// How far below its resting position a SHEET starts before rising. Larger
 /// than [`CARD_SLIDE_PX`]: a sheet should read as arriving from the screen
 /// edge, where a card reads as settling in place.
 ///
-/// It is a rise-and-fade, not a full off-screen slide. The surface height
-/// isn't known until layout, so no build-time value puts it exactly one
-/// height below — and a value large enough for a tall sheet would make a
-/// short one whip in from far off screen.
+/// It is a rise-and-fade on the way IN. The surface height isn't known
+/// until layout (`ViewHandle` exposes no frame), so no build-time value
+/// puts it exactly one height below — and a value large enough for a
+/// tall sheet would make a short one whip in from far off screen.
+///
+/// The way OUT is a full slide instead — see [`sheet_exit_travel`]. The
+/// constraint that forces a small rise on entry does not apply to an
+/// exit: entering, over-travel is a sheet arriving too fast from too far
+/// away; leaving, it only means the sheet is off screen sooner, which is
+/// where it is going anyway.
 const SHEET_SLIDE_PX: f32 = 32.0;
+/// How far a sheet travels to leave the screen: its own height cap, so a
+/// full-height sheet lands exactly off the bottom edge and a shorter one
+/// is already gone before the tween ends.
+///
+/// This is the fix for "the sheet just disappears". It used to exit the
+/// way a card does — a 32px nudge plus an opacity fade over 150ms — and
+/// a fade that short reads as a vanishing, not a departure. A sheet is
+/// the one surface whose whole identity is the edge it came from, so it
+/// has to go back there.
+fn sheet_exit_travel(avail_h: f32) -> f32 {
+    presentation_max_height(ModalPresentation::Sheet, avail_h)
+}
+
 /// A sheet's height cap, as a fraction of the SAFE viewport height. A sheet
 /// deliberately never covers the whole screen: the strip of page left
 /// visible above it is what says "layered over what you were reading"
@@ -269,16 +291,80 @@ fn presentation_max_height(presentation: ModalPresentation, safe_height: f32) ->
     }
 }
 
-/// The grabber: a short, rounded bar centered at a sheet's top edge. Purely
-/// an affordance — it carries no gesture of its own (dismissal is the
-/// backdrop and the host's own controls), it says which edge the surface
-/// came from.
-fn sheet_grabber() -> Element {
+/// How far down a sheet must be dragged before releasing dismisses it
+/// rather than springing back. A quarter of the shortest sensible sheet
+/// — far enough that a stray thumb-drag on the way to the content does
+/// not throw the surface away, close enough that a deliberate pull does
+/// not feel like work.
+const SHEET_DRAG_DISMISS_PX: f32 = 72.0;
+/// A downward fling dismisses regardless of distance. Pixels per second,
+/// which is what [`PanEvent::Ended`] reports.
+const SHEET_DRAG_FLING_VPS: f32 = 700.0;
+/// How long the spring-back takes when a drag is released short of the
+/// threshold.
+const SHEET_DRAG_RETURN_MS: u64 = 180;
+
+/// The grabber: a short, rounded bar centered at a sheet's top edge, and
+/// the handle it has always looked like.
+///
+/// It used to be decorative — "purely an affordance ... it carries no
+/// gesture of its own". That is a promise the shape makes and the code
+/// did not keep: on every platform this pill means "drag me", and a
+/// sheet that ignores the drag reads as broken rather than as
+/// backdrop-only.
+///
+/// `dismiss` is the BACKDROP's handler, deliberately. Dragging the sheet
+/// down means what tapping outside it means, and routing both through
+/// one action keeps them from disagreeing — including when there is no
+/// action at all: a non-dismissable sheet passes `None` here and the
+/// grabber goes back to being decorative, which is then the truth.
+///
+/// The drag drives the same `slide` the open/close animation drives, so
+/// a release past the threshold continues from exactly where the finger
+/// left the surface instead of snapping back to re-animate.
+fn sheet_grabber(slide: Option<AnimatedValue<f32>>, dismiss: Option<Rc<dyn Fn()>>) -> Element {
     let bar = runtime_core::view(Vec::new())
         .with_style(StyleApplication::new(ModalSheetGrabberBarSheet::sheet()))
         .into_element();
-    runtime_core::view(vec![bar])
-        .with_style(StyleApplication::new(ModalSheetGrabberSheet::sheet()))
+    let slot = runtime_core::view(vec![bar])
+        .with_style(StyleApplication::new(ModalSheetGrabberSheet::sheet()));
+    let (Some(slide), Some(dismiss)) = (slide, dismiss) else {
+        // Nothing to drag to, so no gesture — see the note above.
+        return slot.into_element();
+    };
+    // `Ended` reports velocity but not the final delta, so the last
+    // offset is kept here for the release test.
+    let dragged = Rc::new(std::cell::Cell::new(0.0_f32));
+    let handler = runtime_core::pan(runtime_core::PanRecognizer::new(), move |ev| match ev {
+        runtime_core::PanEvent::Moved { delta, .. } => {
+            // Downward only. An upward pull would lift the sheet off the
+            // bottom edge it is anchored to and show a gap under it.
+            let dy = delta.y.max(0.0);
+            dragged.set(dy);
+            slide.set(dy);
+        }
+        runtime_core::PanEvent::Ended { velocity } => {
+            let dy = dragged.replace(0.0);
+            if dy >= SHEET_DRAG_DISMISS_PX || velocity.y >= SHEET_DRAG_FLING_VPS {
+                // Leave `slide` where the finger left it: the exit
+                // animation tweens on from here, so the surface keeps
+                // travelling in the direction it was already going.
+                dismiss();
+            } else {
+                slide.animate(
+                    TweenTo::new(0.0, Duration::from_millis(SHEET_DRAG_RETURN_MS)).ease_out(),
+                );
+            }
+        }
+        runtime_core::PanEvent::Cancelled => {
+            dragged.set(0.0);
+            slide.animate(
+                TweenTo::new(0.0, Duration::from_millis(SHEET_DRAG_RETURN_MS)).ease_out(),
+            );
+        }
+        runtime_core::PanEvent::Began { .. } => {}
+    });
+    slot.on_touch(move |ev: &runtime_core::TouchEvent| handler(ev))
         .into_element()
 }
 
@@ -569,7 +655,17 @@ pub fn Modal(props: ModalProps) -> Element {
         // animate-out (driven inside `build`) can play, then unmount. The
         // PresenceState is a no-op on the portal child; the visual lives on
         // the inner views.
-        .exit(PresenceAnim::new(PresenceState::default(), EXIT_MS as u32, Easing::EaseIn))
+        // Per presentation: a sheet's slide takes `SHEET_EXIT_MS`, and
+        // unmounting at the card's 150ms would cut it off halfway down —
+        // which looks exactly like the vanishing this replaced.
+        .exit(PresenceAnim::new(
+            PresenceState::default(),
+            match presentation {
+                ModalPresentation::Sheet => SHEET_EXIT_MS as u32,
+                ModalPresentation::Centered => EXIT_MS as u32,
+            },
+            Easing::EaseIn,
+        ))
         .into_element()
 }
 
@@ -614,18 +710,48 @@ fn build_overlay(
     };
     let card_slide = AnimatedValue::new(slide_from);
     card_slide.bind(surface_ref, AnimProp::TranslateY);
+    // The grabber drags this same animator — see `sheet_grabber`.
+    let slide_for_drag = card_slide.clone();
     // Scope-adopted by the presence-mounted subtree: freed when presence
     // unmounts after exit. No `mem::forget`.
+    let is_sheet = matches!(presentation, ModalPresentation::Sheet);
+    let viewport_for_exit = viewport_size();
     effect!({
         let is_open = open.get();
-        let (op, slide, ms) = if is_open {
-            (1.0_f32, 0.0_f32, ENTER_MS)
+        if is_open {
+            bd_opacity.animate(TweenTo::new(1.0, Duration::from_millis(ENTER_MS)).ease_out());
+            card_opacity.animate(TweenTo::new(1.0, Duration::from_millis(ENTER_MS)).ease_out());
+            card_slide.animate(TweenTo::new(0.0, Duration::from_millis(ENTER_MS)).ease_out());
+        } else if is_sheet {
+            // A sheet LEAVES BY ITS EDGE. It keeps full opacity the whole
+            // way down — fading it as it goes is what made this read as
+            // "it just disappeared" rather than "it went back where it
+            // came from". Only the backdrop fades.
+            //
+            // `ease_out`: a dismissal is a request to be rid of it, so
+            // the surface has to COMMIT immediately and coast out.
+            //
+            // `ease_in` was measured and is wrong here. Slowed to 2s to
+            // watch it, the sheet's top edge went 655 -> 666 -> 684 ->
+            // 709 -> 745 -> 793: three quarters of the way through the
+            // animation it had travelled an eighth of the distance. At
+            // the real 240ms that is a few pixels of creep and then an
+            // unmount with the sheet still on screen — which is exactly
+            // the "it just disappears" this was meant to fix.
+            let insets = safe_area_insets().get();
+            let avail_h = viewport_for_exit.get().height - insets.top - insets.bottom;
+            let ms = SHEET_EXIT_MS;
+            bd_opacity.animate(TweenTo::new(0.0, Duration::from_millis(ms)).ease_out());
+            card_slide.animate(
+                TweenTo::new(sheet_exit_travel(avail_h), Duration::from_millis(ms)).ease_out(),
+            );
         } else {
-            (0.0_f32, slide_from, EXIT_MS)
-        };
-        bd_opacity.animate(TweenTo::new(op, Duration::from_millis(ms)).ease_out());
-        card_opacity.animate(TweenTo::new(op, Duration::from_millis(ms)).ease_out());
-        card_slide.animate(TweenTo::new(slide, Duration::from_millis(ms)).ease_out());
+            bd_opacity.animate(TweenTo::new(0.0, Duration::from_millis(EXIT_MS)).ease_out());
+            card_opacity.animate(TweenTo::new(0.0, Duration::from_millis(EXIT_MS)).ease_out());
+            card_slide.animate(
+                TweenTo::new(slide_from, Duration::from_millis(EXIT_MS)).ease_out(),
+            );
+        }
     });
 
     assemble_overlay(
@@ -639,6 +765,7 @@ fn build_overlay(
         on_dismiss,
         surface_style,
         content_style,
+        Some(slide_for_drag),
     )
 }
 
@@ -659,6 +786,10 @@ fn assemble_overlay(
     on_dismiss: Option<Rc<dyn Fn()>>,
     surface_style: Option<Rc<StyleSheet>>,
     content_style: Option<Rc<StyleSheet>>,
+    // The surface's translate animator, so a sheet's grabber can drag it.
+    // `None` builds a decorative grabber — what the tests want, since they
+    // construct this without a reactive scope.
+    sheet_slide: Option<AnimatedValue<f32>>,
 ) -> Element {
     // Backdrop layer: a full-bleed view (scrim color) that fades, with a
     // transparent pressable inside catching taps.
@@ -733,7 +864,10 @@ fn assemble_overlay(
     // it stays put while the body scrolls under it.
     let surface_children = match presentation {
         ModalPresentation::Centered => vec![scroller],
-        ModalPresentation::Sheet => vec![sheet_grabber(), scroller],
+        ModalPresentation::Sheet => vec![
+            sheet_grabber(sheet_slide.clone(), backdrop_handler.clone()),
+            scroller,
+        ],
     };
     let surface = runtime_core::view(surface_children)
         .with_style(move || {
@@ -996,6 +1130,8 @@ mod tests {
                 None,
                 None,
                 None,
+                // Decorative grabber: no animator outside a reactive scope.
+                None,
             );
 
             // The portal wraps the Modal's content in a single flex-center
@@ -1125,6 +1261,8 @@ mod tests {
                 None,
                 None,
                 None,
+                // Decorative grabber: no animator outside a reactive scope.
+                None,
             );
             // Under the premint cfg the DEFAULT body application premints
             // to an opaque class stamp — its rules aren't resolvable from
@@ -1158,6 +1296,8 @@ mod tests {
                 None,
                 None,
                 Some(flush),
+                // Decorative grabber: no animator outside a reactive scope.
+                None,
             );
             assert_eq!(
                 body_padding_top(flush_portal),
@@ -1244,6 +1384,8 @@ mod tests {
                     presentation,
                     None,
                     None,
+                    None,
+                    // Decorative grabber: no animator outside a reactive scope.
                     None,
                 );
                 let mut portal_children = match classify(portal) {
