@@ -118,6 +118,35 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **`state` arms actually win the properties they state.** A state
+  overlay reaches `StyleSheet::resolve` as a reserved `__state_*` axis
+  — the event-driven backends fold the active bits into the variant set
+  and resolve normally — and `resolve` merged every axis in one pass
+  over a `BTreeMap`, i.e. in alphabetical axis-name order. `_` sorts
+  before every lowercase letter, so a state arm merged FIRST and any
+  ordinary axis touching the same property painted straight over it.
+
+  A `state pressed { background }` on a sheet whose `variant` / `form` /
+  `tone` axis also sets `background` was therefore dead on arrival. The
+  recognizer fired, the bit flipped, the binding effect re-ran — and the
+  merge threw the result away. The state arms that did work were the
+  ones setting `opacity`, which no variant happened to touch; that is
+  why this survived as long as it did, and why several sheets carry
+  comments choosing opacity over a background "because states are
+  appearance-blind".
+
+  `resolve` now walks ordinary axes first and state axes second. The
+  alphabetical rule between two ORDINARY axes is unchanged and still
+  pinned by `axis_merge_precedence_is_alphabetical_not_declaration_order`;
+  `__bp_*` / `__cq_*` are untouched, because breakpoint and container
+  overlays already fold in after `resolve` returns on the native path.
+
+  Found from a CrewForge list row whose press feedback never appeared on
+  a phone: the row declared `state pressed { background: surface_alt }`
+  next to a `form` axis that sets `background`, and resolved identically
+  pressed and at rest. Fixing it also brought back the pressed wash on
+  idea-ui's own icon buttons, which had the same hole under them.
+
 - **A pan that moves its own view now tracks the finger.**
   `PanEvent`'s `delta` and `velocity` are measured in WINDOW space; they
   used to come from the view-local position, and the view-local origin

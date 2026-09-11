@@ -2334,8 +2334,17 @@ pub fn cached_stylesheet(
 /// `"variant"` arm that both set `background` resolve to the `"variant"`
 /// one, because `"tone" < "variant"`.
 ///
+/// **States are the exception.** The reserved `__state_*` axes
+/// (`hovered`/`pressed`/`focused`/`disabled`) merge in a SECOND pass,
+/// after every ordinary axis, because a state is an overlay rather than
+/// a peer axis. Without that they would lose every same-property
+/// conflict by construction: `_` sorts before every lowercase letter,
+/// so a state arm merged first and the next axis painted over it. See
+/// `a_state_arm_beats_an_ordinary_axis_on_the_same_property`.
+///
 /// This is load-bearing and easy to trip over. Three ways to get a
-/// deterministic winner without depending on the names:
+/// deterministic winner between two ORDINARY axes without depending on
+/// the names:
 ///
 /// - **Fold the conflicting axes into one.** idea-theme's Badge/Tag/Alert
 ///   sheets key a single `appearance` axis as `{tone}_{variant}` for exactly
@@ -2860,8 +2869,55 @@ impl StyleSheet {
         let effective_variants = self.effective_variants(variants);
         let mut effective = (self.base)(&effective_variants);
 
-        // Per-axis variants.
+        // Per-axis variants, in two passes: ordinary axes in
+        // alphabetical order (the documented rule), then STATE axes.
+        //
+        // States are overlays, not peer axes. `hovered`/`pressed`/
+        // `focused`/`disabled` reach `resolve` as reserved
+        // `__state_*` axes (the event-driven backends fold the active
+        // bits into the variant set and resolve normally — see
+        // `runtime-vocabulary`'s `attach_sheet_dynamic`), and a single
+        // BTreeMap pass merged them in alphabetical position with
+        // everything else. `_` sorts before every lowercase letter, so
+        // a state arm landed FIRST and any ordinary axis touching the
+        // same property overwrote it. A `state pressed { background }`
+        // on a sheet with a `form` or `variant` axis that also sets
+        // `background` was dead on arrival — it resolved, merged, and
+        // was immediately painted over.
+        //
+        // Measured in CrewForge: a list row declaring
+        // `state pressed { background: surface_alt }` alongside a
+        // `form` axis resolved to the form arm's background whether
+        // pressed or not, on every backend that resolves states this
+        // way. The recognizer fired, the bit flipped, the effect
+        // re-ran — and the merge threw the result away.
+        //
+        // Two passes, not a rename: the `__` namespace is what keeps
+        // states out of the author's variant namespace, and changing it
+        // to sort last (`zz_state_*`) would be a pun holding up a
+        // contract. Splitting the walk says what is meant — an overlay
+        // applies over what it overlays.
+        //
+        // This deliberately does NOT move `__bp_*` / `__cq_*`.
+        // Breakpoint and container overlays already merge after the
+        // base on the native path (`merge_active_breakpoints` /
+        // `merge_active_containers` fold them in after `resolve`
+        // returns), so they are not subject to this at all; states were
+        // the one overlay kind routed through the variant set.
         for (axis, def) in &self.variants {
+            if is_state_axis(axis) {
+                continue;
+            }
+            if let Some(value) = effective_variants.0.get(axis) {
+                if let Some(f) = def.values.get(value) {
+                    effective = effective.merge(&f(&effective_variants));
+                }
+            }
+        }
+        for (axis, def) in &self.variants {
+            if !is_state_axis(axis) {
+                continue;
+            }
             if let Some(value) = effective_variants.0.get(axis) {
                 if let Some(f) = def.values.get(value) {
                     effective = effective.merge(&f(&effective_variants));
@@ -3052,6 +3108,16 @@ fn state_axis_bit(axis: &str) -> Option<crate::StateBits> {
         "__state_disabled" => Some(crate::StateBits::DISABLED),
         _ => None,
     }
+}
+
+/// Whether `axis` is a reserved STATE-overlay axis.
+///
+/// Defined through [`state_axis_bit`] so the namespace has exactly one
+/// definition: an axis is a state precisely when it names a
+/// `StateBits` flag. [`StyleSheet::resolve`] uses this to merge states
+/// after the ordinary axes — see the two-pass note there.
+fn is_state_axis(axis: &str) -> bool {
+    state_axis_bit(axis).is_some()
 }
 
 // ----------------------------------------------------------------------------

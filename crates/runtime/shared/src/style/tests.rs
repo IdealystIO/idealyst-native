@@ -1802,6 +1802,62 @@ fn axis_merge_precedence_is_alphabetical_not_declaration_order() {
     );
 }
 
+/// A STATE arm beats an ordinary axis that sets the same property,
+/// whatever the two axes are called.
+///
+/// States reach `resolve` as reserved `__state_*` axes — the
+/// event-driven backends fold the active bits into the variant set and
+/// resolve normally. Merged in one alphabetical pass with everything
+/// else they could never win: `_` sorts before every lowercase letter,
+/// so the state arm merged FIRST and the next axis painted over it.
+///
+/// That is not a naming accident to work around, it is a wrong answer.
+/// A state is an overlay: `pressed` means "on top of however this node
+/// currently looks", and a sheet whose ordinary axis happens to set the
+/// same property is the normal case, not a corner. `resolve` therefore
+/// walks ordinary axes first and states second.
+///
+/// Found in CrewForge: a list row declaring
+/// `state pressed { background }` next to a `form` axis that also sets
+/// `background` rendered identically pressed and at rest. The press
+/// recognizer fired and the bit flipped — the merge threw the result
+/// away. Every `state` arm in every sheet had the same hole under it;
+/// the ones that worked did so by setting `opacity`, which no variant
+/// happened to touch.
+#[test]
+fn a_state_arm_beats_an_ordinary_axis_on_the_same_property() {
+    let red = || Color("#ff0000".into());
+    let blue = || Color("#0000ff".into());
+
+    // `form` sorts AFTER `__state_pressed`, so a single alphabetical
+    // pass hands this to `form` — which is the bug.
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .variant("form", "cards", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(red())),
+            ..Default::default()
+        })
+        .variant("__state_pressed", "on", move |_vs| StyleRules {
+            background: Some(Tokenized::Literal(blue())),
+            ..Default::default()
+        });
+
+    let at_rest = sheet.resolve(&VariantSet::new().with("form", "cards"));
+    assert_eq!(
+        at_rest.background,
+        Some(Tokenized::Literal(red())),
+        "unpressed, the ordinary axis still owns the property"
+    );
+
+    let pressed = sheet
+        .resolve(&VariantSet::new().with("form", "cards").with("__state_pressed", "on"));
+    assert_eq!(
+        pressed.background,
+        Some(Tokenized::Literal(blue())),
+        "a state overlay must win the property it states, or every \
+         `state` arm on a sheet with a same-property axis is dead"
+    );
+}
+
 /// The third option the note above calls "a later resolution step": a
 /// COMPOUND. `resolve` layers compounds after every per-axis overlay, so a
 /// compound beats the alphabetically-later axis without anyone having to
