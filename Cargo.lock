@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.8.4"
+version = "1.8.5"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -5564,7 +5564,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -7308,7 +7308,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10073,7 +10073,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "host-mock",
  "mcp-catalog",
