@@ -138,3 +138,42 @@ fn regression_flat_list_on_end_reached_spelled_inline_reaches_the_backend() {
     on_end();
     assert_eq!(arrivals.get(), 1);
 }
+
+/// `always_bounce` (0545eb67) landed as a builder setter with no entry
+/// in the `ui!` lowering table — the exact trap this file exists for.
+/// It reaches the backend from the inline spelling, and it is applied
+/// AFTER `bounces`: a backend that clears `alwaysBounce*` as part of
+/// turning the spring off would otherwise undo a stated
+/// `always_bounce(true)` depending on field order.
+#[test]
+fn regression_always_bounce_spelled_inline_reaches_the_backend_after_bounces() {
+    let h = harness();
+    let tree: Element = h.world.enter(|| {
+        ui! {
+            scroll_view(always_bounce = false, bounces = true) {
+                text("row")
+            }
+        }
+    });
+    let _realized = h.mount(tree);
+    h.flush();
+    let log = h.shared.log.borrow();
+    let bounces = log.iter().position(|l| l.starts_with("bounces "));
+    let always = log.iter().position(|l| l.starts_with("always_bounce "));
+    assert!(always.is_some(), "always_bounce never reached the backend; log:\n{log:?}");
+    assert!(log[always.unwrap()].ends_with(" false"), "{}", log[always.unwrap()]);
+    assert!(bounces.is_some(), "log:\n{log:?}");
+    assert!(always > bounces, "always_bounce must be applied after bounces; log:\n{log:?}");
+}
+
+/// Silence is silence: a scroller that says nothing about either does
+/// not touch the backend's bounce state, so the platform default stands.
+#[test]
+fn a_scroll_view_that_says_nothing_about_bouncing_leaves_it_alone() {
+    let h = harness();
+    let tree: Element = h.world.enter(|| ui! { scroll_view() { text("row") } });
+    let _realized = h.mount(tree);
+    h.flush();
+    let log = h.shared.log.borrow();
+    assert!(!log.iter().any(|l| l.starts_with("bounces ") || l.starts_with("always_bounce ")), "{log:?}");
+}

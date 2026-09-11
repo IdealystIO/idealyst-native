@@ -29,6 +29,7 @@ fn scroll_view_advertises_its_behavioural_props() {
         "on_end_reached",
         "end_reached_threshold",
         "bounces",
+        "always_bounce",
         "safe_area",
     ] {
         assert!(names.contains(&want), "scroll_view is missing `{want}`; has {names:?}");

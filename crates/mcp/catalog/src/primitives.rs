@@ -413,6 +413,12 @@ inventory::submit! {
                 constraint: "",
             },
             PropFieldSpec {
+                name: "always_bounce",
+                type_str: "bool",
+                doc: "Whether the scroller bounces when its content FITS the viewport — separate from `bounces`, which is whether the spring exists at all. `false` keeps the spring for content that overflows and drops it for content that does not, so a bounded pane sized to its content (a bottom sheet) stops rubber-banding under a finger that meant to dismiss it. Unset: the platform default stands (iOS bounces every scroller, so a short page feels live). iOS only; elsewhere a documented no-op, because no other backend bounces an unscrollable pane.",
+                constraint: "inline prop or builder method `.always_bounce(..)`; applied after `bounces`; backends: ios",
+            },
+            PropFieldSpec {
                 name: "safe_area",
                 type_str: "SafeAreaSides",
                 doc: "Opt this scroller into — or explicitly out of — safe-area inset adjustment on the named sides. Unset: the platform default stands (iOS `contentInsetAdjustmentBehavior = .automatic`).",

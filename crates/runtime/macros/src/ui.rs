@@ -2185,6 +2185,7 @@ const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
     "on_end_reached",
     "end_reached_threshold",
     "bounces",
+    "always_bounce",
     "safe_area",
 ];
 
@@ -3580,6 +3581,7 @@ mod tests {
                 on_end_reached = || {},
                 end_reached_threshold = 400.0,
                 bounces = false,
+                always_bounce = false,
                 safe_area = SafeAreaSides::all(),
             ) {
                 text("row")
@@ -3591,6 +3593,7 @@ mod tests {
             ". on_end_reached (",
             ". end_reached_threshold (",
             ". bounces (",
+            ". always_bounce (",
             ". safe_area (",
         ] {
             assert!(out.contains(call), "missing `{call}` in:\n{out}");

@@ -855,6 +855,14 @@ impl caps::ScrollOps for HostMock {
         self.mint("scroll_view".into())
     }
 
+    fn apply_scroll_view_bounces(&mut self, node: &Node, bounces: bool) {
+        self.s.rec("bounces", format!("bounces n{node} {bounces}"));
+    }
+
+    fn apply_scroll_view_always_bounce(&mut self, node: &Node, always: bool) {
+        self.s.rec("always_bounce", format!("always_bounce n{node} {always}"));
+    }
+
     fn observe_scroll_end(
         &mut self,
         node: &Node,
