@@ -130,11 +130,6 @@ fn sheet_exit_travel(avail_h: f32) -> f32 {
 /// visible above it is what says "layered over what you were reading"
 /// rather than "a new screen".
 const SHEET_MAX_HEIGHT_FRACTION: f32 = 0.78;
-/// The grabber bar at a sheet's top edge — the affordance saying the surface
-/// came from the bottom edge and goes back there.
-const SHEET_GRABBER_WIDTH: f32 = 36.0;
-const SHEET_GRABBER_HEIGHT: f32 = 4.0;
-
 /// How a [`Modal`] presents itself.
 ///
 /// It is the SAME component either way — one portal, one backdrop, the same
@@ -150,8 +145,12 @@ pub enum ModalPresentation {
     #[default]
     Centered,
     /// A full-width surface pinned to the BOTTOM edge — rounded top corners,
-    /// a grabber, capped at [`SHEET_MAX_HEIGHT_FRACTION`] of the safe height
-    /// — that rises from below.
+    /// capped at [`SHEET_MAX_HEIGHT_FRACTION`] of the safe height — that
+    /// rises from below.
+    ///
+    /// It carries no grabber and no drag gesture of its own; an app that
+    /// wants either builds them in `content` and drives the surface through
+    /// [`ModalProps::sheet_slide`].
     ///
     /// The thumb-reachable form. Reach for it when a phone user drives the
     /// surface from the bottom of the screen: filter and sort panels, row
@@ -213,6 +212,34 @@ pub struct ModalProps {
     /// [`crate::slot_override`].
     #[prop(static)]
     pub surface_style: Option<Rc<StyleSheet>>,
+    /// The sheet's translate-Y animator, handed in by the app so it can drive
+    /// the surface itself — drag-to-dismiss, a snap point, a peek state.
+    ///
+    /// `None` (the default) makes the modal create its own, which is what
+    /// every call site that only wants enter/exit should do.
+    ///
+    /// When set, the modal still owns the enter and exit tweens and still
+    /// resets the value to the entry offset at the start of each open cycle;
+    /// between those, whatever the app writes lands on the surface. Units are
+    /// DIPs below the resting position, so positive is DOWN, toward the edge
+    /// a sheet leaves by. The exit tween starts from wherever the value is,
+    /// so releasing a drag past your own threshold and flipping `open` false
+    /// continues the travel instead of snapping back first.
+    ///
+    /// Meaningful only with [`ModalPresentation::Sheet`]; a centered card's
+    /// slide is a 14px settle that nothing should be driving by hand. Pair it
+    /// with your own `on_dismiss` — the modal has no opinion about what your
+    /// gesture means.
+    ///
+    /// ```ignore
+    /// let slide = AnimatedValue::new(0.0_f32);
+    /// // …in `content`, a handle whose pan does `slide.set(dy)` and, past
+    /// // your threshold on release, `open.set(false)`.
+    /// Modal(presentation = ModalPresentation::Sheet, sheet_slide = Some(slide))
+    /// ```
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub sheet_slide: Option<AnimatedValue<f32>>,
     /// Style override for the scrollable **body** that wraps `content`. Its
     /// most common use is padding: the body hard-codes `spacing-lg` on all four
     /// sides, so set `padding: 0` here (a "bleed") to let an edge-to-edge
@@ -255,6 +282,7 @@ impl Default for ModalProps {
             width: Reactive::Static(DEFAULT_MODAL_WIDTH),
             backdrop_style: None,
             surface_style: None,
+            sheet_slide: None,
             content_style: None,
         }
     }
@@ -287,109 +315,6 @@ fn presentation_max_height(presentation: ModalPresentation, safe_height: f32) ->
         ModalPresentation::Centered => effective_modal_max_height(safe_height),
         ModalPresentation::Sheet => {
             (safe_height * SHEET_MAX_HEIGHT_FRACTION).max(MODAL_MIN_HEIGHT_FIT)
-        }
-    }
-}
-
-/// How far down a sheet must be dragged before releasing dismisses it
-/// rather than springing back. A quarter of the shortest sensible sheet
-/// — far enough that a stray thumb-drag on the way to the content does
-/// not throw the surface away, close enough that a deliberate pull does
-/// not feel like work.
-const SHEET_DRAG_DISMISS_PX: f32 = 72.0;
-/// A downward fling dismisses regardless of distance. Pixels per second,
-/// which is what [`PanEvent::Ended`] reports.
-const SHEET_DRAG_FLING_VPS: f32 = 700.0;
-/// How long the spring-back takes when a drag is released short of the
-/// threshold.
-const SHEET_DRAG_RETURN_MS: u64 = 180;
-
-/// The grabber: a short, rounded bar centered at a sheet's top edge, and
-/// the handle it has always looked like.
-///
-/// It used to be decorative — "purely an affordance ... it carries no
-/// gesture of its own". That is a promise the shape makes and the code
-/// did not keep: on every platform this pill means "drag me", and a
-/// sheet that ignores the drag reads as broken rather than as
-/// backdrop-only.
-///
-/// `dismiss` is the BACKDROP's handler, deliberately. Dragging the sheet
-/// down means what tapping outside it means, and routing both through
-/// one action keeps them from disagreeing — including when there is no
-/// action at all: a non-dismissable sheet passes `None` here and the
-/// grabber goes back to being decorative, which is then the truth.
-///
-/// The drag drives the same `slide` the open/close animation drives, so
-/// a release past the threshold continues from exactly where the finger
-/// left the surface instead of snapping back to re-animate.
-fn sheet_grabber(slide: Option<AnimatedValue<f32>>, dismiss: Option<Rc<dyn Fn()>>) -> Element {
-    let bar = runtime_core::view(Vec::new())
-        .with_style(StyleApplication::new(ModalSheetGrabberBarSheet::sheet()))
-        .into_element();
-    let slot = runtime_core::view(vec![bar])
-        .with_style(StyleApplication::new(ModalSheetGrabberSheet::sheet()));
-    let (Some(slide), Some(dismiss)) = (slide, dismiss) else {
-        // Nothing to drag to, so no gesture — see the note above.
-        return slot.into_element();
-    };
-    // `Ended` reports velocity but not the final delta, so the last
-    // offset is kept here for the release test.
-    let dragged = Rc::new(std::cell::Cell::new(0.0_f32));
-    let handler = runtime_core::pan(runtime_core::PanRecognizer::new(), move |ev| match ev {
-        runtime_core::PanEvent::Moved { delta, .. } => {
-            // Downward only. An upward pull would lift the sheet off the
-            // bottom edge it is anchored to and show a gap under it.
-            let dy = delta.y.max(0.0);
-            dragged.set(dy);
-            slide.set(dy);
-        }
-        runtime_core::PanEvent::Ended { velocity } => {
-            let dy = dragged.replace(0.0);
-            if dy >= SHEET_DRAG_DISMISS_PX || velocity.y >= SHEET_DRAG_FLING_VPS {
-                // Leave `slide` where the finger left it: the exit
-                // animation tweens on from here, so the surface keeps
-                // travelling in the direction it was already going.
-                dismiss();
-            } else {
-                slide.animate(
-                    TweenTo::new(0.0, Duration::from_millis(SHEET_DRAG_RETURN_MS)).ease_out(),
-                );
-            }
-        }
-        runtime_core::PanEvent::Cancelled => {
-            dragged.set(0.0);
-            slide.animate(
-                TweenTo::new(0.0, Duration::from_millis(SHEET_DRAG_RETURN_MS)).ease_out(),
-            );
-        }
-        runtime_core::PanEvent::Began { .. } => {}
-    });
-    slot.on_touch(move |ev: &runtime_core::TouchEvent| handler(ev))
-        .into_element()
-}
-
-stylesheet! {
-    ModalSheetGrabberSheet<()> {
-        base(_t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            // Never absorbed by the scroller's sizing — the grabber is a
-            // sibling of the scroll_view inside the clipping frame.
-            flex_shrink: 0.0,
-            padding_top: Length::Px(10.0),
-            padding_bottom: Length::Px(6.0),
-        }
-    }
-}
-
-stylesheet! {
-    ModalSheetGrabberBarSheet<IdeaThemeRef> {
-        base(t) {
-            width: Length::Px(SHEET_GRABBER_WIDTH),
-            height: Length::Px(SHEET_GRABBER_HEIGHT),
-            border_radius: t.radius.pill(),
-            background: t.color.border(),
         }
     }
 }
@@ -615,11 +540,12 @@ pub fn Modal(props: ModalProps) -> Element {
     let dismissable = props.dismissable.get();
     let desired = props.width.get();
     // Snapshotted for the same reason as `dismissable`/`width`: it drives
-    // STRUCTURE (container, surface geometry, animation distance, grabber),
+    // STRUCTURE (container, surface geometry, animation distance),
     // so a live change would need the whole overlay rebuilt. `presence`
     // rebuilds `build` per open, so a change between opens is picked up.
     let presentation = props.presentation.get();
     let backdrop_style = props.backdrop_style;
+    let sheet_slide = props.sheet_slide;
     let surface_style = props.surface_style;
     let content_style = props.content_style;
 
@@ -646,6 +572,7 @@ pub fn Modal(props: ModalProps) -> Element {
             backdrop_style.clone(),
             surface_style.clone(),
             content_style.clone(),
+            sheet_slide.clone(),
         )
     };
 
@@ -683,6 +610,9 @@ fn build_overlay(
     backdrop_style: Option<Rc<StyleSheet>>,
     surface_style: Option<Rc<StyleSheet>>,
     content_style: Option<Rc<StyleSheet>>,
+    // App-owned slide animator, or `None` to make our own — see
+    // [`ModalProps::sheet_slide`].
+    sheet_slide: Option<AnimatedValue<f32>>,
 ) -> Element {
     // Resolve the backdrop press handler: explicit override wins; otherwise
     // dismiss when dismissable; otherwise the backdrop is inert.
@@ -708,10 +638,19 @@ fn build_overlay(
         ModalPresentation::Centered => CARD_SLIDE_PX,
         ModalPresentation::Sheet => SHEET_SLIDE_PX,
     };
-    let card_slide = AnimatedValue::new(slide_from);
+    // An app-supplied animator outlives the open cycle (the app owns it), so
+    // it still holds wherever the last exit left it. Reset BEFORE the bind:
+    // `bind` re-applies the current value once the mount fills the ref, so
+    // setting first is what stops a second open from starting a full
+    // sheet-height below the screen.
+    let card_slide = match sheet_slide {
+        Some(av) => {
+            av.set(slide_from);
+            av
+        }
+        None => AnimatedValue::new(slide_from),
+    };
     card_slide.bind(surface_ref, AnimProp::TranslateY);
-    // The grabber drags this same animator — see `sheet_grabber`.
-    let slide_for_drag = card_slide.clone();
     // Scope-adopted by the presence-mounted subtree: freed when presence
     // unmounts after exit. No `mem::forget`.
     let is_sheet = matches!(presentation, ModalPresentation::Sheet);
@@ -765,7 +704,6 @@ fn build_overlay(
         on_dismiss,
         surface_style,
         content_style,
-        Some(slide_for_drag),
     )
 }
 
@@ -786,10 +724,6 @@ fn assemble_overlay(
     on_dismiss: Option<Rc<dyn Fn()>>,
     surface_style: Option<Rc<StyleSheet>>,
     content_style: Option<Rc<StyleSheet>>,
-    // The surface's translate animator, so a sheet's grabber can drag it.
-    // `None` builds a decorative grabber — what the tests want, since they
-    // construct this without a reactive scope.
-    sheet_slide: Option<AnimatedValue<f32>>,
 ) -> Element {
     // Backdrop layer: a full-bleed view (scrim color) that fades, with a
     // transparent pressable inside catching taps.
@@ -860,16 +794,9 @@ fn assemble_overlay(
         })
         .into_element();
 
-    // The grabber is a sibling of the scroller INSIDE the clipping frame, so
-    // it stays put while the body scrolls under it.
-    let surface_children = match presentation {
-        ModalPresentation::Centered => vec![scroller],
-        ModalPresentation::Sheet => vec![
-            sheet_grabber(sheet_slide.clone(), backdrop_handler.clone()),
-            scroller,
-        ],
-    };
-    let surface = runtime_core::view(surface_children)
+    // Both presentations hold the scroller alone. A sheet used to wear a
+    // grabber here; it is the app's now — see [`ModalProps::sheet_slide`].
+    let surface = runtime_core::view(vec![scroller])
         .with_style(move || {
             let vp = viewport.get();
             // Cap width/height to the SAFE rect (subtract the horizontal /
@@ -1130,8 +1057,6 @@ mod tests {
                 None,
                 None,
                 None,
-                // Decorative grabber: no animator outside a reactive scope.
-                None,
             );
 
             // The portal wraps the Modal's content in a single flex-center
@@ -1261,8 +1186,6 @@ mod tests {
                 None,
                 None,
                 None,
-                // Decorative grabber: no animator outside a reactive scope.
-                None,
             );
             // Under the premint cfg the DEFAULT body application premints
             // to an opaque class stamp — its rules aren't resolvable from
@@ -1296,8 +1219,6 @@ mod tests {
                 None,
                 None,
                 Some(flush),
-                // Decorative grabber: no animator outside a reactive scope.
-                None,
             );
             assert_eq!(
                 body_padding_top(flush_portal),
@@ -1361,17 +1282,25 @@ mod tests {
     });
     }
 
-    /// The sheet arm is structural, not just a different width: the surface
-    /// gains a grabber ABOVE the scroller (a sibling inside the clipping
-    /// frame, so it stays put while the body scrolls under it). A centered
-    /// card has the scroller alone.
+    /// A sheet's surface holds the scroller ALONE, exactly like a centered
+    /// card's — the two presentations differ in geometry and animation, not
+    /// in structure.
+    ///
+    /// This is a regression test for a removal. The sheet used to grow a
+    /// grabber child here, with a pan gesture that dragged the surface down
+    /// to dismiss. It went back to the apps: the bar is a lie unless
+    /// something drags it, the gesture stuttered on iOS (two touch origins
+    /// 8px apart reaching one recognizer), and what a downward drag MEANS is
+    /// a screen's decision, not a modal's. An app that wants one builds it
+    /// in `content` and drives the surface through `ModalProps::sheet_slide`.
+    /// If a child reappears in this arm, that decision is being taken back.
     ///
     /// This also pins the Android fall-through fix for the sheet arm — the
     /// card layer must stay a `Pressable` in both presentations, or a tap on
     /// a sheet dismisses it on Android (see
     /// `regression_modal_card_layer_consumes_touches`).
     #[test]
-    fn sheet_wears_a_grabber_above_its_scroller() {
+    fn a_sheet_surface_holds_the_scroller_alone() {
         with_test_world(|| {
             let surface_children = |presentation| {
                 let portal = assemble_overlay(
@@ -1384,8 +1313,6 @@ mod tests {
                     presentation,
                     None,
                     None,
-                    None,
-                    // Decorative grabber: no animator outside a reactive scope.
                     None,
                 );
                 let mut portal_children = match classify(portal) {
@@ -1422,8 +1349,10 @@ mod tests {
             );
             assert_eq!(
                 surface_children(ModalPresentation::Sheet),
-                2,
-                "a sheet holds [grabber, scroller]"
+                1,
+                "a sheet holds the scroller alone too — no grabber, no \
+                 gesture. Drag-to-dismiss is the app's to build, over \
+                 `ModalProps::sheet_slide`."
             );
     });
     }

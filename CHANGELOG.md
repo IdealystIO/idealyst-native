@@ -81,7 +81,57 @@ each entry links to its migration guide.
   list that ONLY grows this way stops growing rather than degrading. The
   primitive's docs name which backends answer.
 
+- **`ModalProps::sheet_slide` — an app can drive the sheet surface
+  itself.** Hand the modal an `AnimatedValue<f32>` and it uses that as
+  the surface's translate-Y instead of making its own: drag-to-dismiss,
+  a snap point, a peek state. The modal keeps the enter and exit tweens
+  and resets the value to the entry offset at the start of each open
+  cycle; between those, whatever the app writes lands on the surface.
+  Units are DIPs below the resting position, so positive is down, toward
+  the edge a sheet leaves by — and because the exit tween starts from
+  wherever the value is, releasing a drag past your own threshold and
+  flipping `open` false continues the travel instead of snapping back
+  first. `None` (the default) is unchanged behaviour.
+
+### Changed
+
+- **A sheet no longer carries a grabber, or a drag gesture.**
+  `ModalPresentation::Sheet` used to grow a pill at its top edge; briefly
+  that pill also dragged the surface down to dismiss. Both are gone, and
+  a sheet's surface now holds its scroller alone, exactly like a centered
+  card's.
+
+  Three reasons, and the first one is why the decorative version was
+  never right either: on every platform that shape means "drag me", so a
+  bar that ignores the drag reads as broken rather than as
+  backdrop-only. The gesture that would have earned it stuttered on iOS —
+  a single recognizer receiving one touch through two paths whose local
+  origins sit `DEFAULT_PAN_SLOP_PX` apart, so the deltas interleave two
+  series 8px apart and the surface is driven to two positions on
+  consecutive frames. And what a downward drag MEANS is a screen's
+  decision: dismiss on one sheet, collapse to a peek on another.
+
+  Migration: a sheet that wants a handle builds one in `content` and
+  drives the surface through the new `ModalProps::sheet_slide`, with its
+  own threshold and its own idea of what crossing it means. A sheet that
+  only wants the enter/exit animation needs no change.
+
 ### Fixed
+
+- **A sheet leaves by the edge it came from.** Its exit was a card's —
+  a 32px nudge plus an opacity fade over 150ms — and a fade that short
+  reads as a vanishing rather than a departure; the reported symptom was
+  "it just disappears". A sheet now slides its full height cap back down
+  over 240ms at full opacity (only the backdrop fades), and `presence`
+  holds the portal mounted that long so the travel is not cut off
+  halfway.
+
+  The easing is `ease_out`, and `ease_in` was measured and is wrong
+  here: slowed to 2s to watch, the sheet's top edge went 655 → 666 →
+  684 → 709 → 745 → 793 — three quarters of the way through the
+  animation it had covered an eighth of the distance. At the real 240ms
+  that is a few pixels of creep and then an unmount with the sheet still
+  on screen, which is the bug it was meant to fix.
 
 - **iOS: scrolling a `flat_list` no longer leaks every row it passes.**
   Rows mount detached, so each row's layout node is its own Taffy root —
