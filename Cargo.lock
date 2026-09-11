@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.8.1"
+version = "1.9.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
