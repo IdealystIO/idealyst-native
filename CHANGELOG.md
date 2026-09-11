@@ -159,6 +159,34 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **`IconButton` tints its own glyph, instead of assuming it inherits.**
+  A vector `icon` and a text `glyph` now both carry the container's
+  resolved `tone x variant` foreground on their OWN node. They used to
+  carry nothing, on the stated assumption that the icon "inherits the
+  button's tone text color" — which is a web-only truth. CSS `color`
+  inherits into the glyph; native backends have no cascade at all, so an
+  icon with no explicit color resolved a SYSTEM constant
+  (`UIColor.labelColor` on iOS) bearing no relation to the disc its
+  ancestor had painted. A `Filled` IconButton therefore drew a dark
+  glyph on its own dark disc: measured on iOS 26.5, container
+  `(24, 24, 27)` under a glyph of `(0, 0, 0)` — a control present,
+  sized, pressable and invisible.
+
+  One resolve of the container's `StyleApplication` covers every input,
+  because the application already encodes all of them: the appearance
+  arm, the `selected` accent overlay, and an author `color` override.
+  Web preminting is unaffected and deliberately so — when the container
+  attaches a preminted class its CSS carries the fill's `color` and the
+  child still inherits `currentColor`, which additionally tracks
+  `:hover` in a way a build-time snapshot cannot.
+
+  `Button` has stamped its leading/trailing icons this way for exactly
+  this reason, and every other icon-bearing component in `idea-ui`
+  (`Select`, `Switch`, `Slider`, `Checkbox`, `Breadcrumbs`,
+  `DatePicker`) sets an explicit color. `IconButton` was the last
+  holdout. No app-side change is needed; a call site passing `color`
+  keeps overriding as before.
+
 - **`state` arms actually win the properties they state.** A state
   overlay reaches `StyleSheet::resolve` as a reserved `__state_*` axis
   — the event-driven backends fold the active bits into the variant set

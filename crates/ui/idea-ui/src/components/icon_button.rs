@@ -24,8 +24,9 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, text, AlignSelf, Color, Element, IconData, IdealystSchema, IntoElement, Length,
-    PressableHandle, Reactive, Ref, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
+    component, icon, resolve_style, text, AlignSelf, Color, Element, IconData, IdealystSchema,
+    IntoElement, Length, PressableHandle, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
+    Tokenized, VariantEnum,
 };
 
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
@@ -48,6 +49,21 @@ thread_local! {
     static ICON_BUTTON_ICON_SHEETS: std::cell::RefCell<
         std::collections::HashMap<u32, Rc<StyleSheet>>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    static ICON_BUTTON_GLYPH_SHEET: Rc<StyleSheet> =
+        StyleSheet::r#static(StyleRules::default())
+            .premint_as("idea-ui.v1.icon_button.glyph");
+}
+
+/// Cached empty sheet, existing only to carry the glyph's `color`
+/// override. A text `glyph` is in the same position as the vector `icon`
+/// — a child that needs the container's foreground stamped on its own
+/// node, because native has no cascade to inherit it from — but it takes
+/// its color through a style rather than through a builder setter, and a
+/// `StyleApplication` needs a sheet to hang the override on. It adds no
+/// rules of its own, so it changes nothing about the glyph's layout.
+fn icon_button_glyph_sheet() -> Rc<StyleSheet> {
+    ICON_BUTTON_GLYPH_SHEET.with(|s| s.clone())
 }
 
 /// Cached static sheet pinning the icon to a `px × px` square. Icons
@@ -90,7 +106,9 @@ pub struct IconButtonProps {
     pub glyph: String,
     /// Optional vector icon to render inside the square. When `Some`, it
     /// takes precedence over `glyph` — e.g. `icon = Some(icons_lucide::X)`
-    /// for a Lucide close button. Inherits the button's tone text color.
+    /// for a Lucide close button. Tinted to the button's tone × variant
+    /// foreground, stamped on the icon's own node — native backends have
+    /// no cascade to inherit it from. Override with `color`.
     pub icon: Option<IconData>,
     /// Fires on press/click.
     pub on_click: Rc<dyn Fn()>,
@@ -228,20 +246,85 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
         }
     };
 
-    // A vector `icon` wins over the text `glyph`. The icon inherits the
-    // button's tone text color (the primitive defaults to the ambient
-    // label color), so it tints correctly per variant without an
-    // explicit color. Sized to the square's content box per size step.
-    // Icon scales with the square: half the side for a custom `size_px`,
+    // The container's resolved foreground, snapshotted for this build.
+    //
+    // THE ICON CARRIES IT ON ITS OWN NODE, because nothing hands it down:
+    // native backends have no style cascade, so an `icon` with no explicit
+    // color resolves a SYSTEM constant (`UIColor.labelColor` on iOS) that
+    // bears no relation to whatever its ancestor is painted. This used to
+    // claim the icon "inherits the button's tone text color"; that is a
+    // web-only truth — CSS `color` inherits into the glyph, UIKit has no
+    // such rule — and under it every Filled IconButton painted a dark
+    // glyph on its own dark disc. `Button` stamps its leading/trailing
+    // icons for exactly this reason; this is the same fix on the same
+    // seam.
+    //
+    // One resolve answers every input, because the container application
+    // already encodes all of them: the tone × variant appearance arm, the
+    // `selected` accent overlay, and an author `color` override (applied
+    // as `override_color` above, so it lands here without a special case).
+    //
+    // WEB PREMINT is the exception, and why this is gated rather than
+    // unconditional. When the container attaches a preminted class its CSS
+    // carries the fill's `color`, so the icon inherits it as
+    // `currentColor` — which also tracks `:hover`, something a build-time
+    // snapshot never can — and under `--premint-only` the read-back itself
+    // is the panic the stripped rule closure names.
+    let fg = {
+        let make_style = make_style.clone();
+        move || {
+            let app = make_style();
+            if app.attaches_preminted() {
+                None
+            } else {
+                resolve_style(&app).color.clone()
+            }
+        }
+    };
+
+    // A vector `icon` wins over the text `glyph`. Sized to the square's
+    // content box per size step: half the side for a custom `size_px`,
     // otherwise the per-step default.
     let icon_px = size_px_snapshot
         .map(|s| (s * 0.5).round())
         .unwrap_or_else(|| icon_px_for(size_snapshot));
     let child = match icon_data {
-        Some(data) => icon(data)
-            .with_style(icon_button_icon_sheet(icon_px))
-            .into_element(),
-        None => text(glyph).into_element(),
+        Some(data) => {
+            let el = icon(data).with_style(icon_button_icon_sheet(icon_px));
+            if style_is_reactive {
+                // A live style axis re-resolves per read, so the tint tracks
+                // the container in place instead of freezing this build's.
+                let fg_live = fg.clone();
+                match fg() {
+                    Some(_) => el
+                        .color(move || {
+                            fg_live()
+                                .map(|c| c.resolve())
+                                .unwrap_or_else(|| Color("#000000".into()))
+                        })
+                        .into_element(),
+                    None => el.into_element(),
+                }
+            } else {
+                match fg() {
+                    // A reactive read even on the static path: `resolve()`
+                    // re-runs on a theme swap, so the tint tracks the token.
+                    Some(c) => el.color(move || c.resolve()).into_element(),
+                    None => el.into_element(),
+                }
+            }
+        }
+        // The glyph needs the same stamp for the same reason — see
+        // `icon_button_glyph_sheet`. `fg` is already `None` on a preminted
+        // web build, so the override is never added there and the class
+        // keeps preminting; on native it is the only thing that colors the
+        // glyph at all.
+        None => match fg() {
+            Some(c) => text(glyph)
+                .with_style(StyleApplication::new(icon_button_glyph_sheet()).override_color(c))
+                .into_element(),
+            None => text(glyph).into_element(),
+        },
     };
     let mut bound = runtime_core::pressable(vec![child], move || (on_click)());
     bound = if style_is_reactive {
@@ -390,6 +473,109 @@ mod tests {
                 Some(AlignSelf::Center),
                 "an IconButton centers on the cross axis instead of stretching/top-aligning"
             );
+    });
+    }
+
+    // Regression: nothing hands a color down to the icon. Native backends
+    // have no style cascade, so an `icon` with no explicit color resolves a
+    // SYSTEM constant — `UIColor.labelColor` on iOS — which bears no
+    // relation to the disc its ancestor painted. This component's comment
+    // used to assert the opposite ("the icon inherits the button's tone
+    // text color"), which is true only on web, where CSS `color` inherits
+    // into the glyph.
+    //
+    // Under that assumption a Filled IconButton painted a near-black glyph
+    // on its own near-black disc: measured on an iOS 26.5 simulator,
+    // container (24, 24, 27) and glyph (0, 0, 0) — a control that is
+    // present, sized and pressable, and invisible. `Button` already stamps
+    // its leading/trailing icons for this reason; this asserts IconButton
+    // does the same.
+    #[test]
+    fn regression_filled_icon_button_icon_carries_intent_text_color() {
+        with_test_world(|| {
+            theme();
+            let props = IconButtonProps {
+                icon: Reactive::Static(Some(TRASH)),
+                tone: Reactive::Static(ToneRef::default()), // Primary
+                variant: Reactive::Static(VariantRef::default()), // Filled
+                ..Default::default()
+            };
+            match classify(only_child(IconButton(&props))) {
+                P::Icon { color, .. } => {
+                    let c = color
+                        .expect("a filled IconButton's icon must carry an explicit color");
+                    assert_eq!(
+                        c.0.to_ascii_lowercase(),
+                        "#ffffff",
+                        "the icon tint is the intent text color, not the ambient label color"
+                    );
+                }
+                _ => panic!("expected an Icon child"),
+            }
+    });
+    }
+
+    // The glyph sits in the same position as the vector icon and had the
+    // same hole: `text(glyph)` carried no style at all, so on a backend
+    // with no cascade it fell back to the theme's ink and a Filled button
+    // drew a dark character on its dark disc. Less visible than the icon
+    // case only because most call sites pass `icon` — the close-button
+    // recipe (`glyph = "×"`) is the one that ships it.
+    #[test]
+    fn regression_filled_icon_button_glyph_carries_intent_text_color() {
+        with_test_world(|| {
+            theme();
+            let props = IconButtonProps {
+                glyph: Reactive::Static("×".into()),
+                tone: Reactive::Static(ToneRef::default()), // Primary
+                variant: Reactive::Static(VariantRef::default()), // Filled
+                ..Default::default()
+            };
+            match classify(only_child(IconButton(&props))) {
+                P::Text { style, .. } => {
+                    let app = match style.expect("a filled IconButton's glyph must carry a style") {
+                        TStyle::App(a) => a,
+                        _ => panic!("the glyph uses a static style source"),
+                    };
+                    let c = runtime_core::resolve_style(&app)
+                        .color
+                        .clone()
+                        .expect("the glyph's style must carry a color");
+                    assert_eq!(
+                        c.resolve().0.to_ascii_lowercase(),
+                        "#ffffff",
+                        "the glyph tint is the intent text color, not the theme's ink"
+                    );
+                }
+                _ => panic!("expected a Text child"),
+            }
+    });
+    }
+
+    // The author's `color` needs no special case in the icon path: it is
+    // applied to the container as an `override_color`, so the single
+    // resolve that tints the icon picks it up. Asserted because that is a
+    // load-bearing property of the design rather than an accident — an
+    // icon path that read the tone × variant arm directly would silently
+    // ignore the override.
+    #[test]
+    fn an_explicit_color_wins_over_the_tone_variant_foreground() {
+        with_test_world(|| {
+            theme();
+            let props = IconButtonProps {
+                icon: Reactive::Static(Some(TRASH)),
+                tone: Reactive::Static(ToneRef::default()),
+                variant: Reactive::Static(VariantRef::default()),
+                color: Reactive::Static(Some(Color("#ff00ff".into()))),
+                ..Default::default()
+            };
+            match classify(only_child(IconButton(&props))) {
+                P::Icon { color, .. } => {
+                    let c = color.expect("an explicit color must reach the icon");
+                    assert_eq!(c.0.to_ascii_lowercase(), "#ff00ff");
+                }
+                _ => panic!("expected an Icon child"),
+            }
     });
     }
 }
