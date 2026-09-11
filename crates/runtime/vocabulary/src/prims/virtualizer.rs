@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::SafeAreaSides;
 use runtime_shared::primitives::virtualizer::{ItemKey, ItemSize, VirtualLayout, VirtualizerHandle};
 use runtime_scene::Element;
 
@@ -69,4 +70,20 @@ pub struct VirtualizerPrim {
     pub on_end_reached: Option<Rc<dyn Fn()>>,
     /// How close to the end counts as arriving, in logical px.
     pub end_reached_threshold: f32,
+    /// Sides on which the virtualizer's own scroller insets its CONTENT
+    /// by the safe area, while continuing to draw through it.
+    ///
+    /// The `scroll_view` counterpart of this is
+    /// `ScrollViewPrim::safe_area`; a virtualized list had no way to
+    /// say it. The case is a list that reaches the bottom of the
+    /// screen on a device with a home indicator: laying it out ABOVE
+    /// the indicator leaves a dead band the list stops short of, and
+    /// laying it out UNDER one with no inset hides the last item
+    /// behind it. What a native list does is neither — it occupies the
+    /// whole screen and insets its content, so rows scroll under the
+    /// indicator and the last one can still be reached.
+    ///
+    /// Three-state like its neighbours: `None` is silence and the
+    /// backend's default stands, `Some(EMPTY)` is an explicit opt-out.
+    pub safe_area: Option<SafeAreaSides>,
 }

@@ -1199,6 +1199,14 @@ mod ios_impl {
         fn apply_scroll_view_always_bounce(&mut self, node: &Self::Node, always: bool) {
             IosBackend::apply_scroll_view_always_bounce_impl(self, node, always)
         }
+
+        fn apply_virtualizer_safe_area_inset(
+            &mut self,
+            node: &Self::Node,
+            sides: runtime_shared::SafeAreaSides,
+        ) {
+            IosBackend::apply_virtualizer_safe_area_inset_impl(self, node, sides)
+        }
     }
 
     impl caps::SafeAreaOps for IosBackend {

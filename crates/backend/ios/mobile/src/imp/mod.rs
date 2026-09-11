@@ -4210,6 +4210,25 @@ impl IosBackend {
         let _: () = unsafe { msg_send![view, setContentInsetAdjustmentBehavior: behavior] };
     }
 
+    /// The virtualizer's counterpart of
+    /// [`Self::apply_scroll_view_safe_area_inset_impl`], and literally
+    /// the same call.
+    ///
+    /// A virtualizer's node is its `UICollectionView` (see
+    /// `create_virtualizer_impl`), and a UICollectionView IS a
+    /// UIScrollView — the same fact that lets `IosVirtualizerOps` read
+    /// `contentOffset` off it. So `contentInsetAdjustmentBehavior`
+    /// applies unchanged, and delegating keeps the two surfaces from
+    /// drifting into two different answers about what a safe-area inset
+    /// means.
+    pub(crate) fn apply_virtualizer_safe_area_inset_impl(
+        &mut self,
+        node: &IosNode,
+        sides: runtime_shared::SafeAreaSides,
+    ) {
+        self.apply_scroll_view_safe_area_inset_impl(node, sides)
+    }
+
     /// Whether the scroll view rubber-bands past its content.
     ///
     /// `bounces` alone is not enough. UIKit also exposes

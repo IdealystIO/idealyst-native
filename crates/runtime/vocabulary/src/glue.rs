@@ -2430,6 +2430,14 @@ pub mod primitives {
         }
 
         impl GlueFlatList {
+            /// Inset the list's CONTENT by the safe area on `sides`
+            /// while the scroller draws through it — the virtualized
+            /// counterpart of `scroll_view().safe_area(..)`.
+            pub fn safe_area(mut self, sides: runtime_shared::SafeAreaSides) -> Self {
+                self.b = self.b.safe_area(sides);
+                self
+            }
+
             pub fn overscan(mut self, factor: f32) -> Self {
                 self.b = self.b.overscan(factor);
                 self

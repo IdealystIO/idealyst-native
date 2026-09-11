@@ -81,6 +81,24 @@ each entry links to its migration guide.
   list that ONLY grows this way stops growing rather than degrading. The
   primitive's docs name which backends answer.
 
+- **`flat_list().safe_area(sides)` — a windowed list can inset its own
+  content.** `scroll_view` has had `safe_area` since the inset work; the
+  virtualizer never did, so a list reaching the bottom of a phone screen
+  had two bad choices: lay it out ABOVE the home indicator and leave a
+  dead band it stops short of, or lay it out under one with no inset and
+  hide the last row behind it. What a native list does is neither — it
+  occupies the whole screen and insets its CONTENT, so rows scroll under
+  the indicator and the last one is still reachable.
+
+  Same three-state contract as its `scroll_view` counterpart (`None` is
+  silence, `Some(NONE)` an explicit opt-out) and the same mechanism on
+  iOS: `contentInsetAdjustmentBehavior`, delegating to the scroll-view
+  implementation rather than restating it. A virtualizer's node IS a
+  `UICollectionView`, which IS a `UIScrollView` — the same fact that
+  lets the two report identical offsets for one gesture — so the two
+  surfaces cannot drift into different answers about what a safe-area
+  inset means. A documented no-op elsewhere.
+
 - **`scroll_view().always_bounce(false)` — no spring when there is
   nothing to scroll.** UIKit splits the question in two (`bounces` /
   `alwaysBounceVertical`) and the framework only exposed the first. It

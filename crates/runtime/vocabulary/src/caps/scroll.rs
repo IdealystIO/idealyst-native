@@ -90,6 +90,17 @@ pub trait ScrollOps: Host {
     #[allow(unused_variables)]
     fn apply_scroll_view_always_bounce(&mut self, node: &Self::Node, always: bool) {}
 
+    /// The virtualizer counterpart of
+    /// [`Self::apply_scroll_view_safe_area_inset`]: inset the windowed
+    /// list's CONTENT by the safe area on `sides` while the scroller
+    /// itself keeps drawing through it.
+    ///
+    /// Only called when the author said something — see
+    /// `VirtualizerPrim::safe_area`. Default: no-op, right for every
+    /// backend with no safe area to speak of.
+    #[allow(unused_variables)]
+    fn apply_virtualizer_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {}
+
     /// Imperative-ref handle for a scroll view. Default: no-op.
     #[allow(unused_variables)]
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {

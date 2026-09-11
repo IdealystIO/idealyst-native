@@ -243,6 +243,15 @@ where
         .borrow_mut()
         .create_virtualizer(callbacks, prim.overscan, prim.layout, &prim.a11y);
 
+    // Same three-state contract `scroll_view`'s safe_area has: only a
+    // stated preference reaches the backend, so a backend's own default
+    // is never overwritten by silence.
+    if let Some(sides) = prim.safe_area {
+        backend
+            .borrow_mut()
+            .apply_virtualizer_safe_area_inset(&node, sides);
+    }
+
     // End-of-scroll observation, on the virtualizer's OWN scroller —
     // the same capability `scroll_view` uses, because a virtualizer's
     // node IS a scroller on every backend that has one (a

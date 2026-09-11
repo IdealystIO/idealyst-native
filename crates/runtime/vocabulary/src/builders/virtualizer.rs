@@ -38,6 +38,7 @@ pub fn virtualizer(
             on_scroll: None,
             on_end_reached: None,
             end_reached_threshold: 0.0,
+            safe_area: None,
         },
     }
 }
@@ -133,6 +134,16 @@ impl VirtualizerBuilder {
     /// How close to the end counts as arriving, in logical px. Default
     /// `0.0` — the very end. A screenful is the usual choice, so the
     /// next page is there before the reader is.
+    /// Inset the list's CONTENT by the safe area on `sides` while the
+    /// scroller keeps drawing through it — see
+    /// `VirtualizerPrim::safe_area`. This is how a list that reaches
+    /// the bottom of the screen lets its rows scroll under the home
+    /// indicator without the last one hiding behind it.
+    pub fn safe_area(mut self, sides: runtime_shared::SafeAreaSides) -> Self {
+        self.prim.safe_area = Some(sides);
+        self
+    }
+
     pub fn end_reached_threshold(mut self, px: f32) -> Self {
         self.prim.end_reached_threshold = px;
         self
@@ -140,5 +151,46 @@ impl VirtualizerBuilder {
 
     pub fn build(self) -> Element {
         item(PrimCell::new(self.prim), Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_shared::primitives::virtualizer::ItemKey;
+    use runtime_shared::SafeAreaSides;
+
+    fn probe() -> VirtualizerBuilder {
+        virtualizer(
+            || 0usize,
+            |i| i as ItemKey,
+            ItemSize::Known(Rc::new(|_| 0.0)),
+            |_| runtime_scene::Element::Fragment(Vec::new()),
+        )
+    }
+
+    /// `safe_area` is the same three-state contract its `scroll_view`
+    /// counterpart has: silence leaves the backend's default alone, and
+    /// an EMPTY set is a stated opt-out rather than another way of
+    /// saying nothing.
+    ///
+    /// A virtualized list had no way to say either, which is why one
+    /// reaching the bottom of a phone screen could only stop short of
+    /// the home indicator or hide its last row behind it — never do
+    /// what a native list does and scroll under it with the content
+    /// inset.
+    #[test]
+    fn safe_area_distinguishes_silence_from_a_stated_preference() {
+        assert_eq!(probe().prim.safe_area, None);
+        assert_eq!(
+            probe().safe_area(SafeAreaSides::BOTTOM).prim.safe_area,
+            Some(SafeAreaSides::BOTTOM)
+        );
+        assert_eq!(
+            probe().safe_area(SafeAreaSides::NONE).prim.safe_area,
+            Some(SafeAreaSides::NONE),
+            "an empty set must survive as Some — it is the opt-out, and \
+             collapsing it to None would hand the decision back to the backend"
+        );
     }
 }
