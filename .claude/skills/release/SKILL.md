@@ -38,6 +38,18 @@ and a dirty tree records a commit that doesn't describe the published bytes.
 
 Disk is a real failure mode here, not a formality — a full disk mid-publish
 leaves the harness unable to write its own tool output. Check before, not after.
+It swings: one day this week went 86 → 15 → 51 GiB free between releases, so a
+number from an hour ago is not a number.
+
+Also check `git rev-list --left-right --count origin/master...HEAD` after a
+`git fetch`. A commit that is local-only still releases fine — the tarball
+embeds its sha, not its presence on a remote — but push it WITH the release so
+`releases.json` never points at a commit nobody else can see.
+
+**If the tree is dirty with files you did not touch, stop and ask.** Several
+sessions commit into this working tree at once. Do not `git add -A` someone's
+in-progress work to get a clean tree, and do not release around it with
+`--allow-dirty`. Say what the files are and let the user decide.
 
 ## 1. See what's unreleased
 
@@ -54,7 +66,15 @@ git show --stat --format='%s%n%n%b' <sha>
 ```
 
 Report the true set. Do not silently release more than the user named, and do
-not silently skip the rest either.
+not silently skip the rest either. "One fix" has meant three commits every
+time this week.
+
+**Check each commit's footprint against its subject.** A commit made with
+`git add -A` in a shared tree can carry another session's in-progress files
+under a subject that never mentions them — this week a navigator fix rode into
+two unrelated commits that way. If a `fix(layout)` touches `navigator/shared.rs`,
+find out why. Those commits are usually already pushed, so do not rewrite them;
+describe what the bumps actually carry in the release commit instead.
 
 ## 2. Review before publishing
 
@@ -73,12 +93,26 @@ The two rules that most often go unmet, both from `CLAUDE.md`:
   - For backend code that can't be unit-tested, this repo's established pattern
     is a pure `*_policy.rs` module beside the platform code, un-gated so it runs
     from any host — see `crates/backend/ios/mobile/src/portal_policy.rs`.
+  - **How to check the bite without `git stash`.** If the test and the fix
+    live in different files, `git checkout <fix-sha>^ -- <impl file>` puts the
+    old implementation under the new test; run; `git checkout HEAD -- <file>`.
+    If they share a file, copy it to the scratchpad, mutate the fixed arm back
+    to the bug by hand, run, copy it back. Either way confirm `git status` is
+    clean afterwards. Make the mutation the ACTUAL bug — half a mutation
+    (one side of a coordinate comparison, say) can leave the test passing and
+    tell you nothing.
+  - A fix in platform-only code (`imp/` under `target_os`) with no host test
+    is the documented §8 escape hatch when the commit says why no tighter test
+    exists. A host test asserting "this method is empty" is theatre — do not
+    add one to tick the box. Check for a CHANGELOG entry instead; that is the
+    §2 gap those commits actually tend to have.
 - **§2 — docs move with behavior.** A new public API or macro block form needs
   its doc section in the same change. Grep for doc comments that describe the
   *old* behavior; a stale doc that argues against the fix is worse than no doc.
 
 Fix what you find in a separate commit **before** publishing, so the release
-records source that is actually correct.
+records source that is actually correct. Stage it by path (`git add <file>…`),
+never `-A` — see §0.
 
 ## 3. Plan (read-only, touches nothing remote)
 
@@ -103,10 +137,25 @@ subject?
 - **`--bump <CRATE>=<LEVEL>`** raises a bump level the subjects under-called.
   The classifier reads the commit SUBJECT, so a branch that lands new public
   API under a free-form subject ("scroll_view can say when the reader has
-  reached the end") cuts as a patch. Check the plan against what the diff
-  actually ADDED — `git diff <last-release>..HEAD -- <crate> | grep '^+\s*pub '`
-  is the quick version — and raise it when the two disagree. Raise-only, and
-  refuses a crate that is not already in the plan.
+  reached the end") cuts as a patch. **The standing rule (set 2026-09-10 on
+  a0265630): additive public API is a minor.** Check every planned crate:
+  `git diff <last-release>..HEAD -- <crate> | grep -E '^\+\s*pub (fn|struct|enum|type|[a-z_]+:)'`
+  and, for anything REMOVED, the same with `^-`. A new `pub` item or prop →
+  `--bump <crate>=minor`; a removed one → stop, that is a major. A private
+  rename (`enum PanState` fields, say) is neither. Raise-only, and refuses a
+  crate that is not already in the plan. Recomputes from the PUBLISHED
+  version, so raising a patch to a minor cannot skip a number.
+- **A planned crate whose diff is behaviour-free gets excluded.** A comment-
+  only or doc-only change to a crate's source still changes its published
+  bytes, so the planner wants a patch — and every consumer would rebuild that
+  crate for nothing. Check with
+  `git show <sha> -- <crate> | grep -E '^\+' | grep -vE '^\+\+|^\+\s*//|^\+\s*$' | wc -l`;
+  zero means comment-only. Leave it out with `--only <crate>` for each crate
+  you DO want (repeatable), on `publish`. Its recorded commit stays where it
+  was and the comment rides into its next real release — `backend-web` was
+  excluded this way four releases running. Say so in the release commit.
+  `--only` is a `build`/`publish` flag; `plan` does not take it, so plan
+  without and subtract in your head.
 - **`--force <CRATE>`** releases a crate at a patch bump although its directory
   is unchanged. Reach for it only when the *published manifest* is wrong and
   the source is right — an under-declared internal requirement is the case it
@@ -218,19 +267,35 @@ grep -A1 'name = "<crate>"' $D/Cargo.lock
 
 Depend on the highest-level crate released (usually `idea-ui`) and confirm it
 pulls the others through their **unchanged** caret requirements — that is the
-proof no dependent needed rewriting.
+proof no dependent needed rewriting. When nothing high-level was released,
+depend on an UNCHANGED `idea-ui` at its current version and confirm it now
+resolves the new sibling — same proof, from the other side.
+
+Then confirm the fix is in the bytes, not only in the plan:
+
+```sh
+T=<scratchpad>/tar; rm -rf $T; mkdir -p $T
+curl -sL https://crates.idealyst.io/crates/<crate>/<version>/download | tar xz -C $T
+grep -c '<something only the fix contains>' $T/<crate>-<version>/src/<file>
+```
+
+`releases.json` says which commit was cut; this says what shipped.
 
 ## 7. Commit the version bumps
 
 `publish` rewrites the released crates' `Cargo.toml` versions plus `Cargo.lock`.
-Commit them as `chore(release):` and say what shipped and how it was checked:
+Commit them as `chore(release):` — `git add -A` is acceptable HERE ONLY after
+you have confirmed `git status` shows nothing but those manifests — and say
+what shipped and how it was checked:
 
 - Which crates, from which version to which, and **why that bump level** —
   name the commit that earned a minor or major.
 - Which crates were deliberately NOT republished, and that consumers keep their
   cached builds.
 - Anything the plan did that looks surprising (a no-op bump, a crate at an old
-  version finally moving).
+  version finally moving), any crate you excluded with `--only` and why, and
+  any `--bump` and why.
+- What the bumps actually carry when a commit subject does not say (§1).
 - The verification: which targets were checked, and what the external consumer
   resolved.
 
@@ -262,7 +327,15 @@ Do **not** add `Co-Authored-By: Claude` or any AI attribution trailer
 - **Tooling crates publish nothing.** The CLI, `dev-reload`, `build-web`, the
   MCP server and the 31 runnable examples are all `publish = false`. A commit
   touching only those releases nothing — say so rather than looking for a crate
-  to bump.
+  to bump. Their "deploy" IS the push: the CLI installs via
+  `cargo install --git`, so once the commit is on `origin/master` anyone who
+  reinstalls has it. Confirm it is on origin, tell the user that is what
+  deployed means for it, and if a guide in `crates/mcp/catalog/guides` also
+  described the old behaviour, fix the guide — that DOES re-cut `mcp-catalog`.
+- **`build` writes the version bumps.** A local `build` rehearsal leaves the
+  manifests modified, and the real `publish` then refuses the dirty tree. Do
+  not rehearse before a real publish; if you must, `git checkout -- Cargo.toml
+  Cargo.lock crates/**/Cargo.toml` between the two.
 
 ## If a publish fails partway
 
