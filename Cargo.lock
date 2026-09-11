@@ -10104,7 +10104,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "base64",
  "bitflags 2.11.1",

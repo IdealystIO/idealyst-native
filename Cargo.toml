@@ -410,7 +410,7 @@ license = "MIT OR Apache-2.0"
 # cargo — there is no CLI-generated web wrapper crate any more.
 idealyst = { path = "crates/idealyst", version = "1.5.3", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "1.5.2", registry = "idealyst" }
-runtime-shared = { path = "crates/runtime/shared", version = "1.10.1", registry = "idealyst" }
+runtime-shared = { path = "crates/runtime/shared", version = "1.10.2", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.5.2", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.5.3", registry = "idealyst" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.10.1", registry = "idealyst" }
