@@ -1883,6 +1883,14 @@ pub mod primitives {
                 self
             }
 
+            /// Whether the scroller bounces with NOTHING to scroll.
+            /// `false` keeps the spring where content overflows and
+            /// drops it where it fits.
+            pub fn always_bounce(mut self, always: bool) -> Self {
+                self.b = self.b.always_bounce(always);
+                self
+            }
+
             pub fn on_scroll(mut self, handler: impl Fn(f32, f32) + 'static) -> Self {
                 self.b = self.b.on_scroll(handler);
                 self

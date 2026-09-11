@@ -258,6 +258,15 @@ where
     if let Some(bounces) = prim.bounces {
         backend.borrow_mut().apply_scroll_view_bounces(&node, bounces);
     }
+    // Same three-state contract, and applied AFTER `bounces` on
+    // purpose: a backend that clears `alwaysBounce*` as part of
+    // turning the spring off would otherwise undo a stated
+    // `always_bounce(true)` depending on field order.
+    if let Some(always) = prim.always_bounce {
+        backend
+            .borrow_mut()
+            .apply_scroll_view_always_bounce(&node, always);
+    }
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_scroll_view_handle(&node);
         fill(handle);

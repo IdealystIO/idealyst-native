@@ -120,6 +120,28 @@ pub struct ScrollViewPrim {
     /// own header has no end to signal, because the thing that scrolls
     /// is not the thing the gesture appears to grab.
     pub bounces: Option<bool>,
+    /// Whether the scroller bounces even when there is NOTHING to
+    /// scroll — content shorter than the scrollport.
+    ///
+    /// Distinct from [`Self::bounces`], which asks whether the spring
+    /// exists at all. This asks whether it fires against an edge that
+    /// is also the other edge. UIKit splits the same way
+    /// (`bounces` / `alwaysBounceVertical`), and iOS is the backend
+    /// that needs the distinction: the framework turns
+    /// `alwaysBounce*` ON for every scroller so short content does not
+    /// feel dead, which is right for a PAGE and wrong for a bounded
+    /// pane whose content usually fits.
+    ///
+    /// A bottom sheet is the case that named it: sized to its content,
+    /// it has nothing to scroll almost always, and a sheet that
+    /// rubber-bands under the finger reads as "this scrolls" when it
+    /// does not — and as a failed drag-to-dismiss when it might.
+    /// `Some(false)` leaves the spring intact for the sheet that IS
+    /// long enough to scroll.
+    ///
+    /// Three-state like its neighbours: `None` is silence and the
+    /// backend's default stands.
+    pub always_bounce: Option<bool>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(ScrollViewHandle)>>,

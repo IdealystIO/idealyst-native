@@ -78,6 +78,18 @@ pub trait ScrollOps: Host {
     #[allow(unused_variables)]
     fn apply_scroll_view_bounces(&mut self, node: &Self::Node, bounces: bool) {}
 
+    /// Whether the scroller bounces when its content FITS — the
+    /// `alwaysBounce*` half of the pair, separate from whether the
+    /// spring exists at all.
+    ///
+    /// Only called when the author said something — see
+    /// `ScrollViewPrim::always_bounce`. Default: no-op, right for every
+    /// backend that does not bounce an unscrollable pane in the first
+    /// place. iOS is the one that does, because the framework asks it
+    /// to for every scroller.
+    #[allow(unused_variables)]
+    fn apply_scroll_view_always_bounce(&mut self, node: &Self::Node, always: bool) {}
+
     /// Imperative-ref handle for a scroll view. Default: no-op.
     #[allow(unused_variables)]
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {

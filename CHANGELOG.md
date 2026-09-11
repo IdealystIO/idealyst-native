@@ -81,6 +81,29 @@ each entry links to its migration guide.
   list that ONLY grows this way stops growing rather than degrading. The
   primitive's docs name which backends answer.
 
+- **`scroll_view().always_bounce(false)` — no spring when there is
+  nothing to scroll.** UIKit splits the question in two (`bounces` /
+  `alwaysBounceVertical`) and the framework only exposed the first. It
+  also turns `alwaysBounce*` ON for every scroller it makes, so short
+  content still feels live — right for a PAGE, wrong for a bounded pane
+  whose content usually fits, which then rubber-bands under the finger
+  and says "this scrolls" when it does not.
+
+  Three-state like its neighbours (`None` is silence, the backend's
+  default stands), additive, and independent of `bounces`: a scroller
+  that says `always_bounce(false)` keeps the platform spring for content
+  that genuinely overflows. Implemented on iOS, a documented no-op
+  elsewhere — no other backend bounces an unscrollable pane in the first
+  place.
+
+- **A modal no longer bounces when its content fits.** `Modal` sets
+  `always_bounce(false)` on its scroller. The case that named it is a
+  bottom sheet: sized to its content and capped, its usual state is
+  nothing to scroll, and a downward drag on a sheet is the gesture a
+  reader expects to dismiss it — so the bounce read as that gesture
+  failing. A modal whose content IS taller than the cap still springs at
+  its ends.
+
 - **`ModalProps::sheet_slide` — an app can drive the sheet surface
   itself.** Hand the modal an `AnimatedValue<f32>` and it uses that as
   the surface's translate-Y instead of making its own: drag-to-dismiss,

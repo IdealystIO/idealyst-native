@@ -4223,6 +4223,26 @@ impl IosBackend {
     /// is a stronger statement ("bounce even with nothing to scroll")
     /// and asking for the platform's normal spring should not opt into
     /// it.
+    /// `alwaysBounceVertical` / `Horizontal` — whether the spring
+    /// fires against an edge that is also the opposite edge.
+    ///
+    /// `create_scroll_view_impl` turns the axis' flag ON for every
+    /// scroller this framework makes, so that short content still
+    /// feels live (Settings and Mail do the same). That is right for a
+    /// page and wrong for a bounded pane, and this is how a pane says
+    /// so. Both axes are set from the one flag: a scroller that should
+    /// not bounce against its own fitting content should not do it
+    /// sideways either.
+    ///
+    /// Independent of [`Self::apply_scroll_view_bounces_impl`] — this
+    /// leaves `bounces` alone, so content that DOES overflow keeps the
+    /// platform spring.
+    pub(crate) fn apply_scroll_view_always_bounce_impl(&mut self, node: &IosNode, always: bool) {
+        let view = node.as_view();
+        let _: () = unsafe { msg_send![view, setAlwaysBounceVertical: always] };
+        let _: () = unsafe { msg_send![view, setAlwaysBounceHorizontal: always] };
+    }
+
     pub(crate) fn apply_scroll_view_bounces_impl(&mut self, node: &IosNode, bounces: bool) {
         let view = node.as_view();
         let on: bool = bounces;

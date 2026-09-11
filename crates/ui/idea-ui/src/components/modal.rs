@@ -775,6 +775,21 @@ fn assemble_overlay(
     // tracks orientation / split-view resizes, mirroring the surface width.
     let viewport_for_scroll = viewport_size();
     let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
+        // No spring when there is nothing to scroll.
+        //
+        // The framework turns `alwaysBounce*` on for every scroller it
+        // makes, so that a short PAGE still feels live. A modal is the
+        // other case: it is sized to its content and capped, so the
+        // usual state is content that fits — and a surface that
+        // rubber-bands under the finger says "this scrolls" when it
+        // does not. On a SHEET it says something worse, because a
+        // downward drag on a sheet is the gesture a reader expects to
+        // dismiss it: the bounce reads as that gesture failing.
+        //
+        // `bounces` itself is untouched, so a modal whose content is
+        // genuinely taller than the cap still springs at its ends the
+        // way everything else on the platform does.
+        .always_bounce(false)
         .with_style(move || {
             // Cap to the SAFE height: subtract the top + bottom safe-area
             // insets so a maximally-tall modal can't grow under the notch /

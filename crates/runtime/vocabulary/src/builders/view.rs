@@ -200,6 +200,7 @@ pub fn scroll_view() -> ScrollViewBuilder {
             end_reached_threshold: 0.0,
             safe_area: None,
             bounces: None,
+            always_bounce: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -265,6 +266,14 @@ impl ScrollViewBuilder {
     /// Clamp the scroll to its content (`false`), or ask for the
     /// platform's overscroll spring (`true`). Saying nothing leaves the
     /// platform default — see `ScrollViewPrim::bounces`.
+    /// Whether the scroller bounces with nothing to scroll. `false`
+    /// keeps the spring for content that overflows and removes it for
+    /// content that fits — see `ScrollViewPrim::always_bounce`.
+    pub fn always_bounce(mut self, always: bool) -> Self {
+        self.prim.always_bounce = Some(always);
+        self
+    }
+
     pub fn bounces(mut self, bounces: bool) -> Self {
         self.prim.bounces = Some(bounces);
         self
@@ -338,6 +347,22 @@ mod tests {
         assert_eq!(scroll_view().prim.bounces, None);
         assert_eq!(scroll_view().bounces(false).prim.bounces, Some(false));
         assert_eq!(scroll_view().bounces(true).prim.bounces, Some(true));
+
+        // `always_bounce` is the same three-state contract on a
+        // SEPARATE question — whether the spring fires with nothing to
+        // scroll — so the two must not collapse into each other. A
+        // scroller that states one says nothing about the other.
+        assert_eq!(scroll_view().prim.always_bounce, None);
+        assert_eq!(scroll_view().always_bounce(false).prim.always_bounce, Some(false));
+        assert_eq!(scroll_view().always_bounce(true).prim.always_bounce, Some(true));
+        let only_always = scroll_view().always_bounce(false);
+        assert_eq!(
+            only_always.prim.bounces, None,
+            "asking for no bounce against fitting content must not also \
+             claim the spring itself is unwanted"
+        );
+        let only_bounces = scroll_view().bounces(false);
+        assert_eq!(only_bounces.prim.always_bounce, None);
     }
 
     /// A plain `view`'s safe area is a bare set on purpose: it lowers to
