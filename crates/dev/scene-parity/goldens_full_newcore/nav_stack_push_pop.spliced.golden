@@ -1,10 +1,15 @@
 # scene-parity FULL-OP NEW-CORE override — scenario `nav_stack_push_pop`, mode `spliced`
 #
-# Sanctioned kernel-ordering divergences only (README + the
-# FULL_NEWCORE_OVERRIDES docs): teardown release interleaving (old
-# LIFO vs new creation-order effect free — same release SET, only
-# the order within teardown windows) and, where noted, cross-effect
-# firing order across sibling effects (divergence #3).
+# Sanctioned divergences only (README + the FULL_NEWCORE_OVERRIDES
+# docs): teardown release interleaving (#5, old LIFO vs new
+# creation-order effect free — same release SET, only the order
+# within teardown windows); where noted, cross-effect firing order
+# across sibling effects (#3); and, for the presence pairs, the
+# Dyn-driver + retire-hook re-expression (#6 — hole structural
+# path, retire-owned detach; identical apply_presence sequence);
+# and post-freeze fixes to a SHARED runtime-shared rule constant
+# (#7 — apply_style payload fields only, op stream unchanged;
+# each instance is listed in the README).
 # Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
 
 == mount ==
@@ -13,7 +18,7 @@ apply_style n0 {flex_direction: Some(Column), flex_grow: Some(Literal(1.0)), wid
 create n1 view
 create n2 text "home"
 insert n1 <- n2
-apply_style n1 {background: Some(Literal(Color("#111111"))), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), width: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
+apply_style n1 {background: Some(Literal(Color("#111111"))), display: Some(Flex), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), width: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
 create n3 view
 create n4 text "header"
 insert n3 <- n4
@@ -29,7 +34,7 @@ insert n5 <- n1
 create n6 view
 create n7 text "detail"
 insert n6 <- n7
-apply_style n6 {background: Some(Literal(Color("#222222"))), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), width: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
+apply_style n6 {background: Some(Literal(Color("#222222"))), display: Some(Flex), flex_grow: Some(Literal(1.0)), flex_shrink: Some(Literal(1.0)), flex_basis: Some(Literal(Px(0.0))), width: Some(Literal(Percent(100.0))), min_height: Some(Literal(Px(0.0)))}
 clear_children n5
 insert n5 <- n6
 

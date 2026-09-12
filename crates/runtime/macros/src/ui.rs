@@ -2831,8 +2831,8 @@ fn emit_if(
     //    needs a `.clone()` or `'static` capture — a loud, diagnosable compile
     //    error, never a silent freeze. See the `migration-0-3-0-to-0-4-0` guide.
     //    To force a genuinely-static-but-call-containing condition back to a
-    //    borrowed-capture plain `if`, read it via `.get_untracked()` or hoist it
-    //    to a `let` above the `ui!` block.
+    //    borrowed-capture plain `if`, read it via `.peek()` (`.get_untracked()`
+    //    on a `Reactive<T>` prop) or hoist it to a `let` above the `ui!` block.
     if condition_may_read_signal(cond) {
         let then_expr = emit_block_as_primitive(then_body);
         let else_expr =
@@ -3006,15 +3006,20 @@ fn condition_may_read_signal(expr: &Expr) -> bool {
         // A call of any kind may read a signal — directly (`.get()`) or in the
         // callee (`foo(x)`, `items.len()`, a predicate that reads a signal).
         //
-        // `.get_untracked()` is the EXCEPTION: it is the framework's declared
-        // intentional-static marker — an explicit non-subscribing read (the same
-        // escape the `snapshot-condition` lint and the runtime untracked-read
-        // warning honor). Honoring it here makes it a real INLINE escape hatch:
-        // `if sig.get_untracked() > 3` lowers to a static plain `if` with
-        // borrowed captures, matching author intent, instead of a reactive
-        // `when` that never fires. We still recurse into the RECEIVER, which may
-        // itself read a signal (`foo().get_untracked()`).
-        Expr::MethodCall(m) if m.method == "get_untracked" && m.args.is_empty() => {
+        // `.peek()` / `.get_untracked()` are the EXCEPTION: they are the
+        // framework's declared intentional-static markers — an explicit
+        // non-subscribing read (the same escape the `snapshot-condition` lint
+        // honors). `peek()` is the spelling on a `Signal` / `ReadSignal` /
+        // `Memo`; `get_untracked()` survives only on the `Reactive<T>` prop
+        // wrapper — both must be honored or one of them silently loses the
+        // escape. Honoring them here makes a real INLINE escape hatch:
+        // `if sig.peek() > 3` lowers to a static plain `if` with borrowed
+        // captures, matching author intent, instead of a reactive `when` that
+        // never fires. We still recurse into the RECEIVER, which may itself
+        // read a signal (`foo().peek()`).
+        Expr::MethodCall(m)
+            if (m.method == "peek" || m.method == "get_untracked") && m.args.is_empty() =>
+        {
             condition_may_read_signal(&m.receiver)
         }
         Expr::Call(_) | Expr::MethodCall(_) => true,
@@ -3810,6 +3815,37 @@ mod tests {
                 assert!(!out.contains("__static_repeat"), "{out}");
                 assert!(out.contains("__idealyst_for_each"), "{out}");
             }
+        }
+
+        /// Regression: `.peek()` is the untracked read on a `Signal`
+        /// (`get_untracked` survives only on the `Reactive<T>` prop
+        /// wrapper), but the inverted gate only knew `get_untracked` as
+        /// the declared-intent escape — so `if sig.peek() > 3`, the
+        /// spelling every current guide gives for an intentional
+        /// snapshot, still lowered to a reactive `when` (forcing `'static`
+        /// move captures) instead of the static plain `if` the author
+        /// asked for. Both spellings must lower identically.
+        #[test]
+        fn regression_peek_condition_lowers_static_like_get_untracked() {
+            let peek = squash(parse_and_emit(quote! {
+                if count.peek() > 3 { text { "a" } }
+            }));
+            let untracked = squash(parse_and_emit(quote! {
+                if count.get_untracked() > 3 { text { "a" } }
+            }));
+            for out in [&peek, &untracked] {
+                assert!(!out.contains("when("), "declared snapshot must stay static:\n{out}");
+            }
+            // The control: the tracked read IS reactive.
+            let get = squash(parse_and_emit(quote! {
+                if count.get() > 3 { text { "a" } }
+            }));
+            assert!(get.contains("when("), "{get}");
+            // A signal read in the RECEIVER still flows, whichever escape wraps it.
+            let nested = squash(parse_and_emit(quote! {
+                if pick(state).peek() > 3 { text { "a" } }
+            }));
+            assert!(nested.contains("when("), "{nested}");
         }
 
         /// Literal-armed reactive `match` must use the closure `switch`

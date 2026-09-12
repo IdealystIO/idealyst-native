@@ -304,12 +304,14 @@ intended.
   condition — `if name.get().len() < 3`, `if is_short(name)`) lowers to a
   reactive `when`/`switch`; only a *provably signal-free* condition (a literal,
   a bare `bool` path, or a comparison of call-free operands) stays static. Rule
-  of thumb: **a `let` freezes, a closure — or a call in the condition — flows.** Debug builds warn at runtime on an untracked
-  `.get()` during a component build (naming the component), and the
-  `snapshot-condition` lint flags the pattern at the `let`. Build-time
-  snapshots are legitimate when intentional — a structural choice that
-  shouldn't rebuild — declare them with `.get_untracked()` (reads without
-  subscribing, silences both diagnostics).
+  of thumb: **a `let` freezes, a closure — or a call in the condition — flows.**
+  The `snapshot-condition` lint flags the pattern at the `let`; nothing
+  warns at runtime (a component body is untracked by construction, so a
+  bare `.get()` there is unremarkable to the kernel). Build-time snapshots
+  are legitimate when intentional — a structural choice that shouldn't
+  rebuild — declare them with `.peek()` (reads without subscribing,
+  silences the lint; `.get_untracked()` is the same intent on a
+  `Reactive<T>` prop and does not exist on a signal).
 - **A mutual write-loop panics, it doesn't hang.** A > B > A cascade trips the
   flush's round limit (100 outer rounds) with a recognizable backtrace instead
   of spinning forever.

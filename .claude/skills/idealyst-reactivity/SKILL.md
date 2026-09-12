@@ -106,8 +106,13 @@ scope.
   `.get()` or any call anywhere) lowers to `when`/`switch`; only a provably
   signal-free condition stays static. "A `let` freezes, a closure — or a call
   in the condition — flows." GUARDED: the `snapshot-condition` lint flags it
-  (ambient in `idealyst dev`), and on a `Reactive<T>` prop `.get_untracked()`
-  declares an intentional snapshot (which the lint accepts by name).
+  (ambient in `idealyst dev`; nothing warns at runtime — the kernel runs a
+  component body untracked by construction). `.peek()` declares an
+  intentional snapshot on a signal (the lint and the `ui!` inverted gate
+  both accept it by name); on a `Reactive<T>` prop the spelling is
+  `.get_untracked()`, and that name does NOT exist on a signal — the
+  component-hygiene guide used to say `.get_untracked()` unqualified,
+  which does not compile against a `Signal`.
 
 ## Keep docs aligned (CLAUDE.md §2)
 

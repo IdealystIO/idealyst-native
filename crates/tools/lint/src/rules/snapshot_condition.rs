@@ -12,15 +12,17 @@
 //! bare `.get()` (outside any closure) is a frozen snapshot; using that
 //! binding as a `ui!`/`jsx!` `if` condition makes a branch that silently
 //! never updates. This is the edit-time twin of the runtime
-//! untracked-build-read warning in `runtime_core::reactive` — same trap,
-//! caught in the editor instead of the console.
+//! kernel's run-once component body — the read is untracked by
+//! construction and nothing at runtime says so, so this catches it in the
+//! editor.
 //!
 //! Detection is deliberately narrow (high precision over recall):
 //! - only fns annotated `#[component]`;
 //! - only top-level `let <ident> = <init>` where `<init>` contains a
 //!   zero-arg `.get()` call NOT inside a closure (a `memo(move || …)` /
 //!   `rx!(…)` initializer keeps its reads inside a closure and never
-//!   matches; `.get_untracked()` is a different name — declared intent);
+//!   matches; `.peek()` — and `.get_untracked()` on a `Reactive<T>` prop
+//!   — are different names: declared intent, never matched);
 //! - only bindings later used as a bare `if [!]NAME {` condition inside
 //!   a `ui!` / `jsx!` token stream in the same fn.
 //!
@@ -77,8 +79,8 @@ pub(crate) fn check_fn(item: &syn::ItemFn, out: &mut Vec<RawDiag>) {
                     .with_help(
                         "a component body runs once, so this `.get()` is frozen. For a \
                          live condition: `let … = memo(move || …)`, or inline the \
-                         `.get()` into the `if`. If the snapshot is intentional, use \
-                         `.get_untracked()` (also silences the runtime warning).",
+                         `.get()` into the `if`. If the snapshot is intentional, say \
+                         so: `.peek()` (on a `Reactive<T>` prop, `.get_untracked()`).",
                     ),
                 );
             }
@@ -231,17 +233,22 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
     }
 
+    /// Declared intent, both spellings: `.peek()` is the untracked read
+    /// on a `Signal`; `.get_untracked()` survives only on the
+    /// `Reactive<T>` prop wrapper. The help text names `.peek()` first,
+    /// so it had better be clean.
     #[test]
-    fn get_untracked_is_clean() {
-        // Declared intent — mirrors the runtime warning's escape hatch.
-        let out = diags(quote! {
-            #[component]
-            fn A() -> Element {
-                let mode = props.mode.get_untracked();
-                ui! { if mode { text { "x" } } }
-            }
-        });
-        assert!(out.is_empty(), "{out:?}");
+    fn peek_and_get_untracked_are_clean() {
+        for read in [quote! { open.peek() }, quote! { props.mode.get_untracked() }] {
+            let out = diags(quote! {
+                #[component]
+                fn A() -> Element {
+                    let mode = #read;
+                    ui! { if mode { text { "x" } } }
+                }
+            });
+            assert!(out.is_empty(), "{read} → {out:?}");
+        }
     }
 
     #[test]

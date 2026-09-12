@@ -10,7 +10,9 @@
 //! Why one shared visitor instead of one `Visit` per rule: the three
 //! patterns key off disjoint node kinds (fn items, call exprs, struct
 //! exprs, macro invocations), so a single walk covers them with no
-//! redundant traversal — and crucially, `syn`'s default visitor does
+//! redundant traversal (the one extra pass, `prefer_ui::FileContext`,
+//! is a file-level import/shadow scan the call-site rule consults, not a
+//! second rule walk) — and crucially, `syn`'s default visitor does
 //! **not** descend into macro token streams, so anything inside
 //! `ui! { … }` is invisible here. That's exactly right: these rules ask
 //! "what did the author write *outside* the macro," which only the
@@ -112,13 +114,19 @@ pub fn all_rules() -> &'static [RuleInfo] {
 /// Walk a parsed file and collect every rule finding (pre-severity,
 /// pre-suppression). The caller resolves severity and suppression.
 pub(crate) fn collect(file: &syn::File) -> Vec<RawDiag> {
-    let mut linter = Linter { diags: Vec::new() };
+    // One cheap pre-pass gathers the file-level facts a node-local rule
+    // can't see from its own node — which framework constructors the
+    // file imports, which idents it shadows — so `prefer-ui-macro` can
+    // judge a bare `view(…)` with evidence instead of guessing.
+    let file_cx = prefer_ui::FileContext::scan(file);
+    let mut linter = Linter { diags: Vec::new(), file_cx };
     linter.visit_file(file);
     linter.diags
 }
 
 struct Linter {
     diags: Vec<RawDiag>,
+    file_cx: prefer_ui::FileContext,
 }
 
 impl<'ast> Visit<'ast> for Linter {
@@ -131,7 +139,7 @@ impl<'ast> Visit<'ast> for Linter {
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         prefer_macros::check_call(node, &mut self.diags);
-        prefer_ui::check_call(node, &mut self.diags);
+        prefer_ui::check_call(node, &self.file_cx, &mut self.diags);
         premint_crawl::check_call(node, &mut self.diags);
         syn::visit::visit_expr_call(self, node);
     }

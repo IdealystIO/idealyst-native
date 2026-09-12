@@ -26,8 +26,9 @@
 //! runs from `for <pat> in` to the body brace group (or the `, key = …`
 //! clause); a zero-arg `. get ( )` token sequence anywhere in the header
 //! expression is the snapshot. Zero-arg keeps `HashMap::get(&k)` and
-//! friends out (they take arguments); `.get_untracked()` is a different
-//! name — declared intent — and never matches. Plain-Rust `for` loops
+//! friends out (they take arguments); `.peek()` (and `.get_untracked()` on
+//! a `Reactive<T>` prop) is a different name — declared intent — and never
+//! matches. Plain-Rust `for` loops
 //! outside the macros are ordinary iteration and are not this rule's
 //! business.
 
@@ -245,14 +246,16 @@ mod tests {
     }
 
     #[test]
-    fn get_untracked_is_clean() {
-        // Different name — declared intent, mirrors `snapshot-condition`.
-        let out = diags(quote! {
-            fn build() -> Element {
-                ui! { for item in items.get_untracked() { Row(data = item) } }
-            }
-        });
-        assert!(out.is_empty(), "{out:?}");
+    fn peek_and_get_untracked_are_clean() {
+        // Different names — declared intent, mirrors `snapshot-condition`.
+        for read in [quote! { items.peek() }, quote! { props.items.get_untracked() }] {
+            let out = diags(quote! {
+                fn build() -> Element {
+                    ui! { for item in #read { Row(data = item) } }
+                }
+            });
+            assert!(out.is_empty(), "{read} → {out:?}");
+        }
     }
 
     #[test]

@@ -119,23 +119,23 @@ One sentence to remember: **a `let` freezes, a closure flows.** Every
 fine-grained framework shares this rule (Solid and Leptos are identical) —
 it's the price of run-once components, paid back by never diffing.
 
-**The framework catches this trap twice:**
-
-- **At runtime (debug builds):** a `.get()` during a component build with no
-  tracked consumer logs a warning naming the component — *"this read is a
-  one-time snapshot and will NEVER update"* — on first render, in the
-  console you're already watching. Zero cost in release builds.
-- **At edit time:** the `snapshot-condition` lint rule flags a hoisted
-  `.get()` binding used as a `ui!` `if` condition, at the `let` where the
-  fix goes. `idealyst dev` runs the linter ambiently on startup, so this
-  appears without ever invoking `idealyst lint`.
+**The framework catches this trap at edit time:** the `snapshot-condition`
+lint rule flags a hoisted `.get()` binding used as a `ui!` `if` condition,
+at the `let` where the fix goes. `idealyst dev` runs the linter ambiently
+on startup, so this appears without ever invoking `idealyst lint`. Nothing
+warns at runtime — the kernel runs a component body untracked by
+construction (`component_scope`), so a bare `.get()` there is exactly what
+it expects and it has nothing to say about it. (The old core's arena had a
+debug-build console warning for this; the new kernel does not.)
 
 Build-time snapshots are still a legitimate tool when they're *intentional*
 (e.g. a structural choice that shouldn't rebuild — IconButton snapshots its
 icon-vs-glyph choice this way). Declare the intent with
-**`.peek()`** — it reads without subscribing, silences both diagnostics,
-and tells every future reader "snapshot, on purpose." (On a `Reactive<T>`
-prop the same intent is spelled `.get_untracked()`.) The distinction is
+**`.peek()`** — it reads without subscribing, silences the lint, and tells
+every future reader "snapshot, on purpose." Inside a `ui!` condition it is
+also the inline escape: `if sig.peek() > 3 { … }` stays a static plain `if`
+with borrowed captures. (On a `Reactive<T>` prop the same intent is spelled
+`.get_untracked()`; that name does not exist on a signal.) The distinction is
 intent: snapshot with `.peek()`, derive with `memo(move || …)`, and treat
 a bare `.get()` outside a closure as a smell.
 

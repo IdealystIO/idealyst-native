@@ -9,9 +9,9 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 | `prefer-effect-macro` | warn | `Effect::new(\|\| …)` | `effect! { … }` |
 | `prefer-memo-fn` | warn | removed `memo!(…)` | `memo(move \|\| …)` |
 | `prefer-text-fstring` | warn | removed `text_fmt!(…)` / `bind!(…)` | `text { "count: {count}" }` |
-| `prefer-ui-macro` | warn | `builder::view(…)`, `BuildElement::build(…)`, `Element::View { … }` | `ui! { … }` / `jsx! { … }` |
+| `prefer-ui-macro` | warn | a primitive constructor called by hand — `runtime_core::view(…)`, `glue::text(…)`, `builders::view()`, or a bare `view(…)` the file imports from the framework — plus `BuildElement::build(…)` and `Element::View { … }` | `ui! { … }` / `jsx! { … }` |
 | `component-pascal-case` | error | `#[component] fn icon_button` | `#[component] fn IconButton` |
-| `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.get_untracked()` if intentional |
+| `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.peek()` if intentional (`.get_untracked()` on a `Reactive<T>` prop) |
 | `prefer-keyed-list` | warn | a child list built by hand — `VEC.push(ui! { … })` / `.map(\|x\| ui! { … })` — outside the macro | `ui! { view() { for item in items, key = item.id { … } } }` |
 | `snapshot-loop` | warn | `for item in items.get()` inside a `ui!` / `jsx!` body — a frozen build-time snapshot | `for item in items, key = item.id { … }` (iterate the Signal itself) |
 | `signal-across-await` | warn | a component-scoped signal read or written after an `.await` inside a detached `spawn_async` (or the future half of `spawn_then`) — the scope can die at any await boundary and the resumed task aborts with `stale-signal-handle` | `spawn_then(future, \|result\| { … })` — the callback runs inside a turn or not at all; also `resource(deps, fetcher)` / `mutation(handler)`, or hoist the signal so it is root-owned |

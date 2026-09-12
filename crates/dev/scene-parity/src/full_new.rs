@@ -201,7 +201,10 @@ pub fn check_full_new(name: &str, mode: Mode) {
              # within teardown windows); where noted, cross-effect firing order\n\
              # across sibling effects (#3); and, for the presence pairs, the\n\
              # Dyn-driver + retire-hook re-expression (#6 — hole structural\n\
-             # path, retire-owned detach; identical apply_presence sequence).\n\
+             # path, retire-owned detach; identical apply_presence sequence);\n\
+             # and post-freeze fixes to a SHARED runtime-shared rule constant\n\
+             # (#7 — apply_style payload fields only, op stream unchanged;\n\
+             # each instance is listed in the README).\n\
              # Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity\n",
             mode = mode.suffix()
         );
@@ -233,7 +236,11 @@ pub fn check_full_new(name: &str, mode: Mode) {
              The vocabulary handlers diverged from the walker's backend-call\n\
              stream — fix the handler, not the golden (only README-sanctioned\n\
              divergences may differ, via normalization or an explicit\n\
-             goldens_full_newcore/ override).\n\
+             goldens_full_newcore/ override). ONE exception to \"not the\n\
+             golden\": if the diff is confined to apply_style payload fields\n\
+             and traces to a deliberate fix of a shared runtime-shared rule\n\
+             constant, that is README divergence #7 — regenerate the override\n\
+             with UPDATE_NEWCORE_GOLDENS=1 and record the instance there.\n\
              \n--- expected ({path}) ---\n{expected}\n--- actual (new core) ---\n{actual}",
             path = path.display(),
         );

@@ -56,7 +56,7 @@
 //!
 //! An `is_alive()` guard — either `if s.is_alive() { … }` or the bail-out
 //! `if !s.is_alive() { return; }` — suppresses the writes it covers. That
-//! is the declared-intent escape, the role `.get_untracked()` plays for
+//! is the declared-intent escape, the role `.peek()` plays for
 //! `snapshot-condition`. It stops at the next `.await`, because a probe
 //! only proves liveness until the task suspends again.
 //!
@@ -298,7 +298,7 @@ fn pos_end(span: proc_macro2::Span) -> (usize, usize) {
 /// ```
 ///
 /// This is the rule's declared-intent escape, the same role
-/// `.get_untracked()` plays for `snapshot-condition`. It is deliberately
+/// `.peek()` plays for `snapshot-condition`. It is deliberately
 /// narrow: a probe only proves liveness until the *next* await, so a guard
 /// followed by another `.await` leaves the writes after it flagged, which
 /// is exactly the residual bug worth reporting.

@@ -9,8 +9,10 @@
 //!    and the removed `signal!` / `memo!` macros (→ the `signal(…)` /
 //!    `memo(move || …)` functions; `prefer-signal-fn`, `prefer-memo-fn`),
 //!    raw `Effect::new` (`prefer-effect-macro`).
-//! 2. Hand-built elements instead of `ui!` / `jsx!` — `builder::…`,
-//!    `BuildElement::build`, `Element::Variant { … }` (`prefer-ui-macro`),
+//! 2. Hand-built elements instead of `ui!` / `jsx!` — a primitive constructor
+//!    called by hand (`runtime_core::view(…)`, `builders::…`, or a bare
+//!    `view(…)` the file imports from the framework), `BuildElement::build`,
+//!    `Element::Variant { … }` (`prefer-ui-macro`),
 //!    and hand-built child lists (`prefer-keyed-list`).
 //! 3. Non-PascalCase `#[component]` functions (`component-pascal-case`).
 //! 4. Frozen-snapshot reactivity traps — a hoisted `.get()` used as a

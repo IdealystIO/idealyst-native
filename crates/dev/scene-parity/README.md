@@ -95,7 +95,9 @@ it did, and the only thing an "update" could now do is re-baseline
 against the current implementation's output. That discards the old
 core's testimony irreversibly, so the environment variable no longer has
 a writer. A red golden is a bug in the current implementation unless it
-is one of the sanctioned divergences below.
+is one of the sanctioned divergences below — including #7, the one class
+where the *frozen testimony* is what's wrong: a shared `runtime-shared`
+rule constant fixed after the freeze.
 
 `UPDATE_NEWCORE_GOLDENS=1` still writes, but ONLY the explicit
 sanctioned-divergence override files (`NEWCORE_OVERRIDES` /
@@ -315,6 +317,42 @@ same override machinery). ONE new full-op divergence:
    the end of the exit window.
    *Pinned by:* `goldens_full_newcore/full_presence_cycle.{anchored,spliced}.golden`
    and `full_presence_bare.spliced.golden`.
+
+7. **Post-freeze fixes to a SHARED rule constant.** A full-op golden
+   pins every `apply_style` payload byte-for-byte, and some of those
+   payloads are not the walker's at all: they are `StyleRules` constants
+   in `runtime-shared` (`screen_flow_fill_rules`,
+   `stack_container_rules`, …) that both cores consumed identically. The
+   golden therefore also froze the *content of those constants on the
+   freeze date* — and the walker had no opinion on that content, it just
+   applied what it was handed. When such a constant is later changed on
+   purpose (a bug fix in the rules themselves, not in either core's
+   mount behaviour), the frozen testimony is testimony to the *bug*, and
+   "fix the handler, not the golden" points the wrong way.
+
+   The test for whether a red golden is this class and not a real
+   regression: the diff must be confined to `apply_style` payload
+   fields, on exactly the nodes that carry the changed constant, with
+   the op sequence, node numbering, and every other field unchanged —
+   and the constant's change must be a deliberate, committed fix in
+   `runtime-shared` with its own rationale. If any structural op moved,
+   it is NOT this class.
+
+   *Resolution:* the affected `(scenario, mode)` pairs are already in the
+   override set; regenerate them with `UPDATE_NEWCORE_GOLDENS=1`, confirm
+   the delta is only the payload fields, and record the fix here.
+
+   Instances:
+   - `208efa86` — `screen_flow_fill_rules` gained `display: Flex` (a
+     screen root carrying only flex-*item* rules lowered to `display:
+     block` on web, so a "pinned header over a growing scroller" screen
+     rendered the header alone). The walker-era golden pinned the
+     overlay WITHOUT `display`, i.e. the broken constant. Reflected in
+     `goldens_full_newcore/nav_stack_push_pop.spliced.golden`: the two
+     screen-root `apply_style` lines gain `display: Some(Flex)`, nothing
+     else moves. (`goldens_full/nav_stack_push_pop.spliced.golden` — the
+     frozen walker copy — deliberately keeps the old constant; it is
+     testimony, not a target.)
 
    All the pairs above are the closed `FULL_NEWCORE_OVERRIDES` set.
 

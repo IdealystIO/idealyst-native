@@ -1,10 +1,15 @@
 # scene-parity FULL-OP NEW-CORE override — scenario `full_release_on_swap`, mode `anchored`
 #
-# Sanctioned kernel-ordering divergences only (README + the
-# FULL_NEWCORE_OVERRIDES docs): teardown release interleaving (old
-# LIFO vs new creation-order effect free — same release SET, only
-# the order within teardown windows) and, where noted, cross-effect
-# firing order across sibling effects (divergence #3).
+# Sanctioned divergences only (README + the FULL_NEWCORE_OVERRIDES
+# docs): teardown release interleaving (#5, old LIFO vs new
+# creation-order effect free — same release SET, only the order
+# within teardown windows); where noted, cross-effect firing order
+# across sibling effects (#3); and, for the presence pairs, the
+# Dyn-driver + retire-hook re-expression (#6 — hole structural
+# path, retire-owned detach; identical apply_presence sequence);
+# and post-freeze fixes to a SHARED runtime-shared rule constant
+# (#7 — apply_style payload fields only, op stream unchanged;
+# each instance is listed in the README).
 # Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
 
 == mount ==

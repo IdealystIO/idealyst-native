@@ -6,7 +6,10 @@
 # within teardown windows); where noted, cross-effect firing order
 # across sibling effects (#3); and, for the presence pairs, the
 # Dyn-driver + retire-hook re-expression (#6 — hole structural
-# path, retire-owned detach; identical apply_presence sequence).
+# path, retire-owned detach; identical apply_presence sequence);
+# and post-freeze fixes to a SHARED runtime-shared rule constant
+# (#7 — apply_style payload fields only, op stream unchanged;
+# each instance is listed in the README).
 # Regenerate: UPDATE_NEWCORE_GOLDENS=1 cargo test -p scene-parity
 
 == mount ==

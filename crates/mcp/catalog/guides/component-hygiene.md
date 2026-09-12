@@ -142,16 +142,21 @@ command checks them over your source:
   in a `move` closure and expands to the scope-owned `Effect::scoped`
   (the raw `Effect::new` is sealed — the "my signal stopped updating"
   footgun).
-- `prefer-ui-macro` — flags elements built by hand (`builder::…`,
-  `BuildElement::build`, `Element::View { … }`) instead of `ui!` / `jsx!`.
+- `prefer-ui-macro` — flags elements built by hand instead of `ui!` /
+  `jsx!`: a primitive constructor called directly (`runtime_core::view(…)`,
+  `glue::text(…)`, `builders::view()`, or a bare `view(…)` / `text(…)` the
+  file imports from the framework), `BuildElement::build`, and the old
+  `Element::View { … }` literal.
 - `component-pascal-case` — flags a `#[component]` fn that isn't
   PascalCase.
 - `snapshot-condition` — flags the hoisted-snapshot trap: a `let` whose
   initializer does a bare `.get()` used later as a `ui!` `if` condition
   (the branch silently never updates). Fix with `memo(move || …)`, inline
-  the `.get()`, or declare an intentional snapshot with
-  `.get_untracked()`. Debug builds also warn at runtime when this
-  happens.
+  the `.get()`, or declare an intentional snapshot with `.peek()` — the
+  untracked read on a `Signal` / `ReadSignal` / `Memo`. (`.get_untracked()`
+  exists only on the `Reactive<T>` prop wrapper; on a signal it does not
+  compile.) Nothing warns at runtime: a component body is untracked by
+  construction, so the lint is the guardrail.
 
 Every rule is individually configurable (`off` / `warn` / `error`) in
 `idealyst-lint.toml` and suppressible inline with
