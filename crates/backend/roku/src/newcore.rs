@@ -461,6 +461,16 @@ impl Host for RokuBackend {
         self.push(RokuCommand::ClearChildren { parent: *node });
     }
 
+    /// TODO(anchor-display-contents): `CreateReactiveAnchor` must realize
+    /// on the BrightScript side as a node that takes NO part in layout or
+    /// focus/remote hit-testing — its children lay out as if they were
+    /// the parent's own (web: `display: contents`; Taffy hosts:
+    /// `runtime_layout::LayoutTree::new_contents_node`). A plain group
+    /// node that is itself a layout item hugs a `flex_grow` child to 0,
+    /// stacks a row parent's children vertically and swallows its `gap`;
+    /// with `supports_splice == false` the anchor sits under EVERY
+    /// `if`/`for` here. See `Host::create_anchor`'s doc. Left as-is until
+    /// an agent can run the SceneGraph side on a device to verify.
     fn create_anchor(&mut self) -> Self::Node {
         let id = self.mint_node();
         self.push(RokuCommand::CreateReactiveAnchor { id });

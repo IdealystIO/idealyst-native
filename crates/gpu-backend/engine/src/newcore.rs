@@ -746,6 +746,24 @@ impl Host for WgpuBackend {
         WgpuBackend::clear_children_impl(self, node)
     }
 
+    /// TODO(anchor-display-contents): `NodeKind::ReactiveAnchor` is minted
+    /// over `layout.new_node()` — a default flex item, which is NOT
+    /// layout-neutral: it hugs a `flex_grow` child to 0, stacks a row
+    /// parent's children vertically and swallows its `gap` (pinned by
+    /// `runtime_layout`'s contents-node tests). With `supports_splice ==
+    /// false` this anchor sits under EVERY `if`/`for` on this backend, so
+    /// the divergence from web is at its widest here. The fix is the one
+    /// iOS / macOS / Android carry: mint the anchor's layout node with
+    /// `runtime_layout::LayoutTree::new_contents_node()` (children link
+    /// into the real ancestor; the anchor's `frame_of` is that ancestor's
+    /// box at the origin), make the scene walk that paints and hit-tests
+    /// reach through the anchor (`logical_children_of` — the flat
+    /// `children_of` never sees a contents node) and never resolve a hit
+    /// to the anchor itself, and update
+    /// `tests/newcore.rs::newcore_host_seam_reproduces_the_deleted_backend_defaults`,
+    /// which pins the anchor kind. See `Host::create_anchor`'s doc. Left
+    /// as-is until an agent can render headless goldens and drive input
+    /// on this backend to verify both halves.
     fn create_anchor(&mut self) -> Self::Node {
         WgpuBackend::create_reactive_anchor_impl(self)
     }

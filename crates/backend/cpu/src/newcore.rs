@@ -498,10 +498,27 @@ impl Host for CpuBackend {
 
     /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
     /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
-    /// it is stated here rather than inherited (deletion-baseline S2.2). A
-    /// plain container view is the right anchor for this backend: an
-    /// unstyled view draws nothing, so the anchor is invisible and
-    /// layout-neutral.
+    /// it is stated here rather than inherited (deletion-baseline S2.2).
+    ///
+    /// TODO(anchor-display-contents): this is NOT a correct anchor. An
+    /// unstyled view draws nothing, but it is still a flex item, and a
+    /// default flex item is not layout-neutral: it hugs a `flex_grow`
+    /// child to 0, stacks a row parent's children vertically and swallows
+    /// its `gap` (pinned by `runtime_layout`'s contents-node tests — and
+    /// with `supports_splice == false` it sits under EVERY `if`/`for`
+    /// here, not only at subtree roots). The fix is the one iOS / macOS /
+    /// Android already carry: register the anchor's layout node with
+    /// `runtime_layout::LayoutTree::new_contents_node()` instead of
+    /// `new_node()` (its children then link into the real ancestor; its
+    /// own `frame_of` is that ancestor's box at the origin, so children's
+    /// frames apply unchanged under it), make sure this backend's frame
+    /// pass reaches the anchor (walk `logical_children_of`, not
+    /// `children_of` — the flat walk never sees a contents node), and keep
+    /// the anchor out of this backend's own hit-testing (try its children,
+    /// never answer with the anchor). See `Host::create_anchor`'s doc and
+    /// the iOS/macOS `create_anchor_impl`. Left as-is until an agent can
+    /// build and exercise this backend's rendering + input on the real
+    /// target to verify the frame-pass and hit-test halves.
     fn create_anchor(&mut self) -> Self::Node {
         self.create_view(&AccessibilityProps::default())
     }
