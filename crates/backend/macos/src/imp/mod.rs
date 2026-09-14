@@ -446,6 +446,13 @@ pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
 /// other no-ops — never a double pass. Deferring (vs. running inline here) is
 /// also required because `with_global_backend`'s `try_borrow_mut` would bail
 /// while the framework still holds the backend mid-`apply_style`/`insert`.
+/// Whether a coalesced layout pass is armed and not yet run. For the
+/// tests that pin what must NOT arm one (`virtual_grid::queue_sync`).
+#[cfg(test)]
+pub(crate) fn layout_pass_is_queued() -> bool {
+    LAYOUT_PASS_QUEUED.with(|q| q.get())
+}
+
 pub fn schedule_layout_pass() {
     let should_post = LAYOUT_PASS_QUEUED
         .with(|q| crate::layout_policy::claim_coalesced_pass(q));

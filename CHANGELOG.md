@@ -196,6 +196,36 @@ each entry links to its migration guide.
   (`runtime_core::view(…)`, `builders::…`, or a bare `view(…)` the file
   imports from the framework).
 
+- **A two-axis grid no longer aborts the app the moment it mounts.**
+  `mount_cell` realizes a subtree and `release_cell` drops one; both
+  re-enter the backend, and every path into a grid sync — the layout
+  pass, `data_changed`, the scroll observer — already held the backend
+  borrow. The first `virtual_grid` to mount on iOS died with `RefCell
+  already borrowed`; macOS and Android carried the identical latent
+  bug. Each engine's sync now does only the registry lookup under the
+  borrow and queues the rest, drained at the seams where the borrow is
+  provably gone. Queueing deliberately arms no layout pass: `sync_all`
+  queues every grid on every pass, and a schedule there made each pass
+  arm the next — 25,488 passes in 90 s. On macOS the whole path runs
+  against real AppKit views in the host tests, which pin that a sync
+  mounts nothing until the drain, a release drops no scope until the
+  drain, and queueing arms no pass.
+
+- **A grid cell lays out inside its cell, not inside the screen.** A
+  mounted cell's root view has no Taffy parent — the engine places it
+  in content space — so the pass computed it against the viewport and
+  then wrote (0, 0, w, h) over the engine's frame: 40×44 cells came
+  back 40×956, stacked in one column. The pass now computes a cell root
+  against its own recorded box and leaves its frame to the engine; the
+  children still get theirs, relative to the cell. iOS and Android;
+  the decision is a host-tested policy fn on each.
+
+- **`idealyst build` refreshes the wrapper's lockfile.** The generated
+  wrapper is its own `[workspace]` and kept its own lock, so bumping a
+  framework crate in the app rebuilt clean and changed nothing —
+  `backend-ios-mobile` pinned at 1.8.5 while the app said 1.8.8. Every
+  builder that writes a standalone wrapper now refreshes it.
+
 - **`backend-roku` compiles again against `Length::Full`.** The same
   missed arm as `dev-server`, in `style::length`: the crate's other
   converter got the pill and this one did not, and 1.5.2 shipped unable

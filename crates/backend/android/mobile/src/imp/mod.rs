@@ -1523,8 +1523,11 @@ impl AndroidBackend {
         {
             let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
             for (key, root_node) in &roots {
-                let (rw, rh) =
-                    primitives::virtual_grid::cell_box(*key).unwrap_or((vw, vh));
+                let (rw, rh) = crate::layout_policy::root_pass(
+                    primitives::virtual_grid::cell_box(*key),
+                    (vw, vh),
+                )
+                .compute_against;
                 self.layout.compute(*root_node, rw, rh);
             }
         }
@@ -1538,7 +1541,13 @@ impl AndroidBackend {
                 // would place this root at the origin and undo the
                 // windowing. The cell's CHILDREN are ordinary entries
                 // and still get theirs, relative to the cell.
-                .filter(|(k, _)| primitives::virtual_grid::cell_box(**k).is_none())
+                .filter(|(k, _)| {
+                    !crate::layout_policy::root_pass(
+                        primitives::virtual_grid::cell_box(**k),
+                        (vw, vh),
+                    )
+                    .engine_owns_frame
+                })
                 .map(|(_, (view, n))| (view.clone(), self.layout.frame_of(*n)))
                 .collect()
         };

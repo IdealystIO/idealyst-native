@@ -45,6 +45,8 @@ mod label_text_policy;
 // any host; the half that borrows the backend and runs Taffy is
 // ios-only. See the module docs for the dropped-pass bug it pins.
 mod layout_drain_policy;
+/// How the layout pass treats a root that is a `virtual_grid` cell.
+mod grid_cell_root_policy;
 
 // idea-lite core migration (iOS mirror of P4a): `runtime_scene::Host` +
 // all 30 `runtime_vocabulary::caps` traits directly on `IosBackend`,

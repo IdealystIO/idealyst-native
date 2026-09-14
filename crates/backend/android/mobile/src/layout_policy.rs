@@ -69,6 +69,65 @@ pub(crate) fn non_px_layout_param(length: &runtime_shared::Length) -> Option<i32
     }
 }
 
+/// What the layout pass does with one Taffy root.
+///
+/// A mounted `virtual_grid` cell's root view has no Taffy PARENT — the
+/// grid engine places it in the scroller's content space — so it is a
+/// root, and the pass did two things to a root that are exactly wrong
+/// for a cell: computed it against the viewport (so the cell's SUBTREE
+/// laid out against the screen) and then handed the result to
+/// `applyFrames`. Kotlin's `setCellFrame` happened to re-apply the
+/// stored frame afterwards, which is why the symptom here was milder
+/// than iOS's full-height cells — but the subtree was still wrong. The
+/// iOS twin is `grid_cell_root_policy`; the JNI half is verified on a
+/// device.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) struct RootPass {
+    /// The box Taffy computes the root against.
+    pub compute_against: (f32, f32),
+    /// `true` when the grid engine owns the root's frame and the apply
+    /// batch must leave it out.
+    pub engine_owns_frame: bool,
+}
+
+/// `cell_box` is `virtual_grid::cell_box(view_key)` — `Some` only for a
+/// mounted grid cell's root; `viewport` is what every other root fills.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn root_pass(cell_box: Option<(f32, f32)>, viewport: (f32, f32)) -> RootPass {
+    match cell_box {
+        Some(cell) => RootPass {
+            compute_against: cell,
+            engine_owns_frame: true,
+        },
+        None => RootPass {
+            compute_against: viewport,
+            engine_owns_frame: false,
+        },
+    }
+}
+
+#[cfg(test)]
+mod root_pass_tests {
+    use super::*;
+
+    /// Regression: a cell root computed against the viewport laid its
+    /// subtree out against the screen and was then framed at the origin.
+    #[test]
+    fn regression_grid_cell_root_is_computed_against_its_box_and_left_to_the_engine() {
+        let pass = root_pass(Some((40.0, 44.0)), (411.0, 891.0));
+        assert_eq!(pass.compute_against, (40.0, 44.0));
+        assert!(pass.engine_owns_frame);
+    }
+
+    #[test]
+    fn an_ordinary_root_fills_the_viewport_and_is_framed_by_the_pass() {
+        let pass = root_pass(None, (411.0, 891.0));
+        assert_eq!(pass.compute_against, (411.0, 891.0));
+        assert!(!pass.engine_owns_frame);
+    }
+}
+
 #[cfg(test)]
 mod length_param_tests {
     use super::*;

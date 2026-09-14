@@ -4584,7 +4584,11 @@ impl IosBackend {
                 // parent — it is positioned by the grid engine in the
                 // scroller's content space. Computing it against the
                 // viewport stretches a 40x44 cell to 40x956.
-                let (rw, rh) = virtual_grid::cell_box(*key).unwrap_or((vw, vh));
+                let (rw, rh) = crate::grid_cell_root_policy::root_pass(
+                    virtual_grid::cell_box(*key),
+                    (vw, vh),
+                )
+                .compute_against;
                 self.layout.compute(*root_node, rw, rh);
                 computed_count += 1;
             }
@@ -4625,7 +4629,9 @@ impl IosBackend {
             // root at the origin and undo the whole windowing. The
             // cell's CHILDREN are ordinary entries in this loop and
             // still get their frames, which are relative to the cell.
-            if virtual_grid::cell_box(*key).is_some() {
+            if crate::grid_cell_root_policy::root_pass(virtual_grid::cell_box(*key), (vw, vh))
+                .engine_owns_frame
+            {
                 continue;
             }
             let frame = self.layout.frame_of(*layout_node);
