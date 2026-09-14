@@ -1006,6 +1006,40 @@ impl LayoutTree {
     /// tall as its content and has nothing to scroll. The native scroll view
     /// still does its own pixel clipping + content-offset; this call only
     /// fixes the Taffy *sizing* of the viewport node.
+    /// Make `node` layout-TRANSPARENT: it neither holds space back from
+    /// its child nor keeps any from its parent.
+    ///
+    /// This is the stand-in for CSS `display: contents`, which taffy 0.7
+    /// has no equivalent of. A node the AUTHOR never wrote — a reactive
+    /// hole's anchor — must not change how the tree lays out, and a
+    /// default flex item does: `flex_grow: 0` stops a bounded height
+    /// dead, and the automatic minimum (`min: auto`) floors the node at
+    /// its content so it cannot shrink either. Between an author's
+    /// bounded slot and an author's fill-me child, that silently turns
+    /// "fill the slot" into "hug your content".
+    ///
+    /// Grow AND shrink, with both automatic minimums floored at zero, is
+    /// as close as a real flex item gets to not being there.
+    pub fn set_pass_through(&mut self, node: LayoutNode) {
+        let _ = self.tree.set_style(node.0, {
+            let mut style = self
+                .tree
+                .style(node.0)
+                .cloned()
+                .unwrap_or(Style::default());
+            style.flex_grow = 1.0;
+            style.flex_shrink = 1.0;
+            // Not `flex_basis: 0`: an anchor holding a content-sized
+            // child should still report that child's size to a parent
+            // that is sizing ITSELF from its children. Basis `auto`
+            // keeps the child's contribution; grow adds the slot's
+            // space on top when there is any.
+            style.min_size.height = taffy::style::Dimension::Length(0.0);
+            style.min_size.width = taffy::style::Dimension::Length(0.0);
+            style
+        });
+    }
+
     pub fn set_overflow_scroll(&mut self, node: LayoutNode, horizontal: bool) {
         let _ = self.tree.set_style(node.0, {
             let mut style = self

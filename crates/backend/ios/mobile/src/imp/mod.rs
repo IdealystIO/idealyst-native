@@ -4695,6 +4695,74 @@ impl IosBackend {
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
 
+        // A virtualizer that resolved to nothing renders nothing, and
+        // says nothing about it.
+        //
+        // This is the single most confusing way for a windowed list to
+        // fail: the surrounding chrome — header, toolbar, any strip the
+        // caller drew — all lay out correctly, and only the rows are
+        // absent. There is no error, no panic, and the empty-state arm
+        // does not fire either, because the list is NOT empty; it has
+        // every item it was given and a viewport of zero to window them
+        // against. It is indistinguishable, on screen and in this log,
+        // from "the query came back with no rows".
+        //
+        // The cause is always the same shape and never local to the
+        // list: `set_overflow_scroll` gives the node `flex_basis: 0` +
+        // `flex_grow: 1` (it must — see `create_virtualizer_impl`), so
+        // the node contributes no base size and lives entirely on the
+        // free space its parent chain hands down. One ancestor that is
+        // content-sized rather than bounded, and the free space is zero.
+        //
+        // So the diagnostic has to name the CHAIN, not the list: the
+        // author needs the first ancestor with a real height to know
+        // where the boundedness stopped. Debug builds only, once per
+        // pass, and only when a list actually collapsed.
+        #[cfg(debug_assertions)]
+        {
+            for key in self.collection_views.iter() {
+                let Some(node) = self.view_to_layout.get(key).map(|(_, n)| *n) else {
+                    continue;
+                };
+                let frame = self.layout.frame_of(node);
+                if frame.height > 0.5 && frame.width > 0.5 {
+                    continue;
+                }
+                let mut chain: Vec<String> = Vec::new();
+                let mut cur = Some(node);
+                let mut hops = 0;
+                while let Some(n) = cur {
+                    let f = self.layout.frame_of(n);
+                    // The SIZES alone say where the height ran out; the
+                    // style says why that node did not pass it on, which
+                    // is the half an author can act on.
+                    chain.push(format!(
+                        "{:.0}x{:.0} [{}]",
+                        f.width,
+                        f.height,
+                        self.layout.debug_style(n)
+                    ));
+                    if hops >= 8 {
+                        chain.push("…".to_string());
+                        break;
+                    }
+                    hops += 1;
+                    cur = self.layout.parent_of(n);
+                }
+                backend_ios_core::ios_log(&format!(
+                    "[layout] WARN idealyst[virtualizer-collapsed]: a windowed list \
+resolved to {:.0}x{:.0} and will render NO rows, though it has items. A virtualizer \
+is `flex_basis: 0` + `flex_grow: 1`, so it takes its height from its parent chain — \
+one content-sized ancestor and there is no free space to grow into. Chain (list → \
+root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
+`min_height: 0`, with every node above it bounded too.",
+                    frame.width,
+                    frame.height,
+                    chain.join(" → "),
+                ));
+            }
+        }
+
         // Sync UIScrollView contentSize: walk each scroll view's
         // Taffy children, compute the bounding box, set
         // `scrollView.contentSize` to that size. Without this the
