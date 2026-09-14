@@ -196,6 +196,21 @@ each entry links to its migration guide.
   (`runtime_core::view(…)`, `builders::…`, or a bare `view(…)` the file
   imports from the framework).
 
+- **`backend-roku` compiles again against `Length::Full`.** The same
+  missed arm as `dev-server`, in `style::length`: the crate's other
+  converter got the pill and this one did not, and 1.5.2 shipped unable
+  to build. It reaches the wire as `FULL_RADIUS_FALLBACK_PX`, with a
+  test that keeps the two converters agreeing.
+
+- **`virtual_grid` works on iOS and Android.** Both mobile backends
+  carried a complete two-axis grid engine behind an EMPTY `GridOps`
+  impl — valid Rust, no warning — so every `virtual_grid` on a phone
+  drew the "not supported" placeholder. The four methods now delegate to
+  the engines with the same world-entered, flush-behind glue the
+  virtualizer uses. `tests/grid_caps_wired.rs` reads the source: a
+  backend that names `create_virtual_grid_impl` must override
+  `create_virtual_grid`.
+
 - **`dev-server` compiles again against `Length::Full`.** The pill
   radius reached every style-time backend but not the wire converter, so
   `idealyst dev` stopped building. It reaches the client as the same

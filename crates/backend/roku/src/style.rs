@@ -83,6 +83,14 @@ pub(crate) fn length(l: &Length) -> WireLength {
         Length::Px(v) => WireLength::Px(*v),
         Length::Percent(v) => WireLength::Percent(*v),
         Length::Auto => WireLength::Auto,
+        // The wire has no pill and is resolved before the client knows
+        // the box — the case `FULL_RADIUS_FALLBACK_PX` exists for, and
+        // the same collapse `length_px` below already makes. This arm
+        // was missed when `Full` landed, and since every other arm is
+        // named the crate simply stopped compiling; a wildcard would
+        // have hidden that and the test below keeps the next variant
+        // loud in one place instead.
+        Length::Full => WireLength::Px(Length::FULL_RADIUS_FALLBACK_PX),
     }
 }
 
@@ -155,5 +163,30 @@ fn font_weight_to_numeric(w: FontWeight) -> u32 {
         FontWeight::Bold => 700,
         FontWeight::ExtraBold => 800,
         FontWeight::Black => 900,
+    }
+}
+
+#[cfg(test)]
+mod length_tests {
+    use super::*;
+
+    /// Regression: `Length::Full` reached `length_px` but not `length`,
+    /// so `backend-roku` did not compile — and shipped that way as
+    /// 1.5.2. Every variant reaches the wire; the pill reaches it as
+    /// the sentinel the other style-time backends use.
+    #[test]
+    fn regression_every_length_reaches_the_wire_and_full_is_the_sentinel() {
+        // `matches!`: `WireLength` is a serialization type without `PartialEq`.
+        assert!(matches!(length(&Length::Px(16.0)), WireLength::Px(v) if v == 16.0));
+        assert!(matches!(length(&Length::Percent(50.0)), WireLength::Percent(v) if v == 50.0));
+        assert!(matches!(length(&Length::Auto), WireLength::Auto));
+        assert!(matches!(
+            length(&Length::Full),
+            WireLength::Px(v) if v == Length::FULL_RADIUS_FALLBACK_PX
+        ));
+        assert!(
+            (length_px(&Length::Full) - Length::FULL_RADIUS_FALLBACK_PX).abs() < f32::EPSILON,
+            "the two converters must agree on the pill"
+        );
     }
 }
