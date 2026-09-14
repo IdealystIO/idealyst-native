@@ -2362,3 +2362,110 @@ mod key_view_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod anchor_hit_tests {
+    //! A reactive anchor's `hitTest:` against REAL `NSView`s — the
+    //! macOS half of what `newcore-ios-smoke` checks on the simulator.
+    //! `hitTest:` is geometry only, so it runs without a window.
+    //!
+    //! The tree hangs under a plain, UNFLIPPED `NSView` root: `hitTest:`
+    //! takes its point in the superview's space, and for a view with no
+    //! superview AppKit reads it unflipped — so a `FlippedView` tested as
+    //! the root sees `(x, y)` as `(x, height - y)`. `hit` takes the
+    //! parent's own flipped coordinates and converts.
+    use super::FlippedView;
+    use objc2::rc::Retained;
+    use objc2::{msg_send, msg_send_id};
+    use objc2_app_kit::NSView;
+    use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
+
+    const SIZE: f64 = 200.0;
+
+    fn view(x: f64, y: f64, w: f64, h: f64) -> Retained<FlippedView> {
+        let v = FlippedView::new(unsafe { MainThreadMarker::new_unchecked() });
+        let _: () = unsafe {
+            msg_send![&v, setFrame: CGRect::new(CGPoint::new(x, y), CGSize::new(w, h))]
+        };
+        v
+    }
+
+    fn same(a: Option<&Retained<NSView>>, b: &FlippedView) -> bool {
+        a.map_or(false, |a| {
+            std::ptr::eq(&**a as *const NSView, b as *const FlippedView as *const NSView)
+        })
+    }
+
+    /// A `SIZE`pt flipped parent under an unflipped root, holding an
+    /// earlier sibling in its top-left corner and, above it in z-order,
+    /// the anchor with one child at `(100, 100)`. `anchor_size` is the
+    /// anchor's own frame: the ancestor's full box (what `apply_frames`
+    /// gives a contents node) or a corner too small to hold the child.
+    fn tree(
+        anchor_size: f64,
+    ) -> (
+        Retained<NSView>,
+        Retained<FlippedView>,
+        Retained<FlippedView>,
+        Retained<FlippedView>,
+        Retained<FlippedView>,
+    ) {
+        let root: Retained<NSView> = unsafe {
+            let alloc: *mut objc2::runtime::AnyObject = msg_send![objc2::class!(NSView), alloc];
+            let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(SIZE, SIZE));
+            let init: *mut objc2::runtime::AnyObject = msg_send![alloc, initWithFrame: frame];
+            Retained::from_raw(init.cast()).expect("NSView")
+        };
+        let parent = view(0.0, 0.0, SIZE, SIZE);
+        let sibling = view(0.0, 0.0, 50.0, 50.0);
+        let anchor = view(0.0, 0.0, anchor_size, anchor_size);
+        let child = view(100.0, 100.0, 50.0, 50.0);
+        let _: () = unsafe { msg_send![&anchor, addSubview: &*child] };
+        let _: () = unsafe { msg_send![&parent, addSubview: &*sibling] };
+        let _: () = unsafe { msg_send![&parent, addSubview: &*anchor] };
+        let _: () = unsafe { msg_send![&root, addSubview: &*parent] };
+        (root, parent, sibling, anchor, child)
+    }
+
+    /// Hit-test `(x, y)` given in the parent's FLIPPED space.
+    fn hit(root: &NSView, x: f64, y: f64) -> Option<Retained<NSView>> {
+        unsafe { msg_send_id![root, hitTest: CGPoint::new(x, SIZE - y)] }
+    }
+
+    /// Regression: an anchor sized to its ancestor's box is a full-size
+    /// view stacked above every earlier sibling, and a plain view there
+    /// answers `hitTest:` for its whole frame — so a button that shared a
+    /// parent with a later `when`/`for` took no clicks. The control shows
+    /// AppKit doing exactly that; the flag makes the anchor step aside.
+    #[test]
+    fn regression_full_size_anchor_no_longer_shadows_an_earlier_sibling() {
+        let (root, _parent, sibling, anchor, _child) = tree(SIZE);
+        assert!(same(hit(&root, 25.0, 25.0).as_ref(), &anchor), "control: a plain view shadows");
+        anchor.set_layout_transparent();
+        assert!(same(hit(&root, 25.0, 25.0).as_ref(), &sibling));
+    }
+
+    /// The other half of "no frame check on self": a child that lies
+    /// outside the anchor's own frame is still reached. The control shows
+    /// a plain view clipping it — AppKit forwards to the subview but the
+    /// subview's default `hitTest:` rejects a point outside its frame.
+    #[test]
+    fn regression_anchor_reaches_a_child_outside_its_own_frame() {
+        let (root, parent, _sibling, anchor, child) = tree(50.0);
+        assert!(same(hit(&root, 125.0, 125.0).as_ref(), &parent), "control: a plain view clips");
+        anchor.set_layout_transparent();
+        assert!(same(hit(&root, 125.0, 125.0).as_ref(), &child));
+    }
+
+    /// A point over the anchor with nothing under it resolves to the
+    /// parent, as if the anchor were not there; its child is still found.
+    #[test]
+    fn transparent_anchor_reaches_children_and_never_answers_for_itself() {
+        let (root, parent, _sibling, anchor, child) = tree(SIZE);
+        anchor.set_layout_transparent();
+        assert!(same(hit(&root, 125.0, 125.0).as_ref(), &child));
+        let got = hit(&root, 150.0, 25.0);
+        assert!(!same(got.as_ref(), &anchor), "the anchor answered for itself");
+        assert!(same(got.as_ref(), &parent));
+    }
+}

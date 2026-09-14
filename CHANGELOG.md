@@ -159,6 +159,49 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **A reactive anchor is `display: contents` on every native backend.**
+  `Host::create_anchor` — the node the scene swaps a hole's subtree
+  under: a `when` branch whose body is another `when`/`for`, a keyed or
+  virtualizer row rooted in one, a navigator screen or portal rooted in
+  one — was a plain view on iOS, macOS and Android. The author never
+  wrote it, but a plain view is a flex item, and a default flex item hugs
+  a `flex_grow` child to nothing, stacks a row parent's children
+  vertically and swallows its `gap`. The case that named it: a windowed
+  list under a reactive anchor resolved to a 0pt viewport and rendered
+  no rows, with no error and no empty state — it had every item and no
+  height to window them against. Web never saw any of this because its
+  anchor is `display: contents`.
+
+  `runtime_layout::LayoutTree::new_contents_node` is the native
+  equivalent taffy has none of: the node has a stable id but is never
+  linked into the Taffy tree — its children link into the nearest real
+  ancestor at the position it holds among its siblings, and its own
+  frame is that ancestor's box at the origin, so the children's frames
+  apply unchanged under the anchor's native view. iOS and macOS also
+  make the anchor's view hit-transparent for itself (`hitTest:` tries
+  the subviews, ignoring the anchor's own bounds, and never answers with
+  the anchor — a full-size anchor above an earlier sibling used to take
+  that sibling's clicks); Android needs nothing, a non-clickable
+  `ViewGroup` falls through. `is_contents` and `logical_children_of`
+  expose the two trees. Pinned by fourteen layout tests, three
+  real-AppKit hit tests, and the iOS simulator smoke app's self-test,
+  which reads live frames and hit-tests through the anchor.
+
+- **`if sig.peek() > 3` inside `ui!` lowers to a static `if`.** The
+  macro honoured `.get_untracked()` as the declared-intent snapshot
+  escape but not `.peek()`, the spelling every current guide gives — so
+  the condition became a reactive `when` that forced `'static` move
+  captures and never fired. Both spellings now lower identically. The
+  `prefer-ui` lint also catches a primitive constructor called directly
+  (`runtime_core::view(…)`, `builders::…`, or a bare `view(…)` the file
+  imports from the framework).
+
+- **`dev-server` compiles again against `Length::Full`.** The pill
+  radius reached every style-time backend but not the wire converter, so
+  `idealyst dev` stopped building. It reaches the client as the same
+  `FULL_RADIUS_FALLBACK_PX` sentinel the other backends use; an
+  exhaustive match plus a test makes the NEXT variant fail in one place.
+
 - **`IconButton` tints its own glyph, instead of assuming it inherits.**
   A vector `icon` and a text `glyph` now both carry the container's
   resolved `tone x variant` foreground on their OWN node. They used to
