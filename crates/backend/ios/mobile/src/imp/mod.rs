@@ -4541,13 +4541,16 @@ impl IosBackend {
         // Find every Taffy root. The framework root is one; each screen
         // mounted via `mount_screen_in_vc` (which bypasses
         // `Backend::insert`) is another.
-        let roots: Vec<runtime_layout::LayoutNode> = {
+        // Carries the view key as well as the node: a root that is a
+        // mounted `virtual_grid` cell is computed against its own box
+        // rather than the viewport (see `virtual_grid::CELL_BOXES`).
+        let roots: Vec<(usize, runtime_layout::LayoutNode)> = {
             let _t = phase_timer::PhaseTimer::start("collect_roots");
             self
                 .view_to_layout
-                .values()
-                .map(|(_, n)| *n)
-                .filter(|n| self.layout.is_root(*n))
+                .iter()
+                .map(|(k, (_, n))| (*k, *n))
+                .filter(|(_, n)| self.layout.is_root(*n))
                 .collect()
         };
 
@@ -4556,7 +4559,7 @@ impl IosBackend {
         // screens at stale dimensions.
         let viewport_changed = self.last_viewport != Some((vw, vh));
         if viewport_changed {
-            for root_node in &roots {
+            for (_, root_node) in &roots {
                 self.layout.mark_dirty(*root_node);
             }
             self.last_viewport = Some((vw, vh));
@@ -4566,7 +4569,7 @@ impl IosBackend {
         let mut skipped_count = 0usize;
         {
             let _t = phase_timer::PhaseTimer::start("taffy_compute_all_roots");
-            for root_node in &roots {
+            for (key, root_node) in &roots {
                 if !self.layout.is_dirty(*root_node) {
                     // Skip persistent hidden screens whose subtree
                     // hasn't been touched since the last pass. Taffy's
@@ -4577,7 +4580,12 @@ impl IosBackend {
                     continue;
                 }
                 let _t_one = phase_timer::PhaseTimer::start("taffy_compute_one_root");
-                self.layout.compute(*root_node, vw, vh);
+                // A grid cell is a root only because it has no Taffy
+                // parent — it is positioned by the grid engine in the
+                // scroller's content space. Computing it against the
+                // viewport stretches a 40x44 cell to 40x956.
+                let (rw, rh) = virtual_grid::cell_box(*key).unwrap_or((vw, vh));
+                self.layout.compute(*root_node, rw, rh);
                 computed_count += 1;
             }
         }
@@ -4612,6 +4620,14 @@ impl IosBackend {
             std::collections::HashSet::with_capacity(self.view_to_layout.len());
         for (key, (view, layout_node)) in self.view_to_layout.iter() {
             still_present.insert(*key);
+            // The grid engine owns a mounted cell's frame: it places
+            // the cell in content space, where Taffy would place this
+            // root at the origin and undo the whole windowing. The
+            // cell's CHILDREN are ordinary entries in this loop and
+            // still get their frames, which are relative to the cell.
+            if virtual_grid::cell_box(*key).is_some() {
+                continue;
+            }
             let frame = self.layout.frame_of(*layout_node);
             // Compare against the last frame we wrote for this
             // view. If it hasn't moved, skip the obj-c message

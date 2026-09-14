@@ -1508,16 +1508,24 @@ impl AndroidBackend {
             return;
         }
         let _t_total = phase_timer::PhaseTimer::start("layout_pass_total");
-        let roots: Vec<runtime_layout::LayoutNode> = self
+        // Carries the view key as well as the node: a root that is a
+        // mounted `virtual_grid` cell is computed against its own box
+        // rather than the viewport. A cell is a root only because it
+        // has no Taffy PARENT — the grid engine places it in the
+        // scroller's content space — so the viewport would stretch it
+        // to the full screen. See `primitives::virtual_grid::CELL_BOXES`.
+        let roots: Vec<(usize, runtime_layout::LayoutNode)> = self
             .view_to_layout
-            .values()
-            .map(|(_, n)| *n)
-            .filter(|n| self.layout.is_root(*n))
+            .iter()
+            .map(|(k, (_, n))| (*k, *n))
+            .filter(|(_, n)| self.layout.is_root(*n))
             .collect();
         {
             let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
-            for root_node in &roots {
-                self.layout.compute(*root_node, vw, vh);
+            for (key, root_node) in &roots {
+                let (rw, rh) =
+                    primitives::virtual_grid::cell_box(*key).unwrap_or((vw, vh));
+                self.layout.compute(*root_node, rw, rh);
             }
         }
         // Snapshot the entries up front so the mutable JNI calls
@@ -1525,8 +1533,13 @@ impl AndroidBackend {
         let frames: Vec<(GlobalRef, runtime_layout::Frame)> = {
             let _t = phase_timer::PhaseTimer::start("layout_snapshot_frames");
             self.view_to_layout
-                .values()
-                .map(|(view, n)| (view.clone(), self.layout.frame_of(*n)))
+                .iter()
+                // The grid engine owns a mounted cell's frame: Taffy
+                // would place this root at the origin and undo the
+                // windowing. The cell's CHILDREN are ordinary entries
+                // and still get theirs, relative to the cell.
+                .filter(|(k, _)| primitives::virtual_grid::cell_box(**k).is_none())
+                .map(|(_, (view, n))| (view.clone(), self.layout.frame_of(*n)))
                 .collect()
         };
         with_env(|env| {

@@ -192,6 +192,35 @@ thread_local! {
     /// time, the first schedule grid to mount aborted the app with
     /// `RefCell already borrowed` inside `virtual_grid::mount_cell`.
     static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
+
+    /// Mounted cells' view pointers → the box this engine framed them
+    /// at, keyed the way `layout_for_view` keys `view_to_layout`.
+    ///
+    /// # Why the layout pass needs to be told
+    ///
+    /// A mounted cell's root view is registered with Taffy like any
+    /// other view, and it has no Taffy PARENT — the cell is positioned
+    /// by this engine in the scroller's content space, not by the
+    /// layout tree. That makes every cell a Taffy ROOT, and
+    /// `run_layout_pass_global` does two things to a root that are
+    /// exactly wrong for a cell: it computes it against the VIEWPORT,
+    /// and it then writes the resulting frame over whatever the view
+    /// had. A 40×44 cell came back 40×956 at the origin — every cell in
+    /// the grid stacked in one column, which is what the first working
+    /// mount on iOS actually looked like.
+    ///
+    /// So the pass consults this map: a root in here is computed against
+    /// its own box instead of the viewport, and its frame is left alone
+    /// (its children still get theirs, relative to it). The cell's
+    /// SUBTREE still lays out properly — it just lays out inside the
+    /// cell rather than inside the screen.
+    static CELL_BOXES: RefCell<HashMap<usize, (f32, f32)>> = RefCell::new(HashMap::new());
+}
+
+/// The box a mounted grid cell was framed at, or `None` for any view
+/// that is not a grid cell root. Consulted by `run_layout_pass_global`.
+pub(crate) fn cell_box(view_key: usize) -> Option<(f32, f32)> {
+    CELL_BOXES.with(|m| m.borrow().get(&view_key).copied())
 }
 
 /// Queue a sync, replacing any already queued for the same grid — the
@@ -348,6 +377,10 @@ fn sync_now(h: &GridHandles) {
     for slot in leaving {
         let cell = mounted.borrow_mut().remove(&slot);
         if let Some(cell) = cell {
+            CELL_BOXES.with(|m| {
+                m.borrow_mut()
+                    .remove(&(&*cell.view as *const UIView as usize))
+            });
             unsafe { cell.view.removeFromSuperview() };
             let release = callbacks
                 .borrow()
@@ -378,6 +411,13 @@ fn sync_now(h: &GridHandles) {
             size: CGSize::new(w as f64, h as f64),
         };
         let _: () = unsafe { msg_send![view, setFrame: frame] };
+        // Tell the layout pass this root is a cell, not a screen — see
+        // `CELL_BOXES`. Recorded BEFORE the view is attached, so the
+        // pass a mount schedules cannot see it un-registered.
+        CELL_BOXES.with(|m| {
+            m.borrow_mut()
+                .insert(view as *const UIView as usize, (w, h))
+        });
         unsafe { scroll.addSubview(view) };
         mounted.borrow_mut().insert(
             (col, row),
@@ -401,6 +441,10 @@ fn sync_now(h: &GridHandles) {
 /// Wave-19).
 fn teardown_now(job: TeardownJob) {
     for cell in job.cells {
+        CELL_BOXES.with(|m| {
+            m.borrow_mut()
+                .remove(&(&*cell.view as *const UIView as usize))
+        });
         unsafe { cell.view.removeFromSuperview() };
         if let Some(release) = job.release_cell.as_ref() {
             crate::imp::ffi_guard::guard_ffi("virtual_grid::release (teardown)", || {

@@ -220,6 +220,24 @@ thread_local! {
     /// `virtual_grid::mount_cell` the moment a grid mounted. This
     /// backend had the identical structure and the identical latent bug.
     static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
+
+    /// Mounted cells' view keys → the box this engine framed them at,
+    /// keyed the way `view_to_layout` is.
+    ///
+    /// A mounted cell's root view has no Taffy PARENT — the engine
+    /// places it in the grid's content space — so the layout pass sees
+    /// it as a ROOT, computes it against the VIEWPORT and writes the
+    /// result over the engine's frame. On iOS that turned every 40x44
+    /// cell into 40x956 stacked at the origin. The pass consults this
+    /// map to compute a cell against its own box and to leave its frame
+    /// alone; the cell's subtree still lays out, inside the cell.
+    static CELL_BOXES: RefCell<HashMap<usize, (f32, f32)>> = RefCell::new(HashMap::new());
+}
+
+/// The box a mounted grid cell was framed at, or `None` for any view
+/// that is not a grid cell root. Consulted by `run_layout_pass`.
+pub(crate) fn cell_box(view_key: usize) -> Option<(f32, f32)> {
+    CELL_BOXES.with(|m| m.borrow().get(&view_key).copied())
 }
 
 /// Queue a sync, replacing any already queued for the same grid — the
@@ -272,6 +290,10 @@ pub(crate) fn drain_pending() {
 /// Wave-19).
 fn teardown_now(job: TeardownJob) {
     for cell in job.cells {
+        CELL_BOXES.with(|m| {
+            m.borrow_mut()
+                .remove(&crate::imp::AndroidBackend::node_key(&cell.view))
+        });
         with_env(|env| {
             let _ = env.call_method(
                 job.grid_view.as_obj(),
@@ -337,6 +359,10 @@ fn sync_now(state: &GridState) {
     for slot in leaving {
         let cell = state.mounted.borrow_mut().remove(&slot);
         let Some(cell) = cell else { continue };
+        CELL_BOXES.with(|m| {
+            m.borrow_mut()
+                .remove(&crate::imp::AndroidBackend::node_key(&cell.view))
+        });
         with_env(|env| {
             let _ = env.call_method(
                 state.grid_view.as_obj(),
@@ -362,6 +388,15 @@ fn sync_now(state: &GridState) {
         let (view, scope_id) = mount(col, row);
         let (x, y) = state.metrics.borrow().cell_origin(col, row);
         let (w, h) = state.metrics.borrow().cell_size(col, row);
+        // Tell the layout pass this root is a cell, not a screen — see
+        // `CELL_BOXES`. Kotlin's `setCellFrame` re-applies the FRAME on
+        // every pass, so the visible symptom here is milder than iOS's;
+        // the cell's SUBTREE would still be computed against the
+        // viewport without this.
+        CELL_BOXES.with(|m| {
+            m.borrow_mut()
+                .insert(crate::imp::AndroidBackend::node_key(&view), (w, h))
+        });
         with_env(|env| {
             let _ = env.call_method(
                 state.grid_view.as_obj(),
