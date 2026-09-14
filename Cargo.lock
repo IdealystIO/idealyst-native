@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cpu"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "parity-goldens",
  "pico-args",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.8.7"
+version = "1.8.8"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "gtk4",
  "inventory",
@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "backend-roku"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-roku-macros",
  "parity-goldens",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "backend-terminal"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "parity-goldens",
  "runtime-layout",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "raw-window-handle",
  "runtime-layout",
@@ -9761,7 +9761,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "bytemuck",
  "glyphon",

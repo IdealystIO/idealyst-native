@@ -481,27 +481,27 @@ icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core", version = "1.5.3", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "1.6.1", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "1.5.3", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.8.7", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.8.8", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "1.5.2", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "1.5.2", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "1.5.2", registry = "idealyst" }
-backend-android-mobile = { path = "crates/backend/android/mobile", version = "1.5.5", registry = "idealyst" }
+backend-android-mobile = { path = "crates/backend/android/mobile", version = "1.5.6", registry = "idealyst" }
 backend-android-tv = { path = "crates/backend/android/tv", version = "1.5.2", registry = "idealyst" }
-backend-roku = { path = "crates/backend/roku", version = "1.5.2", registry = "idealyst" }
+backend-roku = { path = "crates/backend/roku", version = "1.5.3", registry = "idealyst" }
 backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", registry = "idealyst" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
-backend-terminal = { path = "crates/backend/terminal", version = "1.5.2", registry = "idealyst" }
-backend-cpu = { path = "crates/backend/cpu", version = "1.5.2", registry = "idealyst" }
+backend-terminal = { path = "crates/backend/terminal", version = "1.5.3", registry = "idealyst" }
+backend-cpu = { path = "crates/backend/cpu", version = "1.5.3", registry = "idealyst" }
 backend-web = { path = "crates/backend/web", version = "1.6.4", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.2", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.2", registry = "idealyst" }
-backend-windows = { path = "crates/backend/windows", version = "1.5.2", registry = "idealyst" }
-backend-linux = { path = "crates/backend/linux", version = "1.5.2", registry = "idealyst" }
+backend-windows = { path = "crates/backend/windows", version = "1.5.3", registry = "idealyst" }
+backend-linux = { path = "crates/backend/linux", version = "1.5.3", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.2", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
 idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.5.2", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "1.5.2", registry = "idealyst" }
-render-wgpu = { path = "crates/gpu-backend/engine", version = "1.5.2", registry = "idealyst" }
+render-wgpu = { path = "crates/gpu-backend/engine", version = "1.5.3", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
 android-sim = { path = "crates/gpu-backend/painter/android-sim" }
 host-winit = { path = "crates/gpu-backend/host/winit", version = "1.5.2", registry = "idealyst" }
