@@ -1216,10 +1216,84 @@ mod ios_impl {
         }
     }
 
-    // No two-axis grid engine on this backend yet; every `GridOps`
-    // method defaults, so `virtual_grid` reports itself as an
-    // unsupported primitive instead of silently rendering nothing.
-    impl caps::GridOps for IosBackend {}
+    impl caps::GridOps for IosBackend {
+        fn create_virtual_grid(
+            &mut self,
+            callbacks: primitives::virtual_grid::GridCallbacks<Self::Node>,
+            overscan: f32,
+            a11y: &AccessibilityProps,
+        ) -> Self::Node {
+            // Dispatch-site glue, the same shape as
+            // `create_virtualizer` below and as macOS's own `GridOps`:
+            // mount/release run author render closures and scope
+            // cleanups (which may stage writes) from the backend's own
+            // scroll handling, so each is followed by a flush.
+            // col/row counts, sizes and `cell_key` are pure reads and
+            // stay unwrapped.
+            //
+            // mount/release additionally run WORLD-ENTERED
+            // (`enter_mounted_world`): `mount_cell` realizes the cell —
+            // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`)
+            // that aborts outside `World::enter`, which is the
+            // flat_list-renders-zero-rows bug in its two-axis form;
+            // `release_cell` drops the cell scope, whose cleanups need
+            // the same ambient guarantee.
+            let primitives::virtual_grid::GridCallbacks {
+                col_count,
+                row_count,
+                col_width,
+                row_height,
+                cell_key,
+                mount_cell,
+                release_cell,
+                on_scroll,
+            } = callbacks;
+            let callbacks = primitives::virtual_grid::GridCallbacks {
+                col_count,
+                row_count,
+                col_width,
+                row_height,
+                cell_key,
+                mount_cell: {
+                    let f = mount_cell;
+                    Rc::new(move |c, r| {
+                        let mounted = super::enter_mounted_world(|| f(c, r));
+                        schedule_flush();
+                        mounted
+                    })
+                },
+                release_cell: {
+                    let f = release_cell;
+                    Rc::new(move |scope_id| {
+                        super::enter_mounted_world(|| f(scope_id));
+                        schedule_flush();
+                    })
+                },
+                on_scroll: on_scroll.map(|f| -> Rc<dyn Fn(f32, f32)> {
+                    Rc::new(move |x, y| {
+                        f(x, y);
+                        schedule_flush();
+                    })
+                }),
+            };
+            IosBackend::create_virtual_grid_impl(self, callbacks, overscan, a11y)
+        }
+
+        fn virtual_grid_data_changed(&mut self, node: &Self::Node) {
+            IosBackend::virtual_grid_data_changed_impl(self, node)
+        }
+
+        fn release_virtual_grid(&mut self, node: &Self::Node) {
+            IosBackend::release_virtual_grid_impl(self, node)
+        }
+
+        fn make_virtual_grid_handle(
+            &self,
+            node: &Self::Node,
+        ) -> primitives::virtual_grid::VirtualGridHandle {
+            IosBackend::make_virtual_grid_handle_impl(self, node)
+        }
+    }
 
     impl caps::VirtualizerOps for IosBackend {
         fn create_virtualizer(
