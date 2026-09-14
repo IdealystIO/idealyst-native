@@ -177,51 +177,7 @@ edition = "2021"
     write_shared_target_config(wrapper_dir, cargo_target_dir)?;
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
-    refresh_wrapper_lockfile(wrapper_dir)?;
-    Ok(())
-}
-
-/// Delete the generated wrapper's `Cargo.lock` so the next build re-resolves.
-///
-/// # The trap this closes
-///
-/// The wrapper declares its own `[workspace]`, so it keeps its own lockfile —
-/// and that lockfile goes stale whenever the USER crate's dependencies change,
-/// which never touches the wrapper's own `Cargo.toml` and so triggers no
-/// regeneration. Cargo then resolves the framework path crates TWICE and the
-/// build fails with:
-///
-/// ```text
-/// error[E0271]: expected `app` to return `Element`, but it returns `Element`
-/// note: there are multiple different versions of crate `runtime_scene`
-/// ```
-///
-/// Two identically-named types and no mention of a lockfile — an hour of
-/// confusion for a one-line cause. Hit live: adding an `anyhow`
-/// dev-dependency to `websites/idea-ui-docs` broke `idealyst dev --linux` until
-/// this file was removed by hand.
-///
-/// # Why delete rather than copy the workspace's lock
-///
-/// Seeding the wrapper from `<workspace>/Cargo.lock` looks tidier — same
-/// versions on both sides — and was tried first. It made things WORSE: the
-/// wrapper shares the workspace's `target/` (see `write_shared_target_config`),
-/// and once both resolutions are identical the two builds' units differ only in
-/// whether the path deps are spelled relatively (workspace build, cwd = repo
-/// root) or absolutely (wrapper build, cwd = wrapper dir). Cargo then mixed the
-/// two, and the WORKSPACE build started failing with the same duplicate-crate
-/// error inside `idealyst::entry!`. Letting the wrapper resolve independently
-/// keeps its units distinct.
-///
-/// The wrapper is regenerated on every build, so its lock has no reproducibility
-/// role of its own to protect; the workspace's lock still governs the versions
-/// of everything either build actually shares.
-fn refresh_wrapper_lockfile(wrapper_dir: &Path) -> Result<()> {
-    let lock = wrapper_dir.join("Cargo.lock");
-    if lock.exists() {
-        fs::remove_file(&lock)
-            .with_context(|| format!("removing stale {}", lock.display()))?;
-    }
+    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
     Ok(())
 }
 

@@ -408,6 +408,13 @@ fn main() {{
 
     write_target_config(wrapper_dir, project_dir, premint)?;
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
+    // The wrapper is its own `[workspace]`, so it keeps its own
+    // lockfile and nothing invalidates it — a rewritten manifest with
+    // unchanged content leaves cargo on the versions it locked the
+    // first time, so a published framework fix never arrives and a
+    // changed user dep resolves the framework twice. See
+    // `build_ios::refresh_wrapper_lockfile`.
+    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
     fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
     Ok(())
 }

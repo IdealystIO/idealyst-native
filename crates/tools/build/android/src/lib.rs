@@ -813,6 +813,13 @@ ar = "{ar}"
     }
 
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
+    // The wrapper is its own `[workspace]`, so it keeps its own
+    // lockfile and nothing invalidates it — a rewritten manifest with
+    // unchanged content leaves cargo on the versions it locked the
+    // first time, so a published framework fix never arrives and a
+    // changed user dep resolves the framework twice. See
+    // `build_ios::refresh_wrapper_lockfile`.
+    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
     fs::write(wrapper_dir.join("src/lib.rs"), lib_rs)?;
     fs::write(wrapper_dir.join(".cargo/config.toml"), cargo_config)?;
     Ok(())

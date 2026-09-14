@@ -553,6 +553,11 @@ fn run_pending_layout_pass(origin: &str) {
     let started = if trace { Some(std::time::Instant::now()) } else { None };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         with_global_backend(|b| b.run_layout_pass_global());
+        // The pass queued the grids' cell mounts and releases but could
+        // not run them: both re-enter the backend, and
+        // `with_global_backend` held the borrow for the whole pass. It
+        // has returned here — see `virtual_grid::PENDING`.
+        virtual_grid::drain_pending();
     }));
     if let Some(started) = started {
         let n = PASS_COUNT.with(|c| {

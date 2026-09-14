@@ -552,6 +552,13 @@ pub(crate) fn drain_queued_layout_pass() {
                 unreachable!("Drain::Run implies the borrow succeeded")
             };
             backend.run_layout_pass_global();
+            // The pass queued the grids' cell mounts and releases but
+            // could not run them: both re-enter the backend through
+            // `create_*` / scope cleanups, and the `RefMut` above was
+            // live for the whole pass. Dropping it here is what makes
+            // them legal — see `virtual_grid::PENDING`.
+            drop(backend);
+            virtual_grid::drain_pending();
         }
     }
 }

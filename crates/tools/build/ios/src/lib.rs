@@ -975,6 +975,61 @@ pub unsafe extern "C" fn ios_set_launch_path(path: *const std::os::raw::c_char) 
 
     fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
     fs::write(wrapper_dir.join("src/lib.rs"), lib_rs)?;
+    refresh_wrapper_lockfile(wrapper_dir)?;
+    Ok(())
+}
+
+/// Delete the generated wrapper's `Cargo.lock` so the next build
+/// re-resolves.
+///
+/// # The trap this closes
+///
+/// The wrapper declares its own `[workspace]`, so it keeps its own
+/// lockfile — and nothing invalidates it. Its `Cargo.toml` is rewritten
+/// on every build, but a rewritten manifest with unchanged CONTENT
+/// leaves cargo holding the versions it locked the first time, so the
+/// wrapper's dependency set is frozen at whenever the app was first
+/// built for this platform.
+///
+/// Two ways that bites, and the second is the quiet one:
+///
+/// - The user crate's dependencies change, which never touches the
+///   wrapper's manifest. Cargo resolves the framework path crates TWICE
+///   and the build fails with `expected `app` to return `Element`, but
+///   it returns `Element` / there are multiple different versions of
+///   crate `runtime_scene`` — two identically-named types and no
+///   mention of a lockfile.
+/// - **A published framework fix never arrives.** `cargo update` in the
+///   app's workspace moves the workspace lock and nothing else; the
+///   wrapper resolves separately and stays where it was. Measured
+///   2026-09-14 against CrewForge: `backend-ios-mobile` was bumped
+///   1.8.3 → 1.8.8 in the workspace to pick up `virtual_grid` support
+///   on iOS, the app rebuilt clean, and the grid still drew "not
+///   supported on iOS" — because the wrapper was pinned at 1.8.5 and
+///   the backend was never recompiled. Nothing in the output says so:
+///   the build simply does not mention the crate.
+///
+/// # Why delete rather than copy the workspace's lock
+///
+/// Seeding the wrapper from `<workspace>/Cargo.lock` looks tidier —
+/// same versions on both sides — and was tried first (in the Linux
+/// builder, where this helper started). It made things WORSE: the
+/// wrapper shares the workspace's `target/`, and once both resolutions
+/// are identical the two builds' units differ only in whether the path
+/// deps are spelled relatively or absolutely. Cargo then mixed the two
+/// and the WORKSPACE build started failing with the same
+/// duplicate-crate error. Letting the wrapper resolve independently
+/// keeps its units distinct.
+///
+/// The wrapper is regenerated on every build, so its lock has no
+/// reproducibility role of its own to protect; the app's workspace lock
+/// still governs everything either build actually shares.
+pub fn refresh_wrapper_lockfile(wrapper_dir: &Path) -> Result<()> {
+    let lock = wrapper_dir.join("Cargo.lock");
+    if lock.exists() {
+        fs::remove_file(&lock)
+            .with_context(|| format!("removing stale {}", lock.display()))?;
+    }
     Ok(())
 }
 

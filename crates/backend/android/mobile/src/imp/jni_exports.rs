@@ -815,6 +815,9 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustVirtualGrid_nativeOnS
     crate::imp::with_backend_mut(|b| {
         crate::imp::primitives::virtual_grid::on_scroll(b, ptr as usize, x, y)
     });
+    // `with_backend_mut` has returned, so its borrow is gone — one of
+    // the seams where queued mounts may run.
+    crate::imp::primitives::virtual_grid::drain_pending();
 }
 
 /// Kotlin reports a new viewport (first layout, rotation, resize).
@@ -837,6 +840,9 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustVirtualGrid_nativeVie
             height_px,
         )
     });
+    // The first fill happens here, and it must run outside the borrow
+    // above — see `virtual_grid::PENDING`.
+    crate::imp::primitives::virtual_grid::drain_pending();
 }
 
 /// Forward a `RecyclerView` scroll to the author's `on_scroll`.

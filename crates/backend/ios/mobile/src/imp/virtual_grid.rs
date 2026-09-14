@@ -103,6 +103,9 @@ pub(crate) fn create(
             mtm,
             Rc::new(move |x: f32, y: f32| {
                 crate::imp::with_backend(|b| sync(b, key));
+                // `with_backend` has returned, so its borrow is gone —
+                // one of the two seams where queued mounts may run.
+                drain_pending();
                 if let Some(f) = author.as_ref() {
                     f(x, y);
                 }
@@ -136,6 +139,116 @@ fn build_metrics(cb: &GridCallbacks<IosNode>) -> GridMetrics {
     )
 }
 
+/// Everything one sync touches, with no backend borrow among them.
+///
+/// The split this type exists for is the whole point of the module's
+/// deferral: the ONLY thing a sync needs the backend for is finding the
+/// instance in `virtual_grid_registry`. Once the handles are cloned out,
+/// the diff is pure UIKit plus framework `Rc`s.
+#[derive(Clone)]
+struct GridHandles {
+    scroll: Retained<UIScrollView>,
+    callbacks: Rc<RefCell<Option<GridCallbacks<IosNode>>>>,
+    metrics: Rc<RefCell<GridMetrics>>,
+    mounted: Rc<RefCell<HashMap<(usize, usize), MountedCell>>>,
+    last_window: Rc<RefCell<Option<GridWindow>>>,
+}
+
+/// A grid's cells, taken out of the registry, waiting to be dropped.
+struct TeardownJob {
+    cells: Vec<MountedCell>,
+    release_cell: Option<Rc<dyn Fn(u64)>>,
+}
+
+enum PendingJob {
+    Sync(usize, GridHandles),
+    Teardown(TeardownJob),
+}
+
+thread_local! {
+    /// Work that must run with NO backend borrow held.
+    ///
+    /// # Why this queue exists
+    ///
+    /// `mount_cell` realizes a subtree and `release_cell` drops one, and
+    /// both re-enter the backend through `create_*` / scope cleanups —
+    /// `handlers::view::mount_view` opens with `backend.borrow_mut()`.
+    /// Every path that reaches a sync is already holding that borrow:
+    /// the layout pass runs inside `drain_queued_layout_pass`'s `RefMut`,
+    /// `virtual_grid_data_changed` is dispatched through
+    /// `backend.borrow_mut()`, and the scroll delegate goes through
+    /// `with_backend`. Cloning the instance's `Rc`s — which this module
+    /// used to do, with a comment saying it ended the borrow — does not
+    /// end it: the borrow belongs to the CALLER.
+    ///
+    /// So the borrow-free half is queued here and drained at the two
+    /// seams where the borrow is provably gone (see `drain_pending`).
+    /// The cost is that cells mount one pass later than the layout that
+    /// discovered them; they mark the tree dirty on mount, so the
+    /// following pass frames them. That was already true of the first
+    /// fill, which `create` deliberately deferred for this same reason.
+    ///
+    /// Found 2026-09-14: with `GridOps` wired up on iOS for the first
+    /// time, the first schedule grid to mount aborted the app with
+    /// `RefCell already borrowed` inside `virtual_grid::mount_cell`.
+    static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Queue a sync, replacing any already queued for the same grid — the
+/// diff is computed at drain time, so the later one subsumes the
+/// earlier and running both would only repeat an unchanged window.
+fn queue_sync(key: usize, handles: GridHandles) {
+    PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        if let Some(slot) = p.iter_mut().find(
+            |j| matches!(j, PendingJob::Sync(k, _) if *k == key),
+        ) {
+            *slot = PendingJob::Sync(key, handles);
+        } else {
+            p.push(PendingJob::Sync(key, handles));
+        }
+    });
+    // Guarantee a drain even if nothing else schedules one. Cheap: the
+    // pass is coalesced and drops itself if the backend is gone.
+    // NO `schedule_layout_pass()` here, and the omission is
+    // load-bearing. `sync_all` queues EVERY registered grid on every
+    // layout pass, so a schedule from this function makes each pass
+    // arm the next one and the app spins the main thread forever —
+    // measured at 25,488 passes in 90s, a constant view count, taps
+    // and the robot bridge both dead. The queue does not need it: the
+    // pass that queued this drains it on the way out, and the mounts
+    // that drain performs dirty the tree themselves, which schedules
+    // the pass that frames them. That settles, because a re-queued
+    // sync whose window has not moved returns without mounting.
+}
+
+/// Run the queued mounts, releases and teardowns.
+///
+/// **Call only where the backend borrow is provably released.** Today
+/// that is `drain_queued_layout_pass`, immediately after the `RefMut`
+/// falls out of scope, and the scroll delegate once `with_backend` has
+/// returned. Calling it under a borrow puts back the exact abort the
+/// queue exists to prevent.
+///
+/// Loops rather than draining once: a teardown's scope cleanups can
+/// queue another grid's sync. Bounded, because each pass either empties
+/// the queue or the source of the refills is a bug worth stopping on
+/// rather than spinning in.
+pub(crate) fn drain_pending() {
+    for _ in 0..8 {
+        let jobs: Vec<PendingJob> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        if jobs.is_empty() {
+            return;
+        }
+        for job in jobs {
+            match job {
+                PendingJob::Sync(_, handles) => sync_now(&handles),
+                PendingJob::Teardown(job) => teardown_now(job),
+            }
+        }
+    }
+}
+
 /// Counts or sizes changed: rebuild metrics, drop the cached window so
 /// the next `sync` re-diffs from scratch, and re-sync now.
 pub(crate) fn data_changed(backend: &mut crate::imp::IosBackend, node: &IosNode) {
@@ -151,6 +264,10 @@ pub(crate) fn data_changed(backend: &mut crate::imp::IosBackend, node: &IosNode)
         *inst.last_window.borrow_mut() = None;
     }
     sync(backend, key);
+    // The one queueing path with no layout pass already behind it, so
+    // it arms the drain itself. Safe where `queue_sync` is not: this
+    // fires on a real data change, not once per pass.
+    crate::imp::schedule_layout_pass();
 }
 
 /// Re-window: recompute the visible rect, drop cells that left it,
@@ -164,14 +281,33 @@ pub(crate) fn sync(backend: &mut crate::imp::IosBackend, key: usize) {
     let Some(inst) = backend.virtual_grid_registry.get(&key) else {
         return;
     };
-    // Clone the Rc handles so the backend borrow ends before
-    // `mount_cell` runs — it realizes a subtree, which re-enters the
-    // backend through `create_*`.
-    let scroll = inst.scroll_view.clone();
-    let callbacks = inst.callbacks.clone();
-    let metrics = inst.metrics.clone();
-    let mounted = inst.mounted.clone();
-    let last_window = inst.last_window.clone();
+    // The registry lookup is the ONLY part that needs the backend, and
+    // the caller is holding its borrow. Clone the handles and hand the
+    // rest to the queue — `mount_cell` re-enters the backend, so it
+    // cannot run from here. See `PENDING`.
+    queue_sync(
+        key,
+        GridHandles {
+            scroll: inst.scroll_view.clone(),
+            callbacks: inst.callbacks.clone(),
+            metrics: inst.metrics.clone(),
+            mounted: inst.mounted.clone(),
+            last_window: inst.last_window.clone(),
+        },
+    );
+}
+
+/// One grid's re-window, with no backend borrow held. The body of the
+/// old `sync`; see [`PENDING`] for why it is reached through a queue.
+fn sync_now(h: &GridHandles) {
+    // Cloned / reborrowed one at a time rather than destructured: the
+    // `msg_send!` sites want a `&Retained<_>`, which a `&GridHandles`
+    // field is not.
+    let scroll = h.scroll.clone();
+    let callbacks = &h.callbacks;
+    let metrics = &h.metrics;
+    let mounted = &h.mounted;
+    let last_window = &h.last_window;
 
     let (content_w, content_h) = metrics.borrow().content_size();
     let cur: CGSize = unsafe { msg_send![&scroll, contentSize] };
@@ -256,6 +392,24 @@ pub(crate) fn sync(backend: &mut crate::imp::IosBackend, key: usize) {
     }
 }
 
+/// Drop a torn-down grid's cells, with no backend borrow held.
+///
+/// Separated from [`release`] for the same reason as [`sync_now`]:
+/// dropping a cell scope runs its cleanups, and a cleanup that touches
+/// the backend re-enters the borrow the caller is holding. That is the
+/// two-axis form of the virtualizer teardown bug (FRAMEWORK-NOTES
+/// Wave-19).
+fn teardown_now(job: TeardownJob) {
+    for cell in job.cells {
+        unsafe { cell.view.removeFromSuperview() };
+        if let Some(release) = job.release_cell.as_ref() {
+            crate::imp::ffi_guard::guard_ffi("virtual_grid::release (teardown)", || {
+                release(cell.scope_id)
+            });
+        }
+    }
+}
+
 /// Re-window every registered grid. Called from the layout pass, which
 /// is when a grid first learns its viewport size and when a resize
 /// changes it.
@@ -288,15 +442,16 @@ pub(crate) fn release(backend: &mut crate::imp::IosBackend, node: &IosNode) {
     // — the same guard the 1-D data source uses.
     let cbs = inst.callbacks.borrow_mut().take();
     let release_cell = cbs.as_ref().map(|c| c.release_cell.clone());
-    let drained: Vec<MountedCell> = inst.mounted.borrow_mut().drain().map(|(_, v)| v).collect();
-    for cell in drained {
-        unsafe { cell.view.removeFromSuperview() };
-        if let Some(release) = release_cell.as_ref() {
-            crate::imp::ffi_guard::guard_ffi("virtual_grid::release (teardown)", || {
-                release(cell.scope_id)
-            });
-        }
-    }
+    let cells: Vec<MountedCell> = inst.mounted.borrow_mut().drain().map(|(_, v)| v).collect();
+    // Queued, not run: this is called under the caller's backend
+    // borrow, and dropping a cell scope re-enters it. Any sync still
+    // queued for this grid runs first and finds `callbacks` already
+    // `None`, so it mounts nothing into a half-freed instance.
+    PENDING.with(|p| {
+        p.borrow_mut()
+            .push(PendingJob::Teardown(TeardownJob { cells, release_cell }))
+    });
+    crate::imp::schedule_layout_pass();
 }
 
 /// Imperative handle: the node IS the scroller, so offsets are plain

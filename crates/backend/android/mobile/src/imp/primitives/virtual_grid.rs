@@ -179,13 +179,124 @@ pub(crate) fn data_changed(backend: &mut AndroidBackend, node: &GlobalRef) {
     *state.last_window.borrow_mut() = None;
     with_env(|env| apply_content_size(env, &state));
     sync(backend, key);
+    // The one queueing path with no drain already behind it —
+    // `viewport_changed` and `on_scroll` are both drained by their JNI
+    // trampolines. Safe where `queue_sync` is not: this fires on a real
+    // data change, not once per pass.
+    crate::schedule_layout_pass();
 }
 
 /// Re-window: diff the visible cell rect and mount/release the delta.
+enum PendingJob {
+    Sync(usize, Rc<GridState>),
+    Teardown(TeardownJob),
+}
+
+/// A grid's cells, taken out of the registry, waiting to be dropped.
+struct TeardownJob {
+    grid_view: GlobalRef,
+    cells: Vec<MountedCell>,
+    release_cell: Option<Rc<dyn Fn(u64)>>,
+}
+
+thread_local! {
+    /// Work that must run with NO backend borrow held.
+    ///
+    /// `mount_cell` realizes a subtree and `release_cell` drops one, and
+    /// both re-enter the backend through `create_*` / scope cleanups —
+    /// `handlers::view::mount_view` opens with `backend.borrow_mut()`.
+    /// Every path into a sync already holds that borrow: the layout pass,
+    /// the `virtual_grid_data_changed` dispatch, and the scroll callback
+    /// from `RustVirtualGrid`'s JNI export. Cloning `GridState` out of
+    /// the registry does not end the borrow — it is the CALLER's.
+    ///
+    /// So the borrow-free half is queued here and drained where the
+    /// borrow is provably gone. Cells mount one pass later than the
+    /// layout that discovered them and mark the tree dirty on mount, so
+    /// the following pass frames them.
+    ///
+    /// Proven on iOS 2026-09-14, where wiring `GridOps` up for the first
+    /// time aborted the app with `RefCell already borrowed` inside
+    /// `virtual_grid::mount_cell` the moment a grid mounted. This
+    /// backend had the identical structure and the identical latent bug.
+    static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Queue a sync, replacing any already queued for the same grid — the
+/// diff is computed at drain time, so the later subsumes the earlier.
+fn queue_sync(key: usize, state: Rc<GridState>) {
+    PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        if let Some(slot) = p.iter_mut().find(
+            |j| matches!(j, PendingJob::Sync(k, _) if *k == key),
+        ) {
+            *slot = PendingJob::Sync(key, state);
+        } else {
+            p.push(PendingJob::Sync(key, state));
+        }
+    });
+    // NO `schedule_layout_pass()` here, and the omission is
+    // load-bearing. `sync_all` queues EVERY registered grid on every
+    // layout pass, so a schedule from this function makes each pass
+    // arm the next one and the app spins the main thread forever —
+    // measured at 25,488 passes in 90s, a constant view count, taps
+    // and the robot bridge both dead. The queue does not need it: the
+    // pass that queued this drains it on the way out, and the mounts
+    // that drain performs dirty the tree themselves, which schedules
+    // the pass that frames them. That settles, because a re-queued
+    // sync whose window has not moved returns without mounting.
+}
+
+/// Run the queued mounts, releases and teardowns.
+///
+/// **Call only where the backend borrow is provably released**, or this
+/// puts back the abort the queue exists to prevent. Loops because a
+/// teardown's scope cleanups can queue another grid's sync.
+pub(crate) fn drain_pending() {
+    for _ in 0..8 {
+        let jobs: Vec<PendingJob> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        if jobs.is_empty() {
+            return;
+        }
+        for job in jobs {
+            match job {
+                PendingJob::Sync(_, state) => sync_now(&state),
+                PendingJob::Teardown(job) => teardown_now(job),
+            }
+        }
+    }
+}
+
+/// Drop a torn-down grid's cells, with no backend borrow held — the
+/// two-axis form of the virtualizer teardown bug (FRAMEWORK-NOTES
+/// Wave-19).
+fn teardown_now(job: TeardownJob) {
+    for cell in job.cells {
+        with_env(|env| {
+            let _ = env.call_method(
+                job.grid_view.as_obj(),
+                "removeView",
+                "(Landroid/view/View;)V",
+                &[JValue::Object(&cell.view.as_obj())],
+            );
+        });
+        if let Some(release) = job.release_cell.as_ref() {
+            release(cell.scope_id);
+        }
+    }
+}
+
 pub(crate) fn sync(backend: &mut AndroidBackend, key: usize) {
     let Some(state) = backend.virtual_grid_registry.get(&key).cloned() else {
         return;
     };
+    // The registry lookup is the only part needing the backend, and the
+    // caller holds its borrow — hand the rest to the queue. See `PENDING`.
+    queue_sync(key, state);
+}
+
+/// The body of the old `sync`, with no backend borrow held.
+fn sync_now(state: &GridState) {
     let viewport = *state.viewport.borrow();
     if viewport.0 <= 0.0 || viewport.1 <= 0.0 {
         // Layout hasn't run yet. Bail WITHOUT caching so the next
@@ -316,11 +427,17 @@ pub(crate) fn release(backend: &mut AndroidBackend, node: &GlobalRef) {
         let _ = env.call_method(state.grid_view.as_obj(), "removeAllViews", "()V", &[]);
         let _ = env.exception_clear();
     });
-    for cell in drained {
-        if let Some(release) = release_cell.as_ref() {
-            release(cell.scope_id);
-        }
-    }
+    // Queued, not run: this runs under the caller's backend borrow, and
+    // dropping a cell scope re-enters it. `removeAllViews` above already
+    // detached them, so the teardown job only drops the scopes.
+    PENDING.with(|p| {
+        p.borrow_mut().push(PendingJob::Teardown(TeardownJob {
+            grid_view: state.grid_view.clone(),
+            cells: drained,
+            release_cell,
+        }))
+    });
+    crate::schedule_layout_pass();
 }
 
 /// Scroll so `(col, row)` sits at the leading corner. The origin comes
