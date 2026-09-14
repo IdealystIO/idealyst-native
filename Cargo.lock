@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.8.6"
+version = "1.8.7"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -7308,7 +7308,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.5.7"
+version = "1.5.8"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10065,7 +10065,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.5.5"
+version = "1.6.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10073,7 +10073,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "prettyplease",
  "proc-macro2",
