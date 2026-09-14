@@ -47,6 +47,16 @@ pub(crate) struct TouchViewIvars {
     /// because the UIKit flag disables the WHOLE subtree with no way
     /// for a descendant `Auto` to re-enable.
     pointer_events: Cell<Option<runtime_shared::PointerEvents>>,
+    /// A reactive anchor (`Host::create_anchor`): `display: contents` in
+    /// layout (`LayoutTree::new_contents_node`) and, here, in hit-testing.
+    /// The view's own bounds are the ancestor's box, which is not where
+    /// its children necessarily are — under a scroll view the children
+    /// extend past it — so `hitTest:` must ignore the bounds entirely:
+    /// try each subview, never answer with this view. `pointer_events:
+    /// None` is the wrong tool: it makes the whole SUBTREE transparent
+    /// unless a descendant opts back in, and an anchor's children are
+    /// ordinary views that never do.
+    layout_transparent: Cell<bool>,
 }
 
 declare_class!(
@@ -103,48 +113,68 @@ declare_class!(
         // `declare_class!` wraps `#[method_id]` bodies.
         #[method_id(hitTest:withEvent:)]
         fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
-            let result: Option<Retained<UIView>> =
-                unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
-            if matches!(
-                self.ivars().pointer_events.get(),
-                Some(runtime_shared::PointerEvents::None)
-            ) {
-                result.and_then(|result| {
-                    let self_view: &UIView = self;
-                    if std::ptr::eq(&*result as *const UIView, self_view as *const UIView) {
-                        return None;
+            if self.ivars().layout_transparent.get() {
+                // Topmost subview first, as UIKit does; `convertPoint:`
+                // maps into each subview's own coordinate space. No
+                // bounds check on self (see `layout_transparent`).
+                let self_view: &UIView = self;
+                let subviews = self_view.subviews();
+                let subviews: Vec<&UIView> = subviews.to_vec();
+                let mut hit: Option<Retained<UIView>> = None;
+                for sub in subviews.iter().rev() {
+                    let sub: &UIView = sub;
+                    let p: CGPoint =
+                        unsafe { msg_send![self_view, convertPoint: point, toView: sub] };
+                    hit = unsafe { msg_send_id![sub, hitTest: p, withEvent: event] };
+                    if hit.is_some() {
+                        break;
                     }
-                    // Walk hit → … → (excluding) self, collecting each
-                    // framework host's explicit pointer_events for the
-                    // shared nearest-explicit-wins verdict.
-                    let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
-                    let mut cur: Option<Retained<UIView>> = Some(result.clone());
-                    while let Some(v) = cur {
-                        if std::ptr::eq(&*v as *const UIView, self_view as *const UIView) {
-                            break;
+                }
+                hit
+            } else {
+                let result: Option<Retained<UIView>> =
+                    unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
+                if matches!(
+                    self.ivars().pointer_events.get(),
+                    Some(runtime_shared::PointerEvents::None)
+                ) {
+                    result.and_then(|result| {
+                        let self_view: &UIView = self;
+                        if std::ptr::eq(&*result as *const UIView, self_view as *const UIView) {
+                            return None;
                         }
-                        let is_host: bool = unsafe {
-                            msg_send![&*v, isKindOfClass: objc2::class!(IdealystTouchView)]
-                        };
-                        chain.push(if is_host {
-                            let tv = unsafe {
-                                &*(&*v as *const UIView as *const IdealystTouchView)
+                        // Walk hit → … → (excluding) self, collecting each
+                        // framework host's explicit pointer_events for the
+                        // shared nearest-explicit-wins verdict.
+                        let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
+                        let mut cur: Option<Retained<UIView>> = Some(result.clone());
+                        while let Some(v) = cur {
+                            if std::ptr::eq(&*v as *const UIView, self_view as *const UIView) {
+                                break;
+                            }
+                            let is_host: bool = unsafe {
+                                msg_send![&*v, isKindOfClass: objc2::class!(IdealystTouchView)]
                             };
-                            tv.ivars().pointer_events.get()
+                            chain.push(if is_host {
+                                let tv = unsafe {
+                                    &*(&*v as *const UIView as *const IdealystTouchView)
+                                };
+                                tv.ivars().pointer_events.get()
+                            } else {
+                                None
+                            });
+                            cur = unsafe { msg_send_id![&*v, superview] };
+                        }
+                        if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
+                        {
+                            Some(result)
                         } else {
                             None
-                        });
-                        cur = unsafe { msg_send_id![&*v, superview] };
-                    }
-                    if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
-                    {
-                        Some(result)
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                result
+                        }
+                    })
+                } else {
+                    result
+                }
             }
         }
 
@@ -168,6 +198,7 @@ impl IdealystTouchView {
             handler: RefCell::new(None),
             active_touches: RefCell::new(HashSet::new()),
             pointer_events: Cell::new(None),
+            layout_transparent: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         // multipleTouchEnabled = YES so every finger reaches us, not
@@ -192,6 +223,13 @@ impl IdealystTouchView {
     /// Consulted by the `hitTest:withEvent:` override above.
     pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
+    }
+
+    /// Mark this view as a reactive anchor: hit-transparent itself, its
+    /// subviews hit-tested without regard to its bounds. See
+    /// `layout_transparent`. Set once at `create_anchor`.
+    pub(crate) fn set_layout_transparent(&self) {
+        self.ivars().layout_transparent.set(true);
     }
 
     /// Whether an `on_touch` handler is currently installed. Every framework

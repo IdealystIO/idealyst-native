@@ -747,11 +747,23 @@ impl IosBackend {
     }
 
     pub(crate) fn layout_for_view(&mut self, view: &UIView) -> runtime_layout::LayoutNode {
+        self.layout_for_view_with(view, |layout| layout.new_node())
+    }
+
+    /// `layout_for_view` with the caller choosing the Taffy node a
+    /// first-time registration mints — a reactive anchor registers a
+    /// `display: contents` node (`create_anchor_impl`); everything else
+    /// a flex item.
+    fn layout_for_view_with(
+        &mut self,
+        view: &UIView,
+        mint: impl FnOnce(&mut runtime_layout::LayoutTree) -> runtime_layout::LayoutNode,
+    ) -> runtime_layout::LayoutNode {
         let key = view as *const UIView as usize;
         if let Some((_, node)) = self.view_to_layout.get(&key) {
             return *node;
         }
-        let node = self.layout.new_node();
+        let node = mint(&mut self.layout);
         let retained = unsafe {
             Retained::retain(view as *const UIView as *mut UIView).expect("retain UIView")
         };
@@ -1494,6 +1506,27 @@ impl IosBackend {
             2 => runtime_shared::ColorScheme::Dark,
             _ => runtime_shared::ColorScheme::Auto,
         }
+    }
+
+    /// A reactive anchor (`Host::create_anchor`): the node the scene
+    /// swaps a hole's subtree under. It is a real view — the scene holds
+    /// it as a stable handle and parents the subtree's views under it —
+    /// but it must not exist for layout or hit-testing, because the
+    /// author never wrote it: web renders it `display: contents`, and a
+    /// plain view in its place is a flex item that hugs a fill-me child
+    /// and stacks a row's children vertically (every native backend
+    /// shares `runtime_layout`, which pins the shapes). So it registers
+    /// a contents node, whose children link into the real ancestor and
+    /// whose own frame is that ancestor's box at the origin (the
+    /// children's frames stay correct under this view unchanged), and
+    /// the view is hit-transparent for itself with its subviews tested
+    /// regardless of its bounds (`IdealystTouchView::set_layout_transparent`).
+    pub(crate) fn create_anchor_impl(&mut self) -> IosNode {
+        let touch_view = touch::IdealystTouchView::new(self.mtm);
+        touch_view.set_layout_transparent();
+        let view: Retained<UIView> = Retained::into_super(touch_view);
+        let _ = self.layout_for_view_with(&view, |layout| layout.new_contents_node());
+        IosNode::View(view)
     }
 
     pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {

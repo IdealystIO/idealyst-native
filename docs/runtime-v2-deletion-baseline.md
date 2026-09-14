@@ -226,9 +226,12 @@ are pinned by
 (a real headless `Host`, asserting append-order, the no-op, the literal,
 the anchor kind and `insert_many` ordering). backend-macos /
 backend-ios-mobile / backend-android-mobile inherited two: `create_anchor`
-now carries the explicit `create_view(&AccessibilityProps::default())`
-body with the web-only-`display:contents` rationale in a comment, and
-`insert_many` is deleted onto the `Host` default. Their caps impls are
+first carried the explicit `create_view(&AccessibilityProps::default())`
+body with a "web-only `display:contents`" rationale — which was wrong
+(a plain view is a flex item; see the `Host::create_anchor` doc and
+`runtime_layout`'s contents-node tests) — and now mints a
+`display: contents` node via `create_anchor_impl`; `insert_many` is
+deleted onto the `Host` default. Their caps impls are
 `target_os`-gated, so the reachable gate is the launched smoke app
 (`crates/dev/newcore-*-smoke`), not a host unit test. backend-web
 inherited none.

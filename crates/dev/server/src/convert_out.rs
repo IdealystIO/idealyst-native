@@ -111,6 +111,20 @@ fn length_to_wire(l: Length) -> WireLength {
         Length::Px(v) => WireLength::Px(v),
         Length::Percent(v) => WireLength::Pct(v),
         Length::Auto => WireLength::Auto,
+        // `WireLength` has no pill: the wire is resolved BEFORE the
+        // client knows the box, which is exactly the case
+        // `FULL_RADIUS_FALLBACK_PX` exists for — every other backend
+        // that resolves at style time (macOS, Windows, Roku, Android,
+        // the GPU engine) collapses it the same way, and this module
+        // was the one missed.
+        //
+        // Lossy in the direction this module is already lossy in (see
+        // the module docs on `Tokenized`): a box taller than
+        // `2 * 999` renders as a 999px-radius rectangle rather than a
+        // pill. That is the behaviour the sentinel always had, so
+        // nothing regresses; a true pill on the wire needs a `Full`
+        // variant on `WireLength` and a client that resolves it.
+        Length::Full => WireLength::Px(Length::FULL_RADIUS_FALLBACK_PX),
     }
 }
 
@@ -496,5 +510,35 @@ pub fn virtual_layout_to_wire(l: runtime_shared::VirtualLayout) -> wire::WireVir
         },
         main_spacing,
         cross_spacing,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `Length` variant reaches the wire, and the pill reaches it
+    /// as the sentinel every other style-time backend uses.
+    ///
+    /// This is a REGRESSION test, and the regression it pins is a build
+    /// failure rather than a wrong pixel: `Length::Full` was added to
+    /// `runtime-shared` and swept into macOS, Windows, Roku, Android,
+    /// the CPU backend and the GPU engine — and not into this crate, so
+    /// `dev-server` stopped compiling against its own workspace's
+    /// `runtime-shared` and took `idealyst dev` down with it. A
+    /// wildcard arm here would have hidden that; an exhaustive match
+    /// plus this test is what makes the NEXT variant fail loudly in one
+    /// place instead of quietly in two.
+    #[test]
+    fn every_length_reaches_the_wire_and_the_pill_reaches_it_as_the_sentinel() {
+        // `matches!` rather than `assert_eq!`: `WireLength` is a
+        // serialization type in another crate and derives no `PartialEq`.
+        assert!(matches!(length_to_wire(Length::Px(16.0)), WireLength::Px(v) if v == 16.0));
+        assert!(matches!(length_to_wire(Length::Percent(50.0)), WireLength::Pct(v) if v == 50.0));
+        assert!(matches!(length_to_wire(Length::Auto), WireLength::Auto));
+        assert!(matches!(
+            length_to_wire(Length::Full),
+            WireLength::Px(v) if v == Length::FULL_RADIUS_FALLBACK_PX
+        ));
     }
 }

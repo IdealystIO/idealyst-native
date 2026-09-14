@@ -20,7 +20,8 @@
 //! templates); `host/run-sim.sh` builds the staticlib, links the .app,
 //! and launches it on the simulator with the self-test armed.
 
-use runtime_shared::{Length, StyleRules, Tokenized};
+use runtime_shared::accessibility::AccessibilityProps;
+use runtime_shared::{FlexDirection, Length, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
 use runtime_vocabulary::{button, text, toggle, view};
@@ -35,6 +36,84 @@ fn padded_column() -> StyleRules {
         gap: Some(Tokenized::Literal(Length::Px(8.0))),
         ..StyleRules::default()
     }
+}
+
+fn px(v: f32) -> Option<Tokenized<Length>> {
+    Some(Tokenized::Literal(Length::Px(v)))
+}
+
+/// `accessibilityIdentifier` tag so the self-test can find a view.
+fn tagged(id: &str) -> AccessibilityProps {
+    AccessibilityProps {
+        identifier: Some(id.to_string()),
+        ..AccessibilityProps::default()
+    }
+}
+
+/// The reactive-anchor shapes (`Host::create_anchor` — the `display:
+/// contents` node): a closure child whose branch ROOT is a keyed list.
+/// The closure itself splices (this host supports it); the keyed list at
+/// its root does not — it mounts under an anchor. Web renders that
+/// anchor `display: contents`; a plain view in its place is a flex item
+/// the author never wrote, and these two boxes are exactly where it
+/// showed: a `flex_grow` child hugged to 0pt (`fill`), and a row's
+/// children stacked vertically with the gap lost (`chip-2` at (0, 30)
+/// instead of (58, 0)). The self-test reads the live UIView frames and
+/// hit-tests through the anchor.
+fn anchor_shapes() -> Element {
+    view()
+        .child(
+            view()
+                .style(StyleRules {
+                    width: px(200.0),
+                    height: px(120.0),
+                    ..StyleRules::default()
+                })
+                .a11y(tagged("fill-box"))
+                .child(move || {
+                    keyed(
+                        || vec![1u32],
+                        |n| *n,
+                        |_| {
+                            view()
+                                .style(StyleRules {
+                                    flex_grow: Some(Tokenized::Literal(1.0)),
+                                    ..StyleRules::default()
+                                })
+                                .a11y(tagged("fill"))
+                                .build()
+                        },
+                    )
+                }),
+        )
+        .child(
+            view()
+                .style(StyleRules {
+                    width: px(200.0),
+                    height: px(40.0),
+                    flex_direction: Some(FlexDirection::Row),
+                    gap: px(8.0),
+                    ..StyleRules::default()
+                })
+                .a11y(tagged("row-box"))
+                .child(move || {
+                    keyed(
+                        || vec![1u32, 2],
+                        |n| *n,
+                        |n| {
+                            view()
+                                .style(StyleRules {
+                                    width: px(50.0),
+                                    height: px(30.0),
+                                    ..StyleRules::default()
+                                })
+                                .a11y(tagged(&format!("chip-{n}")))
+                                .build()
+                        },
+                    )
+                }),
+        )
+        .build()
 }
 
 /// The app tree. Runs inside `World::enter` (the boot path wraps it),
@@ -70,16 +149,20 @@ pub fn app() -> Element {
             runtime_shared::scheduling::after_ms_detached(700, move || {
                 let committed = count.get() == 41;
                 let views = selftest::live_view_count();
+                let anchors = selftest::check_anchor_shapes();
                 // println! goes to stdout, which `simctl launch
                 // --console-pty` captures; also NSLog via the installed
                 // logger so `log show` has it.
-                println!("[SMOKE-SELFTEST] committed={committed} views={views}");
-                runtime_shared::log_info!("[SMOKE-SELFTEST] committed={committed} views={views}");
+                println!("[SMOKE-SELFTEST] committed={committed} views={views} anchors={anchors}");
+                runtime_shared::log_info!(
+                    "[SMOKE-SELFTEST] committed={committed} views={views} anchors={anchors}"
+                );
                 // The static tree alone mounts well over 10 views
                 // (column + 3 texts + 3 buttons + toggle + dyn hole +
                 // 3 keyed rows); a low count means realize/finish
                 // didn't attach.
-                std::process::exit(if committed && views > 10 { 0 } else { 1 });
+                let ok = committed && views > 10 && anchors == "ok";
+                std::process::exit(if ok { 0 } else { 1 });
             });
         });
     }
@@ -130,6 +213,7 @@ pub fn app() -> Element {
             |n| *n,
             |n| text().content(format!("row #{n}")).build(),
         ))
+        .child(anchor_shapes())
         .build()
 }
 
@@ -164,6 +248,81 @@ mod selftest {
                 .as_ref()
                 .map(|root| count_recursive(root) - 1)
                 .unwrap_or(0)
+        })
+    }
+
+    fn identifier_of(view: &UIView) -> Option<String> {
+        let id: Option<Retained<objc2_foundation::NSString>> =
+            unsafe { objc2::msg_send_id![view, accessibilityIdentifier] };
+        id.map(|s| s.to_string())
+    }
+
+    fn find_by_identifier(view: &UIView, id: &str) -> Option<Retained<UIView>> {
+        if identifier_of(view).as_deref() == Some(id) {
+            return unsafe { Retained::retain(view as *const UIView as *mut UIView) };
+        }
+        for sub in unsafe { view.subviews() }.iter() {
+            if let Some(found) = find_by_identifier(&sub, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn frame_in(view: &UIView, ancestor: &UIView) -> objc2_foundation::CGRect {
+        let bounds: objc2_foundation::CGRect = unsafe { objc2::msg_send![view, bounds] };
+        unsafe { objc2::msg_send![view, convertRect: bounds, toView: ancestor] }
+    }
+
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() < 0.5
+    }
+
+    /// Verify the reactive-anchor shapes in `anchor_shapes` laid out as
+    /// web does (the anchor is `display: contents`), and that the anchor
+    /// is hit-transparent: `"ok"`, or the first failing check.
+    pub fn check_anchor_shapes() -> String {
+        ROOT_VIEW.with(|slot| {
+            let slot = slot.borrow();
+            let Some(root) = slot.as_ref() else {
+                return "no-root".to_string();
+            };
+            let find = |id: &str| find_by_identifier(root, id);
+            let (Some(fill_box), Some(fill), Some(row_box), Some(chip1), Some(chip2)) = (
+                find("fill-box"),
+                find("fill"),
+                find("row-box"),
+                find("chip-1"),
+                find("chip-2"),
+            ) else {
+                return "views-missing".to_string();
+            };
+            // A `flex_grow: 1` child under the anchor fills the 120pt
+            // box (a plain-view anchor hugged it to 0).
+            let f = frame_in(&fill, &fill_box);
+            if !near(f.size.height, 120.0) || !near(f.origin.y, 0.0) {
+                return format!("fill: {}x{} at y={}", f.size.width, f.size.height, f.origin.y);
+            }
+            // Two 50pt chips under the anchor sit in the ROW with the
+            // 8pt gap (a plain-view anchor stacked them in a column).
+            let c1 = frame_in(&chip1, &row_box);
+            let c2 = frame_in(&chip2, &row_box);
+            if !near(c1.origin.x, 0.0) || !near(c2.origin.x, 58.0) || !near(c2.origin.y, 0.0) {
+                return format!("chips: chip-1 at ({},{}) chip-2 at ({},{})", c1.origin.x, c1.origin.y, c2.origin.x, c2.origin.y);
+            }
+            // Hit-testing through the anchor: the point at chip-2's
+            // center resolves to chip-2, not to the anchor view.
+            let center = objc2_foundation::CGPoint {
+                x: c2.origin.x + c2.size.width / 2.0,
+                y: c2.origin.y + c2.size.height / 2.0,
+            };
+            let hit: Option<Retained<UIView>> =
+                unsafe { objc2::msg_send_id![&*row_box, hitTest: center, withEvent: std::ptr::null::<objc2::runtime::AnyObject>()] };
+            match hit.as_deref().and_then(identifier_of) {
+                Some(id) if id == "chip-2" => {}
+                other => return format!("hit-test: {other:?}"),
+            }
+            "ok".to_string()
         })
     }
 }

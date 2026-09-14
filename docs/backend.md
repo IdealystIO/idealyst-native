@@ -51,8 +51,21 @@ holes, keyed lists, fragments — emit nothing else. Two of the seven are
 worth calling out:
 
 - **`create_anchor`** returns a layout-transparent container the anchored
-  drivers swap subtrees under (`display: contents` on web; a plain view
-  elsewhere).
+  drivers swap subtrees under. The scene holds it as a stable handle, but
+  the author never wrote it, so it must not take part in layout or
+  hit-testing: its children lay out and hit-test as if they were the
+  parent's own. Web is `display: contents`; a Taffy-driven host registers
+  `runtime_layout::LayoutTree::new_contents_node` (the node never enters
+  the flat Taffy tree — its children link into the real ancestor, and its
+  own `frame_of` is that ancestor's box at the origin, so the children's
+  frames apply unchanged under the anchor's native view) and makes the
+  native view hit-transparent for itself (iOS/macOS override `hitTest:`
+  to try the subviews and never answer with the anchor; Android needs
+  nothing — a non-clickable `ViewGroup` falls through). A plain view is
+  NOT a correct anchor: it is a flex item, and a default flex item hugs a
+  `flex_grow` child to nothing, stacks a row parent's children vertically
+  and swallows its `gap` — the shapes `runtime_layout`'s contents-node
+  tests pin.
 - **`supports_splice`** answers "can this host splice children directly
   into a real parent (`remove_child` + `insert_at`)?" `true` → style-less
   reactive regions go anchorless; `false` → every reactive region nests
@@ -611,7 +624,9 @@ One dependency (`runtime-vocabulary`) and one import
 
 1. **`Host`** — the seven structural ops and `type Node`. Decide
    `supports_splice` honestly; `false` is always correct and costs an
-   anchor node per reactive region.
+   anchor node per reactive region — which makes `create_anchor`'s
+   layout transparency matter under every `if`/`for`, not only at
+   subtree roots.
 2. **The six required capability methods.** Everything else has a
    default, but these six do not, so `AllCaps` is unsatisfiable without
    them: `ViewOps::create_view`, `TextOps::create_text`,
@@ -643,7 +658,7 @@ impl Host for TuiBackend {
     fn insert_at(&mut self, parent: &mut TuiNodeRef, child: TuiNodeRef, index: usize) { /* … */ }
     fn remove_child(&mut self, parent: &TuiNodeRef, child: &TuiNodeRef) { /* … */ }
     fn clear_children(&mut self, node: &TuiNodeRef) { /* … */ }
-    fn create_anchor(&mut self) -> TuiNodeRef { /* a plain container */ }
+    fn create_anchor(&mut self) -> TuiNodeRef { /* a layout-transparent container: `layout.new_contents_node()` */ }
     fn supports_splice(&self) -> bool { false }
 }
 

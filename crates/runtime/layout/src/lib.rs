@@ -190,6 +190,24 @@ pub struct LayoutTree {
     /// weights proportional to it — uniform `auto`/`fr` tracks can only
     /// split evenly. See [`compute`](Self::compute).
     table_grids: HashMap<NodeId, usize>,
+    /// `display: contents` nodes — see [`Self::new_contents_node`]. A
+    /// contents node has a Taffy slot (so it has a stable id) but is
+    /// NEVER linked into the Taffy tree: its children link into the
+    /// nearest real ancestor instead, at the position the contents node
+    /// holds among its siblings.
+    contents: HashSet<NodeId>,
+    /// Every node's LOGICAL children, in order — the tree the backend's
+    /// native views form, where a contents node is one entry with
+    /// children of its own. Taffy holds the FLAT tree (contents nodes
+    /// collapsed into their ancestor), and the two differ only under a
+    /// parent that has a contents node somewhere below it. Kept for every
+    /// node because it is the only place an EMPTY contents node's
+    /// position among its siblings is recorded: with no Taffy footprint,
+    /// the flat tree alone cannot say where a later child goes.
+    logical_children: HashMap<NodeId, Vec<NodeId>>,
+    /// Each node's LOGICAL parent (real or contents). Taffy's own
+    /// `parent` knows only the real one.
+    logical_parent: HashMap<NodeId, NodeId>,
 }
 
 impl LayoutTree {
@@ -209,6 +227,9 @@ impl LayoutTree {
             safe_area_extra: HashMap::new(),
             grid_items: HashSet::new(),
             table_grids: HashMap::new(),
+            contents: HashSet::new(),
+            logical_children: HashMap::new(),
+            logical_parent: HashMap::new(),
         }
     }
 
@@ -255,6 +276,109 @@ impl LayoutTree {
         LayoutNode(id)
     }
 
+    /// Create a layout-TRANSPARENT node: CSS `display: contents`, which
+    /// taffy 0.7 has no equivalent of.
+    ///
+    /// The node exists in the backend's native tree (a reactive hole's
+    /// anchor is a real view there, because the scene holds it as the
+    /// stable handle it swaps subtrees under) but must not exist for
+    /// layout: the author never wrote it, and any flex item in its place
+    /// changes the answer — a default item's `flex_grow: 0` stops a
+    /// bounded height dead, its column direction stacks a row parent's
+    /// children vertically, and a `gap` no longer separates them. Web
+    /// gets this for free from `display: contents`; every native backend
+    /// shares this crate, so the transparency lives here.
+    ///
+    /// Mechanism: the node has a Taffy slot (a stable id, so `frame_of`
+    /// and the backend's node maps work) but is never linked into the
+    /// Taffy tree. Children added to it link into the nearest REAL
+    /// ancestor instead, at the flat position the contents node holds
+    /// among its siblings — [`add_child`](Self::add_child) /
+    /// [`add_child_at_index`](Self::add_child_at_index) /
+    /// [`remove_child`](Self::remove_child) translate between the two
+    /// trees. Its [`frame_of`](Self::frame_of) is the ancestor's box at
+    /// the origin, so a backend that parents the children under the
+    /// contents node's native view applies their Taffy frames unchanged.
+    /// A style applied to it is ignored, as CSS ignores box properties on
+    /// a `display: contents` element; it is never a layout root.
+    pub fn new_contents_node(&mut self) -> LayoutNode {
+        let id = self
+            .tree
+            .new_leaf(Style::default())
+            .expect("taffy new_leaf");
+        self.contents.insert(id);
+        LayoutNode(id)
+    }
+
+    /// Whether `node` is a [`new_contents_node`](Self::new_contents_node).
+    pub fn is_contents(&self, node: LayoutNode) -> bool {
+        self.contents.contains(&node.0)
+    }
+
+    /// The nearest non-contents ancestor of `node`, inclusive — the Taffy
+    /// node a contents node's children actually link into. `None` while
+    /// `node` hangs off a contents node that is itself unattached.
+    fn real_ancestor(&self, node: NodeId) -> Option<NodeId> {
+        let mut cur = node;
+        // Bounded like `is_under`: a guard against a malformed cycle.
+        for _ in 0..512 {
+            if !self.contents.contains(&cur) {
+                return Some(cur);
+            }
+            cur = *self.logical_parent.get(&cur)?;
+        }
+        None
+    }
+
+    /// The flat (Taffy) nodes `node` stands for: itself, or — for a
+    /// contents node — its children's flat nodes, in order.
+    fn flat_nodes(&self, node: NodeId) -> Vec<NodeId> {
+        if !self.contents.contains(&node) {
+            return vec![node];
+        }
+        let mut out = Vec::new();
+        if let Some(kids) = self.logical_children.get(&node) {
+            for k in kids {
+                out.extend(self.flat_nodes(*k));
+            }
+        }
+        out
+    }
+
+    fn flat_count(&self, node: NodeId) -> usize {
+        if !self.contents.contains(&node) {
+            return 1;
+        }
+        self.logical_children
+            .get(&node)
+            .map(|kids| kids.iter().map(|k| self.flat_count(*k)).sum())
+            .unwrap_or(0)
+    }
+
+    /// Flat index, within `node`'s real ancestor, where `node`'s flat
+    /// span starts: the flat width of everything logically before it,
+    /// summed up through any contents parents.
+    fn flat_base(&self, node: NodeId) -> usize {
+        let Some(parent) = self.logical_parent.get(&node).copied() else {
+            return 0;
+        };
+        let before: usize = self
+            .logical_children
+            .get(&parent)
+            .map(|kids| {
+                kids.iter()
+                    .take_while(|k| **k != node)
+                    .map(|k| self.flat_count(*k))
+                    .sum()
+            })
+            .unwrap_or(0);
+        if self.contents.contains(&parent) {
+            self.flat_base(parent) + before
+        } else {
+            before
+        }
+    }
+
     /// Opt a root node out of the viewport auto-fill on the named axes,
     /// so `compute()` leaves those `Auto` axes alone and the root wraps to
     /// its content instead of filling the viewport.
@@ -279,6 +403,49 @@ impl LayoutTree {
     /// the backend should call this in the same order it would
     /// `addSubview` / `addView`.
     pub fn add_child(&mut self, parent: LayoutNode, child: LayoutNode) {
+        let end = self
+            .logical_children
+            .get(&parent.0)
+            .map(|k| k.len())
+            .unwrap_or(0);
+        self.add_child_at_index(parent, child, end);
+    }
+
+    /// Insert `child` into `parent` at a specific `child_index` (clamped
+    /// to the child count). Companion to [`add_child`](Self::add_child)
+    /// for anchorless reactive regions that splice their rows at a stable
+    /// base index instead of always appending.
+    ///
+    /// `index` counts LOGICAL siblings — the backend's native children,
+    /// where a contents node is one — and is translated to the flat Taffy
+    /// position here. A `child` that is already mounted somewhere is
+    /// MOVED, with DOM `insertBefore` semantics (the reference sibling is
+    /// the one at `index` before the move); Taffy's own
+    /// `insert_child_at_index` never unlinks the old parent, so without
+    /// this a keyed reorder left the row in the old position AND the new
+    /// one, laid out twice.
+    pub fn add_child_at_index(
+        &mut self,
+        parent: LayoutNode,
+        child: LayoutNode,
+        index: usize,
+    ) {
+        debug_assert!(
+            !self.dropped.contains(&child.0) && !self.dropped.contains(&parent.0),
+            "runtime-layout: add_child_at_index on a removed node"
+        );
+        // The reference sibling is resolved BEFORE the child is unlinked,
+        // so moving a node later in its own list lands it before the
+        // node that was at `index` — what `insertBefore` does.
+        let reference = self
+            .logical_children
+            .get(&parent.0)
+            .and_then(|kids| kids.get(index))
+            .copied();
+        if reference == Some(child.0) {
+            return; // inserting a node before itself: already there
+        }
+        self.detach(child.0);
         // A node that was previously laid out as a ROOT has had its
         // `Auto` size axes overwritten with `Length(viewport)` by
         // `compute()` (so the root gets a definite size for Taffy). When
@@ -296,37 +463,66 @@ impl LayoutTree {
         // rendered full-bleed past the 280pt panel. `auto_width` is the
         // signal that the node never had an author-set width, so the
         // baked viewport value is purely a root artifact to undo here.
-        self.revert_root_baked_size(child);
-        self.tree
-            .add_child(parent.0, child.0)
-            .expect("taffy add_child");
-        if self.hscroll_parents.contains(&parent.0) {
-            self.exempt_as_hscroll_content(child.0);
+        for n in self.flat_nodes(child.0) {
+            self.revert_root_baked_size(LayoutNode(n));
         }
-        self.mark_grid_item_if_grid_parent(parent.0, child.0);
+        let kids = self.logical_children.entry(parent.0).or_default();
+        let idx = match reference {
+            Some(r) => kids.iter().position(|k| *k == r).unwrap_or(kids.len()),
+            None => kids.len(),
+        };
+        kids.insert(idx, child.0);
+        self.logical_parent.insert(child.0, parent.0);
+        self.link_flat(child.0);
     }
 
-    /// Insert `child` into `parent` at a specific `child_index` (clamped
-    /// by the caller). Companion to [`add_child`](Self::add_child) for
-    /// anchorless reactive regions that splice their rows at a stable
-    /// base index instead of always appending. Applies the same
-    /// root-baked-size revert.
-    pub fn add_child_at_index(
-        &mut self,
-        parent: LayoutNode,
-        child: LayoutNode,
-        index: usize,
-    ) {
-        self.revert_root_baked_size(child);
-        let count = self.tree.children(parent.0).map(|c| c.len()).unwrap_or(0);
-        let idx = index.min(count);
-        self.tree
-            .insert_child_at_index(parent.0, idx, child.0)
-            .expect("taffy insert_child_at_index");
-        if self.hscroll_parents.contains(&parent.0) {
-            self.exempt_as_hscroll_content(child.0);
+    /// Link `node`'s flat span into its real ancestor's Taffy children at
+    /// the position its logical place dictates. No-op while the chain
+    /// above `node` has no real ancestor yet (a subtree being assembled
+    /// under an unattached contents node): the flat nodes stay Taffy roots
+    /// until the contents node is attached, when this runs for it.
+    fn link_flat(&mut self, node: NodeId) {
+        let Some(ancestor) = self
+            .logical_parent
+            .get(&node)
+            .copied()
+            .and_then(|p| self.real_ancestor(p))
+        else {
+            return;
+        };
+        let base = self.flat_base(node);
+        let flat = self.flat_nodes(node);
+        // Every flat node here is a Taffy root (`detach` / never linked)
+        // — see `add_child_at_index`, the only caller path.
+        for (i, n) in flat.into_iter().enumerate() {
+            let count = self.tree.children(ancestor).map(|c| c.len()).unwrap_or(0);
+            self.tree
+                .insert_child_at_index(ancestor, (base + i).min(count), n)
+                .expect("taffy insert_child_at_index");
+            if self.hscroll_parents.contains(&ancestor) {
+                self.exempt_as_hscroll_content(n);
+            }
+            self.mark_grid_item_if_grid_parent(ancestor, n);
         }
-        self.mark_grid_item_if_grid_parent(parent.0, child.0);
+    }
+
+    /// Unlink `node` from its logical parent, and its flat span from the
+    /// real ancestor's Taffy children. The flat nodes become Taffy roots;
+    /// `node`'s own subtree (logical and flat) stays intact for a
+    /// re-attach. No-op for a node with no logical parent.
+    fn detach(&mut self, node: NodeId) {
+        let Some(parent) = self.logical_parent.remove(&node) else {
+            return;
+        };
+        if let Some(kids) = self.logical_children.get_mut(&parent) {
+            kids.retain(|k| *k != node);
+        }
+        if let Some(ancestor) = self.real_ancestor(parent) {
+            for n in self.flat_nodes(node) {
+                let _ = self.tree.remove_child(ancestor, n);
+            }
+            let _ = self.tree.mark_dirty(ancestor);
+        }
     }
 
     /// If `parent` is a grid container, reset `child` as a grid item.
@@ -426,19 +622,28 @@ impl LayoutTree {
     /// iOS and Android — `if open { Modal }`'s unmount calls `remove_child`
     /// with the Modal's portal node (an orphan root).
     pub fn remove_child(&mut self, parent: LayoutNode, child: LayoutNode) {
-        let is_child = self
-            .tree
-            .children(parent.0)
-            .map(|kids| kids.contains(&child.0))
-            .unwrap_or(false);
-        if is_child {
-            let _ = self.tree.remove_child(parent.0, child.0);
+        if self.logical_parent.get(&child.0) == Some(&parent.0) {
+            self.detach(child.0);
         }
     }
 
-    /// Drop a node entirely (frees its slot in the tree).
+    /// Drop a node entirely (frees its slot in the tree). Its logical
+    /// children are orphaned — each becomes a root of its own (a contents
+    /// node's children were Taffy children of the real ancestor and are
+    /// unlinked from it here), exactly as Taffy orphans a removed node's
+    /// children.
     pub fn remove_node(&mut self, node: LayoutNode) {
+        self.detach(node.0);
+        // The children's flat nodes are already unlinked: a contents
+        // node's by `detach` (they hung off the ancestor), a real node's
+        // by Taffy's `remove` below (it orphans its children).
+        if let Some(kids) = self.logical_children.remove(&node.0) {
+            for k in kids {
+                self.logical_parent.remove(&k);
+            }
+        }
         let _ = self.tree.remove(node.0);
+        self.contents.remove(&node.0);
         self.measure_fns.remove(&node.0);
         self.auto_width.remove(&node.0);
         self.auto_height.remove(&node.0);
@@ -545,6 +750,11 @@ impl LayoutTree {
     }
 
     pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) -> bool {
+        if self.contents.contains(&node.0) {
+            // No box: box properties are meaningless, as CSS ignores
+            // them on a `display: contents` element. Nothing changed.
+            return false;
+        }
         // Surface lifecycle bugs cleanly: if a caller hands us a node
         // that was already freed via `remove_node`, panic *here* with a
         // backtrace pointing at the bad caller instead of letting
@@ -968,7 +1178,11 @@ impl LayoutTree {
     /// layout style nor the children topology changed — Taffy would
     /// otherwise use its cached size.
     pub fn mark_dirty(&mut self, node: LayoutNode) {
-        let _ = self.tree.mark_dirty(node.0);
+        // A contents node has no Taffy footprint; the real ancestor
+        // owns its children's layout.
+        if let Some(n) = self.real_ancestor(node.0) {
+            let _ = self.tree.mark_dirty(n);
+        }
     }
 
     /// True iff Taffy has marked this node (or any of its descendants
@@ -979,7 +1193,10 @@ impl LayoutTree {
     /// N × per-root layout cost on every refresh, even though only
     /// one root is active.
     pub fn is_dirty(&self, node: LayoutNode) -> bool {
-        self.tree.dirty(node.0).unwrap_or(true)
+        match self.real_ancestor(node.0) {
+            Some(n) => self.tree.dirty(n).unwrap_or(true),
+            None => true,
+        }
     }
 
     /// Mark a node as a scroll container on the given axis. Maps to
@@ -1006,40 +1223,6 @@ impl LayoutTree {
     /// tall as its content and has nothing to scroll. The native scroll view
     /// still does its own pixel clipping + content-offset; this call only
     /// fixes the Taffy *sizing* of the viewport node.
-    /// Make `node` layout-TRANSPARENT: it neither holds space back from
-    /// its child nor keeps any from its parent.
-    ///
-    /// This is the stand-in for CSS `display: contents`, which taffy 0.7
-    /// has no equivalent of. A node the AUTHOR never wrote — a reactive
-    /// hole's anchor — must not change how the tree lays out, and a
-    /// default flex item does: `flex_grow: 0` stops a bounded height
-    /// dead, and the automatic minimum (`min: auto`) floors the node at
-    /// its content so it cannot shrink either. Between an author's
-    /// bounded slot and an author's fill-me child, that silently turns
-    /// "fill the slot" into "hug your content".
-    ///
-    /// Grow AND shrink, with both automatic minimums floored at zero, is
-    /// as close as a real flex item gets to not being there.
-    pub fn set_pass_through(&mut self, node: LayoutNode) {
-        let _ = self.tree.set_style(node.0, {
-            let mut style = self
-                .tree
-                .style(node.0)
-                .cloned()
-                .unwrap_or(Style::default());
-            style.flex_grow = 1.0;
-            style.flex_shrink = 1.0;
-            // Not `flex_basis: 0`: an anchor holding a content-sized
-            // child should still report that child's size to a parent
-            // that is sizing ITSELF from its children. Basis `auto`
-            // keeps the child's contribution; grow adds the slot's
-            // space on top when there is any.
-            style.min_size.height = taffy::style::Dimension::Length(0.0);
-            style.min_size.width = taffy::style::Dimension::Length(0.0);
-            style
-        });
-    }
-
     pub fn set_overflow_scroll(&mut self, node: LayoutNode, horizontal: bool) {
         let _ = self.tree.set_style(node.0, {
             let mut style = self
@@ -1168,6 +1351,11 @@ impl LayoutTree {
     /// Authors are presumed to want the root to fill its host area
     /// unless they explicitly override.
     pub fn compute(&mut self, root: LayoutNode, width: f32, height: f32) {
+        if self.contents.contains(&root.0) {
+            // Nothing to lay out: an unattached contents node's children
+            // are roots of their own (see `is_root`).
+            return;
+        }
         // Fill viewport on axes the author left as `Auto`, but
         // preserve explicit `width` / `height`. Without this fallback,
         // a root with `width: auto / height: auto` would collapse to
@@ -1475,6 +1663,20 @@ impl LayoutTree {
     /// zero frame if [`Self::compute`] hasn't run, or if `node` was
     /// never registered.
     pub fn frame_of(&self, node: LayoutNode) -> Frame {
+        if self.contents.contains(&node.0) {
+            // No box of its own: report the real ancestor's box at the
+            // origin. Its children's frames are relative to that
+            // ancestor, so a backend parenting them under the contents
+            // node's native view places them correctly with no
+            // translation. Unattached: nothing to report.
+            return match self.real_ancestor(node.0) {
+                Some(a) if a != node.0 => {
+                    let f = self.frame_of(LayoutNode(a));
+                    Frame { x: 0.0, y: 0.0, width: f.width, height: f.height }
+                }
+                _ => Frame::default(),
+            };
+        }
         let layout = self.tree.layout(node.0).copied().unwrap_or_default();
         Frame {
             x: layout.location.x,
@@ -1503,8 +1705,12 @@ impl LayoutTree {
     /// against. Backends with multiple disconnected subtrees (iOS's
     /// per-screen mounts via `mount_screen_in_vc`) use this to find
     /// all roots after build.
+    ///
+    /// A contents node is never a root: it has nothing to compute. Its
+    /// children are roots of their own while it is unattached, and link
+    /// under the real ancestor once it is.
     pub fn is_root(&self, node: LayoutNode) -> bool {
-        self.tree.parent(node.0).is_none()
+        !self.contents.contains(&node.0) && self.tree.parent(node.0).is_none()
     }
 
     /// Debug: format a node's resolved Taffy style as a string, for
@@ -1512,6 +1718,9 @@ impl LayoutTree {
     /// matter for "why isn't this view positioned where I expect"
     /// debugging.
     pub fn debug_style(&self, node: LayoutNode) -> String {
+        if self.contents.contains(&node.0) {
+            return "display=contents".to_string();
+        }
         let s = self
             .tree
             .style(node.0)
@@ -1532,11 +1741,34 @@ impl LayoutTree {
         )
     }
 
-    /// Return the direct children of `node`. Used by backends that
-    /// need to walk a subtree's resolved frames (e.g. iOS's
-    /// `scrollView.contentSize` sync, which sums child extents to
-    /// determine the scrollable area).
+    /// Return the direct LOGICAL children of `node` — the backend's own
+    /// child list, where a contents node is one entry with children of
+    /// its own. Walking this from a root visits every registered node
+    /// under it, contents nodes included; [`children_of`](Self::children_of)
+    /// walks the flat layout tree and never reaches one.
+    pub fn logical_children_of(&self, node: LayoutNode) -> Vec<LayoutNode> {
+        self.logical_children
+            .get(&node.0)
+            .map(|k| k.iter().map(|n| LayoutNode(*n)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Return the direct LAYOUT children of `node` — the flat Taffy
+    /// children, with contents nodes collapsed into their own children.
+    /// Used by backends that need to walk a subtree's resolved frames
+    /// (e.g. iOS's `scrollView.contentSize` sync, which sums child
+    /// extents to determine the scrollable area); every frame returned
+    /// is relative to `node`. A contents node reports its logical
+    /// children (their frames are relative to its real ancestor, which
+    /// is also what its own synthesized frame spans).
     pub fn children_of(&self, node: LayoutNode) -> Vec<LayoutNode> {
+        if self.contents.contains(&node.0) {
+            return self
+                .logical_children
+                .get(&node.0)
+                .map(|k| k.iter().map(|n| LayoutNode(*n)).collect())
+                .unwrap_or_default();
+        }
         self.tree
             .children(node.0)
             .map(|cs| cs.into_iter().map(LayoutNode).collect())
@@ -1625,7 +1857,18 @@ impl LayoutTree {
     /// frame Y values from a sticky child to its enclosing scroll
     /// view to derive the child's natural y in the scroll view's
     /// content coordinate space (unaffected by UIKit transforms).
+    ///
+    /// This is the LAYOUT parent — the node `frame_of` is relative to —
+    /// so a contents node is skipped: a child of one reports the real
+    /// ancestor, and a contents node reports its own real ancestor.
     pub fn parent_of(&self, node: LayoutNode) -> Option<LayoutNode> {
+        if self.contents.contains(&node.0) {
+            return self
+                .logical_parent
+                .get(&node.0)
+                .and_then(|p| self.real_ancestor(*p))
+                .map(LayoutNode);
+        }
         self.tree.parent(node.0).map(LayoutNode)
     }
 }
@@ -4133,8 +4376,385 @@ mod tests {
             "clearing the cap must re-expand the body to its 200px content, got {reopened}"
         );
     }
+
+    // -----------------------------------------------------------------
+    // `display: contents` — what `new_contents_node` is FOR.
+    //
+    // A reactive hole's anchor is a node the author never wrote, held by
+    // the scene as the stable handle it swaps subtrees under. Web gives
+    // it `display: contents`; native backends used to give it a plain
+    // view, and a plain view is a flex item: it hugs a fill-me child,
+    // stacks a row parent's children in a column, swallows the parent's
+    // gap, and resolves a child's percent against nothing. Every shape
+    // below is measured against the FLAT tree — what web computes — and
+    // must match it exactly.
+    // -----------------------------------------------------------------
+
+    /// A bounded 390×725 container in the given direction; `gap` optional.
+    fn bounded_box(t: &mut LayoutTree, dir: FwFlexDirection, gap: Option<f32>) -> LayoutNode {
+        let root = t.new_node();
+        let mut rs = StyleRules::default();
+        rs.width = Some(px(390.0));
+        rs.height = Some(px(725.0));
+        rs.flex_direction = Some(dir);
+        if let Some(g) = gap {
+            rs.gap = Some(px(g));
+        }
+        t.set_style(root, &rs);
+        root
+    }
+
+    fn sized(t: &mut LayoutTree, w: Option<f32>, h: Option<f32>) -> LayoutNode {
+        let n = t.new_node();
+        let mut rs = StyleRules::default();
+        rs.width = w.map(px);
+        rs.height = h.map(px);
+        t.set_style(n, &rs);
+        n
+    }
+
+    /// The virtualizer-collapse shape: header(60) → anchor → windowed
+    /// list (`set_overflow_scroll`: basis 0 / grow 1). Under a plain-view
+    /// anchor the list resolved to 0pt and rendered no rows; through a
+    /// contents node it takes the 665pt the header leaves.
+    #[test]
+    fn regression_windowed_list_under_reactive_anchor_collapsed_to_zero() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let header = sized(&mut t, None, Some(60.0));
+        let list = t.new_node();
+        t.set_overflow_scroll(list, false);
+        let anchor = t.new_contents_node();
+        t.add_child(root, header);
+        t.add_child(anchor, list);
+        t.add_child(root, anchor);
+        t.compute(root, 390.0, 725.0);
+        let f = t.frame_of(list);
+        assert!((f.height - 665.0).abs() < 0.5, "list should fill below the header, got {}", f.height);
+        assert!((f.y - 60.0).abs() < 0.5, "list should sit below the header, got y={}", f.y);
+    }
+
+    /// `if a { if b { view(flex_grow: 1) } }` — the inner branch root is
+    /// an anchor. A plain-view anchor (`flex_grow: 0`) hugged the child to
+    /// 0pt; web fills the column.
+    #[test]
+    fn contents_node_lets_a_flex_grow_child_fill_the_slot() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let fill = t.new_node();
+        let mut fs = StyleRules::default();
+        fs.flex_grow = Some(f32t(1.0));
+        t.set_style(fill, &fs);
+        let anchor = t.new_contents_node();
+        t.add_child(anchor, fill);
+        t.add_child(root, anchor);
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(fill).height - 725.0).abs() < 0.5, "got {}", t.frame_of(fill).height);
+    }
+
+    /// A keyed `for` at a branch root inside a ROW parent with a gap: the
+    /// chips must lay out in the row with the gap between them, not
+    /// stack vertically inside a column-flow anchor.
+    #[test]
+    fn contents_node_keeps_a_row_parents_direction_and_gap() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Row, Some(8.0));
+        let c1 = sized(&mut t, Some(50.0), Some(30.0));
+        let c2 = sized(&mut t, Some(50.0), Some(30.0));
+        let anchor = t.new_contents_node();
+        t.add_child(anchor, c1);
+        t.add_child(anchor, c2);
+        t.add_child(root, anchor);
+        t.compute(root, 390.0, 725.0);
+        let f = t.frame_of(c2);
+        assert!((f.x - 58.0).abs() < 0.5 && f.y.abs() < 0.5, "chip2 should be at (58, 0), got ({}, {})", f.x, f.y);
+    }
+
+    /// Same in a column with a gap: the gap separates the anchor's
+    /// children from each other, not just the anchor from its siblings.
+    #[test]
+    fn contents_node_keeps_a_column_parents_gap_between_its_children() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, Some(12.0));
+        let r1 = sized(&mut t, None, Some(20.0));
+        let r2 = sized(&mut t, None, Some(20.0));
+        let after = sized(&mut t, None, Some(20.0));
+        let anchor = t.new_contents_node();
+        t.add_child(anchor, r1);
+        t.add_child(anchor, r2);
+        t.add_child(root, anchor);
+        t.add_child(root, after);
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(r2).y - 32.0).abs() < 0.5, "row2.y got {}", t.frame_of(r2).y);
+        assert!((t.frame_of(after).y - 64.0).abs() < 0.5, "sibling after the anchor got y={}", t.frame_of(after).y);
+    }
+
+    /// A percent height resolves against the real ancestor, not against
+    /// a content-sized (indefinite) anchor.
+    #[test]
+    fn contents_node_resolves_a_childs_percent_against_the_ancestor() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let half = t.new_node();
+        let mut hs = StyleRules::default();
+        hs.height = Some(pct(50.0));
+        t.set_style(half, &hs);
+        let anchor = t.new_contents_node();
+        t.add_child(anchor, half);
+        t.add_child(root, anchor);
+        t.compute(root, 390.0, 725.0);
+        // Taffy rounds to whole px: 362.5 → 363.
+        assert!((t.frame_of(half).height - 362.5).abs() <= 0.5, "got {}", t.frame_of(half).height);
+    }
+
+    /// The opposite failure a "grow: 1" anchor approximation has: a
+    /// content-hugging region must NOT take the free space and push the
+    /// sibling after it to the bottom. Transparency means the text hugs
+    /// and the footer sits right under it, as it does with no anchor.
+    #[test]
+    fn contents_node_does_not_take_free_space_from_a_hugging_child() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let text = sized(&mut t, None, Some(20.0));
+        let footer = sized(&mut t, None, Some(40.0));
+        let anchor = t.new_contents_node();
+        t.add_child(anchor, text);
+        t.add_child(root, anchor);
+        t.add_child(root, footer);
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(footer).y - 20.0).abs() < 0.5, "footer.y got {}", t.frame_of(footer).y);
+    }
+
+    /// The contents node's own frame is the ancestor's box at the
+    /// origin, so a backend that keeps the children under the anchor's
+    /// native view can apply their (ancestor-relative) frames unchanged.
+    #[test]
+    fn contents_node_frame_is_the_ancestors_box_at_the_origin() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let header = sized(&mut t, None, Some(60.0));
+        let body = sized(&mut t, None, Some(100.0));
+        let anchor = t.new_contents_node();
+        assert_eq!(t.frame_of(anchor), Frame::default(), "unattached: no box");
+        t.add_child(root, header);
+        t.add_child(anchor, body);
+        t.add_child(root, anchor);
+        t.compute(root, 390.0, 725.0);
+        let af = t.frame_of(anchor);
+        assert_eq!((af.x, af.y, af.width, af.height), (0.0, 0.0, 390.0, 725.0));
+        // body is at y=60 relative to root == relative to the anchor's origin
+        assert!((t.frame_of(body).y - 60.0).abs() < 0.5);
+        assert_eq!(t.parent_of(body), Some(root), "layout parent skips the anchor");
+        assert_eq!(t.parent_of(anchor), Some(root));
+        assert!(!t.is_root(anchor), "a contents node is never a root");
+        assert!(t.is_root(root));
+        assert_eq!(t.children_of(root), vec![header, body], "flat children");
+        assert_eq!(t.children_of(anchor), vec![body], "the anchor's own children");
+    }
+
+    /// An EMPTY anchor (a `when` whose branch is currently the absent
+    /// arm) still holds its slot: a later indexed insert after it lands
+    /// after it, and its first child lands where the slot is.
+    #[test]
+    fn empty_contents_node_holds_its_slot_for_later_inserts() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let a = sized(&mut t, None, Some(10.0));
+        let b = sized(&mut t, None, Some(10.0));
+        let c = sized(&mut t, None, Some(10.0));
+        let x = sized(&mut t, None, Some(10.0));
+        let anchor = t.new_contents_node();
+        t.add_child(root, a);
+        t.add_child(root, anchor);
+        t.add_child(root, b);
+        // Logical index 2 is "after the anchor, before b".
+        t.add_child_at_index(root, c, 2);
+        assert_eq!(t.children_of(root), vec![a, c, b]);
+        // The anchor's first child lands in the anchor's slot: after a.
+        t.add_child(anchor, x);
+        assert_eq!(t.children_of(root), vec![a, x, c, b]);
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(x).y - 10.0).abs() < 0.5);
+        assert!((t.frame_of(c).y - 20.0).abs() < 0.5);
+    }
+
+    /// The anchored driver builds the initial subtree INTO the anchor
+    /// before the parent adopts the anchor: children first, attach last.
+    /// Attaching must link the whole span at the anchor's position.
+    #[test]
+    fn contents_node_attached_after_its_children_links_them_in_place() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let a = sized(&mut t, None, Some(10.0));
+        let b = sized(&mut t, None, Some(10.0));
+        let x = sized(&mut t, None, Some(10.0));
+        let y = sized(&mut t, None, Some(10.0));
+        let anchor = t.new_contents_node();
+        t.add_child(anchor, x);
+        t.add_child(anchor, y);
+        assert!(t.is_root(x) && t.is_root(y), "unattached anchor: children are their own roots");
+        t.add_child(root, a);
+        t.add_child(root, b);
+        t.add_child_at_index(root, anchor, 1);
+        assert_eq!(t.children_of(root), vec![a, x, y, b]);
+        assert!(!t.is_root(x));
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(b).y - 30.0).abs() < 0.5);
+    }
+
+    /// `if a { if b { … } }` inside a `for` row: anchors nest. Every
+    /// level collapses into the one real ancestor.
+    #[test]
+    fn nested_contents_nodes_flatten_into_the_real_ancestor() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Row, Some(8.0));
+        let a = sized(&mut t, Some(50.0), Some(30.0));
+        let b = sized(&mut t, Some(50.0), Some(30.0));
+        let c = sized(&mut t, Some(50.0), Some(30.0));
+        let outer = t.new_contents_node();
+        let inner = t.new_contents_node();
+        t.add_child(inner, b);
+        t.add_child(outer, a);
+        t.add_child(outer, inner);
+        t.add_child(root, outer);
+        t.add_child(root, c);
+        assert_eq!(t.children_of(root), vec![a, b, c]);
+        assert_eq!(t.parent_of(b), Some(root));
+        assert_eq!(t.parent_of(inner), Some(root));
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(b).x - 58.0).abs() < 0.5);
+        assert!((t.frame_of(c).x - 116.0).abs() < 0.5);
+        let inf = t.frame_of(inner);
+        assert_eq!((inf.width, inf.height), (390.0, 725.0));
+        // Adding to the inner anchor lands after b, before c.
+        let d = sized(&mut t, Some(50.0), Some(30.0));
+        t.add_child(inner, d);
+        assert_eq!(t.children_of(root), vec![a, b, d, c]);
+    }
+
+    /// The anchored swap: `clear_children(anchor)` then insert the new
+    /// subtree. The old flat nodes leave the ancestor; the new ones take
+    /// the same slot.
+    #[test]
+    fn contents_node_children_swap_keeps_the_slot() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let a = sized(&mut t, None, Some(10.0));
+        let old = sized(&mut t, None, Some(10.0));
+        let b = sized(&mut t, None, Some(10.0));
+        let anchor = t.new_contents_node();
+        t.add_child(root, a);
+        t.add_child(anchor, old);
+        t.add_child(root, anchor);
+        t.add_child(root, b);
+        t.remove_child(anchor, old);
+        assert_eq!(t.children_of(root), vec![a, b]);
+        assert!(t.is_root(old), "removed: its own root");
+        let new1 = sized(&mut t, None, Some(10.0));
+        let new2 = sized(&mut t, None, Some(10.0));
+        t.add_child(anchor, new1);
+        t.add_child(anchor, new2);
+        assert_eq!(t.children_of(root), vec![a, new1, new2, b]);
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(b).y - 30.0).abs() < 0.5);
+        // Removing the anchor from the parent takes its whole span.
+        t.remove_child(root, anchor);
+        assert_eq!(t.children_of(root), vec![a, b]);
+        assert!(t.is_root(new1) && t.is_root(new2));
+        // …and re-adding it brings the span back, at the new position.
+        t.add_child(root, anchor);
+        assert_eq!(t.children_of(root), vec![a, b, new1, new2]);
+    }
+
+    /// Freeing a contents node orphans its children as roots (as Taffy
+    /// orphans a removed node's children) and leaves the ancestor clean.
+    #[test]
+    fn remove_node_of_a_contents_node_orphans_its_children() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let a = sized(&mut t, None, Some(10.0));
+        let x = sized(&mut t, None, Some(10.0));
+        let anchor = t.new_contents_node();
+        t.add_child(root, a);
+        t.add_child(anchor, x);
+        t.add_child(root, anchor);
+        t.remove_node(anchor);
+        assert!(t.is_dropped(anchor));
+        assert_eq!(t.children_of(root), vec![a]);
+        assert!(t.is_root(x));
+        // The reverse teardown order (child freed first) is equally clean.
+        let anchor2 = t.new_contents_node();
+        let y = sized(&mut t, None, Some(10.0));
+        t.add_child(anchor2, y);
+        t.add_child(root, anchor2);
+        t.remove_node(y);
+        assert_eq!(t.children_of(root), vec![a]);
+        assert_eq!(t.children_of(anchor2), vec![]);
+        t.remove_node(anchor2);
+        assert_eq!(t.children_of(root), vec![a]);
+    }
+
+    /// A style on a contents node is ignored (no box to style), and the
+    /// anchor's children are what a grid parent sees as its items.
+    #[test]
+    fn contents_node_ignores_style_and_exposes_children_to_a_grid_parent() {
+        let mut t = LayoutTree::new();
+        let grid = t.new_node();
+        let mut gs = StyleRules::default();
+        gs.width = Some(px(200.0));
+        gs.display = Some(FwDisplayKind::Grid);
+        gs.grid_template_columns = Some(vec![FwTrackSize::Fr(1.0), FwTrackSize::Fr(1.0)]);
+        t.set_style(grid, &gs);
+        let anchor = t.new_contents_node();
+        let mut bogus = StyleRules::default();
+        bogus.height = Some(px(500.0));
+        assert!(!t.set_style(anchor, &bogus), "no geometry change on a contents node");
+        let c1 = sized(&mut t, None, Some(20.0));
+        let c2 = sized(&mut t, None, Some(20.0));
+        t.add_child(anchor, c1);
+        t.add_child(anchor, c2);
+        t.add_child(grid, anchor);
+        t.compute(grid, 200.0, 400.0);
+        assert!((t.frame_of(c2).x - 100.0).abs() < 0.5, "c2 should take column 2, got x={}", t.frame_of(c2).x);
+        assert!(t.frame_of(c2).y.abs() < 0.5, "same row, got y={}", t.frame_of(c2).y);
+        assert_eq!(t.frame_of(anchor).height, t.frame_of(grid).height);
+    }
+
+    /// `insert_at` on a node that is already a child MOVES it (DOM
+    /// `insertBefore`). Taffy's `insert_child_at_index` does not unlink the
+    /// old parent, so a keyed reorder used to leave the row in both
+    /// places — laid out twice, the second location winning and the
+    /// parent's main-axis budget counting it twice.
+    #[test]
+    fn regression_insert_at_of_a_mounted_child_moves_it_instead_of_duplicating() {
+        let mut t = LayoutTree::new();
+        let root = bounded_box(&mut t, FwFlexDirection::Column, None);
+        let a = sized(&mut t, None, Some(10.0));
+        let b = sized(&mut t, None, Some(10.0));
+        let c = sized(&mut t, None, Some(10.0));
+        t.add_child(root, a);
+        t.add_child(root, b);
+        t.add_child(root, c);
+        // Move c to the front.
+        t.add_child_at_index(root, c, 0);
+        assert_eq!(t.children_of(root), vec![c, a, b]);
+        // Move a to the end: index == count → append.
+        t.add_child_at_index(root, a, 3);
+        assert_eq!(t.children_of(root), vec![c, b, a]);
+        // insertBefore semantics: the reference is the node at `index`
+        // BEFORE the move, so c goes before a.
+        t.add_child_at_index(root, c, 2);
+        assert_eq!(t.children_of(root), vec![b, c, a]);
+        // Inserting before itself is a no-op.
+        t.add_child_at_index(root, c, 1);
+        assert_eq!(t.children_of(root), vec![b, c, a]);
+        t.compute(root, 390.0, 725.0);
+        assert!((t.frame_of(a).y - 20.0).abs() < 0.5, "three rows of 10, a last: y={}", t.frame_of(a).y);
+        // Reparenting to another node unlinks from the old one.
+        let other = t.new_node();
+        t.add_child(other, b);
+        assert_eq!(t.children_of(root), vec![c, a]);
+        assert_eq!(t.children_of(other), vec![b]);
+        assert_eq!(t.parent_of(b), Some(other));
+    }
 }
-
-
-
-

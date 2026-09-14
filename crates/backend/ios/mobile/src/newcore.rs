@@ -734,14 +734,11 @@ mod ios_impl {
         }
 
         fn create_anchor(&mut self) -> Self::Node {
-            // Runtime v2: `Host::create_anchor` is REQUIRED, and this backend
-            // never overrode the old `Backend::create_reactive_anchor`, whose
-            // default was exactly this. Reproduced verbatim: a plain view is a
-            // correct anchor on this backend (only web needs the
-            // `display: contents` variant so the branch's children keep the
-            // surrounding flex context). See
-            // docs/runtime-v2-deletion-baseline.md §2.2.
-            IosBackend::create_view_impl(self, &AccessibilityProps::default())
+            // A layout- and hit-transparent view over a `display:
+            // contents` layout node — this backend's `display: contents`.
+            // A plain view here is a flex item the author never wrote;
+            // see `create_anchor_impl`.
+            IosBackend::create_anchor_impl(self)
         }
 
         fn supports_splice(&self) -> bool {

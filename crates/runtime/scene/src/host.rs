@@ -69,8 +69,25 @@ pub trait Host: 'static {
     fn release_subtree(&mut self, _node: &Self::Node) {}
 
     /// Create a reactive anchor: a layout-transparent container the
-    /// anchored drivers swap subtrees under (`display: contents` on web; a
-    /// plain view elsewhere).
+    /// anchored drivers swap subtrees under.
+    ///
+    /// The scene holds it as a stable handle — it is the one node a
+    /// hole contributes to its parent, whatever the hole's subtree is —
+    /// but the author never wrote it, so it MUST NOT take part in layout
+    /// or hit-testing: its children lay out and hit-test exactly as if
+    /// they were the parent's own. Web is `display: contents`; a
+    /// Taffy-driven host registers `runtime_layout::LayoutTree::
+    /// new_contents_node` and makes the native view hit-transparent for
+    /// itself. A plain view is NOT a correct anchor: it is a flex item,
+    /// and a default flex item hugs a `flex_grow` child to nothing,
+    /// stacks a row parent's children vertically and swallows its `gap`
+    /// — pinned by `runtime_layout`'s contents-node tests.
+    ///
+    /// On a splice-capable host anchors still appear wherever a hole is a
+    /// subtree ROOT — a `when` branch whose body is another `when`/`for`,
+    /// a keyed or virtualizer row rooted in one, a navigator screen or
+    /// portal rooted in one — and as the placeholder of a parked deferred
+    /// item; on a host without splice support, under every hole.
     fn create_anchor(&mut self) -> Self::Node;
 
     /// Can this host splice children directly (`remove_child` +

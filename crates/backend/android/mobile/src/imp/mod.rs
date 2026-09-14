@@ -1242,11 +1242,23 @@ impl AndroidBackend {
         &mut self,
         view: &GlobalRef,
     ) -> runtime_layout::LayoutNode {
+        self.layout_for_view_with(view, |layout| layout.new_node())
+    }
+
+    /// `layout_for_view` with the caller choosing the Taffy node a
+    /// first-time registration mints — a reactive anchor registers a
+    /// `display: contents` node (`create_anchor_impl`); everything else
+    /// a flex item.
+    fn layout_for_view_with(
+        &mut self,
+        view: &GlobalRef,
+        mint: impl FnOnce(&mut runtime_layout::LayoutTree) -> runtime_layout::LayoutNode,
+    ) -> runtime_layout::LayoutNode {
         let key = Self::node_key(view);
         if let Some((_, node)) = self.view_to_layout.get(&key) {
             return *node;
         }
-        let node = self.layout.new_node();
+        let node = mint(&mut self.layout);
         self.view_to_layout.insert(key, (view.clone(), node));
         node
     }
@@ -2384,6 +2396,33 @@ impl AndroidBackend {
     pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> GlobalRef {
         let node = primitives::view::create(self);
         a11y::apply(&node, a11y, None);
+        node
+    }
+
+    /// A reactive anchor (`Host::create_anchor`): the node the scene
+    /// swaps a hole's subtree under. It is a real `FrameLayout` — the
+    /// scene holds it as a stable handle and parents the subtree's views
+    /// under it — but it must not exist for layout, because the author
+    /// never wrote it: web renders it `display: contents`, and a plain
+    /// view in its place is a flex item that hugs a fill-me child and
+    /// stacks a row's children vertically (every native backend shares
+    /// `runtime_layout`, which pins the shapes). So it registers a
+    /// contents node, whose children link into the real ancestor and
+    /// whose own frame is that ancestor's box at the origin, so the
+    /// children's margin frames stay correct under this view unchanged.
+    /// It clips nothing of its own (a `ViewGroup` clips children to its
+    /// bounds by default; a node with no box has no bounds to clip to).
+    /// Touch needs nothing: a non-clickable `ViewGroup` that no child
+    /// consumes for returns `false` from `dispatchTouchEvent`, and the
+    /// parent goes on to the sibling behind it.
+    pub(crate) fn create_anchor_impl(&mut self) -> GlobalRef {
+        let node = primitives::view::create(self);
+        with_env(|env| {
+            let obj = node.as_obj();
+            let _ = env.call_method(&obj, "setClipChildren", "(Z)V", &[jni::objects::JValue::Bool(0)]);
+            let _ = env.call_method(&obj, "setClipToPadding", "(Z)V", &[jni::objects::JValue::Bool(0)]);
+        });
+        let _ = self.layout_for_view_with(&node, |layout| layout.new_contents_node());
         node
     }
 

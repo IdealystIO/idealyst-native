@@ -44,5 +44,5 @@ runtime-vocabulary = { workspace = true }
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }
 objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSObject"] }
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSObject", "NSGeometry"] }
 objc2-ui-kit = { version = "0.2", features = ["UIResponder", "UIView"] }

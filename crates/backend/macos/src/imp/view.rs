@@ -137,6 +137,14 @@ pub struct FlippedViewIvars {
     /// menu belongs to. The macOS half of web's canceled-`pointerdown`
     /// focus preservation.
     preserves_focus: Cell<bool>,
+    /// A reactive anchor (`Host::create_anchor`): `display: contents` in
+    /// layout (`LayoutTree::new_contents_node`) and, here, in hit-testing.
+    /// The view's own frame is the ancestor's box, which is not where its
+    /// children necessarily are, so `hitTest:` ignores it: try each
+    /// subview, never answer with this view. `pointer_events: None` is the
+    /// wrong tool — it makes the whole SUBTREE transparent unless a
+    /// descendant opts back in, and an anchor's children never do.
+    layout_transparent: Cell<bool>,
 }
 
 declare_class!(
@@ -178,65 +186,91 @@ declare_class!(
         // is `(0, 0)`).
         #[method_id(hitTest:)]
         fn hit_test(&self, point: CGPoint) -> Option<Retained<NSView>> {
-            let (tx, ty) = crate::imp::animated::view_layer_translate(self);
-            let adjusted = CGPoint {
-                x: point.x - tx,
-                y: point.y - ty,
-            };
-            let result: Option<Retained<NSView>> =
-                unsafe { msg_send_id![super(self), hitTest: adjusted] };
-            // `pointer-events: none` — this subtree is hit-transparent
-            // (return nil so AppKit resolves whatever renders behind it),
-            // EXCEPT descendants that explicitly re-enable with `Auto`.
-            // The verdict is shared with iOS (Rule #7); see
-            // `backend_apple_core::pointer_events_policy` for the CSS
-            // semantics being modeled. Without this, an always-mounted
-            // full-window scrim styled inert via `PointerEvents::None`
-            // (idea-ui-nav's AppShell) captured EVERY mouse click on
-            // macOS — content links dead while robot (handler-level)
-            // clicks kept working.
-            // Single tail expression (no early `return`): `declare_class!`
-            // wraps `#[method_id]` bodies, so the branching lives in a
-            // closure.
-            if matches!(
-                self.ivars().pointer_events.get(),
-                Some(runtime_shared::PointerEvents::None)
-            ) {
-                result.and_then(|result| {
-                    let self_view: &NSView = self;
-                    if std::ptr::eq(&*result as *const NSView, self_view as *const NSView) {
-                        return None;
+            if self.ivars().layout_transparent.get() {
+                // `point` is in the SUPERVIEW's space (AppKit's `hitTest:`
+                // contract); a subview's `hitTest:` expects OUR space. No
+                // superview yet (mid-attach) → already local. Topmost
+                // subview first, as AppKit does; no frame check on self
+                // (see `layout_transparent`).
+                let this: &NSView = self;
+                let superview: *mut NSView = unsafe { msg_send![this, superview] };
+                let local: CGPoint = if superview.is_null() {
+                    point
+                } else {
+                    unsafe { msg_send![this, convertPoint: point, fromView: superview] }
+                };
+                let subviews: Retained<objc2_foundation::NSArray<NSView>> = unsafe { msg_send_id![this, subviews] };
+                let subs: Vec<&NSView> = subviews.iter().collect();
+                let mut hit: Option<Retained<NSView>> = None;
+                for sub in subs.iter().rev() {
+                    let sub: &NSView = sub;
+                    hit = unsafe { msg_send_id![sub, hitTest: local] };
+                    if hit.is_some() {
+                        break;
                     }
-                    // Walk hit → … → (excluding) self, collecting each
-                    // framework host's explicit pointer_events for the
-                    // shared nearest-explicit-wins verdict.
-                    let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
-                    let mut cur: Option<Retained<NSView>> = Some(result.clone());
-                    while let Some(v) = cur {
-                        if std::ptr::eq(&*v as *const NSView, self_view as *const NSView) {
-                            break;
+                }
+                hit
+            } else {
+                let (tx, ty) = crate::imp::animated::view_layer_translate(self);
+                let adjusted = CGPoint {
+                    x: point.x - tx,
+                    y: point.y - ty,
+                };
+                let result: Option<Retained<NSView>> =
+                    unsafe { msg_send_id![super(self), hitTest: adjusted] };
+                // `pointer-events: none` — this subtree is hit-transparent
+                // (return nil so AppKit resolves whatever renders behind it),
+                // EXCEPT descendants that explicitly re-enable with `Auto`.
+                // The verdict is shared with iOS (Rule #7); see
+                // `backend_apple_core::pointer_events_policy` for the CSS
+                // semantics being modeled. Without this, an always-mounted
+                // full-window scrim styled inert via `PointerEvents::None`
+                // (idea-ui-nav's AppShell) captured EVERY mouse click on
+                // macOS — content links dead while robot (handler-level)
+                // clicks kept working.
+                // Single tail expression (no early `return`): `declare_class!`
+                // wraps `#[method_id]` bodies, so the branching lives in a
+                // closure.
+                if matches!(
+                    self.ivars().pointer_events.get(),
+                    Some(runtime_shared::PointerEvents::None)
+                ) {
+                    result.and_then(|result| {
+                        let self_view: &NSView = self;
+                        if std::ptr::eq(&*result as *const NSView, self_view as *const NSView) {
+                            return None;
                         }
-                        let is_host: bool = unsafe {
-                            msg_send![&*v, isKindOfClass: objc2::class!(IdealystFlippedView)]
-                        };
-                        chain.push(if is_host {
-                            let fv =
-                                unsafe { &*(&*v as *const NSView as *const FlippedView) };
-                            fv.ivars().pointer_events.get()
+                        // Walk hit → … → (excluding) self, collecting each
+                        // framework host's explicit pointer_events for the
+                        // shared nearest-explicit-wins verdict.
+                        let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
+                        let mut cur: Option<Retained<NSView>> = Some(result.clone());
+                        while let Some(v) = cur {
+                            if std::ptr::eq(&*v as *const NSView, self_view as *const NSView) {
+                                break;
+                            }
+                            let is_host: bool = unsafe {
+                                msg_send![&*v, isKindOfClass: objc2::class!(IdealystFlippedView)]
+                            };
+                            chain.push(if is_host {
+                                let fv =
+                                    unsafe { &*(&*v as *const NSView as *const FlippedView) };
+                                fv.ivars().pointer_events.get()
+                            } else {
+                                None
+                            });
+                            cur = unsafe { msg_send_id![&*v, superview] };
+                        }
+                        if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
+                        {
+                            Some(result)
                         } else {
                             None
-                        });
-                        cur = unsafe { msg_send_id![&*v, superview] };
-                    }
-                    if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
-                    {
-                        Some(result)
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                result
+                        }
+                    })
+                } else {
+                    result
+                }
             }
         }
 
@@ -625,6 +659,7 @@ impl FlippedView {
             activate: RefCell::new(None),
             pointer_events: Cell::new(None),
             preserves_focus: Cell::new(false),
+            layout_transparent: Cell::new(false),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -643,6 +678,13 @@ impl FlippedView {
     /// override above.
     pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
+    }
+
+    /// Mark this view as a reactive anchor: hit-transparent itself, its
+    /// subviews hit-tested without regard to its frame. See
+    /// `layout_transparent`. Set once at `create_anchor`.
+    pub(crate) fn set_layout_transparent(&self) {
+        self.ivars().layout_transparent.set(true);
     }
 
     /// Mark this host as keyboard-interactive (a `pressable` / `link`): store the

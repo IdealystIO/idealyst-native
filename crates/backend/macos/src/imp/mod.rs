@@ -830,11 +830,23 @@ impl MacosBackend {
     /// `create_*` method so each native view has a corresponding node
     /// in the layout tree.
     pub(crate) fn layout_for_view(&mut self, view: &NSView) -> runtime_layout::LayoutNode {
+        self.layout_for_view_with(view, |layout| layout.new_node())
+    }
+
+    /// `layout_for_view` with the caller choosing the Taffy node a
+    /// first-time registration mints — a reactive anchor registers a
+    /// `display: contents` node (`create_anchor_impl`); everything else
+    /// a flex item.
+    fn layout_for_view_with(
+        &mut self,
+        view: &NSView,
+        mint: impl FnOnce(&mut runtime_layout::LayoutTree) -> runtime_layout::LayoutNode,
+    ) -> runtime_layout::LayoutNode {
         let key = view as *const NSView as usize;
         if let Some((_, node)) = self.view_to_layout.get(&key) {
             return *node;
         }
-        let node = self.layout.new_node();
+        let node = mint(&mut self.layout);
         let retained = unsafe {
             Retained::retain(view as *const NSView as *mut NSView).expect("retain NSView")
         };
@@ -1140,14 +1152,7 @@ impl MacosBackend {
         // write each corresponding registered view's frame — the same per-view
         // frame-write the host pass does, scoped to the detached tree so we
         // don't disturb the main (recorded) tree's frames or transforms.
-        let mut subtree: std::collections::HashSet<runtime_layout::LayoutNode> =
-            std::collections::HashSet::new();
-        let mut stack = vec![root_layout];
-        while let Some(n) = stack.pop() {
-            if subtree.insert(n) {
-                stack.extend(self.layout.children_of(n));
-            }
-        }
+        let subtree = reachable_layout_nodes(&self.layout, root_layout);
         let snapshot: Vec<(usize, runtime_layout::LayoutNode)> = self
             .view_to_layout
             .iter()
@@ -2207,7 +2212,13 @@ fn reachable_layout_nodes(
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         if reachable.insert(n) {
-            stack.extend(layout.children_of(n));
+            // LOGICAL children — the NSView tree — so a reactive anchor
+            // (a `display: contents` node, absent from the flat layout
+            // tree) is reached and framed too. It needs its frame: AppKit
+            // clips every descendant's `visibleRect` to its ancestors, so
+            // an unframed 0×0 anchor would kill hover tracking and cursor
+            // rects for everything under it.
+            stack.extend(layout.logical_children_of(n));
         }
     }
     reachable
@@ -2264,6 +2275,28 @@ mod reachable_tests {
         for n in [root, outlet, screen_b, b1] {
             assert!(live.contains(&n));
         }
+    }
+
+    /// A reactive anchor is a `display: contents` node — absent from the
+    /// flat layout tree `children_of` walks — but it is a real NSView that
+    /// MUST be framed: AppKit clips every descendant's `visibleRect` to
+    /// its ancestors, so an unframed 0×0 anchor leaves everything under
+    /// it unhoverable and cursor-less. The walk is over the logical
+    /// (NSView) tree, which reaches the anchor and, through it, its
+    /// children.
+    #[test]
+    fn regression_reactive_anchor_is_reached_and_framed() {
+        let mut layout = LayoutTree::new();
+        let root = layout.new_node();
+        let anchor = layout.new_contents_node();
+        let leaf = layout.new_node();
+        layout.add_child(anchor, leaf);
+        layout.add_child(root, anchor);
+        let reachable = reachable_layout_nodes(&layout, root);
+        assert!(reachable.contains(&anchor), "the anchor view needs its frame");
+        assert!(reachable.contains(&leaf), "…and its children are reached through it");
+        // Flat walk alone would miss it — the reason the walk is logical.
+        assert!(!layout.children_of(root).contains(&anchor));
     }
 }
 
@@ -2982,6 +3015,29 @@ impl MacosBackend {
         } else {
             runtime_shared::ColorScheme::Auto
         }
+    }
+
+    /// A reactive anchor (`Host::create_anchor`): the node the scene
+    /// swaps a hole's subtree under. It is a real view — the scene holds
+    /// it as a stable handle and parents the subtree's views under it —
+    /// but it must not exist for layout or hit-testing, because the
+    /// author never wrote it: web renders it `display: contents`, and a
+    /// plain view in its place is a flex item that hugs a fill-me child
+    /// and stacks a row's children vertically (every native backend
+    /// shares `runtime_layout`, which pins the shapes). So it registers
+    /// a contents node, whose children link into the real ancestor and
+    /// whose own frame is that ancestor's box at the origin — the
+    /// children's frames stay correct under this view unchanged, and the
+    /// view keeps a real frame because AppKit clips every descendant's
+    /// `visibleRect` (hover tracking, cursor rects) to its ancestors —
+    /// and the view is hit-transparent for itself with its subviews
+    /// tested regardless of its frame (`FlippedView::set_layout_transparent`).
+    pub(crate) fn create_anchor_impl(&mut self) -> MacosNode {
+        let view = FlippedView::new(self.mtm);
+        view.set_layout_transparent();
+        let view: Retained<NSView> = Retained::into_super(view);
+        let _ = self.layout_for_view_with(&view, |layout| layout.new_contents_node());
+        MacosNode::View(view)
     }
 
     pub(crate) fn create_view_impl(&mut self, a11y: &runtime_shared::accessibility::AccessibilityProps) -> MacosNode {
