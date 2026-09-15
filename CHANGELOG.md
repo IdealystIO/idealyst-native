@@ -196,6 +196,20 @@ each entry links to its migration guide.
   (`runtime_core::view(…)`, `builders::…`, or a bare `view(…)` the file
   imports from the framework).
 
+- **`AppShell` honours a reactive `width` after build.** The prop was
+  typed `Reactive<f32>`, so a signal compiled — and was read once and
+  baked into the preminted sheets, so a collapsible rail passing
+  `rx!(if collapsed { 64 } else { 256 })` narrowed its contents while
+  the panel kept its load-time width; a preference saved as collapsed
+  left a 64px drawer around a full-width rail. The sheets stay keyed on
+  the first value; a live width rides the inline layer, and because an
+  inline rule beats the `@media` pin overlay the pinned-or-not read for
+  panel width, slide and content offset moves into Rust — only when the
+  width is actually a signal. A static width takes exactly the path it
+  took before. Trade, documented on the module: a reactive-width
+  shell's SSR first paint is laid out for the dump's viewport until
+  hydration.
+
 - **A grid cell whose content changed re-mounts.** `cell_key` is
   content-addressed so a pooled cell cannot outlive its data, and the
   engines ignored it: `mounted` was keyed by `(col, row)` and any
