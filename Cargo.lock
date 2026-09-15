@@ -6208,7 +6208,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "host-mock",
  "idea-theme",

@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-nav"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "Themed navigation chrome (TabBar / Drawer / StackHeader) for the idealyst swap & stack navigators — the author-layout that wraps a navigator's outlet."

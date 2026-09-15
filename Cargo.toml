@@ -527,7 +527,7 @@ idea-theme = { path = "crates/ui/idea-theme", version = "1.5.2", registry = "ide
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.2", registry = "idealyst" }
 idea-ui = { path = "crates/ui/idea-ui", version = "1.9.2", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
-idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.2", registry = "idealyst" }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.3", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "1.5.2", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "1.5.2", registry = "idealyst" }
