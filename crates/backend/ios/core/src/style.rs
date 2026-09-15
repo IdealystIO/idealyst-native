@@ -620,6 +620,36 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
                 }
             }
         }
+    } else if !is_metal_view {
+        // ABSENT means transparent, and saying so is the whole point.
+        //
+        // Without this branch a background is only ever WRITTEN, never
+        // withdrawn: a view whose newly resolved rules no longer carry
+        // one keeps whatever colour it was last given. Web cannot have
+        // this bug — a class swap takes the old rule with it — so the
+        // two backends disagreed about what "no background" means.
+        //
+        // It shows up wherever a variant paints and its sibling does
+        // not. CrewForge's schedule: selecting a cell paints
+        // `primary.soft_bg`, deselecting resolves NO background at all,
+        // and the tint stayed until the cell was recycled. Weekend
+        // cells looked fine and were the tell — their `fill` variant
+        // declares a background of its own, so something was always
+        // written back over the selection.
+        //
+        // Reset to an EXPLICIT clear, never `nil`. They are not the
+        // same thing: `nil` means "no colour of my own", and several
+        // UIKit control classes answer that by drawing the OS default
+        // — `systemBackground`, which is near-black in dark mode. That
+        // is the same failure `effective_input_background` exists to
+        // prevent for text controls (see `style_diff`'s
+        // `regression_absent_input_background_uses_theme_surface_not_os_default`),
+        // and passing `nil` here reproduced it across the whole app:
+        // every text node came back with a black box behind it.
+        //
+        // `clearColor` is unambiguous — transparent, whatever the class.
+        let clear = unsafe { objc2_ui_kit::UIColor::clearColor() };
+        view.setBackgroundColor(Some(&clear));
     }
 
     // Gradient is handled outside this function — the mobile (and TV)
