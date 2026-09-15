@@ -196,6 +196,26 @@ each entry links to its migration guide.
   (`runtime_core::view(…)`, `builders::…`, or a bare `view(…)` the file
   imports from the framework).
 
+- **A grid cell whose content changed re-mounts.** `cell_key` is
+  content-addressed so a pooled cell cannot outlive its data, and the
+  engines ignored it: `mounted` was keyed by `(col, row)` and any
+  filled slot was skipped, so a cell whose content changed kept its old
+  view until it scrolled out of the window. CrewForge's schedule
+  applied a shift, refetched, toasted, and still showed an em dash. A
+  mounted cell now carries its key; the window diff leaves an unchanged
+  cell alone and releases a changed one before mounting its
+  replacement. iOS (verified on the simulator) and macOS (pinned by a
+  host test against real AppKit views). Android has the same positional
+  diff and could not be run from here; it is unchanged.
+
+- **iOS: an absent background clears.** `apply_style_to_view` only
+  ever wrote a background, so one could be set but never withdrawn — a
+  deselected schedule cell kept its selection tint until recycled. It
+  now resets to `clearColor`, deliberately not `nil`: several UIKit
+  classes answer `nil` with the OS default, which put a black box
+  behind every text node in dark mode. No host test is possible for a
+  `msg_send` on a `UIView`; verified on the simulator.
+
 - **A two-axis grid no longer aborts the app the moment it mounts.**
   `mount_cell` realizes a subtree and `release_cell` drops one; both
   re-enter the backend, and every path into a grid sync — the layout

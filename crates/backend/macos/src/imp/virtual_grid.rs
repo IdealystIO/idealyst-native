@@ -33,13 +33,22 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
-use runtime_shared::primitives::virtual_grid::{GridCallbacks, GridMetrics, GridWindow};
+use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow};
 
 use super::MacosNode;
 
 struct MountedCell {
     view: Retained<NSView>,
     scope_id: u64,
+    /// The content key this cell was mounted for. `cell_key` is
+    /// content-addressed precisely so a pooled cell cannot survive a
+    /// data change with stale contents — and this engine used to key
+    /// `mounted` by `(col, row)` alone and skip any filled slot, so a
+    /// cell whose CONTENT changed kept its old view until it scrolled
+    /// out of the window. The iOS twin surfaced it on CrewForge's
+    /// schedule: a shift applied, refetched, toasted, and the cell
+    /// still read an em dash.
+    key: CellKey,
 }
 
 pub(crate) struct VirtualGridInstance {
@@ -141,10 +150,20 @@ fn build_metrics(cb: &GridCallbacks<MacosNode>) -> GridMetrics {
 }
 
 pub(crate) fn data_changed(backend: &mut crate::imp::MacosBackend, node: &MacosNode) {
+    data_changed_in(&mut backend.virtual_grid_registry, node);
+    // The one queueing path with no layout pass already behind it, so
+    // it arms the drain itself. Safe where `queue_sync` is not: this
+    // fires on a real data change, not once per pass.
+    crate::imp::schedule_layout_pass();
+}
+
+/// [`data_changed`] against the registry alone, minus the layout pass
+/// it arms — the half the tests below drive.
+fn data_changed_in(registry: &mut GridRegistry, node: &MacosNode) {
     let MacosNode::View(view) = node else { return };
     let key = &**view as *const NSView as usize;
     {
-        let Some(inst) = backend.virtual_grid_registry.get(&key) else {
+        let Some(inst) = registry.get(&key) else {
             return;
         };
         let Some(m) = inst.callbacks.borrow().as_ref().map(build_metrics) else {
@@ -153,11 +172,7 @@ pub(crate) fn data_changed(backend: &mut crate::imp::MacosBackend, node: &MacosN
         *inst.metrics.borrow_mut() = m;
         *inst.last_window.borrow_mut() = None;
     }
-    sync(backend, key);
-    // The one queueing path with no layout pass already behind it, so
-    // it arms the drain itself. Safe where `queue_sync` is not: this
-    // fires on a real data change, not once per pass.
-    crate::imp::schedule_layout_pass();
+    sync_in(registry, key);
 }
 
 /// Everything one sync touches, with no backend borrow among them.
@@ -358,9 +373,32 @@ fn sync_now(h: &GridHandles) {
         }
     }
 
+    // Mount cells that entered — and re-mount any whose CONTENT changed
+    // under them, which a positional diff cannot see.
     for (col, row) in window.cells() {
-        if mounted.borrow().contains_key(&(col, row)) {
-            continue;
+        let key_now = callbacks
+            .borrow()
+            .as_ref()
+            .map(|c| (c.cell_key)(col, row));
+        let mounted_key = mounted.borrow().get(&(col, row)).map(|m| m.key);
+        match (mounted_key, key_now) {
+            // Live cell, unchanged content: leave it alone. This is the
+            // common case and the whole point of the pool.
+            (Some(old), Some(new)) if old == new => continue,
+            // Live cell whose content moved on: drop it so the mount
+            // below rebuilds it. Releasing FIRST keeps the scope count
+            // flat rather than doubling for a frame.
+            (Some(_), _) => {
+                let stale = mounted.borrow_mut().remove(&(col, row));
+                if let Some(stale) = stale {
+                    let _: () = unsafe { msg_send![&stale.view, removeFromSuperview] };
+                    let release = callbacks.borrow().as_ref().map(|c| c.release_cell.clone());
+                    if let Some(release) = release {
+                        release(stale.scope_id);
+                    }
+                }
+            }
+            (None, _) => {}
         }
         let mount = callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
@@ -379,6 +417,7 @@ fn sync_now(h: &GridHandles) {
             MountedCell {
                 view: view.clone(),
                 scope_id,
+                key: key_now.unwrap_or_default(),
             },
         );
     }
@@ -511,20 +550,28 @@ mod pending_tests {
         key: usize,
         mounts: Rc<Cell<usize>>,
         releases: Rc<Cell<usize>>,
+        /// Bump to change cell `(0, 0)`'s content key — what a data
+        /// change that rewrote one cell looks like to the engine.
+        origin_version: Rc<Cell<u64>>,
     }
 
     fn grid(cols: usize, rows: usize) -> Fixture {
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         let mounts = Rc::new(Cell::new(0usize));
         let releases = Rc::new(Cell::new(0usize));
+        let origin_version = Rc::new(Cell::new(0u64));
         let m = mounts.clone();
         let r = releases.clone();
+        let v = origin_version.clone();
         let callbacks = GridCallbacks::<MacosNode> {
             col_count: Rc::new(move || cols),
             row_count: Rc::new(move || rows),
             col_width: Rc::new(|_| 40.0),
             row_height: Rc::new(|_| 40.0),
-            cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+            cell_key: Rc::new(move |c, r| {
+                let content = if (c, r) == (0, 0) { v.get() } else { 0 };
+                (c * 1000 + r) as u64 * 100 + content
+            }),
             mount_cell: Rc::new(move |c, r| {
                 m.set(m.get() + 1);
                 let view: Retained<NSView> =
@@ -540,7 +587,14 @@ mod pending_tests {
             msg_send![&scroll, setFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(200.0, 200.0))]
         };
         let key = &*scroll as *const NSView as usize;
-        Fixture { registry, node: MacosNode::View(scroll), key, mounts, releases }
+        Fixture {
+            registry,
+            node: MacosNode::View(scroll),
+            key,
+            mounts,
+            releases,
+            origin_version,
+        }
     }
 
     fn pending_len() -> usize {
@@ -653,6 +707,57 @@ mod pending_tests {
         MountedCell {
             view: Retained::into_super(crate::imp::view::FlippedView::new(mtm)),
             scope_id: 0,
+            key: 0,
         }
+    }
+
+    fn view_at(f: &Fixture, slot: (usize, usize)) -> Option<Retained<NSView>> {
+        f.registry
+            .get(&f.key)
+            .and_then(|i| i.mounted.borrow().get(&slot).map(|m| m.view.clone()))
+    }
+
+    /// Regression: a data change that rewrote one cell's content left
+    /// the cell's old view in place — `mounted` was keyed by position
+    /// alone, so a filled slot was skipped whatever `cell_key` said.
+    /// The changed cell is rebuilt (its stale scope released first, so
+    /// the count stays flat); the other three are left alone.
+    #[test]
+    fn regression_a_cell_whose_content_changed_is_remounted_on_data_changed() {
+        drain_pending();
+        let mut f = grid(2, 2);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        assert_eq!(f.mounts.get(), 4);
+        let before = view_at(&f, (0, 0)).expect("mounted");
+        let neighbour = view_at(&f, (1, 1)).expect("mounted");
+
+        f.origin_version.set(1);
+        data_changed_in(&mut f.registry, &f.node);
+        drain_pending();
+
+        assert_eq!(f.releases.get(), 1, "the stale cell's scope goes");
+        assert_eq!(f.mounts.get(), 5, "exactly the changed cell is rebuilt");
+        let after = view_at(&f, (0, 0)).expect("mounted");
+        assert!(!std::ptr::eq(&*before, &*after), "the old view stayed");
+        assert!(
+            std::ptr::eq(&*neighbour, &*view_at(&f, (1, 1)).expect("mounted")),
+            "an unchanged cell was churned"
+        );
+        let superview: *mut NSView = unsafe { msg_send![&*before, superview] };
+        assert!(superview.is_null(), "the stale view is still in the document");
+    }
+
+    /// The control for the pool: a data change that changes nothing
+    /// mounts and releases nothing.
+    #[test]
+    fn a_data_change_with_unchanged_keys_leaves_every_cell_alone() {
+        drain_pending();
+        let mut f = grid(2, 2);
+        sync_in(&f.registry, f.key);
+        drain_pending();
+        data_changed_in(&mut f.registry, &f.node);
+        drain_pending();
+        assert_eq!((f.mounts.get(), f.releases.get()), (4, 0));
     }
 }
