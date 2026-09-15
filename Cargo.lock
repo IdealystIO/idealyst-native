@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.8.9"
+version = "1.8.10"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.6.2"
+version = "1.6.3"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
