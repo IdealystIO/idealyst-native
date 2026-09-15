@@ -35,7 +35,7 @@ use objc2::rc::Retained;
 use objc2::msg_send;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::{UIScrollView, UIView};
-use runtime_shared::primitives::virtual_grid::{GridCallbacks, GridMetrics, GridWindow};
+use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow};
 
 use super::IosNode;
 
@@ -44,6 +44,17 @@ use super::IosNode;
 struct MountedCell {
     view: Retained<UIView>,
     scope_id: u64,
+    /// The content key this cell was mounted for.
+    ///
+    /// `cell_key` is content-addressed precisely so a pooled cell cannot
+    /// survive a data change with stale contents — and this engine used
+    /// to ignore it entirely, keying `mounted` by `(col, row)` alone and
+    /// skipping any slot that was already filled. A cell whose CONTENT
+    /// changed therefore kept its old view forever: on CrewForge's
+    /// schedule, applying a shift wrote the row, refetched, toasted
+    /// "Applied to 1 crew member(s)" and left the cell reading an em
+    /// dash. Only scrolling it out of the window and back repainted it.
+    key: CellKey,
 }
 
 pub(crate) struct VirtualGridInstance {
@@ -394,10 +405,42 @@ fn sync_now(h: &GridHandles) {
         }
     }
 
-    // Mount cells that entered.
+    // Mount cells that entered — and re-mount any whose CONTENT
+    // changed under them, which a positional diff cannot see.
     for (col, row) in window.cells() {
-        if mounted.borrow().contains_key(&(col, row)) {
-            continue;
+        let key_now = callbacks
+            .borrow()
+            .as_ref()
+            .map(|c| (c.cell_key)(col, row));
+        let mounted_key = mounted.borrow().get(&(col, row)).map(|m| m.key);
+        match (mounted_key, key_now) {
+            // Live cell, unchanged content: leave it alone. This is the
+            // common case and the whole point of the pool.
+            (Some(old), Some(new)) if old == new => continue,
+            // Live cell whose content moved on: drop it so the mount
+            // below rebuilds it. Releasing FIRST keeps the scope count
+            // flat rather than doubling for a frame.
+            (Some(_), _) => {
+                let stale = mounted.borrow_mut().remove(&(col, row));
+                if let Some(stale) = stale {
+                    CELL_BOXES.with(|m| {
+                        m.borrow_mut()
+                            .remove(&(&*stale.view as *const UIView as usize))
+                    });
+                    unsafe { stale.view.removeFromSuperview() };
+                    let release = callbacks
+                        .borrow()
+                        .as_ref()
+                        .map(|c| c.release_cell.clone());
+                    if let Some(release) = release {
+                        crate::imp::ffi_guard::guard_ffi(
+                            "virtual_grid::release_cell (stale)",
+                            || release(stale.scope_id),
+                        );
+                    }
+                }
+            }
+            (None, _) => {}
         }
         let mount = callbacks.borrow().as_ref().map(|c| c.mount_cell.clone());
         let Some(mount) = mount else { break };
@@ -427,6 +470,7 @@ fn sync_now(h: &GridHandles) {
                         .expect("retain grid cell")
                 },
                 scope_id,
+                key: key_now.unwrap_or_default(),
             },
         );
     }
