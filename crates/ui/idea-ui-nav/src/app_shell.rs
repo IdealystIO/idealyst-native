@@ -32,6 +32,18 @@
 //! The author's hamburger (in a header inside `children`) toggles `is_open`
 //! and hides itself when [`sidebar_pinned`] reports true; sidebar links close
 //! the drawer only when unpinned (`if !sidebar_pinned(pin_at) { is_open.set(false) }`).
+//!
+//! `width` may be a signal too — a collapsible rail passes
+//! `width = rx!(if collapsed.get() { 64.0 } else { 280.0 })` and the
+//! panel, the content offset and the closed drawer's slide all follow it
+//! live. The sheets stay keyed on the FIRST value (they are preminted per
+//! width, and a sheet first built after the crawl has no CSS); a live
+//! width rides the inline layer on top, which is the one layer that never
+//! keys a sheet. The cost, and the reason a static width does not pay it:
+//! an inline rule beats the `@media` pin overlay, so the pinned-or-not
+//! decision for those rules moves into Rust (`sidebar_pinned`), and the
+//! SSR first paint of a reactive-width shell is laid out for the dump's
+//! viewport rather than the reader's until hydration.
 
 use idea_ui::{Surface, SurfaceColor};
 use runtime_core::{
@@ -71,7 +83,9 @@ pub struct AppShellProps {
     /// The breakpoint at (and above) which the sidebar pins in-flow.
     /// Default [`Breakpoint::Lg`] (≥ 1024 dp with the default table).
     pub pin_at: Breakpoint,
-    /// Sidebar width in logical pixels. Default `280`.
+    /// Sidebar width in logical pixels. Default `280`. A signal here makes
+    /// the width live (a collapsible rail) — see the module docs for what
+    /// that trades away on SSR first paint.
     pub width: f32,
     /// The main content — the navigator outlet and everything around it.
     /// Moved out of props by `#[component(children)]`.
@@ -93,12 +107,16 @@ impl Default for AppShellProps {
 /// Renders the shell: main content, a tap-to-close scrim, and ONE sidebar
 /// panel — pinned in view at/above `pin_at`, an off-canvas drawer below it.
 /// All three are always mounted; pinning is static breakpoint styling
-/// (`@media` on web/SSR), only the drawer's `is_open` is reactive.
+/// (`@media` on web/SSR); the drawer's `is_open` is reactive, and so is
+/// `width` when the author passes a signal (see the module docs).
 #[component(children)]
 pub fn AppShell(props: AppShellProps) -> Element {
     let is_open = props.is_open;
     let pin_at = props.pin_at.get();
-    let width = props.width.get();
+    // The sheets bake THIS value; a live width overrides it inline below.
+    let width_live = !props.width.is_static();
+    let width_prop = props.width;
+    let width = width_prop.get();
     let content = props.children;
     let sidebar = props.sidebar;
 
@@ -190,7 +208,25 @@ pub fn AppShell(props: AppShellProps) -> Element {
             sheet.premint_as(&premint_id(width, pin_axis, "content"))
         },
     );
-    let content_style = StyleApplication::new(content_sheet);
+    // A live width cannot ride the sheet (see `premint_id`), and an
+    // inline `margin_left` would beat the pinned overlay's, so the
+    // pinned-or-not read moves into Rust for that case only: below the
+    // pin the content has no offset, at/above it the offset is the live
+    // width. The sheet's transition still animates the inline change.
+    let content_style = {
+        let width_prop = width_prop.clone();
+        move || {
+            let app = StyleApplication::new(content_sheet.clone());
+            if !width_live {
+                return app;
+            }
+            let offset = if sidebar_pinned(pin_at) { width_prop.get() } else { 0.0 };
+            app.with_inline(StyleRules {
+                margin_left: Some(Length::Px(offset).into()),
+                ..Default::default()
+            })
+        }
+    };
 
     // Scrim: base = closed (invisible, inert); opening is the `open` AXIS,
     // never a second sheet (see `premint_id`). The pinned overlay forces it
@@ -293,10 +329,30 @@ pub fn AppShell(props: AppShellProps) -> Element {
     );
     let panel_style = {
         let panel_sheet = panel_sheet.clone();
+        let width_prop = width_prop.clone();
         move || {
             let mut app = StyleApplication::new(panel_sheet.clone());
-            if is_open.get() {
+            let open = is_open.get();
+            if open {
                 app = app.with("open", "on");
+            }
+            if width_live {
+                // Same three states the sheet's arms encode — closed
+                // drawer parked off-canvas by its own width, open drawer
+                // and pinned column both at 0 — restated inline because
+                // an inline transform beats every arm, the pinned one
+                // included.
+                let w = width_prop.get();
+                let shown = open || sidebar_pinned(pin_at);
+                app = app.with_inline(StyleRules {
+                    width: Some(Length::Px(w).into()),
+                    transform: Some(vec![Transform::TranslateX(Length::Px(if shown {
+                        0.0
+                    } else {
+                        -w
+                    }))]),
+                    ..Default::default()
+                });
             }
             app
         }
@@ -495,6 +551,64 @@ mod tests {
                     "{which}: opening adds only an arm class, got {open}"
                 );
             }
+        });
+    }
+
+    // A LIVE width follows its signal — panel width, closed-drawer slide
+    // and the pinned content offset — without a rebuild. The sheets are
+    // baked at the first value (premint keeps them so); the live value
+    // rides the inline layer, and because an inline rule beats the
+    // `@media` pin overlay, the pinned-or-not decision for those rules
+    // is read in Rust. Before this, `width = rx!(…)` compiled, was read
+    // once, and the rail stayed at its load-time width until a reload.
+    #[test]
+    fn regression_a_reactive_width_is_honoured_after_build() {
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let w = runtime_core::signal(280.0_f32);
+            let shell = AppShell(AppShellProps {
+                sidebar: vec![text("SIDEBAR").into()],
+                is_open,
+                pin_at: Reactive::Static(Breakpoint::Lg),
+                width: Reactive::derive(move || w.get()),
+                children: vec![text("CONTENT").into()],
+            });
+            let (content, _, panel) = parts(shell);
+
+            // Below the pin (the test world's viewport is 0 wide): a
+            // closed drawer parks off-canvas by its own width, and the
+            // content carries no offset.
+            assert_eq!(translate_x(&resolve(&panel, false)), -280.0);
+            assert_eq!(resolve(&panel, false).width, Some(Length::Px(280.0).into()));
+            assert_eq!(resolve(&content, false).margin_left, Some(Length::Px(0.0).into()));
+
+            w.set(64.0);
+            commit();
+            assert_eq!(translate_x(&resolve(&panel, false)), -64.0, "the slide follows");
+            assert_eq!(
+                resolve(&panel, false).width,
+                Some(Length::Px(64.0).into()),
+                "the panel narrows without a rebuild"
+            );
+
+            // Pin it: the content offset is the live width, the panel
+            // sits at 0. Pinning is read from the viewport signal here,
+            // not the `__bp_lg` arm — the inline rule outranks the arm,
+            // which is exactly why the read had to move into Rust.
+            runtime_core::viewport_size().set(runtime_core::ViewportSize {
+                width: 1280.0,
+                height: 800.0,
+            });
+            commit();
+            assert_eq!(translate_x(&resolve(&panel, true)), 0.0);
+            assert_eq!(
+                resolve(&content, true).margin_left,
+                Some(Length::Px(64.0).into()),
+                "pinned: content offset by the LIVE width"
+            );
+            w.set(280.0);
+            commit();
+            assert_eq!(resolve(&content, true).margin_left, Some(Length::Px(280.0).into()));
         });
     }
 
