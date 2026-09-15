@@ -536,6 +536,13 @@ fn claim_flyout_level(id: u64, open: Signal<bool>, close: Rc<dyn Fn()>) {
     }
 }
 
+/// Whether the level's holder is open right now — the test probe for
+/// "did that gesture open a flyout".
+#[cfg(test)]
+fn held_flyout_is_open() -> bool {
+    OPEN_FLYOUT.with(|c| c.borrow().as_ref().is_some_and(|f| f.open.is_alive() && f.open.peek()))
+}
+
 /// Hand the level back, if `id` still holds it. A no-op when another submenu
 /// has already claimed it — that one is open and must not be cleared.
 fn release_flyout_level(id: u64) {
@@ -828,9 +835,20 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
         }
     };
 
-    // Trigger row — a hover-tracking VIEW (`on_hover` is a view-only channel),
-    // styled like a menu row and anchoring the flyout. The chevron marks it as
-    // expandable; `active` highlights it while its flyout is open.
+    // Trigger row — two nodes, one row. The OUTER view tracks hover
+    // (`on_hover` is a view-only channel) and anchors the flyout; the INNER
+    // pressable, styled like a menu row, opens it on press. The chevron
+    // marks it as expandable; `active` highlights it while its flyout is
+    // open.
+    //
+    // Hover is the desktop nested-menu standard. Press is what a finger
+    // has: until 2026-09-15 this row was hover-only, so on iOS and Android
+    // — and any touch surface too wide for an app to swap the menu out —
+    // the chevron was a row that did nothing. It is also what a keyboard
+    // activates. A press only ever OPENS: on a pointer the row is already
+    // open by the time it is clicked, and macOS does not collapse a
+    // submenu for clicking its row either. Closing stays with hover-out,
+    // Escape, a pick, and the outside catcher.
     let chevron = runtime_core::text(CHEVRON.to_string())
         .with_style(MenuChevron())
         .into_element();
@@ -838,11 +856,14 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     let trigger = {
         let open_now = open_now.clone();
         let schedule_close = schedule_close.clone();
-        runtime_core::view(vec![label_node, grow(), chevron])
+        let press_open = open_now.clone();
+        let row = runtime_core::pressable(vec![label_node, grow(), chevron], move || press_open())
             .with_style(move || {
                 StyleApplication::new(MenuItemRow::sheet())
                     .with("active", if open.get() { "on" } else { "off" }.to_string())
             })
+            .into_element();
+        runtime_core::view(vec![row])
             .on_hover(move |entering| {
                 if entering {
                     open_now();
@@ -1235,6 +1256,53 @@ mod tests {
             (on_click)();
             assert!(closed.get(), "a plain row closes the flyout after running its handler");
     });
+    }
+
+    /// Regression: a `SubMenu`'s trigger row opens on PRESS as well as on
+    /// hover. It was a hover-only view, so on a touch surface — every phone
+    /// and tablet — the chevron row did nothing at all: the app-side sheet
+    /// that replaced the menu on phones was the only place a flyout's
+    /// contents could be reached, and a tablet had not even that.
+    ///
+    /// The shape is load-bearing: the hover stays on an OUTER view (the
+    /// only node kind with the channel, and the one the flyout anchors to)
+    /// and the press lives on the row inside it. Pressing claims the level
+    /// and opens; a second press does not close — closing is hover-out,
+    /// Escape, a pick, or the catcher, exactly as before.
+    #[test]
+    fn a_submenu_trigger_opens_on_press_as_well_as_hover() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            OPEN_FLYOUT.with(|c| *c.borrow_mut() = None);
+
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            let el = SubMenu(SubMenuProps {
+                label: Reactive::Static("More".to_string()),
+                items: Reactive::Static(vec![MenuEntry::new("Inbox", noop)]),
+                ..Default::default()
+            });
+
+            let mut kids = match classify(el) {
+                P::View { children, .. } => children,
+                _ => panic!("SubMenu = a View wrapping [trigger, flyout]"),
+            };
+            let P::View { on_hover, ref_fill, mut children, .. } = classify(kids.remove(0)) else {
+                panic!("the trigger is a hover-tracking View");
+            };
+            assert!(on_hover, "the outer view keeps the hover channel");
+            assert!(ref_fill, "the outer view is what the flyout anchors to");
+            let P::Pressable { on_click, .. } = classify(children.remove(0)) else {
+                panic!("the row inside the trigger is a Pressable — the press path");
+            };
+
+            assert!(!held_flyout_is_open(), "nothing is open before the press");
+            (on_click)();
+            idea_theme::testing::commit();
+            assert!(held_flyout_is_open(), "a press claims the level and opens the flyout");
+            (on_click)();
+            idea_theme::testing::commit();
+            assert!(held_flyout_is_open(), "a second press does not toggle it closed");
+        });
     }
 
     // =========================================================================
