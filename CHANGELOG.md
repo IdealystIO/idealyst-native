@@ -159,6 +159,20 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **idea-ui `Calendar`: the selected day's numeral inverts on native.**
+  `CalendarDay` and `CalendarZoomCell` carried the numeral's `color` on
+  the CELL and left the `text` child unstyled — CSS inheritance carried
+  it on web and nothing did on UIKit, where a `UILabel` draws its own
+  `textColor`, so the selected day's solid fill kept a dark numeral
+  (measured on an iPhone 17 Pro Max simulator). The colour and size now
+  live on the numeral's own sheets, `CalendarDayLabel` (`sel` / `muted`)
+  and `CalendarZoomLabel` (`active`), the way `Button` splits its box
+  from `ButtonLabel`; the cell sheets keep only the box. `muted` is
+  declared ahead of `sel` on the label so a selected day of an adjacent
+  month reads as selected rather than dimmed. A style bound to
+  `CalendarDay`'s `color` from outside was reading a web-only fact and
+  should bind the label sheet instead.
+
 - **A reactive anchor is `display: contents` on every native backend.**
   `Host::create_anchor` — the node the scene swaps a hole's subtree
   under: a `when` branch whose body is another `when`/`for`, a keyed or

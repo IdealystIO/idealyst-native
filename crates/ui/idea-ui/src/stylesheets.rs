@@ -3169,6 +3169,13 @@ stylesheet! {
     }
 }
 
+// The day cell is the BOX — fill, ring, radius. Its numeral's colour
+// and size are on the numeral (`CalendarDayLabel`), not here: a
+// `color` on a container reaches a text child through CSS inheritance
+// on web and through nothing at all on UIKit, where a `UILabel` draws
+// its own `textColor` whatever its superview says. Measured on an
+// iPhone 17 Pro Max simulator: the selected day's solid fill kept a
+// dark numeral. `Button` splits the same way (`ButtonLabel`).
 stylesheet! {
     pub CalendarDay<IdeaThemeRef> {
         base(t) {
@@ -3178,8 +3185,6 @@ stylesheet! {
             justify_content: JustifyContent::Center,
             border_radius: t.radius.sm(),
             background: Color("transparent".into()),
-            color: t.color.text(),
-            font_size: t.typography.body_size(),
             cursor: Cursor::Pointer,
         }
         // Selection / range role of the cell.
@@ -3189,13 +3194,11 @@ stylesheet! {
             // The single selection, or a range endpoint.
             on(t) {
                 background: t.intent.primary.solid_bg(),
-                color: t.intent.primary.solid_text(),
             }
             // Interior of a selected range: soft wash, squared corners so
             // consecutive cells read as one band.
             mid(t) {
                 background: t.intent.primary.soft_bg(),
-                color: t.intent.primary.fg(),
                 border_radius: Length::Px(0.0),
             }
         }
@@ -3207,14 +3210,6 @@ stylesheet! {
             on(t) {
                 border_width: 1.0,
                 border_color: t.intent.primary.fg(),
-            }
-        }
-        // Leading/trailing days of the adjacent months.
-        variant muted {
-            #[default]
-            off(_t) {}
-            on(t) {
-                color: t.color.text_muted(),
             }
         }
         // Un-pickable (min/max/disabled-fn). Rendered as a plain view (no
@@ -3236,6 +3231,40 @@ stylesheet! {
         }
         transitions {
             background: 120ms EaseOut,
+        }
+    }
+}
+
+// The day's numeral — see `CalendarDay` for why the colour is here.
+// Takes the cell's `sel` and `muted` axes so the two resolve in step.
+// `muted` is declared FIRST so that a selected day of an adjacent
+// month reads as selected: the later arm wins, and a muted numeral on
+// a solid fill would be the one unreadable combination.
+stylesheet! {
+    pub CalendarDayLabel<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text(),
+            font_size: t.typography.body_size(),
+        }
+        // Leading/trailing days of the adjacent months.
+        variant muted {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: t.color.text_muted(),
+            }
+        }
+        variant sel {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: t.intent.primary.solid_text(),
+            }
+            mid(t) {
+                color: t.intent.primary.fg(),
+            }
+        }
+        transitions {
             color: 120ms EaseOut,
         }
     }
@@ -3243,6 +3272,8 @@ stylesheet! {
 
 // Month/year cells of the title-press zoomed-out view (3×4 month grid /
 // 4×4 year grid).
+// The box only — its label's colour is on `CalendarZoomLabel`, for the
+// reason given on `CalendarDay`.
 stylesheet! {
     pub CalendarZoomCell<IdeaThemeRef> {
         base(t) {
@@ -3252,8 +3283,6 @@ stylesheet! {
             justify_content: JustifyContent::Center,
             border_radius: t.radius.sm(),
             background: Color("transparent".into()),
-            color: t.color.text(),
-            font_size: t.typography.body_size(),
             cursor: Cursor::Pointer,
         }
         variant active {
@@ -3261,12 +3290,28 @@ stylesheet! {
             off(_t) {}
             on(t) {
                 background: t.intent.primary.solid_bg(),
-                color: t.intent.primary.solid_text(),
             }
         }
         state hovered(t) {
             background: t.color.surface_alt(),
         }
-        transitions { background: 120ms EaseOut, color: 120ms EaseOut }
+        transitions { background: 120ms EaseOut }
+    }
+}
+
+stylesheet! {
+    pub CalendarZoomLabel<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text(),
+            font_size: t.typography.body_size(),
+        }
+        variant active {
+            #[default]
+            off(_t) {}
+            on(t) {
+                color: t.intent.primary.solid_text(),
+            }
+        }
+        transitions { color: 120ms EaseOut }
     }
 }

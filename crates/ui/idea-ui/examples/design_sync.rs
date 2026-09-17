@@ -262,7 +262,9 @@ fn manifest_json() -> String {
         ("CalendarWeekdayCell", idea_ui::stylesheets::calendar_weekday_cell_style()),
         ("CalendarWeekRow", idea_ui::stylesheets::calendar_week_row_style()),
         ("CalendarDay", idea_ui::stylesheets::calendar_day_style()),
+        ("CalendarDayLabel", idea_ui::stylesheets::calendar_day_label_style()),
         ("CalendarZoomCell", idea_ui::stylesheets::calendar_zoom_cell_style()),
+        ("CalendarZoomLabel", idea_ui::stylesheets::calendar_zoom_label_style()),
     ];
     for (name, sheet) in &macro_sheets {
         emit(name, sheet, &mut out);

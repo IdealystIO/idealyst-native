@@ -41,8 +41,8 @@ use idea_theme::extensible::{tone, variant};
 use crate::components::icon_button::{IconButton, IconButtonSize};
 use crate::date::{CivilDate, DateLabels, Weekday};
 use crate::stylesheets::{
-    CalendarDay, CalendarHeader, CalendarPanel, CalendarTitleButton, CalendarWeekRow,
-    CalendarWeekdayCell, CalendarZoomCell,
+    CalendarDay, CalendarDayLabel, CalendarHeader, CalendarPanel, CalendarTitleButton,
+    CalendarWeekRow, CalendarWeekdayCell, CalendarZoomCell, CalendarZoomLabel,
 };
 
 /// Header nav chevrons (same inline-`IconData` shape as `Select`'s
@@ -272,22 +272,31 @@ fn day_cell(
     blocked: bool,
 ) -> Element {
     let sel_of = core.sel_of.clone();
+    let sel_key = move || {
+        match sel_of(d) {
+            DaySel::Off => "off",
+            DaySel::On => "on",
+            DaySel::Mid => "mid",
+        }
+        .to_string()
+    };
+    let muted = if d.month != visible_month { "on" } else { "off" };
+    let cell_sel = sel_key.clone();
     let style = move || {
         StyleApplication::new(CalendarDay::sheet())
-            .with(
-                "sel",
-                match sel_of(d) {
-                    DaySel::Off => "off",
-                    DaySel::On => "on",
-                    DaySel::Mid => "mid",
-                }
-                .to_string(),
-            )
+            .with("sel", cell_sel())
             .with("today", if d == today { "on" } else { "off" }.to_string())
-            .with("muted", if d.month != visible_month { "on" } else { "off" }.to_string())
             .with("blocked", if blocked { "on" } else { "off" }.to_string())
     };
-    let label = text(d.day.to_string()).into_element();
+    // The numeral carries its own colour (see `CalendarDayLabel`), off
+    // the same selection read as the cell so the two never disagree.
+    let label = text(d.day.to_string())
+        .with_style(move || {
+            StyleApplication::new(CalendarDayLabel::sheet())
+                .with("muted", muted.to_string())
+                .with("sel", sel_key())
+        })
+        .into_element();
     if blocked {
         // A blocked day is inert — no press handler at all (a silent no-op
         // pressable would still hit-test and confuse event routing; see
@@ -317,12 +326,17 @@ fn month_grid(core: &Rc<CalendarCore>, (_year, month): (i32, u8), zoom: Signal<Z
         for col in 0..3u8 {
             let m = row * 3 + col + 1;
             let label = core.labels.months_short[usize::from(m - 1)].clone();
+            let active = if m == month { "on" } else { "off" };
             let style = move || {
-                StyleApplication::new(CalendarZoomCell::sheet())
-                    .with("active", if m == month { "on" } else { "off" }.to_string())
+                StyleApplication::new(CalendarZoomCell::sheet()).with("active", active.to_string())
             };
+            let label = text(label)
+                .with_style(move || {
+                    StyleApplication::new(CalendarZoomLabel::sheet()).with("active", active.to_string())
+                })
+                .into_element();
             cells.push(
-                pressable(vec![text(label).into_element()], move || {
+                pressable(vec![label], move || {
                     let (y, _) = visible.peek();
                     visible.set((y, m));
                     zoom.set(Zoom::Days);
@@ -350,12 +364,17 @@ fn year_grid(core: &Rc<CalendarCore>, (year, _month): (i32, u8), zoom: Signal<Zo
         let mut cells: Vec<Element> = Vec::with_capacity(3);
         for col in 0..3i32 {
             let y = base + row * 3 + col;
+            let active = if y == year { "on" } else { "off" };
             let style = move || {
-                StyleApplication::new(CalendarZoomCell::sheet())
-                    .with("active", if y == year { "on" } else { "off" }.to_string())
+                StyleApplication::new(CalendarZoomCell::sheet()).with("active", active.to_string())
             };
+            let label = text(y.to_string())
+                .with_style(move || {
+                    StyleApplication::new(CalendarZoomLabel::sheet()).with("active", active.to_string())
+                })
+                .into_element();
             cells.push(
-                pressable(vec![text(y.to_string()).into_element()], move || {
+                pressable(vec![label], move || {
                     let (_, m) = visible.peek();
                     visible.set((y, m));
                     zoom.set(Zoom::Months);
@@ -617,6 +636,40 @@ mod tests {
         });
     }
 
+    /// The numeral's colour is on the TEXT node's sheet, not the cell's:
+    /// UIKit does not inherit a superview's colour into a `UILabel`, so a
+    /// colour left on `CalendarDay` alone is a web-only fact. Guards both
+    /// that the label sheet inverts on selection and that the cell sheet
+    /// no longer pretends to.
+    #[test]
+    fn day_numeral_colour_lives_on_the_label() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let off = resolve_style(&StyleApplication::new(CalendarDayLabel::sheet()));
+            let on = resolve_style(
+                &StyleApplication::new(CalendarDayLabel::sheet()).with("sel", "on".to_string()),
+            );
+            assert_ne!(on.color, off.color, "a selected numeral inverts");
+            // Selection beats the adjacent-month dimming: a muted numeral
+            // on the solid fill would be the one unreadable pairing.
+            let muted_sel = resolve_style(
+                &StyleApplication::new(CalendarDayLabel::sheet())
+                    .with("muted", "on".to_string())
+                    .with("sel", "on".to_string()),
+            );
+            assert_eq!(muted_sel.color, on.color);
+            let cell = resolve_style(
+                &StyleApplication::new(CalendarDay::sheet()).with("sel", "on".to_string()),
+            );
+            assert!(cell.color.is_none(), "the cell carries no colour to inherit");
+            let zoom_on = resolve_style(
+                &StyleApplication::new(CalendarZoomLabel::sheet()).with("active", "on".to_string()),
+            );
+            let zoom_off = resolve_style(&StyleApplication::new(CalendarZoomLabel::sheet()));
+            assert_ne!(zoom_on.color, zoom_off.color);
+        });
+    }
+
     #[test]
     fn day_sheet_today_ring_survives_selection() {
         with_test_world(|| {
@@ -647,7 +700,9 @@ mod tests {
             for (name, sheet) in [
                 ("CalendarPanel", CalendarPanel::sheet()),
                 ("CalendarDay", CalendarDay::sheet()),
+                ("CalendarDayLabel", CalendarDayLabel::sheet()),
                 ("CalendarZoomCell", CalendarZoomCell::sheet()),
+                ("CalendarZoomLabel", CalendarZoomLabel::sheet()),
                 ("CalendarWeekdayCell", CalendarWeekdayCell::sheet()),
                 ("CalendarWeekRow", CalendarWeekRow::sheet()),
                 ("CalendarHeader", CalendarHeader::sheet()),
