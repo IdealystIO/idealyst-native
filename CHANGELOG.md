@@ -159,6 +159,16 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **idea-ui `SubMenu`: the trigger row opens on press as well as
+  hover.** The trigger was a hover-tracking view and nothing else, so on
+  any touch surface the chevron row did nothing — no hover, no flyout,
+  no way to reach what was behind it. The row is now a `pressable`
+  inside the hover view: the view keeps the hover channel and the
+  anchor, the pressable opens on press. A press only ever opens (on a
+  pointer the row is already open when clicked, and macOS does not
+  collapse a submenu for clicking its row); closing stays with
+  hover-out, Escape, a pick, and the catcher.
+
 - **idea-ui `Calendar`: the selected day's numeral inverts on native.**
   `CalendarDay` and `CalendarZoomCell` carried the numeral's `color` on
   the CELL and left the `text` child unstyled — CSS inheritance carried
