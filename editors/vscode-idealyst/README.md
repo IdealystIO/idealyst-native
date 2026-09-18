@@ -20,6 +20,24 @@ DSL-vocabulary completion inside `ui! { … }` / `jsx! { … }` blocks:
   plus `None`. Only a bare `name = <path>` counts as a value position —
   inside a nested expression rust-analyzer owns the completion.
 
+Authoring hints for the reactive/component vocabulary, outside the
+markup macros:
+
+- **In a fn body** — `signal`, `memo`, `memo_with`, `effect!`, `rx!`,
+  `spawn_then`, `resource`, `mutation`, `reducer`, `watch`, `untrack`,
+  `on_cleanup`, `on_scope_drop`, `provide`/`inject`, `after_ms_scoped`,
+  `raf_loop_scoped`, `node_ref!`, `animated!`, `timeline!`, `ui!`, …
+  each inserting the catalog's snippet with the arguments you supply as
+  tab stops (`let ${name} = signal(${value});`) and the framework docs
+  (when to use it, the sharp edges) as documentation. Handler bodies
+  inside `ui!` (`on_click = Rc::new(move || { │ })`) get the same set.
+- **At item level** — `#[component]` (a whole component fn skeleton),
+  `#[props]` (a props struct with a documented field), `stylesheet!`.
+
+The snippets and docs are the catalog's `macros` / `utilities` slices
+(`idealyst mcp`'s `describe_macro` / `describe_utility` return the same
+`snippet`), so an agent and the editor propose one canonical spelling.
+
 Theme-token completion inside `stylesheet! { … }` blocks:
 
 - **Token completion** off the block's binding — `base(t) { padding: t.│ }`

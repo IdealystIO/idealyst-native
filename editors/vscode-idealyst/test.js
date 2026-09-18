@@ -55,6 +55,8 @@ const {
     propValueContext,
     unwrapPropType,
     valuesForType,
+    rustContext,
+    authoringItems,
     insideStylesheetMacro,
     tokenPathContext,
 } = __test;
@@ -317,6 +319,56 @@ if ((raw.icon_sets || []).length) {
 } else {
     check("values: IconData offers nothing when the dump has no icon sets",
         valuesForType(vcat, "Reactive<Option<IconData>>").length === 0);
+}
+
+// --- authoring hints (signals, effects, … in #[component] bodies) ---
+const body = `
+use runtime_core::*;
+
+/// Doc with a brace { in prose.
+#[component]
+fn Counter(start: i32) -> Element {
+    let count = signal(start);
+    let s = "a { string";
+    let handler = Rc::new(move || {
+        cou
+    });
+    ui! { text { "x" } }
+}
+
+impl Foo {
+    fn bar(&self) { sig }
+}
+
+mod inner {
+    // item level again
+    xyz
+}
+`;
+check("rustContext: inside a fn body", rustContext(body, body.indexOf("let count")) === "fn");
+check("rustContext: inside a closure inside a fn body", rustContext(body, body.indexOf("cou\n") + 3) === "fn");
+check("rustContext: inside an impl method", rustContext(body, body.indexOf("sig }") + 3) === "fn");
+check("rustContext: module root is item level", rustContext(body, body.indexOf("#[component]")) === "item");
+check("rustContext: inside an inline mod with no fn is item level", rustContext(body, body.indexOf("xyz")) === "item");
+check("rustContext: braces in strings and comments don't count", rustContext(body, body.length - 1) === "item");
+
+if ((raw.macros || []).some((m) => m.snippet)) {
+    const fnItems = authoringItems(cat, "fn").map((i) => i.label);
+    const itemItems = authoringItems(cat, "item").map((i) => i.label);
+    check("authoring: fn body offers the reactive vocabulary",
+        ["signal", "effect!", "memo", "spawn_then", "rx!", "watch", "on_scope_drop", "after_ms_scoped"].every((l) => fnItems.includes(l)),
+        fnItems.join());
+    check("authoring: fn body does not offer item skeletons", !fnItems.includes("#[component]") && !fnItems.includes("#[props]"));
+    check("authoring: item level offers the skeletons only",
+        itemItems.includes("#[component]") && itemItems.includes("#[props]") && itemItems.includes("stylesheet!") && !itemItems.includes("signal"),
+        itemItems.join());
+    const sig = authoringItems(cat, "fn").find((i) => i.label === "signal");
+    check("authoring: inserts the catalog snippet", sig && sig.insertText && sig.insertText.value === "let ${1:name} = signal(${2:value});",
+        sig && JSON.stringify(sig.insertText));
+    const comp = authoringItems(cat, "item").find((i) => i.label === "#[component]");
+    check("authoring: attribute labels filter on the bare word", comp && comp.filterText === "component");
+} else {
+    check("authoring: empty when the dump predates snippets", authoringItems(cat, "fn").length === 0);
 }
 
 // --- project resolution (REGRESSION: workspace-shaped repos) ---

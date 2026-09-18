@@ -174,6 +174,25 @@ each entry links to its migration guide.
   (and now pass doc comments through to the struct). See
   `docs/framework-mcp-spec.md` §4.3.1.
 
+- **Catalog `snippet` on macros and utilities; the reactive surface is
+  fully tabled.** `MacroEntry` and `UtilityEntry` gain `snippet` — the
+  invocation in LSP snippet syntax (`let ${1:name} = signal(${2:value});`,
+  `effect!({\n\t$0\n});`) — served by `describe_macro` /
+  `describe_utility` and the catalog JSON. The utility table now covers
+  the whole reactive surface the reactivity guides describe — `memo_with`,
+  `untrack`, `on_cleanup`, `on_scope_drop`, `provide`, `inject`, `watch`,
+  `reducer`, `resource`, `mutation`, `after_ms_scoped`, `raf_loop_scoped`
+  were undocumented to the MCP — and the macro table documents `#[props]`
+  beside `#[component]`. A test pins that every reactive utility carries a
+  well-formed snippet that spells its own call.
+
+- **VS Code extension offers authoring hints outside `ui!`.** In a fn body
+  (a `#[component]`, a handler closure inside `ui!`, an `impl` method) the
+  popup offers the reactive vocabulary above with the catalog snippet and
+  docs; at item level it offers `#[component]` / `#[props]` /
+  `stylesheet!` skeletons. Attribute labels filter on the bare word, so
+  `comp` finds `#[component]`.
+
 - **VS Code extension completes prop values.** After `tone = ` the
   popup offers the catalog's registered values, `IdealystSchema` enum
   variants, `true`/`false`, an arity-correct `Rc::new(move |…| { … })`

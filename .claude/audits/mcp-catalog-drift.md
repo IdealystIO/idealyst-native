@@ -33,6 +33,13 @@ Five drift surfaces matter:
 
 5. **SDK table vs. the `crates/{sdk,api,ui}/*` roster.** `crates/mcp/catalog/src/sdks.rs` hand-curates one `SdkEntry` per opt-in crate (networking, persistence, the component library, …). The truth is the set of crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/`. Adding a crate without a table entry makes it undiscoverable from the MCP (the A1 gap this slice closed: `net`/`storage`/`credentials`/`server` were invisible); removing/renaming one without updating the table leaves a stale claim with a dep line that won't resolve. The `dep_line` must stay copy-pasteable and the `category`/`kind` accurate.
 
+### Snippets on the macro / utility tables
+
+Every entry in `crates/mcp/catalog/src/{macros,utilities}.rs` carries a `snippet` the editor inserts verbatim. It drifts two ways: the underlying signature changes (an argument added to `spawn_then`, `after_ms_scoped` taking `u64` instead of `i32`) and the snippet still spells the old call; or a new reactive fn lands in `runtime_world` / `runtime_vocabulary::glue` / `scoped_*` with no utility entry at all — `memo_with`, `untrack`, `on_cleanup`, `on_scope_drop`, `provide`, `inject`, `watch`, `reducer`, `resource`, `mutation`, `after_ms_scoped`, `raf_loop_scoped` were all missing once.
+
+- [ ] For each `Reactive` utility, compare `params` and the `snippet` against the current `pub fn` signature (`grep -rn "pub fn <name>" crates/runtime/{world,vocabulary,shared}/src`). The snippet's placeholder count must match the arguments an author has to supply.
+- [ ] List the `pub fn`s in `crates/runtime/world/src/lib.rs`, `crates/runtime/vocabulary/src/{glue,async_reactive,scoped_spawn,scoped_scheduling}.rs` that the reactivity guides name, and confirm each has a utility entry. `reactive_surface_carries_well_formed_snippets` pins the current list — extend it when you add one.
+
 ### Open-set prop values
 
 The `values` slice is open, not locked, but has its own drift: every idea-theme marker that a `*Ref` prop accepts (`extensible/{tone,variant,typography,size,shape}.rs`, plus idea-ui's `card::variant`) must carry `#[derive(IdealystSchema)] #[schema(value_of = "<Ref>", via = "<alias>")]`, or it silently vanishes from `tone = │` completion and `list_values`. The declaration macros `tone!` / `variant!` add it for app code; hand-written markers don't.

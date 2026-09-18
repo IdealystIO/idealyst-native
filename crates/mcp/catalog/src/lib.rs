@@ -293,6 +293,13 @@ pub struct UtilityEntry {
     /// docs for enum returns.
     pub return_type_short: &'static str,
     pub category: UtilityCategory,
+    /// Insertable call shape in LSP snippet syntax (`${1:name}`
+    /// placeholders, `$0` final cursor, `\t` for one indent level) —
+    /// `"let ${1:name} = signal(${2:value});"`. Editor completion
+    /// inserts it verbatim; an agent reads it as the canonical call
+    /// with the arguments an author has to supply marked. Empty when
+    /// the bare `name()` call is the whole story.
+    pub snippet: &'static str,
     #[doc(hidden)]
     pub _seal: (),
 }
@@ -360,6 +367,11 @@ pub struct MacroEntry {
     /// expansion is codegen too large to usefully summarize (`ui!`,
     /// `jsx!`, `stylesheet!`).
     pub expansion: &'static str,
+    /// Insertable invocation in LSP snippet syntax (see
+    /// [`UtilityEntry::snippet`]) — `"effect!({\n\t$0\n});"`. Empty for
+    /// an attribute or derive that is complete as written and for a
+    /// catalog-only macro no author types by hand.
+    pub snippet: &'static str,
     #[doc(hidden)]
     pub _seal: (),
 }

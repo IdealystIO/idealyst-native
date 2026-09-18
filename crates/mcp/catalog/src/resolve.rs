@@ -678,6 +678,7 @@ fn leak_utility_from_json(v: &serde_json::Value) -> Option<&'static UtilityEntry
         return_type: leak_str(return_type),
         return_type_short: leak_str(return_type_short),
         category,
+        snippet: leak_str(v["snippet"].as_str().unwrap_or("").to_string()),
         _seal: (),
     })))
 }
@@ -707,6 +708,7 @@ fn leak_macro_from_json(v: &serde_json::Value) -> Option<&'static MacroEntry> {
         module_path: leak_str(module_path),
         docs: leak_str(docs),
         expansion: leak_str(expansion),
+        snippet: leak_str(v["snippet"].as_str().unwrap_or("").to_string()),
         _seal: (),
     })))
 }

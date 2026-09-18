@@ -210,6 +210,12 @@ Exposed tools (initial set, subject to revision after a prototype):
 | `list_tools`                    | All `#[idealyst_tool]` functions.                              |
 | `describe_tool(name)`           | Tool record.                                                   |
 | `search(query)`                 | Fulltext over names + doc comments.                            |
+| `list_values(filter)`           | Open-set prop values (§4.3.1), filterable by the prop type.    |
+| `describe_macro` / `describe_utility` | Macro / utility record incl. its `snippet` (§5.1).       |
+
+### 5.1 Snippets on the macro and utility tables
+
+`MacroEntry.snippet` / `UtilityEntry.snippet` carry the invocation in LSP snippet syntax — `${n:name}` placeholders for the arguments an author supplies, `$0` for the final cursor, `\t` for one indent level (`"let ${1:name} = signal(${2:value});"`, `"effect!({\n\t$0\n});"`). The VS Code extension inserts them verbatim as authoring hints in `#[component]` bodies; `describe_macro` / `describe_utility` return the same string so an agent proposes the identical spelling. Empty for an attribute or derive that is complete as written (`#[derive(IdealystSchema)]`) and for catalog-only macros nobody types by hand (`recipe!`). The emission suite pins that every `Reactive` utility has a well-formed snippet that spells its own call, and that the utility table covers the reactive surface the guides describe.
 
 Exposed resources:
 

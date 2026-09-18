@@ -469,6 +469,73 @@ fn utilities_table_includes_platform_accessor() {
     assert_eq!(platform.return_type_short, "Platform");
 }
 
+/// Every reactive utility and every author-typed macro carries an
+/// insertable snippet, and every snippet is well-formed LSP snippet
+/// syntax — the editor inserts these verbatim, so a stray `${` or a
+/// missing `}` turns into garbage in the author's buffer.
+#[test]
+fn reactive_surface_carries_well_formed_snippets() {
+    fn well_formed(s: &str) -> bool {
+        // `${n:text}` and `${n}` placeholders must balance; `$n` is fine.
+        let mut depth = 0i32;
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '$' if chars.peek() == Some(&'{') => {
+                    chars.next();
+                    depth += 1;
+                    // a placeholder opens with an index
+                    if !chars.peek().map_or(false, |d| d.is_ascii_digit()) {
+                        return false;
+                    }
+                }
+                '}' if depth > 0 => depth -= 1,
+                _ => {}
+            }
+        }
+        depth == 0
+    }
+
+    let reactive: Vec<&catalog::UtilityEntry> = catalog::utilities()
+        .filter(|u| u.category == catalog::UtilityCategory::Reactive)
+        .collect();
+    for name in [
+        "signal", "memo", "memo_with", "spawn_then", "untrack", "on_cleanup", "on_scope_drop",
+        "provide", "inject", "watch", "reducer", "resource", "mutation", "after_ms_scoped",
+        "raf_loop_scoped",
+    ] {
+        let u = reactive
+            .iter()
+            .find(|u| u.name == name)
+            .unwrap_or_else(|| panic!("reactive utility `{name}` missing from the table"));
+        assert!(!u.snippet.is_empty(), "`{name}` has no snippet");
+        assert!(u.snippet.contains(name), "`{name}` snippet doesn't spell its own call: {:?}", u.snippet);
+    }
+    for u in catalog::utilities() {
+        assert!(well_formed(u.snippet), "utility `{}` snippet malformed: {:?}", u.name, u.snippet);
+    }
+    for m in catalog::macros() {
+        assert!(well_formed(m.snippet), "macro `{}` snippet malformed: {:?}", m.name, m.snippet);
+        let typed_by_hand = matches!(
+            m.kind,
+            catalog::MacroKind::Reactive | catalog::MacroKind::Styling | catalog::MacroKind::Animation
+        ) || m.name == "ui" || m.name == "component" || m.name == "props";
+        if typed_by_hand {
+            assert!(!m.snippet.is_empty(), "macro `{}` has no snippet", m.name);
+        }
+    }
+    // The macro table now documents `#[props]` next to `#[component]`.
+    assert!(catalog::lookup_macro("props").is_some(), "`props` missing from the macro table");
+
+    // Round trip: the snippet survives the JSON reload the MCP server uses.
+    let json = catalog::catalog_json();
+    let cat = catalog::ResolvedCatalog::build_from_json(&json.to_string()).expect("rebuild");
+    let effect = cat.macros().iter().find(|m| m.name == "effect").expect("effect in rebuilt catalog");
+    assert_eq!(effect.snippet, "effect!({\n\t$0\n});");
+    let signal = cat.utilities().iter().find(|u| u.name == "signal").expect("signal in rebuilt catalog");
+    assert_eq!(signal.snippet, "let ${1:name} = signal(${2:value});");
+}
+
 #[test]
 fn guides_table_includes_getting_started() {
     let getting = catalog::lookup_guide("getting-started")

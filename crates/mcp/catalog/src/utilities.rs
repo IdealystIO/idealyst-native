@@ -23,6 +23,7 @@ inventory::submit! {
         return_type: "Signal<T>",
         return_type_short: "Signal",
         category: UtilityCategory::Reactive,
+        snippet: "let ${1:name} = signal(${2:value});",
         _seal: (),
     }
 }
@@ -47,6 +48,7 @@ inventory::submit! {
         return_type: "()",
         return_type_short: "()",
         category: UtilityCategory::Reactive,
+        snippet: "spawn_then(\n\tasync move { ${1:task}.await },\n\tmove |${2:result}| {\n\t\t$0\n\t},\n);",
         _seal: (),
     }
 }
@@ -66,6 +68,7 @@ inventory::submit! {
         return_type: "ReadSignal<T>",
         return_type_short: "ReadSignal",
         category: UtilityCategory::Reactive,
+        snippet: "let ${1:name} = memo(move || ${2:expr});",
         _seal: (),
     }
 }
@@ -79,6 +82,7 @@ inventory::submit! {
         return_type: "Platform",
         return_type_short: "Platform",
         category: UtilityCategory::Platform,
+        snippet: "",
         _seal: (),
     }
 }
@@ -98,6 +102,7 @@ inventory::submit! {
         return_type: "()",
         return_type_short: "()",
         category: UtilityCategory::Platform,
+        snippet: "open_url(${1:url});",
         _seal: (),
     }
 }
@@ -117,6 +122,7 @@ inventory::submit! {
         return_type: "Result<Rgba, ColorParseError>",
         return_type_short: "Rgba",
         category: UtilityCategory::Color,
+        snippet: "parse(${1:input})",
         _seal: (),
     }
 }
@@ -130,6 +136,7 @@ inventory::submit! {
         return_type: "u64",
         return_type_short: "u64",
         category: UtilityCategory::Time,
+        snippet: "",
         _seal: (),
     }
 }
@@ -143,6 +150,7 @@ inventory::submit! {
         return_type: "ColorScheme",
         return_type_short: "ColorScheme",
         category: UtilityCategory::Platform,
+        snippet: "",
         _seal: (),
     }
 }
@@ -156,6 +164,7 @@ inventory::submit! {
         return_type: "Signal<EdgeInsets>",
         return_type_short: "Signal<EdgeInsets>",
         category: UtilityCategory::Layout,
+        snippet: "",
         _seal: (),
     }
 }
@@ -169,6 +178,7 @@ inventory::submit! {
         return_type: "Signal<ViewportSize>",
         return_type_short: "Signal<ViewportSize>",
         category: UtilityCategory::Layout,
+        snippet: "",
         _seal: (),
     }
 }
@@ -182,6 +192,262 @@ inventory::submit! {
         return_type: "Signal<Breakpoint>",
         return_type_short: "Signal<Breakpoint>",
         category: UtilityCategory::Layout,
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "memo_with",
+        module_path: "runtime_core",
+        docs: "`memo` for a `T` without `PartialEq`: you supply the equality the change gate uses (`memo_with(|a, b| a.id == b.id, move || …)`). Same contract otherwise — pure body, no `.set()` inside, read-only output. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "eq",
+                type_str: "impl Fn(&T, &T) -> bool",
+                type_short_name: "Fn",
+            },
+            ParamSpec {
+                name: "f",
+                type_str: "impl Fn() -> T",
+                type_short_name: "Fn",
+            },
+        ],
+        return_type: "ReadSignal<T>",
+        return_type_short: "ReadSignal",
+        category: UtilityCategory::Reactive,
+        snippet: "let ${1:name} = memo_with(|a, b| ${2:a == b}, move || ${3:expr});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "untrack",
+        module_path: "runtime_core",
+        docs: "Read signals inside `f` WITHOUT subscribing the running effect or memo to them — a deliberate snapshot. Use it when an effect must react to signal A but merely consult signal B (`effect!({ let a = a.get(); let b = untrack(|| b.get()); … })`). Suspension is global to the code region, so nested reads and cross-world reads are covered. For a single signal outside any effect, `.peek()` says the same thing more directly. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "f",
+                type_str: "impl FnOnce() -> R",
+                type_short_name: "FnOnce",
+            },
+        ],
+        return_type: "R",
+        return_type_short: "R",
+        category: UtilityCategory::Reactive,
+        snippet: "untrack(|| ${1:signal}.get())",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "on_cleanup",
+        module_path: "runtime_core",
+        docs: "Register teardown for the RUNNING effect: `f` fires before the effect's next re-run and once more when the effect is disposed. Must be called inside an effect body — it panics otherwise (a component body is not an effect: the mount walk runs unanchored). For a component-lifetime teardown use `on_scope_drop`. See [[reactivity]].",
+        params: &[
+            ParamSpec {
+                name: "f",
+                type_str: "impl FnOnce()",
+                type_short_name: "FnOnce",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        snippet: "on_cleanup(move || {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "on_scope_drop",
+        module_path: "runtime_core",
+        docs: "Register teardown that fires when the enclosing scope is dropped — a component's unmount, a `when` branch hiding, a navigator screen popping. Inside an effect it degrades to `on_cleanup`; inside a world but outside an effect it anchors to a dependency-free keepalive effect owned by the enclosing collector; outside any world it is inert. The right hook for releasing a platform resource a component body acquired (a listener, a timer handle, an observer). See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "f",
+                type_str: "impl FnOnce()",
+                type_short_name: "FnOnce",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        snippet: "on_scope_drop(move || {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "provide",
+        module_path: "runtime_core",
+        docs: "Publish a value to every descendant scope, keyed by its TYPE — newtype to disambiguate two values of the same type (`provide(Theme(dark))`). Owned by the providing scope and retracted when it drops, like a signal; a world-lifetime service is `unscoped(|| provide(v))`. Read it below with `inject::<T>()`. Panics outside a scope. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "value",
+                type_str: "T",
+                type_short_name: "T",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        snippet: "provide(${1:value});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "inject",
+        module_path: "runtime_core",
+        docs: "Read the nearest ancestor's `provide`d value of type `T` — `None` when no ancestor provided one (a component rendered outside the provider). Lookup walks the scope tree at call time; it does not subscribe, so provide a `Signal<T>` when descendants must react to changes. See [[reactivity-in-depth]].",
+        params: &[
+        ],
+        return_type: "Option<T>",
+        return_type_short: "Option",
+        category: UtilityCategory::Reactive,
+        snippet: "let ${1:value} = inject::<${2:Type}>();",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "watch",
+        module_path: "runtime_core",
+        docs: "React to signals from OUTSIDE the component tree — app init, an async callback, a platform/service install — where `effect!` has no owning scope. Runs `f` now and re-runs it whenever a signal it read changes, until the returned `Subscription` drops: `#[must_use]`, so store it, or `.leak()` for a process-lifetime pin. Inside a component body prefer `effect!`. See [[reactivity]].",
+        params: &[
+            ParamSpec {
+                name: "f",
+                type_str: "impl FnMut()",
+                type_short_name: "FnMut",
+            },
+        ],
+        return_type: "Subscription",
+        return_type_short: "Subscription",
+        category: UtilityCategory::Reactive,
+        snippet: "let ${1:sub} = watch(move || {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "reducer",
+        module_path: "runtime_core",
+        docs: "Action-dispatched state: `let (state, dispatch) = reducer(initial, |state, action| next)` returns a `Signal<S>` plus a dispatch fn. Each dispatch folds on the STAGED value, so several dispatches in one turn compose; it always notifies and never subscribes the caller. Reach for it when a component's transitions are easier to name than to inline (`Increment`, `Reset`, `Load(page)`). See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "initial",
+                type_str: "S",
+                type_short_name: "S",
+            },
+            ParamSpec {
+                name: "f",
+                type_str: "impl Fn(&S, A) -> S",
+                type_short_name: "Fn",
+            },
+        ],
+        return_type: "(Signal<S>, impl Fn(A))",
+        return_type_short: "Signal",
+        category: UtilityCategory::Reactive,
+        snippet: "let (${1:state}, ${2:dispatch}) = reducer(${3:initial}, |state, action| {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "resource",
+        module_path: "runtime_core",
+        docs: "Declarative async data keyed on signals: `resource(deps, |deps, cancel| async move { … })` runs the fetcher eagerly and again whenever `deps` (a signal, a tuple of signals, or any `Trackable`) changes, cancelling the previous run (`cancel.on_cancel(…)` bridges to an AbortController or similar). The result is a `Resource<T, E>` read as `Loading` / `Error` / `Success` / `Idle`; `.refetch()` re-runs with the current deps. Carries the same stale-scope guard as `spawn_then`, so completion after unmount is discarded, never applied. For submit-and-settle flows use `mutation`. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "deps",
+                type_str: "impl Trackable",
+                type_short_name: "Trackable",
+            },
+            ParamSpec {
+                name: "fetcher",
+                type_str: "impl Fn(D::Value, ResourceCancel) -> impl Future<Output = Result<T, E>>",
+                type_short_name: "Fn",
+            },
+        ],
+        return_type: "Resource<T, E>",
+        return_type_short: "Resource",
+        category: UtilityCategory::Reactive,
+        snippet: "let ${1:data} = resource(${2:deps}, |${3:deps}, _cancel| async move {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "mutation",
+        module_path: "runtime_core",
+        docs: "Callback-driven async state for submit-and-settle flows: `let save = mutation(|input| async move { … })`, then `save.trigger(value)` from a handler and read `save.loading()` / the settled result in the UI. `Clone` — capture it into several closures; clones share one state slot. Anchors to the registering scope like `resource`, so do not trigger it after its creating component unmounts. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "handler",
+                type_str: "impl Fn(I) -> impl Future<Output = Result<T, E>>",
+                type_short_name: "Fn",
+            },
+        ],
+        return_type: "Mutation<I, T, E>",
+        return_type_short: "Mutation",
+        category: UtilityCategory::Reactive,
+        snippet: "let ${1:save} = mutation(|${2:input}| async move {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "after_ms_scoped",
+        module_path: "runtime_core",
+        docs: "One-shot timer that DIES WITH THE REGISTERING SCOPE: `after_ms_scoped(delay_ms, move || …)` fires once after `delay_ms` unless the component (or `when` branch, or screen) that registered it has been torn down. Re-enters the registering scope on fire, so a nested re-arm attaches to the same anchor. The only author-facing timer — the older `runtime_core::scheduling::*` spellings are crate-private. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "delay_ms",
+                type_str: "i32",
+                type_short_name: "i32",
+            },
+            ParamSpec {
+                name: "f",
+                type_str: "impl FnOnce()",
+                type_short_name: "FnOnce",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        snippet: "after_ms_scoped(${1:delay_ms}, move || {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "raf_loop_scoped",
+        module_path: "runtime_core",
+        docs: "Recurring animation-frame loop that dies with the registering scope: `raf_loop_scoped(move || …)` runs `f` every frame until the component unmounts. For value animation prefer `animated!` + an animator; reach for this when something must be sampled per frame (a scroll-linked read, a canvas redraw). See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "f",
+                type_str: "impl FnMut()",
+                type_short_name: "FnMut",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        snippet: "raf_loop_scoped(move || {\n\t$0\n});",
         _seal: (),
     }
 }

@@ -2011,6 +2011,11 @@ impl CatalogService {
         obj.insert("return_type".into(), entry.return_type.into());
         obj.insert("return_type_short".into(), entry.return_type_short.into());
         obj.insert("category".into(), entry.category.as_str().into());
+        // Paste-ready call shape with the author-supplied arguments marked
+        // as `${n:name}` placeholders — the same string the editor
+        // extension inserts, so an agent and a human get one canonical
+        // spelling.
+        obj.insert("snippet".into(), entry.snippet.into());
         if let Some(ty) = return_type_inline {
             obj.insert("return_type_entry".into(), ty);
         }
@@ -2076,6 +2081,7 @@ impl CatalogService {
             "fqn": format!("{}::{}", entry.module_path, entry.name),
             "docs": entry.docs,
             "expansion": entry.expansion,
+            "snippet": entry.snippet,
         });
         Ok(self
             .catalog_text(serde_json::to_string_pretty(&json).unwrap())
@@ -3832,6 +3838,7 @@ impl ServerHandler for CatalogService {
                             "return_type": u.return_type,
                             "return_type_short": u.return_type_short,
                             "category": u.category.as_str(),
+                            "snippet": u.snippet,
                         })
                     })
                     .collect();
@@ -4300,6 +4307,19 @@ mod tests {
             let dv = parse_array(&d);
             assert!(dv["name"].is_string(), "describe_macro({needle:?}) returns a record; {dv}");
         }
+
+        // The paste-ready snippet rides along for macros and utilities —
+        // it's what the editor inserts, so an agent sees the same shape.
+        let d = svc
+            .describe_macro(Parameters(NameRequest { name: "effect".into(), app: None }))
+            .await
+            .unwrap();
+        assert_eq!(parse_array(&d)["snippet"], "effect!({\n\t$0\n});");
+        let u = svc
+            .describe_utility(Parameters(NameRequest { name: "signal".into(), app: None }))
+            .await
+            .unwrap();
+        assert_eq!(parse_array(&u)["snippet"], "let ${1:name} = signal(${2:value});");
     }
 
     /// A1 regression: the opt-in SDK crates are discoverable through the

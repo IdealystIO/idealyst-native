@@ -193,6 +193,7 @@ impl CatalogSlice for UtilityEntry {
             "params": params,
             "return_type": self.return_type,
             "return_type_short": self.return_type_short,
+            "snippet": self.snippet,
             "category": self.category.as_str(),
         })
     }
@@ -220,6 +221,7 @@ impl CatalogSlice for MacroEntry {
             "fqn": format!("{}::{}", self.module_path, self.name),
             "docs": self.docs,
             "expansion": self.expansion,
+            "snippet": self.snippet,
         })
     }
 }

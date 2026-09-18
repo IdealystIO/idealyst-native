@@ -293,7 +293,37 @@ function digest(json) {
         }
     }
 
-    return { tags, propsByTag, tokensByPrefix, valuesByTarget, enumsByName, icons };
+    // Authoring hints: the reactive/component vocabulary an author types
+    // in a `#[component]` body (or at item level), from the catalog's
+    // macro + utility tables — each carries an insertable `snippet` in
+    // LSP syntax plus docs. `itemLevel` marks the ones that declare an
+    // item (a component fn, a props struct, a stylesheet) rather than
+    // a statement.
+    const authoring = [];
+    const itemLevel = new Set(["component", "props", "stylesheet"]);
+    for (const m of json.macros || []) {
+        if (!m.snippet) continue;
+        const attribute = (m.invocation || "").startsWith("#[");
+        authoring.push({
+            label: attribute ? m.invocation : `${m.name}!`,
+            insert: m.snippet,
+            detail: `idealyst macro · ${m.kind || ""}`,
+            docs: [m.docs, m.expansion && `Expands to: \`${m.expansion}\``].filter(Boolean).join("\n\n"),
+            itemLevel: itemLevel.has(m.name),
+        });
+    }
+    for (const u of json.utilities || []) {
+        if (!u.snippet) continue;
+        authoring.push({
+            label: u.name,
+            insert: u.snippet,
+            detail: `idealyst · ${u.category || ""} · ${u.return_type || ""}`,
+            docs: u.docs || "",
+            itemLevel: false,
+        });
+    }
+
+    return { tags, propsByTag, tokensByPrefix, valuesByTarget, enumsByName, icons, authoring };
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +429,34 @@ function insideStylesheetMacro(text, offset) {
         if (depth === 0) return false;
     }
     return true;
+}
+
+/**
+ * Where the cursor sits relative to Rust items: `"fn"` inside a function
+ * body (any depth — a closure or block within one still counts),
+ * `"item"` at item level (module root, or inside an `impl`/`mod` block
+ * with no fn around it). Walks the unmatched `{` openers before the
+ * cursor and checks the header text in front of each for `fn name(`.
+ * Runs over sanitized text so a brace in a string or comment doesn't
+ * count.
+ */
+function rustContext(text, offset) {
+    const start = Math.max(0, offset - LOOKBACK);
+    const slice = sanitize(text.slice(start, offset));
+    const openers = [];
+    for (let i = 0; i < slice.length; i++) {
+        const ch = slice[i];
+        if (ch === "{") openers.push(i);
+        else if (ch === "}") openers.pop();
+    }
+    for (const at of openers) {
+        // The header runs back to the previous statement/item boundary.
+        const head = slice.slice(0, at);
+        const boundary = Math.max(head.lastIndexOf("{"), head.lastIndexOf("}"), head.lastIndexOf(";"));
+        const header = head.slice(boundary + 1);
+        if (/\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*[<(]/.test(header)) return "fn";
+    }
+    return "item";
 }
 
 /**
@@ -602,6 +660,27 @@ function valuesForType(catalog, typeStr) {
 // Completion provider
 // ---------------------------------------------------------------------------
 
+/**
+ * Completion items for the reactive/component vocabulary. At item level
+ * only the declaration skeletons make sense (`#[component]`, `#[props]`,
+ * `stylesheet!`); inside a fn body everything but the item-level ones.
+ */
+function authoringItems(catalog, where) {
+    const items = (catalog.authoring || []).filter((a) =>
+        where === "fn" ? !a.itemLevel || a.label === "stylesheet!" : a.itemLevel
+    );
+    return items.map((a) => {
+        const it = new vscode.CompletionItem(a.label, vscode.CompletionItemKind.Snippet);
+        it.insertText = new vscode.SnippetString(a.insert);
+        it.detail = a.detail;
+        it.documentation = mdDocs({ docs: a.docs });
+        // `#[component]` must still match when the author types `comp`.
+        it.filterText = a.label.replace(/^#\[|\]$/g, "");
+        it.sortText = `0_${a.label}`;
+        return it;
+    });
+}
+
 function mdDocs(item) {
     const md = new vscode.MarkdownString();
     if (item.type) md.appendCodeblock(item.type, "rust");
@@ -632,13 +711,19 @@ function completeAt(document, position) {
     const text = document.getText();
     const offset = document.offsetAt(position);
     const inStylesheet = insideStylesheetMacro(text, offset);
-    if (!inStylesheet && !insideUiMacro(text, offset)) return undefined;
+    const inUi = !inStylesheet && insideUiMacro(text, offset);
 
-    // Lazy first load — only once the author is actually inside one
-    // of our macros, so opening a workspace never starts a build.
-    loadCatalog(project.dir);
+    // Lazy first load. A completion inside one of our macros always
+    // starts it; plain-Rust authoring hints only start it for an exact
+    // project, so typing in a big workspace's shared library never
+    // kicks off the merged multi-app build by itself.
+    if (inStylesheet || inUi || project.exact) loadCatalog(project.dir);
     const catalog = catalogs.get(project.dir);
     if (!catalog) return undefined;
+
+    if (!inStylesheet && !inUi) {
+        return authoringItems(catalog, rustContext(text, offset));
+    }
 
     // stylesheet! — theme tokens off the block binding.
     if (inStylesheet) {
@@ -701,6 +786,13 @@ function completeAt(document, position) {
     }
 
     const ctx = propContext(text, offset);
+    // Inside a nested call within a prop value — a handler body
+    // (`on_click = Rc::new(move || { │ })`), a constructor — the author
+    // is writing plain Rust, so offer the reactive vocabulary rather
+    // than tags.
+    if (ctx && !catalog.propsByTag.has(ctx.tag)) {
+        return authoringItems(catalog, "fn");
+    }
     if (ctx && catalog.propsByTag.has(ctx.tag)) {
         // Prop-name completion for the enclosing tag.
         return catalog.propsByTag
@@ -796,6 +888,8 @@ module.exports = {
         propValueContext,
         unwrapPropType,
         valuesForType,
+        rustContext,
+        authoringItems,
         insideStylesheetMacro,
         tokenPathContext,
     },
