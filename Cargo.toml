@@ -409,11 +409,11 @@ license = "MIT OR Apache-2.0"
 # `idealyst::entry!(<lib>)` in `src/main.rs`, and builds with plain
 # cargo — there is no CLI-generated web wrapper crate any more.
 idealyst = { path = "crates/idealyst", version = "1.5.3", registry = "idealyst" }
-runtime-core = { path = "crates/runtime/core", version = "1.5.2", registry = "idealyst" }
+runtime-core = { path = "crates/runtime/core", version = "1.5.3", registry = "idealyst" }
 runtime-shared = { path = "crates/runtime/shared", version = "1.10.2", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.5.2", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.5.3", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.12.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.12.1", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure
@@ -523,9 +523,9 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
-idea-theme = { path = "crates/ui/idea-theme", version = "1.6.0", registry = "idealyst" }
+idea-theme = { path = "crates/ui/idea-theme", version = "1.6.1", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.2", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "1.11.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "1.11.1", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.3", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }

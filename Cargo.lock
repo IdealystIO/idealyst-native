@@ -6103,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "runtime-core",
  "runtime-vocabulary",
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -10056,7 +10056,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.12.0"
+version = "1.12.1"
 dependencies = [
  "host-mock",
  "mcp-catalog",
