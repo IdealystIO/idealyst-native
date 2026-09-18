@@ -6103,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "runtime-core",
  "runtime-vocabulary",
@@ -6122,7 +6122,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -7308,7 +7308,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.5.8"
+version = "1.6.0"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10073,7 +10073,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.7.3"
+version = "1.8.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
