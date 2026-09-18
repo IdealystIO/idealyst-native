@@ -28,9 +28,11 @@
 //! Recognised `#[schema(...)]` type-level attributes:
 //! - `value_of = "ToneRef"` — short name of the prop type this value
 //!   coerces into.
-//! - `via = "tone"` — the module alias call sites write the value
-//!   through (`tone::Primary`). Optional; the catalog falls back to the
-//!   defining module's last segment.
+//! - `via = "idea_ui::tone"` — the `use` path call sites reach the value
+//!   through: spells `tone::Primary`, imports `idea_ui::tone`. The brace
+//!   form `"idea_ui::components::{card::variant}"` spells
+//!   `card::variant::Flat` and imports `idea_ui::components::card`.
+//!   Optional; the catalog falls back to the defining module.
 //!
 //! Like `mcp_emit`, this is no-op'd at the macro level when the
 //! `mcp` feature is off (call site in `lib.rs`).

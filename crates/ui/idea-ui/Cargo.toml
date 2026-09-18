@@ -38,7 +38,7 @@ style-dump = ["runtime-core/style-dump"]
 # (they self-gate on the catalog feature and expand to nothing without it).
 # The design-sync renderer calls those fns to produce its stories, so it
 # needs them present; production builds leave this off and pay nothing.
-catalog = ["runtime-core/catalog", "idea-theme/catalog"]
+catalog = ["runtime-core/catalog", "idea-theme/catalog", "dep:mcp-catalog"]
 
 # The themed `Table` component + its `table` SDK dep (ON by default).
 # The only feature on this crate that still removes linked code: without
@@ -84,6 +84,9 @@ table = ["dep:table"]
 # name via the crate-root `extern crate runtime_core as runtime_core;`
 # alias in lib.rs (see the note there).
 runtime-core = { workspace = true }
+# Same reason as idea-theme: Card's `card::variant` markers are annotated
+# for the catalog crate that parses `via`; carry that floor here.
+mcp-catalog = { workspace = true, optional = true }
 # The `ui!` / `#[component]` emission spells absolute
 # `::runtime_vocabulary::glue::…` paths, and `test_support` downcasts the
 # scene payloads (`runtime_vocabulary::prims`), so the vocabulary is a

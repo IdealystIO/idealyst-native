@@ -561,6 +561,7 @@ impl CatalogSlice for ValueEntry {
             // Precomputed so a consumer that only reads JSON (the editor
             // extension) never has to know the `via` fallback rule.
             "spelled": self.spelled(),
+            "import": self.import(),
         })
     }
 }

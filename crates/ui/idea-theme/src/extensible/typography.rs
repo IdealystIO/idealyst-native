@@ -28,7 +28,7 @@ macro_rules! builtin_kind {
     ) => {
         /// Built-in typography variant.
         #[derive(Copy, Clone, Default, IdealystSchema)]
-        #[schema(value_of = "TypographyKindRef", via = "typography_kind")]
+        #[schema(value_of = "TypographyKindRef", via = "idea_ui::typography_kind")]
         pub struct $name;
 
         impl TypographyKind for $name {

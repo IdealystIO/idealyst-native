@@ -6105,6 +6105,7 @@ dependencies = [
 name = "idea-theme"
 version = "1.6.1"
 dependencies = [
+ "mcp-catalog",
  "runtime-core",
  "runtime-vocabulary",
 ]
@@ -6128,6 +6129,7 @@ dependencies = [
  "host-mock",
  "idea-theme",
  "idea-ui-docs-derive",
+ "mcp-catalog",
  "premint-dump",
  "runtime-core",
  "runtime-scene",

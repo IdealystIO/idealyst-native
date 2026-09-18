@@ -191,11 +191,11 @@ A closed enum answers "what can I write for this prop?" through its `TypeEntry` 
 ```rust
 /// Built-in semantic tone.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ToneRef", via = "tone")]
+#[schema(value_of = "ToneRef", via = "idea_ui::tone")]
 pub struct Primary;
 ```
 
-That emits one `ValueEntry { short_name, module_path, docs, value_of, via }` into the `values` slice instead of an empty `TypeEntry`. `value_of` is the short name of the prop type the value coerces into (the join key: a prop whose type — unwrapped of `Reactive<…>` / `Option<…>` — has that short name accepts every value registered under it). `via` is the module alias call sites write the value through, so the catalog's precomputed `spelled` is `tone::Primary`; without `via` the defining module's last segment is used. idea-theme's `tone!` / `variant!` declaration macros add the annotation for app-defined markers automatically, and the built-in tone / variant / typography-kind / size / shape markers (plus Card's local variants) ship annotated. The VS Code extension reads this slice to complete `tone = │`.
+That emits one `ValueEntry { short_name, module_path, docs, value_of, via }` into the `values` slice instead of an empty `TypeEntry`. `value_of` is the short name of the prop type the value coerces into (the join key: a prop whose type — unwrapped of `Reactive<…>` / `Option<…>` — has that short name accepts every value registered under it). `via` is the `use` path call sites reach the value through: the catalog precomputes `spelled` (`tone::Primary`, the path's last segment plus the name) and `import` (`idea_ui::tone`). The brace form `via = "idea_ui::components::{card::variant}"` spells `card::variant::Flat` and imports `idea_ui::components::card` — Rust's own `use a::{b::c}` shape. Without `via` the defining module is the import and its last segment the spelling, which is what an app's own `tone!` / `variant!` marker gets (a consumer inside that crate rewrites the leading segment to `crate`). idea-theme's `tone!` / `variant!` declaration macros add the annotation for app-defined markers automatically, and the built-in tone / variant / typography-kind / size / shape markers (plus Card's local variants) ship annotated. The VS Code extension reads this slice to complete `tone = │`.
 
 ## 5. MCP surface
 

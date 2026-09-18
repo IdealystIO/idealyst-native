@@ -7,6 +7,8 @@
 // representative cursor states.
 
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
 const Module = require("module");
 
 // --- vscode mock, installed before extension.js loads ---
@@ -55,6 +57,8 @@ const {
     propValueContext,
     unwrapPropType,
     valuesForType,
+    importPlan,
+    crateNameFor,
     rustContext,
     authoringItems,
     onAssignmentRhs,
@@ -323,6 +327,56 @@ if ((raw.icon_sets || []).length) {
         valuesForType(vcat, "Reactive<Option<IconData>>").length === 0);
 }
 
+// --- auto-import for completed values ---
+// REGRESSION: accepting `typography_kind::Body` inserted the value but not
+// `use idea_ui::typography_kind;`, the file stopped compiling, and with
+// it the catalog build that compiles the file.
+const scratch = `//! A scratch component.
+//!
+//! Mount it anywhere.
+
+use idea_ui::{Typography, TypographyKindRef};
+use runtime_core::{component, ui, Element};
+
+#[component]
+pub fn ScratchText(props: &ScratchTextProps) -> Element {
+    ui! { Typography(kind = typography_kind::Body) }
+}
+`;
+const plan = importPlan(scratch, "idea_ui::typography_kind", "crewforge_ui_shared");
+check("importPlan: missing module → `use` after the last top-level use",
+    plan && plan.text === "\nuse idea_ui::typography_kind;" && scratch.slice(0, plan.offset).endsWith("use runtime_core::{component, ui, Element};"),
+    JSON.stringify(plan));
+check("importPlan: already imported by name → nothing",
+    importPlan(scratch.replace("TypographyKindRef}", "TypographyKindRef, typography_kind}"), "idea_ui::typography_kind", "") === null);
+check("importPlan: already imported as its own line → nothing",
+    importPlan(scratch + "\nuse idea_ui::typography_kind;\n", "idea_ui::typography_kind", "") === null);
+check("importPlan: parent glob → nothing", importPlan("use idea_ui::*;\n", "idea_ui::tone", "") === null);
+check("importPlan: a local `mod tone` → nothing", importPlan("mod tone { pub use idea_ui::tone::*; }\n", "idea_ui::tone", "") === null);
+check("importPlan: prose mentioning the name doesn't count",
+    importPlan("// use idea_ui::tone here\nfn f() {}\n", "idea_ui::tone", "") !== null);
+check("importPlan: inside the defining crate the path is crate::",
+    (importPlan("fn f() {}\n", "my_app::theme", "my_app") || {}).text === "use crate::theme;\n");
+const noUse = importPlan(scratch.replace(/^use .*\n/gm, ""), "idea_ui::tone", "");
+check("importPlan: no `use` lines → after the leading //! block",
+    noUse && noUse.text === "use idea_ui::tone;\n\n" && scratch.replace(/^use .*\n/gm, "").slice(0, noUse.offset).trim().endsWith("Mount it anywhere."),
+    JSON.stringify(noUse));
+check("importPlan: empty import path → nothing", importPlan(scratch, "", "") === null);
+check("importPlan: enum type import", (importPlan("fn f() {}", "idea_ui::components::modal::ModalPresentation", "") || {}).text === "use idea_ui::components::modal::ModalPresentation;\n");
+if ((raw.values || []).some((v) => v.import)) {
+    const kindVals = valuesForType(cat, "Reactive<TypographyKindRef>");
+    check("values: carry the catalog import", kindVals.length > 0 && kindVals.every((v) => v.imp === "idea_ui::typography_kind"), JSON.stringify(kindVals[0]));
+    const cardVal = valuesForType(cat, "Reactive<VariantRef>").find((v) => v.label.startsWith("card::"));
+    check("values: brace-form via imports the first spelled segment", cardVal && cardVal.imp === "idea_ui::components::card", cardVal && cardVal.imp);
+}
+{
+    const tmpc = fs.mkdtempSync(path.join(os.tmpdir(), "idealyst-crate-"));
+    fs.mkdirSync(path.join(tmpc, "src"));
+    fs.writeFileSync(path.join(tmpc, "Cargo.toml"), '[package]\nname = "crewforge-ui-shared"\nversion = "0.1.0"\n');
+    check("crateNameFor: nearest [package] name, dashes to underscores", crateNameFor(path.join(tmpc, "src", "scratch.rs")) === "crewforge_ui_shared");
+    fs.rmSync(tmpc, { recursive: true, force: true });
+}
+
 // --- authoring hints (signals, effects, … in #[component] bodies) ---
 const body = `
 use runtime_core::*;
@@ -402,8 +456,6 @@ if ((raw.macros || []).some((m) => m.snippet)) {
 //   ws/crates/app/nested/Cargo.toml  a plain (non-idealyst) inner crate
 //   plain/Cargo.toml              unrelated non-idealyst package
 //   single/Cargo.toml             a bare idealyst project (root IS the app)
-const fs = require("fs");
-const os = require("os");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "idealyst-ext-"));
 const mk = (rel, body) => {
     const full = path.join(tmp, rel);

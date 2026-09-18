@@ -840,27 +840,54 @@ pub struct ValueEntry {
     /// The join key: a prop whose (unwrapped) type has this short name
     /// accepts every value registered under it.
     pub value_of: &'static str,
-    /// The module alias call sites reach the value through (`tone`),
-    /// per idea-theme's convention that a consumer re-exports the
-    /// vocabulary module and writes `tone::Primary`. Empty when the
-    /// author gave none — [`ValueEntry::spelled`] then falls back to
-    /// the defining module's last segment.
+    /// How call sites reach the value, as the `use` path of the module
+    /// they write it through: `"idea_ui::tone"` spells `tone::Primary`
+    /// and imports `idea_ui::tone`. The brace form names a longer
+    /// spelling — `"idea_ui::components::{card::variant}"` spells
+    /// `card::variant::Flat` and imports `idea_ui::components::card`
+    /// (Rust's own `use a::{b::c}` shape, read the same way). A bare
+    /// segment (`"tone"`) spells but imports nothing; empty means the
+    /// defining module (`module_path`) is the import and its last
+    /// segment the spelling — what an app's own `tone!` marker gets.
     pub via: &'static str,
 }
 
 impl ValueEntry {
+    /// `(import path, spelled prefix)` from `via` / `module_path` per
+    /// the rules on [`ValueEntry::via`]. Import is empty when unknown.
+    fn route(&self) -> (String, String) {
+        if self.via.is_empty() {
+            let prefix = self.module_path.rsplit("::").next().unwrap_or("");
+            return (self.module_path.to_string(), prefix.to_string());
+        }
+        if let Some((head, rest)) = self.via.split_once('{') {
+            let inner = rest.trim_end_matches('}');
+            let first = inner.split("::").next().unwrap_or(inner);
+            return (format!("{head}{first}"), inner.to_string());
+        }
+        if self.via.contains("::") {
+            let prefix = self.via.rsplit("::").next().unwrap_or(self.via);
+            return (self.via.to_string(), prefix.to_string());
+        }
+        (String::new(), self.via.to_string())
+    }
+
     /// The value as written at a `ui!` prop: `tone::Primary`.
     pub fn spelled(&self) -> String {
-        let via = if self.via.is_empty() {
-            self.module_path.rsplit("::").next().unwrap_or(self.module_path)
-        } else {
-            self.via
-        };
-        if via.is_empty() {
+        let (_, prefix) = self.route();
+        if prefix.is_empty() {
             self.short_name.to_string()
         } else {
-            format!("{via}::{}", self.short_name)
+            format!("{prefix}::{}", self.short_name)
         }
+    }
+
+    /// The `use` path that puts [`ValueEntry::spelled`] in scope
+    /// (`idea_ui::tone`), or empty when the catalog can't say. A
+    /// consumer inside the defining crate rewrites the leading crate
+    /// segment to `crate`.
+    pub fn import(&self) -> String {
+        self.route().0
     }
 }
 

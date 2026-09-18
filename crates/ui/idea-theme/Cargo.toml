@@ -17,6 +17,15 @@ crate-type = ["rlib"]
 # spellings stable in this crate, in idea-ui, and in the docs that
 # quote them.
 runtime-core = { workspace = true }
+# Pulled in only with `catalog`, and never named in code: the
+# `#[schema(value_of = …, via = …)]` annotations on the built-in markers
+# are read by the catalog crate (`ValueEntry::spelled` / `import` parse
+# `via`), so this crate's PUBLISHED manifest must carry the catalog
+# version its annotations were written for. Without this line the
+# requirement only reached consumers through runtime-core's floors,
+# and a locked consumer kept an older catalog that spelled the values
+# wrong or dropped them.
+mcp-catalog = { workspace = true, optional = true }
 # `recipe!` (and every other catalog-capturing macro) emits absolute
 # `::runtime_vocabulary::glue::…` paths, so the vocabulary must be a DIRECT
 # dependency, not only a transitive one through the facade. Unconditional
@@ -32,4 +41,4 @@ runtime-vocabulary = { workspace = true }
 # expands to nothing without it, so recipes cost zero in shipped apps.
 # No `default`: this crate has no core selector any more, so a plain
 # `idea-theme = "…"` dep is the whole surface.
-catalog = ["runtime-core/catalog"]
+catalog = ["runtime-core/catalog", "dep:mcp-catalog"]

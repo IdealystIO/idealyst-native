@@ -266,6 +266,7 @@ function digest(json) {
             spelled: v.spelled || v.short_name,
             docs: v.docs || "",
             modulePath: v.module_path || "",
+            import: v.import || "",
         });
     }
     const enumsByName = new Map();
@@ -635,6 +636,7 @@ function valuesForType(catalog, typeStr) {
             kind: "EnumMember",
             detail: `${short} · ${v.modulePath}`,
             docs: v.docs,
+            imp: v.import,
         });
     }
 
@@ -647,6 +649,7 @@ function valuesForType(catalog, typeStr) {
                 kind: "EnumMember",
                 detail: `${short} · ${en.modulePath}`,
                 docs: v.docs,
+                imp: en.modulePath ? `${en.modulePath}::${short}` : "",
             });
         }
     }
@@ -661,6 +664,69 @@ function valuesForType(catalog, typeStr) {
         push("None", "None", { kind: "Keyword" });
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-import
+// ---------------------------------------------------------------------------
+
+/**
+ * The crate a file belongs to: the `[package] name` of the nearest
+ * Cargo.toml above it, with `-` → `_` as Rust spells it. `""` when
+ * there is none.
+ */
+function crateNameFor(filePath) {
+    let dir = path.dirname(filePath);
+    for (;;) {
+        const manifest = manifestAt(dir);
+        if (manifest && /^\s*\[package\]/m.test(manifest)) {
+            const m = manifest.match(/^\s*name\s*=\s*"([^"]+)"/m);
+            return m ? m[1].replace(/-/g, "_") : "";
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) return "";
+        dir = parent;
+    }
+}
+
+/**
+ * Decide the `use` line a completed value needs, or `null` when it is
+ * already reachable. `importPath` is the catalog's (`idea_ui::tone`);
+ * inside the crate that defines it the leading segment becomes `crate`.
+ * "Already reachable" is judged from the file's own text: a `use` that
+ * names the path's last segment (`use idea_ui::{Typography, tone};`,
+ * `use idea_ui::tone;`), a glob of its parent (`use idea_ui::*;`), or a
+ * local `mod tone`. Returns `{ offset, text }` — the insertion point
+ * after the file's last top-level `use`, else after the leading `//!` /
+ * `#![…]` block — so a caller can turn it into an edit.
+ */
+function importPlan(text, importPath, crateName) {
+    if (!importPath) return null;
+    let imp = importPath;
+    if (crateName && imp.startsWith(`${crateName}::`)) imp = `crate::${imp.slice(crateName.length + 2)}`;
+    const segs = imp.split("::");
+    const last = segs[segs.length - 1];
+    const parent = segs.slice(0, -1).join("::");
+    const clean = sanitize(text);
+    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\buse\\b[^;]*\\b${esc(last)}\\b`).test(clean)) return null;
+    if (parent && new RegExp(`\\buse\\s+${esc(parent)}::\\*`).test(clean)) return null;
+    if (new RegExp(`\\bmod\\s+${esc(last)}\\b`).test(clean)) return null;
+
+    // After the last top-level `use …;`.
+    let lastUseEnd = -1;
+    const useRe = /^(?:pub(?:\([^)]*\))?\s+)?use\b[^;]*;/gm;
+    let m;
+    while ((m = useRe.exec(clean)) !== null) lastUseEnd = m.index + m[0].length;
+    if (lastUseEnd !== -1) return { offset: lastUseEnd, text: `\nuse ${imp};` };
+
+    // Else after the leading inner-doc / inner-attribute block.
+    let offset = 0;
+    const lines = text.split("\n");
+    let i = 0;
+    while (i < lines.length && /^\s*(\/\/!|#!\[|$)/.test(lines[i])) i++;
+    for (let k = 0; k < i; k++) offset += lines[k].length + 1;
+    return { offset, text: `use ${imp};\n${i > 0 ? "\n" : ""}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +868,7 @@ function completeAt(document, position) {
         if (!prop) return undefined;
         const values = valuesForType(catalog, prop.type);
         if (!values.length) return undefined;
+        const crateName = crateNameFor(document.uri.fsPath);
         return values.map((v, i) => {
             const it = new vscode.CompletionItem(
                 v.label,
@@ -810,6 +877,17 @@ function completeAt(document, position) {
             it.insertText = v.snippet ? new vscode.SnippetString(v.insert) : v.insert;
             it.detail = v.detail || prop.type;
             if (v.docs) it.documentation = mdDocs({ docs: v.docs });
+            // Bring the value's module into scope when the file hasn't:
+            // accepting `typography_kind::Body` without `use
+            // idea_ui::typography_kind;` leaves the file uncompilable,
+            // and the catalog build compiles this file.
+            const plan = importPlan(text, v.imp, crateName);
+            if (plan) {
+                it.additionalTextEdits = [
+                    vscode.TextEdit.insert(document.positionAt(plan.offset), plan.text),
+                ];
+                it.detail = `${it.detail}  (+ ${plan.text.trim()})`;
+            }
             // Keep catalog order (values before enums before icons, None
             // last) and float the lot above RA's grab-bag.
             it.sortText = `0_${String(i).padStart(5, "0")}`;
@@ -920,6 +998,8 @@ module.exports = {
         propValueContext,
         unwrapPropType,
         valuesForType,
+        importPlan,
+        crateNameFor,
         rustContext,
         authoringItems,
         onAssignmentRhs,

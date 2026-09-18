@@ -19,6 +19,12 @@ DSL-vocabulary completion inside `ui! { … }` / `jsx! { … }` blocks:
   `Some(…)`-wrapped values (with the `.into()` an `Option<Ref>` needs)
   plus `None`. Only a bare `name = <path>` counts as a value position —
   inside a nested expression rust-analyzer owns the completion.
+  Accepting a value also adds the `use` it needs when the file lacks one
+  (`use idea_ui::typography_kind;` after the last top-level `use`; the
+  item's detail shows it): the catalog's `import` for registered values,
+  `module::Type` for enum variants, `crate::…` inside the defining crate.
+  A `use` naming the module, a parent glob, or a local `mod` of that name
+  counts as already imported.
 
 Authoring hints for the reactive/component vocabulary, outside the
 markup macros:

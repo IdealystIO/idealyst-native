@@ -1164,25 +1164,40 @@ mod tests {
             "components": [],
             "values": [
                 { "short_name": "Primary", "module_path": "idea_theme::extensible::tone",
-                  "docs": "Built-in semantic tone.", "value_of": "ToneRef", "via": "tone" },
+                  "docs": "Built-in semantic tone.", "value_of": "ToneRef", "via": "idea_ui::tone" },
                 { "short_name": "H1", "module_path": "idea_theme::extensible::typography",
-                  "docs": "", "value_of": "TypographyKindRef", "via": "typography_kind" },
+                  "docs": "", "value_of": "TypographyKindRef", "via": "idea_ui::typography_kind" },
                 { "short_name": "Hype", "module_path": "my_app::theme",
                   "docs": "", "value_of": "ToneRef", "via": "" },
+                { "short_name": "Flat", "module_path": "idea_ui::components::card::variant",
+                  "docs": "", "value_of": "VariantRef", "via": "idea_ui::components::{card::variant}" },
+                { "short_name": "Loud", "module_path": "other::markers",
+                  "docs": "", "value_of": "ToneRef", "via": "tone" },
             ],
         });
         let cat = ResolvedCatalog::build_from_json(&doc.to_string()).expect("builds");
         let vals = cat.values();
-        assert_eq!(vals.len(), 3);
+        assert_eq!(vals.len(), 5);
         assert_eq!(vals[0].spelled(), "tone::Primary");
+        assert_eq!(vals[0].import(), "idea_ui::tone");
         assert_eq!(vals[0].value_of, "ToneRef");
         // The re-export alias wins over the defining module's name.
         assert_eq!(vals[1].spelled(), "typography_kind::H1");
-        // No `via`: the defining module's last segment is the best guess.
+        assert_eq!(vals[1].import(), "idea_ui::typography_kind");
+        // No `via`: the defining module is the import, its last segment
+        // the spelling — what an app's own `tone!` marker gets.
         assert_eq!(vals[2].spelled(), "theme::Hype");
-        // And the writer emits the precomputed spelling for JSON-only readers.
-        let json = crate::slice::CatalogSlice::to_json(vals[0]);
-        assert_eq!(json["spelled"], "tone::Primary");
+        assert_eq!(vals[2].import(), "my_app::theme");
+        // Brace form: a two-segment spelling, importing the first.
+        assert_eq!(vals[3].spelled(), "card::variant::Flat");
+        assert_eq!(vals[3].import(), "idea_ui::components::card");
+        // A bare alias spells but can't say where it comes from.
+        assert_eq!(vals[4].spelled(), "tone::Loud");
+        assert_eq!(vals[4].import(), "");
+        // And the writer emits both precomputed for JSON-only readers.
+        let json = crate::slice::CatalogSlice::to_json(vals[3]);
+        assert_eq!(json["spelled"], "card::variant::Flat");
+        assert_eq!(json["import"], "idea_ui::components::card");
     }
 
     #[test]

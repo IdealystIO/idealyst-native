@@ -88,7 +88,7 @@ fn no_border() -> StyleRules {
 
 /// Filled — solid background, contrasting text.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "VariantRef", via = "variant")]
+#[schema(value_of = "VariantRef", via = "idea_ui::variant")]
 pub struct Filled;
 
 impl Variant for Filled {
@@ -113,7 +113,7 @@ pub const Solid: Filled = Filled;
 
 /// Soft — tinted background, intent-colored text.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "VariantRef", via = "variant")]
+#[schema(value_of = "VariantRef", via = "idea_ui::variant")]
 pub struct Soft;
 
 impl Variant for Soft {
@@ -130,7 +130,7 @@ impl Variant for Soft {
 
 /// Outlined — transparent fill, intent-colored 1px border + text.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "VariantRef", via = "variant")]
+#[schema(value_of = "VariantRef", via = "idea_ui::variant")]
 pub struct Outlined;
 
 impl Variant for Outlined {
@@ -158,7 +158,7 @@ impl Variant for Outlined {
 
 /// Ghost — transparent fill, no border, intent-colored text only.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "VariantRef", via = "variant")]
+#[schema(value_of = "VariantRef", via = "idea_ui::variant")]
 pub struct Ghost;
 
 impl Variant for Ghost {

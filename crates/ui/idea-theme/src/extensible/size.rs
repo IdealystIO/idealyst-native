@@ -11,7 +11,7 @@ use super::ButtonSize;
 
 /// Small.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ButtonSizeRef", via = "size")]
+#[schema(value_of = "ButtonSizeRef", via = "idea_ui::size")]
 pub struct Sm;
 
 impl ButtonSize for Sm {
@@ -31,7 +31,7 @@ impl ButtonSize for Sm {
 
 /// Medium — the default size.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ButtonSizeRef", via = "size")]
+#[schema(value_of = "ButtonSizeRef", via = "idea_ui::size")]
 pub struct Md;
 
 impl ButtonSize for Md {
@@ -51,7 +51,7 @@ impl ButtonSize for Md {
 
 /// Large.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ButtonSizeRef", via = "size")]
+#[schema(value_of = "ButtonSizeRef", via = "idea_ui::size")]
 pub struct Lg;
 
 impl ButtonSize for Lg {

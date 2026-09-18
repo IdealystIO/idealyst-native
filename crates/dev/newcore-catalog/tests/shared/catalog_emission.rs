@@ -1152,7 +1152,7 @@ fn enum_schema_emits_type_entry_with_variants() {
 /// an enum's variants, which is what makes `tone = │` completable.
 #[allow(dead_code)]
 #[derive(IdealystSchema)]
-#[schema(value_of = "DemoToneRef", via = "tone")]
+#[schema(value_of = "DemoToneRef", via = "demo_ui::tone")]
 /// A loud demo tone.
 pub struct Hype;
 
@@ -1168,8 +1168,9 @@ fn value_of_marker_emits_value_entry_not_type_entry() {
         .filter(|v| v.value_of == "DemoToneRef")
         .collect();
     let hype = vals.iter().find(|v| v.short_name == "Hype").expect("Hype registered");
-    assert_eq!(hype.via, "tone");
+    assert_eq!(hype.via, "demo_ui::tone");
     assert_eq!(hype.spelled(), "tone::Hype");
+    assert_eq!(hype.import(), "demo_ui::tone");
     assert!(hype.docs.contains("loud"), "docs = {:?}", hype.docs);
     assert_eq!(hype.module_path, module_path!());
 
@@ -1177,6 +1178,7 @@ fn value_of_marker_emits_value_entry_not_type_entry() {
     assert_eq!(calm.via, "");
     // `module_path!()` of an integration test is the target name.
     assert_eq!(calm.spelled(), format!("{}::Calm", module_path!().rsplit("::").next().unwrap()));
+    assert_eq!(calm.import(), module_path!());
 
     assert!(
         catalog::lookup_type("Hype").is_none(),
@@ -1702,7 +1704,7 @@ const EXPECTED_EMITTED_INVENTORY: &[&str] = &[
     "type registers_component::BadgeProps struct[label,count,color]",
     "type registers_component::DemoSize enum[Small(),Medium(),Custom(),Named(width,height)]",
     "value registers_component::Calm of=DemoToneRef via=\"\"",
-    "value registers_component::Hype of=DemoToneRef via=\"tone\"",
+    "value registers_component::Hype of=DemoToneRef via=\"demo_ui::tone\"",
 ];
 
 #[test]

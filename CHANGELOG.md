@@ -205,6 +205,29 @@ each entry links to its migration guide.
 
 ### Fixed
 
+- **Completed prop values bring their `use`.** Accepting
+  `typography_kind::Body` inserted the value and nothing else; the file
+  stopped compiling — and with it the catalog build, which compiles that
+  file. `ValueEntry::via` is now the `use` path call sites reach a value
+  through (`"idea_ui::tone"`; brace form
+  `"idea_ui::components::{card::variant}"` for a two-segment spelling),
+  the catalog precomputes `spelled` + `import`, `list_values` returns
+  both, and the extension adds the `use` via an additional edit when
+  the file has no `use`/glob/`mod` that already brings the module in
+  (`crate::…` inside the defining crate; enum variants import
+  `module::Type`). idea-theme and idea-ui now declare `mcp-catalog`
+  under their `catalog` feature so their published manifests carry the
+  catalog version their annotations are written for, instead of
+  reaching it through runtime-core's floors.
+
+- **The catalog wrapper's `Cargo.lock` follows the project's.** The
+  wrapper is its own cargo package; a `cargo update` in the project
+  never reached its lock, so the catalog silently linked whatever the
+  wrapper first resolved (crewforge: mcp-catalog 1.5.8 while the
+  workspace built 1.7.0 — no values, no snippets, no error). The nearest
+  `Cargo.lock` above the anchor project is copied in whenever it is
+  newer than the wrapper's.
+
 - **`idealyst catalog-json` accepts a workspace root, and the VS Code
   extension resolves its catalog per file.** The command called the
   single-project wrapper generator directly, so pointed at a cargo

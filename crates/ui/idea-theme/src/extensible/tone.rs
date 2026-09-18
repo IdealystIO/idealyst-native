@@ -25,7 +25,7 @@ macro_rules! builtin_tone {
     ($name:ident, $key:literal, $block:ident) => {
         /// Built-in semantic tone.
         #[derive(Copy, Clone, Default, IdealystSchema)]
-        #[schema(value_of = "ToneRef", via = "tone")]
+        #[schema(value_of = "ToneRef", via = "idea_ui::tone")]
         pub struct $name;
 
         impl Tone for $name {

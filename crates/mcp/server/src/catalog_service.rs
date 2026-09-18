@@ -2340,7 +2340,7 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "List the VALUES an open-set prop type accepts — the answer to \"what can I write for `tone = …`?\" when the prop type is `ToneRef` / `VariantRef` / `TypographyKindRef` / `ButtonSizeRef` / `ShapeRef` (or an app's own). Each is a marker registered with `#[schema(value_of = …)]`. Returns { value_of, spelled, short_name, fqn, docs } where `spelled` is the paste-ready call-site form (`tone::Primary`); note an `Option<Ref>` prop needs `Some(tone::Primary.into())`. Pass `filter` (case-insensitive, glob `*`, matches value_of/spelled/fqn) to narrow — e.g. `ToneRef`. Closed enums are NOT here: use describe_type for their variants.")]
+    #[tool(description = "List the VALUES an open-set prop type accepts — the answer to \"what can I write for `tone = …`?\" when the prop type is `ToneRef` / `VariantRef` / `TypographyKindRef` / `ButtonSizeRef` / `ShapeRef` (or an app's own). Each is a marker registered with `#[schema(value_of = …)]`. Returns { value_of, spelled, import, short_name, fqn, docs } where `spelled` is the paste-ready call-site form (`tone::Primary`) and `import` the `use` path that puts it in scope (`idea_ui::tone`); note an `Option<Ref>` prop needs `Some(tone::Primary.into())`. Pass `filter` (case-insensitive, glob `*`, matches value_of/spelled/fqn) to narrow — e.g. `ToneRef`. Closed enums are NOT here: use describe_type for their variants.")]
     async fn list_values(
         &self,
         Parameters(req): Parameters<FilterRequest>,
@@ -2358,6 +2358,7 @@ impl CatalogService {
                 Some(serde_json::json!({
                     "value_of": v.value_of,
                     "spelled": spelled,
+                    "import": v.import(),
                     "short_name": v.short_name,
                     "fqn": fqn,
                     "docs": v.docs,
@@ -4385,9 +4386,9 @@ mod tests {
             "components": [],
             "values": [
                 { "short_name": "Primary", "module_path": "idea_theme::extensible::tone",
-                  "docs": "Built-in semantic tone.", "value_of": "ToneRef", "via": "tone" },
+                  "docs": "Built-in semantic tone.", "value_of": "ToneRef", "via": "idea_ui::tone" },
                 { "short_name": "Soft", "module_path": "idea_theme::extensible::variant",
-                  "docs": "", "value_of": "VariantRef", "via": "variant" },
+                  "docs": "", "value_of": "VariantRef", "via": "idea_ui::variant" },
             ],
         });
         let cat = ResolvedCatalog::build_from_json(&doc.to_string()).unwrap();
@@ -4406,6 +4407,7 @@ mod tests {
         let tones = tones.as_array().unwrap();
         assert_eq!(tones.len(), 1);
         assert_eq!(tones[0]["spelled"], "tone::Primary");
+        assert_eq!(tones[0]["import"], "idea_ui::tone");
         assert_eq!(tones[0]["fqn"], "idea_theme::extensible::tone::Primary");
         assert_eq!(tones[0]["docs"], "Built-in semantic tone.");
     }

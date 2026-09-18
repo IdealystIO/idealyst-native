@@ -11,7 +11,7 @@ use super::Shape;
 
 /// Small radius — subtle corner softening.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ShapeRef", via = "shape")]
+#[schema(value_of = "ShapeRef", via = "idea_ui::shape")]
 pub struct Sm;
 
 impl Shape for Sm {
@@ -25,7 +25,7 @@ impl Shape for Sm {
 
 /// Medium radius — the default.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ShapeRef", via = "shape")]
+#[schema(value_of = "ShapeRef", via = "idea_ui::shape")]
 pub struct Md;
 
 impl Shape for Md {
@@ -39,7 +39,7 @@ impl Shape for Md {
 
 /// Large radius — pronounced rounding.
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ShapeRef", via = "shape")]
+#[schema(value_of = "ShapeRef", via = "idea_ui::shape")]
 pub struct Lg;
 
 impl Shape for Lg {
@@ -55,7 +55,7 @@ impl Shape for Lg {
 /// dimension on platforms that don't support `999px` as
 /// "use the full radius").
 #[derive(Copy, Clone, Default, IdealystSchema)]
-#[schema(value_of = "ShapeRef", via = "shape")]
+#[schema(value_of = "ShapeRef", via = "idea_ui::shape")]
 pub struct Pill;
 
 impl Shape for Pill {
