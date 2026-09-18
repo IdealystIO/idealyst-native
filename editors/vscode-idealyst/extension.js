@@ -431,6 +431,13 @@ function insideStylesheetMacro(text, offset) {
     return true;
 }
 
+/** The (sanitized) current line up to the start of the word at the cursor. */
+function beforeWord(text, offset) {
+    const lineStart = text.lastIndexOf("\n", offset - 1) + 1;
+    const line = sanitize(text.slice(lineStart, offset));
+    return line.replace(/[A-Za-z0-9_!]*$/, "");
+}
+
 /**
  * Where the cursor sits relative to Rust items: `"fn"` inside a function
  * body (any depth — a closure or block within one still counts),
@@ -665,13 +672,14 @@ function valuesForType(catalog, typeStr) {
  * only the declaration skeletons make sense (`#[component]`, `#[props]`,
  * `stylesheet!`); inside a fn body everything but the item-level ones.
  */
-function authoringItems(catalog, where) {
+function authoringItems(catalog, where, before = "") {
     const items = (catalog.authoring || []).filter((a) =>
         where === "fn" ? !a.itemLevel || a.label === "stylesheet!" : a.itemLevel
     );
+    const rhs = onAssignmentRhs(before);
     return items.map((a) => {
         const it = new vscode.CompletionItem(a.label, vscode.CompletionItemKind.Snippet);
-        it.insertText = new vscode.SnippetString(a.insert);
+        it.insertText = new vscode.SnippetString(rhs ? stripBinding(a.insert) : a.insert);
         it.detail = a.detail;
         it.documentation = mdDocs({ docs: a.docs });
         // `#[component]` must still match when the author types `comp`.
@@ -679,6 +687,30 @@ function authoringItems(catalog, where) {
         it.sortText = `0_${a.label}`;
         return it;
     });
+}
+
+/**
+ * True when the cursor's word is the right-hand side of an assignment
+ * the author already began — `let count = sig│`, `count = sig│`,
+ * `on_change = sig│` — so a snippet that declares its own binding
+ * must not add a second one (`let count = let name = signal(…)`).
+ * `before` is the text up to the start of the word being completed.
+ * `==`, `!=`, `<=`, `>=` and `=>` are comparisons/arrows, not
+ * assignments.
+ */
+function onAssignmentRhs(before) {
+    return /(^|[^=!<>])=\s*$/.test(before);
+}
+
+/**
+ * `let ${1:name} = signal(${2:value});` → `signal(${2:value});` — drop a
+ * snippet's own `let <pattern> = ` head (tuple patterns and type
+ * ascriptions included) so it slots into the author's assignment.
+ * Placeholder numbering stays as-is: the editor orders tab stops by
+ * number, gaps are fine.
+ */
+function stripBinding(snippet) {
+    return snippet.replace(/^let\s+[^=]*?=\s*/, "");
 }
 
 function mdDocs(item) {
@@ -722,7 +754,7 @@ function completeAt(document, position) {
     if (!catalog) return undefined;
 
     if (!inStylesheet && !inUi) {
-        return authoringItems(catalog, rustContext(text, offset));
+        return authoringItems(catalog, rustContext(text, offset), beforeWord(text, offset));
     }
 
     // stylesheet! — theme tokens off the block binding.
@@ -791,7 +823,7 @@ function completeAt(document, position) {
     // is writing plain Rust, so offer the reactive vocabulary rather
     // than tags.
     if (ctx && !catalog.propsByTag.has(ctx.tag)) {
-        return authoringItems(catalog, "fn");
+        return authoringItems(catalog, "fn", beforeWord(text, offset));
     }
     if (ctx && catalog.propsByTag.has(ctx.tag)) {
         // Prop-name completion for the enclosing tag.
@@ -890,6 +922,8 @@ module.exports = {
         valuesForType,
         rustContext,
         authoringItems,
+        onAssignmentRhs,
+        stripBinding,
         insideStylesheetMacro,
         tokenPathContext,
     },

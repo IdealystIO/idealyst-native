@@ -31,6 +31,9 @@ markup macros:
   tab stops (`let ${name} = signal(${value});`) and the framework docs
   (when to use it, the sharp edges) as documentation. Handler bodies
   inside `ui!` (`on_click = Rc::new(move || { │ })`) get the same set.
+  A snippet that declares its own binding drops it when you've already
+  written one: `let count = sig│` completes to `let count = signal(…);`,
+  not `let count = let name = signal(…);` (same for `reducer`'s tuple).
 - **At item level** — `#[component]` (a whole component fn skeleton),
   `#[props]` (a props struct with a documented field), `stylesheet!`.
 

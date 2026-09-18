@@ -191,7 +191,9 @@ each entry links to its migration guide.
   popup offers the reactive vocabulary above with the catalog snippet and
   docs; at item level it offers `#[component]` / `#[props]` /
   `stylesheet!` skeletons. Attribute labels filter on the bare word, so
-  `comp` finds `#[component]`.
+  `comp` finds `#[component]`. On the right-hand side of an assignment
+  the author already began (`let count = sig│`), a snippet drops its
+  own `let … = ` head so the binding isn't doubled.
 
 - **VS Code extension completes prop values.** After `tone = ` the
   popup offers the catalog's registered values, `IdealystSchema` enum

@@ -57,6 +57,8 @@ const {
     valuesForType,
     rustContext,
     authoringItems,
+    onAssignmentRhs,
+    stripBinding,
     insideStylesheetMacro,
     tokenPathContext,
 } = __test;
@@ -365,6 +367,24 @@ if ((raw.macros || []).some((m) => m.snippet)) {
     const sig = authoringItems(cat, "fn").find((i) => i.label === "signal");
     check("authoring: inserts the catalog snippet", sig && sig.insertText && sig.insertText.value === "let ${1:name} = signal(${2:value});",
         sig && JSON.stringify(sig.insertText));
+    // REGRESSION: `let name = sig│` accepted the full snippet and produced
+    // `let name = let name = signal(value)`. On an assignment's right-hand
+    // side the snippet's own binding is dropped.
+    const onRhs = authoringItems(cat, "fn", "    let count = ").find((i) => i.label === "signal");
+    check("authoring: on a `let` RHS the snippet drops its own binding",
+        onRhs && onRhs.insertText.value === "signal(${2:value});", onRhs && onRhs.insertText.value);
+    const red = authoringItems(cat, "fn", "let (s, d) = ").find((i) => i.label === "reducer");
+    check("authoring: reducer's tuple binding is dropped too",
+        red && red.insertText.value.startsWith("reducer(${3:initial}"), red && red.insertText.value);
+    const reassign = authoringItems(cat, "fn", "    total = ").find((i) => i.label === "memo");
+    check("authoring: a plain reassignment counts as RHS", reassign && reassign.insertText.value === "memo(move || ${2:expr});");
+    const bare = authoringItems(cat, "fn", "    ").find((i) => i.label === "signal");
+    check("authoring: statement position keeps the binding", bare && bare.insertText.value.startsWith("let ${1:name} = signal("));
+    check("onAssignmentRhs: `==` is a comparison, not an assignment", !onAssignmentRhs("if a == "));
+    check("onAssignmentRhs: `=>` is an arrow", !onAssignmentRhs("Some(x) => "));
+    check("onAssignmentRhs: `!=`/`<=`/`>=` are comparisons", !onAssignmentRhs("a != ") && !onAssignmentRhs("a <= ") && !onAssignmentRhs("a >= "));
+    check("stripBinding: type ascription", stripBinding("let ${1:x}: Ref<H> = node_ref!();") === "node_ref!();");
+    check("stripBinding: no binding is untouched", stripBinding("effect!({\n\t$0\n});") === "effect!({\n\t$0\n});");
     const comp = authoringItems(cat, "item").find((i) => i.label === "#[component]");
     check("authoring: attribute labels filter on the bare word", comp && comp.filterText === "component");
 } else {
