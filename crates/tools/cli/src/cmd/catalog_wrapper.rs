@@ -734,9 +734,17 @@ fn pkg_lib_target_name(pkg: &Value) -> Option<String> {
 /// Build the `[dependencies]` RHS for a force-linked crate, sourced to
 /// match how the project resolves it so cargo unifies them:
 ///
-/// - **Workspace mode**: a `path` dep to the resolved manifest directory.
-///   The project's own dep (whether `{ workspace = true }` or `path`)
-///   resolves to the same directory, so cargo sees one package instance.
+/// - **Local crate** (`pkg_source` is `None` — a `path` or workspace dep
+///   of the project, whatever mode the framework itself resolves in): a
+///   `path` dep to its manifest directory. A path is the package's one
+///   identity, so re-declaring it can't fork the graph; the project's
+///   own dep resolves to the same directory and cargo sees one instance.
+///   This is what keeps a monorepo's shared component library in the
+///   catalog when the app pins the framework from the registry — before
+///   it was skipped as a "foreign source", and its components only
+///   survived if the linker happened to keep their `inventory` ctors.
+/// - **Workspace mode**: a `path` dep for everything else too — the
+///   project and the framework share one tree.
 /// - **Git mode**: a `git` dep pinned to the same url + refspec as the
 ///   framework. Returns `None` for a dependency whose source isn't that
 ///   git repo — re-declaring a foreign source would fork the crate graph.
@@ -761,10 +769,12 @@ fn dep_line_for(
             .join(", ");
         format!(", features = [{}]", list)
     };
+    let path_dep = || format!("{{ path = \"{}\"{} }}", manifest_dir.display(), feat);
+    if pkg_source.is_none() {
+        return Some(path_dep());
+    }
     match source {
-        FrameworkSource::Workspace { .. } => {
-            Some(format!("{{ path = \"{}\"{} }}", manifest_dir.display(), feat))
-        }
+        FrameworkSource::Workspace { .. } => Some(path_dep()),
         FrameworkSource::Git { url, refspec } => {
             // Only force-link crates that come from the framework's git
             // repo; their git source already matches the project's, so
@@ -1328,6 +1338,37 @@ mod tests {
             deps[0].dep_line,
             format!("{{ git = \"{url}\", tag = \"v0.1.0\" }}")
         );
+    }
+
+    /// REGRESSION: a monorepo's own component library (a path/workspace
+    /// dep, `source: null`) must be force-linked even when the framework
+    /// resolves from git or the registry. It used to be skipped as a
+    /// "foreign source", so a shared `crewforge-ui-shared`-style crate
+    /// reached the catalog only if the linker kept its `inventory` ctors.
+    #[test]
+    fn regression_collect_force_links_local_path_deps_in_git_and_registry_mode() {
+        let url = "https://github.com/IdealystIO/idealyst-native";
+        let git = FrameworkSource::Git {
+            url: url.to_string(),
+            refspec: GitRef::Tag("v0.1.0".to_string()),
+        };
+        let registry = FrameworkSource::Registry {
+            registry: "idealyst".to_string(),
+            version: "1.5".to_string(),
+        };
+        // `idea-ui` in the fixture is a local crate (source: null) that
+        // depends on runtime-core — the shared-library shape.
+        let meta = sample_metadata();
+        for src in [&git, &registry] {
+            let deps = collect_forced_deps(&meta, src, Path::new("/proj/Cargo.toml"), "my-app");
+            assert_eq!(deps.len(), 1, "{src:?}: got {deps:?}");
+            assert_eq!(deps[0].pkg_name, "idea-ui");
+            assert_eq!(
+                deps[0].dep_line,
+                "{ path = \"/ws/crates/ui/idea-ui\" }",
+                "{src:?}: a local crate is re-declared by path"
+            );
+        }
     }
 
     #[test]

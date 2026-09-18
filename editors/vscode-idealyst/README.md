@@ -8,6 +8,17 @@ DSL-vocabulary completion inside `ui! { … }` / `jsx! { … }` blocks:
 - **Prop completion** inside a tag's parens — `Button(│` offers `label`,
   `on_click`, `tone`, … with types and doc comments; props already
   written are filtered out; accepting inserts `name = `.
+- **Prop value completion** after `name = ` — what the prop's type
+  accepts, resolved from the catalog: open-set markers registered with
+  `#[schema(value_of = …)]` (`tone::Primary`, `variant::Soft`,
+  `typography_kind::H1`, `size::Md`, …, and an app's own `tone!`
+  declarations), `IdealystSchema` enum variants (`ModalPresentation::Sheet`),
+  `true`/`false`, a `Rc::new(move |…| { … })` snippet for callbacks with
+  the right arity, and every icon constant for `IconData` props.
+  `Reactive<…>` is transparent (the macro coerces); `Option<…>` props get
+  `Some(…)`-wrapped values (with the `.into()` an `Option<Ref>` needs)
+  plus `None`. Only a bare `name = <path>` counts as a value position —
+  inside a nested expression rust-analyzer owns the completion.
 
 Theme-token completion inside `stylesheet! { … }` blocks:
 
@@ -23,10 +34,32 @@ Theme-token completion inside `stylesheet! { … }` blocks:
   doesn't compile.
 
 Data comes from the live catalog: the extension shells out to
-`idealyst catalog-json` once per workspace (first run compiles the
-catalog wrapper — minutes cold, seconds warm) and caches in memory.
-`Idealyst: Refresh Catalog` (command palette) re-reads after you add
-components or dependencies.
+`idealyst catalog-json` (first run compiles the catalog wrapper —
+minutes cold, seconds warm) and caches in memory. `Idealyst: Refresh
+Catalog` (command palette) re-reads after you add components or
+dependencies. Everything the CLI prints while building — and every
+load/failure — lands in **Output ▸ Idealyst**; look there first when a
+popup is empty.
+
+## Which catalog a file sees
+
+The catalog is resolved **per file**, not per workspace, so monorepos
+work:
+
+- Walking up from the file, the nearest crate whose `Cargo.toml` has
+  `[package.metadata.idealyst]` is the project. Its catalog holds its
+  own components plus every component library it depends on — exactly
+  the vocabulary usable from that file. In `crates/app-main/src/*.rs`
+  that's `crates/app-main`, and it loads as soon as you open such a
+  file.
+- A file in a plain library member (a shared component crate) belongs
+  to no single app, so it falls back to the workspace root, which
+  `catalog-json` expands into every idealyst member merged into one
+  catalog. That can be a large build in a big workspace, so it's only
+  started on an actual completion attempt inside `ui!`/`stylesheet!`
+  (or a refresh) — never on open.
+- Anything else (no idealyst crate above the file, no `[workspace]`
+  root) gets nothing, silently.
 
 This complements rust-analyzer, which owns types/expressions (including
 inside the macros via `ui!`'s IDE-recovery expansion) but cannot know

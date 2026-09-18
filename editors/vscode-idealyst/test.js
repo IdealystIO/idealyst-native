@@ -29,9 +29,11 @@ const mock = {
     },
     window: { setStatusBarMessage: () => ({ dispose() {} }) },
     workspace: {
-        getConfiguration: () => ({ get: () => "idealyst" }),
+        getConfiguration: () => ({ get: () => mock.__cli }),
         workspaceFolders: [],
     },
+    /** what `idealyst.cli` resolves to; the loader test points it at a stub */
+    __cli: "idealyst",
     languages: { registerCompletionItemProvider: () => ({}) },
     commands: { registerCommand: () => ({}) },
 };
@@ -43,8 +45,19 @@ Module._resolveFilename = function (request, ...rest) {
 require.cache["vscode"] = { id: "vscode", filename: "vscode", loaded: true, exports: mock };
 
 const { __test } = require(path.join(__dirname, "extension.js"));
-const { digest, insideUiMacro, propContext, insideStylesheetMacro, tokenPathContext } =
-    __test;
+const {
+    digest,
+    projectFor,
+    loadCatalog,
+    catalogs,
+    insideUiMacro,
+    propContext,
+    propValueContext,
+    unwrapPropType,
+    valuesForType,
+    insideStylesheetMacro,
+    tokenPathContext,
+} = __test;
 
 let failures = 0;
 function check(name, cond, extra) {
@@ -62,7 +75,8 @@ if (!catalogPath) {
     console.error("usage: node test.js /path/to/catalog.json");
     process.exit(2);
 }
-const cat = digest(require(catalogPath.startsWith("/") ? catalogPath : path.resolve(catalogPath)));
+const raw = require(catalogPath.startsWith("/") ? catalogPath : path.resolve(catalogPath));
+const cat = digest(raw);
 
 check("digest: primitives present as tags", cat.tags.some((t) => t.name === "view"));
 check("digest: components present as tags", cat.tags.some((t) => t.name === "Button"));
@@ -72,11 +86,16 @@ check(
     buttonProps.includes("label") && buttonProps.includes("on_click"),
     `got ${buttonProps.slice(0, 5)}`
 );
-const counterProps = (cat.propsByTag.get("Counter") || []).map((p) => p.name);
+// Any inline-props component in the dump (fn params that aren't a lone
+// `props: &Xxx` with a schema) must surface those params as its props.
+const inline = (raw.components || []).find((c) => {
+    const ps = c.params || [];
+    return ps.length > 0 && !(ps.length === 1 && (ps[0].name === "props" || Array.isArray(ps[0].schema)));
+});
 check(
     "digest: inline-props component params are props",
-    counterProps.includes("start"),
-    `got ${counterProps}`
+    inline && inline.params.every((p) => (cat.propsByTag.get(inline.name) || []).some((q) => q.name === p.name)),
+    inline ? `${inline.name}: got ${(cat.propsByTag.get(inline.name) || []).map((p) => p.name)}` : "no inline-props component in this dump"
 );
 const textProps = (cat.propsByTag.get("text") || []).map((p) => p.name);
 check("digest: primitive props present", textProps.length > 0, "text has no props");
@@ -226,4 +245,165 @@ check("token path: unrelated receiver ignored",
 const plain = `fn f() { let t = thing(); t. }`;
 check("stylesheet: plain code is not a sheet", !insideStylesheetMacro(plain, plain.indexOf("t. ") + 2));
 
-process.exit(failures ? 1 : 0);
+// --- prop VALUE completion ---
+// Context detection: only a bare `name = <path chars>` at depth 0 of
+// the prop list counts; nested expressions belong to rust-analyzer.
+const vsrc = `ui! { Button(label = "Save", tone = ) }`;
+const vAt = vsrc.indexOf("tone = ") + 7;
+const v1 = propValueContext(vsrc, vAt);
+check("propValueContext: empty value after `=`", v1 && v1.tag === "Button" && v1.prop === "tone" && v1.typed === "",
+    JSON.stringify(v1));
+const vsrc2 = `ui! { Button(label = "Save", tone = tone::Pri`;
+const v2 = propValueContext(vsrc2, vsrc2.length);
+check("propValueContext: partial path value", v2 && v2.prop === "tone" && v2.typed === "tone::Pri", JSON.stringify(v2));
+const vsrc3 = `ui! { Button(on_click = Rc::new(move || { let x = `;
+check("propValueContext: nested expression is not a value position", propValueContext(vsrc3, vsrc3.length) === null);
+const vsrc4 = `ui! { Badge(count = compute(a, `;
+check("propValueContext: inside a nested call is not a value position", propValueContext(vsrc4, vsrc4.length) === null);
+const vsrc5 = `ui! { Button(label = "Save", `;
+check("propValueContext: prop-name position is not a value position", propValueContext(vsrc5, vsrc5.length) === null);
+const vsrc6 = `ui! { Toggle(value = v, on_change = move |x| x == `;
+check("propValueContext: `==` inside a closure is not a value position", propValueContext(vsrc6, vsrc6.length) === null);
+
+// Type normalization: Reactive is transparent, Option is remembered,
+// the vocabulary prefix is stripped.
+check("unwrapPropType: Reactive<Option<ToneRef>> with glue prefix",
+    JSON.stringify(unwrapPropType(":: runtime_vocabulary :: glue :: Reactive < Option < ToneRef > >")) ===
+        JSON.stringify({ inner: "ToneRef", optional: true }));
+check("unwrapPropType: Signal stays opaque",
+    unwrapPropType("Signal<bool>").inner === "Signal<bool>");
+
+// Values, against the real dump plus a synthesized `values` slice (the
+// registry-pinned dump predates the slice; the shape is what
+// `ValueEntry::to_json` emits).
+const withValues = Object.assign({}, raw, {
+    values: [
+        { short_name: "Primary", module_path: "idea_theme::extensible::tone", docs: "Built-in semantic tone.",
+          value_of: "ToneRef", via: "tone", spelled: "tone::Primary" },
+        { short_name: "Danger", module_path: "idea_theme::extensible::tone", docs: "",
+          value_of: "ToneRef", via: "tone", spelled: "tone::Danger" },
+    ],
+});
+const vcat = digest(withValues);
+const labels = (t) => valuesForType(vcat, t).map((v) => v.label);
+check("values: open-set markers by prop type", labels("Reactive<ToneRef>").join() === "tone::Primary,tone::Danger",
+    labels("Reactive<ToneRef>").join());
+check("values: Option<Ref> wraps with Some(..into()) and adds None",
+    labels(":: runtime_vocabulary :: glue :: Reactive < Option < ToneRef > >").join() ===
+        "Some(tone::Primary.into()),Some(tone::Danger.into()),None",
+    labels("Reactive<Option<ToneRef>>").join());
+check("values: bool", labels("bool").join() === "true,false");
+check("values: Reactive<bool>", labels("::runtime_vocabulary::glue::Reactive<bool>").join() === "true,false");
+check("values: Signal<bool> offers nothing (needs a handle)", labels("Signal<bool>").length === 0);
+check("values: String offers nothing", labels("String").length === 0);
+const fn0 = valuesForType(vcat, "Rc<dyn Fn()>");
+check("values: Rc<dyn Fn()> closure snippet", fn0.length === 1 && fn0[0].snippet && fn0[0].insert === "Rc::new(move || { $1 })", JSON.stringify(fn0));
+const fn2 = valuesForType(vcat, "Rc<dyn Fn(String, u32) -> bool>");
+check("values: Fn(A, B) gets two params", fn2[0].insert === "Rc::new(move |${1:arg1}, ${2:arg2}| { $3 })", fn2[0].insert);
+const fnOpt = valuesForType(vcat, "Option<Rc<dyn Fn()>>");
+check("values: Option<Rc<dyn Fn()>>", fnOpt.map((v) => v.label).join() === "Some(Rc::new(move |…| { … })),None", fnOpt.map((v) => v.label).join());
+// A real IdealystSchema enum from the dump.
+const enumName = [...vcat.enumsByName.keys()][0];
+if (enumName) {
+    const ev = labels(`Reactive<${enumName}>`);
+    check(`values: enum variants (${enumName})`, ev.length > 0 && ev.every((l) => l.startsWith(`${enumName}::`)), ev.join());
+} else {
+    check("values: enum variants", false, "no enum in dump");
+}
+if ((raw.icon_sets || []).length) {
+    const iconVals = valuesForType(vcat, "::runtime_vocabulary::glue::Reactive<Option<IconData>>");
+    check("values: IconData offers icon constants wrapped in Some", iconVals.length > 1 && iconVals[0].label.startsWith("Some(icons_lucide::") && iconVals[iconVals.length - 1].label === "None",
+        iconVals.slice(0, 2).map((v) => v.label).join());
+} else {
+    check("values: IconData offers nothing when the dump has no icon sets",
+        valuesForType(vcat, "Reactive<Option<IconData>>").length === 0);
+}
+
+// --- project resolution (REGRESSION: workspace-shaped repos) ---
+// The old gate read only the workspace root's Cargo.toml, so a monorepo
+// whose apps live under crates/ never loaded a catalog — the extension
+// was silently inert in every real project. Build a temp tree:
+//
+//   ws/Cargo.toml                 [workspace]
+//   ws/crates/app/Cargo.toml      [package.metadata.idealyst]
+//   ws/crates/lib/Cargo.toml      plain library member
+//   ws/crates/app/nested/Cargo.toml  a plain (non-idealyst) inner crate
+//   plain/Cargo.toml              unrelated non-idealyst package
+//   single/Cargo.toml             a bare idealyst project (root IS the app)
+const fs = require("fs");
+const os = require("os");
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "idealyst-ext-"));
+const mk = (rel, body) => {
+    const full = path.join(tmp, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, body);
+    return full;
+};
+mk("ws/Cargo.toml", '[workspace]\nmembers = ["crates/*"]\n');
+mk("ws/crates/app/Cargo.toml", '[package]\nname = "app"\n[package.metadata.idealyst]\nbundle_id = "x"\n');
+mk("ws/crates/lib/Cargo.toml", '[package]\nname = "lib"\n');
+mk("ws/crates/app/nested/Cargo.toml", '[package]\nname = "nested"\n');
+mk("plain/Cargo.toml", '[package]\nname = "plain"\n');
+mk("single/Cargo.toml", '[package]\nname = "single"\n[package.metadata.idealyst]\n');
+const appFile = mk("ws/crates/app/src/lib.rs", "");
+const libFile = mk("ws/crates/lib/src/lib.rs", "");
+const nestedFile = mk("ws/crates/app/nested/src/lib.rs", "");
+const plainFile = mk("plain/src/lib.rs", "");
+const singleFile = mk("single/src/lib.rs", "");
+const ws = path.join(tmp, "ws");
+
+const appProj = projectFor(appFile, ws);
+check("projectFor: workspace member app resolves to the member, exactly",
+    appProj && appProj.dir === path.join(ws, "crates/app") && appProj.exact === true,
+    JSON.stringify(appProj));
+const libProj = projectFor(libFile, ws);
+check("projectFor: plain lib member falls back to the workspace root (merged, inexact)",
+    libProj && libProj.dir === ws && libProj.exact === false,
+    JSON.stringify(libProj));
+const nestedProj = projectFor(nestedFile, ws);
+check("projectFor: non-idealyst inner crate walks up to the enclosing idealyst crate",
+    nestedProj && nestedProj.dir === path.join(ws, "crates/app") && nestedProj.exact === true,
+    JSON.stringify(nestedProj));
+check("projectFor: unrelated non-idealyst package is not a project",
+    projectFor(plainFile, path.join(tmp, "plain")) === null);
+const singleProj = projectFor(singleFile, path.join(tmp, "single"));
+check("projectFor: bare project root still resolves to itself",
+    singleProj && singleProj.dir === path.join(tmp, "single") && singleProj.exact === true,
+    JSON.stringify(singleProj));
+// The walk must stop at the workspace folder, never climbing into
+// whatever happens to sit above it.
+mk("Cargo.toml", '[package]\nname = "above"\n[package.metadata.idealyst]\n');
+check("projectFor: never climbs above the workspace folder",
+    projectFor(plainFile, path.join(tmp, "plain")) === null);
+fs.rmSync(tmp, { recursive: true, force: true });
+
+// --- loadCatalog end to end, through a stub CLI ---
+// REGRESSION: a refactor left two `loadCatalog` definitions in the file;
+// the surviving one referenced a deleted helper and threw
+// `ReferenceError` on every completion request — invisible to the
+// pure-function checks above because nothing called the loader. Run it
+// for real: `idealyst.cli` points at a script that prints the dump.
+const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "idealyst-ext-cli-"));
+const stub = path.join(stubDir, "idealyst");
+fs.writeFileSync(
+    stub,
+    `#!/bin/sh\n[ "$1" = "catalog-json" ] || exit 2\necho "stub: building $2" >&2\ncat "${path.resolve(catalogPath)}"\n`
+);
+fs.chmodSync(stub, 0o755);
+mock.__cli = stub;
+loadCatalog(stubDir);
+(function waitForLoad(tries) {
+    if (catalogs.has(stubDir)) {
+        const loaded = catalogs.get(stubDir);
+        check("loadCatalog: runs the CLI and caches the digested catalog",
+            loaded.tags.length === cat.tags.length);
+        fs.rmSync(stubDir, { recursive: true, force: true });
+        process.exit(failures ? 1 : 0);
+    }
+    if (tries === 0) {
+        check("loadCatalog: runs the CLI and caches the digested catalog", false, "timed out");
+        fs.rmSync(stubDir, { recursive: true, force: true });
+        process.exit(1);
+    }
+    setTimeout(() => waitForLoad(tries - 1), 50);
+})(100);
