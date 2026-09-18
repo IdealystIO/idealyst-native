@@ -5,12 +5,13 @@
 //! Apps add custom shapes (e.g. `Squircle`) by implementing
 //! [`super::Shape`] on a marker struct.
 
-use runtime_core::{Length, Tokenized};
+use runtime_core::{IdealystSchema, Length, Tokenized};
 
 use super::Shape;
 
 /// Small radius — subtle corner softening.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, IdealystSchema)]
+#[schema(value_of = "ShapeRef", via = "shape")]
 pub struct Sm;
 
 impl Shape for Sm {
@@ -23,7 +24,8 @@ impl Shape for Sm {
 }
 
 /// Medium radius — the default.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, IdealystSchema)]
+#[schema(value_of = "ShapeRef", via = "shape")]
 pub struct Md;
 
 impl Shape for Md {
@@ -36,7 +38,8 @@ impl Shape for Md {
 }
 
 /// Large radius — pronounced rounding.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, IdealystSchema)]
+#[schema(value_of = "ShapeRef", via = "shape")]
 pub struct Lg;
 
 impl Shape for Lg {
@@ -51,7 +54,8 @@ impl Shape for Lg {
 /// Pill — fully rounded (clamped by the backend to half the shorter
 /// dimension on platforms that don't support `999px` as
 /// "use the full radius").
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, IdealystSchema)]
+#[schema(value_of = "ShapeRef", via = "shape")]
 pub struct Pill;
 
 impl Shape for Pill {

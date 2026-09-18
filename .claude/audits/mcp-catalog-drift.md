@@ -33,6 +33,13 @@ Five drift surfaces matter:
 
 5. **SDK table vs. the `crates/{sdk,api,ui}/*` roster.** `crates/mcp/catalog/src/sdks.rs` hand-curates one `SdkEntry` per opt-in crate (networking, persistence, the component library, …). The truth is the set of crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/`. Adding a crate without a table entry makes it undiscoverable from the MCP (the A1 gap this slice closed: `net`/`storage`/`credentials`/`server` were invisible); removing/renaming one without updating the table leaves a stale claim with a dep line that won't resolve. The `dep_line` must stay copy-pasteable and the `category`/`kind` accurate.
 
+### Open-set prop values
+
+The `values` slice is open, not locked, but has its own drift: every idea-theme marker that a `*Ref` prop accepts (`extensible/{tone,variant,typography,size,shape}.rs`, plus idea-ui's `card::variant`) must carry `#[derive(IdealystSchema)] #[schema(value_of = "<Ref>", via = "<alias>")]`, or it silently vanishes from `tone = │` completion and `list_values`. The declaration macros `tone!` / `variant!` add it for app code; hand-written markers don't.
+
+- [ ] For each `pub struct <Marker>;` implementing `Tone` / `Variant` / `TypographyKind` / `ButtonSize` / `Shape` in those files, confirm the `value_of` annotation is present and names the matching `*Ref` type, and that `via` matches the alias idea-ui re-exports (`tone`, `variant`, `typography_kind`, `size`, `shape`; `card::variant` for Card's).
+- [ ] If a new open vocabulary was added (a new `*Ref` newtype in `extensible/mod.rs`), its markers need the same, and `list_values`' tool description should name the new type.
+
 ## Checklist
 
 ### Primitive coverage

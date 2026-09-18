@@ -184,6 +184,19 @@ pub struct PlanetProps {
 
 `IdealystSchema` is no-op-able: on non-MCP builds the impl is `#[inline]` and never called; the linker drops it.
 
+#### 4.3.1 Open-set prop values — `#[schema(value_of = …)]`
+
+A closed enum answers "what can I write for this prop?" through its `TypeEntry` variants. idea-theme's extensible vocabularies do not: a prop takes `impl Into<ToneRef>`, every value is a zero-sized marker implementing the `Tone` trait, and an app adds its own by writing another impl. Nothing enumerates the implementors of an open trait, so each marker registers itself:
+
+```rust
+/// Built-in semantic tone.
+#[derive(Copy, Clone, Default, IdealystSchema)]
+#[schema(value_of = "ToneRef", via = "tone")]
+pub struct Primary;
+```
+
+That emits one `ValueEntry { short_name, module_path, docs, value_of, via }` into the `values` slice instead of an empty `TypeEntry`. `value_of` is the short name of the prop type the value coerces into (the join key: a prop whose type — unwrapped of `Reactive<…>` / `Option<…>` — has that short name accepts every value registered under it). `via` is the module alias call sites write the value through, so the catalog's precomputed `spelled` is `tone::Primary`; without `via` the defining module's last segment is used. idea-theme's `tone!` / `variant!` declaration macros add the annotation for app-defined markers automatically, and the built-in tone / variant / typography-kind / size / shape markers (plus Card's local variants) ship annotated. The VS Code extension reads this slice to complete `tone = │`.
+
 ## 5. MCP surface
 
 Exposed tools (initial set, subject to revision after a prototype):

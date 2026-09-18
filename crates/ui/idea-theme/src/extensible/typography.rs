@@ -12,7 +12,7 @@
 //! 1.5` ratios would render as 1.5px and crush text lines on top of
 //! each other.
 
-use runtime_core::{FontWeight, Length, Tokenized};
+use runtime_core::{FontWeight, IdealystSchema, Length, Tokenized};
 
 use super::TypographyKind;
 
@@ -27,7 +27,8 @@ macro_rules! builtin_kind {
         letter_spacing_px = $ls:expr $(,)?
     ) => {
         /// Built-in typography variant.
-        #[derive(Copy, Clone, Default)]
+        #[derive(Copy, Clone, Default, IdealystSchema)]
+        #[schema(value_of = "TypographyKindRef", via = "typography_kind")]
         pub struct $name;
 
         impl TypographyKind for $name {

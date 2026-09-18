@@ -123,6 +123,7 @@ macro_rules! color_token {
 #[macro_export]
 macro_rules! tone {
     (
+        $(#[$meta:meta])*
         $vis:vis $name:ident using $me:tt , $theme:ident {
             key = $key:literal,
             fill_bg = $fill_bg:expr,
@@ -138,7 +139,14 @@ macro_rules! tone {
             $(,)?
         }
     ) => {
-        #[derive(Copy, Clone, Default)]
+        // `IdealystSchema` + `value_of` registers the marker as a
+        // completable `tone = …` value in the MCP catalog (a no-op
+        // without the `catalog` feature). No `via`: the catalog spells
+        // it through the defining module, which by convention is the
+        // app's `tone` module.
+        $(#[$meta])*
+        #[derive(Copy, Clone, Default, ::runtime_core::IdealystSchema)]
+        #[schema(value_of = "ToneRef")]
         $vis struct $name;
 
         impl $crate::extensible::Tone for $name {
@@ -363,12 +371,16 @@ macro_rules! app_theme {
 #[macro_export]
 macro_rules! variant {
     (
+        $(#[$meta:meta])*
         $vis:vis $name:ident {
             key = $key:literal,
             render($ctx:ident) $body:block $(,)?
         }
     ) => {
-        #[derive(Copy, Clone, Default)]
+        // Registered as a completable `variant = …` value; see `tone!`.
+        $(#[$meta])*
+        #[derive(Copy, Clone, Default, ::runtime_core::IdealystSchema)]
+        #[schema(value_of = "VariantRef")]
         $vis struct $name;
 
         impl $crate::extensible::Variant for $name {

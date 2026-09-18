@@ -33,7 +33,7 @@ use crate::{
     MacroKind, MethodEntry, ParamSpec, PrimitiveCategory, PrimitiveEntry, PropFieldSpec,
     RecipeEntry, ScopeEntry, SdkCategory, SdkEntry, SdkKind, StateEntry, StyleTokenEntry,
     ToolEntry, TypeEntry,
-    TypeShape, UtilityCategory, UtilityEntry, VariantSpec,
+    TypeShape, UtilityCategory, UtilityEntry, ValueEntry, VariantSpec,
 };
 
 /// A `(module_path, name)` pair, the canonical identity for a
@@ -131,6 +131,7 @@ pub struct ResolvedCatalog {
     scopes: Vec<&'static crate::ScopeEntry>,
     sdks: Vec<&'static crate::SdkEntry>,
     icon_sets: Vec<&'static crate::IconSetEntry>,
+    values: Vec<&'static crate::ValueEntry>,
 }
 
 impl ResolvedCatalog {
@@ -152,6 +153,7 @@ impl ResolvedCatalog {
         cat.scopes = crate::scopes().collect();
         cat.sdks = crate::sdks().collect();
         cat.icon_sets = crate::icon_sets().collect();
+        cat.values = crate::values().collect();
         cat
     }
 
@@ -198,6 +200,7 @@ impl ResolvedCatalog {
         cat.scopes = slice_vec::<ScopeEntry>(&value);
         cat.sdks = slice_vec::<SdkEntry>(&value);
         cat.icon_sets = slice_vec::<IconSetEntry>(&value);
+        cat.values = slice_vec::<ValueEntry>(&value);
         Ok(cat)
     }
 
@@ -244,6 +247,9 @@ impl ResolvedCatalog {
     }
     pub fn icon_sets(&self) -> &[&'static crate::IconSetEntry] {
         &self.icon_sets
+    }
+    pub fn values(&self) -> &[&'static crate::ValueEntry] {
+        &self.values
     }
 
     /// Recipes that demonstrate `name` — either as their primary
@@ -813,6 +819,21 @@ fn leak_recipe_from_json(v: &serde_json::Value) -> Option<&'static RecipeEntry> 
     })))
 }
 
+fn leak_value_from_json(v: &serde_json::Value) -> Option<&'static ValueEntry> {
+    let short_name = v["short_name"].as_str()?.to_string();
+    let module_path = v["module_path"].as_str()?.to_string();
+    let value_of = v["value_of"].as_str()?.to_string();
+    let docs = v["docs"].as_str().unwrap_or("").to_string();
+    let via = v["via"].as_str().unwrap_or("").to_string();
+    Some(Box::leak(Box::new(ValueEntry {
+        short_name: leak_str(short_name),
+        module_path: leak_str(module_path),
+        docs: leak_str(docs),
+        value_of: leak_str(value_of),
+        via: leak_str(via),
+    })))
+}
+
 fn leak_type_from_json(v: &serde_json::Value) -> Option<&'static TypeEntry> {
     let short_name = v["short_name"].as_str()?.to_string();
     let module_path = v["module_path"].as_str()?.to_string();
@@ -1032,6 +1053,11 @@ impl LeakFromJson for IconSetEntry {
         leak_icon_set_from_json(v)
     }
 }
+impl LeakFromJson for ValueEntry {
+    fn from_json(v: &serde_json::Value) -> Option<&'static Self> {
+        leak_value_from_json(v)
+    }
+}
 
 fn is_ancestor_module(maybe_ancestor: &str, descendant: &str) -> bool {
     if maybe_ancestor == descendant {
@@ -1126,6 +1152,35 @@ mod tests {
         let set = cat.icon_sets()[0];
         assert_eq!(set.name, "icons-lucide");
         assert_eq!(set.icons[0].ident, "SEARCH");
+    }
+
+    #[test]
+    fn values_survive_build_from_json_and_spell_through_via() {
+        // `values` is what the editor extension reads to complete
+        // `tone = │`; the `via` fallback must round-trip too.
+        let doc = serde_json::json!({
+            "components": [],
+            "values": [
+                { "short_name": "Primary", "module_path": "idea_theme::extensible::tone",
+                  "docs": "Built-in semantic tone.", "value_of": "ToneRef", "via": "tone" },
+                { "short_name": "H1", "module_path": "idea_theme::extensible::typography",
+                  "docs": "", "value_of": "TypographyKindRef", "via": "typography_kind" },
+                { "short_name": "Hype", "module_path": "my_app::theme",
+                  "docs": "", "value_of": "ToneRef", "via": "" },
+            ],
+        });
+        let cat = ResolvedCatalog::build_from_json(&doc.to_string()).expect("builds");
+        let vals = cat.values();
+        assert_eq!(vals.len(), 3);
+        assert_eq!(vals[0].spelled(), "tone::Primary");
+        assert_eq!(vals[0].value_of, "ToneRef");
+        // The re-export alias wins over the defining module's name.
+        assert_eq!(vals[1].spelled(), "typography_kind::H1");
+        // No `via`: the defining module's last segment is the best guess.
+        assert_eq!(vals[2].spelled(), "theme::Hype");
+        // And the writer emits the precomputed spelling for JSON-only readers.
+        let json = crate::slice::CatalogSlice::to_json(vals[0]);
+        assert_eq!(json["spelled"], "tone::Primary");
     }
 
     #[test]

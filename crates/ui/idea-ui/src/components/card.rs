@@ -43,7 +43,7 @@ use idea_theme::tokens;
 /// surface colors directly via `ctx.theme.colors()`.
 pub mod variant {
     use idea_theme::extensible::{ResolutionCtx, Variant, VariantRef};
-    use runtime_core::{Color, StyleRules};
+    use runtime_core::{Color, IdealystSchema, StyleRules};
 
     // Reactive-prop coercion for the card-local variants, so a bare marker
     // (`variant = variant::Flat`) coerces into a `#[props]`-wrapped
@@ -60,7 +60,8 @@ pub mod variant {
     }
 
     /// Flat — page-surface background, no shadow.
-    #[derive(Copy, Clone, Default)]
+    #[derive(Copy, Clone, Default, IdealystSchema)]
+    #[schema(value_of = "VariantRef", via = "card::variant")]
     pub struct Flat;
 
     impl Variant for Flat {
@@ -78,7 +79,8 @@ pub mod variant {
     /// Elevated — raised surface with a soft drop shadow. Uses
     /// `surface_alt` so the card reads as a layer above the page's
     /// `surface`, distinct even on platforms that don't render shadows.
-    #[derive(Copy, Clone, Default)]
+    #[derive(Copy, Clone, Default, IdealystSchema)]
+    #[schema(value_of = "VariantRef", via = "card::variant")]
     pub struct Elevated;
 
     impl Variant for Elevated {

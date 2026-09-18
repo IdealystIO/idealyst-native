@@ -157,7 +157,57 @@ each entry links to its migration guide.
   own threshold and its own idea of what crossing it means. A sheet that
   only wants the enter/exit animation needs no change.
 
+### Added
+
+- **Catalog `values` slice + `#[schema(value_of = …)]`.** The MCP
+  catalog can now answer "what can I write for this prop?" for the
+  open-set vocabularies. A closed enum already listed its variants
+  through `TypeEntry`; idea-theme's `ToneRef` / `VariantRef` /
+  `TypographyKindRef` / `ButtonSizeRef` / `ShapeRef` props take any
+  marker implementing an open trait, which nothing enumerated. A marker
+  annotated `#[derive(IdealystSchema)] #[schema(value_of = "ToneRef",
+  via = "tone")]` registers a `ValueEntry` — type it coerces into, and
+  its call-site spelling (`tone::Primary`) — in a new `values` slice
+  (`catalog_json()["values"]`, `ResolvedCatalog::values()`). The
+  built-in markers ship annotated, Card's local variants too, and the
+  `tone!` / `variant!` declaration macros annotate app-defined markers
+  (and now pass doc comments through to the struct). See
+  `docs/framework-mcp-spec.md` §4.3.1.
+
+- **VS Code extension completes prop values.** After `tone = ` the
+  popup offers the catalog's registered values, `IdealystSchema` enum
+  variants, `true`/`false`, an arity-correct `Rc::new(move |…| { … })`
+  snippet for callback props, and icon constants for `IconData` props;
+  `Option<…>` props get `Some(…)`-wrapped values plus `None`. `=` is a
+  trigger character. Only a bare `name = <path>` position completes —
+  nested expressions stay rust-analyzer's.
+
 ### Fixed
+
+- **`idealyst catalog-json` accepts a workspace root, and the VS Code
+  extension resolves its catalog per file.** The command called the
+  single-project wrapper generator directly, so pointed at a cargo
+  workspace it failed to parse the root as a project — while the
+  extension's own gate read only the workspace root's `Cargo.toml` and
+  returned nothing, silently, in every monorepo (apps under `crates/`).
+  Together that meant no tag/prop/token completion at all in real
+  projects. `catalog-json` now expands a workspace root through the same
+  `resolve_project_roots` as `idealyst mcp`; the extension walks up from
+  the edited file to the nearest crate with `[package.metadata.idealyst]`
+  (warmed on open), falling back to the merged workspace catalog for a
+  shared-library member (built lazily, on a completion attempt). CLI
+  output and load failures now go to an `Idealyst` output channel.
+
+- **Catalog wrapper force-links a project's local path dependencies in
+  git and registry mode.** `dep_line_for` returned `None` for any dep
+  whose `source` wasn't the framework's, which also caught the project's
+  own `path`/workspace crates — so a monorepo's shared component library
+  was skipped (with a "foreign source" warning) whenever the app pinned
+  the framework from the registry, and its components reached the
+  catalog only if the linker happened to keep their `inventory` ctors.
+  A local crate is now always re-declared by `path`, as workspace mode
+  already did; a path is the package's one identity, so it can't fork
+  the graph.
 
 - **idea-ui `SubMenu`: the trigger row opens on press as well as
   hover.** The trigger was a hover-tracking view and nothing else, so on

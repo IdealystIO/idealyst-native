@@ -24,7 +24,7 @@ use crate::{
     AnimationEntry, ComponentEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry,
     PrimitiveEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry, StyleTokenEntry, ToolEntry,
     TypeEntry, TypeShape,
-    UtilityEntry,
+    UtilityEntry, ValueEntry,
 };
 
 /// Writer side: a catalog entry type that knows its JSON array key, how
@@ -532,6 +532,33 @@ impl CatalogSlice for SdkEntry {
             "category": self.category.as_str(),
             "kind": self.kind.as_str(),
             "guide": self.guide,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------
+// Value
+// ---------------------------------------------------------------------
+
+impl CatalogSlice for ValueEntry {
+    const KEY: &'static str = "values";
+
+    fn collect_sorted() -> Vec<&'static Self> {
+        let mut v: Vec<&'static ValueEntry> = crate::values().collect();
+        v.sort_by_key(|e| (e.value_of, e.module_path, e.short_name));
+        v
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "short_name": self.short_name,
+            "module_path": self.module_path,
+            "docs": self.docs,
+            "value_of": self.value_of,
+            "via": self.via,
+            // Precomputed so a consumer that only reads JSON (the editor
+            // extension) never has to know the `via` fallback rule.
+            "spelled": self.spelled(),
         })
     }
 }

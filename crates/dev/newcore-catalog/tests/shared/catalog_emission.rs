@@ -1080,6 +1080,49 @@ fn enum_schema_emits_type_entry_with_variants() {
     assert!(width.doc.contains("width override"), "got {:?}", width.doc);
 }
 
+/// `#[schema(value_of = …)]` on a marker registers a `ValueEntry`
+/// (and NO empty `TypeEntry` for the marker) — the open-set analogue of
+/// an enum's variants, which is what makes `tone = │` completable.
+#[allow(dead_code)]
+#[derive(IdealystSchema)]
+#[schema(value_of = "DemoToneRef", via = "tone")]
+/// A loud demo tone.
+pub struct Hype;
+
+/// Without `via`, the spelling falls back to the defining module.
+#[allow(dead_code)]
+#[derive(IdealystSchema)]
+#[schema(value_of = "DemoToneRef")]
+pub struct Calm;
+
+#[test]
+fn value_of_marker_emits_value_entry_not_type_entry() {
+    let vals: Vec<&catalog::ValueEntry> = catalog::values()
+        .filter(|v| v.value_of == "DemoToneRef")
+        .collect();
+    let hype = vals.iter().find(|v| v.short_name == "Hype").expect("Hype registered");
+    assert_eq!(hype.via, "tone");
+    assert_eq!(hype.spelled(), "tone::Hype");
+    assert!(hype.docs.contains("loud"), "docs = {:?}", hype.docs);
+    assert_eq!(hype.module_path, module_path!());
+
+    let calm = vals.iter().find(|v| v.short_name == "Calm").expect("Calm registered");
+    assert_eq!(calm.via, "");
+    // `module_path!()` of an integration test is the target name.
+    assert_eq!(calm.spelled(), format!("{}::Calm", module_path!().rsplit("::").next().unwrap()));
+
+    assert!(
+        catalog::lookup_type("Hype").is_none(),
+        "a marker's empty TypeEntry is noise next to its ValueEntry"
+    );
+    // And it reaches the JSON document under `values`.
+    let json = catalog::catalog_json();
+    assert!(
+        json["values"].as_array().unwrap().iter().any(|v| v["spelled"] == "tone::Hype"),
+        "values slice missing from catalog_json"
+    );
+}
+
 /// `#[derive(IdealystSchema)]` on a struct still emits the legacy
 /// `PropsSchemaEntry` AND a new `TypeEntry` with shape `Struct`.
 #[test]
@@ -1269,6 +1312,7 @@ fn catalog_json_v2_includes_every_new_slice() {
         "methods",
         "animations",
         "types",
+        "values",
         "tools",
         "scopes",
         "sdks",
@@ -1486,6 +1530,12 @@ fn emitted_inventory_fingerprint() -> String {
         };
         lines.push(format!("type {}::{} {}", t.module_path, t.short_name, shape));
     }
+    for v in cat.values() {
+        lines.push(format!(
+            "value {}::{} of={} via={:?}",
+            v.module_path, v.short_name, v.value_of, v.via
+        ));
+    }
     for s in catalog::schemas() {
         lines.push(format!(
             "schema {}::{} [{}]",
@@ -1584,6 +1634,8 @@ const EXPECTED_EMITTED_INVENTORY: &[&str] = &[
     "tool registers_component::darken params=[_hex:str,_amount:f32] -> String",
     "type registers_component::BadgeProps struct[label,count,color]",
     "type registers_component::DemoSize enum[Small(),Medium(),Custom(),Named(width,height)]",
+    "value registers_component::Calm of=DemoToneRef via=\"\"",
+    "value registers_component::Hype of=DemoToneRef via=\"tone\"",
 ];
 
 #[test]

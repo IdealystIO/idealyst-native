@@ -2334,6 +2334,35 @@ impl CatalogService {
             .await)
     }
 
+    #[tool(description = "List the VALUES an open-set prop type accepts — the answer to \"what can I write for `tone = …`?\" when the prop type is `ToneRef` / `VariantRef` / `TypographyKindRef` / `ButtonSizeRef` / `ShapeRef` (or an app's own). Each is a marker registered with `#[schema(value_of = …)]`. Returns { value_of, spelled, short_name, fqn, docs } where `spelled` is the paste-ready call-site form (`tone::Primary`); note an `Option<Ref>` prop needs `Some(tone::Primary.into())`. Pass `filter` (case-insensitive, glob `*`, matches value_of/spelled/fqn) to narrow — e.g. `ToneRef`. Closed enums are NOT here: use describe_type for their variants.")]
+    async fn list_values(
+        &self,
+        Parameters(req): Parameters<FilterRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let cat = self.catalog.read().await;
+        let json: Vec<serde_json::Value> = cat
+            .values()
+            .iter()
+            .filter_map(|v| {
+                let fqn = format!("{}::{}", v.module_path, v.short_name);
+                let spelled = v.spelled();
+                if !matches_filter(&req.filter, &[v.value_of, &spelled, &fqn]) {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "value_of": v.value_of,
+                    "spelled": spelled,
+                    "short_name": v.short_name,
+                    "fqn": fqn,
+                    "docs": v.docs,
+                }))
+            })
+            .collect();
+        Ok(self
+            .catalog_text(serde_json::to_string_pretty(&json).unwrap())
+            .await)
+    }
+
     #[tool(description = "Describe one type — struct fields (name, type, doc, constraint) or enum variants (name, docs, payload). Accepts a short-name or fully-qualified name.")]
     async fn describe_type(
         &self,
@@ -3702,7 +3731,8 @@ impl ServerHandler for CatalogService {
                  list_utilities, describe_utility, list_states. \
                  Theme tokens (what a stylesheet! names via its block binding): \
                  list_tokens, describe_token. \
-                 Types: list_types, describe_type. \
+                 Types: list_types, describe_type; open-set prop values \
+                 (tone::Primary, variant::Soft, …): list_values. \
                  Tools (#[idealyst_tool]): list_tools, describe_tool. \
                  SDK crates (net, storage, credentials, server, …): list_sdks, describe_sdk. \
                  Guides: list_guides, read_guide (bundled framework docs). \
@@ -4329,6 +4359,37 @@ mod tests {
     /// server tools. Built from a synthetic catalog (icon packs
     /// self-register from `icons-lucide`, which the standalone server
     /// doesn't link) injected via `replace_catalog`.
+    #[tokio::test]
+    async fn list_values_filters_by_prop_type_and_spells_call_site_form() {
+        let doc = serde_json::json!({
+            "components": [],
+            "values": [
+                { "short_name": "Primary", "module_path": "idea_theme::extensible::tone",
+                  "docs": "Built-in semantic tone.", "value_of": "ToneRef", "via": "tone" },
+                { "short_name": "Soft", "module_path": "idea_theme::extensible::variant",
+                  "docs": "", "value_of": "VariantRef", "via": "variant" },
+            ],
+        });
+        let cat = ResolvedCatalog::build_from_json(&doc.to_string()).unwrap();
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+
+        let all = parse_array(&svc.list_values(Parameters(FilterRequest::default())).await.unwrap());
+        assert_eq!(all.as_array().unwrap().len(), 2);
+
+        // The filter is the join an agent actually has: the prop's type.
+        let tones = parse_array(
+            &svc.list_values(Parameters(FilterRequest { filter: Some("ToneRef".into()), ..Default::default() }))
+                .await
+                .unwrap(),
+        );
+        let tones = tones.as_array().unwrap();
+        assert_eq!(tones.len(), 1);
+        assert_eq!(tones[0]["spelled"], "tone::Primary");
+        assert_eq!(tones[0]["fqn"], "idea_theme::extensible::tone::Primary");
+        assert_eq!(tones[0]["docs"], "Built-in semantic tone.");
+    }
+
     #[tokio::test]
     async fn icon_set_tools_list_paginate_and_search() {
         let doc = serde_json::json!({
@@ -5516,6 +5577,7 @@ mod tests {
         assert_marked!("list_recipes", svc.list_recipes(Parameters(FilterRequest::default())));
         assert_marked!("list_icon_sets", svc.list_icon_sets(Parameters(FilterRequest::default())));
         assert_marked!("list_types", svc.list_types(Parameters(FilterRequest::default())));
+        assert_marked!("list_values", svc.list_values(Parameters(FilterRequest::default())));
         assert_marked!("list_primitives", svc.list_primitives(Parameters(FilterRequest::default())));
         assert_marked!("list_sdks", svc.list_sdks(Parameters(FilterRequest::default())));
         assert_marked!("list_macros", svc.list_macros(Parameters(FilterRequest::default())));

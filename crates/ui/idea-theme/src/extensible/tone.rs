@@ -14,7 +14,7 @@
 //! module within the app that `pub use idea_ui::extensible::tone::*`
 //! so call sites uniformly read `tone::Name` regardless of origin.
 
-use runtime_core::{Color, Tokenized};
+use runtime_core::{Color, IdealystSchema, Tokenized};
 
 use super::Tone;
 use crate::theme::IdeaTheme;
@@ -24,7 +24,8 @@ use crate::theme::IdeaTheme;
 macro_rules! builtin_tone {
     ($name:ident, $key:literal, $block:ident) => {
         /// Built-in semantic tone.
-        #[derive(Copy, Clone, Default)]
+        #[derive(Copy, Clone, Default, IdealystSchema)]
+        #[schema(value_of = "ToneRef", via = "tone")]
         pub struct $name;
 
         impl Tone for $name {

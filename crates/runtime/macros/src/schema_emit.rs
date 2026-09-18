@@ -11,9 +11,26 @@
 //! - one `mcp_catalog::TypeEntry { shape: Enum }` containing each
 //!   variant's name, docs, and payload (unit / tuple / struct).
 //!
+//! For a type carrying `#[schema(value_of = "ToneRef")]` (any shape):
+//! registers one `mcp_catalog::ValueEntry` — "this type is a value an
+//! author can write for a prop of type `ToneRef`". This is how the
+//! open-set vocabularies (idea-theme's tone/variant/kind/size/shape
+//! markers, and an app's own) become completable: nothing else in the
+//! program enumerates the implementors of an open trait. A unit or
+//! tuple struct with `value_of` emits ONLY the value entry (an empty
+//! `TypeEntry` for a marker is noise); named structs and enums keep
+//! their shape entry as well.
+//!
 //! Recognised `#[schema(...)]` field attributes:
 //! - `constraint = "..."` — free-form constraint hint. Surfaces as
 //!   `PropFieldSpec.constraint`. Empty when absent.
+//!
+//! Recognised `#[schema(...)]` type-level attributes:
+//! - `value_of = "ToneRef"` — short name of the prop type this value
+//!   coerces into.
+//! - `via = "tone"` — the module alias call sites write the value
+//!   through (`tone::Primary`). Optional; the catalog falls back to the
+//!   defining module's last segment.
 //!
 //! Like `mcp_emit`, this is no-op'd at the macro level when the
 //! `mcp` feature is off (call site in `lib.rs`).
@@ -26,19 +43,41 @@ pub(crate) fn emit(input: DeriveInput) -> TokenStream2 {
     let struct_ident = &input.ident;
     let struct_name_str = struct_ident.to_string();
     let type_docs = collect_field_docs(&input.attrs);
+    let value_of = collect_value_of(&input.attrs);
 
-    match &input.data {
+    let mut out = TokenStream2::new();
+    if let Some((target, via)) = &value_of {
+        out.extend(emit_value(&struct_name_str, &type_docs, target, via));
+    }
+    out.extend(match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(named) => emit_named_struct(&struct_name_str, &type_docs, &named.named),
-            // Tuple structs and unit structs: emit an empty `TypeEntry`
-            // (shape `Struct` with no fields) so consumers know the
-            // type exists, but no `PropsSchemaEntry` since prop names
-            // don't apply.
+            // A marker (`value_of`) is described by its value entry
+            // alone. Otherwise tuple/unit structs emit an empty
+            // `TypeEntry` (shape `Struct`, no fields) so consumers know
+            // the type exists, but no `PropsSchemaEntry` since prop
+            // names don't apply.
+            _ if value_of.is_some() => TokenStream2::new(),
             _ => emit_empty_struct(&struct_name_str, &type_docs),
         },
         Data::Enum(e) => emit_enum(&struct_name_str, &type_docs, e),
         // Unions: silently inert. The catalog has no use for them.
         Data::Union(_) => TokenStream2::new(),
+    });
+    out
+}
+
+fn emit_value(name_str: &str, docs: &str, value_of: &str, via: &str) -> TokenStream2 {
+    quote! {
+        ::runtime_core::__mcp::inventory::submit! {
+            ::runtime_core::__mcp::ValueEntry {
+                short_name: #name_str,
+                module_path: module_path!(),
+                docs: #docs,
+                value_of: #value_of,
+                via: #via,
+            }
+        }
     }
 }
 
@@ -193,6 +232,30 @@ fn collect_field_docs(attrs: &[syn::Attribute]) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// Parse the type-level `#[schema(value_of = "ToneRef", via = "tone")]`.
+/// `None` without `value_of`; `via` defaults to empty (the catalog
+/// derives the spelling from the defining module then).
+pub(crate) fn collect_value_of(attrs: &[syn::Attribute]) -> Option<(String, String)> {
+    let mut target = None;
+    let mut via = String::new();
+    for attr in attrs {
+        if !attr.path().is_ident("schema") {
+            continue;
+        }
+        let _ = attr.parse_nested_meta(|m| {
+            if m.path.is_ident("value_of") {
+                let s: syn::LitStr = m.value()?.parse()?;
+                target = Some(s.value());
+            } else if m.path.is_ident("via") {
+                let s: syn::LitStr = m.value()?.parse()?;
+                via = s.value();
+            }
+            Ok(())
+        });
+    }
+    target.map(|t| (t, via))
 }
 
 /// Parse `#[schema(constraint = "...")]` off a field. Quietly ignores

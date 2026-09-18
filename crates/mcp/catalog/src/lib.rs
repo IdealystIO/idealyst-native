@@ -186,6 +186,7 @@ inventory::collect!(GuideEntry);
 inventory::collect!(MethodEntry);
 inventory::collect!(AnimationEntry);
 inventory::collect!(TypeEntry);
+inventory::collect!(ValueEntry);
 inventory::collect!(RecipeEntry);
 inventory::collect!(ScopeEntry);
 inventory::collect!(SdkEntry);
@@ -801,6 +802,56 @@ pub struct IconSetEntry {
     pub icons: &'static [IconRef],
 }
 
+/// A named value that satisfies an **open-set** prop type — the answer
+/// to "what can I write after `tone =`?".
+///
+/// Closed enums answer that through [`TypeEntry`] (shape `Enum`): the
+/// variants are the values. But idea-theme's extensible vocabularies
+/// (`ToneRef`, `VariantRef`, `TypographyKindRef`, …) are open: a prop
+/// takes `impl Into<ToneRef>`, each value is a zero-sized marker struct
+/// implementing the trait, and an app adds its own by writing another
+/// impl. No enum lists them, so completion tooling had nothing to offer
+/// for exactly the props authors pick values for most. Each marker
+/// registers one of these instead.
+///
+/// Open — emitted by `#[derive(IdealystSchema)]` with a type-level
+/// `#[schema(value_of = "ToneRef", via = "tone")]`; the framework's
+/// built-ins and an app's custom markers register the same way.
+#[derive(Debug)]
+pub struct ValueEntry {
+    /// The marker's own name (`Primary`).
+    pub short_name: &'static str,
+    /// Where the marker is defined (`module_path!()`).
+    pub module_path: &'static str,
+    pub docs: &'static str,
+    /// Short name of the prop type this value coerces into (`ToneRef`).
+    /// The join key: a prop whose (unwrapped) type has this short name
+    /// accepts every value registered under it.
+    pub value_of: &'static str,
+    /// The module alias call sites reach the value through (`tone`),
+    /// per idea-theme's convention that a consumer re-exports the
+    /// vocabulary module and writes `tone::Primary`. Empty when the
+    /// author gave none — [`ValueEntry::spelled`] then falls back to
+    /// the defining module's last segment.
+    pub via: &'static str,
+}
+
+impl ValueEntry {
+    /// The value as written at a `ui!` prop: `tone::Primary`.
+    pub fn spelled(&self) -> String {
+        let via = if self.via.is_empty() {
+            self.module_path.rsplit("::").next().unwrap_or(self.module_path)
+        } else {
+            self.via
+        };
+        if via.is_empty() {
+            self.short_name.to_string()
+        } else {
+            format!("{via}::{}", self.short_name)
+        }
+    }
+}
+
 /// Generalized type-catalog entry. Subsumes [`PropsSchemaEntry`]:
 /// every props struct also produces a `TypeEntry` (shape `Struct`).
 /// Enums get a `TypeEntry` with shape `Enum` listing their variants
@@ -984,6 +1035,12 @@ pub fn types() -> impl Iterator<Item = &'static TypeEntry> {
     inventory::iter::<TypeEntry>()
 }
 
+/// Iterate every [`ValueEntry`] registered via
+/// `#[derive(IdealystSchema)]` + `#[schema(value_of = …)]`.
+pub fn values() -> impl Iterator<Item = &'static ValueEntry> {
+    inventory::iter::<ValueEntry>()
+}
+
 /// Iterate every [`ScopeEntry`] declared via `doc_scope!`.
 pub fn scopes() -> impl Iterator<Item = &'static ScopeEntry> {
     inventory::iter::<ScopeEntry>()
@@ -1072,6 +1129,7 @@ pub fn catalog_json() -> serde_json::Value {
         "methods": slice_array::<MethodEntry>(),
         "animations": slice_array::<AnimationEntry>(),
         "types": slice_array::<TypeEntry>(),
+        "values": slice_array::<ValueEntry>(),
         "tools": slice_array::<ToolEntry>(),
         "recipes": slice_array::<RecipeEntry>(),
         "scopes": slice_array::<ScopeEntry>(),
