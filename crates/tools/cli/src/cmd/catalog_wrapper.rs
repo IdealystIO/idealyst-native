@@ -479,8 +479,56 @@ fn main() {{
     fs::create_dir_all(wrapper_dir.join(".cargo"))
         .with_context(|| format!("create {}", wrapper_dir.join(".cargo").display()))?;
     write_if_changed(&wrapper_dir.join(".cargo/config.toml"), &cargo_config)?;
+    seed_lockfile(&wrapper_dir, anchor_root)?;
 
     Ok(wrapper_dir)
+}
+
+/// Make the wrapper resolve exactly what the project resolves.
+///
+/// The wrapper is its own cargo package with its own `Cargo.lock`, and
+/// cargo keeps a lock's versions for as long as they satisfy the
+/// requirements. The project's requirements are caret floors, so a
+/// `cargo update` in the project (idea-theme 1.5 → 1.6, say) changes
+/// nothing in the wrapper: its lock still satisfies `^1.5`, it keeps
+/// linking the old crate, and the catalog silently describes a
+/// framework the project no longer builds against — no values, no
+/// snippets, no new components, and nothing says why.
+///
+/// So the project's lockfile is copied in whenever it is newer than
+/// the wrapper's. Cargo then adds the wrapper's own entries on the
+/// next build (which makes the wrapper lock the newer of the two, so
+/// this is a no-op until the project's lock changes again), and every
+/// shared dependency is pinned to the version the project actually
+/// compiles. Members of a workspace share the root lock; walking up
+/// from the anchor project finds it either way.
+fn seed_lockfile(wrapper_dir: &Path, anchor_root: &Path) -> Result<()> {
+    let Some(project_lock) = anchor_root
+        .ancestors()
+        .map(|d| d.join("Cargo.lock"))
+        .find(|p| p.is_file())
+    else {
+        return Ok(());
+    };
+    let wrapper_lock = wrapper_dir.join("Cargo.lock");
+    let newer = match (fs::metadata(&project_lock), fs::metadata(&wrapper_lock)) {
+        (Ok(p), Ok(w)) => match (p.modified(), w.modified()) {
+            (Ok(p), Ok(w)) => p > w,
+            _ => true,
+        },
+        (Ok(_), Err(_)) => true,
+        (Err(_), _) => false,
+    };
+    if !newer {
+        return Ok(());
+    }
+    fs::copy(&project_lock, &wrapper_lock).with_context(|| {
+        format!(
+            "seed the catalog wrapper's Cargo.lock from {}",
+            project_lock.display()
+        )
+    })?;
+    Ok(())
 }
 
 /// A dependency crate the wrapper force-links so its component
@@ -1083,6 +1131,42 @@ mod tests {
         let dir = sidecar_target_dir(&src, Path::new("/proj"));
         assert_eq!(dir, PathBuf::from("/fw/target").join(SIDECAR_TARGET_DIR));
         assert_eq!(dir.parent().unwrap(), src.cargo_target_dir(Path::new("/proj")));
+    }
+
+    /// REGRESSION: the wrapper kept its own stale lock across a project
+    /// `cargo update`, so the catalog linked mcp-catalog 1.5.8 while the
+    /// project built against 1.7.0 — no values, no snippets, no error.
+    #[test]
+    fn regression_wrapper_lock_follows_the_projects_lock() {
+        let project = fake_project("lockseed");
+        let project_lock = project.join("Cargo.lock");
+        fs::write(&project_lock, "# version = 3\n[[package]]\nname = \"a\"\nversion = \"1.0.0\"\n").unwrap();
+
+        let wrapper = generate(&project).expect("generate");
+        let wrapper_lock = wrapper.join("Cargo.lock");
+        assert_eq!(
+            fs::read_to_string(&wrapper_lock).unwrap(),
+            fs::read_to_string(&project_lock).unwrap(),
+            "first generate seeds the wrapper lock from the project's"
+        );
+
+        // Cargo rewrote the wrapper lock (newer than the project's):
+        // leave it alone.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&wrapper_lock, "# wrapper-owned\n").unwrap();
+        generate(&project).expect("regenerate");
+        assert_eq!(fs::read_to_string(&wrapper_lock).unwrap(), "# wrapper-owned\n");
+
+        // The project's lock changed (a `cargo update`): it wins again.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&project_lock, "# version = 3\n[[package]]\nname = \"a\"\nversion = \"2.0.0\"\n").unwrap();
+        generate(&project).expect("regenerate after update");
+        assert!(
+            fs::read_to_string(&wrapper_lock).unwrap().contains("2.0.0"),
+            "a newer project lock re-seeds the wrapper"
+        );
+
+        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]
