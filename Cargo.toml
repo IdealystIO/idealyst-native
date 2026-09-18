@@ -436,7 +436,7 @@ premint-dump = { path = "crates/tools/premint-dump" }
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.5.2", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.8.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.7.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.8.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
@@ -523,9 +523,9 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
-idea-theme = { path = "crates/ui/idea-theme", version = "1.6.1", registry = "idealyst" }
+idea-theme = { path = "crates/ui/idea-theme", version = "1.6.2", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.2", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "1.11.1", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "1.11.2", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.3", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
