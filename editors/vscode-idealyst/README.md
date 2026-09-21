@@ -71,22 +71,24 @@ popup is empty.
 ## Which catalog a file sees
 
 The catalog is resolved **per file**, not per workspace, so monorepos
-work:
+work, and every shape is warmed as soon as you open a file — it should
+be loading before your first keystroke:
 
 - Walking up from the file, the nearest crate whose `Cargo.toml` has
   `[package.metadata.idealyst]` is the project. Its catalog holds its
   own components plus every component library it depends on — exactly
   the vocabulary usable from that file. In `crates/app-main/src/*.rs`
-  that's `crates/app-main`, and it loads as soon as you open such a
-  file.
-- A file in a plain library member (a shared component crate) belongs
-  to no single app, so it falls back to the workspace root, which
-  `catalog-json` expands into every idealyst member merged into one
-  catalog. That can be a large build in a big workspace, so it's only
-  started on an actual completion attempt inside `ui!`/`stylesheet!`
-  (or a refresh) — never on open.
-- Anything else (no idealyst crate above the file, no `[workspace]`
-  root) gets nothing, silently.
+  that's `crates/app-main`.
+- A file in a plain library crate that depends on the framework
+  (`runtime-core` / `idealyst` / `idea-ui` in its `Cargo.toml`) is handed
+  to `catalog-json` as that crate, and the CLI catalogs the **lightest
+  idealyst app that depends on it** — any app that pulls the library in
+  sees the same library components, and one app keeps the build small
+  even in a workspace with dozens of apps.
+- Anything else — a crate with no framework dependency, a file outside
+  any crate — gets nothing, silently, and never spawns the CLI. The
+  extension activates for every Rust file; other people's Rust must
+  stay untouched.
 
 This complements rust-analyzer, which owns types/expressions (including
 inside the macros via `ui!`'s IDE-recovery expansion) but cannot know

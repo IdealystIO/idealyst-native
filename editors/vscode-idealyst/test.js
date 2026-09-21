@@ -465,13 +465,15 @@ const mk = (rel, body) => {
 };
 mk("ws/Cargo.toml", '[workspace]\nmembers = ["crates/*"]\n');
 mk("ws/crates/app/Cargo.toml", '[package]\nname = "app"\n[package.metadata.idealyst]\nbundle_id = "x"\n');
-mk("ws/crates/lib/Cargo.toml", '[package]\nname = "lib"\n');
+mk("ws/crates/lib/Cargo.toml", '[package]\nname = "lib"\n[dependencies]\nruntime-core = { workspace = true }\n');
+mk("ws/crates/util/Cargo.toml", '[package]\nname = "util"\n[dependencies]\nserde = "1"\n');
 mk("ws/crates/app/nested/Cargo.toml", '[package]\nname = "nested"\n');
 mk("plain/Cargo.toml", '[package]\nname = "plain"\n');
 mk("single/Cargo.toml", '[package]\nname = "single"\n[package.metadata.idealyst]\n');
 const appFile = mk("ws/crates/app/src/lib.rs", "");
 const libFile = mk("ws/crates/lib/src/lib.rs", "");
 const nestedFile = mk("ws/crates/app/nested/src/lib.rs", "");
+const utilFile = mk("ws/crates/util/src/lib.rs", "");
 const plainFile = mk("plain/src/lib.rs", "");
 const singleFile = mk("single/src/lib.rs", "");
 const ws = path.join(tmp, "ws");
@@ -481,9 +483,13 @@ check("projectFor: workspace member app resolves to the member, exactly",
     appProj && appProj.dir === path.join(ws, "crates/app") && appProj.exact === true,
     JSON.stringify(appProj));
 const libProj = projectFor(libFile, ws);
-check("projectFor: plain lib member falls back to the workspace root (merged, inexact)",
-    libProj && libProj.dir === ws && libProj.exact === false,
+check("projectFor: plain lib member resolves to its own crate (the CLI picks a dependent app), inexact",
+    libProj && libProj.dir === path.join(ws, "crates/lib") && libProj.exact === false,
     JSON.stringify(libProj));
+const looseFile = mk("ws/tools/loose.rs", "");
+check("projectFor: a file outside any crate is nobody's", projectFor(looseFile, ws) === null);
+check("projectFor: a member with no framework dependency is not ours (no CLI spawn in foreign Rust)",
+    projectFor(utilFile, ws) === null);
 const nestedProj = projectFor(nestedFile, ws);
 check("projectFor: non-idealyst inner crate walks up to the enclosing idealyst crate",
     nestedProj && nestedProj.dir === path.join(ws, "crates/app") && nestedProj.exact === true,

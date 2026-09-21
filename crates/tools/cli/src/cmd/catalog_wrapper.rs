@@ -199,7 +199,16 @@ pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
     if build_ios::parse_manifest(&root).is_ok() {
         return Ok(vec![root]);
     }
-    let found = discover_workspace_projects(&root)?;
+    let meta = workspace_metadata(&root)?;
+    // A plain library member: the lightest idealyst app that depends on
+    // it (see `dependent_project`). Its catalog holds the library's
+    // components plus everything the library itself depends on — the
+    // vocabulary usable from the library — at the cost of one app
+    // build rather than every member's.
+    if let Some(app) = dependent_project(&meta, &root) {
+        return Ok(vec![app]);
+    }
+    let found = collect_workspace_projects(&meta);
     if found.is_empty() {
         anyhow::bail!(
             "{} is a cargo workspace with no idealyst projects in it. An \
@@ -212,13 +221,13 @@ pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-/// Run `cargo metadata` at a workspace root and return the member
-/// directories that are idealyst projects. Cargo resolves `members`
-/// globs for us, which hand-globbing would get wrong.
-fn discover_workspace_projects(workspace_root: &Path) -> Result<Vec<PathBuf>> {
-    let manifest_path = workspace_root.join("Cargo.toml");
+/// `cargo metadata` for the workspace `dir` belongs to — with the
+/// resolve graph, which [`dependent_project`] walks. Cargo resolves
+/// `members` globs for us, which hand-globbing would get wrong.
+fn workspace_metadata(dir: &Path) -> Result<Value> {
+    let manifest_path = dir.join("Cargo.toml");
     let output = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .args(["metadata", "--format-version", "1"])
         .arg("--manifest-path")
         .arg(&manifest_path)
         .output()
@@ -230,9 +239,82 @@ fn discover_workspace_projects(workspace_root: &Path) -> Result<Vec<PathBuf>> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .with_context(|| format!("parse cargo metadata for {}", manifest_path.display()))?;
-    Ok(collect_workspace_projects(&json))
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parse cargo metadata for {}", manifest_path.display()))
+}
+
+/// When `dir` is a workspace member that is NOT itself an idealyst
+/// project (a shared component library, say), the directory of the
+/// idealyst member that depends on it — transitively, through the
+/// resolve graph — with the fewest resolved dependencies, ties broken
+/// by name. `None` when `dir` isn't a member or nothing idealyst
+/// depends on it.
+///
+/// One dependent, not all of them: every app that pulls the library
+/// in sees the same library components, so any one gives the library's
+/// vocabulary, and the lightest keeps the catalog build bounded. The
+/// framework repo has dozens of examples depending on idea-ui; wrapping
+/// them all to describe idea-ui was the build that made editor tooling
+/// refuse to warm the catalog for a library file.
+fn dependent_project(meta: &Value, dir: &Path) -> Option<PathBuf> {
+    let packages = meta.get("packages")?.as_array()?;
+    let manifest = dir.join("Cargo.toml");
+    let lib_id = packages
+        .iter()
+        .find(|p| {
+            p.get("manifest_path")
+                .and_then(|m| m.as_str())
+                .is_some_and(|m| Path::new(m) == manifest)
+        })?
+        .get("id")?
+        .as_str()?;
+    let members: Vec<&str> = meta
+        .get("workspace_members")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    // Only a member is ours to describe; a registry crate's directory
+    // (a `~/.cargo/registry` path an editor might hand us) is not.
+    if !members.contains(&lib_id) {
+        return None;
+    }
+    let nodes = meta.pointer("/resolve/nodes")?.as_array()?;
+    let deps_of = |id: &str| -> Vec<&str> {
+        nodes
+            .iter()
+            .find(|n| n.get("id").and_then(|i| i.as_str()) == Some(id))
+            .and_then(|n| n.get("deps").and_then(|d| d.as_array()))
+            .map(|d| d.iter().filter_map(|x| x.get("pkg").and_then(|p| p.as_str())).collect())
+            .unwrap_or_default()
+    };
+    // Transitive closure of a package's resolved deps.
+    let closure = |id: &str| -> std::collections::BTreeSet<&str> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stack = deps_of(id);
+        while let Some(d) = stack.pop() {
+            if seen.insert(d) {
+                stack.extend(deps_of(d));
+            }
+        }
+        seen
+    };
+    packages
+        .iter()
+        .filter(|p| p.get("id").and_then(|i| i.as_str()).is_some_and(|id| members.contains(&id)))
+        .filter(|p| p.get("metadata").and_then(|m| m.get("idealyst")).is_some())
+        .filter_map(|p| {
+            let id = p.get("id")?.as_str()?;
+            let deps = closure(id);
+            if !deps.contains(lib_id) {
+                return None;
+            }
+            let name = p.get("name")?.as_str()?;
+            let root = Path::new(p.get("manifest_path")?.as_str()?).parent()?.to_path_buf();
+            Some((deps.len(), name.to_string(), root))
+        })
+        .min()
+        .map(|(_, _, root)| root)
 }
 
 /// Pure core of [`discover_workspace_projects`], unit-testable against a
@@ -1021,6 +1103,51 @@ mod tests {
             collect_workspace_projects(&meta),
             vec![PathBuf::from("/w/a"), PathBuf::from("/w/z")]
         );
+    }
+
+    /// A plain library member resolves to the LIGHTEST idealyst app
+    /// that (transitively) depends on it — not every member.
+    #[test]
+    fn dependent_project_picks_the_lightest_transitive_dependent() {
+        let meta = json!({
+            "workspace_members": ["lib", "mid", "heavy", "light", "other"],
+            "packages": [
+                {"id": "lib",   "name": "ui-shared", "manifest_path": "/ws/crates/ui-shared/Cargo.toml"},
+                {"id": "mid",   "name": "mid",       "manifest_path": "/ws/crates/mid/Cargo.toml"},
+                {"id": "heavy", "name": "app-a",     "manifest_path": "/ws/crates/app-a/Cargo.toml",
+                 "metadata": {"idealyst": {}}},
+                {"id": "light", "name": "app-b",     "manifest_path": "/ws/crates/app-b/Cargo.toml",
+                 "metadata": {"idealyst": {}}},
+                {"id": "other", "name": "app-c",     "manifest_path": "/ws/crates/app-c/Cargo.toml",
+                 "metadata": {"idealyst": {}}},
+                {"id": "serde", "name": "serde",     "manifest_path": "/reg/serde/Cargo.toml"},
+                {"id": "wgpu",  "name": "wgpu",      "manifest_path": "/reg/wgpu/Cargo.toml"}
+            ],
+            "resolve": {"nodes": [
+                {"id": "lib",   "deps": [{"pkg": "serde"}]},
+                {"id": "mid",   "deps": [{"pkg": "lib"}]},
+                // heavy reaches lib directly but carries more deps
+                {"id": "heavy", "deps": [{"pkg": "lib"}, {"pkg": "mid"}, {"pkg": "wgpu"}]},
+                // light reaches lib only through mid
+                {"id": "light", "deps": [{"pkg": "mid"}]},
+                // other doesn't depend on lib at all
+                {"id": "other", "deps": [{"pkg": "serde"}]},
+                {"id": "serde", "deps": []},
+                {"id": "wgpu",  "deps": [{"pkg": "serde"}]}
+            ]}
+        });
+        assert_eq!(
+            dependent_project(&meta, Path::new("/ws/crates/ui-shared")),
+            Some(PathBuf::from("/ws/crates/app-b")),
+            "app-b's closure (mid, lib, serde) is smaller than app-a's (lib, mid, wgpu, serde)"
+        );
+        // An idealyst project itself, or a non-member, is not this path's business.
+        assert_eq!(dependent_project(&meta, Path::new("/ws")), None);
+        // A package that isn't a workspace member is not ours to describe,
+        // even though an idealyst member depends on it.
+        assert_eq!(dependent_project(&meta, Path::new("/reg/serde")), None);
+        // A member nothing idealyst depends on has no dependent.
+        assert_eq!(dependent_project(&meta, Path::new("/ws/crates/app-c")), None);
     }
 
     #[test]

@@ -68,39 +68,52 @@ function isIdealystManifest(manifest) {
  * Decide which directory the catalog for `filePath` comes from.
  *
  * Walk up from the file to the workspace folder looking for the nearest
- * crate whose Cargo.toml is an idealyst project; that crate's catalog
- * (its own components + every component library it depends on) is
- * exactly the vocabulary usable from that file. This is what makes a
- * monorepo work: in `crates/app-main/src/*.rs` the answer is
- * `crates/app-main`, not the workspace root.
+ * crate. An idealyst project (`[package.metadata.idealyst]`) is handed
+ * over as-is: its catalog holds its own components plus every component
+ * library it depends on — exactly the vocabulary usable from that file.
+ * A plain library crate is handed over too, and `catalog-json` resolves
+ * it to the LIGHTEST idealyst app that depends on it (any app that pulls
+ * the library in sees the same library components, and one app keeps
+ * the build bounded — the framework repo has dozens of examples on
+ * idea-ui). A file outside any crate is nobody's: `null`.
  *
- * A file that belongs to no idealyst crate — a shared component library
- * inside the workspace — falls back to the workspace root, which the
- * CLI expands into every idealyst member (`resolve_project_roots`) so
- * the library's components still show, merged. That fallback can be a
- * big build in a large workspace, so it's only ever taken lazily (on a
- * completion attempt or an explicit refresh — never on activation).
+ * Every shape is cheap enough to warm on open, so the catalog is
+ * loading before the first keystroke. (The earlier design routed a
+ * library file to the merged every-member catalog and, to avoid that
+ * build in the framework repo, only started it on a completion inside
+ * `ui!` — which read as "the extension waits for real code before it
+ * does anything".)
  *
- * Returns `{ dir, exact }` or `null` when nothing here is idealyst.
- * The old gate checked only the workspace root's manifest and so was
- * silently inert in every workspace-shaped project.
+ * Returns `{ dir, exact }` — `exact` when the crate is itself an
+ * idealyst project — or `null` when nothing here is idealyst. The old
+ * gate checked only the workspace root's manifest and so was silently
+ * inert in every workspace-shaped project.
  */
 function projectFor(filePath, folder) {
     let dir = path.dirname(filePath);
     const stop = path.resolve(folder);
+    let library = null;
     for (;;) {
         const manifest = manifestAt(dir);
         if (manifest && isIdealystManifest(manifest)) return { dir, exact: true };
+        // A crate that depends on the framework may host components —
+        // the CLI's own signal. Anything else is somebody else's Rust
+        // and must not spawn the CLI at all (this extension activates
+        // for every Rust file).
+        if (!library && manifest && /^\s*\[package\]/m.test(manifest) && usesFramework(manifest)) {
+            library = dir;
+        }
         if (path.resolve(dir) === stop) break;
         const parent = path.dirname(dir);
         if (parent === dir) break;
         dir = parent;
     }
-    const rootManifest = manifestAt(stop);
-    if (rootManifest && rootManifest.includes("[workspace]")) {
-        return { dir: stop, exact: false };
-    }
-    return null;
+    return library ? { dir: library, exact: false } : null;
+}
+
+/** Does this Cargo.toml declare a framework crate as a dependency? */
+function usesFramework(manifest) {
+    return /^\s*(runtime-core|idealyst|idea-ui)\s*=/m.test(manifest);
 }
 
 /**
@@ -811,11 +824,9 @@ function completeAt(document, position) {
     const inStylesheet = insideStylesheetMacro(text, offset);
     const inUi = !inStylesheet && insideUiMacro(text, offset);
 
-    // Lazy first load. A completion inside one of our macros always
-    // starts it; plain-Rust authoring hints only start it for an exact
-    // project, so typing in a big workspace's shared library never
-    // kicks off the merged multi-app build by itself.
-    if (inStylesheet || inUi || project.exact) loadCatalog(project.dir);
+    // Normally already warm (`warmFor` on open); this is the fallback
+    // for a folder whose editor was never "active".
+    loadCatalog(project.dir);
     const catalog = catalogs.get(project.dir);
     if (!catalog) return undefined;
 
@@ -935,17 +946,16 @@ function completeAt(document, position) {
 // ---------------------------------------------------------------------------
 
 /**
- * Warm the catalog for the crate the active editor sits in — but only
- * when that crate is itself an idealyst project. The workspace-root
- * fallback (`exact: false`) can wrap dozens of members in a big
- * monorepo, so it waits for an actual completion request.
+ * Warm the catalog for the crate the active editor sits in, so it is
+ * ready before the first keystroke. Every resolution `projectFor`
+ * returns is a bounded build (one app), so there is nothing to defer.
  */
 function warmFor(editor) {
     if (!editor || editor.document.languageId !== "rust") return;
     const folderUri = vscode.workspace.getWorkspaceFolder(editor.document.uri);
     if (!folderUri) return;
     const project = projectFor(editor.document.uri.fsPath, folderUri.uri.fsPath);
-    if (project && project.exact) loadCatalog(project.dir);
+    if (project) loadCatalog(project.dir);
 }
 
 function activate(context) {

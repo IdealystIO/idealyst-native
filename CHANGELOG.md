@@ -220,6 +220,19 @@ each entry links to its migration guide.
   catalog version their annotations are written for, instead of
   reaching it through runtime-core's floors.
 
+- **`catalog-json` on a library crate catalogs its lightest dependent
+  app; the extension warms every file on open.** A library member
+  (`crates/ui-shared`) used to expand to every idealyst member of the
+  workspace, and the extension refused to start that build on open —
+  it waited for a completion inside `ui!`, which read as "nothing
+  happens until I type real code". `resolve_project_roots` now walks
+  the resolve graph and picks the idealyst member that transitively
+  depends on the library with the fewest resolved dependencies (any
+  dependent sees the same library components; one keeps the build
+  bounded). The extension hands a framework-dependent library crate
+  over as itself and warms on open; a crate with no framework
+  dependency, or a file outside any crate, never spawns the CLI.
+
 - **The catalog wrapper's `Cargo.lock` follows the project's.** The
   wrapper is its own cargo package; a `cargo update` in the project
   never reached its lock, so the catalog silently linked whatever the
