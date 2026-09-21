@@ -19,9 +19,16 @@
 //! the root as a project and produced nothing, which the VS Code
 //! extension surfaced as "no completion at all" in monorepos.
 //!
+//! `--deps-only` builds the other wrapper flavour: no workspace member is
+//! linked, only the non-member crates the projects depend on (see
+//! [`generate_deps_only`]). That is the half editor tooling wants from
+//! a compile — the members it reads from source with `catalog-scan`.
+//!
 //! First run compiles the wrapper (the project graph with the `catalog`
 //! feature on) — minutes cold, seconds warm; cargo caches everything.
 //! Build chatter goes to stderr; stdout stays pure JSON.
+//!
+//! [`generate_deps_only`]: super::catalog_wrapper::generate_deps_only
 //!
 //! [`resolve_project_roots`]: super::catalog_wrapper::resolve_project_roots
 
@@ -35,6 +42,13 @@ pub struct Args {
     /// Project directory.
     #[arg(default_value = ".")]
     pub dir: PathBuf,
+    /// Link only the project's dependencies (idea-ui, icon packs, SDKs),
+    /// never a workspace member: the catalog of what the project USES.
+    /// Pair with `catalog-scan` for what it writes. A compile error in
+    /// the project can't break this build, and it only re-runs when the
+    /// dependency graph changes.
+    #[arg(long)]
+    pub deps_only: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -43,8 +57,12 @@ pub fn run(args: Args) -> Result<()> {
 
     let roots = super::catalog_wrapper::resolve_project_roots(&root)
         .context("resolve the idealyst project(s) to catalog")?;
-    let wrapper_dir = super::catalog_wrapper::generate_for_roots(&roots)
-        .context("generate the catalog wrapper crate")?;
+    let wrapper_dir = if args.deps_only {
+        super::catalog_wrapper::generate_deps_only(&roots)
+    } else {
+        super::catalog_wrapper::generate_for_roots(&roots)
+    }
+    .context("generate the catalog wrapper crate")?;
 
     // Inherit stdout so the JSON streams straight through; `-q` keeps
     // cargo's progress off stdout (diagnostics still reach stderr).

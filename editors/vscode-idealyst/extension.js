@@ -122,6 +122,29 @@ function projectFor(filePath, folder) {
     return library ? { dir: library, exact: false } : null;
 }
 
+/**
+ * Names of the crates a Cargo.toml lists under `[dependencies]` (and
+ * target-specific dependency tables), spelled as module roots
+ * (`crewforge-ui-shared` → `crewforge_ui_shared`). Enough to know
+ * which workspace members' scans belong in a crate's catalog.
+ */
+function manifestDeps(dir) {
+    const manifest = manifestAt(dir) || "";
+    const deps = new Set();
+    let inDeps = false;
+    for (const line of manifest.split("\n")) {
+        const section = line.match(/^\s*\[([^\]]+)\]/);
+        if (section) {
+            inDeps = /(^|\.)dependencies$/.test(section[1]);
+            continue;
+        }
+        if (!inDeps) continue;
+        const m = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
+        if (m) deps.add(m[1].replace(/-/g, "_"));
+    }
+    return deps;
+}
+
 /** Does this Cargo.toml declare a framework crate as a dependency? */
 function usesFramework(manifest) {
     return /^\s*(runtime-core|idealyst|idea-ui)\s*=/m.test(manifest);
@@ -138,12 +161,15 @@ function loadCatalog(dir, { force = false } = {}) {
     loading.add(dir);
 
     const cli = cliPath();
-    log(`loading catalog: ${cli} catalog-json ${dir}`);
+    log(`loading catalog: ${cli} catalog-json --deps-only ${dir}`);
     const status = vscode.window.setStatusBarMessage(
         "$(sync~spin) idealyst: building catalog… (first run compiles the project)"
     );
     const started = Date.now();
-    const child = cp.spawn(cli, ["catalog-json", dir], { cwd: dir });
+    // `--deps-only`: link nothing of the workspace's own — members come
+    // from `catalog-scan` — so a compile error in the author's code can't
+    // take this build down, and it only re-runs when the graph changes.
+    const child = cp.spawn(cli, ["catalog-json", "--deps-only", dir], { cwd: dir });
     const stdout = [];
     child.stdout.on("data", (b) => stdout.push(b));
     child.stderr.on("data", (b) => {
@@ -209,7 +235,7 @@ function scanCrate(dir) {
         } else {
             try {
                 const json = JSON.parse(Buffer.concat(stdout).toString());
-                scans.set(dir, { crate: json.scanned_crate || "", cat: digest(json) });
+                scans.set(dir, { crate: json.scanned_crate || "", cat: digest(json), deps: manifestDeps(dir) });
                 remerge();
                 log(
                     `scanned ${dir} in ${Date.now() - started}ms: ` +
@@ -235,9 +261,51 @@ function scanCrate(dir) {
  */
 function remerge() {
     const empty = digest({});
+    const byCrate = new Map([...scans.values()].map((sc) => [sc.crate, sc]));
     const dirs = new Set([...bases.keys(), ...scans.keys()]);
     for (const dir of dirs) {
-        catalogs.set(dir, mergeScans(bases.get(dir) || empty, [...scans.values()]));
+        // The crate itself plus every scanned crate reachable through
+        // `[dependencies]` — so app-main sees ui-shared's components but
+        // not app-checkin's screens.
+        const own = scans.get(dir);
+        const rootCrate = own ? own.crate : crateNameFor(path.join(dir, "src", "lib.rs"));
+        const rootDeps = own ? own.deps : manifestDeps(dir);
+        const wanted = new Set([rootCrate]);
+        const stack = [...rootDeps];
+        while (stack.length) {
+            const c = stack.pop();
+            if (wanted.has(c) || !byCrate.has(c)) continue;
+            wanted.add(c);
+            stack.push(...byCrate.get(c).deps);
+        }
+        const relevant = [...scans.values()].filter((sc) => wanted.has(sc.crate));
+        catalogs.set(dir, mergeScans(bases.get(dir) || empty, relevant));
+    }
+}
+
+/**
+ * Scan every framework-dependent crate of the workspace once, so a
+ * crate's catalog can include the members it depends on (the compiled
+ * catalog links none of them). `findFiles` is async and skips
+ * `target/`; each hit is the same crate check `projectFor` applies.
+ */
+async function scanWorkspace(folder) {
+    let manifests = [];
+    try {
+        manifests = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(folder, "**/Cargo.toml"),
+            "{**/target/**,**/node_modules/**}"
+        );
+    } catch (e) {
+        log(`workspace scan skipped: ${e.message}`);
+        return;
+    }
+    for (const uri of manifests) {
+        const dir = path.dirname(uri.fsPath);
+        const manifest = manifestAt(dir) || "";
+        if (/^\s*\[package\]/m.test(manifest) && usesFramework(manifest) && !scans.has(dir)) {
+            scanCrate(dir);
+        }
     }
 }
 
@@ -1129,10 +1197,26 @@ function completeAt(document, position) {
     }
 
     // Tag completion (child position).
+    const crateName = crateNameFor(document.uri.fsPath);
     return catalog.tags.map((t) => {
         const it = new vscode.CompletionItem(t.name, t.kind);
         it.detail = t.detail;
         it.documentation = mdDocs(t);
+        // `Tag(│)` — or `Tag(│) { }` for a container (it takes children)
+        // — so the next keystroke lands in the prop list.
+        const props = catalog.propsByTag.get(t.name) || [];
+        const container = props.some((p) => p.name === "children");
+        it.insertText = new vscode.SnippetString(container ? `${t.name}($1) {\n\t$0\n}` : `${t.name}($1)`);
+        // A component from another crate needs its `use`, like a value does.
+        if (t.modulePath) {
+            const plan = importPlan(text, `${t.modulePath}::${t.name}`, crateName);
+            if (plan) {
+                it.additionalTextEdits = [
+                    vscode.TextEdit.insert(document.positionAt(plan.offset), plan.text),
+                ];
+                it.detail = `${it.detail}  (+ ${plan.text.trim()})`;
+            }
+        }
         return it;
     });
 }
@@ -1202,6 +1286,7 @@ function activate(context) {
         vscode.workspace.onDidSaveTextDocument(onSaved)
     );
     warmFor(vscode.window.activeTextEditor);
+    for (const f of vscode.workspace.workspaceFolders || []) scanWorkspace(f);
 }
 
 function deactivate() {}
@@ -1225,6 +1310,8 @@ module.exports = {
         hoverAt,
         mergeScans,
         scanCrate,
+        manifestDeps,
+        scans,
         rustContext,
         authoringItems,
         onAssignmentRhs,

@@ -73,19 +73,23 @@ Theme-token completion inside `stylesheet! { … }` blocks:
 
 Data comes from two sources, merged:
 
-- **`idealyst catalog-json`** — the compiled catalog: the project's
-  dependencies (idea-ui's components, values, tokens, primitives,
-  macros, utilities) and the project itself, as the real crates
-  register them. Built once per project (minutes cold, seconds warm) and
-  cached in memory.
-- **`idealyst catalog-scan`** — the project's own components, props,
-  `IdealystSchema` enums and `value_of` markers, read from its source
-  with `syn` in about a second. Runs when a file is first opened and on
-  **every save**, and its entries replace the compiled catalog's for
-  that crate — so a component you just wrote completes, hovers and
-  takes prop values the moment you save, without waiting for a build.
-  A file that doesn't parse is skipped and the rest still count, so a
-  half-typed edit never blanks the catalog.
+- **`idealyst catalog-json --deps-only`** — the compiled catalog of
+  what the crate **uses**: idea-ui's components and values, icon packs,
+  SDK crates, tokens, primitives, macros, utilities — as the real crates
+  register them. It links none of the workspace's own crates, so a
+  compile error in your code can never take it down, and it only
+  rebuilds when the dependency graph changes (minutes cold, seconds
+  warm).
+- **`idealyst catalog-scan`** — what the workspace **writes**: every
+  framework-dependent crate's components, props, `IdealystSchema` enums
+  and `value_of` markers, read from source with `syn` in about a
+  second. Every such crate is scanned on activation and re-scanned on
+  **every save**, so a component you just wrote completes, hovers and
+  takes prop values the moment you save. A file that doesn't parse is
+  skipped and the rest still count, so a half-typed edit never blanks
+  the catalog. A crate's catalog includes the scans of the crates it
+  depends on (`app-main` sees `ui-shared`'s components, not
+  `app-checkin`'s screens).
 
 `Idealyst: Refresh Catalog` (command palette) rebuilds both, e.g. after
 a `cargo update`. Everything the CLI prints — and every load/failure —
@@ -104,10 +108,9 @@ be loading before your first keystroke:
   that's `crates/app-main`.
 - A file in a plain library crate that depends on the framework
   (`runtime-core` / `idealyst` / `idea-ui` in its `Cargo.toml`) is handed
-  to `catalog-json` as that crate, and the CLI catalogs the **lightest
-  idealyst app that depends on it** — any app that pulls the library in
-  sees the same library components, and one app keeps the build small
-  even in a workspace with dozens of apps.
+  to `catalog-json` as that crate: its compiled catalog is the library's
+  own dependencies — the lightest set that holds everything usable from
+  inside it.
 - Anything else — a crate with no framework dependency, a file outside
   any crate — gets nothing, silently, and never spawns the CLI. The
   extension activates for every Rust file; other people's Rust must

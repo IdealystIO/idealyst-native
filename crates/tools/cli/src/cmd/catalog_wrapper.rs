@@ -119,6 +119,32 @@ pub fn generate_for_roots(project_roots: &[PathBuf]) -> Result<PathBuf> {
     generate_with(project_roots, "catalog", "catalog", "dump_catalog_json")
 }
 
+/// Like [`generate_for_roots`], but the wrapper links NONE of the
+/// workspace's own crates — only the non-member crates in the projects'
+/// transitive graph that depend on `runtime-core` (idea-ui, an icon
+/// pack, an SDK). The catalog it produces is the dependency half:
+/// everything the projects use but don't write. Editor tooling pairs it
+/// with `catalog-scan` for the members, so a compile error in the
+/// author's code can no longer take the whole catalog down, and the
+/// build re-runs only when the dependency graph changes.
+///
+/// Its own wrapper dir (`catalog-deps`) and lock, sharing the sidecar
+/// target dir with the full wrapper so compiled dependencies are cached
+/// once.
+pub fn generate_deps_only(project_roots: &[PathBuf]) -> Result<PathBuf> {
+    generate_with_link(project_roots, "catalog-deps", "catalog", "dump_catalog_json", Link::DepsOnly)
+}
+
+/// What a generated wrapper links.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Link {
+    /// The projects themselves plus their direct component-library deps.
+    Projects,
+    /// Only non-member crates reachable from the projects (see
+    /// [`generate_deps_only`]).
+    DepsOnly,
+}
+
 /// Directory name for a wrapper covering `projects`.
 ///
 /// One project keeps its own name, so a single-project wrapper lands at
@@ -195,19 +221,16 @@ pub fn sidecar_target_dir(source: &FrameworkSource, project_root: &Path) -> Path
 pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("canonicalize {}", root.display()))?;
-    // A real project: wrap exactly it.
+    // Any crate with a `[package]` — an app, or a plain library member —
+    // is wrapped exactly. A library's wrapper links the library plus
+    // its own dependencies, which is the lightest catalog that holds
+    // everything usable from inside it (`parse_manifest` needs no
+    // `[package.metadata.idealyst]`; that section only configures the
+    // app targets).
     if build_ios::parse_manifest(&root).is_ok() {
         return Ok(vec![root]);
     }
     let meta = workspace_metadata(&root)?;
-    // A plain library member: the lightest idealyst app that depends on
-    // it (see `dependent_project`). Its catalog holds the library's
-    // components plus everything the library itself depends on — the
-    // vocabulary usable from the library — at the cost of one app
-    // build rather than every member's.
-    if let Some(app) = dependent_project(&meta, &root) {
-        return Ok(vec![app]);
-    }
     let found = collect_workspace_projects(&meta);
     if found.is_empty() {
         anyhow::bail!(
@@ -221,8 +244,7 @@ pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-/// `cargo metadata` for the workspace `dir` belongs to — with the
-/// resolve graph, which [`dependent_project`] walks. Cargo resolves
+/// `cargo metadata` for the workspace `dir` belongs to. Cargo resolves
 /// `members` globs for us, which hand-globbing would get wrong.
 fn workspace_metadata(dir: &Path) -> Result<Value> {
     let manifest_path = dir.join("Cargo.toml");
@@ -241,80 +263,6 @@ fn workspace_metadata(dir: &Path) -> Result<Value> {
     }
     serde_json::from_slice(&output.stdout)
         .with_context(|| format!("parse cargo metadata for {}", manifest_path.display()))
-}
-
-/// When `dir` is a workspace member that is NOT itself an idealyst
-/// project (a shared component library, say), the directory of the
-/// idealyst member that depends on it — transitively, through the
-/// resolve graph — with the fewest resolved dependencies, ties broken
-/// by name. `None` when `dir` isn't a member or nothing idealyst
-/// depends on it.
-///
-/// One dependent, not all of them: every app that pulls the library
-/// in sees the same library components, so any one gives the library's
-/// vocabulary, and the lightest keeps the catalog build bounded. The
-/// framework repo has dozens of examples depending on idea-ui; wrapping
-/// them all to describe idea-ui was the build that made editor tooling
-/// refuse to warm the catalog for a library file.
-fn dependent_project(meta: &Value, dir: &Path) -> Option<PathBuf> {
-    let packages = meta.get("packages")?.as_array()?;
-    let manifest = dir.join("Cargo.toml");
-    let lib_id = packages
-        .iter()
-        .find(|p| {
-            p.get("manifest_path")
-                .and_then(|m| m.as_str())
-                .is_some_and(|m| Path::new(m) == manifest)
-        })?
-        .get("id")?
-        .as_str()?;
-    let members: Vec<&str> = meta
-        .get("workspace_members")?
-        .as_array()?
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    // Only a member is ours to describe; a registry crate's directory
-    // (a `~/.cargo/registry` path an editor might hand us) is not.
-    if !members.contains(&lib_id) {
-        return None;
-    }
-    let nodes = meta.pointer("/resolve/nodes")?.as_array()?;
-    let deps_of = |id: &str| -> Vec<&str> {
-        nodes
-            .iter()
-            .find(|n| n.get("id").and_then(|i| i.as_str()) == Some(id))
-            .and_then(|n| n.get("deps").and_then(|d| d.as_array()))
-            .map(|d| d.iter().filter_map(|x| x.get("pkg").and_then(|p| p.as_str())).collect())
-            .unwrap_or_default()
-    };
-    // Transitive closure of a package's resolved deps.
-    let closure = |id: &str| -> std::collections::BTreeSet<&str> {
-        let mut seen = std::collections::BTreeSet::new();
-        let mut stack = deps_of(id);
-        while let Some(d) = stack.pop() {
-            if seen.insert(d) {
-                stack.extend(deps_of(d));
-            }
-        }
-        seen
-    };
-    packages
-        .iter()
-        .filter(|p| p.get("id").and_then(|i| i.as_str()).is_some_and(|id| members.contains(&id)))
-        .filter(|p| p.get("metadata").and_then(|m| m.get("idealyst")).is_some())
-        .filter_map(|p| {
-            let id = p.get("id")?.as_str()?;
-            let deps = closure(id);
-            if !deps.contains(lib_id) {
-                return None;
-            }
-            let name = p.get("name")?.as_str()?;
-            let root = Path::new(p.get("manifest_path")?.as_str()?).parent()?.to_path_buf();
-            Some((deps.len(), name.to_string(), root))
-        })
-        .min()
-        .map(|(_, _, root)| root)
 }
 
 /// Pure core of [`discover_workspace_projects`], unit-testable against a
@@ -361,6 +309,16 @@ pub fn generate_with(
     subdir: &str,
     bin_name: &str,
     dump_call: &str,
+) -> Result<PathBuf> {
+    generate_with_link(project_roots, subdir, bin_name, dump_call, Link::Projects)
+}
+
+fn generate_with_link(
+    project_roots: &[PathBuf],
+    subdir: &str,
+    bin_name: &str,
+    dump_call: &str,
+    link: Link,
 ) -> Result<PathBuf> {
     if project_roots.is_empty() {
         anyhow::bail!("no project roots to build a catalog wrapper for");
@@ -433,7 +391,7 @@ pub fn generate_with(
     // collide.
     let mut forced: Vec<ForcedDep> = Vec::new();
     for (root, manifest) in &projects {
-        for dep in discover_forced_deps(root, &source, &manifest.name) {
+        for dep in discover_forced_deps(root, &source, &manifest.name, link) {
             if project_names.contains(&dep.pkg_name.as_str()) {
                 continue;
             }
@@ -457,11 +415,18 @@ pub fn generate_with(
     // workspace: `inventory` registration is additive at link time, so
     // linking N project libs collects N projects' components into one
     // catalog, each still carrying its own crate in `module_path`.
-    let project_dep_lines = projects
+    //
+    // Deps-only links none of them: the projects only served to pick the
+    // dependency set (see `generate_deps_only`).
+    let linked_projects: &[(PathBuf, build_ios::Manifest)] = match link {
+        Link::Projects => &projects,
+        Link::DepsOnly => &[],
+    };
+    let project_dep_lines = linked_projects
         .iter()
         .map(|(root, m)| format!("{} = {{ path = \"{}\" }}\n", m.name, root.display()))
         .collect::<String>();
-    let project_use_lines = projects
+    let project_use_lines = linked_projects
         .iter()
         .map(|(_, m)| format!("use {} as _;\n", m.lib_name))
         .collect::<String>();
@@ -639,6 +604,7 @@ fn discover_forced_deps(
     project_root: &Path,
     source: &FrameworkSource,
     project_pkg_name: &str,
+    link: Link,
 ) -> Vec<ForcedDep> {
     let manifest_path = project_root.join("Cargo.toml");
     let output = std::process::Command::new("cargo")
@@ -671,7 +637,7 @@ fn discover_forced_deps(
             return Vec::new();
         }
     };
-    collect_forced_deps(&json, source, &manifest_path, project_pkg_name)
+    collect_forced_deps(&json, source, &manifest_path, project_pkg_name, link)
 }
 
 /// Pure core of [`discover_forced_deps`], split out so it's unit-testable
@@ -690,6 +656,7 @@ fn collect_forced_deps(
     source: &FrameworkSource,
     project_manifest_path: &Path,
     project_pkg_name: &str,
+    link: Link,
 ) -> Vec<ForcedDep> {
     let packages = match metadata.get("packages").and_then(|p| p.as_array()) {
         Some(p) => p,
@@ -715,23 +682,54 @@ fn collect_forced_deps(
         return Vec::new();
     };
 
-    // Direct, normal dependency package ids of the root, from the
-    // resolve graph (which already applied platform/feature resolution).
-    let direct_ids: Vec<String> = metadata
-        .pointer("/resolve/nodes")
-        .and_then(|n| n.as_array())
-        .and_then(|nodes| nodes.iter().find(|n| n.get("id").and_then(|i| i.as_str()) == Some(root_id.as_str())))
-        .and_then(|root_node| root_node.get("deps").and_then(|d| d.as_array()))
-        .map(|deps| {
-            deps.iter()
-                .filter(|dep| dep_has_normal_kind(dep))
-                .filter_map(|dep| dep.get("pkg").and_then(|p| p.as_str()).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Normal dependency package ids of the root, from the resolve graph
+    // (which already applied platform/feature resolution): the direct
+    // ones when the project itself is linked (its own deps reach the
+    // rest), or the whole closure minus workspace members when it is
+    // not — a component library the project reaches only through a
+    // member (app → ui-shared → idea-ui) still has to be linked, and
+    // members are exactly what deps-only refuses to compile.
+    let nodes = metadata.pointer("/resolve/nodes").and_then(|n| n.as_array());
+    let normal_deps_of = |id: &str| -> Vec<String> {
+        nodes
+            .and_then(|nodes| nodes.iter().find(|n| n.get("id").and_then(|i| i.as_str()) == Some(id)))
+            .and_then(|node| node.get("deps").and_then(|d| d.as_array()))
+            .map(|deps| {
+                deps.iter()
+                    .filter(|dep| dep_has_normal_kind(dep))
+                    .filter_map(|dep| dep.get("pkg").and_then(|p| p.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let candidate_ids: Vec<String> = match link {
+        Link::Projects => normal_deps_of(&root_id),
+        Link::DepsOnly => {
+            let members: Vec<&str> = metadata
+                .get("workspace_members")
+                .and_then(|m| m.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            let mut seen: Vec<String> = Vec::new();
+            let mut stack = normal_deps_of(&root_id);
+            while let Some(id) = stack.pop() {
+                if seen.contains(&id) {
+                    continue;
+                }
+                // Members are walked THROUGH (their deps count) but never
+                // linked themselves.
+                stack.extend(normal_deps_of(&id));
+                if !members.contains(&id.as_str()) {
+                    seen.push(id);
+                }
+            }
+            seen.sort();
+            seen
+        }
+    };
 
     let mut out: Vec<ForcedDep> = Vec::new();
-    for id in &direct_ids {
+    for id in &candidate_ids {
         let Some(pkg) = packages
             .iter()
             .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id.as_str()))
@@ -763,6 +761,7 @@ fn collect_forced_deps(
             continue;
         };
         let pkg_source = pkg.get("source").and_then(|s| s.as_str());
+        let pkg_version = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("");
         // Some component-library crates gate their MCP self-registration
         // behind their OWN `catalog` feature (a separate inventory slice
         // from `runtime-core/catalog`'s `#[component]` emission) — e.g.
@@ -775,7 +774,7 @@ fn collect_forced_deps(
         } else {
             &[]
         };
-        let Some(dep_line) = dep_line_for(source, dir, pkg_source, features) else {
+        let Some(dep_line) = dep_line_for(source, dir, pkg_source, pkg_version, features) else {
             // git mode + third-party source: skip (see fn docs).
             eprintln!(
                 "[idealyst mcp] skipping force-link of `{name}` — its source isn't the \
@@ -804,9 +803,15 @@ fn collect_forced_deps(
 fn dep_has_normal_kind(dep: &Value) -> bool {
     match dep.get("dep_kinds").and_then(|k| k.as_array()) {
         None => true,
-        Some(kinds) => kinds
-            .iter()
-            .any(|k| k.get("kind").map(|v| v.is_null()).unwrap_or(true)),
+        // A normal (not dev/build) edge with no `target` cfg. A
+        // target-gated one (`[target.'cfg(target_arch = "wasm32")'
+        // .dependencies] video = …`) is a dep only on that target; the
+        // wrapper builds for the host, where force-linking it would
+        // compile a crate the project itself never compiles here.
+        Some(kinds) => kinds.iter().any(|k| {
+            k.get("kind").map(|v| v.is_null()).unwrap_or(true)
+                && k.get("target").map(|v| v.is_null()).unwrap_or(true)
+        }),
     }
 }
 
@@ -886,6 +891,7 @@ fn dep_line_for(
     source: &FrameworkSource,
     manifest_dir: &Path,
     pkg_source: Option<&str>,
+    pkg_version: &str,
     features: &[&str],
 ) -> Option<String> {
     // `, features = ["a", "b"]` or empty.
@@ -926,9 +932,16 @@ fn dep_line_for(
             if !src.contains("sparse+") && !src.starts_with("registry+") {
                 return None;
             }
+            // The crate's OWN resolved version, not the framework's: a
+            // registry crate need not track the framework's number
+            // (charts 1.2 beside runtime-core 1.5), and a caret on what
+            // the project resolved is always satisfiable by the lock the
+            // wrapper is seeded with. The framework version is the
+            // fallback when metadata carried none.
+            let v = if pkg_version.is_empty() { version.as_str() } else { pkg_version };
             Some(format!(
                 "{{ version = \"{}\", registry = \"{}\"{} }}",
-                version, registry, feat
+                v, registry, feat
             ))
         }
     }
@@ -1103,51 +1116,6 @@ mod tests {
             collect_workspace_projects(&meta),
             vec![PathBuf::from("/w/a"), PathBuf::from("/w/z")]
         );
-    }
-
-    /// A plain library member resolves to the LIGHTEST idealyst app
-    /// that (transitively) depends on it — not every member.
-    #[test]
-    fn dependent_project_picks_the_lightest_transitive_dependent() {
-        let meta = json!({
-            "workspace_members": ["lib", "mid", "heavy", "light", "other"],
-            "packages": [
-                {"id": "lib",   "name": "ui-shared", "manifest_path": "/ws/crates/ui-shared/Cargo.toml"},
-                {"id": "mid",   "name": "mid",       "manifest_path": "/ws/crates/mid/Cargo.toml"},
-                {"id": "heavy", "name": "app-a",     "manifest_path": "/ws/crates/app-a/Cargo.toml",
-                 "metadata": {"idealyst": {}}},
-                {"id": "light", "name": "app-b",     "manifest_path": "/ws/crates/app-b/Cargo.toml",
-                 "metadata": {"idealyst": {}}},
-                {"id": "other", "name": "app-c",     "manifest_path": "/ws/crates/app-c/Cargo.toml",
-                 "metadata": {"idealyst": {}}},
-                {"id": "serde", "name": "serde",     "manifest_path": "/reg/serde/Cargo.toml"},
-                {"id": "wgpu",  "name": "wgpu",      "manifest_path": "/reg/wgpu/Cargo.toml"}
-            ],
-            "resolve": {"nodes": [
-                {"id": "lib",   "deps": [{"pkg": "serde"}]},
-                {"id": "mid",   "deps": [{"pkg": "lib"}]},
-                // heavy reaches lib directly but carries more deps
-                {"id": "heavy", "deps": [{"pkg": "lib"}, {"pkg": "mid"}, {"pkg": "wgpu"}]},
-                // light reaches lib only through mid
-                {"id": "light", "deps": [{"pkg": "mid"}]},
-                // other doesn't depend on lib at all
-                {"id": "other", "deps": [{"pkg": "serde"}]},
-                {"id": "serde", "deps": []},
-                {"id": "wgpu",  "deps": [{"pkg": "serde"}]}
-            ]}
-        });
-        assert_eq!(
-            dependent_project(&meta, Path::new("/ws/crates/ui-shared")),
-            Some(PathBuf::from("/ws/crates/app-b")),
-            "app-b's closure (mid, lib, serde) is smaller than app-a's (lib, mid, wgpu, serde)"
-        );
-        // An idealyst project itself, or a non-member, is not this path's business.
-        assert_eq!(dependent_project(&meta, Path::new("/ws")), None);
-        // A package that isn't a workspace member is not ours to describe,
-        // even though an idealyst member depends on it.
-        assert_eq!(dependent_project(&meta, Path::new("/reg/serde")), None);
-        // A member nothing idealyst depends on has no dependent.
-        assert_eq!(dependent_project(&meta, Path::new("/ws/crates/app-c")), None);
     }
 
     #[test]
@@ -1402,6 +1370,7 @@ mod tests {
             &src,
             Path::new("/proj/Cargo.toml"),
             "my-app",
+            Link::Projects,
         );
         // Only idea-ui qualifies: serde lacks a runtime-core dep,
         // dev-tool is a dev-dependency, proc-mac is proc-macro-only,
@@ -1444,7 +1413,7 @@ mod tests {
             .push(json!({"pkg": "fc", "dep_kinds": [{"kind": null}]}));
 
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
 
         assert_eq!(deps.len(), 1, "got: {deps:?}");
         assert_eq!(deps[0].pkg_name, "idea-ui");
@@ -1478,7 +1447,7 @@ mod tests {
             .push(json!({"pkg": "icons", "dep_kinds": [{"kind": null}]}));
 
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
         assert_eq!(deps.len(), 2, "got: {deps:?}");
 
         let icons = deps.iter().find(|d| d.pkg_name == "icons-lucide").expect("icons-lucide forced");
@@ -1517,7 +1486,7 @@ mod tests {
             .unwrap()
             .push(json!({"pkg": "icons", "dep_kinds": [{"kind": null}]}));
 
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
         let icons = deps.iter().find(|d| d.pkg_name == "icons-lucide").expect("icons-lucide forced");
         assert_eq!(
             icons.dep_line,
@@ -1542,7 +1511,7 @@ mod tests {
         // can't re-declare it safely in git mode — must be skipped.
         meta["packages"][2]["dependencies"] = json!([{"name": "runtime-core", "kind": null}]);
 
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
         assert_eq!(deps.len(), 1, "got: {deps:?}");
         assert_eq!(deps[0].pkg_name, "idea-ui");
         assert_eq!(
@@ -1571,7 +1540,7 @@ mod tests {
         // depends on runtime-core — the shared-library shape.
         let meta = sample_metadata();
         for src in [&git, &registry] {
-            let deps = collect_forced_deps(&meta, src, Path::new("/proj/Cargo.toml"), "my-app");
+            let deps = collect_forced_deps(&meta, src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
             assert_eq!(deps.len(), 1, "{src:?}: got {deps:?}");
             assert_eq!(deps[0].pkg_name, "idea-ui");
             assert_eq!(
@@ -1582,6 +1551,64 @@ mod tests {
         }
     }
 
+    /// Deps-only walks the resolve graph THROUGH workspace members
+    /// without linking them, links the component crates found beyond
+    /// them, and skips target-gated edges.
+    #[test]
+    fn deps_only_links_transitive_non_members_and_skips_target_gated_deps() {
+        let src = FrameworkSource::Registry {
+            registry: "idealyst".to_string(),
+            version: "1.5".to_string(),
+        };
+        let reg = "sparse+https://crates.idealyst.io/index/";
+        let meta = json!({
+            "workspace_members": ["app", "shared"],
+            "packages": [
+                {"id": "app", "name": "my-app", "manifest_path": "/proj/Cargo.toml", "source": null,
+                 "dependencies": [{"name": "runtime-core", "kind": null}, {"name": "crewforge-ui-shared", "kind": null}],
+                 "targets": [{"name": "my_app", "kind": ["lib"]}]},
+                {"id": "shared", "name": "crewforge-ui-shared", "manifest_path": "/proj/../shared/Cargo.toml", "source": null,
+                 "dependencies": [{"name": "runtime-core", "kind": null}, {"name": "idea-ui", "kind": null}],
+                 "targets": [{"name": "crewforge_ui_shared", "kind": ["lib"]}]},
+                {"id": "ui", "name": "idea-ui", "version": "1.11.2", "manifest_path": "/reg/idea-ui/Cargo.toml", "source": reg,
+                 "dependencies": [{"name": "runtime-core", "kind": null}],
+                 "targets": [{"name": "idea_ui", "kind": ["lib"]}]},
+                {"id": "video", "name": "video", "version": "1.5.2", "manifest_path": "/reg/video/Cargo.toml", "source": reg,
+                 "dependencies": [{"name": "runtime-core", "kind": null}],
+                 "targets": [{"name": "video", "kind": ["lib"]}]},
+                {"id": "serde", "name": "serde", "version": "1.0.0", "manifest_path": "/reg/serde/Cargo.toml",
+                 "source": "registry+https://github.com/rust-lang/crates.io-index",
+                 "dependencies": [], "targets": [{"name": "serde", "kind": ["lib"]}]}
+            ],
+            "resolve": {
+                "root": "app",
+                "nodes": [
+                    {"id": "app", "deps": [
+                        {"pkg": "shared", "dep_kinds": [{"kind": null, "target": null}]},
+                        {"pkg": "video", "dep_kinds": [{"kind": null, "target": "cfg(target_arch = \"wasm32\")"}]}
+                    ]},
+                    {"id": "shared", "deps": [{"pkg": "ui", "dep_kinds": [{"kind": null, "target": null}]},
+                                              {"pkg": "serde", "dep_kinds": [{"kind": null, "target": null}]}]},
+                    {"id": "ui", "deps": []},
+                    {"id": "video", "deps": []},
+                    {"id": "serde", "deps": []}
+                ]
+            }
+        });
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::DepsOnly);
+        let names: Vec<&str> = deps.iter().map(|d| d.pkg_name.as_str()).collect();
+        assert_eq!(names, vec!["idea-ui"], "reached through the member, member itself not linked, wasm-only dep skipped; got {deps:?}");
+        // The registry line carries the crate's OWN resolved version.
+        assert_eq!(deps[0].dep_line, "{ version = \"1.11.2\", registry = \"idealyst\" }");
+
+        // The full mode still sees only direct deps: the member is a
+        // direct dep here, and it is a project-side crate the wrapper
+        // links by path.
+        let direct = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let names: Vec<&str> = direct.iter().map(|d| d.pkg_name.as_str()).collect();
+        assert_eq!(names, vec!["crewforge-ui-shared"]);
+    }
+
     #[test]
     fn collect_falls_back_to_manifest_path_when_resolve_root_missing() {
         // A virtual-workspace manifest leaves resolve.root null; we must
@@ -1589,7 +1616,7 @@ mod tests {
         let mut meta = sample_metadata();
         meta["resolve"]["root"] = Value::Null;
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app");
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].pkg_name, "idea-ui");
     }
@@ -1597,8 +1624,8 @@ mod tests {
     #[test]
     fn collect_returns_empty_on_malformed_metadata() {
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        assert!(collect_forced_deps(&json!({}), &src, Path::new("/proj/Cargo.toml"), "my-app").is_empty());
-        assert!(collect_forced_deps(&json!({"packages": []}), &src, Path::new("/proj/Cargo.toml"), "my-app").is_empty());
+        assert!(collect_forced_deps(&json!({}), &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects).is_empty());
+        assert!(collect_forced_deps(&json!({"packages": []}), &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects).is_empty());
     }
 
     #[test]

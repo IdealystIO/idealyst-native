@@ -62,6 +62,7 @@ const {
     hoverAt,
     mergeScans,
     scanCrate,
+    manifestDeps,
     rustContext,
     authoringItems,
     onAssignmentRhs,
@@ -365,6 +366,12 @@ check("importPlan: no `use` lines → after the leading //! block",
     noUse && noUse.text === "use idea_ui::tone;\n\n" && scratch.replace(/^use .*\n/gm, "").slice(0, noUse.offset).trim().endsWith("Mount it anywhere."),
     JSON.stringify(noUse));
 check("importPlan: empty import path → nothing", importPlan(scratch, "", "") === null);
+check("importPlan: a component already imported from the crate root is left alone",
+    importPlan("use idea_ui::{Button, Card};\n", "idea_ui::components::button::Button", "") === null);
+check("importPlan: a component from another crate gets its module path",
+    (importPlan("use runtime_core::ui;\n", "idea_ui::components::button::Button", "my_app") || {}).text === "\nuse idea_ui::components::button::Button;");
+check("importPlan: a component of this crate imports through crate::",
+    (importPlan("use runtime_core::ui;\n", "my_app::scratch::ScratchText", "my_app") || {}).text === "\nuse crate::scratch::ScratchText;");
 check("importPlan: enum type import", (importPlan("fn f() {}", "idea_ui::components::modal::ModalPresentation", "") || {}).text === "use idea_ui::components::modal::ModalPresentation;\n");
 if ((raw.values || []).some((v) => v.import)) {
     const kindVals = valuesForType(cat, "Reactive<TypographyKindRef>");
@@ -443,6 +450,32 @@ fn f() -> Element {
     check("mergeScans: enums of the crate are replaced", merged.enumsByName.get("Mode").variants.length === 2);
     check("mergeScans: tagsByName follows", merged.tagsByName.has("New") && !merged.tagsByName.has("Old"));
     check("mergeScans: no scans → base unchanged", mergeScans(base, []).tags.length === base.tags.length);
+}
+
+{
+    const tmpd = fs.mkdtempSync(path.join(os.tmpdir(), "idealyst-deps-"));
+    fs.writeFileSync(path.join(tmpd, "Cargo.toml"), `[package]
+name = "app-main"
+
+[dependencies]
+runtime-core = { workspace = true }
+crewforge-ui-shared = { workspace = true }
+serde = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+video = { workspace = true }
+
+[dev-dependencies]
+insta = "1"
+
+[features]
+default = []
+`);
+    const deps = manifestDeps(tmpd);
+    check("manifestDeps: dependency tables, dashes to underscores, features/dev excluded",
+        deps.has("crewforge_ui_shared") && deps.has("video") && deps.has("serde") && !deps.has("insta") && !deps.has("default"),
+        [...deps].join());
+    fs.rmSync(tmpd, { recursive: true, force: true });
 }
 
 // --- authoring hints (signals, effects, … in #[component] bodies) ---
@@ -587,7 +620,7 @@ fs.writeFileSync(
     stub,
     `#!/bin/sh
 case "$1" in
-  catalog-json) echo "stub: building $2" >&2; cat "${path.resolve(catalogPath)}" ;;
+  catalog-json) [ "$2" = "--deps-only" ] || exit 3; echo "stub: building $3" >&2; cat "${path.resolve(catalogPath)}" ;;
   catalog-scan) echo '{"scanned_crate":"stub_app","components":[{"name":"Fresh","module_path":"stub_app","params":[]}],"types":[],"values":[]}' ;;
   *) exit 2 ;;
 esac

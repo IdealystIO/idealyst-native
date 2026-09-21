@@ -195,6 +195,24 @@ each entry links to its migration guide.
   the author already began (`let count = sig│`), a snippet drops its
   own `let … = ` head so the binding isn't doubled.
 
+- **`catalog-json --deps-only`; the extension compiles only what you
+  use.** The wrapper's second flavour links none of the workspace's own
+  crates — only the non-member crates in the projects' transitive graph
+  that depend on `runtime-core` (idea-ui, icon packs, SDKs), walking
+  through members without linking them and skipping target-gated edges
+  (a `cfg(wasm32)`-only dep is not a host dep). Registry dep lines now
+  carry the crate's own resolved version rather than the framework's.
+  The extension uses it for the compiled half and `catalog-scan` for
+  every framework-dependent crate in the workspace, merging into each
+  crate's catalog the scans of the crates it depends on — so an app
+  compile error can no longer blank the catalog, and the compiled build
+  re-runs only when the dependency graph changes.
+
+- **Tag completion imports and scaffolds.** Accepting a component from
+  another crate adds `use <module_path>::Name;` (or `crate::…`) the way
+  a value does, and inserts `Name(│)` — `Name(│) { }` for a container —
+  so the next keystroke is in the prop list.
+
 - **`idealyst catalog-scan` + scan-on-save in the extension.** A new
   component only reached completion after the next compiled catalog
   build — minutes, and none at all while any file in the crate failed
@@ -239,17 +257,14 @@ each entry links to its migration guide.
   catalog version their annotations are written for, instead of
   reaching it through runtime-core's floors.
 
-- **`catalog-json` on a library crate catalogs its lightest dependent
-  app; the extension warms every file on open.** A library member
-  (`crates/ui-shared`) used to expand to every idealyst member of the
-  workspace, and the extension refused to start that build on open —
-  it waited for a completion inside `ui!`, which read as "nothing
-  happens until I type real code". `resolve_project_roots` now walks
-  the resolve graph and picks the idealyst member that transitively
-  depends on the library with the fewest resolved dependencies (any
-  dependent sees the same library components; one keeps the build
-  bounded). The extension hands a framework-dependent library crate
-  over as itself and warms on open; a crate with no framework
+- **The extension warms every file on open, and a library crate is
+  its own catalog.** A file in a library member used to route to the
+  merged every-member catalog, which the extension refused to start on
+  open (in the framework repo it would wrap 73 examples) — so nothing
+  happened until a completion inside `ui!`. A framework-dependent
+  library crate is now handed to `catalog-json` as itself (its wrapper
+  links the library plus its own dependencies, the lightest catalog
+  usable from inside it) and warms on open; a crate with no framework
   dependency, or a file outside any crate, never spawns the CLI.
 
 - **The catalog wrapper's `Cargo.lock` follows the project's.** The
