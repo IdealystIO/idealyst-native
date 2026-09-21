@@ -195,6 +195,11 @@ each entry links to its migration guide.
   the author already began (`let count = sig│`), a snippet drops its
   own `let … = ` head so the binding isn't doubled.
 
+- **VS Code extension hovers.** Inside `ui!`/`jsx!`, hovering a tag
+  shows the component's doc comment plus every prop with type and doc;
+  a prop name shows that prop's type and doc; a value
+  (`typography_kind::Body`) shows its docs and the `use` it needs.
+
 - **VS Code extension completes prop values.** After `tone = ` the
   popup offers the catalog's registered values, `IdealystSchema` enum
   variants, `true`/`false`, an arity-correct `Rc::new(move |…| { … })`

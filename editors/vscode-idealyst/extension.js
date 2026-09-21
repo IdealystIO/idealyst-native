@@ -337,7 +337,9 @@ function digest(json) {
         });
     }
 
-    return { tags, propsByTag, tokensByPrefix, valuesByTarget, enumsByName, icons, authoring };
+    const tagsByName = new Map(tags.map((t) => [t.name, t]));
+
+    return { tags, tagsByName, propsByTag, tokensByPrefix, valuesByTarget, enumsByName, icons, authoring };
 }
 
 // ---------------------------------------------------------------------------
@@ -743,6 +745,97 @@ function importPlan(text, importPath, crateName) {
 }
 
 // ---------------------------------------------------------------------------
+// Hover
+// ---------------------------------------------------------------------------
+
+/** Markdown-escape the characters that would start list/table syntax. */
+function mdInline(x) {
+    return String(x).replace(/\|/g, "\\|");
+}
+
+/**
+ * Hover text (markdown) for the identifier at `offset` inside a
+ * `ui!`/`jsx!` block, or `null` when the catalog has nothing to say:
+ *
+ * - a tag (`Button`, `text`) — its docs and every prop with type + doc;
+ * - a prop name inside a tag's parens — that prop's type + doc;
+ * - a value (`tone::Primary`) — the registered value's docs.
+ *
+ * `word` is the identifier under the cursor and `wordStart` its
+ * offset; the caller finds those with the editor's word-range API.
+ */
+function hoverAt(catalog, text, wordStart, word) {
+    if (!insideUiMacro(text, wordStart + word.length)) return null;
+    const after = text.slice(wordStart + word.length).match(/^\s*([({])/);
+
+    // Tag: the identifier opens a prop list or a child block.
+    const tag = catalog.tagsByName.get(word);
+    if (tag && after) {
+        const props = catalog.propsByTag.get(word) || [];
+        const lines = [`**${word}** · ${mdInline(tag.detail)}`];
+        if (tag.docs) lines.push("", tag.docs);
+        if (props.length) {
+            lines.push("", "**Props**", "");
+            for (const p of props) {
+                const doc = p.docs ? ` — ${p.docs.split("\n\n")[0].replace(/\n/g, " ")}` : "";
+                lines.push(`- \`${p.name}\`: \`${mdInline(p.type)}\`${doc}`);
+            }
+        }
+        return lines.join("\n");
+    }
+
+    // Prop name: `Tag(…, word = …)`.
+    const ctx = propContext(text, wordStart);
+    if (ctx && catalog.propsByTag.has(ctx.tag)) {
+        const isName = /^\s*=(?!=)/.test(text.slice(wordStart + word.length));
+        const p = (catalog.propsByTag.get(ctx.tag) || []).find((x) => x.name === word);
+        if (isName && p) {
+            const lines = [`**${ctx.tag}.${word}** · \`${mdInline(p.type)}\``];
+            if (p.docs) lines.push("", p.docs);
+            return lines.join("\n");
+        }
+    }
+
+    // Value: the path ending at this word (`tone::Primary`).
+    const head = text.slice(Math.max(0, wordStart - 200), wordStart).match(/([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)::$/);
+    const spelled = head ? `${head[1]}::${word}` : word;
+    for (const [target, vals] of catalog.valuesByTarget) {
+        const v = vals.find((x) => x.spelled === spelled);
+        if (v) {
+            const lines = [`**${spelled}** · value of \`${target}\` · ${mdInline(v.modulePath)}`];
+            if (v.docs) lines.push("", v.docs);
+            if (v.import) lines.push("", `\`use ${v.import};\``);
+            return lines.join("\n");
+        }
+    }
+    return null;
+}
+
+const hoverProvider = {
+    provideHover(document, position) {
+        try {
+            const folderUri = vscode.workspace.getWorkspaceFolder(document.uri);
+            if (!folderUri) return undefined;
+            const project = projectFor(document.uri.fsPath, folderUri.uri.fsPath);
+            if (!project) return undefined;
+            const catalog = catalogs.get(project.dir);
+            if (!catalog) return undefined;
+            const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+            if (!range) return undefined;
+            const text = document.getText();
+            const md = hoverAt(catalog, text, document.offsetAt(range.start), document.getText(range));
+            if (!md) return undefined;
+            const ms = new vscode.MarkdownString(md);
+            ms.supportHtml = false;
+            return new vscode.Hover(ms, range);
+        } catch (e) {
+            log(`hover FAILED: ${e.stack || e}`);
+            throw e;
+        }
+    },
+};
+
+// ---------------------------------------------------------------------------
 // Completion provider
 // ---------------------------------------------------------------------------
 
@@ -970,6 +1063,7 @@ function activate(context) {
             "=", // prop value position
             "."  // token path segment
         ),
+        vscode.languages.registerHoverProvider({ language: "rust" }, hoverProvider),
         vscode.commands.registerCommand("idealyst.refreshCatalog", () => {
             const editor = vscode.window.activeTextEditor;
             const folderUri =
@@ -1010,6 +1104,7 @@ module.exports = {
         valuesForType,
         importPlan,
         crateNameFor,
+        hoverAt,
         rustContext,
         authoringItems,
         onAssignmentRhs,

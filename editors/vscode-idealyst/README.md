@@ -26,6 +26,17 @@ DSL-vocabulary completion inside `ui! { … }` / `jsx! { … }` blocks:
   A `use` naming the module, a parent glob, or a local `mod` of that name
   counts as already imported.
 
+Hover inside `ui!` / `jsx!`:
+
+- **A tag** (`Typography(`, `text {`) — the component's doc comment and
+  every prop with its type and first doc paragraph.
+- **A prop name** (`kind = …`) — that prop's type and full doc.
+- **A value** (`typography_kind::Body`, also inside `Some(…)`) — the
+  registered value's docs and the `use` that brings it in.
+
+rust-analyzer's own hover (the props-struct type) still shows; this one
+stacks above it with the catalog's documentation.
+
 Authoring hints for the reactive/component vocabulary, outside the
 markup macros:
 

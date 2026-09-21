@@ -59,6 +59,7 @@ const {
     valuesForType,
     importPlan,
     crateNameFor,
+    hoverAt,
     rustContext,
     authoringItems,
     onAssignmentRhs,
@@ -375,6 +376,40 @@ if ((raw.values || []).some((v) => v.import)) {
     fs.writeFileSync(path.join(tmpc, "Cargo.toml"), '[package]\nname = "crewforge-ui-shared"\nversion = "0.1.0"\n');
     check("crateNameFor: nearest [package] name, dashes to underscores", crateNameFor(path.join(tmpc, "src", "scratch.rs")) === "crewforge_ui_shared");
     fs.rmSync(tmpc, { recursive: true, force: true });
+}
+
+// --- hover: component docs + props, prop docs, value docs ---
+{
+    const hsrc = `
+fn f() -> Element {
+    let kind = 1;
+    ui! {
+        Typography(content = "x", kind = typography_kind::Body, tone = Some(tone::Danger.into()))
+        text { "y" }
+    }
+}`;
+    const at = (needle, plus = 0) => hsrc.indexOf(needle) + plus;
+    const tagHover = hoverAt(cat, hsrc, at("Typography("), "Typography");
+    check("hover: tag shows component docs and a props list",
+        tagHover && tagHover.startsWith("**Typography** · component") && tagHover.includes("**Props**") && /- `kind`: `[^`]+`/.test(tagHover),
+        tagHover && tagHover.slice(0, 120));
+    const primHover = hoverAt(cat, hsrc, at("text {"), "text");
+    check("hover: primitive tag", primHover && primHover.startsWith("**text** · primitive"), primHover && primHover.slice(0, 60));
+    const propHover = hoverAt(cat, hsrc, at("kind = typography"), "kind");
+    check("hover: prop name shows its type and doc",
+        propHover && propHover.startsWith("**Typography.kind** · `") && propHover.length > 40, propHover && propHover.slice(0, 80));
+    if ((raw.values || []).length) {
+        const valHover = hoverAt(cat, hsrc, at("Body,"), "Body");
+        check("hover: value shows docs and its import",
+            valHover && valHover.startsWith("**typography_kind::Body** · value of `TypographyKindRef`") && valHover.includes("use idea_ui::typography_kind;"),
+            valHover && valHover.slice(0, 100));
+        const optVal = hoverAt(cat, hsrc, at("Danger.into"), "Danger");
+        check("hover: value inside Some(…)", optVal && optVal.startsWith("**tone::Danger**"), optVal && optVal.slice(0, 60));
+    }
+    check("hover: a plain identifier in a handler is not ours", hoverAt(cat, hsrc, at("let kind", 4), "kind") === null);
+    check("hover: a prop-value that is a local variable is not ours",
+        hoverAt(cat, `ui! { Typography(content = label) }`, 27, "label") === null);
+    check("hover: outside ui! nothing", hoverAt(cat, `fn f() { Typography(x) }`, 9, "Typography") === null);
 }
 
 // --- authoring hints (signals, effects, … in #[component] bodies) ---
