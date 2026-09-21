@@ -852,24 +852,33 @@ pub struct ValueEntry {
     pub via: &'static str,
 }
 
+/// The [`ValueEntry::via`] rules as a pure function — `(import path,
+/// spelled prefix)` for a marker defined in `module_path` annotated with
+/// `via`. Shared with the source scanner (`idealyst catalog-scan`), which
+/// has the annotation text but no `ValueEntry`, so a scanned value is
+/// spelled exactly as the compiled catalog would spell it.
+pub fn value_route(module_path: &str, via: &str) -> (String, String) {
+    if via.is_empty() {
+        let prefix = module_path.rsplit("::").next().unwrap_or("");
+        return (module_path.to_string(), prefix.to_string());
+    }
+    if let Some((head, rest)) = via.split_once('{') {
+        let inner = rest.trim_end_matches('}');
+        let first = inner.split("::").next().unwrap_or(inner);
+        return (format!("{head}{first}"), inner.to_string());
+    }
+    if via.contains("::") {
+        let prefix = via.rsplit("::").next().unwrap_or(via);
+        return (via.to_string(), prefix.to_string());
+    }
+    (String::new(), via.to_string())
+}
+
 impl ValueEntry {
     /// `(import path, spelled prefix)` from `via` / `module_path` per
     /// the rules on [`ValueEntry::via`]. Import is empty when unknown.
     fn route(&self) -> (String, String) {
-        if self.via.is_empty() {
-            let prefix = self.module_path.rsplit("::").next().unwrap_or("");
-            return (self.module_path.to_string(), prefix.to_string());
-        }
-        if let Some((head, rest)) = self.via.split_once('{') {
-            let inner = rest.trim_end_matches('}');
-            let first = inner.split("::").next().unwrap_or(inner);
-            return (format!("{head}{first}"), inner.to_string());
-        }
-        if self.via.contains("::") {
-            let prefix = self.via.rsplit("::").next().unwrap_or(self.via);
-            return (self.via.to_string(), prefix.to_string());
-        }
-        (String::new(), self.via.to_string())
+        value_route(self.module_path, self.via)
     }
 
     /// The value as written at a `ui!` prop: `tone::Primary`.

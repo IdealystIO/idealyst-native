@@ -60,6 +60,8 @@ const {
     importPlan,
     crateNameFor,
     hoverAt,
+    mergeScans,
+    scanCrate,
     rustContext,
     authoringItems,
     onAssignmentRhs,
@@ -412,6 +414,37 @@ fn f() -> Element {
     check("hover: outside ui! nothing", hoverAt(cat, `fn f() { Typography(x) }`, 9, "Typography") === null);
 }
 
+// --- source scans merge over the compiled catalog ---
+{
+    const base = digest({
+        primitives: [{ name: "view", props: [] }],
+        components: [
+            { name: "Old", module_path: "my_app::widgets", params: [] },
+            { name: "Button", module_path: "idea_ui::components::button", params: [] },
+        ],
+        values: [{ short_name: "Hype", module_path: "my_app::theme", value_of: "ToneRef", via: "", spelled: "theme::Hype", import: "my_app::theme" }],
+        types: [{ short_name: "Mode", module_path: "my_app", shape: { kind: "enum", variants: [{ name: "A", payload: [] }] } }],
+    });
+    const scan = {
+        crate: "my_app",
+        cat: digest({
+            components: [{ name: "New", module_path: "my_app::widgets", params: [{ name: "label", type: "String" }] }],
+            values: [{ short_name: "Calm", module_path: "my_app::theme", value_of: "ToneRef", via: "", spelled: "theme::Calm", import: "my_app::theme" }],
+            types: [{ short_name: "Mode", module_path: "my_app", shape: { kind: "enum", variants: [{ name: "A", payload: [] }, { name: "B", payload: [] }] } }],
+        }),
+    };
+    const merged = mergeScans(base, [scan]);
+    const names = merged.tags.map((t) => t.name);
+    check("mergeScans: the scanned crate's compiled components are replaced by the scan's",
+        names.includes("New") && !names.includes("Old"), names.join());
+    check("mergeScans: other crates and primitives are untouched", names.includes("Button") && names.includes("view"));
+    check("mergeScans: scanned props are reachable", (merged.propsByTag.get("New") || []).map((p) => p.name).join() === "label");
+    check("mergeScans: values of the crate are replaced", (merged.valuesByTarget.get("ToneRef") || []).map((v) => v.spelled).join() === "theme::Calm");
+    check("mergeScans: enums of the crate are replaced", merged.enumsByName.get("Mode").variants.length === 2);
+    check("mergeScans: tagsByName follows", merged.tagsByName.has("New") && !merged.tagsByName.has("Old"));
+    check("mergeScans: no scans → base unchanged", mergeScans(base, []).tags.length === base.tags.length);
+}
+
 // --- authoring hints (signals, effects, … in #[component] bodies) ---
 const body = `
 use runtime_core::*;
@@ -552,16 +585,25 @@ const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "idealyst-ext-cli-"));
 const stub = path.join(stubDir, "idealyst");
 fs.writeFileSync(
     stub,
-    `#!/bin/sh\n[ "$1" = "catalog-json" ] || exit 2\necho "stub: building $2" >&2\ncat "${path.resolve(catalogPath)}"\n`
+    `#!/bin/sh
+case "$1" in
+  catalog-json) echo "stub: building $2" >&2; cat "${path.resolve(catalogPath)}" ;;
+  catalog-scan) echo '{"scanned_crate":"stub_app","components":[{"name":"Fresh","module_path":"stub_app","params":[]}],"types":[],"values":[]}' ;;
+  *) exit 2 ;;
+esac
+`
 );
 fs.chmodSync(stub, 0o755);
 mock.__cli = stub;
 loadCatalog(stubDir);
+scanCrate(stubDir);
 (function waitForLoad(tries) {
-    if (catalogs.has(stubDir)) {
-        const loaded = catalogs.get(stubDir);
+    const loaded = catalogs.get(stubDir);
+    if (loaded && loaded.tags.some((t) => t.name === "Fresh") && loaded.tags.length > 1) {
         check("loadCatalog: runs the CLI and caches the digested catalog",
-            loaded.tags.length === cat.tags.length);
+            loaded.tags.length === cat.tags.length + 1);
+        check("scanCrate: a scanned component is merged over the compiled catalog",
+            loaded.tagsByName.has("Fresh") && loaded.tagsByName.has("view"));
         fs.rmSync(stubDir, { recursive: true, force: true });
         process.exit(failures ? 1 : 0);
     }

@@ -6269,6 +6269,7 @@ dependencies = [
  "mcp-catalog",
  "mcp-server",
  "pathdiff",
+ "quote",
  "rmcp",
  "robot-relay",
  "robot-test",

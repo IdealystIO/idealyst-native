@@ -29,13 +29,24 @@ const path = require("path");
 // ---------------------------------------------------------------------------
 
 /**
- * Catalogs keyed by the directory `idealyst catalog-json` was pointed
- * at — a project crate, or a workspace root (see `projectFor`).
- * Value: `{ tags, propsByTag, tokensByPrefix }`.
+ * What completion reads: per project dir (see `projectFor`), the
+ * compiled catalog with every source scan merged over it — see
+ * `remerge`. Value: the `digest` shape.
  */
 const catalogs = new Map();
+/** Compiled catalogs (`catalog-json`) by project dir — the slow, full truth. */
+const bases = new Map();
+/**
+ * Source scans (`catalog-scan`) by crate dir — the project's own
+ * components/enums/values, refreshed on every save in about a second,
+ * so a component exists for completion the moment its file is saved
+ * rather than after the next compiled build. Value: `{ crate, cat }`.
+ */
+const scans = new Map();
 /** directories with a load in flight, so we don't spawn twice */
 const loading = new Set();
+/** crate dirs with a scan in flight; a save meanwhile queues one more */
+const scanning = new Map();
 /** "Idealyst" output channel — where the CLI's stderr and our own logs go. */
 let output = null;
 
@@ -152,8 +163,8 @@ function loadCatalog(dir, { force = false } = {}) {
         }
         try {
             const json = JSON.parse(Buffer.concat(stdout).toString());
-            const cat = digest(json);
-            catalogs.set(dir, cat);
+            bases.set(dir, digest(json));
+            remerge();
             log(
                 `catalog ready for ${dir} in ${secs}s: ` +
                 `${(json.components || []).length} components, ` +
@@ -167,6 +178,96 @@ function loadCatalog(dir, { force = false } = {}) {
     };
     child.on("error", (e) => finish(`cannot run ${cli}: ${e.message}`));
     child.on("close", (code) => finish(code === 0 ? null : `exit code ${code}`));
+}
+
+/**
+ * Run `idealyst catalog-scan CRATE` and merge the result. Fast (the
+ * crate's sources are parsed, nothing is compiled) and forgiving (a
+ * file that doesn't parse is skipped, the rest still count), so it runs
+ * at warm-up — the author's own components are there before the
+ * compiled catalog lands — and on every save.
+ */
+function scanCrate(dir) {
+    if (scanning.has(dir)) {
+        scanning.set(dir, true); // rerun once this one finishes
+        return;
+    }
+    scanning.set(dir, false);
+    const cli = cliPath();
+    const started = Date.now();
+    const child = cp.spawn(cli, ["catalog-scan", dir], { cwd: dir });
+    const stdout = [];
+    child.stdout.on("data", (b) => stdout.push(b));
+    child.stderr.on("data", (b) => {
+        for (const line of b.toString().split("\n")) if (line.trim()) log(`  ${line}`);
+    });
+    const finish = (err) => {
+        const again = scanning.get(dir);
+        scanning.delete(dir);
+        if (err) {
+            log(`scan FAILED for ${dir}: ${err}`);
+        } else {
+            try {
+                const json = JSON.parse(Buffer.concat(stdout).toString());
+                scans.set(dir, { crate: json.scanned_crate || "", cat: digest(json) });
+                remerge();
+                log(
+                    `scanned ${dir} in ${Date.now() - started}ms: ` +
+                    `${(json.components || []).length} components, ` +
+                    `${(json.types || []).length} types, ${(json.values || []).length} values`
+                );
+            } catch (e) {
+                log(`scan parse FAILED for ${dir}: ${e.message}`);
+            }
+        }
+        if (again) scanCrate(dir);
+    };
+    child.on("error", (e) => finish(`cannot run ${cli}: ${e.message}`));
+    child.on("close", (code) => finish(code === 0 ? null : `exit code ${code}`));
+}
+
+/**
+ * Rebuild every visible catalog: each compiled base with every scan
+ * merged over it, and — for a crate that has a scan but no compiled
+ * catalog yet — the scans alone. A scan replaces the compiled entries
+ * of its crate (they're the same declarations, the scan's just newer)
+ * and is invisible for every other crate.
+ */
+function remerge() {
+    const empty = digest({});
+    const dirs = new Set([...bases.keys(), ...scans.keys()]);
+    for (const dir of dirs) {
+        catalogs.set(dir, mergeScans(bases.get(dir) || empty, [...scans.values()]));
+    }
+}
+
+/** Pure: `base` with each scan's crate replaced by the scan's entries. */
+function mergeScans(base, scanList) {
+    const inCrate = (modulePath, crate) => modulePath === crate || modulePath.startsWith(`${crate}::`);
+    let tags = [...base.tags];
+    const propsByTag = new Map(base.propsByTag);
+    const valuesByTarget = new Map([...base.valuesByTarget].map(([k, v]) => [k, [...v]]));
+    const enumsByName = new Map(base.enumsByName);
+    for (const { crate, cat } of scanList) {
+        if (!crate) continue;
+        tags = tags.filter((t) => !inCrate(t.modulePath || "", crate));
+        for (const t of cat.tags) {
+            tags.push(t);
+            propsByTag.set(t.name, cat.propsByTag.get(t.name) || []);
+        }
+        for (const [k, v] of valuesByTarget) valuesByTarget.set(k, v.filter((x) => !inCrate(x.modulePath, crate)));
+        for (const [k, v] of cat.valuesByTarget) valuesByTarget.set(k, [...(valuesByTarget.get(k) || []), ...v]);
+        for (const [k, v] of enumsByName) if (inCrate(v.modulePath, crate)) enumsByName.delete(k);
+        for (const [k, v] of cat.enumsByName) enumsByName.set(k, v);
+    }
+    return {
+        ...base,
+        tags,
+        tagsByName: new Map(tags.map((t) => [t.name, t])),
+        propsByTag,
+        valuesByTarget,
+        enumsByName,
+    };
 }
 
 /**
@@ -189,6 +290,7 @@ function digest(json) {
             kind: vscode.CompletionItemKind.Function,
             detail: `primitive · ${p.category || ""}`,
             docs: p.docs || "",
+            modulePath: "",
         });
         propsByTag.set(
             p.name,
@@ -208,6 +310,7 @@ function digest(json) {
             kind: vscode.CompletionItemKind.Class,
             detail: `component · ${c.module_path || ""}`,
             docs: c.docs || "",
+            modulePath: c.module_path || "",
         });
         const params = c.params || [];
         let props = [];
@@ -1048,7 +1151,18 @@ function warmFor(editor) {
     const folderUri = vscode.workspace.getWorkspaceFolder(editor.document.uri);
     if (!folderUri) return;
     const project = projectFor(editor.document.uri.fsPath, folderUri.uri.fsPath);
-    if (project) loadCatalog(project.dir);
+    if (!project) return;
+    loadCatalog(project.dir);
+    if (!scans.has(project.dir)) scanCrate(project.dir);
+}
+
+/** A saved Rust file re-scans its crate, so a new component completes at once. */
+function onSaved(document) {
+    if (document.languageId !== "rust") return;
+    const folderUri = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!folderUri) return;
+    const project = projectFor(document.uri.fsPath, folderUri.uri.fsPath);
+    if (project) scanCrate(project.dir);
 }
 
 function activate(context) {
@@ -1071,8 +1185,11 @@ function activate(context) {
             const project =
                 folderUri && projectFor(editor.document.uri.fsPath, folderUri.uri.fsPath);
             catalogs.clear();
+            bases.clear();
+            scans.clear();
             if (project) {
                 loadCatalog(project.dir, { force: true });
+                scanCrate(project.dir);
             } else {
                 log("refresh: the active editor is not inside an idealyst project");
                 vscode.window.setStatusBarMessage(
@@ -1081,7 +1198,8 @@ function activate(context) {
                 );
             }
         }),
-        vscode.window.onDidChangeActiveTextEditor(warmFor)
+        vscode.window.onDidChangeActiveTextEditor(warmFor),
+        vscode.workspace.onDidSaveTextDocument(onSaved)
     );
     warmFor(vscode.window.activeTextEditor);
 }
@@ -1105,6 +1223,8 @@ module.exports = {
         importPlan,
         crateNameFor,
         hoverAt,
+        mergeScans,
+        scanCrate,
         rustContext,
         authoringItems,
         onAssignmentRhs,

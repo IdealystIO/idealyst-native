@@ -82,6 +82,12 @@ enum Command {
     /// editor tooling. First run compiles the catalog wrapper.
     #[command(name = "catalog-json")]
     CatalogJson(cmd::catalog_json::Args),
+    /// Print the crate's OWN catalog entries (components, props, enums,
+    /// values) by parsing its source — no compile, sub-second, tolerant
+    /// of a file mid-edit. The fast half of editor tooling; dependencies
+    /// still come from `catalog-json`.
+    #[command(name = "catalog-scan")]
+    CatalogScan(cmd::catalog_scan::Args),
     /// Configure a project aspect. Currently: `devcontainer` (initialize or
     /// update a devcontainer + its idealyst-managed sidecar services).
     Configure(cmd::configure::Args),
@@ -158,6 +164,7 @@ fn main() -> anyhow::Result<()> {
         Command::Lint(args) => cmd::lint::run(args),
         Command::Clean(args) => cmd::clean::run(args),
         Command::CatalogJson(args) => cmd::catalog_json::run(args),
+        Command::CatalogScan(args) => cmd::catalog_scan::run(args),
         Command::Configure(args) => cmd::configure::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),
         Command::Sync(args) => cmd::sync::run(args),

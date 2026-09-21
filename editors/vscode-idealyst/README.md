@@ -71,13 +71,25 @@ Theme-token completion inside `stylesheet! { … }` blocks:
   doesn't bind `_t`, so suggesting tokens there would propose code that
   doesn't compile.
 
-Data comes from the live catalog: the extension shells out to
-`idealyst catalog-json` (first run compiles the catalog wrapper —
-minutes cold, seconds warm) and caches in memory. `Idealyst: Refresh
-Catalog` (command palette) re-reads after you add components or
-dependencies. Everything the CLI prints while building — and every
-load/failure — lands in **Output ▸ Idealyst**; look there first when a
-popup is empty.
+Data comes from two sources, merged:
+
+- **`idealyst catalog-json`** — the compiled catalog: the project's
+  dependencies (idea-ui's components, values, tokens, primitives,
+  macros, utilities) and the project itself, as the real crates
+  register them. Built once per project (minutes cold, seconds warm) and
+  cached in memory.
+- **`idealyst catalog-scan`** — the project's own components, props,
+  `IdealystSchema` enums and `value_of` markers, read from its source
+  with `syn` in about a second. Runs when a file is first opened and on
+  **every save**, and its entries replace the compiled catalog's for
+  that crate — so a component you just wrote completes, hovers and
+  takes prop values the moment you save, without waiting for a build.
+  A file that doesn't parse is skipped and the rest still count, so a
+  half-typed edit never blanks the catalog.
+
+`Idealyst: Refresh Catalog` (command palette) rebuilds both, e.g. after
+a `cargo update`. Everything the CLI prints — and every load/failure —
+lands in **Output ▸ Idealyst**; look there first when a popup is empty.
 
 ## Which catalog a file sees
 

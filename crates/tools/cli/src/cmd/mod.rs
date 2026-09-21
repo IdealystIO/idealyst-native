@@ -1,6 +1,7 @@
 pub mod brs;
 pub mod build;
 pub mod catalog_json;
+pub mod catalog_scan;
 pub mod catalog_wrapper;
 pub mod check;
 pub mod clean;

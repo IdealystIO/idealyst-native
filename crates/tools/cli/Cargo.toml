@@ -86,6 +86,8 @@ pathdiff = "0.2"
 # concatenates their BrightScript output into a single `.brs` file.
 backend-roku-transpile = { workspace = true }
 syn = { version = "2", features = ["full"] }
+# `catalog-scan` prints a param's type as the author wrote it.
+quote = { workspace = true }
 # Source linter engine — powers the `lint` subcommand and the
 # rust-analyzer `check.overrideCommand` integration. The CLI is just the
 # entry point; the rules + diagnostic formats live in the crate.

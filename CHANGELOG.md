@@ -195,6 +195,20 @@ each entry links to its migration guide.
   the author already began (`let count = sig│`), a snippet drops its
   own `let … = ` head so the binding isn't doubled.
 
+- **`idealyst catalog-scan` + scan-on-save in the extension.** A new
+  component only reached completion after the next compiled catalog
+  build — minutes, and none at all while any file in the crate failed
+  to compile. `catalog-scan DIR` parses the crate's sources with `syn`
+  (no compile, ~1 s) and emits its `#[component]`s (inline params, or
+  the props struct's fields with `#[props]` wrapping mirrored),
+  `IdealystSchema` enums and `value_of` markers in catalog JSON shape,
+  spelled through the same `value_route` the compiled catalog uses; a
+  file that doesn't parse is skipped and reported, the rest still
+  scan. The extension runs it at warm-up and on every save and merges
+  it over the compiled catalog, replacing that crate's compiled
+  entries, so a saved component completes, hovers and takes prop
+  values immediately. Dependencies still come from `catalog-json`.
+
 - **VS Code extension hovers.** Inside `ui!`/`jsx!`, hovering a tag
   shows the component's doc comment plus every prop with type and doc;
   a prop name shows that prop's type and doc; a value
