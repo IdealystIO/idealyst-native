@@ -3356,6 +3356,7 @@ dependencies = [
 name = "dev-client"
 version = "1.5.2"
 dependencies = [
+ "host-mock",
  "mock-backend",
  "runtime-scene",
  "runtime-shared",

@@ -96,6 +96,17 @@ pub enum ReplayError {
     MissingHandler(HandlerId),
 }
 
+/// Report a skipped command once. Split out so the no-std-ish core
+/// stays free of the platform's logging: on wasm this reaches the
+/// browser console, elsewhere stderr.
+fn warn_replay_skip(err: &ReplayError) {
+    let msg = format!("[dev-client] skipping a command this client cannot replay: {err:?}");
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::warn_1(&msg.as_str().into());
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("{msg}");
+}
+
 /// One command, as a diagnostic string: the variant name plus every
 /// node id it names.
 ///
@@ -242,6 +253,14 @@ where
     /// share, so there's no observable behavior change for them.
     backend: Rc<RefCell<B>>,
     nodes: HashMap<NodeId, B::Node>,
+    /// Command shapes whose replay failure has already been reported.
+    ///
+    /// The failures that reach here are structural (an unimplemented
+    /// primitive's node is never registered, so EVERY op about it
+    /// fails), and a reactive effect can re-emit the same op every
+    /// frame. Logging once per shape keeps the console readable
+    /// without hiding a new failure.
+    reported_failures: std::collections::HashSet<String>,
     styles: HashMap<StyleId, Rc<StyleRules>>,
     outbound: OutboundSender,
     graphics_registry: GraphicsRegistry,
@@ -309,6 +328,7 @@ where
         Self {
             backend,
             nodes: HashMap::new(),
+            reported_failures: std::collections::HashSet::new(),
             styles: HashMap::new(),
             outbound: outbound.into(),
             graphics_registry: GraphicsRegistry::new(),
@@ -439,31 +459,53 @@ where
     /// real backend; errors short-circuit the batch and surface to
     /// the caller (in production-dev, log + continue; in tests,
     /// fail loudly).
-    /// Apply a frame, naming the command that failed.
+    /// Apply a frame. A command that fails is SKIPPED, named, and the
+    /// rest of the frame still applies.
     ///
-    /// The error used to carry only the offending `NodeId`, which is
-    /// the one fact that identifies nothing: a replay error reads
-    /// `UnknownNode(NodeId(565))` and the 565 refers to a node the
-    /// client never heard of, so there is no way to look it up. What
-    /// the reader needs is the COMMAND — which op referenced it, and
-    /// how far into the frame the batch got before it stopped.
+    /// This used to stop at the first error, on the reasoning that a
+    /// half-applied frame hides a desynchronized mirror. The reasoning
+    /// was wrong about what actually fails here. The errors in practice
+    /// are not mirror drift — they are ops naming a primitive whose
+    /// REPLAY is not implemented yet (`apply_create_virtualizer` is a
+    /// stub, so the client never registers the node and every later op
+    /// about it is an `UnknownNode`). Stopping meant one unimplemented
+    /// primitive discarded every unrelated command behind it: on
+    /// CrewForge, a `VirtualizerDataChanged` at command 1165 of 1259
+    /// blanked the app's entire content pane, and the only clue was a
+    /// node id that by definition names nothing the reader can look up.
     ///
-    /// The batch still stops at the first error. Continuing would
-    /// paper over a desynchronized mirror with a half-applied frame,
-    /// and a tree that is silently missing a subtree is harder to
-    /// diagnose than one that stopped and said so.
+    /// Skipping degrades the same failure to "the virtualized list is
+    /// missing, everything else painted" — which is both more useful
+    /// and more honest about what is wrong.
+    ///
+    /// It is NOT silent. Each distinct failure is logged once per
+    /// client (keyed on the command's shape, so a per-frame effect
+    /// cannot spam), and the first error is returned so callers that
+    /// care still see one.
     pub fn apply_batch(&mut self, commands: Vec<Command>) -> Result<(), ReplayError> {
         let total = commands.len();
+        let mut first: Option<ReplayError> = None;
         for (index, cmd) in commands.into_iter().enumerate() {
             let described = describe_command(&cmd);
-            self.apply(cmd).map_err(|e| ReplayError::InBatch {
-                index,
-                total,
-                command: described,
-                cause: Box::new(e),
-            })?;
+            if let Err(cause) = self.apply(cmd) {
+                let err = ReplayError::InBatch {
+                    index,
+                    total,
+                    command: described.clone(),
+                    cause: Box::new(cause),
+                };
+                if self.reported_failures.insert(described) {
+                    warn_replay_skip(&err);
+                }
+                if first.is_none() {
+                    first = Some(err);
+                }
+            }
         }
-        Ok(())
+        match first {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Dispatch a single command.
@@ -1902,5 +1944,57 @@ mod replay_diagnostics_tests {
     fn a_command_with_no_nodes_still_has_a_name() {
         let d = describe_command(&Command::Finish { root: NodeId(1) });
         assert!(d.starts_with("Finish"), "{d}");
+    }
+
+    /// The regression that mattered: one unimplemented primitive used
+    /// to discard every unrelated command behind it. On CrewForge a
+    /// `VirtualizerDataChanged` at command 1165 of 1259 blanked the
+    /// app's entire content pane.
+    ///
+    /// Uses the mock host rather than a hand-rolled fake so the nodes
+    /// really are created through the capability surface.
+    #[test]
+    fn regression_a_command_it_cannot_replay_does_not_discard_the_rest_of_the_frame() {
+        let backend =
+            host_mock::HostMock::new(std::rc::Rc::new(host_mock::Shared::default()));
+        let mut client = WireBackend::new_newcore(backend, OutboundSender::new());
+
+        let frame = vec![
+            // Applies.
+            Command::CreateView { id: NodeId(1), a11y: Default::default() },
+            // Fails: nothing ever created node 559 on this client,
+            // because `apply_create_virtualizer` is a stub.
+            Command::VirtualizerDataChanged { node: NodeId(559), item_count: 3 },
+            // Must STILL apply.
+            Command::CreateView { id: NodeId(2), a11y: Default::default() },
+            Command::Insert { parent: NodeId(1), child: NodeId(2) },
+        ];
+        let total = frame.len();
+        let result = client.apply_batch(frame);
+
+        // The failure is reported, with the command and its place.
+        match result {
+            Err(ReplayError::InBatch { index, total: t, ref command, .. }) => {
+                assert_eq!(index, 1);
+                assert_eq!(t, total);
+                assert!(command.contains("Virtualizer"), "{command}");
+            }
+            other => panic!("expected the skipped command to be reported: {other:?}"),
+        }
+        // …and everything after it landed anyway.
+        assert!(client.nodes.contains_key(&NodeId(2)), "the frame must not stop at the bad op");
+    }
+
+    /// The same failing shape, every frame, must not flood the console.
+    #[test]
+    fn a_repeated_failure_is_reported_once() {
+        let backend =
+            host_mock::HostMock::new(std::rc::Rc::new(host_mock::Shared::default()));
+        let mut client = WireBackend::new_newcore(backend, OutboundSender::new());
+        let bad = || vec![Command::VirtualizerDataChanged { node: NodeId(559), item_count: 1 }];
+        assert!(client.apply_batch(bad()).is_err());
+        let after_first = client.reported_failures.len();
+        assert!(client.apply_batch(bad()).is_err());
+        assert_eq!(client.reported_failures.len(), after_first, "reported once per shape");
     }
 }

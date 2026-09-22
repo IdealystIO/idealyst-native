@@ -48,3 +48,6 @@ runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
 mock-backend = { path = "../mock-backend" }
+# The all-caps mock host, so the replay tests drive the REAL capability
+# surface rather than a hand-rolled fake that could diverge from it.
+host-mock = { path = "../host-mock" }
