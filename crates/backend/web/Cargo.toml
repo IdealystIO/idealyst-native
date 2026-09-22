@@ -17,6 +17,18 @@ default = []
 # made. A consumer's `features = ["prim-…"]` is an unknown-feature error
 # now, which is the honest signal.
 hydrate = []
+# The dev-time UI overlay's PAGE half: `__idealyst_overlay_patch`, the
+# entry point the livereload script calls when the dev loop decided a
+# save needs no rebuild.
+#
+# Forwards to the crates that own the gate (rule 6) — `runtime-vocabulary`
+# for the applier and the per-node tag, `wire` for the payload shape,
+# which is the same one the runtime-server path puts on the socket so one
+# format serves both dev shapes. The EMISSION half
+# (`runtime-macros/ui-overlay`) is not reachable from here and comes from
+# the app crate enabling `runtime-core/ui-overlay`, which is what
+# `idealyst dev --web` passes. `build --web` never does.
+ui-overlay = ["runtime-vocabulary/ui-overlay", "dep:wire", "wire/runtime-patch", "dep:runtime-template"]
 # Forwards to runtime-core's `debug-stats`. When on, the web
 # backend reports per-phase timings (`set_attribute`, `insert_rule`,
 # etc.) into the framework's phase-counter aggregator so apply-style
@@ -68,6 +80,7 @@ runtime-shared = { workspace = true }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }
+runtime-template = { workspace = true, optional = true }
 css = { workspace = true }
 inventory = "0.3"
 wasm-bindgen = "0.2"

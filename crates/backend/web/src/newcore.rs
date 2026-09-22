@@ -189,6 +189,61 @@ struct App {
     world: World,
 }
 
+/// Apply a dev-time overlay patch to the mounted app.
+///
+/// The page's livereload script calls this (as
+/// `window.__idealyst_overlay_patch`) when the dev loop decided a save
+/// needs no rebuild. `json` is `{ "site": u64, "edits": [...] }` —
+/// `wire::WireOverlayPatch`, the same shape the runtime-server path puts
+/// on the socket, so one payload format serves both dev shapes.
+///
+/// Both halves are applied, and both are needed: `stage_key` so every
+/// future build of the site carries the edit (a signal firing must not
+/// revert it), and `apply_live_to` for what is already on screen. See
+/// `runtime_vocabulary::overlay::live`.
+///
+/// Returns an error string rather than panicking. A failed patch is a
+/// dev-loop event; the page's handler logs it and reloads, which is the
+/// correct fallback and a much better outcome than a wasm trap taking
+/// the app down mid-edit.
+#[cfg(feature = "ui-overlay")]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = __idealyst_overlay_patch)]
+pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
+    let patch: wire::WireOverlayPatch = serde_json::from_str(json)
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("bad overlay patch: {e}")))?;
+    let edits = patch.to_edits();
+
+    let applied = APP.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(app) = slot.as_mut() else { return None };
+        runtime_vocabulary::overlay::stage_key(patch.site, edits.clone());
+        let outcome = app.world.enter(|| {
+            runtime_vocabulary::overlay::apply_live_to(
+                &app._backend,
+                &app._registry,
+                &mut app.realized.root,
+                patch.site,
+                &edits,
+            )
+        });
+        app.world.flush();
+        Some(outcome)
+    });
+
+    match applied {
+        Some(outcome) => {
+            web_sys::console::info_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[idealyst] overlay patch: {} applied, {} waiting for the next render",
+                outcome.applied, outcome.refused
+            )));
+            Ok(())
+        }
+        None => Err(wasm_bindgen::JsValue::from_str(
+            "no mounted app to patch",
+        )),
+    }
+}
+
 /// Mount a new-core element tree into `#app`. Client-render-only (no
 /// hydration — see the module docs). The build closure runs inside
 /// `world.enter`, so free `signal()`/`effect()` calls work; top-level

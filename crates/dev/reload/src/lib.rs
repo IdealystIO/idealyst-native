@@ -21,6 +21,9 @@
 //! so the resulting wasm connects to the host's WebSocket instead
 //! of rendering the local `app()` tree.
 
+pub mod overlay;
+pub mod overlay_decide;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,12 +73,31 @@ const MAX_COALESCE_MS: u64 = 3_000;
 /// rebuild instead of polling.
 ///
 /// Construct once per dev session; clone the `Arc` to share. The
+/// How many decided patches the signal keeps for listeners that
+/// reconnect. A page that fell further behind than this has missed
+/// enough that reloading is the honest answer.
+const MAX_BUFFERED_PATCHES: usize = 64;
+
 /// type is intentionally lock-light on the read side (atomic load),
 /// with the mutex/condvar pair carrying only the wake notification.
 #[derive(Default)]
 pub struct ReloadSignal {
     gen: AtomicU64,
     notify: (Mutex<()>, Condvar),
+    /// Overlay patches decided since the process started, newest last,
+    /// each with the sequence number a listener resumes from.
+    ///
+    /// A separate counter from `gen` because the two mean opposite
+    /// things to a page: a generation bump says "the bundle moved,
+    /// reload", a patch says "the bundle is fine, apply this". Folding
+    /// them into one number would make every patch a reload, which is
+    /// the cost the patch exists to avoid.
+    ///
+    /// Bounded: a long session must not grow a list nobody will read,
+    /// and a listener that fell far enough behind to miss entries is a
+    /// listener that should reload anyway.
+    patches: Mutex<Vec<(u64, String)>>,
+    patch_seq: AtomicU64,
 }
 
 impl ReloadSignal {
@@ -110,21 +132,84 @@ impl ReloadSignal {
         new
     }
 
+    /// The patch sequence a listener has caught up to.
+    pub fn patch_seq(&self) -> u64 {
+        self.patch_seq.load(Ordering::Acquire)
+    }
+
+    /// Record a decided patch and wake listeners.
+    ///
+    /// `json` is whatever the delivery side agreed on; this type does
+    /// not parse it. Keeping the payload opaque is what lets the
+    /// protocol between the watcher and the page change without this
+    /// crate's public surface moving.
+    pub fn push_patch(&self, json: String) -> u64 {
+        let seq = self.patch_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        {
+            let mut patches = self.patches.lock().unwrap();
+            patches.push((seq, json));
+            let len = patches.len();
+            if len > MAX_BUFFERED_PATCHES {
+                patches.drain(..len - MAX_BUFFERED_PATCHES);
+            }
+        }
+        self.patch_seq.store(seq, Ordering::Release);
+        let _g = self.notify.0.lock().unwrap();
+        self.notify.1.notify_all();
+        seq
+    }
+
+    /// Patches newer than `seen`, oldest first.
+    ///
+    /// A listener whose `seen` predates the buffer gets what is left,
+    /// not an error: the page it belongs to is about to be told to
+    /// reload anyway, and refusing to send the recent ones would make a
+    /// reconnect worse than useless.
+    pub fn patches_since(&self, seen: u64) -> Vec<(u64, String)> {
+        self.patches
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(seq, _)| *seq > seen)
+            .cloned()
+            .collect()
+    }
+
     /// Block until `current() > seen`, or until `timeout` elapses.
     /// Returns the current generation (which equals `seen` on timeout
     /// with no intervening bump). The mutex protects the condvar
     /// only — the actual state is the atomic counter.
     pub fn wait_past(&self, seen: u64, timeout: Duration) -> u64 {
+        self.wait_past_either(seen, u64::MAX, timeout).0
+    }
+
+    /// Block until either the generation passes `seen_gen` or the patch
+    /// sequence passes `seen_patch`. Returns both current values.
+    ///
+    /// One wait for two events, because the SSE writer has one thread
+    /// per listener and waiting on them separately would need two.
+    pub fn wait_past_either(
+        &self,
+        seen_gen: u64,
+        seen_patch: u64,
+        timeout: Duration,
+    ) -> (u64, u64) {
         let mut g = self.notify.0.lock().unwrap();
         loop {
-            let cur = self.gen.load(Ordering::Acquire);
-            if cur > seen {
-                return cur;
+            let (cur, patch) = (
+                self.gen.load(Ordering::Acquire),
+                self.patch_seq.load(Ordering::Acquire),
+            );
+            if cur > seen_gen || patch > seen_patch {
+                return (cur, patch);
             }
             let (gn, res) = self.notify.1.wait_timeout(g, timeout).unwrap();
             g = gn;
             if res.timed_out() {
-                return self.gen.load(Ordering::Acquire);
+                return (
+                    self.gen.load(Ordering::Acquire),
+                    self.patch_seq.load(Ordering::Acquire),
+                );
             }
         }
     }
@@ -460,7 +545,17 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         describe(&watch_paths),
     );
 
+    // The descriptor set the current build left behind, if any. Kept
+    // across saves and advanced after each decided patch, so the NEXT
+    // save diffs against what is actually running rather than against
+    // the source the last compiler saw.
+    let mut archive = overlay_decide::load_archive(&dir, &dir_package_name(&dir));
+
     while let Ok(events) = rx.recv() {
+        let changed_paths: Vec<PathBuf> = match &events {
+            Ok(evs) => evs.iter().map(|e| e.path.clone()).collect(),
+            Err(_) => Vec::new(),
+        };
         drain(&rx);
         if events.is_err() {
             continue;
@@ -468,6 +563,46 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         // Absorb the rest of the burst before starting the build —
         // otherwise a multi-file edit queues one full rebuild per file.
         let folded = settle(&rx);
+
+        // Can this save skip the compiler? Decided BEFORE anything
+        // expensive starts, from the archive plus the new source. See
+        // `overlay_decide` for why the answer is conservative.
+        if let Some(set) = archive.as_ref() {
+            let started = std::time::Instant::now();
+            let changed = read_changed(&dir, &changed_paths);
+            match overlay_decide::decide(Some(set), &changed) {
+                overlay_decide::Decision::Patch(patches) => {
+                    let count = patches.len();
+                    for patch in &patches {
+                        match serde_json::to_string(&overlay_decide::wire_payload(patch)) {
+                            Ok(json) => {
+                                signal.push_patch(json);
+                            }
+                            Err(e) => eprintln!("[dev-reload] cannot encode patch: {e}"),
+                        }
+                    }
+                    if let Some(set) = archive.as_mut() {
+                        overlay_decide::advance_archive(set, &changed);
+                    }
+                    eprintln!(
+                        "[dev] patched {count} site(s) in {} ms, no rebuild",
+                        started.elapsed().as_millis()
+                    );
+                    drain(&rx);
+                    continue;
+                }
+                overlay_decide::Decision::Unchanged if !changed.is_empty() => {
+                    eprintln!("[dev] no UI or code change in this save, no rebuild");
+                    drain(&rx);
+                    continue;
+                }
+                overlay_decide::Decision::Unchanged => {}
+                overlay_decide::Decision::Rebuild(why) => {
+                    eprintln!("[dev] rebuilding: {why}");
+                }
+            }
+        }
+
         if folded > 0 {
             eprintln!("[dev-reload] change detected (+{folded} more), rebuilding…");
         } else {
@@ -520,12 +655,60 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
             );
         }
 
+        // A rebuild regenerates the descriptor set from source, which
+        // is also what drops every staged patch: the new binary already
+        // has the edits compiled in, so re-sending them would be
+        // applying the same change twice.
+        match overlay::write_for(&dir, &dir) {
+            Ok(_) => archive = overlay_decide::load_archive(&dir, &dir_package_name(&dir)),
+            Err(e) => {
+                eprintln!("[dev-reload] no descriptor set for this build: {e}");
+                archive = None;
+            }
+        }
+
         // Coalesce anything queued during the build — wasm-pack
         // writes to `pkg/` (not watched) and cargo touches
         // `target/` (not watched), but defensively draining keeps
         // editor save-bursts from triggering N consecutive builds.
         drain(&rx);
     }
+}
+
+/// The crate's package name, for locating its descriptor archive.
+fn dir_package_name(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|m| {
+            m.get("package")?.get("name")?.as_str().map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// Read the changed files the decision needs, as package-relative
+/// paths.
+///
+/// A path outside the crate — a watched path dependency — is skipped
+/// here, which means the decision never sees it and the save falls to a
+/// rebuild. That is the right answer: the archive describes THIS crate,
+/// and a dependency's sites are compiled into a different artifact.
+fn read_changed(dir: &Path, paths: &[PathBuf]) -> Vec<overlay_decide::ChangedFile> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in paths {
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(dir) else { continue };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if !seen.insert(relative.clone()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        out.push(overlay_decide::ChangedFile { path: relative, text });
+    }
+    out
 }
 
 /// The watch set as one log-friendly line. Printed at startup and

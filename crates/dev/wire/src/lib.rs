@@ -1917,8 +1917,22 @@ pub enum WireOverlayLiteral {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireOverlayNode {
     pub kind: String,
-    pub props: Vec<(String, WireOverlayPropValue)>,
+    pub props: Vec<WireOverlayProp>,
     pub children: Vec<WireOverlayNode>,
+}
+
+/// One `name = value` pair on a [`WireOverlayNode`].
+///
+/// A named struct and not a tuple, so its JSON matches
+/// `runtime_template::PropEntry`'s field for field. The file watcher
+/// emits that shape directly — it decides patches and should not have
+/// to take a protocol dependency to say so — and `dev-reload`'s
+/// `the_watchers_payload_decodes_as_the_protocol_type` is what holds
+/// the two spellings together.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireOverlayProp {
+    pub name: String,
+    pub value: WireOverlayPropValue,
 }
 
 /// A prop's value inside a [`WireOverlayNode`].
@@ -1973,12 +1987,12 @@ mod overlay_convert {
                 props: n
                     .props
                     .iter()
-                    .map(|p| {
-                        let value = match &p.value {
+                    .map(|p| WireOverlayProp {
+                        name: p.name.to_string(),
+                        value: match &p.value {
                             rt::PropValue::Lit(v) => WireOverlayPropValue::Lit(v.into()),
                             rt::PropValue::Slot(i) => WireOverlayPropValue::Slot(*i),
-                        };
-                        (p.name.to_string(), value)
+                        },
                     })
                     .collect(),
                 children: n.children.iter().map(WireOverlayNode::from).collect(),
@@ -1993,9 +2007,9 @@ mod overlay_convert {
                 props: n
                     .props
                     .iter()
-                    .map(|(name, value)| rt::PropEntry {
-                        name: name.clone().into(),
-                        value: match value {
+                    .map(|p| rt::PropEntry {
+                        name: p.name.clone().into(),
+                        value: match &p.value {
                             WireOverlayPropValue::Lit(v) => rt::PropValue::Lit(v.into()),
                             WireOverlayPropValue::Slot(i) => rt::PropValue::Slot(*i),
                         },

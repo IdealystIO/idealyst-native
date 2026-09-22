@@ -9,6 +9,15 @@ description = "Watch + wasm-pack rebuild loop for `idealyst dev` reload mode"
 publish = false
 
 [dependencies]
+# The `ui!` front end, as a library: the watch loop runs the SAME parser
+# and split pass the proc macro does, to decide whether a save is a
+# patch or a rebuild. A second implementation that disagreed by one node
+# would mis-address every patch after it.
+runtime-macros-parse = { workspace = true }
+runtime-template = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+toml = "0.8"
 anyhow = "1"
 # File-watch + debounce. Same crate `dev-server` uses for its runtime-server
 # rebuild loop — keeps the workspace from carrying two debouncers.
@@ -23,3 +32,14 @@ build-ios = { workspace = true }
 # `watch_roots` — the watcher follows the project's LOCAL dependency
 # closure (path deps / workspace members), not just its own `src/`.
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# The overlay producer and the decision table are tested against real
+# crate directories on disk: the scan walks `src/`, reads `Cargo.toml`,
+# and turns absolute paths back into package-relative ones, none of
+# which is exercised by handing it text.
+tempfile = "3"
+# The watcher emits its patch payload by hand rather than taking a
+# protocol dependency to say four fields. This holds the two spellings
+# together: the payload must decode as the real wire type.
+wire = { workspace = true, features = ["runtime-patch"] }

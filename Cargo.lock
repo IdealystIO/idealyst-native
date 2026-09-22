@@ -1581,6 +1581,7 @@ dependencies = [
  "raw-window-handle",
  "runtime-scene",
  "runtime-shared",
+ "runtime-template",
  "runtime-vocabulary",
  "runtime-world",
  "serde_json",
@@ -3392,7 +3393,14 @@ dependencies = [
  "build-ios",
  "build-web",
  "notify-debouncer-mini",
+ "runtime-macros-parse",
+ "runtime-template",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
+ "wire",
 ]
 
 [[package]]

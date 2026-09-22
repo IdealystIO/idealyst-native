@@ -16,7 +16,6 @@ pub mod init;
 pub mod lint;
 pub mod mcp;
 pub mod new;
-pub mod overlay;
 pub mod publish;
 pub mod run;
 pub mod rustc_capture;

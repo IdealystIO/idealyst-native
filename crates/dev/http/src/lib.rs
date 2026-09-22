@@ -138,6 +138,14 @@ pub struct HeadInjectionContext {
 /// stream differs from the one received on connect. `EventSource`
 /// auto-reconnects on its own (default ~3s backoff), so a server
 /// restart or transient network blip recovers without any glue here.
+///
+/// The same stream also carries `patch` events — a saved edit the dev
+/// loop decided needs no rebuild. Those go to the page's overlay entry
+/// point instead of reloading it, which is the entire point: a reload
+/// throws away scroll position, form state and every signal in the app,
+/// and a changed label does not need any of that thrown away. A page
+/// whose bundle was built without the overlay has no entry point, so
+/// the patch is ignored and the next real rebuild carries the edit.
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
   var baseline = null;
@@ -149,6 +157,19 @@ const RELOAD_SCRIPT: &str = r#"<script>
       location.reload();
     }
   };
+  es.addEventListener("patch", function (e) {
+    var apply = window.__idealyst_overlay_patch;
+    if (typeof apply !== "function") {
+      console.info("[idealyst] overlay patch ignored: this bundle has no overlay");
+      return;
+    }
+    try {
+      apply(e.data);
+    } catch (err) {
+      console.error("[idealyst] overlay patch failed, reloading", err);
+      location.reload();
+    }
+  });
 })();
 </script>"#;
 
@@ -393,6 +414,10 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
     // baseline event immediately on connect. Without this the page
     // would sit on an empty stream until the next rebuild.
     let mut last_seen = signal.as_ref().map(|s| s.current()).unwrap_or(0);
+    // Patches already decided are NOT replayed to a page connecting
+    // now: it just loaded the bundle, which was built from the current
+    // source. Replaying would re-apply edits that are already in it.
+    let mut last_patch = signal.as_ref().map(|s| s.patch_seq()).unwrap_or(0);
     if write_event(&mut writer, last_seen).is_err() {
         return;
     }
@@ -400,13 +425,22 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
     loop {
         match &signal {
             Some(sig) => {
-                let new = sig.wait_past(last_seen, SSE_KEEPALIVE);
+                let (new, patch_seq) = sig.wait_past_either(last_seen, last_patch, SSE_KEEPALIVE);
+                if patch_seq > last_patch {
+                    for (seq, json) in sig.patches_since(last_patch) {
+                        if write_patch(&mut writer, &json).is_err() {
+                            return;
+                        }
+                        last_patch = last_patch.max(seq);
+                    }
+                    last_patch = last_patch.max(patch_seq);
+                }
                 if new > last_seen {
                     last_seen = new;
                     if write_event(&mut writer, new).is_err() {
                         return;
                     }
-                } else if write_ping(&mut writer).is_err() {
+                } else if patch_seq == last_patch && new == last_seen && write_ping(&mut writer).is_err() {
                     return;
                 }
             }
@@ -418,6 +452,22 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
             }
         }
     }
+}
+
+/// One overlay patch, as a named SSE event so the page's handler can
+/// tell it from a generation bump without parsing the payload first.
+///
+/// The JSON is emitted on a single `data:` line — SSE splits a payload
+/// on newlines and the client would have to rejoin them, so the
+/// serializer that produced this must not pretty-print. Asserted rather
+/// than hoped: a newline here would silently truncate the patch.
+fn write_patch(w: &mut Box<dyn Write + Send + 'static>, json: &str) -> std::io::Result<()> {
+    debug_assert!(
+        !json.contains('\n'),
+        "an overlay patch must be one SSE data line; serialize it compactly"
+    );
+    w.write_all(format!("event: patch\ndata: {json}\n\n").as_bytes())?;
+    w.flush()
 }
 
 fn write_event(w: &mut Box<dyn Write + Send + 'static>, gen: u64) -> std::io::Result<()> {

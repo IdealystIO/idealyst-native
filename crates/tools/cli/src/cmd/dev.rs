@@ -40,7 +40,7 @@
 //!   carry a site key and a node index — two integers. That is the whole
 //!   in-binary footprint; see `runtime_macros`' `ui_overlay` for the
 //!   measurement that settled it.
-//! - **Beside the build**, `cmd::overlay` writes
+//! - **Beside the build**, `dev_reload::overlay` writes
 //!   `target/idealyst/<app>/overlay/<build>.json`: every `ui!` site of
 //!   the crate, described by the same parser the macro expands with. A
 //!   differ compares two of those to produce a patch.
@@ -1194,6 +1194,12 @@ fn web_dev_features(no_robot: bool) -> Vec<String> {
     // keys the target dir on `user_features`: flipping it cannot serve a
     // half-tagged build.
     f.push("runtime-core/ui-overlay".to_string());
+    // The PAGE half: `backend-web`'s `__idealyst_overlay_patch`, the
+    // entry point the livereload script calls when the dev loop decided
+    // a save needs no rebuild. A separate feature because it is a
+    // separate crate — `runtime-core/ui-overlay` reaches the emission
+    // and the applier, not the wasm-bindgen export.
+    f.push("backend-web/ui-overlay".to_string());
     f
 }
 
@@ -1576,7 +1582,7 @@ fn launch_web(
             // refused to start because a descriptor could not be
             // written would be trading the whole loop for an
             // enhancement to it.
-            if let Err(e) = crate::cmd::overlay::write_for(dir, dir) {
+            if let Err(e) = dev_reload::overlay::write_for(dir, dir) {
                 eprintln!("[overlay] no descriptor set for this build: {e}");
             }
             // `dev_reload::start_with` does the first build
@@ -3389,7 +3395,11 @@ mod tests {
 
         assert_eq!(
             opts.features,
-            vec!["runtime-core/dev".to_string(), "runtime-core/ui-overlay".to_string()],
+            vec![
+                "runtime-core/dev".to_string(),
+                "runtime-core/ui-overlay".to_string(),
+                "backend-web/ui-overlay".to_string(),
+            ],
         );
         assert_eq!(opts.robot_relay_url, None);
     }
@@ -3404,11 +3414,16 @@ mod tests {
                 "runtime-core/dev".to_string(),
                 "robot".to_string(),
                 "runtime-core/ui-overlay".to_string(),
+                "backend-web/ui-overlay".to_string(),
             ],
         );
         assert_eq!(
             web_dev_features(true),
-            vec!["runtime-core/dev".to_string(), "runtime-core/ui-overlay".to_string()],
+            vec![
+                "runtime-core/dev".to_string(),
+                "runtime-core/ui-overlay".to_string(),
+                "backend-web/ui-overlay".to_string(),
+            ],
         );
     }
 
@@ -3419,6 +3434,7 @@ mod tests {
     #[test]
     fn the_overlay_is_dev_only() {
         assert!(web_dev_features(false).iter().any(|f| f == "runtime-core/ui-overlay"));
+        assert!(web_dev_features(false).iter().any(|f| f == "backend-web/ui-overlay"));
         let build_rs = include_str!("build.rs");
         assert!(
             !build_rs.contains("ui-overlay"),

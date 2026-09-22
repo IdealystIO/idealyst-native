@@ -33,6 +33,15 @@
 //! against this scanner's site key, the other checks node-for-node
 //! agreement across the whole fixture corpus.
 //!
+//! # Why this lives in the dev-reload crate
+//!
+//! Because the DECISION does. A save's outcome — patch or rebuild —
+//! needs the archived descriptor set and the freshly scanned one side
+//! by side, and the watch loop is what has both. Producing the archive
+//! and reading it back are two halves of one thing, and splitting them
+//! across a crate boundary would mean the CLI owning the format and the
+//! watcher re-deriving it.
+//!
 //! # Failure is per-file
 //!
 //! A file that does not parse is reported and skipped; every other file
@@ -48,6 +57,24 @@ use runtime_template::{Descriptor, SPLIT_VERSION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// What a build recorded about one source file.
+///
+/// Two digests, because a dev loop has to answer two different
+/// questions about a save:
+///
+/// - **`content`** — did this file change at all? Cheapest possible
+///   filter, and what makes a build identifiable.
+/// - **`skeleton`** — did anything change OUTSIDE its `ui!` bodies? A
+///   descriptor cannot answer that: `let x = 1;` becoming `let x = 2;`
+///   moves no site and changes no descriptor, and it is compiled code.
+///   Together the two partition a file into the part an overlay can
+///   patch and the part that needs a compiler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDigest {
+    pub content: String,
+    pub skeleton: String,
+}
+
 /// One build's descriptor set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DescriptorSet {
@@ -61,24 +88,27 @@ pub struct DescriptorSet {
     /// `[package] name` of the scanned crate, exactly as it feeds the
     /// site key.
     pub package: String,
-    /// Content digest of every scanned file, by package-relative path.
-    /// What makes the build identifiable, and what a differ compares
-    /// first to find which files could possibly have changed.
-    pub files: BTreeMap<String, String>,
+    /// Per-file digests, by package-relative path. See [`FileDigest`].
+    pub files: BTreeMap<String, FileDigest>,
     /// Every site found, in file then source order.
     pub sites: Vec<Descriptor>,
 }
 
 impl DescriptorSet {
     /// The build key: a digest over the split version and every file's
-    /// path and content hash. Also the document's file name.
+    /// path and CONTENT hash. Also the document's file name.
+    ///
+    /// The skeleton hash is deliberately not in it: two builds whose
+    /// sources differ only inside `ui!` bodies are still different
+    /// builds, and a key that could not tell them apart would let a
+    /// stale descriptor set be mistaken for the current one.
     pub fn build_key(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.split_version.to_le_bytes());
         for (path, digest) in &self.files {
             h.update(path.as_bytes());
             h.update([0u8]);
-            h.update(digest.as_bytes());
+            h.update(digest.content.as_bytes());
             h.update([0u8]);
         }
         hex(&h.finalize())
@@ -92,7 +122,7 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
     let package = package_name(dir)?;
     let src = dir.join("src");
     let mut files = Vec::new();
-    super::catalog_scan::collect_rs_files(&src, &mut files);
+    collect_rs_files(&src, &mut files);
     // Also scan `tests/` and `examples/`? No: only what the app's
     // binary is built from can carry tags, and a descriptor for a site
     // that is never compiled into the running program is noise a differ
@@ -116,7 +146,7 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                 continue;
             }
         };
-        set.files.insert(relative.clone(), hex(&Sha256::digest(text.as_bytes())));
+        let content = hex(&Sha256::digest(text.as_bytes()));
 
         let sites = match runtime_macros_parse::sites_in_file(&package, &relative, &text) {
             Ok(s) => s,
@@ -125,9 +155,18 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                     "[overlay] skipping {} (does not parse: {e}); other files still scanned",
                     file.display()
                 );
+                // Still hashed, with the skeleton standing in as the
+                // whole file: a file this scan could not read is a file
+                // any change to must rebuild, and recording it that way
+                // is what makes that happen.
+                set.files.insert(relative, FileDigest { content: content.clone(), skeleton: content });
                 continue;
             }
         };
+        let skeleton = hex(&Sha256::digest(
+            runtime_macros_parse::skeleton_of(&text, &sites).as_bytes(),
+        ));
+        set.files.insert(relative.clone(), FileDigest { content, skeleton });
         for mut site in sites {
             match runtime_macros_parse::describe(site.id.clone(), &mut site.ui) {
                 Ok(d) => set.sites.push(d),
@@ -168,6 +207,21 @@ pub fn overlay_dir(project_root: &Path, app: &str) -> PathBuf {
     project_root.join("target").join("idealyst").join(app).join("overlay")
 }
 
+/// Every `.rs` file under a directory, recursively.
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 /// `[package] name` of the crate, spelled as cargo spells it — hyphens
 /// intact, because that is what `CARGO_PKG_NAME` gives the proc macro
 /// and therefore what feeds the site key.
@@ -193,6 +247,12 @@ fn relative_to(dir: &Path, file: &Path) -> Option<String> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The digest spelling this module records, so the decision half can
+/// produce a comparable one from a file it has in memory.
+pub fn digest(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 #[cfg(test)]
