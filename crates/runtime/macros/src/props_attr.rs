@@ -170,7 +170,7 @@ fn reactive_inner(ty: &Type) -> Option<&Type> {
 
 /// Generate `Props::__apply_literal`.
 ///
-/// The template lowering's builder cannot assign an arbitrarily-typed
+/// A descriptor applier cannot assign an arbitrarily-typed
 /// field, so a component node's LITERAL props are carried in the
 /// descriptor as data and applied by name through this method. That is
 /// what makes a literal-prop edit a data change rather than a
@@ -188,7 +188,7 @@ fn reactive_inner(ty: &Type) -> Option<&Type> {
 /// methods before trait methods, so a `#[props]` / `#[component]` struct
 /// uses this one and a props type without the macro silently falls back —
 /// which is the contract: such a component is slot-only under the
-/// template lowering, never an error.
+/// overlay, never an error.
 ///
 /// `LiteralValue::Path` (an enum-like path such as `tone::Danger`) gets
 /// no arm ON PURPOSE. A generated method cannot construct an arbitrary

@@ -268,7 +268,7 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
         quote! { self.#name }
     });
 
-    // The template lowering's literal applier, from the same field list
+    // The overlay's literal applier, from the same field list
     // (see `props_attr::apply_literal_impl` for why it is an inherent
     // method).
     let apply_literal = crate::props_attr::apply_literal_impl(

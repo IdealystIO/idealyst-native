@@ -1,41 +1,52 @@
-# ui-lowering-parity — the two `ui!` lowerings must be interchangeable
+# ui-lowering-parity — the `ui!` emission, and the overlay that edits it
 
-`ui!` has two lowerings:
+Two contracts live here, and both are about things that cannot be
+checked from one side alone.
 
-- **direct** — what `ui!` has always emitted, and still emits: builder
-  calls inline at the call site.
-- **template** — the same parsed tree, split into a `static` descriptor
-  (data) plus an ordered list of dynamic expressions ("slots"), with
-  `runtime_vocabulary`'s template builder constructing the `Element` from
-  the pair.
+**1. The emission does not drift.** Every fixture is recorded against a
+frozen golden captured from the emitter as it was BEFORE the slot-list
+rewrite. Self-consistency is not the property that matters: a suite
+comparing the emitter only against itself is satisfied by a uniformly
+wrong one.
 
-They must produce **identical scenes**. This crate is the gate that
-proves it, and — through phase 1's goldens — also proves that teaching
-the direct lowering to read its dynamic values out of the slot list did
-not change what it builds.
+**2. The overlay addresses what the emission built.** The compiled app
+carries only numbers — a site key and a node index per node. The
+descriptor that gives those numbers meaning is produced from SOURCE at
+build time by a different code path. If the two ever disagree, every
+patch after the first divergence edits the wrong element, **and nothing
+else fails**: both halves stay internally consistent and patches simply
+never match. This crate is the only place both run on one input.
 
 ```
-cargo test -p ui-lowering-parity                    # everything
-cargo test -p ui-lowering-parity --no-default-features   # direct-only goldens
+cargo test -p ui-lowering-parity                    # the emission contract
+cargo test -p ui-lowering-parity --features ui-overlay   # + the overlay's
 ```
 
-Both halves run in ONE process, which is the point: the two lowerings
-are compared as two expansions of the same tokens inside the same
-binary, not as two builds whose differences could be anything. The
-`template` feature is on by default; turning it off leaves the
-direct-only golden check, which is what you want while bisecting a
-divergence.
+The goldens are the SAME files either way. That is the byte-identity
+gate: turning the feature on must not change what a site builds.
 
-## The contract
+## The suites
 
-Every fixture in `src/fixtures.rs` is **authored once** and expanded
-**twice**, by `ui_lowered!(direct { … })` and `ui_lowered!(template { … })`
-over the same token trees. Each expansion is mounted against a
-[`host_mock::Harness`] (the repo's canonical recording `runtime_scene::Host`
-+ all-30-caps mock), driven through every signal the fixture exposes, and
-recorded. Three projections of that recording must match, and they are
-checked in this order because that is the order in which a divergence is
-diagnosable:
+| test | what it pins |
+|------|--------------|
+| `goldens.rs :: direct_lowering_matches_the_frozen_reference` | the emission still builds what the pre-rewrite emitter did — 49 fixtures × 2 structural modes × 3 projections |
+| `goldens.rs :: recordings_are_deterministic` | the same fixture recorded twice is byte-identical (otherwise every other assertion here is flaky, not false) |
+| `goldens.rs :: every_fixture_has_a_golden_and_every_golden_a_fixture` | the corpus cannot silently shrink |
+| `goldens.rs :: a_site_numbers_a_node_before_everything_under_it` | the feature is DOING something when on, and the one relation a flat node array with `u32` child indices depends on |
+| `descriptor.rs` | every tag lands on the node the build-time descriptor gives that number — and the corpus interleaves control flow with elements, so that check is not vacuous |
+| `site_key.rs` | the macro and the source scanner name the same SITE |
+| `apply.rs` | the applier, on mounted scenes: what it changes and — six of twelve cases — what it refuses |
+| `round_trip.rs` | `Element(original) + apply(diff(desc(original), desc(edited))) == Element(edited)` |
+| `apply_literal.rs` | `#[component]`/`#[props]`' generated `__apply_literal`: application through the `Reactive` wrap, integer narrowing, refusal reporting, and the blanket fallback for a props type the macro never touched |
+| `double_eval.rs` | props the emitter used to splice twice stay spliced once |
+
+## How a fixture is recorded
+
+Each fixture is mounted against a [`host_mock::Harness`] (the repo's
+canonical recording `runtime_scene::Host` + all-30-caps mock), driven
+through every signal it exposes, and recorded. Three projections must
+match, checked in this order because that is the order in which a
+divergence is diagnosable:
 
 | projection   | what it pins                                                     |
 |--------------|------------------------------------------------------------------|
@@ -43,42 +54,35 @@ diagnosable:
 | `full`       | every recorded capability call — props, styles, text updates, handler installs, lifecycle |
 | `scene`      | the final tree (kind + captured text per node), after the last drive |
 
-Each fixture is recorded in **both** structural modes:
+Every fixture is recorded in **both** structural modes — **anchored**
+(`supports_splice() == false`: reactive regions nest under an anchor,
+swaps are `clear_children` + `insert`) and **spliced** (regions splice
+into the real parent via `remove_child` + `insert_at`). The two take
+different code through the scene drivers, so a bug that only shows in
+one of them would otherwise hide. Same split `scene-parity` makes.
 
-- **anchored** (`supports_splice() == false`) — reactive regions nest
-  under an anchor; swaps are `clear_children` + `insert`.
-- **spliced** (`supports_splice() == true`) — regions splice into the
-  real parent via `remove_child` + `insert_at`.
+The recording has one step per drive, labelled, so a divergence is
+attributed to the mutation that caused it rather than to the mount.
 
-The two take different code through the scene drivers, so a lowering bug
-that only shows in one of them would otherwise hide. Same split
-`scene-parity` makes.
+## Why the corpora are `macro_rules!`
 
-Assertion 3 in the task's phrasing ("identical op streams after driving
-every signal the fixture exposes") is the per-step structure of
-`structural`/`full`: the recording has one step per drive, labelled, so a
-divergence is attributed to the mutation that caused it rather than to
-the mount.
+A fixture's tokens must be available to the compiler AND, for the
+overlay half, to the parser library as source. `stringify!` inside the
+generating macro is how one authoring reaches both — there is no way to
+write the body twice and still claim the two halves saw the same input.
 
-## Why the corpus is a `macro_rules!`
+`src/fixtures.rs` holds `fixture! { … }` (emission contract); each
+invocation generates `St` + `make()`, the labelled `DRIVES` the harness
+replays, the `ui!` expansion, and the body as a string. All four
+sections (`state`, `locals`, `drive`, `body`) are mandatory, empty braces
+when unused: an optional-section macro would have to guess, and a fixture
+that silently dropped its drive list would assert nothing.
 
-A fixture must be written once and expanded twice, from the same tokens.
-That is a macro-level constraint — a data file or a `fn` taking a
-lowering parameter cannot express it, because the lowering is chosen at
-expansion time. So the corpus is `fixture! { … }` invocations, each
-generating a module with:
+`src/edits.rs` holds `pair! { … }` (overlay contract): one site written
+TWICE, `original` and `edited`, both compiled and both kept as source,
+plus whether the edit is expected to be patchable at all.
 
-- `St` — the signals the fixture exposes, plus `make()`,
-- `DRIVES` — the labelled mutations the harness replays,
-- `direct(&St) -> Element` and (under `--features template`)
-  `template(&St) -> Element`, expanded from the same `body { … }` tokens,
-- `record_direct(Mode)` / `record_template(Mode)`.
-
-All four sections (`state`, `locals`, `drive`, `body`) are mandatory;
-empty braces when unused. An optional-section macro would have to guess,
-and a fixture that silently dropped its drive list would assert nothing.
-
-## What the corpus covers
+## What the emission corpus covers
 
 Node kinds: `view`, `text` (literal / closure / f-string / `content`
 prop), `button` (literal label, closure handler, and the
@@ -109,13 +113,8 @@ selection, `test_id`, and the a11y attribute set.
 
 `crates/dev/scene-parity` freezes the op sequences for 13 reactive
 scenarios — but it builds them through `runtime_scene`'s constructors
-and contains **no `ui!` at all**, so there is nothing there for a
-*lowering* to apply to; adding a mode to its matrix would be adding a
-mode that changes nothing. Its goldens stay green as a separate
-invariant.
-
-The equivalent coverage lives here instead: three fixtures re-author its
-structural corpus in `ui!` —
+and contains **no `ui!` at all**. The equivalent coverage lives here:
+three fixtures re-author its structural corpus in `ui!` —
 `for_keyed_reorder_and_insert` (`each_reverse` +
 `each_insert_middle_survivors` + a removal),
 `reactive_if_in_keyed_row` (`nested_when_in_each_row`), and
@@ -129,14 +128,27 @@ cleanup ordering relative to the structural ops via `on_cleanup` markers.
 `host-mock`'s op log has no cleanup line to interleave, so the shape is
 covered only by the `unmount` step's op sequence.
 
-## Phase-1 goldens
+## What the edit corpus covers
 
-`goldens/<fixture>.<mode>.golden` is a recording of the **pre-slot-rewrite**
-direct emitter, captured before `ui.rs` was touched and committed as the
-reference. They exist because self-consistency is not the property that
-matters: a suite comparing the rewritten lowering only against itself
-would be satisfied by a uniformly-wrong emitter. Comparing against a
-frozen recording of the old one makes "behavior-preserving" falsifiable.
+Patchable: a text literal, a nested one beside an untouched sibling, an
+a11y literal, a child appended, a child removed, children reordered, and
+a literal edited next to a reactive sibling that must be left alone.
+
+Refused, and this half matters as much — an edit that must be refused
+silently becoming accepted-and-wrong is the failure the whole design
+exists to make impossible: a changed `if` condition, a changed reactive
+text body, a prop that went from a literal to a closure, and a static
+child added beside control flow.
+
+`round_trip.rs` also pins that diffing a descriptor against ITSELF
+produces nothing. Without it, a differ that emitted a spurious `SetProp`
+for every node would still pass — the patch would just happen to write
+the values that were already there.
+
+## The frozen goldens
+
+`goldens/<fixture>.<mode>.golden` is a recording of the
+**pre-slot-rewrite** emitter, captured before `ui.rs` was touched.
 
 ```
 UPDATE_UI_PARITY_GOLDENS=1 cargo test -p ui-lowering-parity
@@ -146,67 +158,30 @@ writes them. Re-baselining discards the pre-rewrite reference
 permanently, so do it only after reviewing the diff — and record the
 reason in the divergence list below.
 
-**Every** golden in the corpus is a pre-rewrite recording, including the
-fixtures added after the rewrite landed. To capture one, restore the
-pre-rewrite emitter over the macro crate, write the goldens, and put the
-current one back:
+**Every** golden is a pre-rewrite recording, including fixtures added
+after the rewrite landed. To capture one, restore the pre-rewrite
+emitter over the macro crate, write the goldens, and put the current one
+back:
 
 ```
 git checkout <pre-rewrite sha> -- crates/runtime/macros/
-UPDATE_UI_PARITY_GOLDENS=1 cargo test -p ui-lowering-parity \
-    --no-default-features --test goldens
+UPDATE_UI_PARITY_GOLDENS=1 cargo test -p ui-lowering-parity --test goldens
 # the diff must show ONLY the new fixture's files
 git checkout HEAD -- crates/runtime/macros/
 ```
 
-`--no-default-features` because the pre-rewrite crate has no template
-emitter. The step is worth the ceremony: a golden captured from the
-CURRENT emitter only proves self-consistency, which is the property the
-corpus exists to go beyond. (It doubles as a re-verification — the
-rewrite is confirmed byte-for-byte whenever the rewrite of every existing
-golden comes back empty.)
+The ceremony is worth it: a golden captured from the CURRENT emitter
+proves only self-consistency, which is the property the corpus exists to
+go beyond.
 
 ### Sanctioned divergences from the frozen reference
 
 None. Every fixture reproduces the pre-rewrite recording byte for byte
-in both modes, under BOTH lowerings.
+in both modes, with `ui-overlay` on and off.
 
-## The suites
+## One prop the emitter drops
 
-| test | what it pins |
-|------|--------------|
-| `goldens.rs :: direct_lowering_matches_the_frozen_reference` | the slot-list rewrite changed nothing the pre-rewrite emitter did |
-| `goldens.rs :: recordings_are_deterministic` | the same fixture recorded twice is byte-identical (otherwise every other assertion here is flaky, not false) |
-| `goldens.rs :: every_fixture_has_a_golden_and_every_golden_a_fixture` | the corpus cannot silently shrink |
-| `parity.rs :: every_fixture_builds_the_same_scene_under_both_lowerings` | the cross-lowering contract, all three projections, both modes |
-| `parity.rs :: template_lowering_matches_the_frozen_reference` | the template lowering against the FROZEN goldens too — so a regression that moved both lowerings the same way still fails |
-| `apply_literal.rs` | `#[component]`/`#[props]`' generated `__apply_literal`: literal application through the `Reactive` wrap, integer narrowing, refusal reporting, and the blanket fallback for a props type the macro never touched |
-
-## Descriptor-native vs escaped
-
-The template lowering does not need every node to be descriptor-native
-to be correct: a node the descriptor cannot model becomes a
-`Node::Escape`, built by the direct emitter and handed to a slot as a
-finished `Element`. So the template half of this suite passes from the
-first commit, and what grows over time is how much of each fixture is
-DATA rather than code.
-
-That boundary is pinned where it is decided — in `runtime-macros`'
-`ui_template` unit tests, node kind by node kind, plus
-`descriptor_native_coverage_of_the_corpus`, which pins the exact
-native/escaped node COUNTS for a corpus mirroring these fixtures. A
-widening of the native set therefore shows up in that diff, and this
-suite is what proves the widening did not change any scene.
-
-This suite also finds props the DIRECT emitter silently drops. The
-`overlay_non_modal` fixture is how `overlay(click_through = …)` surfaced:
-`emit_overlay` never lowered it, so declaring it native made the template
-lowering apply a prop the direct one discarded, and the full-op
-projection failed. It is left un-native, so both lowerings agree on the
-drop; fixing the drop is a behaviour change for the direct emitter and
+This suite is how `overlay(click_through = …)` surfaced: `emit_overlay`
+never lowered it. The `overlay_non_modal` fixture pins the drop rather
+than hiding it — fixing it is a behaviour change for the emitter and
 belongs in its own commit.
-
-An escaped node's BODIES stay template-lowered (the macro keeps an
-ambient-lowering flag for exactly this), so a fixture like
-`for_keyed_reactive` still exercises the template builder on its row
-bodies even though the `for` itself escapes.

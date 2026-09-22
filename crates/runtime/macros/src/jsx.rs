@@ -41,9 +41,9 @@
 //!
 //! ## `jsx!` is NOT on the slot split
 //!
-//! `ui!` lowers through [`crate::ui_split`], which pulls every dynamic
-//! expression out of a node into a `let` prelude evaluated in SOURCE
-//! order (see that module's docs and `crate::ui_template` for why).
+//! `ui!` lowers through `runtime_macros_parse::split`, which pulls every
+//! dynamic expression out of a node into a `let` prelude evaluated in
+//! SOURCE order (see that module's docs for why).
 //! `jsx!` does not: it has its own node type and its own `emit_node` /
 //! `emit_block_as_primitive`, and it still emits props where the builder
 //! chain splices them.
@@ -57,10 +57,9 @@
 //!
 //! Bringing `jsx!` onto the shared split means either re-parsing its
 //! grammar into `UiNode` or generalising the split over both node types.
-//! Neither is hard; it is simply not what the split was added for
-//! (`ui_lowered!`'s two lowerings both consume `UiNode`). Until then:
-//! `jsx!` has ONE lowering, and the template lowering is not reachable
-//! from it.
+//! Neither is hard; it is simply not what the split was added for. Until
+//! then a `jsx!` site produces no descriptor and its nodes carry no
+//! overlay tag, so a static edit inside one needs a rebuild.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};

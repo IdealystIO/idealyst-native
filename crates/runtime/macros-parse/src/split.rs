@@ -30,15 +30,16 @@
 //! Construct evaluated where the construction splices it.
 //! ```
 //!
-//! The direct lowering used to evaluate a node's props *after* its
-//! children (`view(style = f()) { Badge(label = g()) }` ran `g()` then
-//! `f()`, because `style` lowers to a trailing `.with_style(f())`). The
-//! template lowering cannot reproduce that: its slots are an array,
-//! evaluated left to right. Rather than contort the builder, BOTH
-//! lowerings now hoist every `Prelude` slot into a `let` at the head of
+//! The emission used to evaluate a node's props *after* its children
+//! (`view(style = f()) { Badge(label = g()) }` ran `g()` then `f()`,
+//! because `style` lowers to a trailing `.with_style(f())`). A
+//! descriptor cannot describe that: its slots are an ordered list, and a
+//! build-time producer reading the same source has to agree with the
+//! emission about when each expression runs. Rather than contort the
+//! builder, every `Prelude` slot is hoisted into a `let` at the head of
 //! its scope, in source order. That is the one behavioural change the
-//! slot rewrite makes, and it makes the two lowerings' observable
-//! evaluation order identical by construction.
+//! slot rewrite makes, and it is documented for authors in
+//! `crates/mcp/catalog/guides/migration-1-3-0-to-1-4-0.md`.
 //!
 //! `Construct` placement is reserved for expressions whose *evaluation*
 //! has no observable effect, so leaving them where the construction

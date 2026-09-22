@@ -3,9 +3,9 @@
 A **descriptor** is one `ui!` call site in data form: its node tree,
 tags, attribute names, child order, literal values, and a `SlotSig`
 naming the dynamic expressions it does *not* carry. This crate owns that
-data model, the `Registry` that keys descriptors by site, and
-`validate`. It depends on `serde` and nothing else — no builders, no
-handlers, no dev server, no CLI.
+data model, the `Registry` that keys descriptors by site, and `diff` —
+two descriptors in, a `Patch` or a `Rejection` out. It depends on `serde`
+and nothing else — no builders, no handlers, no dev server, no CLI.
 
 ```
 src/screens/login.rs:42:5
@@ -94,7 +94,9 @@ moves nothing.
 | `SlotSig` | one `SlotInfo` per slot: its role, its syntactic kind, and its prop name |
 | `SiteId` | package + package-relative file + line + column |
 | `Registry` | the descriptors a tool knows about, keyed by site |
-| `Patch` | the edits to apply to one site |
+| `Patch` | a list of `Edit`s addressed to one site |
+| `Edit` | `SetProp { node, name, value }` or `SetChildren { node, children }` |
+| `NewNode` | a subtree a patch asks to be CONSTRUCTED — literals only |
 | `SPLIT_VERSION` | the node-numbering version; a differ refuses a mismatched pair |
 
 `Node::Prim`'s `kind` is a string and not a closed enum on purpose. The
@@ -123,31 +125,60 @@ numberings agree over the whole fixture corpus.
 One (site, node) pair addresses a SET of elements, not one: every row of a
 `for` builds the same node of the same site. An applier edits every match.
 
-## What `validate` checks
+## What `diff` refuses
 
-The slots are **code**. They were compiled into the binary from the
-author's expressions and cannot be patched; only the descriptor can. So a
-patch is accepted only when
+`diff(old, new)` is where "is this edit safe?" is answered, and it is
+answered here because here is the only place BOTH source versions exist.
+A running app has one; the compiled code that would receive the patch has
+the other baked in and cannot describe it.
 
-- it is internally consistent — every child/root index in range, every slot
-  reference declared;
-- and its slot signature matches the compiled site's **shape for shape**.
-  A descriptor that used slot 3 as a condition where the binary supplies a
-  text value would address the wrong thing.
+Every edit names an **old** node index. Indices are positions in a
+preorder walk, so inserting a node renumbers everything after it — and
+the binary carries the old numbering, because it is the build that is
+running. What a patch ASKS FOR is data (`NewNode`), never an index into
+the new descriptor, so a patch is meaningful with the new descriptor
+nowhere in sight.
+
+The slots are **code**: they were compiled into the binary from the
+author's expressions and cannot be patched. So a diff refuses
+
+| refusal | what changed |
+|---|---|
+| `SlotsChanged` / `SlotShapeChanged` | the site's compiled expressions |
+| `PropMovedToCode` | a prop went between a literal and a slot, or a path-valued prop (a style token) changed |
+| `CodeChanged` | an `if` condition, a `for` iterable, a `match` scrutinee |
+| `ShapeChanged` | the tree changed shape around a control-flow node, whose position in its parent's list is decided at runtime |
+| `NotConstructible` | a new subtree references a slot or a style path, and cannot be built from data |
+
+A refusal is not a failure. It is the differ saying "this one needs a
+rebuild", which is the correct and available answer.
 
 `SlotInfo::name` is deliberately NOT compared: it is reserved for a later
-name-matched protocol, and comparing it now would reject harmless edits.
+name-matched protocol, and comparing it now would reject a harmless prop
+rename. `kind` is a *syntactic* label (`"closure"`, `"path"`, `"call"`,
+…), not a Rust type — a proc macro has tokens, never resolved types. It
+is a drift detector, not a type check.
 
-`kind` is a *syntactic* label (`"closure"`, `"path"`, `"call"`, …), not a
-Rust type — a proc macro has tokens, never resolved types. It is a drift
-detector, not a type check.
+`check_well_formed` is the other half: a descriptor's internal
+consistency, on its own — every child and root index in range, every slot
+reference declared.
 
 ## Tests
 
-`cargo test -p runtime-template` covers serde round-tripping, the site-key
-fold, registration, and every `validate` rejection.
+`cargo test -p runtime-template` covers serde round-tripping, the
+site-key fold, registration, every `check_well_formed` rejection, and
+every `diff` outcome — a changed literal, a new sibling, a site diffed
+against itself, and each refusal above.
 
-The proof that the numbering actually addresses a built tree lives in
-`crates/dev/ui-lowering-parity`, which mounts every fixture with tags on
-and checks the relation the flat node array depends on: within one site, a
-node is numbered before everything beneath it.
+The proof that any of it addresses a REAL tree lives in
+`crates/dev/ui-lowering-parity`. It mounts every fixture with tags on and
+checks the relation the flat node array depends on (within one site, a
+node is numbered before everything beneath it); it checks that every tag
+lands on the node this crate's producer gives that number; and for each
+edit pair it asserts the whole loop —
+
+```text
+Element(original) + apply(diff(desc(original), desc(edited))) == Element(edited)
+```
+
+— on three projections of a real mount.

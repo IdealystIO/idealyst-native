@@ -1,10 +1,12 @@
 //! The fixture corpus.
 //!
-//! Every entry is authored ONCE inside [`fixture!`] and expanded TWICE —
-//! through `ui_lowered!(direct)` and `ui_lowered!(template)` — so the two
-//! lowerings provably consume the same tokens. The macro also generates
-//! the fixture's signal state, its `let`-prelude, and the drive list the
-//! harness replays.
+//! Every entry is authored ONCE inside [`fixture!`] and reaches TWO
+//! consumers from that one authoring: the compiler, which expands the
+//! `ui!`, and — through `stringify!` — the build-time descriptor
+//! producer, which parses the same tokens as source. Writing the body
+//! twice would give up the claim that both halves saw the same input.
+//! The macro also generates the fixture's signal state, its
+//! `let`-prelude, and the drive list the harness replays.
 //!
 //! Shape:
 //!
@@ -109,8 +111,8 @@ stylesheet! {
     }
 }
 
-/// Literal-prop component: every prop is a descriptor literal, so the
-/// template lowering can drive it entirely from data.
+/// Literal-prop component: every prop is a descriptor literal, so an
+/// overlay edit can reach all of them.
 #[component]
 fn Badge(
     /// Reactive-by-default text prop.
@@ -488,9 +490,9 @@ fixture! {
     }
 }
 
-/// A provably signal-free comparison — the shape that becomes a
-/// `Select` node under the template lowering (a bare-path condition is
-/// type-dispatched and escapes; see `static_if`).
+/// A provably signal-free comparison — a plain Rust `if`, chosen once at
+/// construction. A bare-path condition is type-dispatched instead; see
+/// `static_if`.
 fixture! {
     name = static_if_comparison;
     state { }

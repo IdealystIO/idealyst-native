@@ -28,6 +28,32 @@
 //! and Ctrl-C tears all of them down together. A failure in one
 //! target prints a `[dev <target>] launch failed: …` line and the
 //! remaining targets keep running.
+//!
+//! ## The UI overlay (`--web`)
+//!
+//! `dev --web` turns on the `ui-overlay` cargo feature and writes a
+//! descriptor set beside the build. Those are the two halves of one
+//! capability: addressing what a `ui!` site built, so a static edit can
+//! be applied without recompiling.
+//!
+//! - **In the bundle**, the feature makes every node a `ui!` site builds
+//!   carry a site key and a node index — two integers. That is the whole
+//!   in-binary footprint; see `runtime_macros`' `ui_overlay` for the
+//!   measurement that settled it.
+//! - **Beside the build**, `cmd::overlay` writes
+//!   `target/idealyst/<app>/overlay/<build>.json`: every `ui!` site of
+//!   the crate, described by the same parser the macro expands with. A
+//!   differ compares two of those to produce a patch.
+//!
+//! Both are DEV ONLY. `idealyst build --web` passes neither, so a
+//! shipped bundle carries no tags and no descriptor set — and
+//! `the_overlay_is_dev_only` in this module's tests reads `build.rs` to
+//! keep it that way.
+//!
+//! Writing the descriptor set is best-effort: a failure prints
+//! `[overlay] no descriptor set for this build: …` and the dev loop
+//! starts anyway. Refusing to serve an app because an enhancement to the
+//! loop could not be prepared would be the wrong trade.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

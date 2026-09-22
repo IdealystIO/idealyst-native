@@ -746,9 +746,9 @@ pub(crate) fn text_lowering(props: &[Prop], children: Option<&[UiNode]>) -> Text
     // `Signal<String>` handle) that `IntoTextSource` routes on its own.
     //
     // A bare, placeholder-free STRING LITERAL is split out as `Literal`:
-    // it is the one content shape a descriptor can carry as data, so the
-    // template lowering has to see it as such. The direct lowering
-    // renders it from the author's own tokens, unchanged.
+    // it is the one content shape a descriptor can carry as data, so an
+    // overlay edit can reach it. The emission renders it from the
+    // author's own tokens, unchanged.
     let content: TokenStream2 = if let Some(kids) = children {
         match kids.len() {
             0 => return TextLowering::Literal(String::new()),
@@ -851,7 +851,7 @@ fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     quote! { ::runtime_core::button(#label, #on_click) #leading #trailing }
 }
 
-/// A `button`'s label expression. Shared with the template lowering.
+/// A `button`'s label expression.
 pub(crate) fn button_label(props: &[Prop]) -> TokenStream2 {
     props
         .iter()
@@ -860,7 +860,7 @@ pub(crate) fn button_label(props: &[Prop]) -> TokenStream2 {
         .unwrap_or_else(|| quote! { "" })
 }
 
-/// A `button`'s press expression. Shared with the template lowering so
+/// A `button`'s press expression. Factored out so
 /// the structured-call rewrite below cannot drift between them.
 pub(crate) fn button_on_click(props: &[Prop]) -> TokenStream2 {
     // on_click: three shapes, in priority order:

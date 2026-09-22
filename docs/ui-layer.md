@@ -320,18 +320,30 @@ expression the emitter discards.
 is the producer of a **descriptor**: the data half of a site, addressable
 and patchable without recompiling.
 
-`runtime-template` (`crates/runtime/template`) owns those types —
-`Descriptor`, `Node`, `PropEntry`, `SlotSig`, `SiteId`, `Registry`,
-`Patch`/`validate`. It depends on `runtime-scene` and `serde` and
-nothing else, so a descriptor serializes and validates with no renderer
-in the graph.
+Most of a UI tree is not code. Tags, attribute names, child order, string
+and number and bool literals, enum-like paths, style-token accessors —
+all of it is data that happens to be spelled in Rust. Separating that
+half makes a static edit (a changed label, a reordered child) a DATA
+change, and that is the basis for changing one without a rebuild.
 
-Most of a UI tree is not code: tags, attribute names, child order,
-literals, enum-like paths, style-token accessors. Separating that half
-makes a static edit (a changed label, a reordered child, a different
-style) a DATA change — the basis for hot reload without recompiling.
-What consumes it is a dev-time **overlay** (below), not a second
-emission.
+`runtime-template` (`crates/runtime/template`) owns the types —
+`Descriptor`, `Node`, `PropEntry`, `SlotSig`, `SiteId`, `Registry`,
+`Patch`, `diff`. It depends on `serde` and nothing else, so a descriptor
+serializes and diffs with no renderer in the graph.
+
+`runtime-macros-parse` (`crates/runtime/macros-parse`) is the front end
+that produces them: the `ui!` parser, the split pass, the node numbering
+and the IDE-recovery shell, as a PLAIN library. `runtime-macros` is the
+emission over it. The split matters because two callers need the same
+answers — the proc macro expanding `ui!` inside rustc, and the CLI
+reading a crate's sources at build time — and a proc-macro crate cannot
+be depended on as a library. While the parser lived inside one, the
+second caller had to reimplement it, and a reimplementation that
+disagreed by a single node would mis-address every patch after that
+node, silently.
+
+What CONSUMES the descriptor is a dev-time overlay — see [The dev-time
+overlay](#the-dev-time-overlay) below — not a second emission.
 
 ### Reactive `if`
 
@@ -432,6 +444,88 @@ The DSL is a frontend. What it emits — one lowering, builder calls
 inline — is the framework's only structural commitment.
 
 ---
+
+## The dev-time overlay
+
+Behind the `ui-overlay` cargo feature (off by default; `idealyst dev
+--web` turns it on, `idealyst build --web` never does), the emission adds
+one thing per node: an **origin tag**.
+
+```rust
+runtime_core::__overlay::tag(<the node's expression>, <site key>, <node index>)
+```
+
+Two integer literals and a call. `site key` is
+`runtime_template::site_key` of the `ui!` invocation's package,
+package-relative file, line and column; `node index` is the number the
+split pass gave that node. A patch names the same pair, carries its new
+values inline, and is applied inside `tag` — which is the point every
+node passes through on **every** build of its site. That is what makes a
+patch survive a rebuild: a site's `Element` is rebuilt whenever its
+reactive scope re-runs, and a patch applied once to a tree that is then
+rebuilt from the compiled code would silently revert.
+
+A `#[component]`'s props are the exception. By the time its `Element`
+exists they have been consumed and its body has run, so the emission
+wraps the props struct literal instead and applies literals through the
+generated `__apply_literal`.
+
+### Descriptors are a build artifact, not binary contents
+
+They used to be compiled in — a `static Descriptor` per site, registered
+at build time. Measured on a real app (CrewForge, ~256 codegen units)
+that cost **+1.4 s on every one-edit rebuild**:
+
+| one-edit rebuild | overlay off | tags only | tags + in-binary descriptor |
+|---|---|---|---|
+| a string literal in a screen | 5.04–5.30 s | 5.63–5.64 s | 6.83–6.97 s |
+| a trailing comment | 4.96–5.02 s | 4.85–5.02 s | 6.47–6.64 s |
+| `macro_expand_crate` | 1.64–1.65 s | 1.69–1.79 s | 2.51–2.60 s |
+| `serialize_dep_graph` | 0.37–0.60 s | 0.39–0.60 s | 0.61–0.78 s |
+
+A 27% tax on exactly the loop the overlay exists to shorten, all of it in
+expansion and dep-graph serialization and none of it in codegen — while
+keeping only the TAGS measured within noise of the feature being off.
+
+So the descriptor is produced from SOURCE at build time, by the same
+split pass, and written beside the build:
+`target/idealyst/<app>/overlay/<build>.json`, where `<build>` is a digest
+of every scanned file's content plus the split-pass version. The compiled
+program carries only the tags and one `IDEALYST_UI_SPLIT_VERSION` marker,
+so a tool can refuse a binary numbered by a walk it does not know.
+
+Three things follow, and each is better than the old arrangement:
+
+1. **Validation moves to where the evidence is.** "Does this edit disturb
+   an expression the compiled code supplies?" needs BOTH source versions.
+   The differ has them; a running app never did.
+2. **An over-the-air path archives each build's descriptor set** keyed by
+   build id, rather than reading it back out of a shipped binary.
+3. **The dev loop pays nothing** for a feature that exists to make the
+   dev loop faster.
+
+### What an edit can and cannot change
+
+`runtime_template::diff(old, new)` turns two descriptors into a `Patch`
+or a `Rejection`. It refuses everything that would mean the compiled code
+changed — a different slot signature, a prop that moved between data and
+a slot, a changed `if` condition / `for` iterable / `match` scrutinee, a
+changed style token (recorded as source text, because a value of an
+arbitrary type is not reconstructible from a string), a new subtree
+referencing a slot, or any structural change around a control-flow node
+whose position is decided at runtime.
+
+A refusal is not a failure. It is the differ saying "this one needs a
+rebuild", which is the correct and available answer. The applier refuses
+the same class of thing again at runtime — a reactive prop, a child list
+holding a reactive region — checking the LIVE tree rather than trusting
+the patch, and counts what it applied so a dev server can say so rather
+than showing a tree that is neither version.
+
+`crates/dev/ui-lowering-parity` closes the loop end to end: for each
+edit pair it asserts that `Element(original)` plus the diff of the two
+descriptors renders exactly like `Element(edited)`, on all three
+projections of a real mount.
 
 ## The primitive builders
 

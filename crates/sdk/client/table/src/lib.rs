@@ -49,7 +49,7 @@
 //! ([`set_cell_interaction`]): a sibling backdrop can never receive
 //! touches landing on cell content on native.
 //!
-//! # The two lowerings
+//! # Two platform lowerings
 //!
 //! - **Web (wasm32)**: each primitive lowers to a scene
 //!   [`Element::Item`] carrying a typed payload; the scene
