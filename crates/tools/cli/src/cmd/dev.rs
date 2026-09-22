@@ -51,9 +51,40 @@
 //! keep it that way.
 //!
 //! Writing the descriptor set is best-effort: a failure prints
-//! `[overlay] no descriptor set for this build: …` and the dev loop
+//! `[dev-reload] no descriptor set for this build: …` and the dev loop
 //! starts anyway. Refusing to serve an app because an enhancement to the
 //! loop could not be prepared would be the wrong trade.
+//!
+//! ## What a save does now
+//!
+//! Before starting a rebuild, the watcher asks whether the save is a
+//! PATCH — a change confined to `ui!` bodies that diffs cleanly against
+//! the archive. If it is, the patches go to the page and the compiler is
+//! never started:
+//!
+//! ```text
+//! [dev] patched 1 site(s) in 18 ms, no rebuild
+//! ```
+//!
+//! If it is not, the normal rebuild runs and says why:
+//!
+//! ```text
+//! [dev] rebuilding: src/screens/login.rs changed outside its `ui!` bodies
+//! [dev] rebuilding: src/screens/auth/brand_lockup.rs: the site's compiled
+//!       expressions changed (5 slots before, 6 after)
+//! ```
+//!
+//! A rebuild regenerates the descriptor set from source, which is also
+//! what drops every staged patch — the new binary has the edits compiled
+//! in, so re-sending them would apply the same change twice. The full
+//! decision table is `dev_reload::overlay_decide`; which edits fall on
+//! which side is in `docs/ui-layer.md`.
+//!
+//! Delivery reaches the page on the shape `dev-http` serves. A
+//! FULL-STACK project's own server hands out `index.html` and never runs
+//! `dev-http`, so it gets the decision and the log but no in-page
+//! delivery yet — the SSE endpoint the injected script talks to is not
+//! on that server.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

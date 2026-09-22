@@ -49,3 +49,55 @@ Two flavors of remote execution use the same machinery:
 `runtime-server-shell-native` is the device-side piece for the
 runtime-server flavor; for hot reload over HTTP, `web-dev-host` or
 the in-app `dev-client` listens directly.
+
+## What a save does
+
+A rebuild is seconds. Most saves during UI work change a label, a
+number, a child order — data, not code — and those do not need one. So
+before anything expensive starts, `dev-reload` asks whether this save is
+a PATCH:
+
+```
+  save
+   │
+   ▼
+  dev-reload ── read the changed files
+   │
+   ├─ skeleton changed?  (the file with `ui!` bodies blanked)  ──► rebuild
+   ├─ a site moved / appeared / vanished?                      ──► rebuild
+   ├─ does not parse?                                          ──► rebuild
+   │
+   ▼  diff each changed site against the build's archived descriptor set
+      (target/idealyst/<app>/overlay/<build>.json)
+   │
+   ├─ runtime_template::diff refuses  ──────────────────────────► rebuild
+   │
+   ▼  Patch
+   ├─ web --local: an SSE `patch` event → the page's
+   │               `__idealyst_overlay_patch` → stage + apply live
+   └─ runtime-server: the sidecar applies it to its own tree; the
+                      resulting Host calls reach every client as
+                      ordinary wire commands
+
+  [dev] patched 1 site(s) in 18 ms, no rebuild
+```
+
+Measured on CrewForge (2050 `ui!` sites across 260 files): 18 ms for a
+patched literal, against a ~5 s rebuild.
+
+The decision is conservative and the asymmetry is the design. A wrong
+rebuild costs seconds. A wrong patch means the screen and the source
+disagree with nothing to say so, and every edit after it is reasoned
+about against a program that is not there. So a file carrying both a
+`ui!` edit and a logic edit rebuilds, and every refusal names its
+reason:
+
+```
+[dev] rebuilding: src/screens/login.rs changed outside its `ui!` bodies
+[dev] rebuilding: src/screens/auth/brand_lockup.rs: the site's compiled
+      expressions changed (5 slots before, 6 after)
+```
+
+See [docs/ui-layer.md](../../docs/ui-layer.md) for what patches and what
+rebuilds, and `crates/dev/reload/src/overlay_decide.rs` for the decision
+table itself.

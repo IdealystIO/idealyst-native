@@ -529,6 +529,34 @@ Three things follow, and each is better than the old arrangement:
 3. **The dev loop pays nothing** for a feature that exists to make the
    dev loop faster.
 
+### What patches, and what rebuilds
+
+A save during `idealyst dev --web` takes one of two paths. This is the
+whole table:
+
+| the edit | what happens |
+|---|---|
+| a string, number or bool literal in a `ui!` body | **patched** |
+| a `#[component]`'s literal prop | **patched**, applied on that site's next render |
+| a static child added, removed or reordered — where every old child is fully static | **patched** |
+| a changed `if` condition, `for` iterable or `match` scrutinee | rebuild — it is compiled code |
+| a literal becoming a closure, or the reverse | rebuild — the value moved between data and code |
+| a changed style token or enum path (`t.card()`, `tone::Danger`) | rebuild — recorded as source TEXT, and no value can be rebuilt from a string |
+| a structural change where any old child carries a style or other slot | rebuild — its prop bindings are owned by the enclosing scope, not the node |
+| anything outside a `ui!` body, in a file that also has one | rebuild — the whole file's save rebuilds |
+| a `ui!` body gaining or losing a LINE | rebuild — it moves every site below it in that file, and position is part of site identity |
+| a `ui!` nested inside another macro's tokens (`vec![ui!{…}]`) | rebuild — `syn` does not descend into a macro's tokens, so the scanner never sees that site |
+| a `jsx!` body | rebuild — `jsx!` has its own grammar, produces no descriptor, and carries no tags |
+
+Two practical consequences worth knowing before you reach for this:
+
+- **A heavily styled tree patches its text but not its shape.** Almost
+  every node in a real app carries `style = …`, which is a slot, so the
+  fully-static requirement for a structural change is rarely met. Text
+  and literal props are where the win is.
+- **Reformatting rebuilds.** Anything that changes line numbers inside a
+  file with several `ui!` sites re-keys the ones below it.
+
 ### What an edit can and cannot change
 
 `runtime_template::diff(old, new)` turns two descriptors into a `Patch`
@@ -551,6 +579,31 @@ than showing a tree that is neither version.
 edit pair it asserts that `Element(original)` plus the diff of the two
 descriptors renders exactly like `Element(edited)`, on all three
 projections of a real mount.
+
+### Two application paths, and why both
+
+A patch is applied twice, and neither half subsumes the other:
+
+- **the `Element` path**, inside `__overlay::tag`, changes what the NEXT
+  build of the site produces. Without it a patch evaporates the moment a
+  signal fires and the site rebuilds itself from the compiled code.
+- **the LIVE path**, `runtime_vocabulary::overlay::apply_live`, reaches
+  the instances already mounted. Without it nothing visible happens
+  until something re-renders.
+
+The live path is generic over `H: AllCaps` and issues ordinary
+capability calls — `update_text`, `update_button_label`, `set_disabled`,
+`insert`, `remove_child`. There is no backend in it and no
+`cfg(target)`: every backend gets it from one replay, which is the
+standing rule about where platform differences are allowed to live.
+
+A live edit needs a SETTER on the seam, so the live half covers less
+than the `Element` half: a `#[component]`'s prop has no setter (its body
+already ran, and re-running it would need every dynamic prop it was
+given, which is compiled code the patch does not carry). Those appear on
+the site's next render. The applier COUNTS what it could not do rather
+than pretending, so a dev server can say "showing on next render"
+instead of leaving the author wondering.
 
 ## The primitive builders
 

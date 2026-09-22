@@ -163,6 +163,21 @@ is a drift detector, not a type check.
 consistency, on its own — every child and root index in range, every slot
 reference declared.
 
+## The two application paths
+
+A patch is applied twice, and neither half subsumes the other. The
+`Element` path (`runtime_vocabulary::overlay::tag`) changes what the next
+build of a site produces, so the edit survives every state-driven
+rebuild. The LIVE path (`overlay::apply_live`) reaches instances already
+mounted, so a saved edit appears without waiting for something to
+re-render. Without the first a patch evaporates the moment a signal
+fires; without the second nothing visible happens until one does.
+
+Both refuse rather than guess, and both report what they refused. The
+live path covers less, because a live edit needs a SETTER on the backend
+seam — a `#[component]`'s prop has none, so it lands on that site's next
+render.
+
 ## Tests
 
 `cargo test -p runtime-template` covers serde round-tripping, the
