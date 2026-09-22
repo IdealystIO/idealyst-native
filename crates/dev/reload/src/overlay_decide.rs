@@ -108,12 +108,21 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
     let Some(archive) = archive else {
         return Decision::Rebuild(Reason::NoArchive);
     };
+    // A document from an older producer has no per-site keys or
+    // ordinals, so nothing here can address a patch. Rebuilding
+    // regenerates it in the current format.
+    if archive.overlay_version != crate::overlay::OVERLAY_VERSION {
+        return Decision::Rebuild(Reason::NoArchive);
+    }
 
-    // Index the archive's sites by file, in source order, so a file's
-    // old and new site lists can be compared position for position.
-    let mut by_file: BTreeMap<&str, Vec<&runtime_template::Descriptor>> = BTreeMap::new();
-    for descriptor in &archive.sites {
-        by_file.entry(descriptor.site.file.as_ref()).or_default().push(descriptor);
+    // The archive's sites by file, in the ordinal order the producer
+    // recorded — the same walk the on-save scan does.
+    let mut by_file: BTreeMap<&str, Vec<&crate::overlay::ArchivedSite>> = BTreeMap::new();
+    for site in &archive.sites {
+        by_file.entry(site.descriptor.site.file.as_ref()).or_default().push(site);
+    }
+    for sites in by_file.values_mut() {
+        sites.sort_by_key(|s| s.ordinal);
     }
 
     let mut patches = Vec::new();
@@ -141,16 +150,32 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
             return Decision::Rebuild(Reason::CodeChanged { file: file.path.clone() });
         }
 
-        let old = by_file.get(file.path.as_str()).cloned().unwrap_or_default();
-        if old.len() != sites.len() {
+        // Match by ORDINAL, not by site key. A body gaining a line moves
+        // every site below it, which re-keys them — but the running
+        // binary still carries the OLD keys, and the file still has the
+        // same sites in the same order. Matching by position lets those
+        // saves patch; keying by position alone made them all rebuild.
+        //
+        // The ordinal set changing means a site was added or removed,
+        // and a new site has no compiled tag to address at all.
+        let archived = by_file.get(file.path.as_str()).cloned().unwrap_or_default();
+        if archived.len() != sites.len() {
             return Decision::Rebuild(Reason::SitesMoved { file: file.path.clone() });
         }
-        for (before, site) in old.iter().zip(sites) {
-            let mut site = site;
-            if before.site != site.id {
-                return Decision::Rebuild(Reason::SitesMoved { file: file.path.clone() });
+        for (before, mut site) in archived.iter().zip(sites) {
+            // A site this build could not describe, or one this save
+            // cannot parse, has nothing to diff.
+            let Some(ui) = site.ui.as_mut() else {
+                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
+            };
+            if before.descriptor.nodes.is_empty() && before.descriptor.roots.is_empty() {
+                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
             }
-            let after = match runtime_macros_parse::describe(site.id.clone(), &mut site.ui) {
+            // Describe under the ARCHIVED site id, so the diff compares
+            // two versions of one site rather than refusing them as two
+            // different sites — and so the patch is addressed to the key
+            // the compiled code carries.
+            let after = match runtime_macros_parse::describe(before.descriptor.site.clone(), ui) {
                 Ok(d) => d,
                 // The two numbering walks disagreed — a bug in this
                 // crate's own pass, not in the author's code. Rebuild:
@@ -159,10 +184,10 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
                     return Decision::Rebuild(Reason::SitesMoved { file: file.path.clone() })
                 }
             };
-            match diff(before, &after) {
+            match diff(&before.descriptor, &after) {
                 Ok(patch) if patch.edits.is_empty() => {}
                 Ok(patch) => patches.push(SitePatch {
-                    site: patch.site.key(),
+                    site: before.key,
                     file: file.path.clone(),
                     edits: patch.edits.into_owned(),
                 }),
@@ -204,13 +229,24 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                 skeleton,
             },
         );
-        for mut site in sites {
-            let Ok(after) = runtime_macros_parse::describe(site.id.clone(), &mut site.ui) else {
+        for (ordinal, mut site) in sites.into_iter().enumerate() {
+            let Some(ui) = site.ui.as_mut() else { continue };
+            let Some(slot) = archive
+                .sites
+                .iter_mut()
+                .find(|s| s.descriptor.site.file == file.path && s.ordinal == ordinal as u32)
+            else {
                 continue;
             };
-            if let Some(slot) = archive.sites.iter_mut().find(|d| d.site == after.site) {
-                *slot = after;
-            }
+            // Describe under the archived site id and keep `key`
+            // untouched. The DESCRIPTOR moves forward so the next save
+            // diffs against what is running; the KEY must not, because
+            // it is what the compiled binary's tags say and no patch
+            // changes that. Only a rebuild does.
+            let Ok(after) = runtime_macros_parse::describe(slot.descriptor.site.clone(), ui) else {
+                continue;
+            };
+            slot.descriptor = after;
         }
     }
 }
@@ -362,32 +398,143 @@ fn Screen() -> Element {
         }
     }
 
-    /// Positions are part of site identity, so a site that moved is a
-    /// site the running binary's tags no longer name — a patch sent
-    /// against the new key would address nothing.
+    /// A `ui!` body gaining a line moves every site BELOW it in the
+    /// file, which re-keys them — the compiled tags still carry the old
+    /// keys. Matching by ORDINAL instead of by key is what lets this
+    /// save patch: the file still has the same sites in the same order,
+    /// and the patch is addressed to the key the binary actually has.
     ///
-    /// The case is subtler than "someone added a line at the top", which
-    /// the skeleton already catches. A `ui!` body GROWING a line moves
-    /// every site BELOW it in the file while leaving the skeleton
-    /// identical (the hole is fixed-width), so this is the only check
-    /// standing between that save and a patch addressed to the wrong
-    /// place.
+    /// Before ordinal matching this rebuilt, which meant adding one line
+    /// to a `ui!` body cost a full compile no matter how trivial the
+    /// edit was.
     #[test]
-    fn a_body_growing_a_line_rebuilds_because_it_moves_the_site_below_it() {
+    fn a_body_growing_a_line_patches_the_sites_below_it_instead_of_rebuilding() {
         let two_sites = format!(
             "{APP}\n#[component]\nfn Other() -> Element {{\n    ui! {{ text {{ \"two\" }} }}\n}}\n"
         );
         let (_d, archive) = archive_of(&two_sites);
         assert_eq!(archive.sites.len(), 2, "the fixture must have a site below the edit");
+        let second_key = archive.sites[1].key;
 
         let edited = two_sites.replace(
             "            text { \"hello\" }\n",
-            "            text { \"hello\" }\n            text { \"extra\" }\n",
+            "            text { \"hello there\" }\n            text { \"extra\" }\n",
         );
+        match decide(Some(&archive), &changed(&edited)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1, "only the edited site changed: {patches:?}");
+                assert_eq!(patches[0].site, archive.sites[0].key);
+            }
+            other => panic!("expected a patch, got {other:?}"),
+        }
+
+        // The untouched site below must still be addressable by the key
+        // the binary holds, not by the one its new line number implies.
+        let moved = runtime_macros_parse::sites_in_file(
+            &archive.package,
+            "src/app.rs",
+            &edited,
+        )
+        .expect("parses");
+        assert_ne!(
+            moved[1].id.key(),
+            second_key,
+            "the fixture must actually re-key the site below, or this proves nothing"
+        );
+    }
+
+    /// A site APPEARING has no compiled tag to address, so there is
+    /// nothing a patch could reach. It rebuilds — and in practice the
+    /// SKELETON catches it one step before the ordinal check does,
+    /// because writing a new `ui!` invocation means writing the code
+    /// around it too. Both guards are real; this pins the outcome
+    /// without pinning which one fires, since that depends on how the
+    /// site was added.
+    #[test]
+    fn adding_a_site_rebuilds() {
+        let (_d, archive) = archive_of(APP);
+        let edited = format!(
+            "{APP}\n#[component]\nfn New() -> Element {{ ui! {{ text {{ \"new\" }} }} }}\n"
+        );
+        assert!(
+            matches!(decide(Some(&archive), &changed(&edited)), Decision::Rebuild(_)),
+            "a new site has no compiled tag to address"
+        );
+    }
+
+    /// The ordinal check on its own, reached by removing a site while
+    /// leaving the skeleton byte-identical — only possible from INSIDE
+    /// another site's body, which is where nested sites live.
+    #[test]
+    fn removing_a_nested_site_rebuilds_on_the_ordinal_check() {
+        let source = r#"
+#[component]
+fn A() -> Element {
+    ui! { view() { presence(visible = f) { ui! { text { "inner" } } } } }
+}
+"#;
+        let (_d, archive) = archive_of(source);
+        assert_eq!(archive.sites.len(), 2, "outer and inner");
+
+        let edited = source.replace(r#"ui! { text { "inner" } }"#, r#"text { "inner" }"#);
         assert_eq!(
             decide(Some(&archive), &changed(&edited)),
-            Decision::Rebuild(Reason::SitesMoved { file: "src/app.rs".into() })
+            Decision::Rebuild(Reason::SitesMoved { file: "src/app.rs".into() }),
+            "one site fewer, and the one that vanished had a compiled tag"
         );
+    }
+
+    /// A site nested in another macro's tokens counts in document
+    /// order, so the sites after it keep their ordinals. Get this wrong
+    /// — append nested sites at the end, say — and every patch after the
+    /// nested one addresses the wrong site.
+    #[test]
+    fn a_nested_site_takes_its_place_in_the_ordinal_order() {
+        let source = r#"
+#[component]
+fn A() -> Element {
+    ui! { text { "first" } }
+}
+
+#[component]
+fn B() -> Element {
+    pressable(vec![ui! { text { "nested" } }], || {})
+}
+
+#[component]
+fn C() -> Element {
+    ui! { text { "third" } }
+}
+"#;
+        let (_d, archive) = archive_of(source);
+        assert_eq!(archive.sites.len(), 3, "the nested site is archived too");
+        assert_eq!(
+            archive.sites.iter().map(|s| s.ordinal).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        // Editing the LAST site must patch the last site. If the nested
+        // one were appended rather than slotted in at ordinal 1, this
+        // would address the nested site instead.
+        let edited = source.replace(r#""third""#, r#""third!""#);
+        match decide(Some(&archive), &changed(&edited)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1);
+                assert_eq!(patches[0].site, archive.sites[2].key);
+            }
+            other => panic!("expected a patch, got {other:?}"),
+        }
+
+        // And the nested site itself is patchable, which it never was
+        // before: `syn` does not descend into a macro's tokens.
+        let edited = source.replace(r#""nested""#, r#""nested!""#);
+        match decide(Some(&archive), &changed(&edited)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1);
+                assert_eq!(patches[0].site, archive.sites[1].key);
+            }
+            other => panic!("expected a patch, got {other:?}"),
+        }
     }
 
     /// An inserted line ABOVE everything is caught one step earlier, by

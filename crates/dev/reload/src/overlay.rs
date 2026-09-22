@@ -78,8 +78,9 @@ pub struct FileDigest {
 /// One build's descriptor set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DescriptorSet {
-    /// Format version of this document. Bumped when the JSON shape
-    /// changes, independently of the numbering.
+    /// Format version of this document. `2` added per-site keys and
+    /// ordinals; a `1` document has no way to express them, so a reader
+    /// that meets one rebuilds.
     pub overlay_version: u32,
     /// The node-numbering version the scanning library used. A differ
     /// must refuse a document whose value disagrees with the binary's
@@ -90,8 +91,34 @@ pub struct DescriptorSet {
     pub package: String,
     /// Per-file digests, by package-relative path. See [`FileDigest`].
     pub files: BTreeMap<String, FileDigest>,
-    /// Every site found, in file then source order.
-    pub sites: Vec<Descriptor>,
+    /// Every site found, in file then document order.
+    pub sites: Vec<ArchivedSite>,
+}
+
+/// The document format's own version. See
+/// [`DescriptorSet::overlay_version`].
+pub const OVERLAY_VERSION: u32 = 2;
+
+/// One `ui!` site as a build recorded it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchivedSite {
+    /// The key the COMPILED code carries in this site's tags.
+    ///
+    /// Stored rather than derived from `descriptor.site`, and never
+    /// updated by a patch, because those two stop agreeing the moment an
+    /// edit shifts a line: the source says the site is at 44:5 now, and
+    /// the running binary still says 43:5. The binary is what a patch
+    /// has to address, so THIS is the number that travels.
+    pub key: u64,
+    /// Position among the file's `ui!` invocations, in document order,
+    /// starting at 0.
+    ///
+    /// What survives a line shift. A save is matched to the archive by
+    /// (file, ordinal), so a body gaining a line re-keys nothing as far
+    /// as the dev loop is concerned — it patches, where keying by
+    /// position alone would have rebuilt every site below the edit.
+    pub ordinal: u32,
+    pub descriptor: Descriptor,
 }
 
 impl DescriptorSet {
@@ -130,7 +157,7 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
     files.sort();
 
     let mut set = DescriptorSet {
-        overlay_version: 1,
+        overlay_version: OVERLAY_VERSION,
         split_version: SPLIT_VERSION,
         package: package.clone(),
         files: BTreeMap::new(),
@@ -167,14 +194,38 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
             runtime_macros_parse::skeleton_of(&text, &sites).as_bytes(),
         ));
         set.files.insert(relative.clone(), FileDigest { content, skeleton });
-        for mut site in sites {
-            match runtime_macros_parse::describe(site.id.clone(), &mut site.ui) {
-                Ok(d) => set.sites.push(d),
+        for (ordinal, mut site) in sites.into_iter().enumerate() {
+            let key = site.id.key();
+            let Some(ui) = site.ui.as_mut() else {
+                // Recorded with no descriptor: the ordinal has to stay
+                // in step with the on-save scan, which counts this site
+                // too. A site with no descriptor is never patched.
+                set.sites.push(ArchivedSite {
+                    key,
+                    ordinal: ordinal as u32,
+                    descriptor: empty_descriptor(site.id.clone()),
+                });
+                continue;
+            };
+            match runtime_macros_parse::describe(site.id.clone(), ui) {
+                Ok(descriptor) => set.sites.push(ArchivedSite {
+                    key,
+                    ordinal: ordinal as u32,
+                    descriptor,
+                }),
                 // A stamp mismatch is a bug in this crate's own two
-                // walks, not in the author's code. Loud on stderr,
-                // skipped in the output: a wrong descriptor is worse
-                // than a missing one.
-                Err(e) => eprintln!("[overlay] {}: {e}", site.id),
+                // walks, not in the author's code. Loud on stderr, and
+                // recorded WITHOUT a descriptor so the ordinal still
+                // lines up: a wrong descriptor is worse than a missing
+                // one, and a missing ordinal is worse than both.
+                Err(e) => {
+                    eprintln!("[overlay] {}: {e}", site.id);
+                    set.sites.push(ArchivedSite {
+                        key,
+                        ordinal: ordinal as u32,
+                        descriptor: empty_descriptor(site.id.clone()),
+                    });
+                }
             }
         }
     }
@@ -219,6 +270,21 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
+    }
+}
+
+/// A placeholder for a site this build could not describe.
+///
+/// Marked by having no roots AND no nodes, which `check_well_formed`
+/// treats as legal (it is what `ui! {}` produces) — so a reader can tell
+/// "nothing here" from "something here" without a second field, and a
+/// differ against one produces no edits.
+fn empty_descriptor(site: runtime_template::SiteId) -> Descriptor {
+    Descriptor {
+        site,
+        slots: runtime_template::SlotSig { slots: Vec::new().into() },
+        nodes: Vec::new().into(),
+        roots: Vec::new().into(),
     }
 }
 
@@ -318,7 +384,8 @@ fn Login(count: i32) -> Element {
         assert_eq!(set.split_version, SPLIT_VERSION);
         assert_eq!(set.sites.len(), 2, "one `ui!` per file");
 
-        let mut files: Vec<&str> = set.sites.iter().map(|s| s.site.file.as_ref()).collect();
+        let mut files: Vec<&str> =
+            set.sites.iter().map(|s| s.descriptor.site.file.as_ref()).collect();
         files.sort();
         assert_eq!(files, vec!["src/lib.rs", "src/screens/login.rs"]);
         // Package-relative and `/`-separated, never the tempdir's path:
@@ -336,10 +403,11 @@ fn Login(count: i32) -> Element {
         let login = set
             .sites
             .iter()
-            .find(|s| s.site.file == "src/screens/login.rs")
+            .find(|s| s.descriptor.site.file == "src/screens/login.rs")
             .expect("login site");
 
         let opaque = login
+            .descriptor
             .nodes
             .iter()
             .enumerate()
@@ -360,7 +428,7 @@ fn Login(count: i32) -> Element {
         assert_eq!(opaque.1, "count>0", "the condition is recorded as source text");
         assert_eq!(opaque.2.len(), 1, "its body is one node, hanging under it");
         assert!(opaque.2[0] > opaque.0, "a child is numbered after its parent");
-        assert_eq!(runtime_template::check_well_formed(login), Ok(()));
+        assert_eq!(runtime_template::check_well_formed(&login.descriptor), Ok(()));
     }
 
     /// Two scans of the same sources must produce the same build key,
