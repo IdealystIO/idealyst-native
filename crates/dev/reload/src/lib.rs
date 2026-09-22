@@ -21,8 +21,13 @@
 //! so the resulting wasm connects to the host's WebSocket instead
 //! of rendering the local `app()` tree.
 
-pub mod overlay;
-pub mod overlay_decide;
+/// The overlay's build-time half, re-exported.
+///
+/// It lives in `dev-overlay` because the runtime-server host needs the
+/// same decision and has no business pulling this crate's bundler in to
+/// get it. Re-exported here so the watcher's callers keep one import.
+pub use dev_overlay::archive as overlay;
+pub use dev_overlay::decide as overlay_decide;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

@@ -9,14 +9,10 @@ description = "Watch + wasm-pack rebuild loop for `idealyst dev` reload mode"
 publish = false
 
 [dependencies]
-# The `ui!` front end, as a library: the watch loop runs the SAME parser
-# and split pass the proc macro does, to decide whether a save is a
-# patch or a rebuild. A second implementation that disagreed by one node
-# would mis-address every patch after it.
-runtime-macros-parse = { workspace = true }
-runtime-template = { workspace = true }
-sha2 = { workspace = true }
-serde = { workspace = true }
+# The patch-or-rebuild decision, and the descriptor archive it reads.
+# Its own crate because the runtime-server host needs the same decision
+# and must not pull this crate's bundler in to get it.
+dev-overlay = { workspace = true }
 toml = "0.8"
 anyhow = "1"
 # File-watch + debounce. Same crate `dev-server` uses for its runtime-server

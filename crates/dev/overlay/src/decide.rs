@@ -1,7 +1,7 @@
 //! The dev loop's decision: patch this save, or rebuild it?
 //!
 //! On a save the watcher has the new source. The build it is watching
-//! left a descriptor set behind (see [`super::overlay`]). Together those
+//! left a descriptor set behind (see [`crate::archive`]). Together those
 //! are enough to answer the question without starting a compiler — and
 //! starting one is the thing worth avoiding, since a rebuild of a real
 //! app is seconds and a patch is milliseconds.
@@ -34,7 +34,7 @@ use std::path::Path;
 
 use runtime_template::{diff, Edit, Rejection};
 
-use crate::overlay::DescriptorSet;
+use crate::archive::DescriptorSet;
 
 /// What to do with a save.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,13 +111,13 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
     // A document from an older producer has no per-site keys or
     // ordinals, so nothing here can address a patch. Rebuilding
     // regenerates it in the current format.
-    if archive.overlay_version != crate::overlay::OVERLAY_VERSION {
+    if archive.overlay_version != crate::archive::OVERLAY_VERSION {
         return Decision::Rebuild(Reason::NoArchive);
     }
 
     // The archive's sites by file, in the ordinal order the producer
     // recorded — the same walk the on-save scan does.
-    let mut by_file: BTreeMap<&str, Vec<&crate::overlay::ArchivedSite>> = BTreeMap::new();
+    let mut by_file: BTreeMap<&str, Vec<&crate::archive::ArchivedSite>> = BTreeMap::new();
     for site in &archive.sites {
         by_file.entry(site.descriptor.site.file.as_ref()).or_default().push(site);
     }
@@ -130,7 +130,7 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
         let Some(recorded) = archive.files.get(&file.path) else {
             return Decision::Rebuild(Reason::UnknownFile { file: file.path.clone() });
         };
-        if recorded.content == crate::overlay::digest(file.text.as_bytes()) {
+        if recorded.content == crate::archive::digest(file.text.as_bytes()) {
             continue;
         }
 
@@ -145,7 +145,7 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
             }
         };
         let skeleton =
-            crate::overlay::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
+            crate::archive::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
         if skeleton != recorded.skeleton {
             return Decision::Rebuild(Reason::CodeChanged { file: file.path.clone() });
         }
@@ -221,11 +221,11 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
             continue;
         };
         let skeleton =
-            crate::overlay::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
+            crate::archive::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
         archive.files.insert(
             file.path.clone(),
-            crate::overlay::FileDigest {
-                content: crate::overlay::digest(file.text.as_bytes()),
+            crate::archive::FileDigest {
+                content: crate::archive::digest(file.text.as_bytes()),
                 skeleton,
             },
         );
@@ -271,7 +271,7 @@ pub fn wire_payload(patch: &SitePatch) -> serde_json::Value {
 /// hash, so several can accumulate over a session and the most recent is
 /// the one the running binary was built from.
 pub fn load_archive(project_root: &Path, app: &str) -> Option<DescriptorSet> {
-    let dir = crate::overlay::overlay_dir(project_root, app);
+    let dir = crate::archive::overlay_dir(project_root, app);
     let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
         let path = entry.path();
@@ -324,7 +324,7 @@ fn Screen() -> Element {
         .unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/app.rs"), source).unwrap();
-        let set = crate::overlay::scan_crate(dir.path()).expect("scan");
+        let set = crate::archive::scan_crate(dir.path()).expect("scan");
         (dir, set)
     }
 
@@ -727,10 +727,10 @@ mod archive_tests {
             "nothing to load before a build"
         );
 
-        crate::overlay::write_for(dir.path(), dir.path()).expect("write");
+        crate::archive::write_for(dir.path(), dir.path()).expect("write");
         let loaded = load_archive(dir.path(), "archive-fixture").expect("load");
         assert_eq!(loaded.package, "archive-fixture");
         assert_eq!(loaded.sites.len(), 1);
-        assert_eq!(loaded, crate::overlay::scan_crate(dir.path()).unwrap());
+        assert_eq!(loaded, crate::archive::scan_crate(dir.path()).unwrap());
     }
 }

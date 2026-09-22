@@ -3386,18 +3386,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dev-overlay"
+version = "1.5.3"
+dependencies = [
+ "anyhow",
+ "runtime-macros-parse",
+ "runtime-template",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
+ "wire",
+]
+
+[[package]]
 name = "dev-reload"
 version = "1.5.2"
 dependencies = [
  "anyhow",
  "build-ios",
  "build-web",
+ "dev-overlay",
  "notify-debouncer-mini",
- "runtime-macros-parse",
- "runtime-template",
- "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "toml 0.8.23",
  "wire",
@@ -3411,6 +3423,7 @@ dependencies = [
  "base64",
  "ctrlc",
  "dev-hot",
+ "dev-overlay",
  "headless-screenshot",
  "idea-ui",
  "libc",
@@ -3426,6 +3439,7 @@ dependencies = [
  "serde_json",
  "subsecond-types",
  "tokio",
+ "toml 0.8.23",
  "tungstenite 0.24.0",
  "wire",
 ]

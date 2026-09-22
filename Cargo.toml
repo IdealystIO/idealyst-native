@@ -90,6 +90,7 @@ members = [
     "crates/dev/client",
     "crates/dev/server",
     "crates/dev/http",
+    "crates/dev/overlay",
     "crates/dev/reload",
     "crates/dev/web-host",
     "crates/dev/runtime-server-shell",
@@ -462,6 +463,7 @@ robot-test = { path = "crates/dev/robot-test" }
 robot-test-macros = { path = "crates/dev/robot-test-macros" }
 native-parity = { path = "crates/dev/native-parity" }
 dev-http = { path = "crates/dev/http" }
+dev-overlay = { path = "crates/dev/overlay", version = "1.5.3", registry = "idealyst" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }
 build-ios = { path = "crates/tools/build/ios" }

@@ -177,6 +177,29 @@ pub enum SidecarIn {
         /// it to `dev_hot::apply_patch`.
         table_json: String,
     },
+    /// Apply a dev-time **overlay patch** to every live session.
+    ///
+    /// The host decided that a save needs no rebuild (see
+    /// `dev_reload::overlay_decide`) and is asking the running app to
+    /// take the edit directly. The sidecar routes it to each session
+    /// thread, which applies it to that session's own `SceneSession`:
+    /// staged for future builds of the site, AND applied live to what is
+    /// mounted.
+    ///
+    /// The resulting backend calls go through that session's recorder,
+    /// so they reach attached clients as ordinary
+    /// [`SidecarOut::Commands`] and update the recorder's scene mirror —
+    /// which is what makes a client connecting a second later snapshot
+    /// the PATCHED tree. Forwarding the patch to the clients instead
+    /// would do neither: they replay commands and do not run the app.
+    ///
+    /// Carried as JSON for the same reason `ApplyPatch` carries its
+    /// table that way — one `serde_json` round-trip per frame, and the
+    /// payload's shape stays owned by the crate that defines it.
+    OverlayPatch {
+        /// `wire::WireOverlayPatch`, serialized.
+        patch_json: String,
+    },
     /// A client's reply to [`SidecarOut::CaptureScreenshot`]. The host
     /// received `wire::AppToDev::ScreenshotResult` from the client and
     /// forwards it here so the blocked `screenshot` Robot verb (waiting
@@ -839,10 +862,62 @@ mod runtime {
         /// session's `Owner`, reset its scene log, and re-render to
         /// pick up patched component bodies.
         Rerender,
+        /// Apply an overlay patch to this session's mounted scene. See
+        /// [`SidecarIn::OverlayPatch`].
+        OverlayPatch(String),
         /// Graceful shutdown — the host has closed the session. The
         /// thread drops its `Owner` (firing any teardown effects)
         /// and exits.
         Shutdown,
+    }
+
+    /// Decode an overlay patch and apply it to a session's mounted
+    /// scene.
+    ///
+    /// Both halves: staged so every future build of the site carries the
+    /// edit (a state-driven rebuild must not revert it), and applied
+    /// live to what is mounted. `SceneSession::apply_overlay_patch` does
+    /// both; this is the decode and the reporting around it.
+    ///
+    /// Nothing here panics. A malformed patch is a dev-loop event, and
+    /// the app it would take down is the one the author is looking at.
+    #[cfg(feature = "ui-overlay")]
+    fn apply_overlay_patch_json(
+        scene_session: &RefCell<Option<crate::newcore::SceneSession>>,
+        patch_json: &str,
+    ) {
+        let patch: wire::WireOverlayPatch = match serde_json::from_str(patch_json) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[runtime-server-app] bad overlay patch: {e}");
+                return;
+            }
+        };
+        let edits = patch.to_edits();
+        let mut slot = scene_session.borrow_mut();
+        let Some(session) = slot.as_mut() else {
+            eprintln!("[runtime-server-app] overlay patch with no mounted scene; dropping");
+            return;
+        };
+        let outcome = session.apply_overlay_patch(patch.site, &edits);
+        eprintln!(
+            "[runtime-server-app] overlay patch: {} applied, {} waiting for the next render",
+            outcome.applied, outcome.refused
+        );
+    }
+
+    /// Without the feature there is no applier compiled in, and no tags
+    /// to address either — a patch cannot be honoured, so it is
+    /// reported and dropped rather than silently ignored.
+    #[cfg(not(feature = "ui-overlay"))]
+    fn apply_overlay_patch_json(
+        _scene_session: &RefCell<Option<crate::newcore::SceneSession>>,
+        _patch_json: &str,
+    ) {
+        eprintln!(
+            "[runtime-server-app] overlay patch ignored: this sidecar was built without \
+             `ui-overlay`, so its `ui!` sites carry no tags to address"
+        );
     }
 
     struct SessionHandle {
@@ -1039,6 +1114,24 @@ mod runtime {
                             "[runtime-server-app] session {session:?} channel closed; pruning"
                         );
                         sessions.remove(&session);
+                    }
+                }
+                SidecarIn::OverlayPatch { patch_json } => {
+                    // Every live session: the patch is a property of the
+                    // SOURCE, so every session built from that source
+                    // wants it. A session whose channel has closed is
+                    // pruned on the next pass, same as an Event.
+                    for (session, handle) in sessions.iter() {
+                        if handle
+                            .tx
+                            .send(SessionMsg::OverlayPatch(patch_json.clone()))
+                            .is_err()
+                        {
+                            eprintln!(
+                                "[runtime-server-app] session {session:?} channel closed; \
+                                 overlay patch dropped"
+                            );
+                        }
                     }
                 }
                 SidecarIn::ApplyPatch { table_json } => {
@@ -1296,6 +1389,9 @@ mod runtime {
                     if let Some(s) = scene_session.borrow().as_ref() {
                         s.flush();
                     }
+                }
+                SessionMsg::OverlayPatch(patch_json) => {
+                    apply_overlay_patch_json(&scene_session, &patch_json);
                 }
                 SessionMsg::Rerender => {
                     // Reached only if the host applied a patch anyway —

@@ -90,6 +90,11 @@ runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["robot"] }
 runtime-world = { workspace = true }
 runtime-template = { workspace = true, optional = true }
+# The patch-or-rebuild decision for a save, and the descriptor archive it
+# reads. Its own crate so pulling it in here does not drag the web
+# bundler along with it.
+dev-overlay = { workspace = true }
+toml = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 

@@ -226,10 +226,62 @@ pub fn run(
     let sidecar_manifest_for_rebuild = sidecar_manifest.clone();
     let cargo_target_for_rebuild = cargo_target.clone();
     let user_crate_for_rebuild = user_crate.clone();
+
+    // The crate the sidecar was built from, for the overlay archive.
+    // `user_src` is conventionally `<crate>/src`, and the archive the
+    // build wrote lives under that crate's own target dir.
+    let overlay_crate_dir = user_src.parent().map(|p| p.to_path_buf());
+    let overlay_sidecar = sidecar_slot.clone();
+    let mut overlay_archive: Option<dev_overlay::DescriptorSet> = overlay_crate_dir
+        .as_ref()
+        .and_then(|dir| dev_overlay::load_archive(dir, &package_name_of(dir)));
+    if overlay_archive.is_none() {
+        eprintln!(
+            "[runtime-server-host] no overlay descriptor set — every save will rebuild \
+             (run `idealyst dev` so the build writes one)"
+        );
+    }
+
     spawn_change_loop(
-        vec![user_src],
+        vec![user_src.clone()],
         std::time::Duration::from_millis(100),
-        Box::new(move |_changed: &[std::path::PathBuf]| {
+        Box::new(move |changed: &[std::path::PathBuf]| {
+            // Can this save skip the compiler entirely? Asked before
+            // anything expensive starts. A patch reaches the running
+            // app through the sidecar, which applies it to its own tree
+            // — so the resulting backend calls stream to every attached
+            // client as ordinary commands AND update the recorder's
+            // scene mirror, which is what a late-joining client is
+            // snapshotted from.
+            if let (Some(dir), Some(archive)) =
+                (overlay_crate_dir.as_ref(), overlay_archive.as_ref())
+            {
+                let started = std::time::Instant::now();
+                let files = read_changed_files(dir, changed);
+                match dev_overlay::decide(Some(archive), &files) {
+                    dev_overlay::Decision::Patch(patches) => {
+                        let count = patches.len();
+                        send_overlay_patches(&overlay_sidecar, &patches);
+                        if let Some(archive) = overlay_archive.as_mut() {
+                            dev_overlay::advance_archive(archive, &files);
+                        }
+                        eprintln!(
+                            "[dev] patched {count} site(s) in {} ms, no rebuild",
+                            started.elapsed().as_millis()
+                        );
+                        return;
+                    }
+                    dev_overlay::Decision::Unchanged if !files.is_empty() => {
+                        eprintln!("[dev] no UI or code change in this save, no rebuild");
+                        return;
+                    }
+                    dev_overlay::Decision::Unchanged => {}
+                    dev_overlay::Decision::Rebuild(why) => {
+                        eprintln!("[dev] rebuilding: {why}");
+                    }
+                }
+            }
+
             let t_total = std::time::Instant::now();
             let force_respawn = std::env::var("IDEALYST_RUNTIME_SERVER_NO_HOTPATCH")
                 .ok()
@@ -470,4 +522,65 @@ fn respawn_sidecar(
         }
     }
     replay_sessions_to_sidecar(sidecar_slot, tracker);
+}
+
+/// `[package] name` of the crate at `dir`, for locating its overlay
+/// archive.
+fn package_name_of(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+        .and_then(|m| m.get("package")?.get("name")?.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Read the changed files the decision needs, as package-relative
+/// paths.
+///
+/// A path outside the crate — a watched path dependency — is skipped,
+/// so the decision never sees it and the save falls to a rebuild. That
+/// is the right answer: the archive describes THIS crate, and a
+/// dependency's sites are compiled into a different artifact.
+fn read_changed_files(
+    dir: &std::path::Path,
+    paths: &[std::path::PathBuf],
+) -> Vec<dev_overlay::ChangedFile> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in paths {
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(dir) else { continue };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if !seen.insert(relative.clone()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        out.push(dev_overlay::ChangedFile { path: relative, text });
+    }
+    out
+}
+
+/// Hand decided patches to the sidecar, which applies each to its own
+/// mounted scene.
+///
+/// One frame per site: a patch is per-site by construction, and keeping
+/// them separate means one site's refusal cannot take another's edit
+/// down with it.
+fn send_overlay_patches(slot: &SidecarSlot, patches: &[dev_overlay::SitePatch]) {
+    let Ok(guard) = slot.lock() else {
+        eprintln!("[runtime-server-host] sidecar slot poisoned; overlay patch dropped");
+        return;
+    };
+    let Some(sidecar) = guard.as_ref() else {
+        eprintln!("[runtime-server-host] no sidecar; overlay patch dropped");
+        return;
+    };
+    for patch in patches {
+        match serde_json::to_string(&dev_overlay::wire_payload(patch)) {
+            Ok(patch_json) => sidecar.send(SidecarIn::OverlayPatch { patch_json }),
+            Err(e) => eprintln!("[runtime-server-host] cannot encode overlay patch: {e}"),
+        }
+    }
 }

@@ -1,0 +1,43 @@
+# dev-overlay — the dev-time overlay's BUILD-TIME half.
+#
+# Produces a build's descriptor set from source, and decides what a save
+# means: patch this, or rebuild it.
+#
+# Its own crate, and not part of `dev-reload`, because both dev shapes
+# need the decision and they have nothing else in common. The web
+# watcher lives in `dev-reload` (which pulls `build-web`, wasm-pack, the
+# whole bundler); the runtime-server host lives in `dev-server`. Putting
+# the decision in either would have dragged that crate's dependencies
+# into the other's binary for no reason.
+#
+# Deliberately narrow: the parse library, the descriptor types, and
+# serde. No bundler, no watcher, no transport.
+[package]
+name = "dev-overlay"
+version = "1.5.3"
+edition.workspace = true
+license.workspace = true
+description = "Idealyst dev overlay: a build's descriptor set, and the patch-or-rebuild decision for a save."
+
+[dependencies]
+# The `ui!` front end, as a library: the same parser, split pass and node
+# numbering the proc macro runs. A second implementation that disagreed
+# by one node would mis-address every patch after it.
+runtime-macros-parse = { workspace = true }
+runtime-template = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+toml = "0.8"
+anyhow = "1"
+
+[dev-dependencies]
+# The producer and the decision table are tested against real crate
+# directories on disk: the scan walks `src/`, reads `Cargo.toml`, and
+# turns absolute paths back into package-relative ones, none of which is
+# exercised by handing it text.
+tempfile = "3"
+# The watcher emits its patch payload by hand rather than taking a
+# protocol dependency to say four fields. This holds the two spellings
+# together: the payload must decode as the real wire type.
+wire = { workspace = true, features = ["runtime-patch"] }
