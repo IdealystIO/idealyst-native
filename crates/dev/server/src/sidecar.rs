@@ -161,6 +161,19 @@ pub enum SidecarIn {
         session: String,
         #[serde(default)]
         viewport: Option<wire::WireViewport>,
+        /// The browser's address bar at connect (`AppToDev::Hello`'s
+        /// `initial_url`), or `None` for a client that has no URL.
+        ///
+        /// Bundled into session creation for the same reason `viewport`
+        /// is: the author's navigators read it during the FIRST mount,
+        /// and a value that arrives afterwards has already missed the
+        /// only question it answers. The session thread parks it in
+        /// `runtime_shared`'s headless initial-path slot — a
+        /// thread-local, and the sidecar runs one thread per session,
+        /// so two browser tabs on two deep links cannot see each
+        /// other's.
+        #[serde(default)]
+        initial_url: Option<String>,
     },
     /// Tell the sidecar to shut down the named session's thread. The
     /// thread drops its `Owner` (firing teardown effects) and exits.
@@ -594,7 +607,7 @@ impl Sidecar {
     /// idempotently. A respawn builds a fresh `Sidecar` with an empty
     /// set, so the next `ensure_session`/replay re-creates the session
     /// on the new process generation.
-    pub fn ensure_session(&self, session: &str, viewport: Option<wire::WireViewport>) {
+    pub fn ensure_session(&self, session: &str, facts: SessionFacts) {
         {
             let Ok(mut created) = self.created_sessions.lock() else {
                 return;
@@ -607,7 +620,8 @@ impl Sidecar {
         }
         self.send(SidecarIn::CreateSession {
             session: session.to_string(),
-            viewport,
+            viewport: facts.viewport,
+            initial_url: facts.initial_url,
         });
     }
 
@@ -699,7 +713,35 @@ pub struct SessionTracker {
     /// hot-patch respawn replays `CreateSession { viewport }` with
     /// the correct size, instead of falling back to None and making
     /// the next raf tick anchor at the welcome's hardcoded 393×800.
-    inner: Arc<Mutex<std::collections::HashMap<String, Option<wire::WireViewport>>>>,
+    inner: Arc<Mutex<std::collections::HashMap<String, SessionFacts>>>,
+}
+
+/// What the host remembers about one client, so a replayed
+/// `CreateSession` reconstructs the session the client actually had.
+///
+/// Everything here is reported by the client on `Hello` and consumed by
+/// the author's code during the FIRST mount — which is why it travels
+/// with session creation rather than arriving after it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionFacts {
+    /// Last size the client reported. A respawn that replayed `None`
+    /// here made the next raf tick anchor at the hardcoded 393×800.
+    pub viewport: Option<wire::WireViewport>,
+    /// The browser's address bar at connect, path-only
+    /// (`window.location.pathname`). `None` for a client with no URL —
+    /// every native shell.
+    ///
+    /// Kept across a respawn so a hot-patch fallback re-mounts the
+    /// session on the screen the user deep-linked to, rather than
+    /// dropping it back to the app's configured initial route.
+    pub initial_url: Option<String>,
+}
+
+impl SessionFacts {
+    /// Facts for a client that reported only a viewport.
+    pub fn viewport_only(viewport: Option<wire::WireViewport>) -> Self {
+        Self { viewport, initial_url: None }
+    }
 }
 
 impl SessionTracker {
@@ -709,7 +751,7 @@ impl SessionTracker {
 
     pub fn insert(&self, id: &str) {
         if let Ok(mut g) = self.inner.lock() {
-            g.entry(id.to_string()).or_insert(None);
+            g.entry(id.to_string()).or_default();
         }
     }
 
@@ -723,28 +765,37 @@ impl SessionTracker {
     /// when called repeatedly with the same value.
     pub fn set_viewport(&self, id: &str, viewport: Option<wire::WireViewport>) {
         if let Ok(mut g) = self.inner.lock() {
-            g.insert(id.to_string(), viewport);
+            g.entry(id.to_string()).or_default().viewport = viewport;
         }
     }
 
-    /// Last-known viewport for `id`, flattening "session not tracked"
-    /// and "tracked but viewport unknown" to the same `None`. Used by
-    /// the lazy `ensure_session` event-forward path so a re-sent
-    /// `CreateSession` carries the size the client last reported.
-    pub fn viewport(&self, id: &str) -> Option<wire::WireViewport> {
+    /// Record the URL the client connected on. Set once, from `Hello`;
+    /// the sidecar has no live URL to update it from (see
+    /// `docs/hot-reload.md`, wire-mode navigation).
+    pub fn set_initial_url(&self, id: &str, url: Option<String>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.entry(id.to_string()).or_default().initial_url = url;
+        }
+    }
+
+    /// Last-known facts for `id`, flattening "session not tracked" and
+    /// "tracked but unknown" to the same defaults. Used by the lazy
+    /// `ensure_session` event-forward path so a re-sent `CreateSession`
+    /// carries what the client last reported.
+    pub fn facts(&self, id: &str) -> SessionFacts {
         self.inner
             .lock()
             .ok()
-            .and_then(|g| g.get(id).copied().flatten())
+            .and_then(|g| g.get(id).cloned())
+            .unwrap_or_default()
     }
 
-    /// Snapshot of the current session set as `(id, viewport)` pairs.
-    /// Used after sidecar respawn to replay `CreateSession` for each
-    /// known session, with the viewport the client last reported.
-    pub fn snapshot(&self) -> Vec<(String, Option<wire::WireViewport>)> {
+    /// Snapshot of the current session set. Used after sidecar respawn
+    /// to replay `CreateSession` for each known session.
+    pub fn snapshot(&self) -> Vec<(String, SessionFacts)> {
         self.inner
             .lock()
-            .map(|g| g.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .map(|g| g.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
     }
 }
@@ -990,8 +1041,8 @@ mod runtime {
         // `Hello` so the host can pair the symbol. See
         // `SidecarOut::Hello::app_reference`.
         let app_reference = app as *const () as u64;
-        run_loop(app_reference, move |session, rx, out, viewport| {
-            run_session_thread_newcore(session, rx, out, app, register, viewport)
+        run_loop(app_reference, move |session, rx, out, viewport, initial_url| {
+            run_session_thread_newcore(session, rx, out, app, register, viewport, initial_url)
         })
     }
 
@@ -1007,6 +1058,7 @@ mod runtime {
                 mpsc::Receiver<SessionMsg>,
                 Arc<Mutex<std::io::Stdout>>,
                 Option<wire::WireViewport>,
+                Option<String>,
             ) + Send
             + Sync
             + Clone
@@ -1087,7 +1139,7 @@ mod runtime {
             };
 
             match msg {
-                SidecarIn::CreateSession { session, viewport } => {
+                SidecarIn::CreateSession { session, viewport, initial_url } => {
                     if sessions.contains_key(&session) {
                         eprintln!(
                             "[runtime-server-app] CreateSession({session}): already exists; ignoring"
@@ -1115,7 +1167,7 @@ mod runtime {
                         .name(format!("aas-session-{session}"))
                         .stack_size(16 * 1024 * 1024)
                         .spawn(move || {
-                            body(session_for_thread, rx, out_clone, viewport);
+                            body(session_for_thread, rx, out_clone, viewport, initial_url);
                         })
                         .expect("spawn session thread");
                     sessions.insert(session.clone(), SessionHandle { tx, join });
@@ -1321,6 +1373,7 @@ mod runtime {
         app: fn() -> crate::newcore::SceneElement,
         register: fn(&mut crate::newcore::SceneRegistry),
         initial_viewport: Option<wire::WireViewport>,
+        initial_url: Option<String>,
     ) {
         // Same thread-level installs as the old-core body: IPC sink for
         // device-frame round-trips, the Tokio-backed async executor,
@@ -1343,6 +1396,25 @@ mod runtime {
         // Without this hop, an app whose tree lives directly in
         // `app()` would patch nothing.
         let mount = || {
+            // The URL this client connected on, parked where the
+            // navigator handlers look for it.
+            //
+            // `resolve_initial` consults, in order: this slot, the
+            // host's live `UrlSyncService`, then the author's configured
+            // initial route. Running natively the sidecar has NO live
+            // URL — `window.location` is a browser thing and nothing
+            // installs a `UrlSyncService` here — so without this every
+            // navigator opens on its configured route and a deep link
+            // renders the home screen while the address bar still says
+            // where the user actually went.
+            //
+            // The slot is a THREAD-LOCAL and the sidecar runs one
+            // thread per session, so two tabs on two deep links cannot
+            // see each other's. Re-applied on every mount, not just the
+            // first: a hot-patch re-run that skipped it would drop the
+            // session back to the configured route, turning every save
+            // into a navigation.
+            runtime_shared::primitives::navigator::set_initial_path(initial_url.clone());
             // Open the kernel's build window for the duration of the
             // mount walk. Everything `signal()`-shaped created inside it
             // is recorded by position, which is what a later patch's
@@ -1654,5 +1726,89 @@ mod runtime {
             // reader thread, never routed to the (blocked) session thread.
             DeviceFrameResult { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod session_facts_tests {
+    use super::*;
+
+    /// The sidecar runs the app NATIVELY, where `window.location` does
+    /// not exist and nothing installs a `UrlSyncService` — so the URL
+    /// the browser connected on is the only one it will ever see. It
+    /// used to be destructured out of `Hello` and thrown away, which
+    /// made every deep link render the app's configured initial route
+    /// while the address bar still said where the user had gone.
+    ///
+    /// Carried on `CreateSession` rather than sent afterwards for the
+    /// same reason `viewport` is: the author's navigators read it
+    /// during the FIRST mount, and a value arriving later has already
+    /// missed the only question it answers.
+    #[test]
+    fn regression_create_session_carries_the_url_the_client_connected_on() {
+        let frame = SidecarIn::CreateSession {
+            session: "web_00000001".into(),
+            viewport: None,
+            initial_url: Some("/projects/42".into()),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        let back: SidecarIn = serde_json::from_str(&json).unwrap();
+        match back {
+            SidecarIn::CreateSession { initial_url, .. } => {
+                assert_eq!(initial_url.as_deref(), Some("/projects/42"));
+            }
+            other => panic!("wrong frame: {other:?}"),
+        }
+    }
+
+    /// A sidecar built before the field existed must still decode a
+    /// frame that carries it, and vice versa — the host and the sidecar
+    /// are separate binaries and a dev session can outlive a rebuild of
+    /// only one of them.
+    #[test]
+    fn a_create_session_without_a_url_still_decodes() {
+        let json = r#"{"kind":"CreateSession","payload":{"session":"web_1","viewport":null}}"#;
+        let back: SidecarIn = serde_json::from_str(json).unwrap();
+        match back {
+            SidecarIn::CreateSession { initial_url, .. } => assert!(initial_url.is_none()),
+            other => panic!("wrong frame: {other:?}"),
+        }
+    }
+
+    /// A respawn re-creates every live session. Replaying it on the
+    /// app's configured route rather than the one the user is looking
+    /// at would turn every hot-patch fallback into a navigation, so the
+    /// tracker keeps both facts per session — and keeps them APART, so
+    /// two tabs on two deep links cannot inherit each other's.
+    #[test]
+    fn the_tracker_keeps_each_sessions_url_for_the_respawn_replay() {
+        let tracker = SessionTracker::new();
+        tracker.insert("web_1");
+        tracker.insert("web_2");
+        tracker.set_initial_url("web_1", Some("/projects/42".into()));
+        tracker.set_initial_url("web_2", Some("/crew".into()));
+        tracker.set_viewport(
+            "web_1",
+            Some(wire::WireViewport { width: 800.0, height: 600.0 }),
+        );
+
+        assert_eq!(tracker.facts("web_1").initial_url.as_deref(), Some("/projects/42"));
+        assert_eq!(tracker.facts("web_2").initial_url.as_deref(), Some("/crew"));
+        // Setting one fact must not clear the other.
+        assert!(tracker.facts("web_1").viewport.is_some());
+        assert!(tracker.facts("web_2").viewport.is_none());
+
+        let mut snap = tracker.snapshot();
+        snap.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(snap.len(), 2);
+        assert_eq!(snap[0].1.initial_url.as_deref(), Some("/projects/42"));
+    }
+
+    /// An untracked session flattens to defaults rather than panicking:
+    /// the event-forward path calls this for ids it may not have seen.
+    #[test]
+    fn facts_for_an_unknown_session_are_defaults() {
+        let tracker = SessionTracker::new();
+        assert_eq!(tracker.facts("nobody"), SessionFacts::default());
     }
 }

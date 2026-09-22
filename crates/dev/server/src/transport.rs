@@ -615,7 +615,14 @@ fn accept_new(
                         continue;
                     }
                 };
-                let (app_name, color_scheme, _initial_url, identity, viewport) = hello;
+                // `initial_url` is no longer dropped: it is the ONLY
+                // URL the sidecar ever sees. The app runs natively
+                // there, so `window.location` does not exist and every
+                // navigator would otherwise open on its configured
+                // initial route — making every deep link render the
+                // home screen while the address bar still says
+                // `/projects/42`. See `SessionFacts::initial_url`.
+                let (app_name, color_scheme, initial_url, identity, viewport) = hello;
                 let label = identity
                     .device_label
                     .as_deref()
@@ -654,6 +661,12 @@ fn accept_new(
                         // when a sidecar respawn (hot-patch fallback)
                         // forces session re-creation.
                         t.set_viewport(&session_id, viewport);
+                        // Same reason, same path: a respawn re-creates
+                        // the session, and re-creating it on the app's
+                        // configured initial route rather than the one
+                        // the user is looking at would make every
+                        // hot-patch fallback a navigation.
+                        t.set_initial_url(&session_id, initial_url.clone());
                     }
                     if !single_process_mode {
                         if let Some(slot) = sidecar_slot {
@@ -663,7 +676,13 @@ fn accept_new(
                                     // create is recorded on this sidecar
                                     // generation; the event-forward path
                                     // re-sends if this raced an empty slot.
-                                    sidecar.ensure_session(&session_id, viewport);
+                                    sidecar.ensure_session(
+                                        &session_id,
+                                        crate::SessionFacts {
+                                            viewport,
+                                            initial_url: initial_url.clone(),
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -969,9 +988,10 @@ fn handle_app_msg(
                     // over the wire silently did nothing. ensure_session
                     // sends CreateSession at most once per generation
                     // and the sidecar treats dups idempotently.
-                    let viewport =
-                        tracker.and_then(|t| t.viewport(client_session));
-                    sidecar.ensure_session(client_session, viewport);
+                    let facts = tracker
+                        .map(|t| t.facts(client_session))
+                        .unwrap_or_default();
+                    sidecar.ensure_session(client_session, facts);
                     sidecar.send(crate::SidecarIn::Event {
                         session: client_session.to_string(),
                         event: msg,
