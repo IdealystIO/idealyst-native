@@ -1343,13 +1343,25 @@ mod runtime {
         // Without this hop, an app whose tree lives directly in
         // `app()` would patch nothing.
         let mount = || {
-            dev_hot::with_retry(|| {
+            // Open the kernel's build window for the duration of the
+            // mount walk. Everything `signal()`-shaped created inside it
+            // is recorded by position, which is what a later patch's
+            // `harvest` reads. Closed immediately after: creations from
+            // event handlers and from reactive regions that mount later
+            // are deliberately not preserved (see
+            // `runtime_world::hot_state`).
+            #[cfg(feature = "hot-reload")]
+            runtime_world::hot_state::arm();
+            let session = dev_hot::with_retry(|| {
                 crate::newcore::SceneSession::mount(
                     &recorder,
                     |r| register(r),
                     || dev_hot::call(app, ()),
                 )
-            })
+            });
+            #[cfg(feature = "hot-reload")]
+            runtime_world::hot_state::disarm();
+            session
         };
         // `Rc<RefCell<Option<...>>>` (not a plain local) so the Robot
         // driver-env closures installed below can reach the CURRENT
@@ -1471,6 +1483,24 @@ mod runtime {
                     // session's tree against the current process image:
                     // fresh scene, fresh snapshot, same socket and same
                     // session id.
+                    //
+                    // Harvest FIRST, then drop. The values are moved out
+                    // of the dying world's arena, so the order is not a
+                    // preference: after the drop there is nothing left
+                    // to take. `seed` then hands each one to the
+                    // matching `signal()` call in the run below, so a
+                    // counter, a text field or a navigator's position
+                    // comes back where the author left it.
+                    #[cfg(feature = "hot-reload")]
+                    let carried = {
+                        let state = runtime_world::hot_state::harvest();
+                        eprintln!(
+                            "[runtime-server-app] {session}: carrying {} signal value(s) \
+                             across the patch",
+                            state.len(),
+                        );
+                        state
+                    };
                     let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                         || drop(scene_session.borrow_mut().take()),
                     ));
@@ -1482,6 +1512,8 @@ mod runtime {
                         return;
                     }
                     recorder.reset_log_and_scene();
+                    #[cfg(feature = "hot-reload")]
+                    runtime_world::hot_state::seed(carried);
                     let remount =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(mount));
                     match remount {

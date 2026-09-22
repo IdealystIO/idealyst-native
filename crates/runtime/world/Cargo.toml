@@ -17,6 +17,18 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Dev-time hot reload: carry signal VALUES across an in-process re-run
+# (`src/hot_state.rs`). Off by default and compiled out completely —
+# with it off, `create_signal` has no seed lookup, no recording, and
+# `AnySignal` has no erased-payload methods.
+#
+# Turned on through `runtime-core/hot-reload`, the same switch that
+# makes `#[component]` emit its subsecond dispatch split. The two belong
+# together: a patch with no re-run changes nothing on screen, and a
+# re-run with no carried state resets the app on every save.
+hot-reload = []
+
 [dependencies]
 # Fast FxHash for the kernel's maps (world registry, per-world context).
 # Keys are internal world ids / TypeIds — never attacker-controlled — so the

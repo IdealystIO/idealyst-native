@@ -52,6 +52,19 @@ ui-overlay = [
     "dep:runtime-template",
 ]
 
+# The sidecar's half of subsecond hot reload: carry signal VALUES across
+# the in-process re-run a patch triggers, so a counter, a text field or a
+# navigator's position survives a save.
+#
+# Declared HERE and not inherited from the graph on purpose. Features
+# unify per crate, so a sidecar that enables `runtime-core/hot-reload`
+# does turn `runtime-world/hot-reload` on — but this crate's own
+# `#[cfg(feature = "hot-reload")]` blocks only ever see THIS crate's
+# feature list (CLAUDE.md rule 6). Without the declaration the kernel
+# would record and harvest nothing would ask for it, and every patch
+# would silently reset the app.
+hot-reload = ["runtime-world/hot-reload"]
+
 # Pulls in the runtime-server dev runtimes — `host::run` (long-lived dev-host
 # process) and `sidecar::run` (per-project worker that links the user
 # crate). Enables both because both modules share most deps

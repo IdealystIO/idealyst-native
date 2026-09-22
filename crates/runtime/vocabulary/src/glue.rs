@@ -3384,13 +3384,44 @@ pub fn __default_signal_prop<S: DefaultSignalProp>() -> S {
 /// RAII guard returned by [`__component_build_probe`]. The old core's
 /// probe powers a dev-build untracked-read diagnostic tied to the OLD
 /// arena's tracking; the new kernel runs component bodies untracked by
-/// construction (`component_scope`), so the probe is a no-op here.
-pub struct BuildProbeGuard;
+/// construction (`component_scope`), so the probe carries nothing in an
+/// ordinary build.
+///
+/// Under `hot-reload` it becomes load-bearing: it is what opens and
+/// closes a component's frame on the kernel's hot-state path stack, and
+/// that stack is the only identity a preserved signal has across a
+/// re-run. RAII rather than a matched pair of calls because a component
+/// body can return early or panic, and a leaked frame would mis-key
+/// every signal built after it.
+pub struct BuildProbeGuard {
+    /// Whether this guard actually pushed a frame. `false` when no
+    /// build window is open, which is every non-dev build and every
+    /// construction outside a mount.
+    #[cfg(feature = "hot-reload")]
+    pushed: bool,
+}
 
-/// No-op stand-in for the old core's `__component_build_probe` (the
-/// `#[component]` body brackets itself with it).
+#[cfg(feature = "hot-reload")]
+impl Drop for BuildProbeGuard {
+    fn drop(&mut self) {
+        if self.pushed {
+            runtime_world::hot_state::pop_frame();
+        }
+    }
+}
+
+/// The bracket `#[component]` wraps every body in. A no-op in ordinary
+/// builds; under `hot-reload` it opens the component's frame on the
+/// hot-state path stack (see [`BuildProbeGuard`]).
 pub fn __component_build_probe(_name: &'static str) -> BuildProbeGuard {
-    BuildProbeGuard
+    #[cfg(feature = "hot-reload")]
+    {
+        BuildProbeGuard { pushed: runtime_world::hot_state::push_frame(_name) }
+    }
+    #[cfg(not(feature = "hot-reload"))]
+    {
+        BuildProbeGuard {}
+    }
 }
 
 // ============================================================================

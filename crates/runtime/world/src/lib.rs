@@ -47,6 +47,12 @@ use rustc_hash::FxHashMap;
 #[cfg(test)]
 mod tests;
 
+/// Dev-time hot reload: carrying signal VALUES across an in-process
+/// re-run of a patched tree. Entirely behind the `hot-reload` feature;
+/// see its module docs for why values move rather than handles.
+#[cfg(feature = "hot-reload")]
+pub mod hot_state;
+
 /// Panic with an actionable diagnostic in dev builds and a terse stable code
 /// in release builds (same convention as runtime-core: long prose ships in
 /// wasm rodata, so it is compiled out of release; the slug keeps the failure
@@ -695,6 +701,18 @@ trait AnySignal: Any {
     /// return whether subscribers must be notified.
     fn commit(&mut self, forced: bool) -> bool;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// The payload box as `Box<dyn Any>`, so a caller that has lost `T`
+    /// can downcast back to `SignalData<T>`.
+    ///
+    /// Trait-object upcasting would give this for free on a new enough
+    /// toolchain; spelling it out keeps the crate's `rust-version`
+    /// floor where it is. Only [`steal_signal_data`] uses it.
+    #[cfg(feature = "hot-reload")]
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    /// `TypeId::of::<T>()` for the payload. Recovered from the trait
+    /// object because the harvest side has no `T`.
+    #[cfg(feature = "hot-reload")]
+    fn value_type_id(&self) -> std::any::TypeId;
 }
 
 struct SignalData<T> {
@@ -705,6 +723,16 @@ struct SignalData<T> {
 }
 
 impl<T: PartialEq + 'static> AnySignal for SignalData<T> {
+    #[cfg(feature = "hot-reload")]
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+
+    #[cfg(feature = "hot-reload")]
+    fn value_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<T>()
+    }
+
     fn commit(&mut self, forced: bool) -> bool {
         match self.next.take() {
             Some(next) => {
@@ -790,6 +818,12 @@ fn create_signal<T: PartialEq + 'static>(
     value: T,
     site: SiteLoc,
 ) -> Signal<T> {
+    // Dev-time hot reload: if a previous run of this same position held
+    // a value of this type, start from it instead of the author's
+    // initial value. Off by default and compiled out entirely — see
+    // `hot_state`.
+    #[cfg(feature = "hot-reload")]
+    let value = hot_state::take_seed::<T>().unwrap_or(value);
     let data: Box<dyn AnySignal> = Box::new(SignalData { value, next: None });
     let (slot, gen) = {
         let mut signals = arena.signals.borrow_mut();
@@ -813,7 +847,48 @@ fn create_signal<T: PartialEq + 'static>(
         }
     };
     register_owned(OwnedItem::Signal { world: arena.id, slot, gen });
+    #[cfg(feature = "hot-reload")]
+    hot_state::record::<T>(arena.id, slot, gen);
     Signal { world: arena.id, slot, gen, _marker: PhantomData }
+}
+
+/// Take a signal's payload box out of its arena, erased, and retire the
+/// slot.
+///
+/// The dev-time hot-reload harvest ([`hot_state::harvest`]) is the only
+/// caller. It MOVES the value rather than cloning it, which is what
+/// keeps `Clone` off `signal`'s bounds — the cost is that the slot is
+/// finished afterwards, so the generation is bumped exactly as
+/// `free_signal` would. Any handle still pointing here is stale from
+/// this moment, and stale is the kernel's loud state, not its silent
+/// one.
+///
+/// The index is NOT recycled onto the free list: harvesting only ever
+/// happens on a world that is about to be dropped, and pushing a slot a
+/// caller might still hold a handle to back into circulation is exactly
+/// the aliasing the generation counter exists to prevent.
+#[cfg(feature = "hot-reload")]
+pub(crate) fn steal_signal_data(
+    world: WorldId,
+    slot: u32,
+    gen: u32,
+) -> Option<(std::any::TypeId, Box<dyn Any>)> {
+    let arena = arena_of(world)?;
+    let data = {
+        let mut signals = arena.signals.borrow_mut();
+        let s = signals.get_mut(slot as usize)?;
+        if s.gen != gen {
+            return None;
+        }
+        let data = s.data.take()?;
+        s.gen = s.gen.wrapping_add(1);
+        s.queued = false;
+        s.forced = false;
+        s.subscribers.clear();
+        data
+    };
+    let type_id = data.value_type_id();
+    Some((type_id, data.into_any()))
 }
 
 fn create_effect(arena: &Rc<WorldArena>, class: EffectClass, f: Box<dyn FnMut()>) -> Effect {

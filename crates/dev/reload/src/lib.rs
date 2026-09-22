@@ -616,6 +616,21 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
                     continue;
                 }
                 overlay_decide::Decision::Unchanged => {}
+                overlay_decide::Decision::HotPatch(files) => {
+                    // The subsecond tier exists only in runtime-server
+                    // mode, where a native sidecar holds the app and a
+                    // jump table can be applied to it. `--local` builds
+                    // wasm and reloads the page, so a body-only save is
+                    // a rebuild here — named, rather than falling into
+                    // the generic branch, so the log says which tier the
+                    // save WOULD have taken.
+                    eprintln!(
+                        "[dev] {} changed inside function bodies — that is an in-place \
+                         hot patch in runtime-server mode (`idealyst dev --web` without \
+                         `--local`); rebuilding",
+                        files.join(", "),
+                    );
+                }
                 overlay_decide::Decision::Rebuild(why) => {
                     eprintln!("[dev] rebuilding: {why}");
                 }
