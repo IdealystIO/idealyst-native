@@ -33,6 +33,7 @@ use std::rc::Rc;
 use host_mock::{Harness, Node};
 use runtime_scene::{realize, Element, Realized};
 
+pub mod edits;
 pub mod fixtures;
 
 // ===========================================================================

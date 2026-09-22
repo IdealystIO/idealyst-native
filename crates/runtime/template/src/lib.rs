@@ -83,6 +83,10 @@
 
 #![forbid(unsafe_code)]
 
+mod diff;
+
+pub use diff::{diff, Rejection};
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;

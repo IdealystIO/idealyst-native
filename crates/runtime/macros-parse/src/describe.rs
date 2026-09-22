@@ -199,10 +199,23 @@ impl Builder {
     ) -> Result<Vec<u32>, StampMismatch> {
         let Some(kids) = children else { return Ok(Vec::new()) };
         match children_kind(canonical, canonical.is_some()) {
-            ChildrenKind::List | ChildrenKind::Content | ChildrenKind::Ignored => {
-                self.nodes_in_scope(kids)
-            }
+            ChildrenKind::List | ChildrenKind::Ignored => self.nodes_in_scope(kids),
             ChildrenKind::NestedScope => self.scope(kids),
+            // `text`'s block is CONTENT, and it is recorded as the
+            // node's `content` prop (see `prop_entries`) — not as a
+            // child. Recording it both ways would make one edit look
+            // like two, and the child copy would be an `Opaque` whose
+            // text changed, which a differ reads as "the code changed"
+            // and refuses.
+            //
+            // The nodes are still WALKED, because they still consume
+            // indices: the emission numbers them too, and a descriptor
+            // that skipped them would address every later node one
+            // short.
+            ChildrenKind::Content => {
+                self.nodes_in_scope(kids)?;
+                Ok(Vec::new())
+            }
         }
     }
 }
@@ -211,13 +224,18 @@ fn is_data(value: &PropValue) -> bool {
     matches!(value, PropValue::Lit(v) if !matches!(v, LiteralValue::Path(_)))
 }
 
-/// Every prop of a node, plus `text`'s literal body promoted to a
-/// `content` prop.
+/// Every prop of a node, plus `text`'s body promoted to a `content`
+/// prop.
 ///
 /// `text { "hi" }` and `text(content = "hi")` are the same tree to an
 /// author and the same emission; recording them the same way is what
 /// lets a differ see an edit to either spelling as one changed prop
 /// rather than as a changed child.
+///
+/// A DYNAMIC body is promoted too, as its source text. That is what
+/// makes changing it visible: the differ sees `content` go from one
+/// path-shaped value to another and refuses, instead of seeing nothing
+/// and shipping a patch that leaves the old closure running.
 fn prop_entries(
     props: &[Prop],
     canonical: Option<&'static str>,
@@ -230,9 +248,11 @@ fn prop_entries(
     if canonical == Some("text") && !props.iter().any(|p| p.name == "content") {
         if let UiNode::Component { children: Some(kids), .. } = node {
             if let [UiNode::Expr(e)] = kids.as_slice() {
-                if let Some(v) = classify_static(e) {
-                    out.push(PropEntry { name: "content".into(), value: PropValue::Lit(lit(v)) });
-                }
+                let value = match classify_static(e) {
+                    Some(v) => lit(v),
+                    None => LiteralValue::Path(squash(e).into()),
+                };
+                out.push(PropEntry { name: "content".into(), value: PropValue::Lit(value) });
             }
         }
     }
