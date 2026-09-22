@@ -1275,15 +1275,15 @@ where
 ///
 /// Re-exported UNCONDITIONALLY, because `#[component]` / `#[props]`
 /// generate an `__apply_literal` naming `TemplateLiteral` on every props
-/// struct. The overlay that consumes descriptors is behind the
-/// `ui-overlay` feature; these types are not.
+/// struct. The overlay that consumes it is behind the `ui-overlay`
+/// feature; this type is not.
+///
+/// It is deliberately just the LITERAL type and its fallback trait. The
+/// descriptor types proper — `Descriptor`, `Node`, `SiteId` — are build
+/// artifacts a tool reads, never something compiled code names, so
+/// nothing re-exports them into the author surface.
 pub mod __template {
-    pub use runtime_template::{
-        Descriptor as TemplateDescriptor, LiteralValue as TemplateLiteral, Node as TemplateNode,
-        Patch as TemplatePatch, PropEntry as TemplatePropEntry,
-        PropValue as TemplatePropValue, Registry as TemplateRegistry, SiteId as TemplateSiteId,
-        SlotInfo as TemplateSlotInfo, SlotSig as TemplateSlotSig,
-    };
+    pub use runtime_template::LiteralValue as TemplateLiteral;
 
     /// The fallback half of `#[component]`'s generated
     /// `__apply_literal`.

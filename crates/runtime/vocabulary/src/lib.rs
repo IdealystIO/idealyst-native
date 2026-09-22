@@ -207,8 +207,9 @@ pub mod robot_watch;
 pub mod scoped_spawn;
 pub mod scoped_scheduling;
 pub mod slots;
-// The dev-time overlay (`ui-overlay`): descriptor registration + the
-// per-node tag a patch addresses nodes by. See src/overlay.rs.
+// The dev-time overlay (`ui-overlay`): the per-node origin tag a patch
+// addresses nodes by, and the split-pass version marker. No descriptor
+// is compiled in — it is a build artifact. See src/overlay.rs.
 #[cfg(feature = "ui-overlay")]
 pub mod overlay;
 pub mod style_attach;

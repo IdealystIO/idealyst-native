@@ -25,19 +25,26 @@ proc-macro = true
 # graph, so one crate enabling it flipped the lowering for every crate
 # in the same cargo invocation). One core, one lowering, no switch.
 
-# `ui-overlay`: emit, per `ui!` site, a `static` descriptor + a
-# per-node origin tag, so a dev-time overlay can patch the site's static
-# half without recompiling. OFF by default; with it off the emission is
-# byte-identical to a build without the feature (proved by running the
-# whole `ui-lowering-parity` corpus in both states against one set of
-# frozen goldens).
+# `ui-overlay`: emit a per-node origin tag — a site key and a node index,
+# both integer literals — so a dev-time overlay can address what a `ui!`
+# site built and patch its static half without recompiling. The
+# DESCRIPTOR that gives those numbers meaning is produced from source at
+# build time, not emitted here; see `ui_overlay`'s module docs for the
+# measurement that settled that. OFF by default; with it off the
+# emission is byte-identical to a build without the feature (proved by
+# running the whole `ui-lowering-parity` corpus in both states against
+# one set of frozen goldens).
+#
+# Pulls in `runtime-template` for the one thing both halves must agree
+# on, `site_key`. Optional, so the default build graph of this
+# proc-macro crate is unchanged.
 #
 # Yes, a proc-macro crate compiles once per build graph, so this flips
 # for every crate in one cargo invocation — that is WANTED here (a
 # half-tagged tree is a half-patchable app), and unlike the retired
 # lowering switch it is a cargo FEATURE, which cargo fingerprints. No
 # invisible-env hazard, no target-dir keying needed.
-ui-overlay = []
+ui-overlay = ["dep:runtime-template"]
 
 # Forwarded from the app crate's debug-stats. Toggles whether
 # `#[component]` emits enter/exit instrumentation calls into the
@@ -88,6 +95,10 @@ strict-docs = []
 strict-naming = []
 
 [dependencies]
+# Only for `site_key` — the fold of package/file/line/column that a
+# node's tag carries. Enabled by `ui-overlay`; absent otherwise, so the
+# default proc-macro build graph is untouched.
+runtime-template = { workspace = true, optional = true }
 syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
 quote = "1"
 # `span-locations` gives us `Span::start()` so the `mcp` feature can

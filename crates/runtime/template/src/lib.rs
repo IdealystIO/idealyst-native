@@ -1,38 +1,57 @@
-//! Template **descriptors**: the static half of a `ui!` site.
+//! Template **descriptors**: the static half of a `ui!` site, as a
+//! BUILD-TIME artifact.
 //!
-//! `ui!` has two lowerings. The *direct* one emits builder calls inline.
-//! The *template* one splits each site into
+//! A descriptor is the data form of one `ui!` call site — the node tree,
+//! tags, attribute names, literal values, child order, and a [`SlotSig`]
+//! for the dynamic expressions it does not carry. Its purpose is to let
+//! a dev-time overlay say "node 7 of that site now has `content =
+//! "Sign in."`" without recompiling.
 //!
-//! 1. a [`Descriptor`] — data: the node tree, tags, attribute names,
-//!    literal values, child order, and a [`SlotSig`] for the dynamic
-//!    expressions it does not carry; and
-//! 2. an ordered **slot list** — the dynamic expressions themselves,
-//!    evaluated at the call site,
+//! # Descriptors are not in the binary
 //!
-//! and hands both to `runtime_vocabulary::template::build`, which
-//! constructs the `Element`.
+//! They used to be: `ui!` emitted a `static Descriptor` per site and
+//! registered it at build time. That was measured on a real app
+//! (CrewForge, ~256 CGUs) and cost about **1.4 s on every one-edit
+//! rebuild** — a 27% tax on the loop the feature exists to speed up,
+//! almost all of it in `macro_expand_crate` and `serialize_dep_graph`.
+//! The same measurement with the descriptor compiled out and only the
+//! node TAGS kept was within noise of the feature being off entirely.
+//! See `docs/ui-layer.md` for the table.
 //!
-//! This crate owns (1). It knows nothing about builders, handlers or
-//! transports, and depends only on `runtime-scene` and `serde`. That
-//! narrowness is the point: a descriptor is a portable artifact. It
-//! serializes; it can be [`validate`]d against a [`Registry`] with no
-//! renderer in the graph; and a source other than "compiled into the
-//! binary" can slot in behind [`TemplateSource`] without this crate
-//! learning about transports. **The over-the-air path is not built** —
-//! only the seam it would occupy, and [`CompiledIn`] is the single
-//! implementation.
+//! So the descriptor is produced from SOURCE at build time, by the same
+//! split pass the macro uses, and written next to the build. The binary
+//! carries only what cannot be recovered from source:
 //!
-//! # Const-constructible
+//! - a [`site_key`] and a node index on each `Element` the site builds
+//!   (`runtime_scene::NodeTag`), and
+//! - one crate-level [`SPLIT_VERSION`] marker.
 //!
-//! Every collection is a [`Cow`], so the compiled-in form is a plain
-//! `static`:
+//! Everything else — which node is which, what its props were, which
+//! slots it references — is in the JSON the build wrote. That also puts
+//! validation where it belongs: a differ has BOTH source versions in
+//! hand, so it can check that an edit did not disturb the slot list
+//! before it ever sends a patch. And an over-the-air path archives each
+//! build's descriptor set keyed by build id rather than reading it back
+//! out of a shipped app.
+//!
+//! # What this crate owns
+//!
+//! The data types, the [`Registry`], and [`validate`]. It knows nothing
+//! about builders, handlers or transports, and depends only on serde.
+//! That narrowness is the point: a descriptor is a portable artifact.
+//! It serializes; it can be validated with no renderer in the graph.
 //!
 //! ```
 //! use std::borrow::Cow;
 //! use runtime_template::*;
 //!
-//! static DESC: Descriptor = Descriptor {
-//!     site: SiteId { module: Cow::Borrowed("my_app::screen"), hash: Cow::Borrowed("0a1b2c3d") },
+//! let desc = Descriptor {
+//!     site: SiteId {
+//!         package: Cow::Borrowed("my-app"),
+//!         file: Cow::Borrowed("src/screen.rs"),
+//!         line: 12,
+//!         col: 5,
+//!     },
 //!     slots: SlotSig { slots: Cow::Borrowed(&[]) },
 //!     nodes: Cow::Borrowed(&[Node::Prim {
 //!         kind: Cow::Borrowed("text"),
@@ -45,19 +64,22 @@
 //!     roots: Cow::Borrowed(&[0]),
 //! };
 //!
-//! assert_eq!(DESC.nodes.len(), 1);
+//! assert_eq!(desc.nodes.len(), 1);
+//! assert_eq!(desc.site.key(), site_key("my-app", "src/screen.rs", 12, 5));
 //! ```
 //!
-//! The same type round-trips through serde, so a descriptor read from
-//! bytes is indistinguishable from one the compiler baked in.
+//! Every collection is a [`Cow`] so a descriptor read from bytes and one
+//! built in memory are the same type.
 //!
 //! # Node indices, not nesting
 //!
 //! [`Descriptor::nodes`] is FLAT and children are `u32` indices into it.
-//! Nesting `Node` inside `Node` would need a `Box` per level, which is
-//! not const-constructible; a flat array also lets a nested template
-//! (an `if` branch's body) live in the same descriptor as its parent,
-//! addressed by root index.
+//! Nesting `Node` inside `Node` would need a `Box` per level; a flat
+//! array also lets a nested template (an `if` branch's body) live in the
+//! same descriptor as its parent, addressed by root index. The indices
+//! are assigned by the split pass in emission order, which is exactly
+//! the order the macro numbers its tags — that correspondence is the
+//! whole addressing scheme, and it is tested over the parity corpus.
 
 #![forbid(unsafe_code)]
 
@@ -80,25 +102,122 @@ pub type List<T> = Cow<'static, [T]>;
 
 /// Identifies one `ui!` call site.
 ///
-/// `module` is the expansion's `module_path!()` and `hash` is a stable
-/// digest of the site's body tokens. Together they survive a rebuild
-/// that does not touch the site, and change when it does — which is what
-/// makes a descriptor addressable across two compilations of the same
-/// program.
+/// The site is named by WHERE it is written, because that is the one
+/// thing both halves of the system can see: the proc macro reads it off
+/// its own call span, and the build-time producer reads it off the file
+/// it is parsing. Exactly four things feed it, and nothing else:
 ///
-/// Source line is deliberately NOT part of the identity: adding a blank
-/// line above a site would otherwise re-key it.
+/// - `package` — `CARGO_PKG_NAME` of the crate being compiled. Two
+///   crates both having a `src/lib.rs` would otherwise collide.
+/// - `file` — the source path RELATIVE to that package's
+///   `CARGO_MANIFEST_DIR`, `/`-separated (`src/screens/login.rs`). The
+///   absolute prefix is stripped so a descriptor produced on one
+///   machine addresses a binary built on another.
+/// - `line`, `col` — 1-based position of the `ui!` invocation, as the
+///   macro's call span reports it.
+///
+/// [`key`](SiteId::key) folds those four into the `u64` the compiled
+/// code actually carries in each node's tag. The full `SiteId` stays in
+/// the build artifact, where a human can read it.
+///
+/// # Why position is part of the identity
+///
+/// It means inserting a line above a site re-keys it. That is a real
+/// cost and it is deliberate: the alternative — hashing the site's
+/// tokens — re-keys the site on exactly the edits the overlay exists to
+/// serve (change a literal, change the key), which is worse. A moved
+/// site simply looks to the differ like one site gone and another
+/// arrived, and the answer is a normal rebuild. A literal edit, the case
+/// that matters, does not move anything.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SiteId {
-    pub module: Text,
-    pub hash: Text,
+    pub package: Text,
+    pub file: Text,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl SiteId {
+    /// The `u64` the binary carries for this site. See [`site_key`].
+    pub fn key(&self) -> u64 {
+        site_key(&self.package, &self.file, self.line, self.col)
+    }
 }
 
 impl fmt::Display for SiteId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#{}", self.module, self.hash)
+        write!(f, "{}/{}:{}:{}", self.package, self.file, self.line, self.col)
     }
 }
+
+/// FNV-1a 64-bit offset basis and prime. FNV and not a cryptographic
+/// hash: this is an addressing key, not a signature, and it has to be
+/// computable in a `const fn` with no dependencies on either side of the
+/// build.
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Fold a site's four identifying parts into the key the compiled code
+/// carries.
+///
+/// `const fn` so a caller can place the key in a `const`; the proc macro
+/// computes it at expansion time and splices the resulting integer
+/// literal, so the compiled code contains a number and no hashing code.
+///
+/// The hashed bytes are exactly `package`, `0x1f`, `file`, `0x1f`, then
+/// `line` and `col` little-endian — separated so `("ab", "c")` and
+/// `("a", "bc")` cannot collide.
+pub const fn site_key(package: &str, file: &str, line: u32, col: u32) -> u64 {
+    /// Unit separator: cannot occur in a package name or a path.
+    const SEP: u8 = 0x1f;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    hash = fold_bytes(hash, package.as_bytes());
+    hash = fold_byte(hash, SEP);
+    hash = fold_bytes(hash, file.as_bytes());
+    hash = fold_byte(hash, SEP);
+    hash = fold_u32(hash, line);
+    fold_u32(hash, col)
+}
+
+const fn fold_byte(hash: u64, byte: u8) -> u64 {
+    (hash ^ byte as u64).wrapping_mul(FNV_PRIME)
+}
+
+const fn fold_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    let mut i = 0;
+    while i < bytes.len() {
+        hash = fold_byte(hash, bytes[i]);
+        i += 1;
+    }
+    hash
+}
+
+const fn fold_u32(mut hash: u64, value: u32) -> u64 {
+    let bytes = value.to_le_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        hash = fold_byte(hash, bytes[i]);
+        i += 1;
+    }
+    hash
+}
+
+/// The split pass's numbering version.
+///
+/// A descriptor addresses a binary by node INDEX, and the indices come
+/// from the split pass's walk. Change the walk and every index in a
+/// previously produced descriptor means something else — a patch built
+/// against the old numbering would silently edit the wrong node, which
+/// is the worst failure this system can have. So the number goes into
+/// the build artifact and into the binary (as
+/// `runtime_vocabulary::overlay::SPLIT_VERSION`), and a differ refuses a
+/// pair that disagrees.
+///
+/// **Bump this whenever node numbering changes.** The parity suite pins
+/// the corpus's numbering, so a change that needs a bump fails there
+/// first with a message saying so.
+pub const SPLIT_VERSION: u32 = 1;
 
 // ===========================================================================
 // Slots
@@ -523,46 +642,47 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError>
     Ok(())
 }
 
-// ===========================================================================
-// TemplateSource
-// ===========================================================================
-
-/// Where the descriptor a site builds from comes from.
-///
-/// The seam exists so that "compiled into the binary" is not the only
-/// possible answer — a later over-the-air path would be another
-/// implementation, resolving a site against descriptors received at
-/// runtime and falling back to the compiled one. **That path is not
-/// built**: [`CompiledIn`] is the only implementation, and it is what
-/// the emission uses.
-///
-/// Keeping the seam here, in the data crate, is what stops the idea from
-/// leaking into the builder: a source hands back a `&Descriptor` and the
-/// builder never learns where it came from.
-pub trait TemplateSource {
-    /// The descriptor to build `site` from, given the one the compiler
-    /// baked in. Must return a descriptor whose slot signature is
-    /// compatible with `compiled`'s — [`validate`] is how a source
-    /// establishes that before it starts handing out replacements.
-    fn resolve<'a>(&'a self, site: &SiteId, compiled: &'a Descriptor) -> &'a Descriptor;
-}
-
-/// The only [`TemplateSource`]: always the compiled-in descriptor.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CompiledIn;
-
-impl TemplateSource for CompiledIn {
-    fn resolve<'a>(&'a self, _site: &SiteId, compiled: &'a Descriptor) -> &'a Descriptor {
-        compiled
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn site(hash: &'static str) -> SiteId {
-        SiteId { module: Cow::Borrowed("test"), hash: Cow::Borrowed(hash) }
+    #[test]
+    fn a_site_key_folds_all_four_parts() {
+        let base = site_key("app", "src/a.rs", 10, 4);
+        assert_ne!(base, site_key("other", "src/a.rs", 10, 4), "package must count");
+        assert_ne!(base, site_key("app", "src/b.rs", 10, 4), "file must count");
+        assert_ne!(base, site_key("app", "src/a.rs", 11, 4), "line must count");
+        assert_ne!(base, site_key("app", "src/a.rs", 10, 5), "column must count");
+        assert_eq!(base, site_key("app", "src/a.rs", 10, 4), "and it is a function");
+    }
+
+    /// The separator is the reason `("ab", "c")` and `("a", "bc")` are
+    /// different sites. Without it they would hash the same byte run and
+    /// a patch for one would address the other.
+    #[test]
+    fn a_site_key_separates_its_parts() {
+        assert_ne!(site_key("ab", "c", 1, 1), site_key("a", "bc", 1, 1));
+    }
+
+    #[test]
+    fn a_site_id_agrees_with_the_free_function() {
+        let id = SiteId {
+            package: Cow::Borrowed("app"),
+            file: Cow::Borrowed("src/screens/login.rs"),
+            line: 42,
+            col: 9,
+        };
+        assert_eq!(id.key(), site_key("app", "src/screens/login.rs", 42, 9));
+        assert_eq!(id.to_string(), "app/src/screens/login.rs:42:9");
+    }
+
+    fn site(file: &'static str) -> SiteId {
+        SiteId {
+            package: Cow::Borrowed("test"),
+            file: Cow::Borrowed(file),
+            line: 1,
+            col: 1,
+        }
     }
 
     fn sig(roles: &[(&'static str, &'static str)]) -> SlotSig {
@@ -768,10 +888,4 @@ mod tests {
         assert_eq!(check_well_formed(&d), Ok(()));
     }
 
-    #[test]
-    fn compiled_in_source_always_returns_the_compiled_descriptor() {
-        let d = one_text("a");
-        let src = CompiledIn;
-        assert!(std::ptr::eq(src.resolve(&site("a"), &d), &d));
-    }
 }

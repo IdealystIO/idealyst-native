@@ -38,8 +38,8 @@ ui-overlay = ["runtime-core/ui-overlay"]
 runtime-macros = { workspace = true }
 # The author surface the emission's `::runtime_core::…` paths retarget
 # onto (`runtime_vocabulary::glue`), plus the builtin handlers the
-# fixtures mount through — and, under `ui-overlay`, the registry the
-# gate reads.
+# fixtures mount through — and, under `ui-overlay`, the tag reader the
+# gate uses.
 runtime-vocabulary = { workspace = true }
 # Author-surface alias so fixture bodies can spell `runtime_core::…`
 # the way app code does.

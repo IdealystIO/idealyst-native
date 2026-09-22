@@ -82,6 +82,16 @@ pub struct Recording {
     /// Indented snapshot of every root tree, taken after the last drive
     /// and before teardown.
     pub scene: String,
+    /// Every tagged node of the built tree, paired with its nearest
+    /// tagged ancestor, depth-first.
+    ///
+    /// Only under `ui-overlay`, and deliberately not part of any golden:
+    /// a tag's site key folds this file's own path and line, so pinning
+    /// it would make an edit above a fixture a test failure. What the
+    /// suite asserts on it is the relation — see
+    /// `runtime_vocabulary::overlay::tag_tree`.
+    #[cfg(feature = "ui-overlay")]
+    pub tags: Vec<(runtime_scene::NodeTag, runtime_scene::NodeTag)>,
 }
 
 /// Op families that make up the STRUCTURAL projection: node creation
@@ -176,10 +186,23 @@ pub fn record<St: 'static>(
     let mut steps: Vec<Step> = Vec::new();
     let state: Rc<RefCell<Option<St>>> = Rc::new(RefCell::new(None));
 
+    #[cfg(feature = "ui-overlay")]
+    let mut tags: Vec<(runtime_scene::NodeTag, runtime_scene::NodeTag)> = Vec::new();
+
     let realized: Realized<Node> = h.world.enter(|| {
         let st = make();
         let element = build(&st);
         *state.borrow_mut() = Some(st);
+        // Read the tags off the BUILT tree, before realize consumes it.
+        #[cfg(feature = "ui-overlay")]
+        {
+            // Only the edges with a tagged parent: a root tag has
+            // nothing to be checked against.
+            tags = runtime_vocabulary::overlay::tag_tree(&element)
+                .into_iter()
+                .filter_map(|(p, c)| p.map(|p| (p, c)))
+                .collect();
+        }
         realize(&h.backend, &h.registry, element)
     });
     h.flush();
@@ -202,7 +225,12 @@ pub fn record<St: 'static>(
     drop(state);
     steps.push(Step { label: "unmount".into(), ops: h.take_log() });
 
-    Recording { steps, scene }
+    Recording {
+        steps,
+        scene,
+        #[cfg(feature = "ui-overlay")]
+        tags,
+    }
 }
 
 /// Every root tree in creation order. Roots are the nodes the harness

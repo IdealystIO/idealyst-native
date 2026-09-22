@@ -88,20 +88,24 @@ pub fn item<T: Any>(data: T, children: Vec<Element>) -> Element {
 /// Where a node came from: the `ui!` site that emitted it, and which
 /// node of that site's `Descriptor` it is.
 ///
-/// This is what lets an overlay patch a BUILT tree. A descriptor edit
-/// names a descriptor node; the tag is the only thing that maps it back
-/// to the `Element` that node produced. Position cannot: a reactive
+/// This is what lets an overlay patch a BUILT tree. A patch names a
+/// (site, node) pair; the tag is the only thing that maps that back to
+/// the `Element` that node produced. Position cannot: a reactive
 /// branch, a keyed row or a `for` changes how many siblings exist, so
 /// the n-th child of a parent is not a stable identity — which is why
 /// dynamic slots are located by tag and never by index.
 ///
-/// `Copy` and pointer-sized-ish: `site` is a `&'static str` the macro
-/// interns as a literal (`module_path!()#hash`), `node` is the index
-/// into that descriptor's flat node array.
+/// `Copy` and 12 bytes: `site` is `runtime_template::site_key` of the
+/// `ui!` invocation's package / file / line / column, spliced by the
+/// macro as an integer literal, and `node` is the index the split pass
+/// gives this node. Both are plain numbers on purpose — this is every
+/// byte the `ui-overlay` feature adds to a compiled app, and the
+/// descriptor that gives the numbers meaning is a build artifact
+/// alongside the binary, never inside it.
 #[cfg(feature = "ui-overlay")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeTag {
-    pub site: &'static str,
+    pub site: u64,
     pub node: u32,
 }
 

@@ -159,20 +159,6 @@ pub(crate) enum SlotRole {
     Key,
 }
 
-impl SlotRole {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            SlotRole::PropValue => "prop",
-            SlotRole::TextContent => "text",
-            SlotRole::ExprChild => "child",
-            SlotRole::Condition => "cond",
-            SlotRole::Scrutinee => "scrutinee",
-            SlotRole::Iterator => "iter",
-            SlotRole::Key => "key",
-        }
-    }
-}
-
 /// One dynamic expression pulled out of a scope.
 pub(crate) struct SlotDef {
     /// Expansion-unique index; also the name of the `Prelude` local.
@@ -652,20 +638,6 @@ fn rewrite_prop(slots: &mut Vec<SlotDef>, canonical: Option<&str>, p: &Prop) -> 
         value: local_expr(index),
         arrow_target: None,
     }
-}
-
-/// The slot index a `__ui_sN` local names, if `expr` is one.
-///
-/// The inverse of [`local_expr`]. The overlay descriptor needs it
-/// because by the time a node is recorded its hoisted props have already
-/// been rewritten to their locals — the slot index is recoverable only
-/// from the name.
-pub(crate) fn slot_index_of(expr: &Expr) -> Option<usize> {
-    let Expr::Path(p) = expr else { return None };
-    if p.qself.is_some() || p.path.segments.len() != 1 {
-        return None;
-    }
-    p.path.segments[0].ident.to_string().strip_prefix("__ui_s")?.parse().ok()
 }
 
 /// `__ui_sN` as an `Expr`.

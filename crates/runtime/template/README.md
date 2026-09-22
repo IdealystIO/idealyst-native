@@ -1,203 +1,153 @@
 # runtime-template — a `ui!` site, as data
 
-`ui!` has two lowerings:
-
-- **direct** — what `ui!` emits: builder calls inline at the call site.
-- **template** — the same parsed tree split into a `Descriptor` (data)
-  plus an ordered list of dynamic expressions ("slots"), with
-  `runtime_vocabulary::template::build` constructing the `Element` from
-  the pair.
-
-This crate owns the descriptor. It depends on `runtime-scene` and
-`serde` and nothing else — no builders, no handlers, no dev-server, no
-CLI.
+A **descriptor** is one `ui!` call site in data form: its node tree,
+tags, attribute names, child order, literal values, and a `SlotSig`
+naming the dynamic expressions it does *not* carry. This crate owns that
+data model, the `Registry` that keys descriptors by site, and
+`validate`. It depends on `serde` and nothing else — no builders, no
+handlers, no dev server, no CLI.
 
 ```
-ui_lowered!(template { view(style = sheet()) { text { "hello" } } })
+src/screens/login.rs:42:5
 
-  ↓ runtime_macros::ui_split      (shared with the direct lowering)
+  ui! { view(style = sheet()) { text { "Sign in" } } }
 
-  static  : view[style=slot 0] > text[content="hello"]
+    ↓ the split pass (runtime_macros' ui_split)
+
+  static  : view[style = slot 0] > text[content = "Sign in"]
   dynamic : slot 0 = sheet()
-
-  ↓ runtime_macros::ui_template
-
-  {
-      let __ui_s0; __ui_s0 = sheet();
-      static __UI_DESC: Descriptor = …;
-      runtime_core::__template::build(&__UI_DESC, &mut [
-          SlotValue::style(__ui_s0),
-      ])
-  }
 ```
 
-## Why the split is worth having
+The static half is a `Descriptor`. The dynamic half stays compiled code,
+which is the whole point: an overlay edits the first and never touches
+the second.
 
-Most of a UI tree is not code. Tags, attribute names, child order,
-string and number and bool literals, enum-like paths, style-token
-accessors — all of it is data that happens to be spelled in Rust. The
-direct lowering compiles it into machine code, so changing a label means
-a rebuild.
+## Descriptors are build artifacts, not binary contents
 
-A descriptor separates the two halves, which buys three things. Only the
-first is being built:
+They used to be compiled in: `ui!` emitted a `static Descriptor` per site
+and registered it at startup. That was measured on a real app — CrewForge,
+~256 codegen units — and it cost **+1.4 s on every one-edit rebuild**:
 
-1. **Hot reload of static edits** — a changed literal or a reordered
-   child is a new descriptor for the same slot signature, which a
-   running program can swap in. That is what [`validate`] checks.
-2. **Possibly, over-the-air UI patches** — the same swap, from a
-   descriptor received at runtime rather than from a recompile. The
-   [`TemplateSource`] trait is the seam; **the path is not built**, and
-   `CompiledIn` is the only implementation.
-3. **Possibly, smaller output** — one builder-driving function instead
-   of N inlined builder chains. Unmeasured.
+| one-edit rebuild | overlay off | tags only | tags + in-binary descriptor |
+|---|---|---|---|
+| a string literal in a screen | 5.04–5.30 s | 5.63–5.64 s | 6.83–6.97 s |
+| a trailing comment | 4.96–5.02 s | 4.85–5.02 s | 6.47–6.64 s |
+| `macro_expand_crate` | 1.64–1.65 s | 1.69–1.79 s | 2.51–2.60 s |
+| `serialize_dep_graph` | 0.37–0.60 s | 0.39–0.60 s | 0.61–0.78 s |
 
-Nothing about (2) or (3) is assumed by anything here. What keeps them
-reachable is the dependency list: a descriptor that only needs
-`runtime-scene` and `serde` can be serialized, shipped, and validated
-without a renderer in the graph.
+A 27% tax on exactly the loop the overlay exists to shorten, all of it in
+expansion and dep-graph serialization and none of it in codegen — while
+keeping only the node TAGS measured within noise of the feature being off
+entirely.
+
+So a descriptor is produced from SOURCE at build time, by the same split
+pass the macro runs, and written beside the build. The compiled program
+carries only what cannot be recovered from source:
+
+- a `site_key` and a node index on each `Element` a site builds
+  (`runtime_scene::NodeTag` — two integers), and
+- one `SPLIT_VERSION` marker per program.
+
+Three things follow, and each is better than the old arrangement:
+
+1. **Validation moves to where the evidence is.** "Does this edit disturb
+   a slot the compiled code supplies?" needs BOTH source versions. The
+   differ has them; a running app never did.
+2. **An over-the-air path archives each build's descriptor set** keyed by
+   build id, rather than reading it back out of a shipped binary.
+3. **The dev loop pays nothing** for a feature that exists to make the dev
+   loop faster.
+
+## Site identity
+
+A site is named by where it is written, because that is the one thing both
+halves can see — the proc macro reads it off its own call span, the
+build-time producer off the file it is parsing. Exactly four things feed
+it:
+
+| part | value |
+|---|---|
+| `package` | `CARGO_PKG_NAME` of the crate being compiled |
+| `file` | source path relative to that package's `CARGO_MANIFEST_DIR`, `/`-separated |
+| `line`, `col` | 1-based position of the `ui!` invocation, from its call span |
+
+`site_key(package, file, line, col)` folds those into the `u64` the
+compiled code carries. It is FNV-1a with the parts separated by `0x1f`,
+and it is a `const fn` — an addressing key, not a signature.
+
+Position being part of the identity means inserting a line above a site
+re-keys it. That is deliberate. The alternative, hashing the site's
+tokens, re-keys on exactly the edits the overlay exists to serve. A moved
+site looks to the differ like one site gone and another arrived, and the
+answer is an ordinary rebuild; a literal edit, the case that matters,
+moves nothing.
 
 ## The model
 
 | type | what it is |
 |------|------------|
-| `Descriptor` | one `ui!` site: a `SiteId`, a `SlotSig`, a FLAT `nodes` array and the `roots` into it |
-| `Node` | `Prim` (a builtin the builder constructs), `Component` (a `#[component]` tag + a site-supplied constructor), `Dyn` (a reactive `if`), `Escape` (a subtree the site built itself) |
+| `Descriptor` | one site: a `SiteId`, a `SlotSig`, a FLAT `nodes` array and the `roots` into it |
+| `Node::Prim` | a builtin primitive, named by its canonical snake_case string |
+| `Node::Component` | a `#[component]` tag, named by the PascalCase path that is also its props type |
+| `Node::Opaque` | addressable as a unit, not patchable inside — a `for`, an `if let`, a binding `match` arm, a node with a trailing `.method(…)` chain |
 | `PropEntry` | `name = Lit(LiteralValue) \| Slot(index)` |
 | `SlotSig` | one `SlotInfo` per slot: its role, its syntactic kind, and its prop name |
-| `SiteId` | `module_path!()` + a digest of the site's body tokens |
-| `Registry` | the descriptors a program knows about, keyed by site |
-| `Patch` | a replacement descriptor for one site |
-| `TemplateSource` | where a site's descriptor comes from; `CompiledIn` is the only one |
+| `SiteId` | package + package-relative file + line + column |
+| `Registry` | the descriptors a tool knows about, keyed by site |
+| `Patch` | the edits to apply to one site |
+| `SPLIT_VERSION` | the node-numbering version; a differ refuses a mismatched pair |
 
-Everything is `Cow`-backed, so the compiled-in form is a plain `static`
-and the deserialized form is the same type:
+`Node::Prim`'s `kind` is a string and not a closed enum on purpose. The
+overlay never CONSTRUCTS a tree from a descriptor wholesale, it addresses
+one that already exists — so every primitive has to be nameable, including
+ones no applier knows how to build. A closed enum would make "addressable"
+and "constructible" the same set, and they are not.
 
-```rust
-static DESC: Descriptor = Descriptor {
-    site: SiteId { module: Cow::Borrowed("app::screen"), hash: Cow::Borrowed("0a1b2c3d") },
-    slots: SlotSig { slots: Cow::Borrowed(&[]) },
-    nodes: Cow::Borrowed(&[Node::Prim {
-        kind: PrimKind::Text,
-        props: Cow::Borrowed(&[PropEntry {
-            name: Cow::Borrowed("content"),
-            value: PropValue::Lit(LiteralValue::Str(Cow::Borrowed("hello"))),
-        }]),
-        children: Cow::Borrowed(&[]),
-    }]),
-    roots: Cow::Borrowed(&[0]),
-};
-```
+`Node::Opaque::children` is not always empty: a `for`'s row body keeps its
+nodes under the opaque node, so a row's literals stay patchable even though
+the iteration is not.
 
-`nodes` is flat and children are `u32` indices. Nesting `Node` inside
-`Node` would need a `Box` per level, which is not const-constructible —
-and a flat array lets a nested template (an `if` branch's body) live in
-the same descriptor as its parent, addressed by root index.
+## Node indices
 
-## What `validate` actually checks
+`nodes` is flat and children are `u32` indices into it. Nesting `Node`
+inside `Node` would need a `Box` per level; a flat array also lets a nested
+template (an `if` branch's body) live in the same descriptor as its parent,
+addressed by root index.
+
+The indices are assigned by the split pass in emission order — the same
+order the macro numbers its tags. That correspondence is the entire
+addressing scheme. `SPLIT_VERSION` exists so a differ can refuse a binary
+numbered by a walk it does not know, and the parity suite asserts the two
+numberings agree over the whole fixture corpus.
+
+One (site, node) pair addresses a SET of elements, not one: every row of a
+`for` builds the same node of the same site. An applier edits every match.
+
+## What `validate` checks
 
 The slots are **code**. They were compiled into the binary from the
-author's expressions and cannot be patched; only the descriptor can. So
-a patch is accepted only when
+author's expressions and cannot be patched; only the descriptor can. So a
+patch is accepted only when
 
-- it is internally consistent — every child/root index in range, every
-  slot reference declared;
-- and its slot signature matches the compiled site's **shape for
-  shape**. A descriptor that used slot 3 as a condition where the binary
-  supplies a text value would hand the builder the wrong type.
+- it is internally consistent — every child/root index in range, every slot
+  reference declared;
+- and its slot signature matches the compiled site's **shape for shape**.
+  A descriptor that used slot 3 as a condition where the binary supplies a
+  text value would address the wrong thing.
 
-`SlotInfo::name` is deliberately NOT compared: it is reserved for a
-later name-matched protocol, and comparing it now would reject harmless
-descriptor edits.
+`SlotInfo::name` is deliberately NOT compared: it is reserved for a later
+name-matched protocol, and comparing it now would reject harmless edits.
 
-`kind` is a *syntactic* label (`"closure"`, `"path"`, `"call"`, …), not
-a Rust type — a proc macro has tokens, never resolved types. It is a
-drift detector, not a type check.
-
-## What is descriptor-native, and what escapes
-
-`Node::Escape` is the completeness escape hatch: the site built the
-subtree with the direct lowering and left the finished `Element`(s) in a
-slot. Every `ui!` construct is expressible that way, which is what lets
-the template lowering be *complete* while the descriptor-native set
-grows independently. An escape is correct but opaque — its literals are
-compiled in, so a static edit inside one still needs a rebuild.
-
-Descriptor-native today:
-
-- **every builtin primitive with a monomorphic constructor** — `view`,
-  `text`, `button`, `image`, `activity_indicator`, `scroll_view`,
-  `icon`, `text_input`, `toggle`, `slider`, `link` (the `external =`
-  spelling), `overlay`, `anchored_overlay`, `presence`, `graphics` —
-  with the props `runtime_vocabulary::template::build_prim` models,
-  which is every prop the corresponding `ui::emit_*` lowers;
-- **every `#[component]` invocation**. Its literal props are descriptor
-  data; a DYNAMIC prop's value is captured by the `ctor` thunk (its type
-  is the component's field type, which only the call site can name) and
-  its NAME is recorded in `Node::Component::dynamic`, so a reader can
-  see which props a descriptor edit could change and which are compiled
-  in. The children and the child order stay data either way, which is
-  most of what a component subtree is;
-- a reactive `if` AND the `when` tag, both as `Dyn` — condition and
-  branch thunks in slots, each branch its own nested template;
-- STATIC branching as `Select` — a plain `if` with a provably
-  signal-free condition, and a `match` whose patterns bind nothing. The
-  dispatch stays compiled in a `Fn() -> usize` selector (patterns are
-  code); the descriptor gets the arm count and each arm's body as a
-  nested template, and exactly one arm thunk ever runs.
-
-Escaped today, and why:
-
-| shape | why |
-|---|---|
-| `flat_list`, `link(route = …)` | GENERIC constructors (`flat_list<T, K, S, R>`, `link<P>`) — a builder driven by data has no type to instantiate them at |
-| `image(asset = …)` | a different constructor (`image_asset(*v)`), not this node kind |
-| an uncontrolled `text_input`/`toggle`/`slider` | an absent `value` makes the direct emitter mint a signal (`glue::fresh_signal(…)`); deciding to allocate state is not a descriptor's job |
-| a trailing `.method(…)` chain | raw tokens over an open-ended surface; modelling it means a slot-constructor table over the whole builder API, for a construct on a minority of nodes whose arguments are compiled anyway. Decided, not pending |
-| `for` | a row template instantiated N times with N slot arrays — no shape in the "one descriptor, one slot array" model. The row BODY is already a nested template |
-| `if let`, a `match` arm that BINDS | a `Select` splits dispatch from body, so a pattern binding cannot cross into the arm thunk |
-| a bare-path / field `if` condition | `emit_if` dispatches it by the value's TYPE (`StaticCond` vs `ReactiveCond`); the macro cannot see types, so that decision stays in the emitted code |
-| a reactive `match` | `glue::switch` re-dispatches on change over an arbitrary scrutinee type |
-| a bare expression child | it is an expression |
-| a prop the direct emitter drops (`view(gap = …)`, `overlay(click_through = …)`) | escaping is what keeps the two lowerings agreeing on the drop |
-
-An escaped node's *bodies* stay template-lowered, so the lowering does
-not stop at the first escape — an escaped `for`'s rows are still
-descriptor-native.
-
-Widening the native set is additive: a `PrimKind` variant plus its arm
-in the builder plus its entry in the macro's table. `runtime-macros`'
-`descriptor_native_coverage_of_the_corpus` pins the exact native/escaped
-node counts for a corpus mirroring the parity fixtures, so a widening —
-or a narrowing — lands in the diff next to the table that caused it.
-
-## Profiling
-
-The builder carries one `PhaseTimer` phase, `realize_template`, gated on
-`debug-stats` (whose owner is `runtime-shared` — there is no
-`runtime-core/debug-stats`; `runtime-vocabulary/debug-stats` forwards to
-it). Off by default: the timer's clock reads skew per-node numbers when
-thousands of nodes hit it.
-
-```
-cargo …  --features runtime-vocabulary/debug-stats
-```
-
-then drain with `runtime_core::debug::take_phase_counters()`. On wasm,
-`backend_web::install_time_source()` must have run or every duration
-reads 0 (counts stay real).
+`kind` is a *syntactic* label (`"closure"`, `"path"`, `"call"`, …), not a
+Rust type — a proc macro has tokens, never resolved types. It is a drift
+detector, not a type check.
 
 ## Tests
 
-`cargo test -p runtime-template` covers serde round-tripping,
-registration, and every `validate` rejection. The emission's own
-descriptors are checked by a `debug_assert!` in
-`runtime_vocabulary::template::build`, so the whole
-`ui-lowering-parity` suite (and every debug-built app under the template
-lowering) runs `check_well_formed` against real output rather than only
-hand-written fixtures.
+`cargo test -p runtime-template` covers serde round-tripping, the site-key
+fold, registration, and every `validate` rejection.
 
-The proof that a descriptor builds the *right* tree lives in
-`crates/dev/ui-lowering-parity`: every fixture is authored once, expanded
-through both lowerings, and compared on three projections of a real
-mount.
+The proof that the numbering actually addresses a built tree lives in
+`crates/dev/ui-lowering-parity`, which mounts every fixture with tags on
+and checks the relation the flat node array depends on: within one site, a
+node is numbered before everything beneath it.

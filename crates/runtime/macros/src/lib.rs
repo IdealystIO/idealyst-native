@@ -19,8 +19,11 @@
 //! every slot into a `let` at the head of its scope in source order.
 //!
 //! The split is not an implementation detail of the emission: it is the
-//! producer of the `runtime_template::Descriptor` a dev-time overlay
-//! patches. See `crates/runtime/template`.
+//! same pass that produces the `runtime_template::Descriptor` a
+//! dev-time overlay patches against. The descriptor itself is built
+//! from SOURCE at build time, not emitted here — under `ui-overlay` the
+//! emission adds only a per-node origin tag (see `ui_overlay`). See
+//! `crates/runtime/template`.
 //!
 //! ## Heuristics, limitations
 //!

@@ -10081,6 +10081,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
+ "runtime-template",
  "sha2 0.10.9",
  "syn 2.0.117",
 ]
@@ -10128,7 +10129,6 @@ dependencies = [
 name = "runtime-template"
 version = "1.5.0"
 dependencies = [
- "runtime-scene",
  "serde",
  "serde_json",
 ]

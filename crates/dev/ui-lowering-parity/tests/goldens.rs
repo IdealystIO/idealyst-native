@@ -84,25 +84,59 @@ fn every_fixture_has_a_golden_and_every_golden_a_fixture() {
 ///
 /// both green is the stronger statement — same op sequence, same final
 /// scene, same deltas after every drive, across all 49 fixtures in both
-/// structural modes. A token diff would also flag the `static`
-/// descriptor and the `tag(…)` wrappers, which are exactly the things
-/// that are ALLOWED to differ.
+/// structural modes. A token diff would also flag the `tag(…)`
+/// wrappers, which are exactly the thing that is ALLOWED to differ.
 ///
 /// What this test adds is the half a golden cannot see: that the
 /// feature is doing something when it is ON. An emission that silently
 /// no-opped would pass every golden for the wrong reason.
+///
+/// It asserts the relation a patch's addressing rests on: **within one
+/// site, a node is numbered before everything beneath it.**
+///
+/// That is the weakest true statement, and the two things it does NOT
+/// say are why:
+///
+/// - a tree contains SEVERAL sites — a `#[component]`'s own `ui!` is a
+///   second site nested inside the first's tree — so "one tree, one site
+///   key" is false; and
+/// - one (site, node) pair addresses a SET of elements, not one: every
+///   row of a `for` builds the same node of the same site. The applier
+///   therefore edits every match, which is the correct behaviour and is
+///   why distinctness is not asserted.
+///
+/// Ancestor-before-descendant survives both, and it is exactly what
+/// makes a descriptor's flat node array with `u32` child indices a
+/// faithful map of the built tree.
+///
+/// The keys themselves are not pinned: a site key folds this file's own
+/// path and line, so pinning one would make every edit above a fixture
+/// a test failure. `runtime-template` covers the fold itself.
 #[cfg(feature = "ui-overlay")]
 #[test]
-fn building_a_site_registers_its_descriptor() {
-    runtime_vocabulary::overlay::reset();
-    let before = runtime_vocabulary::overlay::stats().0;
-    let _ = (fixtures::all()[0].direct)(Mode::Spliced);
-    let (sites, patches) = runtime_vocabulary::overlay::stats();
+fn a_site_numbers_a_node_before_everything_under_it() {
+    let mut checked = 0;
+    for fixture in fixtures::all() {
+        for (parent, child) in (fixture.direct)(Mode::Spliced).tags {
+            if parent.site != child.site {
+                // A component boundary: the child belongs to the
+                // component's own `ui!`, which numbers from 0 again.
+                continue;
+            }
+            assert!(
+                child.node > parent.node,
+                "{}: node {} is under node {} of the same site but numbered before it",
+                fixture.name,
+                child.node,
+                parent.node
+            );
+            checked += 1;
+        }
+    }
     assert!(
-        sites > before,
-        "with `ui-overlay` on, building a site must register its descriptor"
+        checked > 0,
+        "no fixture produced a tagged parent/child pair — the emission is a no-op"
     );
-    assert_eq!(patches, 0, "nothing staged a patch");
 }
 
 /// Fixture names must be unique — two fixtures sharing a name would
