@@ -75,6 +75,14 @@ If you're new to the codebase, read the docs in this order:
 
 ## Tooling
 
+- [`hot-reload.md`](./hot-reload.md). What a save costs. `idealyst dev`
+  sorts every save into three outcomes before doing any work — an overlay
+  patch (literals only; no compiler), a subsecond hot patch (function
+  bodies only; the user crate is re-emitted and the mounted tree re-run
+  in place, with signal state carried across), or a rebuild and respawn.
+  The decision table, the patch pipeline, what survives a patch and what
+  deliberately does not, the diagnostics, and the one feature that turns
+  the whole substrate off.
 - [`devcontainer.md`](./devcontainer.md). `idealyst configure devcontainer` —
   initialize or update a project's Dev Container and toggle idealyst-managed
   sidecar services (Postgres/MySQL, Redis, MinIO). The two-file ownership model

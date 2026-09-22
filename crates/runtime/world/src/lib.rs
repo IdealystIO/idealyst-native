@@ -848,7 +848,7 @@ fn create_signal<T: PartialEq + 'static>(
     };
     register_owned(OwnedItem::Signal { world: arena.id, slot, gen });
     #[cfg(feature = "hot-reload")]
-    hot_state::record::<T>(arena.id, slot, gen);
+    hot_state::record(arena.id, slot, gen);
     Signal { world: arena.id, slot, gen, _marker: PhantomData }
 }
 

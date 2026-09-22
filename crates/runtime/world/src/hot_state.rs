@@ -275,7 +275,13 @@ pub(crate) fn take_seed<T: 'static>() -> Option<T> {
 
 /// Called from `create_signal` AFTER the slot exists: remember where
 /// this creation was, so [`harvest`] can find its value later.
-pub(crate) fn record<T: 'static>(world: WorldId, slot: u32, gen: u32) {
+///
+/// Not generic over the value type: the type is recovered in
+/// [`harvest`], from the payload box itself. Recording it here would
+/// mean carrying a `TypeId` through the arena for slots that are never
+/// harvested — every signal in a dev session, for the benefit of the
+/// few that outlive a patch.
+pub(crate) fn record(world: WorldId, slot: u32, gen: u32) {
     TLS.with(|t| {
         let mut t = t.borrow_mut();
         let Tls { frames, recording, .. } = &mut *t;
@@ -284,8 +290,6 @@ pub(crate) fn record<T: 'static>(world: WorldId, slot: u32, gen: u32) {
         let key = SlotKey { path: frame.hash, ordinal: frame.ordinal };
         frame.ordinal += 1;
         recording.push(Recorded { key, world, slot, gen });
-        // Type is recorded in `harvest`, where the box is in hand.
-        let _ = TypeId::of::<T>();
     });
 }
 
