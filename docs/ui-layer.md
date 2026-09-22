@@ -254,11 +254,12 @@ backend, or the rendering model.
 ```text
 ui! { Counter(label = "Score", value = score) }
 
-  ↓ parsed by runtime_macros::ui
+  ↓ parsed by runtime_macros::ui, then split (see below)
 
+let __ui_s0; __ui_s0 = score;                    // the one dynamic slot
 BuildElement::build(Counter {                    // `Counter` is the tag alias
-    label: ("Score").into(),
-    value: (score).into(),
+    label: ("Score").into(),                     // a literal: descriptor data
+    value: (__ui_s0).into(),
     ..<Counter as BuildElement>::defaults()      // defaults for omitted props
 })
 
@@ -268,6 +269,77 @@ counter(&CounterProps { label: "Score".into(), value: score, .. })
 
   ↓ runs the (rewritten) fn body, returns an Element
 ```
+
+### The split: static descriptor + ordered slots
+
+Before emitting anything, the macro splits each `ui!` site into a
+**static** part and an ordered list of **dynamic slots**
+(`crates/runtime/macros/src/ui_split.rs`). Static means: primitive and
+component tags, attribute names, child order, string / integer / float /
+bool literals (including `"lit".to_string()` / `"lit".into()`),
+style-token accessors of the shape `t.a.b()` / `theme.x.y()`, enum-like
+paths (`tone::Danger`, `StackAxis::Row`), and an f-string's literal
+fragments. Everything else is a slot: closures, bare identifiers, method
+calls, `rx!`, signal reads, control-flow conditions / scrutinees /
+iterables, and bare expression children.
+
+Slots have a **placement**:
+
+- **`Prelude`** — bound to a `__ui_sN` local at the head of its scope,
+  in source order, before anything is constructed. Emitted as a
+  *deferred-init* pair (`let __ui_s0; __ui_s0 = …;`) so a `.into()` whose
+  target type is pinned by the destination field still resolves.
+- **`Construct`** — left where the construction splices it. Reserved for
+  expressions whose *evaluation* has no observable effect: closure
+  literals (constructing one only captures), macro invocations, the
+  reactive-call shape `f(sig)` (rewritten inside a closure), and
+  control-flow conditions / scrutinees / iterables (a reactive one is
+  wrapped in `move || …`; a static `match` scrutinee must stay put or
+  hoisting would force a move where match ergonomics borrow).
+
+The hoist is why prop expressions now evaluate **in source order**. They
+used not to: `style` lowers to a trailing `.with_style(f())`, so
+`view(style = f()) { Badge(label = g()) }` ran `g()` before `f()`.
+
+A **template scope** is one Rust scope's worth of nodes — the `ui!` body,
+plus every body the emission puts in a fresh Rust scope (an `if`/`match`
+branch, a `for` row builder, a `presence` child thunk). Each has its own
+slot list, so a branch's expressions are evaluated when that branch
+activates and a row's once per row, exactly as before. A `view`'s or
+component's children are *not* a new scope: they are built inline in the
+parent's block and share its prelude.
+
+A primitive silently ignores props it doesn't recognise
+(`view(gap = 4)` reaches nothing). Such a prop's slot is dropped from the
+prelude rather than evaluated, so the split never starts running an
+expression the emitter discards.
+
+### Two lowerings
+
+The split exists so a second lowering can consume it. `ui!` emits the
+**direct** lowering (builder calls inline, reading slots out of their
+locals). The **template** lowering turns the same split into a `static`
+descriptor plus a runtime slot array, handed to
+`runtime_vocabulary`'s template builder — the shape a static edit can
+change without recompiling. Both are reachable from the test-only
+`ui_lowered!(direct { … })` / `ui_lowered!(template { … })` entry point
+in `runtime-macros`; `ui!` stays on `direct`.
+
+There is deliberately **no cargo feature** selecting the lowering. A
+proc-macro crate is compiled once per build graph, so a feature on
+`runtime-macros` would flip the lowering for every crate in the same
+cargo invocation — the hazard that removed the `new-core` feature (see
+the NOTE in `crates/runtime/macros/Cargo.toml`). Selection is per
+invocation; a per-build-graph switch would be an env var read at
+expansion time.
+
+The two must produce identical scenes. `crates/dev/ui-lowering-parity`
+is the gate: every fixture is authored once, expanded through both
+entry points, mounted against `host-mock` in both structural modes, and
+compared on three projections (structural ops, every capability call,
+the final scene). It additionally pins the direct lowering against
+goldens frozen *before* the slot rewrite, so "the hoist changed nothing
+else" is falsifiable rather than self-asserted.
 
 ### Reactive `if`
 

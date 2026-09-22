@@ -54,6 +54,7 @@ mod props_attr;
 mod reactivity;
 mod stylesheet;
 mod ui;
+mod ui_split;
 mod ui_template;
 
 use proc_macro::TokenStream;

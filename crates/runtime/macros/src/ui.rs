@@ -72,6 +72,38 @@
 //! `label = "Score"` flows into a `String` field. Other attribute values
 //! pass through verbatim — we don't apply generalized `.into()` because
 //! of Rust inference fragility on non-literal types.
+//!
+//! ## Two lowerings, one front half
+//!
+//! `ui!` emits the **direct** lowering (this module). A second,
+//! **template** lowering ([`crate::ui_template`]) turns the same parsed
+//! tree into a `static` descriptor plus a runtime slot array. Both are
+//! reachable from the test-only `ui_lowered!(direct { … })` /
+//! `ui_lowered!(template { … })` entry point, and both must produce
+//! identical scenes — `crates/dev/ui-lowering-parity` is the gate.
+//!
+//! What they share is everything up to tree construction: the parser,
+//! the [`UiNode`] tree, and the [`crate::ui_split`] pass that separates
+//! each *template scope* into descriptor data (literals, enum-like
+//! paths, style-token accessors, attribute names, child order) and an
+//! ordered list of dynamic **slots**.
+//!
+//! The direct lowering reads its dynamic values out of that slot list:
+//! a `Prelude` slot is bound to a `__ui_sN` local at the head of its
+//! scope, in SOURCE order, and the construction reads the local. That is
+//! the one behavioural change the split made — a node's props used to be
+//! evaluated *after* its children, because `style` lowers to a trailing
+//! `.with_style(…)` — and it is what makes the two lowerings'
+//! observable evaluation order identical by construction. See
+//! [`crate::ui_split`] for the placement rules and their rationale.
+//!
+//! A *template scope* is one Rust scope's worth of nodes: the `ui!`
+//! body, and every body the emission puts inside a fresh Rust scope —
+//! an `if`/`match` branch ([`emit_block_as_primitive`],
+//! [`emit_child_scope`]), a `for` row builder, a `presence` child thunk.
+//! A `view`'s (or component's) children are NOT a new scope: they are
+//! built inline in the parent's block, so they share its slot list and
+//! its prelude.
 
 use proc_macro2::{Delimiter, Span, Spacing, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, ToTokens};
@@ -86,6 +118,11 @@ pub struct Ui {
 
 /// A single node in the UI tree. Either a component invocation we parsed,
 /// or a raw Rust expression that goes through ChildList passthrough.
+///
+/// `Clone` because the split pass ([`crate::ui_split`]) rewrites a scope's
+/// nodes (substituting hoisted slot locals) rather than mutating the
+/// parsed tree in place.
+#[derive(Clone)]
 pub(crate) enum UiNode {
     Component {
         name: Ident,
@@ -141,6 +178,7 @@ pub(crate) enum UiNode {
     Expr(Expr),
 }
 
+#[derive(Clone)]
 pub(crate) struct MatchArm {
     pub(crate) pat: syn::Pat,
     /// Optional `if guard` after the pattern.
@@ -148,6 +186,7 @@ pub(crate) struct MatchArm {
     pub(crate) body: Vec<UiNode>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Prop {
     pub(crate) name: Ident,
     pub(crate) value: Expr,
@@ -616,13 +655,22 @@ pub(crate) fn emit_with(ui: Ui, input: &TokenStream2, lowering: Lowering) -> Tok
 }
 
 fn emit_direct(ui: Ui, input: &TokenStream2) -> TokenStream2 {
-    let body = match ui.elements.len() {
+    crate::ui_split::reset_slot_counter();
+    let body = emit_root_scope(&ui.elements);
+    emit_shell(input, body)
+}
+
+/// Emit the `ui!` body's TOP-LEVEL scope: split it, evaluate the prelude,
+/// then build.
+fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
+    let scope = crate::ui_split::split(elements);
+    let body = match scope.nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole element: it is coerced to one `Element` below, so emit
         // it in single-slot context.
-        1 => emit_node(&ui.elements[0], Ctx::Single),
+        1 => emit_node(&scope.nodes[0], Ctx::Single),
         _ => {
-            let kids = ui.elements.iter().map(|n| emit_node(n, Ctx::Child));
+            let kids = scope.nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
                 ::runtime_core::view({
                     let mut __c: ::std::vec::Vec<::runtime_core::Element>
@@ -633,7 +681,43 @@ fn emit_direct(ui: Ui, input: &TokenStream2) -> TokenStream2 {
             }
         }
     };
-    emit_shell(input, body)
+    with_prelude(&scope, body)
+}
+
+/// Wrap `body` in its scope's slot prelude, or return it unchanged when
+/// the scope hoisted nothing (so a fully-static tree's emission is
+/// byte-identical to the pre-slot-rewrite output).
+fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -> TokenStream2 {
+    let prelude = scope.prelude_for(&body);
+    if prelude.is_empty() {
+        body
+    } else {
+        quote! { { #prelude #body } }
+    }
+}
+
+/// Emit `nodes` as a FRESH template scope yielding a `Vec<Element>`.
+///
+/// Every construct whose body the emission puts inside its own Rust
+/// scope — an `if`/`match` branch, a `for` row builder — routes its body
+/// through here, so that body's dynamic expressions are hoisted where
+/// the body runs (per branch activation, per row) rather than at the
+/// enclosing scope's head. That is also what the direct lowering has
+/// always done, since the author's expressions live inside the
+/// branch/row closure.
+fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
+    let scope = crate::ui_split::split(nodes);
+    let parts: Vec<TokenStream2> =
+        scope.nodes.iter().map(|n| emit_node(n, Ctx::Child)).collect();
+    let body = quote! {
+        {
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
+                = ::std::vec::Vec::new();
+            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+            __c
+        }
+    };
+    with_prelude(&scope, body)
 }
 
 /// Wrap an emission tail (the real build chain on the happy path, or the
@@ -1983,7 +2067,7 @@ fn text_content_reads_signal_bare(children: Option<&[UiNode]>, props: &[Prop]) -
 /// it built once and never re-ran when `state` changed. This predicate
 /// closes that gap so the closure-`switch` reactive path also claims
 /// the bare-call shape (matching `if`'s behavior).
-fn is_reactive_call_shape(expr: &Expr) -> bool {
+pub(crate) fn is_reactive_call_shape(expr: &Expr) -> bool {
     let call = match expr {
         Expr::Call(c) => c,
         _ => return false,
@@ -2933,27 +3017,13 @@ fn emit_if(
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
     let then_thunk = {
-        let parts = then_body.iter().map(|n| emit_node(n, Ctx::Child));
-        quote! {
-            move || {
-                let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                    = ::std::vec::Vec::new();
-                #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-                __c
-            }
-        }
+        let body = emit_child_scope(then_body);
+        quote! { move || #body }
     };
     let else_thunk = match else_body {
         Some(eb) => {
-            let parts = eb.iter().map(|n| emit_node(n, Ctx::Child));
-            quote! {
-                move || {
-                    let mut __c: ::std::vec::Vec<::runtime_core::Element>
-                        = ::std::vec::Vec::new();
-                    #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
-                    __c
-                }
-            }
+            let body = emit_child_scope(eb);
+            quote! { move || #body }
         }
         None => quote! { move || ::std::vec::Vec::<::runtime_core::Element>::new() },
     };
@@ -3000,11 +3070,14 @@ fn emit_plain_if(
         // its nodes as FLAT siblings (no wrapper View); a missing `else`
         // contributes nothing (no empty-View placeholder).
         Ctx::Child => {
-            let then_parts = then_body.iter().map(|n| emit_node(n, Ctx::Child));
+            // Each branch is its own template scope; the branch's node
+            // list arrives as a `Vec<Element>` and flattens into the
+            // shared `__c` exactly as the per-node appends did.
+            let then_vec = emit_child_scope(then_body);
             let else_block = match else_body {
                 Some(eb) => {
-                    let else_parts = eb.iter().map(|n| emit_node(n, Ctx::Child));
-                    quote! { #( ::runtime_core::ChildList::append_to(#else_parts, &mut __c); )* }
+                    let else_vec = emit_child_scope(eb);
+                    quote! { ::runtime_core::ChildList::append_to(#else_vec, &mut __c); }
                 }
                 None => quote! {},
             };
@@ -3013,7 +3086,7 @@ fn emit_plain_if(
                     let mut __c: ::std::vec::Vec<::runtime_core::Element>
                         = ::std::vec::Vec::new();
                     if #cond {
-                        #( ::runtime_core::ChildList::append_to(#then_parts, &mut __c); )*
+                        ::runtime_core::ChildList::append_to(#then_vec, &mut __c);
                     } else {
                         #else_block
                     }
@@ -3252,9 +3325,10 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
                 .iter()
                 .map(|arm| {
                     let pat = &arm.pat;
-                    let parts = arm.body.iter().map(|n| emit_node(n, Ctx::Child));
+                    // Each arm body is its own template scope.
+                    let arm_vec = emit_child_scope(&arm.body);
                     let appends = quote! {
-                        #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+                        ::runtime_core::ChildList::append_to(#arm_vec, &mut __c);
                     };
                     match &arm.guard {
                         Some(g) => quote! { #pat if #g => { #appends } },
@@ -3360,7 +3434,8 @@ fn emit_for_children(
     // A `.get()` somewhere in a non-range iterable can no longer make a
     // loop accidentally reactive.
     if matches!(iter, Expr::Range(_)) && condition_is_reactive(iter) {
-        let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
+        // The row body is its own template scope (it runs once per row).
+        let row_vec = emit_child_scope(body);
         // A reactive range is keyed-by-position: the row's identity IS
         // its index, so the enumeration counter is the natural key (or
         // the author's `key` expr if they wrote one). Keying — rather
@@ -3381,12 +3456,8 @@ fn emit_for_children(
                 for #pat in #iter {
                     let __key = ::runtime_core::EachKey::new(#key_expr);
                     __idx += 1;
-                    let __build: ::runtime_core::EachRowBuild = ::std::boxed::Box::new(move || {
-                        let mut __row: ::std::vec::Vec<::runtime_core::Element>
-                            = ::std::vec::Vec::new();
-                        #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
-                        __row
-                    });
+                    let __build: ::runtime_core::EachRowBuild =
+                        ::std::boxed::Box::new(move || #row_vec);
                     __c.push((__key, __build));
                 }
                 __c
@@ -3444,7 +3515,8 @@ fn emit_for_children(
     // (static) while a keyless `for x in signal { … }` is a COMPILE
     // ERROR carrying the `ReactiveListKeyed` diagnostic: a reactive list
     // must be keyed so per-row state survives rebuilds.
-    let parts: Vec<TokenStream2> = body.iter().map(|n| emit_node(n, Ctx::Child)).collect();
+    // The row body is its own template scope (it runs once per row).
+    let row_vec = emit_child_scope(body);
     let dispatch = if let Some(k) = key {
         quote! {
             {
@@ -3452,12 +3524,7 @@ fn emit_for_children(
                 use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
                 (#iter).__idealyst_for_each_keyed(
                     move |#pat| #k,
-                    move |#pat| {
-                        let mut __row: ::std::vec::Vec<::runtime_core::Element>
-                            = ::std::vec::Vec::new();
-                        #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
-                        __row
-                    },
+                    move |#pat| #row_vec,
                 )
             }
         }
@@ -3466,12 +3533,7 @@ fn emit_for_children(
             {
                 #[allow(unused_imports)]
                 use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
-                (#iter).__idealyst_for_each(move |#pat| {
-                    let mut __row: ::std::vec::Vec<::runtime_core::Element>
-                        = ::std::vec::Vec::new();
-                    #( ::runtime_core::ChildList::append_to(#parts, &mut __row); )*
-                    __row
-                })
+                (#iter).__idealyst_for_each(move |#pat| #row_vec)
             }
         }
     };
@@ -3557,14 +3619,17 @@ fn try_emit_for_repeat(
 /// (from a user component) and the surrounding `when()` / `if`
 /// expression always sees `Element`.
 fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
-    let body = match nodes.len() {
+    // A branch / arm / row / presence body is its own template scope —
+    // see `emit_child_scope`.
+    let scope = crate::ui_split::split(nodes);
+    let body = match scope.nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole node must itself be one Element: single-slot context.
-        1 => emit_node(&nodes[0], Ctx::Single),
+        1 => emit_node(&scope.nodes[0], Ctx::Single),
         // Multiple nodes genuinely need a wrapper to collapse to one
         // value; the wrapper's children are a list, so each is Child.
         _ => {
-            let parts = nodes.iter().map(|n| emit_node(n, Ctx::Child));
+            let parts = scope.nodes.iter().map(|n| emit_node(n, Ctx::Child));
             quote! {
                 ::runtime_core::view({
                     let mut __c: ::std::vec::Vec<::runtime_core::Element>
@@ -3575,7 +3640,8 @@ fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
             }
         }
     };
-    quote! { ::runtime_core::IntoElement::into_element(#body) }
+    let with_prelude_body = with_prelude(&scope, body);
+    quote! { ::runtime_core::IntoElement::into_element(#with_prelude_body) }
 }
 
 /// `DrawerNavigator` `ui!` sugar — retired. This branch used to emit
@@ -3978,14 +4044,19 @@ mod tests {
                 link(route = HOME) { text { "x" } }
             }));
             assert!(!out.contains("compile_error"), "{out}");
-            assert!(out.contains("primitives::link::link(HOME,()"), "{out}");
+            // `route` is dynamic, so it threads through its hoisted slot.
+            assert!(out.contains("__ui_s0=HOME;"), "{out}");
+            assert!(out.contains("primitives::link::link(__ui_s0,()"), "{out}");
 
-            // Explicit params thread through as the second positional.
+            // Explicit params thread through as the second positional —
+            // as the second hoisted slot, in source order.
             let out = squash(parse_and_emit(quote! {
                 link(route = DETAIL, params = DetailParams { id: 3 }) { text { "d" } }
             }));
+            assert!(out.contains("__ui_s0=DETAIL;"), "{out}");
+            assert!(out.contains("__ui_s1=DetailParams{id:3};"), "{out}");
             assert!(
-                out.contains("primitives::link::link(DETAIL,DetailParams{id:3}"),
+                out.contains("primitives::link::link(__ui_s0,__ui_s1"),
                 "{out}"
             );
         }
@@ -4048,8 +4119,12 @@ mod tests {
                 }
             }));
             assert!(!out.contains("compile_error"), "{out}");
+            // `target` is a dynamic prop, so it arrives through its
+            // hoisted slot local (see `ui_split`): the prelude binds the
+            // author's expression and the constructor reads the local.
+            assert!(out.contains("__ui_s0=anchor;"), "{out}");
             assert!(
-                out.contains("::runtime_core::primitives::overlay::anchored_overlay(anchor,"),
+                out.contains("::runtime_core::primitives::overlay::anchored_overlay(__ui_s0,"),
                 "{out}"
             );
             for chain in [".side(", ".align(", ".offset("] {
@@ -4119,8 +4194,16 @@ mod tests {
                 )
             }));
             assert!(!out.contains("compile_error"), "{out}");
+            // `data` and `size` are dynamic (slots 0 and 2 — the two
+            // closures in between are `Construct`-placed and stay where
+            // they were written); `overscan` / `gap` are literals and
+            // stay inline.
+            assert!(out.contains("__ui_s0=rows;"), "{out}");
+            assert!(out.contains("__ui_s2=fixed_size(24.0);"), "{out}");
             assert!(
-                out.contains("::runtime_core::primitives::flat_list::flat_list::<_,_,(),_>(rows,"),
+                out.contains(
+                    "::runtime_core::primitives::flat_list::flat_list::<_,_,(),_>(__ui_s0,"
+                ),
                 "{out}"
             );
             for chain in [".overscan(", ".gap("] {
@@ -4218,8 +4301,15 @@ mod tests {
         // Each prop is a struct field coerced with `.into()`; the field's
         // declared type pins the target (so `"x"` lands in a String /
         // Reactive<String>). Both literal and non-literal values coerce.
+        //
+        // A LITERAL is descriptor data and stays inline; a dynamic value
+        // is hoisted into the scope prelude and the field reads the
+        // local. The `.into()` still sits at the field, which is what
+        // pins its target type — and why the prelude uses deferred init
+        // (`let x; x = …;`) rather than `let x = …;`.
         assert!(out.contains("(\"x\") . into ()"), "got: {out}");
-        assert!(out.contains("(score) . into ()"), "got: {out}");
+        assert!(out.contains("let __ui_s0 ; __ui_s0 = score ;"), "got: {out}");
+        assert!(out.contains("(__ui_s0) . into ()"), "got: {out}");
     }
 
     #[test]
@@ -4365,8 +4455,14 @@ mod tests {
         // Both children lower to their own Counter struct literal — twice
         // each: once in the real build chain, once in the `__ui_recover`
         // salvage shell every expansion now carries (see `emit_shell`).
-        assert!(out.contains("(s) . into ()"), "got: {out}");
-        assert!(out.contains("(t) . into ()"), "got: {out}");
+        //
+        // The prop values are dynamic, so each reaches its field through
+        // a hoisted slot local, bound in the scope's prelude in SOURCE
+        // order (`s` before `t`) — see `ui_split`.
+        assert!(out.contains("let __ui_s0 ; __ui_s0 = s ;"), "got: {out}");
+        assert!(out.contains("let __ui_s1 ; __ui_s1 = t ;"), "got: {out}");
+        assert!(out.contains("(__ui_s0) . into ()"), "got: {out}");
+        assert!(out.contains("(__ui_s1) . into ()"), "got: {out}");
         assert_eq!(out.matches("Counter {").count(), 4, "got: {out}");
     }
 
