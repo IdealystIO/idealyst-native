@@ -393,10 +393,41 @@ fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
             /// `BadgeProps`) — what a descriptor calls the node, and so
             /// what the constructor must be registered under. The type
             /// cannot know it; the macro that generates this can.
+            /// A way to run this component again with new literal
+            /// props, when its props type allows one.
+            ///
+            /// The `Clone` decision is made HERE, once per props type,
+            /// by autoref specialization: `(&Probe(self)).rebuilder()`
+            /// resolves to the `ViaClone` impl when the bounds hold and
+            /// autorefs once more onto a `None` fallback when they do
+            /// not. No specialization feature, no bound on
+            /// `#[component]` — a bound would break every component
+            /// with `children: Vec<Element>` — and a props type that is
+            /// not `Clone` still compiles.
+            ///
+            /// One body per props type, not per call site. The call
+            /// site version of this cost +1.2 s on a real app's
+            /// one-edit rebuild: trait resolution multiplied by
+            /// thousands of sites.
+            #[doc(hidden)]
+            #[allow(clippy::all)]
+            pub fn __overlay_rebuilder(
+                &self,
+            ) -> ::core::option::Option<::runtime_core::__overlay::Rebuilder> {
+                #[allow(unused_imports)]
+                use ::runtime_core::__overlay::{ViaClone as _, ViaFallback as _};
+                (&::runtime_core::__overlay::Probe(self)).rebuilder()
+            }
+
             #[doc(hidden)]
             #[allow(clippy::all)]
             pub fn __overlay_bind(&mut self, tag: &'static str) {
                 ::runtime_core::__overlay::register_ctor(tag, #ctor_path);
+                // Hand the ambient frame a copy of these props, before
+                // the body consumes them. `exit` attaches it to the
+                // element, realize carries it to the mounted node, and
+                // a live prop edit runs the component again from it.
+                ::runtime_core::__overlay::set_rebuilder(self.__overlay_rebuilder());
                 let ::core::option::Option::Some((__site, __node)) =
                     ::runtime_core::__overlay::take_current()
                 else {

@@ -176,18 +176,24 @@ thread_local! {
 /// scope — is resolution work multiplied by thousands of call sites. See
 /// `runtime_macros`' `ui_overlay` for what that cost measured.
 pub fn enter(site: u64, node: u32) {
-    enter_with(site, node, None)
+    AMBIENT.with(|a| a.borrow_mut().push(Some((site, node))));
+    REBUILDER.with(|r| r.borrow_mut().push(None));
 }
 
-/// [`enter`], carrying a way to build this instance again.
+/// Give the open frame a way to build this instance again.
 ///
-/// The rebuilder is attached to the element by [`exit`], travels with it
-/// through realize, and ends up on the mounted node — which is where a
-/// live patch to a component's prop needs it. See
+/// Called from a props type's generated `build`, where the type is
+/// concrete and the probe for `Clone` costs one resolution per TYPE
+/// rather than per call site. [`exit`] attaches it to the element,
+/// realize carries it to the mounted node, and a live patch to a
+/// component's prop runs the component again from it. See
 /// [`rebuild`](crate::overlay::rebuild).
-pub fn enter_with(site: u64, node: u32, rebuilder: Option<rebuild::Rebuilder>) {
-    AMBIENT.with(|a| a.borrow_mut().push(Some((site, node))));
-    REBUILDER.with(|r| r.borrow_mut().push(rebuilder));
+pub fn set_rebuilder(rebuilder: Option<rebuild::Rebuilder>) {
+    REBUILDER.with(|r| {
+        if let Some(top) = r.borrow_mut().last_mut() {
+            *top = rebuilder;
+        }
+    });
 }
 
 /// End the frame [`enter`] opened, returning the element unchanged.

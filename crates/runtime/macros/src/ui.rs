@@ -1631,10 +1631,6 @@ fn emit_user(
         }
     });
 
-    // The props LITERAL, not the built element: under `ui-overlay` the
-    // emission keeps a copy of it before building (see
-    // `ui_overlay::component_props`), and with the feature off it is
-    // wrapped straight back into `build`.
     let built = quote! {
         #props_ty {
             #(#field_assignments)*
@@ -2452,32 +2448,40 @@ mod tests {
     /// as a string for substring assertions. NOTE: the output includes the
     /// `__ui_recover` salvage shell (same as a real expansion) — counted
     /// assertions must account for the salvage copy of the input.
-    /// A component call site must compile whatever its props type is.
+    /// A component must compile whatever its props type is.
     ///
     /// The overlay wants a COPY of the props so it can run the component
     /// again with a new literal, and that needs `Clone` — which
     /// `#[component]` does not require and, because
-    /// `children: Vec<Element>` is not `Clone`, could not require. So the
-    /// call site decides with autoref specialization: the emission names
-    /// both the `ViaClone` and `ViaFallback` traits and lets method
-    /// probing pick. A props type that is not `Clone` reaches the
-    /// fallback and yields `None` — not a compile error, which is what a
-    /// bound would have cost every component with children.
+    /// `children: Vec<Element>` is not `Clone`, could not require. The
+    /// decision is made by autoref specialization inside the props
+    /// type's own generated `__overlay_rebuilder`: a type that is not
+    /// `Clone` reaches the fallback and yields `None`, rather than
+    /// failing to compile, which is what a bound would have cost every
+    /// component with children.
     ///
-    /// This pins the SHAPE of that decision in the emitted tokens. That
-    /// it resolves correctly at each end is `ui-lowering-parity`'s
-    /// `live_component.rs`, which mounts both kinds and patches them.
+    /// …and the CALL SITE must carry none of it.
+    ///
+    /// The probe lives in the props type's own generated `build`, once
+    /// per type. Emitting it here instead cost +1.2 s on CrewForge's
+    /// one-edit rebuild — trait resolution multiplied by thousands of
+    /// sites, the same mistake the first `__overlay_bind` made. This is
+    /// the guard on not making it a third time.
     #[cfg(feature = "ui-overlay")]
     #[test]
-    fn a_component_call_site_probes_for_clone_rather_than_requiring_it() {
-        let out = parse_and_emit(quote! { Badge(label = "x") });
-        assert!(out.contains("ViaClone"), "{out}");
-        assert!(out.contains("ViaFallback"), "{out}");
-        assert!(out.contains("Probe"), "{out}");
+    fn a_component_call_site_carries_only_enter_and_exit() {
+        let out: String = parse_and_emit(quote! { Badge(label = "x") })
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(out.contains("__overlay::enter("), "{out}");
+        assert!(out.contains("__overlay::exit("), "{out}");
         assert!(
-            out.contains("rebuilder"),
-            "the probe's result must reach the overlay: {out}"
+            !out.contains("Probe"),
+            "the Clone probe belongs in the props type's `build`, not here: {out}"
         );
+        assert!(!out.contains("ViaClone"), "{out}");
+        assert!(!out.contains("rebuilder"), "{out}");
     }
 
     /// With the feature OFF none of it is emitted — a component call
