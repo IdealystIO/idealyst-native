@@ -33,6 +33,12 @@ robot = []
 # (repeat batch, dynamic-sheet effect). Same discipline as the other
 # crates' debug-stats (CLAUDE.md §6): OFF by default, counters land in
 # runtime-core's thread-local phase map, zero code when off.
+# `ui-overlay`: the dev-time overlay — descriptor registration plus the
+# per-node origin tag it addresses nodes by. OFF by default. Forwards to
+# `runtime-scene`, which owns the `Element` tag field; `runtime-macros`
+# (which emits the tags) is forwarded separately by `runtime-core`.
+ui-overlay = ["runtime-scene/ui-overlay"]
+
 debug-stats = ["runtime-shared/debug-stats"]
 
 # Forward runtime-shared's `async-driver` gate so glue can mirror the old

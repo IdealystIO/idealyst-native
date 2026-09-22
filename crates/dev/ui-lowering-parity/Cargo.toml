@@ -25,12 +25,21 @@ license.workspace = true
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
 
+[features]
+default = []
+# Run the whole corpus with the dev-time overlay compiled in. The
+# goldens are the SAME files either way — that is the point: the feature
+# must not change what a site builds. Forwards to `runtime-core` so this
+# crate can also `#[cfg]` on it.
+ui-overlay = ["runtime-core/ui-overlay"]
+
 [dependencies]
 # `ui_lowered!` / `#[component]` / `stylesheet!` — the macro set under test.
 runtime-macros = { workspace = true }
 # The author surface the emission's `::runtime_core::…` paths retarget
 # onto (`runtime_vocabulary::glue`), plus the builtin handlers the
-# fixtures mount through.
+# fixtures mount through — and, under `ui-overlay`, the registry the
+# gate reads.
 runtime-vocabulary = { workspace = true }
 # Author-surface alias so fixture bodies can spell `runtime_core::…`
 # the way app code does.

@@ -46,6 +46,23 @@ mcp = ["catalog"]
 # bridge transport declares
 # `dev = ["runtime-core/dev", "runtime-shared/robot"]`.
 dev = ["robot", "catalog"]
+# `ui-overlay`: the dev-time overlay. Turns on the descriptor emission
+# (`runtime-macros`), the `Element` node tag (`runtime-scene`, forwarded
+# through the vocabulary), and the registry + applier
+# (`runtime-vocabulary`). OFF by default.
+#
+# Forwarded from here the way `debug-stats` is forwarded from
+# runtime-shared: the gate lives on the crates that own the data, and
+# this root only wires them together. NOTE the three-way forward —
+# leaving `runtime-macros` out would emit no tags, and leaving
+# `runtime-scene` out would emit tags with nowhere to put them. Both are
+# sound-but-inert, which is exactly the kind of silent half-configuration
+# a single switch prevents.
+ui-overlay = [
+    "runtime-macros/ui-overlay",
+    "runtime-vocabulary/ui-overlay",
+]
+
 # `runtime_core::premint` — the linkme registry the `stylesheet!`
 # expansion registers into under `cfg(idealyst_premint_dump)`. Enabled
 # only by the CLI's ephemeral premint-dump wrapper and by the

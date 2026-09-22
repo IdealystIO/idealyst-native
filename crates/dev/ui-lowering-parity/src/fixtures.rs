@@ -1022,11 +1022,10 @@ fixture! {
     }
 }
 
-/// `overlay`'s NON-modal shape. `click_through` is deliberately not
-/// here: `emit_overlay` does not lower it (it compiles and reaches
-/// nothing), so neither lowering applies it — see the note in
-/// `ui_template`'s `prim_prop_slot_ctor`. This fixture is what found
-/// that, by making the template lowering try.
+// `overlay`'s NON-modal shape. `click_through` is deliberately absent:
+// `emit_overlay` does not lower it — it compiles and reaches nothing —
+// and this fixture is what surfaced that, back when a second lowering
+// tried to apply it.
 fixture! {
     name = overlay_non_modal;
     state { open: bool = true }

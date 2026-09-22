@@ -609,12 +609,18 @@ fn build_cell(_header: bool, children: Vec<Element>, style: Option<StyleProp>) -
 #[cfg(not(target_arch = "wasm32"))]
 fn extract_row(row: Element, owneds: &mut Vec<glue::Owned>) -> NativeRow {
     match row {
-        Element::Item { data, children } => {
-            if let Some(cell) = data.downcast_ref::<PrimCell<TableRowPrim>>() {
-                NativeRow { cells: children, slots: Some(cell.take()) }
-            } else {
-                NativeRow { cells: vec![Element::Item { data, children }], slots: None }
-            }
+        // Guarded rather than destructure-and-rebuild: rebuilding an
+        // `Element::Item` from its parts DROPS anything else the variant
+        // carries (under `ui-overlay`, the node's origin tag), so a
+        // non-row item is passed through whole by the catch-all arm
+        // below instead.
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<TableRowPrim>>().is_some() =>
+        {
+            let cell = data
+                .downcast_ref::<PrimCell<TableRowPrim>>()
+                .expect("guard just checked this downcast");
+            NativeRow { cells: children, slots: Some(cell.take()) }
         }
         Element::Fragment(children) => NativeRow { cells: children, slots: None },
         Element::Owned { element, owned } => {
@@ -969,7 +975,7 @@ pub fn visit_row_cells(row: &Element, mut f: impl FnMut(&Element)) {
     fn walk(el: &Element, f: &mut dyn FnMut(&Element)) {
         match el {
             Element::Owned { element, .. } => walk(element, f),
-            Element::Item { data, children } => {
+            Element::Item { data, children, .. } => {
                 if data.downcast_ref::<PrimCell<TableRowPrim>>().is_some() {
                     for c in children {
                         f(c);

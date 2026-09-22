@@ -55,6 +55,9 @@ pub use element::{
     component_scope, dyn_element, dyn_keyed, fragment, item, keyed, many, owned, DynSpec, Element,
     Key, RetireHook,
 };
+/// The overlay's node-origin surface — only under `ui-overlay`.
+#[cfg(feature = "ui-overlay")]
+pub use element::{item_tagged, with_tag, NodeTag};
 pub use host::Host;
 pub use late::{defer_registration, drain_registrations, has_pending_registrations};
 pub use realize::{

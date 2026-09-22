@@ -1157,6 +1157,15 @@ fn web_dev_features(no_robot: bool) -> Vec<String> {
     if !no_robot {
         f.push("robot".to_string());
     }
+    // The dev-time UI overlay: each `ui!` site registers its descriptor
+    // and tags the nodes it builds, so the dev loop can address a site's
+    // static half. DEV ONLY — `idealyst build --web` never passes it, so
+    // a shipped bundle carries neither the descriptors nor the tags.
+    //
+    // A cargo feature, so cargo fingerprints it and `config_key` already
+    // keys the target dir on `user_features`: flipping it cannot serve a
+    // half-tagged build.
+    f.push("runtime-core/ui-overlay".to_string());
     f
 }
 
@@ -3340,7 +3349,10 @@ mod tests {
             full_stack_bundle_options(&args, &test_source(), PathBuf::from("/tmp/dist/web"), None)
                 .unwrap();
 
-        assert_eq!(opts.features, vec!["runtime-core/dev".to_string()]);
+        assert_eq!(
+            opts.features,
+            vec!["runtime-core/dev".to_string(), "runtime-core/ui-overlay".to_string()],
+        );
         assert_eq!(opts.robot_relay_url, None);
     }
 
@@ -3350,9 +3362,30 @@ mod tests {
     fn web_dev_features_gate_only_robot_on_no_robot() {
         assert_eq!(
             web_dev_features(false),
-            vec!["runtime-core/dev".to_string(), "robot".to_string()],
+            vec![
+                "runtime-core/dev".to_string(),
+                "robot".to_string(),
+                "runtime-core/ui-overlay".to_string(),
+            ],
         );
-        assert_eq!(web_dev_features(true), vec!["runtime-core/dev".to_string()]);
+        assert_eq!(
+            web_dev_features(true),
+            vec!["runtime-core/dev".to_string(), "runtime-core/ui-overlay".to_string()],
+        );
+    }
+
+    /// The overlay is a DEV feature. `idealyst build --web` must never
+    /// pass it — a shipped bundle carrying a descriptor per `ui!` site
+    /// and a tag per node would pay for a dev-loop capability nobody
+    /// can use in production.
+    #[test]
+    fn the_overlay_feature_is_dev_only() {
+        assert!(web_dev_features(false).iter().any(|f| f == "runtime-core/ui-overlay"));
+        let build_rs = include_str!("build.rs");
+        assert!(
+            !build_rs.contains("ui-overlay"),
+            "`idealyst build` must not enable the overlay"
+        );
     }
 
     /// A project manifest with whatever `[package.metadata.idealyst.app]`

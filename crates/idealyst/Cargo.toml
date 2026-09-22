@@ -40,6 +40,14 @@ terminal = ["dep:host-terminal"]
 runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
 # Robot bridge — the MCP server's remote-control transport.
 robot = ["backend-web/robot"]
+# Dev-time UI overlay: each `ui!` site registers its descriptor and tags
+# the nodes it builds, so the dev loop can patch a site's static half
+# (literals, styles, child order) without recompiling. OFF by default;
+# `idealyst dev` turns it on. A cargo feature and not
+# `cfg(debug_assertions)` so an over-the-air path could use it in a
+# release build.
+ui-overlay = ["runtime-core/ui-overlay"]
+
 # Adopt server-rendered DOM instead of mounting fresh. Set by the build
 # when the app is paired with an SSR/SSG server binary; `boot::web`'s
 # `page_is_prerendered` check picks the path at runtime, but the backend

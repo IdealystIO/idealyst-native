@@ -35,7 +35,7 @@
 //!     site: SiteId { module: Cow::Borrowed("my_app::screen"), hash: Cow::Borrowed("0a1b2c3d") },
 //!     slots: SlotSig { slots: Cow::Borrowed(&[]) },
 //!     nodes: Cow::Borrowed(&[Node::Prim {
-//!         kind: PrimKind::Text,
+//!         kind: Cow::Borrowed("text"),
 //!         props: Cow::Borrowed(&[PropEntry {
 //!             name: Cow::Borrowed("content"),
 //!             value: PropValue::Lit(LiteralValue::Str(Cow::Borrowed("hello"))),
@@ -204,171 +204,64 @@ pub struct PropEntry {
 // Nodes
 // ===========================================================================
 
-/// The builtin primitives the template builder constructs from the
-/// descriptor directly.
-///
-/// This is a CLOSED set. A primitive is listed here only once the
-/// builder drives its glue wrapper from data; everything else reaches
-/// the scene through [`Node::Escape`], which is correct but opaque to a
-/// static edit.
-///
-/// The set now covers every builtin primitive whose constructor and
-/// setters are MONOMORPHIC. What is left out is left out structurally:
-/// `flat_list<T, K, S, R>` and the in-app `link<P>` are generic over the
-/// row / route-params type, and a builder driven by data has no type to
-/// instantiate them at. (`when` is not missing either — it lowers to
-/// [`Node::Dyn`].)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PrimKind {
-    View,
-    Text,
-    Button,
-    Image,
-    ActivityIndicator,
-    ScrollView,
-    Icon,
-    TextInput,
-    Toggle,
-    Slider,
-    /// `link(external = "https://…")` only. The in-app form is
-    /// `link<P>(route: &Route<P>, params: P, …)`, generic over the
-    /// route's params type — a builder driven by data cannot name `P`,
-    /// so that spelling escapes.
-    Link,
-    Overlay,
-    AnchoredOverlay,
-    /// The child arrives as a branch THUNK slot, not as
-    /// [`Node::Prim::children`]: `presence(move || child)` rebuilds its
-    /// child per mount, so the child is a nested template the same way
-    /// a [`Node::Dyn`] branch is.
-    Presence,
-    Graphics,
-}
-
-/// Every [`PrimKind`], for exhaustiveness in tests and tooling.
-pub const ALL_PRIM_KINDS: &[PrimKind] = &[
-    PrimKind::View,
-    PrimKind::Text,
-    PrimKind::Button,
-    PrimKind::Image,
-    PrimKind::ActivityIndicator,
-    PrimKind::ScrollView,
-    PrimKind::Icon,
-    PrimKind::TextInput,
-    PrimKind::Toggle,
-    PrimKind::Slider,
-    PrimKind::Link,
-    PrimKind::Overlay,
-    PrimKind::AnchoredOverlay,
-    PrimKind::Presence,
-    PrimKind::Graphics,
-];
-
-impl PrimKind {
-    /// The `ui!` tag that lowers to this kind.
-    pub fn tag(self) -> &'static str {
-        match self {
-            PrimKind::View => "view",
-            PrimKind::Text => "text",
-            PrimKind::Button => "button",
-            PrimKind::Image => "image",
-            PrimKind::ActivityIndicator => "activity_indicator",
-            PrimKind::ScrollView => "scroll_view",
-            PrimKind::Icon => "icon",
-            PrimKind::TextInput => "text_input",
-            PrimKind::Toggle => "toggle",
-            PrimKind::Slider => "slider",
-            PrimKind::Link => "link",
-            PrimKind::Overlay => "overlay",
-            PrimKind::AnchoredOverlay => "anchored_overlay",
-            PrimKind::Presence => "presence",
-            PrimKind::Graphics => "graphics",
-        }
-    }
-
-    /// Parse a canonical `ui!` primitive tag. `None` for a primitive the
-    /// descriptor does not model — the emission escapes those.
-    ///
-    /// The two absences are deliberate and structural, not a backlog:
-    /// `flat_list<T, K, S, R>` and the in-app `link<P>` have GENERIC
-    /// constructors, and a builder that works from data cannot name a
-    /// type parameter. `when` is absent because it lowers to
-    /// [`Node::Dyn`], which is the same construct.
-    pub fn from_tag(tag: &str) -> Option<PrimKind> {
-        ALL_PRIM_KINDS.iter().copied().find(|k| k.tag() == tag)
-    }
-}
-
 /// One node of a descriptor's flat node array.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Node {
-    /// A builtin primitive the builder constructs itself.
+    /// A builtin primitive.
+    ///
+    /// `kind` is the CANONICAL primitive name — exactly the string
+    /// `runtime_macros`' `canonical_primitive` yields (`"view"`,
+    /// `"text"`, `"anchored_overlay"`, …). A string and not a closed
+    /// enum on purpose: the overlay never CONSTRUCTS a tree from a
+    /// descriptor, it addresses one that already exists — so every
+    /// primitive has to be nameable, including ones no applier knows how
+    /// to build. A closed enum would make "addressable" and
+    /// "constructible" the same set, and they are not.
     Prim {
-        kind: PrimKind,
+        kind: Text,
         props: List<PropEntry>,
         /// Indices into [`Descriptor::nodes`], in child order.
         children: List<u32>,
     },
-    /// A `#[component]` tag.
+    /// A `#[component]` invocation.
     ///
-    /// The builder cannot name the props type, so the site supplies a
-    /// typed constructor in slot `ctor`; the builder hands it the
-    /// `literals` (which the component's generated `__apply_literal`
-    /// applies by name) and the built children. `tag` is recorded for
-    /// diagnostics and for a descriptor diff, not for dispatch.
+    /// `path` is the tag as written at the call site (PascalCase), which
+    /// doubles as the props-type path: `#[component]` emits a
+    /// `pub type Tag = TagProps` alias, so the tag resolves to the type.
     Component {
-        tag: Text,
-        ctor: u32,
-        literals: List<PropEntry>,
+        path: Text,
+        props: List<PropEntry>,
         children: List<u32>,
         /// Props the site passes as CODE, by name.
         ///
-        /// A dynamic prop's value is captured by the `ctor` thunk, not
-        /// carried here — its type is the component's field type, which
-        /// only the call site can name. Recording the names anyway is
-        /// what keeps the descriptor honest: a reader can see which of a
-        /// component's props a descriptor edit could change (the
-        /// `literals`) and which are compiled in (these). Pretending
-        /// they were addressable slots would be worse than omitting
-        /// them.
+        /// A dynamic prop's value lives in the compiled emission, not
+        /// here. Recording the NAMES is what keeps the descriptor
+        /// honest: a reader — and [`validate`] — can see which of a
+        /// component's props an edit could change and which are baked
+        /// in.
         dynamic: List<Text>,
     },
-    /// A reactive `if`: a `Fn() -> bool` in slot `cond` selects between
-    /// two `Fn() -> Element` branch thunks. Each branch is its own
-    /// NESTED TEMPLATE — the thunk builds from this same descriptor,
-    /// which is why the node array is flat.
-    Dyn {
-        cond: u32,
-        then: u32,
-        otherwise: u32,
+    /// A shape the descriptor addresses as a UNIT but cannot patch
+    /// inside: a generic `flat_list` / `link(route =)`, an `if let`, a
+    /// `match` arm that binds, a `for`, a node carrying a trailing
+    /// `.method(…)` chain.
+    ///
+    /// Each is irreducibly code — a type parameter, a pattern binding,
+    /// an open-ended builder call — so the descriptor records that
+    /// something is here, which slot defines it, and what hangs under
+    /// it, and stops.
+    ///
+    /// `children` is NOT always empty: a `for`'s row body keeps its
+    /// nested-template nodes under this one, so a row template's
+    /// literals stay patchable even though the iteration is not.
+    Opaque {
+        /// The slot carrying the construct's defining expression — a
+        /// condition, an iterable, a scrutinee. `None` where there is no
+        /// single such expression (a chained node, an escaped
+        /// primitive).
+        slot: Option<u32>,
+        children: List<u32>,
     },
-    /// STATIC branching — a plain `if`, an `if let`, a non-reactive
-    /// `match`.
-    ///
-    /// The dispatch itself is irreducibly code: patterns bind names, and
-    /// a descriptor has no way to say "match this value against these
-    /// patterns". So `selector` is a compiled `Fn() -> usize` returning
-    /// which arm is taken, and `arms` is one thunk slot per arm.
-    ///
-    /// What this buys over an [`Escape`](Node::Escape) is structure: the
-    /// descriptor says how many arms there are and that exactly one
-    /// runs, instead of one opaque node where the tree had a branch.
-    /// Exactly one arm thunk is ever called, so the untaken arms' work —
-    /// including their own slot preludes — never happens, as in the
-    /// direct lowering.
-    Select {
-        selector: u32,
-        arms: List<u32>,
-    },
-    /// A subtree the descriptor does not model: the site built it and
-    /// left the finished `Element`(s) in slot `slot`.
-    ///
-    /// Correct, but opaque — an escaped subtree's literals are compiled
-    /// in, so a static edit inside one needs a rebuild. Every `ui!`
-    /// construct is expressible this way, which is what lets the
-    /// template lowering be complete from day one while the
-    /// descriptor-native set grows.
-    Escape { slot: u32 },
 }
 
 // ===========================================================================
@@ -397,31 +290,14 @@ impl Descriptor {
         let mut out = Vec::new();
         for node in self.nodes.iter() {
             match node {
-                Node::Prim { props, .. } => {
+                Node::Prim { props, .. } | Node::Component { props, .. } => {
                     for p in props.iter() {
                         if let PropValue::Slot(s) = p.value {
                             out.push(s);
                         }
                     }
                 }
-                Node::Component { ctor, literals, .. } => {
-                    out.push(*ctor);
-                    for p in literals.iter() {
-                        if let PropValue::Slot(s) = p.value {
-                            out.push(s);
-                        }
-                    }
-                }
-                Node::Dyn { cond, then, otherwise } => {
-                    out.push(*cond);
-                    out.push(*then);
-                    out.push(*otherwise);
-                }
-                Node::Select { selector, arms } => {
-                    out.push(*selector);
-                    out.extend(arms.iter().copied());
-                }
-                Node::Escape { slot } => out.push(*slot),
+                Node::Opaque { slot, .. } => out.extend(*slot),
             }
         }
         out.sort_unstable();
@@ -429,11 +305,11 @@ impl Descriptor {
         out
     }
 
-    /// How many nodes are descriptor-native (anything but
-    /// [`Node::Escape`]). The parity suite reports this per fixture so
-    /// the descriptor-native boundary is visible rather than assumed.
-    pub fn native_node_count(&self) -> usize {
-        self.nodes.iter().filter(|n| !matches!(n, Node::Escape { .. })).count()
+    /// How many nodes are PATCHABLE (anything but [`Node::Opaque`]).
+    /// Reported per fixture by the overlay suite, so the boundary stays
+    /// visible rather than assumed.
+    pub fn patchable_node_count(&self) -> usize {
+        self.nodes.iter().filter(|n| !matches!(n, Node::Opaque { .. })).count()
     }
 }
 
@@ -624,7 +500,7 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError>
     }
     for node in descriptor.nodes.iter() {
         match node {
-            Node::Prim { props, children, .. } => {
+            Node::Prim { props, children, .. } | Node::Component { props, children, .. } => {
                 for p in props.iter() {
                     if let PropValue::Slot(s) = p.value {
                         slot_ok(s)?;
@@ -634,29 +510,14 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError>
                     node_ok(c)?;
                 }
             }
-            Node::Component { ctor, literals, children, .. } => {
-                slot_ok(*ctor)?;
-                for p in literals.iter() {
-                    if let PropValue::Slot(s) = p.value {
-                        slot_ok(s)?;
-                    }
+            Node::Opaque { slot, children } => {
+                if let Some(s) = slot {
+                    slot_ok(*s)?;
                 }
                 for &c in children.iter() {
                     node_ok(c)?;
                 }
             }
-            Node::Dyn { cond, then, otherwise } => {
-                slot_ok(*cond)?;
-                slot_ok(*then)?;
-                slot_ok(*otherwise)?;
-            }
-            Node::Select { selector, arms } => {
-                slot_ok(*selector)?;
-                for &a in arms.iter() {
-                    slot_ok(a)?;
-                }
-            }
-            Node::Escape { slot } => slot_ok(*slot)?,
         }
     }
     Ok(())
@@ -721,7 +582,7 @@ mod tests {
 
     fn text_node(content: &'static str) -> Node {
         Node::Prim {
-            kind: PrimKind::Text,
+            kind: Cow::Borrowed("text"),
             props: Cow::Owned(vec![PropEntry {
                 name: Cow::Borrowed("content"),
                 value: PropValue::Lit(LiteralValue::Str(Cow::Borrowed(content))),
@@ -745,22 +606,6 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         let back: Descriptor = serde_json::from_str(&json).unwrap();
         assert_eq!(d, back);
-    }
-
-    #[test]
-    fn prim_kinds_round_trip_their_tags() {
-        for &kind in ALL_PRIM_KINDS {
-            assert_eq!(PrimKind::from_tag(kind.tag()), Some(kind));
-        }
-        // Tags are unique — a duplicate would make `from_tag` pick the
-        // first and silently mis-key the other.
-        let mut tags: Vec<&str> = ALL_PRIM_KINDS.iter().map(|k| k.tag()).collect();
-        let before = tags.len();
-        tags.sort_unstable();
-        tags.dedup();
-        assert_eq!(before, tags.len(), "duplicate PrimKind tag");
-        assert_eq!(PrimKind::from_tag("flat_list"), None);
-        assert_eq!(PrimKind::from_tag("when"), None);
     }
 
     #[test]
@@ -810,7 +655,7 @@ mod tests {
         reg.register(one_text("a"));
         let mut patched = one_text("a");
         patched.slots = sig(&[("prop", "path")]);
-        patched.nodes = Cow::Owned(vec![Node::Escape { slot: 0 }]);
+        patched.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
         let patch = Patch { site: site("a"), descriptor: patched };
         assert_eq!(
             validate(&patch, &reg),
@@ -823,12 +668,12 @@ mod tests {
         let mut reg = Registry::new();
         let mut compiled = one_text("a");
         compiled.slots = sig(&[("prop", "path")]);
-        compiled.nodes = Cow::Owned(vec![Node::Escape { slot: 0 }]);
+        compiled.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
         reg.register(compiled);
 
         let mut patched = one_text("a");
         patched.slots = sig(&[("cond", "closure")]);
-        patched.nodes = Cow::Owned(vec![Node::Escape { slot: 0 }]);
+        patched.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
         let patch = Patch { site: site("a"), descriptor: patched };
         assert!(matches!(
             validate(&patch, &reg),
@@ -851,7 +696,7 @@ mod tests {
                 kind: Cow::Borrowed("path"),
             }]),
         };
-        compiled.nodes = Cow::Owned(vec![Node::Escape { slot: 0 }]);
+        compiled.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
         reg.register(compiled);
 
         let mut patched = one_text("a");
@@ -862,7 +707,7 @@ mod tests {
                 kind: Cow::Borrowed("path"),
             }]),
         };
-        patched.nodes = Cow::Owned(vec![Node::Escape { slot: 0 }]);
+        patched.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
         let patch = Patch { site: site("a"), descriptor: patched };
         assert_eq!(validate(&patch, &reg), Ok(()));
     }
@@ -880,7 +725,7 @@ mod tests {
         );
 
         let mut bad_slot = one_text("a");
-        bad_slot.nodes = Cow::Owned(vec![Node::Escape { slot: 2 }]);
+        bad_slot.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(2), children: Cow::Borrowed(&[]) }]);
         assert_eq!(
             validate(&Patch { site: site("a"), descriptor: bad_slot }, &reg),
             Err(ValidationError::SlotIndexOutOfRange { index: 2, slots: 0 })
@@ -907,19 +752,19 @@ mod tests {
             slots: sig(&[("prop", "path"), ("child", "call")]),
             nodes: Cow::Owned(vec![
                 Node::Prim {
-                    kind: PrimKind::View,
+                    kind: Cow::Borrowed("view"),
                     props: Cow::Owned(vec![PropEntry {
                         name: Cow::Borrowed("style"),
                         value: PropValue::Slot(0),
                     }]),
                     children: Cow::Owned(vec![1]),
                 },
-                Node::Escape { slot: 1 },
+                Node::Opaque { slot: Some(1), children: Cow::Borrowed(&[]) },
             ]),
             roots: Cow::Owned(vec![0]),
         };
         assert_eq!(d.referenced_slots(), vec![0, 1]);
-        assert_eq!(d.native_node_count(), 1);
+        assert_eq!(d.patchable_node_count(), 1);
         assert_eq!(check_well_formed(&d), Ok(()));
     }
 

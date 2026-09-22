@@ -586,7 +586,12 @@ pub(crate) enum Ctx {
 
 pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
     crate::ui_split::reset_slot_counter();
+    crate::ui_overlay::begin_site(input);
     let body = emit_root_scope(&ui.elements);
+    // The descriptor is complete only AFTER the walk, so the `static`
+    // and its registration are prepended to the finished body.
+    let prelude = crate::ui_overlay::site_prelude();
+    let body = if prelude.is_empty() { body } else { quote! { { #prelude #body } } };
     emit_shell(input, body)
 }
 
@@ -594,6 +599,7 @@ pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
 /// then build.
 fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
     let scope = crate::ui_split::split(elements);
+    crate::ui_overlay::record_scope(&scope);
     let body = match scope.nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole element: it is coerced to one `Element` below, so emit
@@ -637,6 +643,7 @@ pub(crate) fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -
 /// branch/row closure.
 pub(crate) fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
     let scope = crate::ui_split::split(nodes);
+    crate::ui_overlay::record_scope(&scope);
     let parts: Vec<TokenStream2> =
         scope.nodes.iter().map(|n| emit_node(n, Ctx::Child)).collect();
     let body = quote! {
@@ -1433,6 +1440,11 @@ fn emit_component(
     children: Option<&[UiNode]>,
     chain: &[TokenStream2],
 ) -> TokenStream2 {
+    // Reserve this node's descriptor index BEFORE its children are
+    // emitted, so a parent always precedes its children in the array.
+    // No-op with `ui-overlay` off. See `ui_overlay`'s module docs for
+    // why the index comes from the emission walk and not a second pass.
+    let __overlay_index = crate::ui_overlay::open_node();
     // Framework primitives are a fixed set, canonicalized to snake_case
     // (`view`, `text`, `text_input`, …) to match the `runtime_core::view(...)`
     // builder fn names and React's lowercase-intrinsic convention. PascalCase
@@ -1582,10 +1594,48 @@ fn emit_component(
     // Append any trailing `.method(args)` calls verbatim. The
     // expression is parenthesized once so the chain attaches to the
     // final value of the inner expression, not to its head.
-    if chain.is_empty() {
+    let built = if chain.is_empty() {
         with_a11y
     } else {
         quote! { (#with_a11y) #(#chain)* }
+    };
+
+    record_overlay_node(__overlay_index, name, canonical, props, !chain.is_empty());
+    crate::ui_overlay::tag(built, __overlay_index)
+}
+
+/// Record the node just emitted into the site descriptor. A no-op with
+/// `ui-overlay` off.
+///
+/// A node with a trailing `.method(…)` chain is `Opaque`: the chain is
+/// raw tokens over an open-ended builder surface, so the descriptor can
+/// address the node but not describe what the chain did to it.
+#[allow(unused_variables)]
+fn record_overlay_node(
+    index: crate::ui_overlay::NodeIndex,
+    name: &Ident,
+    canonical: Option<&'static str>,
+    props: &[Prop],
+    chained: bool,
+) {
+    #[cfg(feature = "ui-overlay")]
+    {
+        use crate::ui_overlay::{NodeKind, PropValue};
+        let name_str = name.to_string();
+        let kind = if chained {
+            NodeKind::Opaque(None)
+        } else if let Some(c) = canonical {
+            NodeKind::Prim(c)
+        } else {
+            NodeKind::Component(&name_str)
+        };
+        let recorded: Vec<(String, PropValue)> = props
+            .iter()
+            .map(|p| (p.name.to_string(), PropValue::of(&p.value)))
+            .collect();
+        // Children are recorded by the scope emitters, which know the
+        // indices; a node's own entry carries its props and kind.
+        crate::ui_overlay::close_node(index, kind, recorded, Vec::new());
     }
 }
 

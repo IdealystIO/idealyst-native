@@ -1280,7 +1280,7 @@ where
 pub mod __template {
     pub use runtime_template::{
         Descriptor as TemplateDescriptor, LiteralValue as TemplateLiteral, Node as TemplateNode,
-        Patch as TemplatePatch, PrimKind as TemplatePrimKind, PropEntry as TemplatePropEntry,
+        Patch as TemplatePatch, PropEntry as TemplatePropEntry,
         PropValue as TemplatePropValue, Registry as TemplateRegistry, SiteId as TemplateSiteId,
         SlotInfo as TemplateSlotInfo, SlotSig as TemplateSlotSig,
     };
@@ -1303,6 +1303,14 @@ pub mod __template {
 
     impl<T> ApplyLiteralFallback for T {}
 }
+
+/// The dev-time overlay's runtime entry points, reached from macro
+/// output as `::runtime_core::__overlay::…`.
+///
+/// Only exists under `ui-overlay` — and so does the emission that calls
+/// it, so the two are never out of step within one build graph.
+#[cfg(feature = "ui-overlay")]
+pub use crate::overlay as __overlay;
 
 pub trait ChildList {
     fn append_to(self, out: &mut Vec<Element>);

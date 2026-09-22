@@ -71,6 +71,40 @@ fn every_fixture_has_a_golden_and_every_golden_a_fixture() {
     assert_eq!(expected, on_disk, "fixture list and goldens dir disagree");
 }
 
+/// The `ui-overlay` feature must not change what a site BUILDS.
+///
+/// This is the byte-identity gate, and it is deliberately "same scene"
+/// rather than "same tokens": every golden above is checked against the
+/// SAME frozen file whichever way the feature is set, so
+///
+/// ```text
+/// cargo test -p ui-lowering-parity
+/// cargo test -p ui-lowering-parity --features ui-overlay
+/// ```
+///
+/// both green is the stronger statement — same op sequence, same final
+/// scene, same deltas after every drive, across all 49 fixtures in both
+/// structural modes. A token diff would also flag the `static`
+/// descriptor and the `tag(…)` wrappers, which are exactly the things
+/// that are ALLOWED to differ.
+///
+/// What this test adds is the half a golden cannot see: that the
+/// feature is doing something when it is ON. An emission that silently
+/// no-opped would pass every golden for the wrong reason.
+#[cfg(feature = "ui-overlay")]
+#[test]
+fn building_a_site_registers_its_descriptor() {
+    runtime_vocabulary::overlay::reset();
+    let before = runtime_vocabulary::overlay::stats().0;
+    let _ = (fixtures::all()[0].direct)(Mode::Spliced);
+    let (sites, patches) = runtime_vocabulary::overlay::stats();
+    assert!(
+        sites > before,
+        "with `ui-overlay` on, building a site must register its descriptor"
+    );
+    assert_eq!(patches, 0, "nothing staged a patch");
+}
+
 /// Fixture names must be unique — two fixtures sharing a name would
 /// silently overwrite each other's golden.
 #[test]
