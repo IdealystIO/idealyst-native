@@ -1,0 +1,52 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text_input
+insert n0 <- n1
+create n2 toggle false
+insert n0 <- n2
+create n3 slider
+insert n0 <- n3
+
+-- draft=hi --
+(none)
+
+-- on=true --
+(none)
+
+-- amount=0.9 --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text_input
+update_text_input_value n1 ""
+insert n0 <- n1
+create n2 toggle false
+update_toggle_value n2 false
+insert n0 <- n2
+create n3 slider
+update_slider_value n3 0.5
+insert n0 <- n3
+
+-- draft=hi --
+update_text_input_value n1 "hi"
+
+-- on=true --
+update_toggle_value n2 true
+
+-- amount=0.9 --
+update_slider_value n3 0.9
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text_input
+  n2 toggle false
+  n3 slider

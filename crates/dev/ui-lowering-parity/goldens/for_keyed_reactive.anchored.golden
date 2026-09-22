@@ -1,0 +1,73 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "one"
+insert n1 <- n2
+create n3 text "two"
+insert n1 <- n3
+insert n0 <- n1
+
+-- append --
+clear_children n1
+create n4 text "one"
+insert n1 <- n4
+create n5 text "two"
+insert n1 <- n5
+create n6 text "three"
+insert n1 <- n6
+
+-- remove-middle --
+clear_children n1
+create n7 text "one"
+insert n1 <- n7
+create n8 text "three"
+insert n1 <- n8
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "one"
+insert n1 <- n2
+create n3 text "two"
+insert n1 <- n3
+insert n0 <- n1
+
+-- append --
+release_subtree n2
+release_subtree n3
+clear_children n1
+create n4 text "one"
+insert n1 <- n4
+create n5 text "two"
+insert n1 <- n5
+create n6 text "three"
+insert n1 <- n6
+
+-- remove-middle --
+release_subtree n4
+release_subtree n5
+release_subtree n6
+clear_children n1
+create n7 text "one"
+insert n1 <- n7
+create n8 text "three"
+insert n1 <- n8
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 anchor
+    n7 text "one"
+    n8 text "three"
+n2 text "one"
+n3 text "two"
+n4 text "one"
+n5 text "two"
+n6 text "three"

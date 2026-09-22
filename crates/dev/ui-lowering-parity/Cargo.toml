@@ -1,0 +1,52 @@
+# ui-lowering-parity — the gate that proves `ui!`'s two lowerings are
+# interchangeable.
+#
+# Every fixture in `src/fixtures.rs` is authored ONCE and instantiated
+# twice, through `ui_lowered!(direct)` and `ui_lowered!(template)`. The
+# suite then asserts three things per fixture, in ONE process:
+#
+#   1. the same structural-op sequence (the 7-method `runtime_scene::Host`
+#      seam plus node creation),
+#   2. the same final scene (kinds, text, styles, props),
+#   3. the same op stream after driving every signal the fixture exposes.
+#
+# Phase 1 additionally pins the DIRECT lowering against goldens captured
+# from the pre-slot-rewrite emitter (`goldens/*.golden`), so the
+# slot-list rewrite is proven to be behavior-preserving and not merely
+# self-consistent.
+#
+# Dev/test utility crate — nothing shipped depends on it.
+[package]
+name = "ui-lowering-parity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[features]
+default = []
+# Compiles the TEMPLATE half of every fixture and the cross-lowering
+# tests. Off through phase 1 (there is no template emitter yet); on for
+# good once the emitter lands.
+template = []
+
+[dependencies]
+# `ui_lowered!` / `#[component]` / `stylesheet!` — the macro set under test.
+runtime-macros = { workspace = true }
+# The author surface the emission's `::runtime_core::…` paths retarget
+# onto (`runtime_vocabulary::glue`), plus the builtin handlers the
+# fixtures mount through.
+runtime-vocabulary = { workspace = true }
+# Author-surface alias so fixture bodies can spell `runtime_core::…`
+# the way app code does.
+runtime-core = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+runtime-shared = { workspace = true }
+# The recording scene Host + all-30-caps mock the fixtures realize
+# against. Chosen over hand-rolling a recorder: it is the repo's
+# canonical test substrate and already carries the op-log format the
+# other golden suites speak.
+host-mock = { workspace = true }

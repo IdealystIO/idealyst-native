@@ -1,0 +1,23 @@
+=== structural ===
+-- mount --
+create n0 virtualizer overscan=1 layout=VirtualLayout { axis: Vertical, lanes: Fixed(1), main_spacing: 0.0, cross_spacing: 0.0 }
+
+-- append --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 virtualizer overscan=1 layout=VirtualLayout { axis: Vertical, lanes: Fixed(1), main_spacing: 0.0, cross_spacing: 0.0 }
+virtualizer_data_changed n0
+
+-- append --
+virtualizer_data_changed n0
+
+-- unmount --
+release_virtualizer n0
+
+=== scene ===
+n0 virtualizer overscan=1 layout=VirtualLayout { axis: Vertical, lanes: Fixed(1), main_spacing: 0.0, cross_spacing: 0.0 }

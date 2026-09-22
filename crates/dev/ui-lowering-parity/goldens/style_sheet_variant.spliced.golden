@@ -1,0 +1,24 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text "big"
+insert n0 <- n1
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text "big"
+insert n0 <- n1
+apply_default_text_font none
+register_stylesheet rules=3
+apply_style n0 width=none
+
+-- unmount --
+on_node_unstyled n0
+
+=== scene ===
+n0 view
+  n1 text "big"

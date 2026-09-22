@@ -54,6 +54,7 @@ mod props_attr;
 mod reactivity;
 mod stylesheet;
 mod ui;
+mod ui_template;
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -198,6 +199,37 @@ pub fn ui(input: TokenStream) -> TokenStream {
     match syn::parse2::<ui::Ui>(input.clone()) {
         Ok(parsed) => finish(ui::emit(parsed, &input)),
         Err(err) => finish(ui::emit_recovery(input, &err)),
+    }
+}
+
+/// `ui_lowered!(direct { … })` / `ui_lowered!(template { … })` —
+/// TEST-ONLY entry point that pins which of the two `ui!` lowerings a
+/// call site expands to.
+///
+/// `ui!` always emits the DIRECT lowering (builder calls inline, as it
+/// always has). The TEMPLATE lowering turns the same parsed tree into a
+/// `static` descriptor plus an ordered slot list and hands both to
+/// `runtime_vocabulary`'s template builder. Both must produce identical
+/// scenes; `crates/dev/ui-lowering-parity` is the suite that proves it.
+///
+/// Why an explicit-mode macro instead of a cargo feature on this crate:
+/// a proc-macro crate is compiled ONCE per build graph, so a feature
+/// here flips the lowering for every crate in the same cargo
+/// invocation. That hazard is exactly why the `new-core` feature was
+/// removed (see the NOTE in this crate's `Cargo.toml`). Selection is
+/// therefore per invocation; a per-build-graph switch, when it lands,
+/// will be an env var read at expansion time (the shape `lazy!`'s
+/// retired `IDEALYST_DYNAMIC_SPLIT` used).
+#[proc_macro]
+pub fn ui_lowered(input: TokenStream) -> TokenStream {
+    let input: proc_macro2::TokenStream = input.into();
+    let (lowering, body) = match ui::split_lowered_invocation(input) {
+        Ok(pair) => pair,
+        Err(err) => return err.to_compile_error().into(),
+    };
+    match syn::parse2::<ui::Ui>(body.clone()) {
+        Ok(parsed) => finish(ui::emit_with(parsed, &body, lowering)),
+        Err(err) => finish(ui::emit_recovery(body, &err)),
     }
 }
 

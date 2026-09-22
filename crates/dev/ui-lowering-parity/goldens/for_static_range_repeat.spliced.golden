@@ -1,0 +1,30 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text ""
+create n2 text ""
+create n3 text ""
+insert_many n0 <- [n1, n2, n3]
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text ""
+update_text n1 "row 0"
+create n2 text ""
+update_text n2 "row 1"
+create n3 text ""
+update_text n3 "row 2"
+insert_many n0 <- [n1, n2, n3]
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text ""
+  n2 text ""
+  n3 text ""

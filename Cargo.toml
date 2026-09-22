@@ -103,6 +103,8 @@ members = [
     "crates/dev/robot-test-macros",
     "crates/dev/native-parity",
     "crates/dev/scene-parity",
+    # Proves `ui!`'s DIRECT and TEMPLATE lowerings build identical scenes.
+    "crates/dev/ui-lowering-parity",
     # Smoke app for backend-web's new-core boot path (idea-lite P3b).
     "crates/dev/newcore-web-smoke",
     # Smoke app for the External-SDK wave: the canvas SDK (scene-registry
@@ -446,6 +448,7 @@ dev-server = { path = "crates/dev/server", version = "1.5.3", registry = "idealy
 mock-backend = { path = "crates/dev/mock-backend" }
 host-mock = { path = "crates/dev/host-mock", version = "1.5.6", registry = "idealyst" }
 parity-goldens = { path = "crates/dev/parity-goldens" }
+ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
 headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.2", registry = "idealyst" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
 robot-relay = { path = "crates/dev/robot-relay" }

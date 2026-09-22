@@ -1,0 +1,31 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text "a"
+insert n0 <- n1
+create n2 text "b"
+insert n0 <- n2
+create n3 text "c"
+insert n0 <- n3
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text "a"
+insert n0 <- n1
+create n2 text "b"
+insert n0 <- n2
+create n3 text "c"
+insert n0 <- n3
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text "a"
+  n2 text "b"
+  n3 text "c"

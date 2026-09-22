@@ -1,0 +1,23 @@
+=== structural ===
+-- mount --
+create n0 text ""
+
+-- count=4 --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 text ""
+update_text n0 "d=2"
+
+-- count=4 --
+update_text n0 "d=8"
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 text ""

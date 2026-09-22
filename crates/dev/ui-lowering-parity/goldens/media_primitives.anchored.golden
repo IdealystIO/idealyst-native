@@ -1,0 +1,37 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 image "https://example.test/x.png"
+insert n0 <- n1
+create n2 activity_indicator
+insert n0 <- n2
+create n3 link route="" url="https://example.test"
+create n4 text "out"
+insert n3 <- n4
+insert n0 <- n3
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 image "https://example.test/x.png"
+update_image_src n1 "https://example.test/x.png"
+insert n0 <- n1
+create n2 activity_indicator
+insert n0 <- n2
+create n3 link route="" url="https://example.test"
+create n4 text "out"
+insert n3 <- n4
+insert n0 <- n3
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 image "https://example.test/x.png"
+  n2 activity_indicator
+  n3 link route="" url="https://example.test"
+    n4 text "out"

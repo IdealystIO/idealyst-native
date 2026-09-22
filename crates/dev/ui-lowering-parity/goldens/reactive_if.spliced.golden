@@ -1,0 +1,45 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text "off"
+insert_at n0 <- n1 @ 0
+
+-- flag=true --
+remove_child n0 -x n1
+create n2 text "on"
+insert_at n0 <- n2 @ 0
+
+-- flag=false --
+remove_child n0 -x n2
+create n3 text "off"
+insert_at n0 <- n3 @ 0
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text "off"
+insert_at n0 <- n1 @ 0
+
+-- flag=true --
+remove_child n0 -x n1
+release_subtree n1
+create n2 text "on"
+insert_at n0 <- n2 @ 0
+
+-- flag=false --
+remove_child n0 -x n2
+release_subtree n2
+create n3 text "off"
+insert_at n0 <- n3 @ 0
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n3 text "off"
+n1 text "off"
+n2 text "on"

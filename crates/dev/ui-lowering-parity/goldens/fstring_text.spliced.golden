@@ -1,0 +1,33 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text ""
+insert n0 <- n1
+create n2 text "static prose"
+insert n0 <- n2
+
+-- count=9 --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text ""
+update_text n1 "2 items"
+insert n0 <- n1
+create n2 text "static prose"
+insert n0 <- n2
+
+-- count=9 --
+update_text n1 "9 items"
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text ""
+  n2 text "static prose"

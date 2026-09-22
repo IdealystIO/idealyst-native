@@ -1,0 +1,23 @@
+=== structural ===
+-- mount --
+create n0 text ""
+
+-- ratio=0.25 --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 text ""
+update_text n0 "0.50 done"
+
+-- ratio=0.25 --
+update_text n0 "0.25 done"
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 text ""

@@ -1,0 +1,66 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text ""
+insert n0 <- n1
+create n2 view
+create n3 text ""
+insert n2 <- n3
+insert n0 <- n2
+create n4 view
+create n5 text ""
+insert n4 <- n5
+insert n0 <- n4
+create n6 view
+create n7 text ""
+insert n6 <- n7
+create n8 text "leaf"
+insert n6 <- n8
+insert n0 <- n6
+
+-- count=2 --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text ""
+update_text n1 "shell"
+insert n0 <- n1
+create n2 view
+create n3 text ""
+update_text n3 "nested:1"
+insert n2 <- n3
+insert n0 <- n2
+create n4 view
+create n5 text ""
+update_text n5 "v=0"
+insert n4 <- n5
+insert n0 <- n4
+create n6 view
+create n7 text ""
+update_text n7 "deeper"
+insert n6 <- n7
+create n8 text "leaf"
+insert n6 <- n8
+insert n0 <- n6
+
+-- count=2 --
+update_text n5 "v=2"
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text ""
+  n2 view
+    n3 text ""
+  n4 view
+    n5 text ""
+  n6 view
+    n7 text ""
+    n8 text "leaf"

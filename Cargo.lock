@@ -12714,6 +12714,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-lowering-parity"
+version = "1.5.2"
+dependencies = [
+ "host-mock",
+ "runtime-core",
+ "runtime-macros",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

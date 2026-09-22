@@ -1,0 +1,55 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "zero"
+insert n1 <- n2
+insert n0 <- n1
+
+-- n=1 --
+clear_children n1
+create n3 anchor
+create n4 text "one"
+insert n3 <- n4
+insert n1 <- n3
+
+-- n=2 --
+clear_children n3
+create n5 text "many"
+insert n3 <- n5
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "zero"
+insert n1 <- n2
+insert n0 <- n1
+
+-- n=1 --
+release_subtree n2
+clear_children n1
+create n3 anchor
+create n4 text "one"
+insert n3 <- n4
+insert n1 <- n3
+
+-- n=2 --
+release_subtree n4
+clear_children n3
+create n5 text "many"
+insert n3 <- n5
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 anchor
+    n3 anchor
+      n5 text "many"
+n2 text "zero"
+n4 text "one"

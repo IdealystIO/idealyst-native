@@ -81,12 +81,12 @@ use syn::{braced, parenthesized, Expr, Ident, Token};
 
 /// Top-level entry: a `ui! { ... }` invocation parses to a list of elements.
 pub struct Ui {
-    elements: Vec<UiNode>,
+    pub(crate) elements: Vec<UiNode>,
 }
 
 /// A single node in the UI tree. Either a component invocation we parsed,
 /// or a raw Rust expression that goes through ChildList passthrough.
-enum UiNode {
+pub(crate) enum UiNode {
     Component {
         name: Ident,
         props: Vec<Prop>,
@@ -141,23 +141,23 @@ enum UiNode {
     Expr(Expr),
 }
 
-struct MatchArm {
-    pat: syn::Pat,
+pub(crate) struct MatchArm {
+    pub(crate) pat: syn::Pat,
     /// Optional `if guard` after the pattern.
-    guard: Option<Expr>,
-    body: Vec<UiNode>,
+    pub(crate) guard: Option<Expr>,
+    pub(crate) body: Vec<UiNode>,
 }
 
-struct Prop {
-    name: Ident,
-    value: Expr,
+pub(crate) struct Prop {
+    pub(crate) name: Ident,
+    pub(crate) value: Expr,
     /// Optional `=> output_signal` clause for structured actions.
     /// Set when a prop is written as `on_click = method(sig) =>
     /// out_signal` — the `=>` token follows the prop's value
     /// expression and an output signal expression follows the `=>`.
     /// `emit_button` reads this to construct a fully-populated
     /// `Action` directly (no `action!`/`bind_press!` macro needed).
-    arrow_target: Option<Expr>,
+    pub(crate) arrow_target: Option<Expr>,
 }
 
 /// Recognized accessibility attribute names. Each maps 1:1 to a
@@ -545,7 +545,77 @@ enum Ctx {
     Single,
 }
 
+/// Which lowering a `ui!`-family invocation expands to.
+///
+/// Both lowerings share the whole front half — the same parser, the same
+/// [`UiNode`] tree, and the same [`split`](crate::ui_split) pass that
+/// separates each site into a static descriptor and an ordered slot
+/// list. They differ ONLY in how the tree is constructed from that
+/// split.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lowering {
+    /// Builder calls emitted inline (what `ui!` has always done, and
+    /// still does). Dynamic values are read out of the slot list as
+    /// hoisted locals.
+    Direct,
+    /// A `static` descriptor plus a runtime slot array, handed to
+    /// `runtime_vocabulary`'s template builder.
+    Template,
+}
+
+/// Parse the `ui_lowered!(direct { … })` / `ui_lowered!(template { … })`
+/// envelope, returning the selected lowering and the `ui!` body tokens.
+///
+/// The mode and the body share ONE delimiter because a Rust macro call
+/// carries exactly one: `ui_lowered!(direct) { … }` would parse as an
+/// invocation followed by an unrelated block.
+pub(crate) fn split_lowered_invocation(
+    input: TokenStream2,
+) -> syn::Result<(Lowering, TokenStream2)> {
+    struct Envelope {
+        lowering: Lowering,
+        body: TokenStream2,
+    }
+    impl Parse for Envelope {
+        fn parse(input: ParseStream) -> syn::Result<Self> {
+            let ident: Ident = input
+                .parse()
+                .map_err(|e| syn::Error::new(e.span(), "expected `direct` or `template`"))?;
+            let lowering = match ident.to_string().as_str() {
+                "direct" => Lowering::Direct,
+                "template" => Lowering::Template,
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown lowering `{other}` — expected `direct` or `template`"),
+                    ))
+                }
+            };
+            let body;
+            braced!(body in input);
+            if !input.is_empty() {
+                return Err(input.error("expected nothing after the `ui_lowered!` body"));
+            }
+            Ok(Envelope { lowering, body: body.parse()? })
+        }
+    }
+    let env: Envelope = syn::parse2(input)?;
+    Ok((env.lowering, env.body))
+}
+
 pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
+    emit_with(ui, input, Lowering::Direct)
+}
+
+/// Emit a parsed `ui!` body under an explicit lowering.
+pub(crate) fn emit_with(ui: Ui, input: &TokenStream2, lowering: Lowering) -> TokenStream2 {
+    if lowering == Lowering::Template {
+        return crate::ui_template::emit(&ui.elements, input);
+    }
+    emit_direct(ui, input)
+}
+
+fn emit_direct(ui: Ui, input: &TokenStream2) -> TokenStream2 {
     let body = match ui.elements.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole element: it is coerced to one `Element` below, so emit

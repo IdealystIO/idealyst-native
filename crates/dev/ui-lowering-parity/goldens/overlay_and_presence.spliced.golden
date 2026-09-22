@@ -1,0 +1,89 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 view
+insert_at n0 <- n1 @ 0
+create n2 presence_placeholder
+insert n0 <- n2
+
+-- open=true --
+remove_child n0 -x n1
+create n3 view
+create n4 portal
+create n5 pressable
+insert n4 <- n5
+create n6 view
+create n7 text "modal"
+insert n6 <- n7
+insert n4 <- n6
+insert n3 <- n4
+create n8 portal
+create n9 view
+create n10 text "tip"
+insert n9 <- n10
+insert n8 <- n9
+insert n3 <- n8
+insert_at n0 <- n3 @ 0
+
+-- toast=true --
+create n11 text "toast"
+insert_at n2 <- n11 @ 0
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 view
+apply_default_text_font none
+register_stylesheet rules=1
+apply_style n1 width=none
+insert_at n0 <- n1 @ 0
+create n2 presence_placeholder
+insert n0 <- n2
+
+-- open=true --
+remove_child n0 -x n1
+on_node_unstyled n1
+release_subtree n1
+create n3 view
+create n4 portal
+create n5 pressable
+insert n4 <- n5
+create n6 view
+create n7 text "modal"
+insert n6 <- n7
+insert n4 <- n6
+insert n3 <- n4
+create n8 portal
+create n9 view
+create n10 text "tip"
+insert n9 <- n10
+insert n8 <- n9
+insert n3 <- n8
+insert_at n0 <- n3 @ 0
+
+-- toast=true --
+create n11 text "toast"
+insert_at n2 <- n11 @ 0
+apply_presence n11 op=Some(0.0) ty=None snap
+apply_presence n11 rest 100ms
+
+-- unmount --
+release_portal n4
+release_portal n8
+
+=== scene ===
+n0 view
+  n3 view
+    n4 portal
+      n5 pressable
+      n6 view
+        n7 text "modal"
+    n8 portal
+      n9 view
+        n10 text "tip"
+  n2 presence_placeholder
+    n11 text "toast"
+n1 view

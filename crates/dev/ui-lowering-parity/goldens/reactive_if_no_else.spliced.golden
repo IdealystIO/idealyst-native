@@ -1,0 +1,42 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text "always"
+insert n0 <- n1
+create n2 view
+insert_at n0 <- n2 @ 1
+
+-- flag=true --
+remove_child n0 -x n2
+create n3 text "sometimes"
+insert_at n0 <- n3 @ 1
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text "always"
+insert n0 <- n1
+create n2 view
+apply_default_text_font none
+register_stylesheet rules=1
+apply_style n2 width=none
+insert_at n0 <- n2 @ 1
+
+-- flag=true --
+remove_child n0 -x n2
+on_node_unstyled n2
+release_subtree n2
+create n3 text "sometimes"
+insert_at n0 <- n3 @ 1
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text "always"
+  n3 text "sometimes"
+n2 view

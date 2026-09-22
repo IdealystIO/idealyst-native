@@ -1,0 +1,16 @@
+=== structural ===
+-- mount --
+create n0 text "via-prop"
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 text "via-prop"
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 text "via-prop"

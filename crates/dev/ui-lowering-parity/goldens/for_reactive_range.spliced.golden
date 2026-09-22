@@ -1,0 +1,54 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text ""
+create n2 text ""
+insert_at n0 <- n1 @ 0
+insert_at n0 <- n2 @ 1
+
+-- n=4 --
+create n3 text ""
+create n4 text ""
+insert_at n0 <- n3 @ 2
+insert_at n0 <- n4 @ 3
+
+-- n=1 --
+remove_child n0 -x n2
+remove_child n0 -x n3
+remove_child n0 -x n4
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text ""
+update_text n1 "r0"
+create n2 text ""
+update_text n2 "r1"
+insert_at n0 <- n1 @ 0
+insert_at n0 <- n2 @ 1
+
+-- n=4 --
+create n3 text ""
+update_text n3 "r2"
+create n4 text ""
+update_text n4 "r3"
+insert_at n0 <- n3 @ 2
+insert_at n0 <- n4 @ 3
+
+-- n=1 --
+remove_child n0 -x n2
+remove_child n0 -x n3
+remove_child n0 -x n4
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text ""
+n2 text ""
+n3 text ""
+n4 text ""
