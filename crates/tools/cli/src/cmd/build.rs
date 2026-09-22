@@ -597,6 +597,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // A deploy bundle never advertises a dev machine's relay.
             robot_relay_url: None,
             head_script: None,
+            // Not wire mode: only the full-stack dev loop stages a sidecar URL.
+            runtime_server_url: None,
             gzip: args.gzip,
             // `.br` siblings ride release builds only — the deploy
             // artifact. Debug bundles skip the q11 encode (seconds of

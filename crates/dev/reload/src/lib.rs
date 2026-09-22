@@ -272,6 +272,10 @@ pub struct BuildOptions {
     /// the full-stack shape's livereload + overlay `EventSource`. See
     /// [`build_web::BuildOptions::head_script`].
     pub head_script: Option<String>,
+    /// [`build_web::BuildOptions::runtime_server_url`]. `Some` only in
+    /// wire mode on a full-stack project, where the bundle is built
+    /// once and the browser is a thin client.
+    pub runtime_server_url: Option<String>,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -340,6 +344,7 @@ pub fn start(
             bundle_out_dir: None,
             robot_relay_url: None,
             head_script: None,
+            runtime_server_url: None,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -916,6 +921,7 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // the project's `index.html` fresh each time.
         robot_relay_url: opts.robot_relay_url.clone(),
         head_script: opts.head_script.clone(),
+        runtime_server_url: opts.runtime_server_url.clone(),
         dev_opt: opts.dev_opt,
         gzip: false,
         // Dev rebuilds skip the q11 encode; `.br` siblings are a
@@ -1036,6 +1042,7 @@ mod tests {
             bundle_out_dir: None,
             robot_relay_url: None,
             head_script: None,
+            runtime_server_url: None,
             premint,
             premint_only: only,
             premint_report: report,

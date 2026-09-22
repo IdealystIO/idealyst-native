@@ -556,12 +556,15 @@ pub fn run(args: Args) -> Result<()> {
     // Full-stack projects declare a server (`server_bin` / `server_manifest`).
     let backend_declared =
         manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some();
-    // When web is a target of a full-stack project, the project's own
-    // server serves the bundle + API and `launch_web` takes the full-stack
-    // path — so the runtime-server hot-reload host is never used. Skip
-    // building/spawning it (it's a few hundred crates) so `idealyst dev
-    // --web` on a full-stack app is as lean as `idealyst run server`.
-    let full_stack_web = backend_declared && active_targets.contains(&Target::Web);
+    // NOTE: declaring a server used to SUPPRESS the runtime-server host
+    // ("it's a few hundred crates"). It no longer does. Wire mode is how
+    // a save becomes a hot patch instead of a full wasm rebuild, and an
+    // app large enough for that to matter is exactly the shape that
+    // declares a server — suppressing it there aimed the feature at the
+    // projects that need it least. The two coexist now: the project's
+    // own server keeps serving the bundle and the API, and the sidecar
+    // holds the reactive tree beside it (`launch_web_with_backend`).
+    let _ = backend_declared;
 
     // Decide if the interactive panel should actually boot. The flag
     // is the user's request; we still gate on a real TTY (so piped
@@ -712,7 +715,7 @@ pub fn run(args: Args) -> Result<()> {
     // this fn to keep the CLI alive while the host serves — see the
     // wait loop after the worker join.
     let mut host_pid: Option<u32> = None;
-    let runtime_server_port: Option<u16> = if !args.local && !full_stack_web {
+    let runtime_server_port: Option<u16> = if !args.local {
         let host_binary = build_runtime_server_host(&dir)?;
         let port_file = runtime_server_port_file(&dir);
         // Clear any stale value from a previous session before
@@ -721,6 +724,19 @@ pub fn run(args: Args) -> Result<()> {
         let _ = std::fs::remove_file(&port_file);
         let mut cmd = Command::new(&host_binary);
         cmd.env("IDEALYST_RUNTIME_SERVER_PORT_FILE", &port_file);
+        // In wire mode the app's `#[server]` calls originate in the
+        // SIDECAR, not in the browser — so the sidecar is the process
+        // that has to know where the API lives. The env the platform
+        // launchers already get is exactly right here; the sidecar is a
+        // child of this host and inherits it.
+        //
+        // Without this, an app whose `configure_server()` resolves the
+        // base URL from `server::dev_base_url()` (the documented native
+        // pattern) falls back to a hardcoded origin — or, with no
+        // fallback, every RPC fails with "configure was never called".
+        for (k, v) in dev_env_vars(&dir, &args, "", None, None) {
+            cmd.env(k, v);
+        }
         // When the terminal target is in the active set, redirect the
         // dev-host's stdio to a log file — its `[runtime-server-host]
         // hot-patch applied …` chatter (every save!) would otherwise
@@ -1477,7 +1493,14 @@ fn launch_web(
     // on save, and run the server (see `launch_web_with_backend`).
     let manifest = parse_manifest(dir)?;
     if manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some() {
-        return launch_web_with_backend(dir, args, &source, &manifest, children);
+        return launch_web_with_backend(
+            dir,
+            args,
+            &source,
+            &manifest,
+            children,
+            runtime_server_port,
+        );
     }
 
     // Past the full-stack branch there is no project server, so the
@@ -1556,6 +1579,8 @@ fn launch_web(
                     bundle_out_dir: None,
                     robot_relay_url: None,
                     head_script: None,
+                    // Not wire mode: only the full-stack dev loop stages a sidecar URL.
+                    runtime_server_url: None,
                     // Unreachable with premint flags set: run() bails on
                     // premint without --local, and this is the !local arm.
                     premint: false,
@@ -1646,6 +1671,8 @@ fn launch_web(
                     // `index.html` to write it into.
                     robot_relay_url: None,
                     head_script: None,
+                    // Not wire mode: only the full-stack dev loop stages a sidecar URL.
+                    runtime_server_url: None,
                     premint: args.premint,
                     premint_only: args.premint_only,
                     premint_report: args.premint_report,
@@ -1935,6 +1962,8 @@ fn launch_ssr(
                 bundle_out_dir: Some(bundle_dir.clone()),
                 robot_relay_url: None,
                 head_script: None,
+                // Not wire mode: only the full-stack dev loop stages a sidecar URL.
+                runtime_server_url: None,
                 gzip: false,
                 brotli: false,
                 strip_panics: false,
@@ -2190,12 +2219,27 @@ fn full_stack_bundle_options(
     dist_web: PathBuf,
     relay_url: Option<String>,
     sse_port: Option<u16>,
+    runtime_server_port: Option<u16>,
 ) -> Result<dev_reload::BuildOptions> {
+    // Wire mode: the browser runs none of the app's code, it replays
+    // what the sidecar sends. The bundle is a THIN CLIENT, so it is
+    // built with the one feature that switches `idealyst::boot::web`
+    // from a local mount to `connect_web`, and with none of the
+    // local-render dev features — the overlay tags, the robot dial-out
+    // and the catalog inventory all belong to code that runs in the
+    // sidecar now, and compiling them here would only inflate a bundle
+    // nobody iterates on.
+    let wire = runtime_server_port.is_some();
+    let features = if wire {
+        vec!["runtime-server".to_string()]
+    } else {
+        web_dev_features(args.no_robot)
+    };
     Ok(dev_reload::BuildOptions {
         source: source.clone(),
         // Robot-on-web, same as the static path — see
         // `web_dev_features`.
-        features: web_dev_features(args.no_robot),
+        features,
         // Stage the full bundle into the dev staging dir for BOTH
         // shapes — it's the dir the server is told to serve (`WEB_DIST`).
         // `None` here (the old in-crate value) would sync `pkg/` into
@@ -2211,7 +2255,17 @@ fn full_stack_bundle_options(
         // The push channel this shape would otherwise not have. Same
         // reasoning as the relay URL above, and restaged on every
         // rebuild for the same reason.
-        head_script: full_stack_reload_script(sse_port),
+        //
+        // Not in wire mode: the sidecar's WebSocket IS the push channel,
+        // and both live tiers (overlay patch, hot patch) reach the page
+        // through it as ordinary wire commands. A second channel telling
+        // the page to reload would only undo them.
+        head_script: if wire { None } else { full_stack_reload_script(sse_port) },
+        // Wire mode's sidecar URL, written into the staged `index.html`
+        // because this project's server hands that file out verbatim —
+        // there is no `dev-http` here to splice it in at serve time.
+        runtime_server_url: runtime_server_port
+            .map(|p| format!("ws://127.0.0.1:{p}")),
         // Full-stack premint dev: the staged-bundle path injects
         // the stylesheet <link> into the staged index.html itself,
         // so threading the flags is the whole feature here.
@@ -2226,15 +2280,34 @@ fn full_stack_bundle_options(
     })
 }
 
+/// The full-stack web loop: the project's own server serves the bundle
+/// and the API same-origin, and the CLI keeps both halves current.
+///
+/// `runtime_server_port` is `Some` in WIRE mode, and it changes the
+/// shape of the loop rather than adding to it:
+///
+/// - the bundle is built ONCE, as a thin client (`runtime-server`), and
+///   there is no wasm rebuild watcher — the sidecar holds the app, so a
+///   source save is its business, not this loop's;
+/// - the sidecar's URL is written into the staged `index.html`, because
+///   the project's server hands that file out verbatim;
+/// - the reload/overlay SSE stream is not started: the WebSocket is the
+///   push channel, and a second one telling the page to reload would
+///   only undo the patch that just landed.
+///
+/// The SERVER watcher runs either way. A `#[server]` fn's signature is
+/// a contract between two binaries, and no jump table spans them.
 fn launch_web_with_backend(
     dir: &Path,
     args: &Args,
     source: &build_ios::FrameworkSource,
     manifest: &build_ios::Manifest,
     children: Arc<Mutex<Vec<Child>>>,
+    runtime_server_port: Option<u16>,
 ) -> Result<()> {
     use std::time::Duration;
 
+    let wire = runtime_server_port.is_some();
     let standalone = manifest.app.server_manifest.is_some();
     // `--port` overrides the manifest here: this one server IS the web
     // server for the session (bundle + API, same-origin), so the flag
@@ -2261,7 +2334,12 @@ fn launch_web_with_backend(
     // port that is already listening; a page that loaded first would
     // reconnect on its own, but starting in the right order means the
     // first save after a cold start lands too.
-    let sse_port = match std::net::TcpListener::bind("127.0.0.1:0") {
+    let sse_port = if wire {
+        // See this fn's doc comment: the sidecar's socket is the push
+        // channel in wire mode.
+        None
+    } else {
+        match std::net::TcpListener::bind("127.0.0.1:0") {
         Ok(listener) => match listener.local_addr() {
             Ok(addr) => {
                 drop(listener);
@@ -2285,26 +2363,44 @@ fn launch_web_with_backend(
             eprintln!("[dev web] no reload/overlay stream: {e}");
             None
         }
+        }
     };
 
+    let bundle_opts = full_stack_bundle_options(
+        args,
+        source,
+        dist_web.clone(),
+        relay_url.clone(),
+        sse_port,
+        runtime_server_port,
+    )?;
     if !args.no_build {
-        crate::dlog!(
-            "dev web",
-            "full-stack: starting watcher for {} (standalone = {})",
-            dir.display(),
-            standalone,
-        );
-        let handle = dev_reload::start_with(
-            dir,
-            signal.clone(),
-            full_stack_bundle_options(args, source, dist_web.clone(), relay_url.clone(), sse_port)?,
-        )
-        .context("web bundle initial build + watcher start failed")?;
-        // Hand the watcher thread to the runtime — it lives as long
-        // as the dev session. Dropping the JoinHandle here would NOT
-        // stop the thread (it's a detached child), but `mem::forget`
-        // makes the intent explicit and silences the unused warning.
-        std::mem::forget(handle);
+        if wire {
+            // Built once, not watched. The thin client does not change
+            // when the app's source does — that is the entire point of
+            // wire mode, and a watcher here would rebuild a 20-second
+            // wasm bundle to publish a page that is already correct.
+            crate::dlog!(
+                "dev web",
+                "full-stack + wire: building the thin client once (the sidecar owns saves)",
+            );
+            dev_reload::build_once(dir, &bundle_opts)
+                .context("web bundle initial build failed (wire mode)")?;
+        } else {
+            crate::dlog!(
+                "dev web",
+                "full-stack: starting watcher for {} (standalone = {})",
+                dir.display(),
+                standalone,
+            );
+            let handle = dev_reload::start_with(dir, signal.clone(), bundle_opts)
+                .context("web bundle initial build + watcher start failed")?;
+            // Hand the watcher thread to the runtime — it lives as long
+            // as the dev session. Dropping the JoinHandle here would NOT
+            // stop the thread (it's a detached child), but `mem::forget`
+            // makes the intent explicit and silences the unused warning.
+            std::mem::forget(handle);
+        }
     }
 
     // Phase 1b: the server gets its own watcher — BOTH shapes, not just
@@ -3415,6 +3511,95 @@ mod tests {
         }
     }
 
+    // ---------------------------------------------------------------
+    // Full-stack + WIRE mode. A project declaring a server used to be
+    // excluded from the runtime-server host entirely, which aimed hot
+    // patching at the projects least likely to need it. These pin the
+    // shape of the loop now that the two coexist.
+    // ---------------------------------------------------------------
+
+    /// In wire mode the browser runs none of the app's code, so the
+    /// bundle is a THIN CLIENT: the one feature that switches
+    /// `idealyst::boot::web` to `connect_web`, and none of the
+    /// local-render dev features. Compiling the overlay tags, the robot
+    /// dial-out or the catalog inventory into it would only inflate a
+    /// bundle nobody iterates on — every one of those belongs to code
+    /// that runs in the sidecar now.
+    #[test]
+    fn a_full_stack_wire_bundle_is_a_thin_client() {
+        let args = parse_dev(&["idealyst", "dev", "--web"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist"),
+            None,
+            None,
+            Some(44321),
+        )
+        .unwrap();
+        assert_eq!(opts.features, vec!["runtime-server".to_string()]);
+    }
+
+    /// The project's own server hands out `index.html` verbatim, so
+    /// there is no `dev-http` to splice the sidecar URL in at serve
+    /// time — it has to be written into the STAGED copy. Without it the
+    /// page mounts locally with a console error and never connects,
+    /// which looks like a working app that simply never hot-reloads.
+    #[test]
+    fn a_full_stack_wire_bundle_stages_the_sidecar_url() {
+        let args = parse_dev(&["idealyst", "dev", "--web"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist"),
+            None,
+            None,
+            Some(44321),
+        )
+        .unwrap();
+        assert_eq!(
+            opts.runtime_server_url.as_deref(),
+            Some("ws://127.0.0.1:44321"),
+        );
+    }
+
+    /// The WebSocket is the push channel in wire mode, and both live
+    /// tiers reach the page through it. A second channel telling the
+    /// page to reload would undo the patch that just landed.
+    #[test]
+    fn a_full_stack_wire_bundle_has_no_reload_script() {
+        let args = parse_dev(&["idealyst", "dev", "--web"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist"),
+            None,
+            Some(9999),
+            Some(44321),
+        )
+        .unwrap();
+        assert!(opts.head_script.is_none(), "{:?}", opts.head_script);
+    }
+
+    /// `--local` is the escape hatch and must be untouched: the full
+    /// dev feature set, the reload script, no sidecar URL.
+    #[test]
+    fn a_full_stack_local_bundle_is_unchanged_by_wire_mode() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist"),
+            None,
+            Some(9999),
+            None,
+        )
+        .unwrap();
+        assert_eq!(opts.features, web_dev_features(false));
+        assert!(opts.runtime_server_url.is_none());
+        assert!(opts.head_script.is_some(), "the SSE reload script still rides");
+    }
+
     /// A full-stack project (one declaring `server_bin` /
     /// `server_manifest`) built its web bundle with NO cargo features,
     /// so `idealyst::boot::web`'s relay dial-out — gated behind
@@ -3434,6 +3619,7 @@ mod tests {
             &test_source(),
             PathBuf::from("/tmp/dist/web"),
             Some("ws://127.0.0.1:44885".to_string()),
+            None,
             None,
         )
         .unwrap();
@@ -3465,6 +3651,7 @@ mod tests {
             PathBuf::from("/tmp/dist/web"),
             Some("ws://127.0.0.1:44885".to_string()),
             None,
+            None,
         )
         .unwrap();
 
@@ -3484,7 +3671,8 @@ mod tests {
                 PathBuf::from("/tmp/dist/web"),
                 None,
                 None,
-            )
+            None,
+        )
                 .unwrap();
 
         assert_eq!(
@@ -3577,6 +3765,7 @@ mod tests {
             PathBuf::from("/tmp/dist/web"),
             None,
             Some(44321),
+            None,
         )
         .unwrap();
         let script = opts.head_script.expect("a port yields a script");
@@ -3985,7 +4174,8 @@ mod tests {
         let project = Path::new("/tmp/some-project");
         let staged = dev_web_bundle_dir(project);
         let opts =
-            full_stack_bundle_options(&args, &test_source(), staged.clone(), None, None).unwrap();
+            full_stack_bundle_options(&args, &test_source(), staged.clone(), None, None, None)
+                .unwrap();
         assert_eq!(opts.bundle_out_dir.as_deref(), Some(staged.as_path()));
     }
 }

@@ -131,6 +131,8 @@ pub fn run(args: Args) -> Result<()> {
             bundle_out_dir: Some(bundle_out.clone()),
             robot_relay_url: None,
             head_script: None,
+            // Not wire mode: only the full-stack dev loop stages a sidecar URL.
+            runtime_server_url: None,
             gzip: false,
                 brotli: false,
             strip_panics: false,

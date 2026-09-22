@@ -143,6 +143,24 @@ pub struct BuildOptions {
     /// Ignored when `bundle_out_dir` is `None`, same as
     /// `robot_relay_url`.
     pub head_script: Option<String>,
+    /// WebSocket URL of the dev session's runtime-server sidecar, for
+    /// wire mode on a FULL-STACK project.
+    ///
+    /// In wire mode the browser runs none of the app's code: it opens
+    /// this socket and replays the commands the native sidecar sends.
+    /// `idealyst::boot::web` reads the global at boot and falls back to
+    /// a local mount (with a console error) when it is missing, so a
+    /// dropped injection looks like "hot reload silently does nothing"
+    /// rather than a blank page.
+    ///
+    /// The non-full-stack path gets the same global from `dev-http` at
+    /// SERVE time (`inject_aas_url`). A full-stack project's own server
+    /// hands out `index.html` as a plain file, so there is no serve-time
+    /// hook and the value has to be written INTO the staged copy —
+    /// exactly the situation `robot_relay_url` above exists for.
+    ///
+    /// Ignored when `bundle_out_dir` is `None`.
+    pub runtime_server_url: Option<String>,
     /// Pre-gzip every text-ish file in the staged bundle, writing
     /// gzipped bytes under the original filename. Only meaningful
     /// when `bundle_out_dir` is `Some`; ignored otherwise. The static
@@ -792,6 +810,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // inspector / evaluators. Same `</head>` splice and the same
         // pre-gzip ordering as the injections above.
         stage_robot_relay_url(&staged.join("index.html"), opts.robot_relay_url.as_deref())?;
+        // Wire mode's sidecar URL, for a full-stack project. Same
+        // `</head>` splice and the same pre-gzip ordering as the
+        // injections above; see `BuildOptions::runtime_server_url`.
+        stage_runtime_server_url(
+            &staged.join("index.html"),
+            opts.runtime_server_url.as_deref(),
+        )?;
         stage_head_script(&staged.join("index.html"), opts.head_script.as_deref())?;
         // Stage any EXTERNAL dirs the app links in (e.g. a component
         // library's `fonts/`), copied under their final path component so
@@ -1142,6 +1167,39 @@ fn stage_head_script(index_path: &Path, script: Option<&str>) -> Result<()> {
 fn stage_robot_relay_url(index_path: &Path, url: Option<&str>) -> Result<()> {
     let Some(url) = url else { return Ok(()) };
     inject_robot_relay_url_into_staged_index(index_path, url)
+}
+
+/// Splice `window.IDEALYST_RUNTIME_SERVER_URL` into the staged
+/// `index.html` head. See [`BuildOptions::runtime_server_url`].
+fn stage_runtime_server_url(index_path: &Path, url: Option<&str>) -> Result<()> {
+    let Some(url) = url else { return Ok(()) };
+    let html = fs::read_to_string(index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let rewritten = inject_into_head(html, &runtime_server_url_script_tag(url));
+    fs::write(index_path, rewritten)
+        .with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
+/// The wire-mode `<script>` tag.
+///
+/// The GLOBAL NAME is a contract with two readers that never see each
+/// other: `idealyst::boot::web`, which reads it at boot, and
+/// `dev_http`'s serve-time `inject_aas_url`, which produces the same
+/// global for the non-full-stack path. A rename in one place and not
+/// the others is a page that quietly mounts locally instead of
+/// connecting — which looks like a working app that simply never
+/// hot-reloads. Pinned by `the_runtime_server_tag_names_the_global_the_boot_path_reads`.
+///
+/// Escaped rather than interpolated, for the same reason
+/// [`robot_relay_script_tag`] is: the URL is assembled from a port the
+/// OS chose, but the function is `pub` and an unescaped `"` would leave
+/// the rest of the page's `<head>` as executable script.
+pub fn runtime_server_url_script_tag(url: &str) -> String {
+    format!(
+        "\n    <script>window.IDEALYST_RUNTIME_SERVER_URL=\"{}\";</script>",
+        escape_js_string(url),
+    )
 }
 
 /// Splice `window.IDEALYST_ROBOT_RELAY_URL` into the staged
@@ -2832,6 +2890,7 @@ mod regression_tests {
             // `index.html`, never the cargo build.
             robot_relay_url: None,
             head_script: None,
+            runtime_server_url: None,
             bundle_out_dir: None,
             prune_dead_data_min: None,
         }
@@ -4166,6 +4225,73 @@ mod robot_relay_tests {
         // And nothing from the URL reaches the document as raw markup.
         let body = tag.strip_prefix("\n    <script>").unwrap().strip_suffix("</script>").unwrap();
         assert!(!body.contains('<'), "no raw `<` may survive into the script body: {body}");
+    }
+
+    // ---------------------------------------------------------------
+    // Wire mode's sidecar URL, for a full-stack project.
+    // ---------------------------------------------------------------
+
+    /// The GLOBAL NAME is a contract with two readers that never see
+    /// each other — `idealyst::boot::web`, which reads it at boot, and
+    /// `dev_http`'s serve-time injector, which produces the same global
+    /// for the non-full-stack path. A rename in one place and not the
+    /// others is a page that quietly mounts locally instead of
+    /// connecting, which presents as a working app that simply never
+    /// hot-reloads.
+    #[test]
+    fn the_runtime_server_tag_names_the_global_the_boot_path_reads() {
+        let tag = runtime_server_url_script_tag("ws://127.0.0.1:44321");
+        assert!(
+            tag.contains("window.IDEALYST_RUNTIME_SERVER_URL=\"ws://127.0.0.1:44321\""),
+            "{tag}"
+        );
+    }
+
+    /// Same untrusted-input posture as the relay URL beside it: the
+    /// function is `pub`, and an unescaped `"` would leave the rest of
+    /// the page's head as executable script.
+    #[test]
+    fn the_runtime_server_url_cannot_break_out_of_the_script_tag() {
+        let tag = runtime_server_url_script_tag(r#"ws://x"</script><script>alert(1)"#);
+        assert_eq!(tag.matches("<script>").count(), 1, "escaped: {tag}");
+        assert_eq!(tag.matches("</script>").count(), 1, "escaped: {tag}");
+        let body = tag
+            .strip_prefix("\n    <script>")
+            .unwrap()
+            .strip_suffix("</script>")
+            .unwrap();
+        assert!(!body.contains('<'), "no raw `<` may survive: {body}");
+    }
+
+    /// It must land INSIDE the head, before the module script that
+    /// boots wasm — the global is read synchronously at boot, so a tag
+    /// after the bundle's own `<script>` would be too late.
+    #[test]
+    fn the_runtime_server_url_is_staged_into_the_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index.html");
+        std::fs::write(
+            &index,
+            "<html><head><title>x</title></head><body><script type=\"module\"></script></body></html>",
+        )
+        .unwrap();
+        stage_runtime_server_url(&index, Some("ws://127.0.0.1:1234")).unwrap();
+        let html = std::fs::read_to_string(&index).unwrap();
+        let at = html.find("IDEALYST_RUNTIME_SERVER_URL").expect("injected");
+        assert!(at < html.find("</head>").unwrap(), "{html}");
+        assert!(at < html.find("type=\"module\"").unwrap(), "{html}");
+    }
+
+    /// `None` is a no-op, so every non-wire build path — including
+    /// every `idealyst build` — is byte-unchanged.
+    #[test]
+    fn no_runtime_server_url_leaves_the_index_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index.html");
+        let original = "<html><head></head><body></body></html>";
+        std::fs::write(&index, original).unwrap();
+        stage_runtime_server_url(&index, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), original);
     }
 
     /// A deploy bundle must never carry a dev machine's relay port —
