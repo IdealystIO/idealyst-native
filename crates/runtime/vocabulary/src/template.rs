@@ -337,6 +337,61 @@ impl SlotValue {
 }
 
 // ===========================================================================
+// Phase timing
+// ===========================================================================
+
+/// RAII phase timer for the template builder, reporting into
+/// `runtime_shared::debug`'s phase-counter aggregator.
+///
+/// The same shape as `backend-web`'s `PhaseTimer` and gated the same
+/// way — on `debug-stats`, whose real owner is `runtime-shared` (there
+/// is no `runtime-core/debug-stats`; `runtime-vocabulary/debug-stats`
+/// forwards to `runtime-shared/debug-stats`). A second copy rather than
+/// a shared one because `runtime-vocabulary` cannot depend on a
+/// backend; the cost is ~20 lines that vanish with the feature.
+///
+/// RAII rather than a wrapping macro for the reason the web one gives:
+/// the timed code returns from inside conditional arms, and a drop
+/// fires whichever arm ran.
+///
+/// The phase name `"realize_template"` is a stable aggregation key —
+/// it is what a `debug-stats` run compares against the direct
+/// lowering's inline construction.
+#[cfg(feature = "debug-stats")]
+pub(crate) struct PhaseTimer {
+    phase: &'static str,
+    start_us: u64,
+}
+
+#[cfg(feature = "debug-stats")]
+impl PhaseTimer {
+    pub(crate) fn start(phase: &'static str) -> Self {
+        Self { phase, start_us: runtime_shared::debug::now_micros() }
+    }
+}
+
+#[cfg(feature = "debug-stats")]
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        let dur = runtime_shared::debug::now_micros().saturating_sub(self.start_us);
+        runtime_shared::debug::record_apply_phase(self.phase, dur);
+    }
+}
+
+/// Zero-cost stub when `debug-stats` is off: the call site keeps
+/// compiling and the optimizer strips it.
+#[cfg(not(feature = "debug-stats"))]
+pub(crate) struct PhaseTimer;
+
+#[cfg(not(feature = "debug-stats"))]
+impl PhaseTimer {
+    #[inline(always)]
+    pub(crate) fn start(_phase: &'static str) -> Self {
+        Self
+    }
+}
+
+// ===========================================================================
 // Entry points
 // ===========================================================================
 
@@ -353,6 +408,7 @@ pub fn build(descriptor: &Descriptor, slots: &mut [SlotValue]) -> Element {
 /// children slot takes 0/1/N siblings, a single slot takes one
 /// `Element` and wraps a multi-node body in a `view`.
 pub fn build_list(descriptor: &Descriptor, slots: &mut [SlotValue]) -> Vec<Element> {
+    let _t = PhaseTimer::start("realize_template");
     let desc = CompiledIn.resolve(&descriptor.site, descriptor);
     debug_check(desc);
     let mut roots: Vec<Element> = Vec::with_capacity(desc.roots.len());
@@ -370,6 +426,7 @@ pub fn build_from(
     descriptor: &Descriptor,
     slots: &mut [SlotValue],
 ) -> Element {
+    let _t = PhaseTimer::start("realize_template");
     let desc = source.resolve(&descriptor.site, descriptor);
     debug_check(desc);
     let mut roots: Vec<Element> = Vec::with_capacity(desc.roots.len());

@@ -171,6 +171,22 @@ in the builder plus its entry in the macro's table. `runtime-macros`'
 node counts for a corpus mirroring the parity fixtures, so a widening —
 or a narrowing — lands in the diff next to the table that caused it.
 
+## Profiling
+
+The builder carries one `PhaseTimer` phase, `realize_template`, gated on
+`debug-stats` (whose owner is `runtime-shared` — there is no
+`runtime-core/debug-stats`; `runtime-vocabulary/debug-stats` forwards to
+it). Off by default: the timer's clock reads skew per-node numbers when
+thousands of nodes hit it.
+
+```
+cargo …  --features runtime-vocabulary/debug-stats
+```
+
+then drain with `runtime_core::debug::take_phase_counters()`. On wasm,
+`backend_web::install_time_source()` must have run or every duration
+reads 0 (counts stay real).
+
 ## Tests
 
 `cargo test -p runtime-template` covers serde round-tripping,
