@@ -484,7 +484,7 @@ anyhow = "1"
 
 use std::path::PathBuf;
 use build_runtime_server::hotpatch::{{HotPatchArtifact, HotPatchBuilder}};
-use dev_server::host::{{HostConfig, HotPatchAdapter, JumpTable, run}};
+use dev_server::host::{{HostConfig, HotPatchAdapter, JumpTable, PatchRequest, run}};
 
 const DEFAULT_ADDR: &str = "{default_addr}";
 
@@ -501,12 +501,9 @@ const DEFAULT_ADDR: &str = "{default_addr}";
 struct BuilderAdapter(HotPatchBuilder);
 
 impl HotPatchAdapter for BuilderAdapter {{
-    fn build(
-        &self,
-        user_crate: &str,
-        aslr_reference: u64,
-    ) -> anyhow::Result<JumpTable> {{
-        let HotPatchArtifact {{ table, .. }} = self.0.build(user_crate, aslr_reference)?;
+    fn build(&self, req: &PatchRequest<'_>) -> anyhow::Result<JumpTable> {{
+        let HotPatchArtifact {{ table, .. }} =
+            self.0.build(req.user_crate, req.aslr_reference, req.app_reference)?;
         Ok(table)
     }}
 

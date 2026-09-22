@@ -70,6 +70,21 @@ pub enum SidecarOut {
         /// Result of `dlsym(RTLD_DEFAULT, "main")` inside the
         /// freshly-spawned sidecar process.
         aslr_reference: u64,
+        /// Runtime address of the user crate's app ROOT fn — the
+        /// `fn() -> Element` this sidecar was handed.
+        ///
+        /// The root is ordinary user code, not a `#[component]`, so it
+        /// has no `__*_hot_impl` symbol for the jump-table generator to
+        /// pair by name. Reporting its ADDRESS lets the host find the
+        /// symbol anyway: subtract the ASLR slide to get the link-time
+        /// address, then look that up in the sidecar's symbol table.
+        /// Without it, an app whose whole tree lives in `app()` — the
+        /// scaffold's own shape — would get nothing from a patch.
+        ///
+        /// `0` when unknown (an older sidecar, or a boot path that
+        /// does not go through `run_newcore`).
+        #[serde(default)]
+        app_reference: u64,
     },
     /// A batch of newly-produced wire commands for `session`. The host
     /// looks up that session's mirror recorder, appends each command
@@ -444,6 +459,10 @@ pub struct Sidecar {
     /// hot-patch builder reads it to compute the ASLR slide for
     /// each patch. Zero until the first Hello arrives.
     aslr_reference: AtomicU64,
+    /// Runtime address of the user crate's app root fn, from the same
+    /// `Hello` frame. Zero until it arrives, or when the sidecar could
+    /// not report one. See [`SidecarOut::Hello::app_reference`].
+    app_reference: AtomicU64,
     /// Session ids for which this `Sidecar` instance has already been
     /// sent a `CreateSession`. Scopes "has the sidecar been told about
     /// this session" to the CURRENT sidecar generation: a respawn
@@ -484,6 +503,7 @@ impl Sidecar {
             outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
             aslr_reference: AtomicU64::new(0),
+            app_reference: AtomicU64::new(0),
             created_sessions: Mutex::new(HashSet::new()),
             reader_thread: Some(reader_thread),
             writer_thread: Some(writer_thread),
@@ -515,6 +535,7 @@ impl Sidecar {
             outbound_tx: Some(outbound_tx),
             inbound_rx: Mutex::new(inbound_rx),
             aslr_reference: AtomicU64::new(0),
+            app_reference: AtomicU64::new(0),
             created_sessions: Mutex::new(HashSet::new()),
             reader_thread: None,
             writer_thread: None,
@@ -533,6 +554,18 @@ impl Sidecar {
     /// inbound drain loop when a `Hello` frame arrives.
     pub fn set_aslr_reference(&self, addr: u64) {
         self.aslr_reference.store(addr, Ordering::Relaxed);
+    }
+
+    /// Cached app-root address reported by the sidecar's `Hello`.
+    /// Zero when unknown — the patch builder then simply omits the
+    /// root's jump-table entry.
+    pub fn app_reference(&self) -> u64 {
+        self.app_reference.load(Ordering::Relaxed)
+    }
+
+    /// Setter twin of [`Self::set_aslr_reference`].
+    pub fn set_app_reference(&self, addr: u64) {
+        self.app_reference.store(addr, Ordering::Relaxed);
     }
 
     /// Queue an outbound frame. Returns immediately; delivery is best
@@ -952,7 +985,12 @@ mod runtime {
         app: fn() -> crate::newcore::SceneElement,
         register: fn(&mut crate::newcore::SceneRegistry),
     ) -> std::io::Result<()> {
-        run_loop(move |session, rx, out, viewport| {
+        // `app` is a fn POINTER, so its runtime address is exactly the
+        // key a jump-table entry for the root would use — report it on
+        // `Hello` so the host can pair the symbol. See
+        // `SidecarOut::Hello::app_reference`.
+        let app_reference = app as *const () as u64;
+        run_loop(app_reference, move |session, rx, out, viewport| {
             run_session_thread_newcore(session, rx, out, app, register, viewport)
         })
     }
@@ -962,7 +1000,7 @@ mod runtime {
     /// a closure; everything else (crash handler, scheduler install,
     /// ASLR hello, session routing, patch fan-out, screenshot /
     /// device-frame correlation) is identical for both cores.
-    fn run_loop<F>(session_body: F) -> std::io::Result<()>
+    fn run_loop<F>(app_reference: u64, session_body: F) -> std::io::Result<()>
     where
         F: Fn(
                 String,
@@ -1026,6 +1064,7 @@ mod runtime {
                 &mut *o,
                 &SidecarOut::Hello {
                     aslr_reference: main_addr,
+                    app_reference,
                 },
             )?;
             let _ = o.flush();
@@ -1296,9 +1335,20 @@ mod runtime {
         // `with_retry` is subsecond's catch-unwind boundary; see this
         // fn's doc comment for why the mount walk is the frame that
         // owns it.
+        // The app ROOT goes through the jump table too, not just the
+        // `#[component]`s below it. `app` is a fn pointer, so
+        // `dev_hot::call` takes subsecond's fn-POINTER path and looks
+        // its runtime address up in the table — the entry the host
+        // builds from the address this sidecar reported on `Hello`.
+        // Without this hop, an app whose tree lives directly in
+        // `app()` would patch nothing.
         let mount = || {
             dev_hot::with_retry(|| {
-                crate::newcore::SceneSession::mount(&recorder, |r| register(r), app)
+                crate::newcore::SceneSession::mount(
+                    &recorder,
+                    |r| register(r),
+                    || dev_hot::call(app, ()),
+                )
             })
         };
         // `Rc<RefCell<Option<...>>>` (not a plain local) so the Robot

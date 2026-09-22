@@ -86,6 +86,30 @@ pub struct HostConfig {
     pub user_crate: String,
 }
 
+/// What the host knows about the running sidecar when it asks for a
+/// patch.
+///
+/// A struct rather than three arguments because it has grown twice
+/// already and the generated host wrapper is compiled from a template
+/// — every signature change there is a wrapper every pinned project
+/// has to regenerate.
+pub struct PatchRequest<'a> {
+    /// Which crate's captured rustc invocation to replay. Only that
+    /// crate's objects are re-emitted; framework crates stay cached.
+    pub user_crate: &'a str,
+    /// The sidecar's runtime `main` address, against which the builder
+    /// computes the ASLR slide.
+    pub aslr_reference: u64,
+    /// The sidecar's runtime address for the user crate's app ROOT fn,
+    /// or `0` if it did not report one.
+    ///
+    /// The root is plain user code — not a `#[component]` — so it has
+    /// no `__*_hot_impl` symbol to pair by name. Its address is how the
+    /// builder finds the symbol anyway. An app whose whole tree lives
+    /// in `app()` depends on this entry for a patch to change anything.
+    pub app_reference: u64,
+}
+
 /// Bridge between the host's "I have a file change, please give me a
 /// fresh `JumpTable`" expectation and whatever produces it on the
 /// build side.
@@ -94,16 +118,12 @@ pub struct HostConfig {
 /// it without depending on `build-runtime-server`. The wrapper main wires up
 /// the concrete impl, keeping the cross-crate edge thin.
 pub trait HotPatchAdapter: Send + Sync {
-    /// Produce a `JumpTable` for `user_crate` against the sidecar's
-    /// current ASLR slide. Returning `Err` triggers respawn
-    /// fallback — the host will SIGKILL + cargo-build + respawn
-    /// the sidecar from scratch. The host logs `Err`'s `{e:#}` so
-    /// implementers should include context.
-    fn build(
-        &self,
-        user_crate: &str,
-        aslr_reference: u64,
-    ) -> anyhow::Result<JumpTable>;
+    /// Produce a `JumpTable` for [`PatchRequest::user_crate`] against
+    /// the running sidecar. Returning `Err` triggers respawn fallback —
+    /// the host will SIGKILL + cargo-build + respawn the sidecar from
+    /// scratch. The host logs `Err`'s `{e:#}` so implementers should
+    /// include context.
+    fn build(&self, req: &PatchRequest<'_>) -> anyhow::Result<JumpTable>;
 
     /// Extra environment the respawn fallback's `cargo build` must run
     /// with.
@@ -482,7 +502,7 @@ fn try_hotpatch(
     user_crate: &str,
 ) -> anyhow::Result<()> {
     let builder = builder.ok_or_else(|| anyhow::anyhow!("hot-patch adapter unavailable"))?;
-    let aslr = {
+    let (aslr, app_reference) = {
         let g = sidecar_slot
             .lock()
             .map_err(|_| anyhow::anyhow!("sidecar slot lock poisoned"))?;
@@ -495,9 +515,13 @@ fn try_hotpatch(
                 "sidecar has not reported aslr_reference yet"
             ));
         }
-        v
+        (v, s.app_reference())
     };
-    let table = builder.build(user_crate, aslr)?;
+    let table = builder.build(&PatchRequest {
+        user_crate,
+        aslr_reference: aslr,
+        app_reference,
+    })?;
     let table_json = serde_json::to_string(&table)?;
     let g = sidecar_slot
         .lock()
@@ -677,7 +701,7 @@ mod tests {
     }
 
     impl HotPatchAdapter for FakeAdapter {
-        fn build(&self, _user_crate: &str, _aslr: u64) -> anyhow::Result<JumpTable> {
+        fn build(&self, _req: &PatchRequest<'_>) -> anyhow::Result<JumpTable> {
             anyhow::bail!("not used in these tests")
         }
         fn rebuild_env(&self) -> Vec<(String, String)> {

@@ -470,8 +470,9 @@ fn drain_sidecar_inbound(
     let Some(sidecar) = guard.as_ref() else { return };
     for msg in sidecar.drain_inbound() {
         match msg {
-            crate::SidecarOut::Hello { aslr_reference } => {
+            crate::SidecarOut::Hello { aslr_reference, app_reference } => {
                 sidecar.set_aslr_reference(aslr_reference);
+                sidecar.set_app_reference(app_reference);
             }
             crate::SidecarOut::Commands { session, cmds } => {
                 let Some(state) = sessions.sessions.get(&session) else {

@@ -24,10 +24,20 @@ use subsecond_types::{AddressMap, JumpTable};
 
 use super::cache::HostBinCache;
 
+/// Build the table.
+///
+/// `runtime_main` is the sidecar's live `main` address and
+/// `app_runtime` its live app-root address (0 when unreported). The
+/// two together are how the ROOT gets an entry: the root is plain user
+/// code with no `__*_hot_impl` name to match on, so we convert its
+/// runtime address to a link-time one through the ASLR slide, look up
+/// which symbol lives there, and pair THAT name. See
+/// [`root_symbol_at`].
 pub fn build(
     patch_dylib: &Path,
     host_cache: &HostBinCache,
-    _runtime_main: u64,
+    runtime_main: u64,
+    app_runtime: u64,
 ) -> Result<JumpTable> {
     let data = std::fs::read(patch_dylib)
         .with_context(|| format!("read {}", patch_dylib.display()))?;
@@ -74,6 +84,29 @@ pub fn build(
         }
     }
 
+    // The app root, by ADDRESS rather than by name.
+    //
+    // `fn app() -> Element` is ordinary user code — the `#[component]`
+    // split never touches it, so there is no `__*_hot_impl` symbol to
+    // match. But the sidecar calls it through a fn POINTER, which is
+    // exactly what subsecond's fast dispatch keys on, so one entry is
+    // all it takes. Without this, an app whose whole tree lives in
+    // `app()` — the scaffold's own shape — applies a patch that rebinds
+    // nothing and re-renders the old code.
+    if let Some((name, link_addr)) =
+        root_symbol_at(host_cache, runtime_main, app_runtime)
+    {
+        match patch_syms.get(&name) {
+            Some(&patch_addr) => {
+                map.insert(link_addr, patch_addr);
+            }
+            None => eprintln!(
+                "[hotpatch] app root `{name}` is not in the patch dylib — edits to the \
+                 root fn itself will not apply (components below it still will)"
+            ),
+        }
+    }
+
     Ok(JumpTable {
         lib: patch_dylib.to_path_buf(),
         map,
@@ -92,3 +125,83 @@ fn is_hot_impl_symbol(name: &str) -> bool {
     name.contains("_hot_impl")
 }
 
+
+/// Which symbol the sidecar's live app-root address corresponds to,
+/// plus its link-time address.
+///
+/// `app_runtime` and `runtime_main` are addresses in the RUNNING
+/// process; `host_cache` holds link-time addresses. The difference
+/// between the live `main` and the cached one is the ASLR slide, and
+/// subtracting it converts the root's address into something the cache
+/// can be searched by.
+///
+/// Returns `None` when the sidecar reported no root (`0`), when the
+/// slide cannot be computed, or when no symbol sits at that address —
+/// each of which only costs the root's entry, never correctness.
+fn root_symbol_at(
+    host_cache: &HostBinCache,
+    runtime_main: u64,
+    app_runtime: u64,
+) -> Option<(String, u64)> {
+    if app_runtime == 0 || runtime_main == 0 || host_cache.main_addr == 0 {
+        return None;
+    }
+    let slide = runtime_main.checked_sub(host_cache.main_addr)?;
+    let link_addr = app_runtime.checked_sub(slide)?;
+    host_cache
+        .symbols
+        .iter()
+        .find(|(_, sym)| sym.address == link_addr)
+        .map(|(name, _)| (name.clone(), link_addr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object::SymbolKind;
+
+    fn cache_with(main: u64, entries: &[(&str, u64)]) -> HostBinCache {
+        let mut c = HostBinCache::default();
+        c.main_addr = main;
+        for (n, a) in entries {
+            c.symbols.insert(
+                (*n).to_string(),
+                super::super::cache::CachedSymbol {
+                    address: *a,
+                    kind: SymbolKind::Text,
+                    size: 0,
+                    is_weak: false,
+                },
+            );
+        }
+        c
+    }
+
+    /// The root is found by undoing the ASLR slide, not by guessing at
+    /// the mangled name — which varies with crate disambiguator,
+    /// mangling version and where in the crate the fn is defined.
+    #[test]
+    fn root_symbol_is_located_through_the_aslr_slide() {
+        let cache = cache_with(0x1000, &[("_main", 0x1000), ("_app", 0x2000)]);
+        // Loaded at +0x40000.
+        let found = root_symbol_at(&cache, 0x41000, 0x42000).expect("root found");
+        assert_eq!(found, ("_app".to_string(), 0x2000));
+    }
+
+    /// A sidecar that reports no root (older build, or a boot path
+    /// that does not know one) costs the root's entry and nothing
+    /// else — never a wrong entry.
+    #[test]
+    fn an_unreported_root_is_simply_absent() {
+        let cache = cache_with(0x1000, &[("_main", 0x1000)]);
+        assert!(root_symbol_at(&cache, 0x41000, 0).is_none());
+    }
+
+    /// No symbol at the computed address means the cache and the
+    /// running binary disagree — skip rather than pair something else.
+    #[test]
+    fn an_address_with_no_symbol_yields_nothing() {
+        let cache = cache_with(0x1000, &[("_main", 0x1000)]);
+        assert!(root_symbol_at(&cache, 0x41000, 0x49999).is_none());
+    }
+}

@@ -166,7 +166,12 @@ impl HotPatchBuilder {
     /// `runtime_main_addr` is the running sidecar's `dlsym
     /// ("main")` value (cached by the host from the sidecar's
     /// `Hello` frame).
-    pub fn build(&self, user_crate: &str, runtime_main_addr: u64) -> Result<HotPatchArtifact> {
+    pub fn build(
+        &self,
+        user_crate: &str,
+        runtime_main_addr: u64,
+        app_runtime_addr: u64,
+    ) -> Result<HotPatchArtifact> {
         let t_total = std::time::Instant::now();
 
         let t_replay = std::time::Instant::now();
@@ -207,8 +212,9 @@ impl HotPatchBuilder {
         let link_ms = t_link.elapsed().as_millis();
 
         let t_jt = std::time::Instant::now();
-        let table = jumptable::build(&out_dylib, &host_cache, runtime_main_addr)
-            .context("building jump table")?;
+        let table =
+            jumptable::build(&out_dylib, &host_cache, runtime_main_addr, app_runtime_addr)
+                .context("building jump table")?;
         let jt_ms = t_jt.elapsed().as_millis();
 
         eprintln!(
