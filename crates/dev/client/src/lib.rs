@@ -96,15 +96,17 @@ pub enum ReplayError {
     MissingHandler(HandlerId),
 }
 
-/// Report a skipped command once. Split out so the no-std-ish core
-/// stays free of the platform's logging: on wasm this reaches the
-/// browser console, elsewhere stderr.
+/// Report a skipped command once.
+///
+/// `log_warn!`, not `eprintln!`: this client's most important reader is
+/// a BROWSER console, and stderr is a no-op on wasm — which is why the
+/// `warn_unknown_style` warnings beside it have never actually been
+/// visible where they matter. The shared logging macro routes to
+/// `console.warn` on web and to stderr elsewhere.
 fn warn_replay_skip(err: &ReplayError) {
-    let msg = format!("[dev-client] skipping a command this client cannot replay: {err:?}");
-    #[cfg(target_arch = "wasm32")]
-    web_sys::console::warn_1(&msg.as_str().into());
-    #[cfg(not(target_arch = "wasm32"))]
-    eprintln!("{msg}");
+    runtime_shared::log_warn!(
+        "[dev-client] skipping a command this client cannot replay: {err:?}"
+    );
 }
 
 /// One command, as a diagnostic string: the variant name plus every
