@@ -279,6 +279,8 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
         true,
     );
 
+    let (build_mut, overlay_prologue) = crate::props_attr::overlay_build_prologue(fn_name);
+
     quote! {
         #apply_literal
 
@@ -301,7 +303,8 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
 
         #[automatically_derived]
         impl ::runtime_core::BuildElement for #props_ident {
-            fn build(self) -> ::runtime_core::Element {
+            fn build(#build_mut self) -> ::runtime_core::Element {
+                #overlay_prologue
                 // Coerce via `IntoElement` so a component returning a
                 // richer type than bare `Element` still satisfies the
                 // trait — same as the legacy impl.

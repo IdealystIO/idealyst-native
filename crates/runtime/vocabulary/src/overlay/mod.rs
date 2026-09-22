@@ -124,7 +124,59 @@ pub fn staged_count() -> usize {
 /// that stages a patch in one case must not leak it into the next.
 pub fn reset() {
     STAGED.with(|s| s.borrow_mut().clear());
+    AMBIENT.with(|a| a.borrow_mut().clear());
     construct::clear_ctors();
+}
+
+thread_local! {
+    /// The `ui!` (site, node) whose component is being built, innermost
+    /// last.
+    ///
+    /// A stack, because a component's children are built while its own
+    /// props struct literal is being evaluated — `enter(A)`, then the
+    /// children `enter(B)`/`exit(B)`, then `build(A_props)`. The top of
+    /// the stack at the moment `build` runs is A, which is correct.
+    ///
+    /// `Option` per frame, and `take_current` TAKES: a component built
+    /// by hand inside another's children (a bare
+    /// `BuildElement::build(..)`, not a `ui!` tag) has no `enter` of its
+    /// own, and taking means it finds nothing rather than silently
+    /// consuming its parent's address and applying that node's patch to
+    /// itself. A missed patch is recoverable; a patch applied to the
+    /// wrong node is not.
+    static AMBIENT: RefCell<Vec<Option<(u64, u32)>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Announce which node of which site is about to be built.
+///
+/// Emitted by `ui!` immediately before a `#[component]`'s build
+/// expression, and paired with [`exit`]. Deliberately a free function
+/// taking two integers: it is emitted at every component call site in
+/// the program, and anything generic — or anything requiring a trait in
+/// scope — is resolution work multiplied by thousands of call sites. See
+/// `runtime_macros`' `ui_overlay` for what that cost measured.
+pub fn enter(site: u64, node: u32) {
+    AMBIENT.with(|a| a.borrow_mut().push(Some((site, node))));
+}
+
+/// End the frame [`enter`] opened, returning the element unchanged.
+///
+/// Takes and returns the element so the pair brackets an EXPRESSION
+/// rather than needing a block with a temporary, which keeps the
+/// emission one statement wider instead of three.
+pub fn exit(element: Element) -> Element {
+    AMBIENT.with(|a| {
+        a.borrow_mut().pop();
+    });
+    element
+}
+
+/// Take the innermost address, if this build has one.
+///
+/// Called from a props type's generated `BuildElement::build`. See
+/// [`AMBIENT`] on why it takes rather than reads.
+pub fn take_current() -> Option<(u64, u32)> {
+    AMBIENT.with(|a| a.borrow_mut().last_mut().and_then(|f| f.take()))
 }
 
 /// The literal prop edits staged for one node.

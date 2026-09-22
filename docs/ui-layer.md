@@ -466,19 +466,34 @@ reactive scope re-runs, and a patch applied once to a tree that is then
 rebuilt from the compiled code would silently revert.
 
 A `#[component]`'s props are the exception. By the time its `Element`
-exists they have been consumed and its body has run, so the emission
-wraps the props struct literal instead — one generated call,
-`__p.__overlay_bind("Badge", SITE, NODE)`, which registers the
-component's constructor and applies any staged literals through the
-generated `__apply_literal`.
+exists they have been consumed and its body has run, so `ui!` brackets
+the build expression with an ambient address instead:
 
-The BODIES of both hooks are generated once per props TYPE rather than
-written at each call site, and that is a measurement: inline at every
-call site they cost +1.7 s on CrewForge's one-edit rebuild, +1.1 s of it
-the constructor alone, because a large app has thousands of component
-call sites and each was a fresh body to expand, type-check and
-monomorphize. One body per component and one call per site brings the
-whole feature to about +0.6 s of rustc time on that loop.
+```rust
+runtime_core::__overlay::enter(SITE, NODE);
+runtime_core::__overlay::exit(BuildElement::build(Badge { .. }))
+```
+
+and the component's own generated `BuildElement::build` reads it, applies
+any staged literals through `__apply_literal`, and registers the
+component's constructor.
+
+Everything the call site emits is free functions taking integers —
+nothing generic, nothing needing a trait in scope. That is a measurement,
+arrived at in three steps: writing the work inline at each call site cost
++1.7 s on CrewForge's one-edit rebuild, moving the bodies into per-type
+generated methods got it to +0.8 s, and the ambient pair removed the last
+thing a site had to resolve (an inherent method whose fallback is a
+blanket `impl<T>`, which pulls trait selection into every one of
+thousands of sites).
+
+Because registration now happens inside `build`, the contract for
+inserting a component is "any component type this program has built
+once", not "any component currently on screen". And because the ambient
+frame is TAKEN rather than read, a component built by hand inside
+another's children finds nothing rather than applying a patch addressed
+to its neighbour — the patch is lost, which is a rebuild, instead of
+being misapplied, which is a wrong screen with nothing to say so.
 
 ### Descriptors are a build artifact, not binary contents
 

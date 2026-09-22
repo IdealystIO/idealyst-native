@@ -94,6 +94,8 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
         }
     };
 
+    let (build_mut, overlay_prologue) = crate::props_attr::overlay_build_prologue(fn_name);
+
     quote! {
         // Tag alias: `ui! { Foo(...) }` uses the tag as the type name, so
         // this bridges `Foo` to its real props struct. The component fn
@@ -106,7 +108,8 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
 
         #[automatically_derived]
         impl ::runtime_core::BuildElement for #path {
-            fn build(self) -> ::runtime_core::Element {
+            fn build(#build_mut self) -> ::runtime_core::Element {
+                #overlay_prologue
                 // Coerce via `IntoElement` so a component returning a richer
                 // type than bare `Element` still satisfies `-> Element`:
                 // identity for `Element`, `.primitive` for `Bound`/`Bindable`

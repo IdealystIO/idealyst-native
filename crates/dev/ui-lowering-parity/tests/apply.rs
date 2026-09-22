@@ -375,3 +375,47 @@ fn a_patch_applies_on_every_rebuild_and_unstaging_reverts_it() {
     assert!(mount_scene(static_text).contains("before"));
     overlay::reset();
 }
+
+// ===========================================================================
+// The ambient address
+// ===========================================================================
+
+/// A component built BY HAND inside another's children — a bare
+/// `BuildElement::build(..)` expression, not a `ui!` tag — has no
+/// address of its own. It must not inherit its neighbour's.
+///
+/// `ui!` brackets a component's build with `enter`/`exit`, and the
+/// children are evaluated between the two, so a hand-built component in
+/// that gap sees the enclosing frame. `take_current` empties the frame
+/// on first read, so the hand-built one finds nothing rather than
+/// applying a patch addressed to a different node to itself.
+///
+/// The cost is visible here and accepted: the patch is LOST rather than
+/// misapplied, because the hand-built child consumed the frame before
+/// its neighbour's `build` ran. A missed patch is a rebuild; a patch
+/// applied to the wrong node is a wrong screen with nothing to say so.
+#[test]
+fn a_hand_built_component_never_inherits_its_neighbours_address() {
+    fn tree() -> Element {
+        ui! {
+            view() {
+                Badge(label = "badge") {
+                    runtime_vocabulary::glue::BuildElement::build(Pill { label: "pill".into() })
+                }
+            }
+        }
+    }
+
+    let before = scene_without(tree);
+    assert!(before.contains("badge") && before.contains("pill"), "{before}");
+
+    let after = scene_with(tree, vec![set_str(1, "label", "patched")]);
+    assert!(
+        !after.contains("patched") || after.matches("patched").count() == 1,
+        "at most one node may take the patch:\n{after}"
+    );
+    assert!(
+        after.contains("pill"),
+        "the hand-built component must keep its own props:\n{after}"
+    );
+}

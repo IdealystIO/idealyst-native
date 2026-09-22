@@ -307,8 +307,8 @@ pub(crate) fn apply_literal_impl(
     }
 }
 
-/// The overlay's per-props-type hooks: apply a staged patch, and build
-/// one of these from literals.
+/// The overlay's per-props-type hooks: bind a build to its site, and
+/// construct one of these from literals.
 ///
 /// Feature-gated because both name `runtime_core::__overlay`, which only
 /// exists under `ui-overlay` — and the emission that calls them is
@@ -357,25 +357,43 @@ fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
     quote! {
         #[automatically_derived]
         impl #ty {
-            /// The overlay's whole per-call-site job, in one call:
-            /// teach it how to build this component, then apply
-            /// whatever it has staged for this node.
+            /// The overlay's per-component job, run from inside this
+            /// type's own `BuildElement::build`: teach the overlay how
+            /// to build this component, then apply whatever it has
+            /// staged for the node being built.
             ///
-            /// Called on the props struct BEFORE `BuildElement::build`
-            /// — a component's props do not survive into the built tree,
-            /// so this is the only moment they can be changed.
+            /// It has to happen here and not after, because a
+            /// component's props do not survive into the built tree —
+            /// this is the last moment they are reachable.
             ///
-            /// `tag` is the name as WRITTEN at the call site, which is
-            /// what a descriptor calls this node and therefore what the
-            /// constructor must be registered under. It is the one thing
-            /// the type itself cannot know (`Badge` vs `BadgeProps`), so
-            /// it is the one argument the call site supplies beyond its
-            /// address.
+            /// WHICH node is read from the ambient address `ui!` sets
+            /// around the build expression, rather than passed in.
+            /// Passing it meant emitting this call at every component
+            /// call site in the program, and the trait-method resolution
+            /// that goes with it; the ambient pair is two integer
+            /// arguments to two free functions instead. See
+            /// `runtime_macros`' `ui_overlay` for the measurement.
+            ///
+            /// Registration is unconditional, so a component built ANY
+            /// way — a `ui!` tag, a bare `BuildElement::build`, a
+            /// fn-call form — can afterwards be inserted by a patch. The
+            /// contract is "any component type this program has built
+            /// once", not "any component currently on screen".
+            ///
+            /// `tag` is the name as WRITTEN at a call site (`Badge`, not
+            /// `BadgeProps`) — what a descriptor calls the node, and so
+            /// what the constructor must be registered under. The type
+            /// cannot know it; the macro that generates this can.
             #[doc(hidden)]
             #[allow(clippy::all)]
-            pub fn __overlay_bind(&mut self, tag: &'static str, site: u64, node: u32) {
+            pub fn __overlay_bind(&mut self, tag: &'static str) {
                 ::runtime_core::__overlay::register_ctor(tag, #ctor_path);
-                for (__n, __v) in ::runtime_core::__overlay::staged_props(site, node) {
+                let ::core::option::Option::Some((__site, __node)) =
+                    ::runtime_core::__overlay::take_current()
+                else {
+                    return;
+                };
+                for (__n, __v) in ::runtime_core::__overlay::staged_props(__site, __node) {
                     self.__apply_literal(&__n, &__v);
                 }
             }
@@ -600,4 +618,33 @@ mod tests {
         assert!(out.contains("schema"), "non-prop attrs must survive: {out}");
         assert!(out.contains("name:::runtime_core::Reactive<String>"), "{out}");
     }
+}
+
+/// The prologue a generated `BuildElement::build` runs before the
+/// component's own body.
+///
+/// Returns `(mut_token, statements)` — the `mut` because the props are
+/// taken by value and the patch writes into them.
+///
+/// Emitted once per props TYPE rather than at each `ui!` call site, and
+/// that is deliberate: `__overlay_bind`'s fallback is a blanket
+/// `impl<T>`, so resolving the call pulls trait selection in wherever it
+/// appears. Once per component is nothing; once per call site, across a
+/// large app, was measurable. See `runtime_macros`' `ui_overlay`.
+#[cfg(feature = "ui-overlay")]
+pub(crate) fn overlay_build_prologue(tag: &syn::Ident) -> (TokenStream2, TokenStream2) {
+    let tag_str = tag.to_string();
+    (
+        quote! { mut },
+        quote! {
+            #[allow(unused_imports)]
+            use ::runtime_core::__template::ApplyLiteralFallback as _;
+            self.__overlay_bind(#tag_str);
+        },
+    )
+}
+
+#[cfg(not(feature = "ui-overlay"))]
+pub(crate) fn overlay_build_prologue(_tag: &syn::Ident) -> (TokenStream2, TokenStream2) {
+    (TokenStream2::new(), TokenStream2::new())
 }

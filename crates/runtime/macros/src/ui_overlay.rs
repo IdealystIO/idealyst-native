@@ -154,28 +154,26 @@ mod live {
         quote! { ::runtime_core::__overlay::tag(#body, #site, #node) }
     }
 
-    /// Wrap a `#[component]`'s props struct literal so a staged patch
-    /// reaches it, and teach the overlay how to build this component.
+    /// Bracket a `#[component]`'s build expression with the ambient
+    /// address its generated `BuildElement::build` reads.
     ///
-    /// The constructor is a non-capturing closure, so it coerces to a
-    /// plain `fn` pointer; it exists here rather than in a link-time
-    /// registry because only this call site knows the props TYPE, which
-    /// is what makes `__apply_literal` / `__apply_children` resolve
-    /// inherently.
+    /// Two free functions taking integers: no closure, no trait in
+    /// scope, nothing generic. That shape is the whole point — this is
+    /// emitted at every component call site in the program, and the
+    /// previous form (one inherent method call, whose fallback is a
+    /// blanket `impl<T>`) pulled trait selection into each of thousands
+    /// of sites. The work itself moved into the per-type `build` body,
+    /// where it is compiled once.
     pub(crate) fn component_props(
         body: TokenStream2,
-        name: &proc_macro2::Ident,
+        _name: &proc_macro2::Ident,
         node: u32,
     ) -> TokenStream2 {
         let site = SITE.with(|s| s.get());
-        let name_str = name.to_string();
         quote! {
             {
-                #[allow(unused_imports)]
-                use ::runtime_core::__template::ApplyLiteralFallback as _;
-                let mut __p = #body;
-                __p.__overlay_bind(#name_str, #site, #node);
-                __p
+                ::runtime_core::__overlay::enter(#site, #node);
+                ::runtime_core::__overlay::exit(#body)
             }
         }
     }

@@ -1311,10 +1311,12 @@ pub mod __template {
         }
 
         /// Register a constructor and apply whatever the overlay
-        /// staged for this node. The generated inherent version does
-        /// both; this one is what a props type the macros never touched
-        /// gets, and it correctly does nothing.
-        fn __overlay_bind(&mut self, _tag: &'static str, _site: u64, _node: u32) {}
+        /// staged for the node being built. The generated inherent
+        /// version does both; this one is what a props type the macros
+        /// never touched gets, and it correctly does nothing — such a
+        /// component is not patchable and not insertable, which is the
+        /// contract, not an error.
+        fn __overlay_bind(&mut self, _tag: &'static str) {}
 
         /// Build one of these from literal props and children.
         ///

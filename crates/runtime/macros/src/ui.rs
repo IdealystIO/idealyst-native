@@ -1632,17 +1632,17 @@ fn emit_user(
     });
 
     let built = quote! {
-        #props_ty {
-            #(#field_assignments)*
-            #children_field
-            ..<#props_ty as ::runtime_core::BuildElement>::defaults()
-        }
+        ::runtime_core::BuildElement::build(
+            #props_ty {
+                #(#field_assignments)*
+                #children_field
+                ..<#props_ty as ::runtime_core::BuildElement>::defaults()
+            }
+        )
     };
-    let built = crate::ui_overlay::component_props(built, name, node);
-
-    quote! {
-        ::runtime_core::BuildElement::build(#built)
-    }
+    // Under `ui-overlay`, brackets the whole BUILD with this node's
+    // address, which the generated `build` reads. A no-op otherwise.
+    crate::ui_overlay::component_props(built, name, node)
 }
 
 /// An empty, **layout-neutral** `View`, coerced to `Element` — used as
