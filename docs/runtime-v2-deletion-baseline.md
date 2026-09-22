@@ -853,10 +853,13 @@ one. It did not delete `runtime-core` itself — that is stage 3.
   naming `migrating-to-runtime-v2.md`, the same treatment `--old-core`
   gets, so a size-tuned pipeline learns the lever is gone instead of
   silently shipping the all-families bundle.
-- **`runtime-core/hot-reload` from the dev chain.** `#[component]` has no
-  hot-dispatch split, so a source change rebuilds and respawns the
-  session; the `BuilderAdapter` seam is retained, `#[allow(dead_code)]`,
-  as the re-enable point.
+- ~~**`runtime-core/hot-reload` from the dev chain.**~~ **CLOSED.**
+  `#[component]` splits again (`runtime_macros::hot_split`), the
+  generated sidecar enables `runtime-core/hot-reload`, and the host
+  installs the `BuilderAdapter` that was kept as the re-enable point. A
+  body-only save now re-emits the user crate, rebinds a subsecond jump
+  table and re-runs the mounted tree in place, carrying signal state
+  across; only a SHAPE change respawns. See `docs/hot-reload.md`.
 
 ### Two generators that had been pinned to the old core
 

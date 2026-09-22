@@ -259,11 +259,10 @@ pub struct Args {
     /// In runtime-server mode (the default) the sidecar mounts the app
     /// through a per-session `World` + scene `realize`
     /// (`dev_server::sidecar::run_newcore`); the wire protocol is
-    /// unchanged, so clients are identical. Saves apply via
-    /// rebuild-and-respawn — in-place hot-PATCHING needs the
-    /// `#[component]` hot-dispatch split, which the runtime-v2 emission
-    /// does not have. In `--local` mode each platform wrapper boots its
-    /// own `newcore` entry.
+    /// unchanged, so clients are identical. Saves apply in three tiers
+    /// — literal, body, shape — see `docs/hot-reload.md`. In `--local`
+    /// mode each platform wrapper boots its own `newcore` entry and a
+    /// body edit rebuilds the wasm and reloads the page.
     #[arg(long)]
     pub new_core: bool,
 
@@ -1538,11 +1537,13 @@ fn launch_web(
                     // sidecar would log `notifying 0 session(s) to
                     // re-render` on every rebuild.
                     //
-                    // There is no hot-reload counterpart: the
-                    // `#[component]` lowering has no hot-dispatch split,
-                    // so a source change rebuilds and respawns the
-                    // session rather than patching a handler table in
-                    // place (named gap in docs/migrating-to-runtime-v2.md).
+                    // Nothing hot-reload-shaped belongs on the WASM
+                    // side: in runtime-server mode the browser is a thin
+                    // wire client that runs none of the user's code, so
+                    // every tier — overlay patch, subsecond hot patch,
+                    // respawn — happens in the native sidecar and
+                    // reaches this bundle as ordinary wire commands.
+                    // See docs/hot-reload.md.
                     features: vec![
                         // Wrapper-local feature; MUST match the
                         // template's declaration or the

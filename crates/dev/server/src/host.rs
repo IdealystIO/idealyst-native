@@ -283,13 +283,26 @@ pub fn run(
     // build wrote lives under that crate's own target dir.
     let overlay_crate_dir = user_src.parent().map(|p| p.to_path_buf());
     let overlay_sidecar = sidecar_slot.clone();
-    let mut overlay_archive: Option<dev_overlay::DescriptorSet> = overlay_crate_dir
-        .as_ref()
-        .and_then(|dir| dev_overlay::load_archive(dir, &package_name_of(dir)));
+    // SCANNED here, not loaded from disk.
+    //
+    // The on-disk archive is written by the `--local` watch loop
+    // (`dev-reload`), which a runtime-server session never runs — so
+    // this host used to find either nothing or a leftover document from
+    // some other session, and log "every save will rebuild". Both save
+    // tiers depend on the archive, so in runtime-server mode neither of
+    // them had ever actually run.
+    //
+    // Scanning is the right answer rather than adding a writer: the
+    // sidecar was just built from these exact sources, so the scan
+    // describes the running binary by construction — no file to go
+    // stale, no build key to agree on, and nothing another session can
+    // overwrite underneath us.
+    let mut overlay_archive: Option<dev_overlay::DescriptorSet> = None;
+    rescan_archive(&mut overlay_archive, overlay_crate_dir.as_deref());
     if overlay_archive.is_none() {
         eprintln!(
-            "[runtime-server-host] no overlay descriptor set — every save will rebuild \
-             (run `idealyst dev` so the build writes one)"
+            "[runtime-server-host] could not scan this crate's `ui!` sites — every save \
+             will rebuild and respawn"
         );
     }
 
@@ -684,16 +697,6 @@ fn note_respawn(hot_patch: Option<&dyn HotPatchAdapter>, sidecar_path: &std::pat
             false
         }
     }
-}
-
-/// `[package] name` of the crate at `dir`, for locating its overlay
-/// archive.
-fn package_name_of(dir: &std::path::Path) -> String {
-    std::fs::read_to_string(dir.join("Cargo.toml"))
-        .ok()
-        .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
-        .and_then(|m| m.get("package")?.get("name")?.as_str().map(str::to_string))
-        .unwrap_or_default()
 }
 
 /// Read the changed files the decision needs, as package-relative
