@@ -13,10 +13,103 @@ the sorting is worth more than any of the individual mechanisms.
 The last boundary is a safety boundary, not a speed tier. See
 [Why a shape change cannot be patched](#why-a-shape-change-cannot-be-patched).
 
-Both live tiers exist **only in runtime-server mode** — `idealyst dev`
-without `--local`, which is the default. In `--local` mode the app is
-compiled to wasm and runs in the browser; there is no process to patch,
-so a body edit rebuilds and reloads the page.
+Both live tiers exist **only in wire mode** (also called runtime-server
+mode) — `idealyst dev` without `--local`, which is the default. In
+`--local` mode the app is compiled to wasm and runs in the browser;
+there is no process to patch, so a body edit rebuilds and reloads the
+page.
+
+## Wire mode
+
+The app runs NATIVELY, in a sidecar process on your machine. The
+browser is a thin client: it opens a WebSocket, replays the commands the
+sidecar sends, and sends events back. It runs none of your code.
+
+That is what makes hot patching possible at all — there is a live
+process holding your reactive tree, and a jump table can be applied to
+it. It also means the app is subject to the sidecar's environment, not
+the browser's; see [What runs where](#what-runs-where).
+
+### Full-stack projects
+
+A project that declares a server (`server_bin` / `server_manifest`) gets
+wire mode too. The two run side by side:
+
+- **the project's own server** keeps serving the bundle and the API
+  same-origin, exactly as in `--local`;
+- **the sidecar** holds the reactive tree and talks to the browser on
+  its own WebSocket port.
+
+Three things differ from `--local` on the same project:
+
+- The bundle is built ONCE, as a thin client (features: just
+  `runtime-server`), and is not watched. Source saves are the sidecar's
+  business now.
+- The sidecar's URL is written into the STAGED `index.html` rather than
+  spliced in at serve time — the project's server hands that file out
+  verbatim, so there is no serve-time hook.
+- No reload/overlay SSE stream: the WebSocket is the push channel.
+
+The SERVER watcher still runs. A `#[server]` fn's signature is a
+contract between two binaries, and no jump table spans them — a server
+edit rebuilds and restarts the server, as before.
+
+### `#[server]` calls come from the sidecar
+
+This is the consequence most worth internalising. In `--local` the
+browser makes the call and the browser's cookie jar authenticates it. In
+wire mode the SIDECAR makes the call.
+
+- **Base URL.** The dev host is spawned with `IDEALYST_SERVER_URL`, so
+  the documented native pattern — `server::dev_base_url()` inside your
+  own `configure_server()` — resolves to the project's dev server. An
+  app with no native arm in `configure_server` will fall back to whatever
+  it hardcodes, or fail with "configure was never called".
+- **Credentials.** On macOS the `net` SDK's transport is NSURLSession
+  with the process-wide shared `HTTPCookieStorage`, so a login performed
+  through the app authenticates every later call from that sidecar. You
+  sign in through the browser as usual; the keystrokes travel over the
+  wire, the sidecar performs the login, and the sidecar holds the
+  session. **The browser never needs the cookie.**
+
+  The jar is PROCESS-wide, not session-wide: two browser tabs on one
+  sidecar share one identity. For one developer on their own machine
+  that is invisible; it is not a property to rely on. Per-session jars
+  need an `NSURLSessionConfiguration` per session thread.
+
+### What runs where
+
+| Thing | In wire mode |
+|---|---|
+| Your components, signals, effects | Sidecar (native) |
+| `#[server]` calls | Sidecar → your dev server |
+| DOM, layout, paint, input | Browser |
+| `web_sys` / `js_sys` code | **Not run** — the native arm of your `cfg` runs instead |
+| `localStorage` | Not available; the native arm runs |
+| A file picker / clipboard / camera SDK | The SIDECAR's — i.e. your machine's, not the viewer's |
+| `#[component(lazy)]` | No split natively; the body resolves immediately |
+
+An app with a `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(...))]` pair
+takes the NATIVE arm. If that arm was written for a phone or for an SSR
+prerender, it may be wrong here — a boot probe skipped "because SSR has
+no reactor" will also be skipped in the sidecar, which does have one.
+
+### Navigation is partly wired
+
+The sidecar has no address bar. What works and what does not:
+
+| | Wire mode |
+|---|---|
+| In-app navigation (links, pushes) | **Works** — it is ordinary tree mutation over the wire |
+| Deep link / initial URL | **Works** — the browser reports it on `Hello` and the session parks it where `resolve_initial` looks |
+| A push updating the address bar | **No** — nothing writes `history.pushState` |
+| Browser Back / Forward | **No** — no `popstate` listener, and no history entries were pushed, so Back leaves the page |
+| Query-param screen state in the URL | **No** — the state changes, the URL does not |
+
+The missing half is a wire message pair (sidecar → browser "the URL is
+now X"; browser → sidecar "the user pressed Back"). Until it lands,
+wire mode is for iterating on a screen you can reach by clicking, and
+`--local` remains the way to exercise URL-driven behavior.
 
 ## What the decision looks at
 
