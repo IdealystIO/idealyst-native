@@ -249,11 +249,22 @@ fn diff_children(
         }
         return Ok(());
     }
-    // The lists differ in shape, so the whole list is replaced. Every
-    // OLD child must be a plain node: a control-flow child's position is
-    // decided at runtime, and the applier would refuse the edit anyway.
+    // The lists differ in shape, so the whole list is REPLACED — and
+    // that means the old children are unmounted. Every one of them must
+    // therefore be fully static, recursively:
+    //
+    // - a control-flow child's position is decided at runtime, so it
+    //   cannot be replaced at all; and
+    // - a child holding a SLOT is holding compiled code. Its props may
+    //   be bound by effects that outlive the node they were written
+    //   for — the enclosing scope owns them, not the child — so tearing
+    //   it out live would leave a binding writing to something that is
+    //   no longer there.
+    //
+    // Refusing here rather than in the applier is what keeps the two
+    // application paths agreeing about what a patch may contain.
     for &a in oc {
-        if matches!(old.node(a), Some(Node::Opaque { .. }) | None) {
+        if !is_fully_static(old, a) {
             return Err(Rejection::ShapeChanged { node: a });
         }
     }
@@ -275,6 +286,20 @@ fn lists_correspond(old: &Descriptor, new: &Descriptor, oc: &[u32], nc: &[u32]) 
             (Some(x), Some(y)) => same_kind(x, y),
             _ => false,
         })
+}
+
+/// Whether a node and everything under it is descriptor DATA — no
+/// control flow, no slot-valued prop.
+fn is_fully_static(desc: &Descriptor, index: u32) -> bool {
+    let Some(node) = desc.node(index) else { return false };
+    let (props, children) = match node {
+        Node::Prim { props, children, .. } | Node::Component { props, children, .. } => {
+            (props, children)
+        }
+        Node::Opaque { .. } => return false,
+    };
+    props.iter().all(|p| matches!(p.value, PropValue::Lit(_)))
+        && children.iter().all(|&c| is_fully_static(desc, c))
 }
 
 fn same_kind(a: &Node, b: &Node) -> bool {

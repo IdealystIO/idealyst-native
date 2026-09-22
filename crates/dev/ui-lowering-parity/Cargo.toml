@@ -53,6 +53,10 @@ runtime-shared = { workspace = true }
 # other golden suites speak.
 host-mock = { workspace = true }
 
+# The patch DATA types. Needed by the lib (not just the tests) because
+# the live-apply harness takes a `Patch`.
+runtime-template = { workspace = true }
+
 [dev-dependencies]
 # The BUILD-TIME half of the overlay. The suite's job is to prove that
 # the descriptor it produces from a fixture's source numbers nodes
@@ -60,5 +64,4 @@ host-mock = { workspace = true }
 # whole addressing scheme rests on, and the one that cannot be checked
 # from either side alone.
 runtime-macros-parse = { workspace = true }
-runtime-template = { workspace = true }
 syn = { workspace = true }

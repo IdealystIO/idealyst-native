@@ -62,6 +62,7 @@
 
 mod apply;
 mod construct;
+pub mod live;
 mod prims;
 
 use std::cell::RefCell;
@@ -71,6 +72,7 @@ use runtime_scene::Element;
 use runtime_template::{Edit, LiteralValue, Patch, SiteId};
 
 pub use apply::Outcome;
+pub use live::{apply_live, apply_live_to};
 pub use construct::{ctor_count, register_ctor, ComponentCtor};
 
 thread_local! {
@@ -125,6 +127,7 @@ pub fn staged_count() -> usize {
 pub fn reset() {
     STAGED.with(|s| s.borrow_mut().clear());
     AMBIENT.with(|a| a.borrow_mut().clear());
+    live::release_all();
     construct::clear_ctors();
 }
 

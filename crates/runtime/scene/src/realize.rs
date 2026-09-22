@@ -70,7 +70,23 @@ impl<N: Clone> Realized<N> {
 /// structure elsewhere.
 pub enum LiveNode<N> {
     /// A mounted primitive and the live children its handler realized.
-    Item { node: N, children: Vec<LiveNode<N>> },
+    Item {
+        node: N,
+        children: Vec<LiveNode<N>>,
+        /// Which `ui!` node built this, and what kind of payload it is.
+        ///
+        /// The `Element` that produced this carried the tag; keeping it
+        /// on the LIVE side is what lets a patch reach an instance that
+        /// is already mounted, rather than only the next build of its
+        /// site. The `TypeId` rides along because the live tree has no
+        /// payload — it is how an applier knows whether this node takes
+        /// `update_text` or `update_button_label`.
+        ///
+        /// Only under `ui-overlay`, so a normal build carries no
+        /// per-node cost. Match with `..`.
+        #[cfg(feature = "ui-overlay")]
+        origin: Option<(crate::element::NodeTag, std::any::TypeId)>,
+    },
     /// Flat siblings, no node of their own.
     Fragment(Vec<LiveNode<N>>),
     /// A live structural hole (see [`DynLive`]).
@@ -659,6 +675,11 @@ impl<'a, H: Host> MountCx<'a, H> {
         // One nesting level of the realize recursion. See `depth` for why
         // the budget is enforced here and nowhere else.
         let _level = depth::enter();
+        #[cfg(feature = "ui-overlay")]
+        let tag = match &element {
+            Element::Item { tag, .. } => *tag,
+            _ => None,
+        };
         let Element::Item { data, children, .. } = element else {
             unreachable!("mount_item called on a non-Item")
         };
@@ -695,6 +716,8 @@ impl<'a, H: Host> MountCx<'a, H> {
         LiveNode::Item {
             node,
             children: kids,
+            #[cfg(feature = "ui-overlay")]
+            origin: tag.map(|t| (t, type_id)),
         }
     }
 }
@@ -1382,4 +1405,78 @@ fn drive_keyed_anchored<H: Host>(
     });
 
     (anchor, slot)
+}
+
+// ============================================================================
+// Overlay: reaching a mounted instance by tag
+// ============================================================================
+
+/// Visit every mounted item that a given `ui!` site built, innermost
+/// last, handing the visitor its node index, payload type and the live
+/// subtree.
+///
+/// This is the LIVE half of the overlay's addressing. The `Element`
+/// applier changes what the next build of a site produces; this reaches
+/// the instances already on screen, so a saved edit shows up without
+/// waiting for something to re-render.
+///
+/// One (site, node) pair can match SEVERAL live nodes — every row of a
+/// `for` builds the same node of the same site — so the visitor is
+/// called once per match rather than returning "the" node.
+///
+/// Regions (`Dyn`, `Keyed`, `Deferred`) are walked THROUGH: their
+/// contents are live items like any other, and a patch to a node inside
+/// a reactive branch must reach the branch that is currently mounted.
+#[cfg(feature = "ui-overlay")]
+pub fn visit_tagged<N: Clone>(
+    root: &mut LiveNode<N>,
+    site: u64,
+    f: &mut impl FnMut(&crate::element::NodeTag, std::any::TypeId, &mut LiveNode<N>),
+) {
+    match root {
+        LiveNode::Item { origin, .. } => {
+            if let Some((tag, type_id)) = *origin {
+                if tag.site == site {
+                    f(&tag, type_id, root);
+                }
+            }
+            // Re-borrow: the visitor may have replaced the child list.
+            if let LiveNode::Item { children, .. } = root {
+                for child in children.iter_mut() {
+                    visit_tagged(child, site, f);
+                }
+            }
+        }
+        LiveNode::Fragment(children) => {
+            for child in children.iter_mut() {
+                visit_tagged(child, site, f);
+            }
+        }
+        // Regions are walked THROUGH. A patch to a node inside a
+        // reactive branch has to reach the branch that is currently
+        // mounted, and a keyed row's subtree is live items like any
+        // other. Each region's contents live behind its own `RefCell`,
+        // so the walk borrows for exactly the recursion and never holds
+        // one across a rebuild.
+        LiveNode::Dyn(region) => {
+            if let Some(realized) = region.slot.borrow_mut().realized.as_mut() {
+                visit_tagged(&mut realized.root, site, f);
+            }
+        }
+        LiveNode::Deferred(region) => {
+            if let Some(realized) = region.slot.borrow_mut().realized.as_mut() {
+                visit_tagged(&mut realized.root, site, f);
+            }
+        }
+        LiveNode::Keyed(KeyedLive::Anchored { slot, .. }) => {
+            if let Some(realized) = slot.borrow_mut().as_mut() {
+                visit_tagged(&mut realized.root, site, f);
+            }
+        }
+        LiveNode::Keyed(KeyedLive::Spliced { state }) => {
+            for row in state.borrow_mut().rows.iter_mut() {
+                visit_tagged(&mut row.realized.root, site, f);
+            }
+        }
+    }
 }

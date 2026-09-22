@@ -246,9 +246,125 @@ pub fn mount_scene(build: impl FnOnce() -> Element) -> String {
         realize(&h.backend, &h.registry, element)
     });
     h.flush();
-    let scene = scene_snapshot(&h);
+    let roots = h.live_roots();
+    let scene = if roots.is_empty() {
+        "(empty)".to_string()
+    } else {
+        roots.iter().map(|r| h.live_tree(*r)).collect::<Vec<_>>().join("\n")
+    };
     drop(realized);
     scene
+}
+
+/// A scene snapshot with backend node IDs removed.
+///
+/// A live patch mints FRESH nodes for anything it inserts, so a patched
+/// tree and a recompiled one are identical in every way a user could
+/// observe and different in the numbers the mock happens to hand out.
+/// Comparing shape + content is the honest comparison; comparing IDs
+/// would be asserting that a patch reuses allocations, which is not a
+/// property anything wants.
+pub fn scene_shape(scene: &str) -> String {
+    scene
+        .lines()
+        .map(|line| {
+            // `  n3 text "one"` -> `  text "one"`: drop the `nN` token,
+            // keep the indentation, which is what carries the structure.
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            match line.trim_start().split_once(' ') {
+                Some((first, tail)) if first.starts_with('n') => format!("{indent}{tail}"),
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A harness with a mounted tree, kept alive so a test can patch it
+/// LIVE and then look at the scene again.
+///
+/// [`mount_scene`] answers "what did this build produce"; this answers
+/// "what happens to it afterwards", which is the whole question the live
+/// path exists for. The `Realized` is held rather than dropped, because
+/// dropping it IS unmount.
+#[cfg(feature = "ui-overlay")]
+pub struct Mounted {
+    pub harness: Harness,
+    pub realized: Realized<Node>,
+}
+
+#[cfg(feature = "ui-overlay")]
+impl Mounted {
+    /// Mount `build` and keep everything alive.
+    pub fn new(build: impl FnOnce() -> Element) -> Mounted {
+        let harness = Harness::new();
+        harness.record_all();
+        let realized = harness.world.enter(|| {
+            let element = build();
+            realize(&harness.backend, &harness.registry, element)
+        });
+        harness.flush();
+        Mounted { harness, realized }
+    }
+
+    /// Apply edits to what is mounted, through the backend seam.
+    pub fn apply_live(
+        &mut self,
+        site: u64,
+        edits: &[runtime_template::Edit],
+    ) -> runtime_vocabulary::overlay::Outcome {
+        let outcome = self.harness.world.enter(|| {
+            runtime_vocabulary::overlay::apply_live_to(
+                &self.harness.backend,
+                &self.harness.registry,
+                &mut self.realized.root,
+                site,
+                edits,
+            )
+        });
+        self.harness.flush();
+        outcome
+    }
+
+    /// The site key the mounted tree's outermost tagged node carries.
+    ///
+    /// Read off the LIVE tree, which is what a dev server does with a
+    /// tag it received — there is no way to hash a `SiteId` backwards
+    /// into the number the compiled code holds.
+    pub fn site(&self) -> u64 {
+        fn first<N>(live: &runtime_scene::LiveNode<N>) -> Option<u64> {
+            match live {
+                runtime_scene::LiveNode::Item { origin, children, .. } => origin
+                    .map(|(tag, _)| tag.site)
+                    .or_else(|| children.iter().find_map(first)),
+                runtime_scene::LiveNode::Fragment(children) => children.iter().find_map(first),
+                _ => None,
+            }
+        }
+        first(&self.realized.root).expect("a tagged node in the mounted tree")
+    }
+
+    /// Run `f` inside the harness world — for driving a signal.
+    pub fn drive(&self, f: impl FnOnce()) {
+        self.harness.world.enter(f);
+        self.harness.flush();
+    }
+
+    /// What the backend would actually be showing — current text,
+    /// released nodes gone.
+    ///
+    /// Not [`scene_snapshot`], which prints creation-time kinds and
+    /// keeps released nodes as stray roots because that is what the
+    /// frozen goldens pin. A live patch changes exactly those two
+    /// things, so asserting it against the frozen projection would be
+    /// asserting against the one view that cannot see it.
+    pub fn scene(&self) -> String {
+        let roots = self.harness.live_roots();
+        if roots.is_empty() {
+            return "(empty)".to_string();
+        }
+        roots.iter().map(|r| self.harness.live_tree(*r)).collect::<Vec<_>>().join("\n")
+    }
 }
 
 /// Every root tree in creation order. Roots are the nodes the harness

@@ -275,7 +275,7 @@ fn cleanup_marker(ops: &Rc<RefCell<Vec<String>>>, label: &str) {
 fn render_labels(rig: &Rig, realized: &Realized<u32>) -> Vec<String> {
     fn walk(labels: &HashMap<u32, String>, node: &LiveNode<u32>, out: &mut Vec<String>) {
         match node {
-            LiveNode::Item { node, children } => {
+            LiveNode::Item { node, children, .. } => {
                 out.push(labels[node].clone());
                 for child in children {
                     walk(labels, child, out);

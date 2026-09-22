@@ -64,4 +64,6 @@ pub use realize::{
     realize, DeferredLive, DynLive, DynWatch, KeyedLive, KeyedState, LiveNode, MountCx, Realized,
     Retired, MAX_DEPTH,
 };
+#[cfg(feature = "ui-overlay")]
+pub use realize::visit_tagged;
 pub use registry::{Handler, ManyHandler, Registry};

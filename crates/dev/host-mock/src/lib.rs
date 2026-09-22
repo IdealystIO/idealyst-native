@@ -127,6 +127,24 @@ pub struct Shared {
     pub children: RefCell<BTreeMap<Node, Vec<Node>>>,
     /// Parent per child.
     pub parent: RefCell<BTreeMap<Node, Node>>,
+    /// Nodes the backend was told to release
+    /// ([`Host::release_subtree`](runtime_scene::Host::release_subtree)).
+    ///
+    /// A real backend drops such a node; this mock keeps it, because
+    /// every frozen golden in the repo records the op stream AND a
+    /// snapshot in which released nodes still appear as stray roots.
+    /// Changing that would re-baseline goldens whose whole value is
+    /// being frozen, so the fact is recorded HERE instead and only the
+    /// live projection ([`Harness::live_tree`]) consults it.
+    pub released: RefCell<HashSet<Node>>,
+    /// The CURRENT text of a text/button node, following
+    /// `update_text` / `update_button_label`.
+    ///
+    /// `kinds` keeps the value a node was CREATED with, which is what
+    /// the frozen snapshots pin. This tracks what the node would
+    /// actually be showing. Same reason as `released`: additive, so no
+    /// existing assertion moves.
+    pub live_text: RefCell<BTreeMap<Node, String>>,
 
     // --- captured platform callbacks, in creation order ---
     /// `attach_states` setters (flip interaction states like a native
@@ -221,6 +239,8 @@ impl Default for Shared {
             kinds: RefCell::new(BTreeMap::new()),
             children: RefCell::new(BTreeMap::new()),
             parent: RefCell::new(BTreeMap::new()),
+            released: RefCell::new(HashSet::new()),
+            live_text: RefCell::new(BTreeMap::new()),
             state_setters: RefCell::new(Vec::new()),
             press_handlers: RefCell::new(Vec::new()),
             button_presses: RefCell::new(Vec::new()),
@@ -432,6 +452,7 @@ impl Host for HostMock {
     /// distinction `Host::release_subtree` exists to carry.
     fn release_subtree(&mut self, node: &Node) {
         self.s.rec("release_subtree", format!("release_subtree n{node}"));
+        self.s.released.borrow_mut().insert(*node);
     }
 
     fn create_anchor(&mut self) -> Node {
@@ -576,6 +597,7 @@ impl caps::TextOps for HostMock {
     fn update_text(&mut self, node: &Node, content: &str) {
         self.s
             .rec("update_text", format!("update_text n{node} {content:?}"));
+        self.s.live_text.borrow_mut().insert(*node, content.to_string());
     }
 
     // create_text_with_id stays the trait default (`None`): dyn text
@@ -600,6 +622,7 @@ impl caps::ButtonOps for HostMock {
             "update_button_label",
             format!("update_button_label n{node} {label:?}"),
         );
+        self.s.live_text.borrow_mut().insert(*node, label.to_string());
     }
 }
 
@@ -1567,6 +1590,47 @@ impl Harness {
     }
 
     /// Indented tree snapshot rooted at `node` (`"n0 view\n  n1 text …"`).
+    /// The LIVE tree: what the backend would actually be showing.
+    ///
+    /// [`Harness::tree`] prints the kind a node was CREATED with and
+    /// includes nodes that have been released, because that is what
+    /// every frozen golden in the repo pins and re-baselining them would
+    /// throw away their whole point. This projection is the other
+    /// question — "what is on screen" — and it is what the overlay's
+    /// live path is asserted against, since a live patch changes exactly
+    /// the two things `tree` cannot see: a node's current text, and
+    /// whether a node is still there.
+    pub fn live_tree(&self, node: Node) -> String {
+        fn walk(h: &Harness, node: Node, depth: usize, out: &mut String) {
+            let kind = match h.shared.live_text.borrow().get(&node) {
+                Some(text) => format!("text {text:?}"),
+                None => h.kind_of(node).unwrap_or_else(|| "?".into()),
+            };
+            out.push_str(&format!("{}n{node} {kind}\n", "  ".repeat(depth)));
+            for child in h.children_of(node) {
+                walk(h, child, depth + 1, out);
+            }
+        }
+        let mut out = String::new();
+        walk(self, node, 0, &mut out);
+        out.trim_end().to_string()
+    }
+
+    /// Every root of the LIVE tree: a node with no parent that has not
+    /// been released. See [`Harness::live_tree`].
+    pub fn live_roots(&self) -> Vec<Node> {
+        let kinds = self.shared.kinds.borrow();
+        let parents = self.shared.parent.borrow();
+        let released = self.shared.released.borrow();
+        let mut roots: Vec<Node> = kinds
+            .keys()
+            .copied()
+            .filter(|n| !parents.contains_key(n) && !released.contains(n))
+            .collect();
+        roots.sort_unstable();
+        roots
+    }
+
     pub fn tree(&self, node: Node) -> String {
         fn walk(h: &Harness, node: Node, depth: usize, out: &mut String) {
             let kind = h.kind_of(node).unwrap_or_else(|| "?".into());
