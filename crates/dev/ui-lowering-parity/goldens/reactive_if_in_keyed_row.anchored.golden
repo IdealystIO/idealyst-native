@@ -1,0 +1,188 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 view
+create n3 text "one"
+insert n2 <- n3
+create n4 anchor
+create n5 view
+insert n4 <- n5
+insert n2 <- n4
+insert n1 <- n2
+create n6 view
+create n7 text "two"
+insert n6 <- n7
+create n8 anchor
+create n9 view
+insert n8 <- n9
+insert n6 <- n8
+insert n1 <- n6
+insert n0 <- n1
+
+-- expand --
+clear_children n4
+create n10 text "detail"
+insert n4 <- n10
+clear_children n8
+create n11 text "detail"
+insert n8 <- n11
+
+-- append --
+clear_children n1
+create n12 view
+create n13 text "one"
+insert n12 <- n13
+create n14 anchor
+create n15 text "detail"
+insert n14 <- n15
+insert n12 <- n14
+insert n1 <- n12
+create n16 view
+create n17 text "two"
+insert n16 <- n17
+create n18 anchor
+create n19 text "detail"
+insert n18 <- n19
+insert n16 <- n18
+insert n1 <- n16
+create n20 view
+create n21 text "three"
+insert n20 <- n21
+create n22 anchor
+create n23 text "detail"
+insert n22 <- n23
+insert n20 <- n22
+insert n1 <- n20
+
+-- collapse --
+clear_children n14
+create n24 view
+insert n14 <- n24
+clear_children n18
+create n25 view
+insert n18 <- n25
+clear_children n22
+create n26 view
+insert n22 <- n26
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 view
+create n3 text "one"
+insert n2 <- n3
+create n4 anchor
+create n5 view
+apply_default_text_font none
+register_stylesheet rules=1
+apply_style n5 width=none
+insert n4 <- n5
+insert n2 <- n4
+insert n1 <- n2
+create n6 view
+create n7 text "two"
+insert n6 <- n7
+create n8 anchor
+create n9 view
+apply_style n9 width=none
+insert n8 <- n9
+insert n6 <- n8
+insert n1 <- n6
+insert n0 <- n1
+
+-- expand --
+on_node_unstyled n5
+release_subtree n5
+clear_children n4
+create n10 text "detail"
+insert n4 <- n10
+on_node_unstyled n9
+release_subtree n9
+clear_children n8
+create n11 text "detail"
+insert n8 <- n11
+
+-- append --
+release_subtree n2
+release_subtree n6
+clear_children n1
+create n12 view
+create n13 text "one"
+insert n12 <- n13
+create n14 anchor
+create n15 text "detail"
+insert n14 <- n15
+insert n12 <- n14
+insert n1 <- n12
+create n16 view
+create n17 text "two"
+insert n16 <- n17
+create n18 anchor
+create n19 text "detail"
+insert n18 <- n19
+insert n16 <- n18
+insert n1 <- n16
+create n20 view
+create n21 text "three"
+insert n20 <- n21
+create n22 anchor
+create n23 text "detail"
+insert n22 <- n23
+insert n20 <- n22
+insert n1 <- n20
+
+-- collapse --
+release_subtree n15
+clear_children n14
+create n24 view
+apply_style n24 width=none
+insert n14 <- n24
+release_subtree n19
+clear_children n18
+create n25 view
+apply_style n25 width=none
+insert n18 <- n25
+release_subtree n23
+clear_children n22
+create n26 view
+apply_style n26 width=none
+insert n22 <- n26
+
+-- unmount --
+on_node_unstyled n24
+on_node_unstyled n25
+on_node_unstyled n26
+
+=== scene ===
+n0 view
+  n1 anchor
+    n12 view
+      n13 text "one"
+      n14 anchor
+        n24 view
+    n16 view
+      n17 text "two"
+      n18 anchor
+        n25 view
+    n20 view
+      n21 text "three"
+      n22 anchor
+        n26 view
+n2 view
+  n3 text "one"
+  n4 anchor
+    n10 text "detail"
+n5 view
+n6 view
+  n7 text "two"
+  n8 anchor
+    n11 text "detail"
+n9 view
+n15 text "detail"
+n19 text "detail"
+n23 text "detail"

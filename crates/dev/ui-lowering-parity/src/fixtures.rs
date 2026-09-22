@@ -823,6 +823,110 @@ fn double(n: i32) -> i32 {
     n * 2
 }
 
+// ---------------------------------------------------------------------------
+// The `scene-parity` structural corpus, re-authored in `ui!`
+//
+// `crates/dev/scene-parity` pins the frozen op sequences for 13 reactive
+// scenarios — but it builds them with `runtime_scene`'s constructors
+// directly and contains no `ui!` at all, so there is nothing there for a
+// LOWERING to be applied to. These fixtures are the missing half: the
+// same reactive shapes (`each_reverse`,
+// `each_insert_middle_survivors`, `switch_rotation`,
+// `nested_when_in_each_row`) authored through `ui!`, so both lowerings
+// are measured against them.
+// ---------------------------------------------------------------------------
+
+fixture! {
+    name = for_keyed_reorder_and_insert;
+    state { rows: Vec<Row> = vec![
+        Row { id: 1, label: "a".to_string() },
+        Row { id: 2, label: "b".to_string() },
+        Row { id: 3, label: "c".to_string() },
+    ] }
+    locals { }
+    drive {
+        "reverse" => |s| {
+            let mut v = s.rows.get();
+            v.reverse();
+            s.rows.set(v);
+        },
+        "insert-middle" => |s| {
+            let mut v = s.rows.get();
+            v.insert(1, Row { id: 9, label: "mid".to_string() });
+            s.rows.set(v);
+        },
+        "remove-first" => |s| {
+            let mut v = s.rows.get();
+            v.remove(0);
+            s.rows.set(v);
+        }
+    }
+    body {
+        view {
+            for row in rows, key = row.id {
+                text { row.label.clone() }
+            }
+        }
+    }
+}
+
+fixture! {
+    name = reactive_if_in_keyed_row;
+    state {
+        rows: Vec<Row> = vec![
+            Row { id: 1, label: "one".to_string() },
+            Row { id: 2, label: "two".to_string() },
+        ],
+        expanded: bool = false,
+    }
+    locals { }
+    drive {
+        "expand" => |s| s.expanded.set(true),
+        "append" => |s| {
+            let mut v = s.rows.get();
+            v.push(Row { id: 3, label: "three".to_string() });
+            s.rows.set(v);
+        },
+        "collapse" => |s| s.expanded.set(false)
+    }
+    body {
+        view {
+            for row in rows, key = row.id {
+                view {
+                    text { row.label.clone() }
+                    if expanded.get() {
+                        text { "detail" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fixture! {
+    name = reactive_match_rotation;
+    state { phase: Phase = Phase::Idle }
+    locals { }
+    drive {
+        "to-Busy" => |s| s.phase.set(Phase::Busy),
+        "to-Done" => |s| s.phase.set(Phase::Done),
+        "back-to-Idle" => |s| s.phase.set(Phase::Idle),
+        "to-Busy-again" => |s| s.phase.set(Phase::Busy)
+    }
+    body {
+        view {
+            match phase.get() {
+                Phase::Idle => { text { "idle" } }
+                Phase::Busy => {
+                    text { "busy" }
+                    text { "spinner" }
+                }
+                Phase::Done => { text { "done" } }
+            }
+        }
+    }
+}
+
 // ===========================================================================
 // Registry
 // ===========================================================================
@@ -869,5 +973,8 @@ pub fn all() -> Vec<Fixture> {
         overlay_and_presence::fixture(),
         flat_list_primitive::fixture(),
         button_arrow_action::fixture(),
+        for_keyed_reorder_and_insert::fixture(),
+        reactive_if_in_keyed_row::fixture(),
+        reactive_match_rotation::fixture(),
     ]
 }

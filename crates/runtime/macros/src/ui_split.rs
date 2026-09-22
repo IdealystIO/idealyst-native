@@ -401,7 +401,7 @@ fn prop_stays_put(kind: Option<&str>, name: &str) -> bool {
 }
 
 /// A coarse syntactic label for a slot expression.
-fn expr_kind(expr: &Expr) -> &'static str {
+pub(crate) fn expr_kind_of(expr: &Expr) -> &'static str {
     match expr {
         Expr::Closure(_) => "closure",
         Expr::Macro(_) => "macro",
@@ -500,7 +500,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                                         role: SlotRole::TextContent,
                                         placement: Placement::Construct,
                                         expr: e.to_token_stream(),
-                                        kind: expr_kind(e),
+                                        kind: expr_kind_of(e),
                                     });
                                 }
                             }
@@ -531,7 +531,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                     role: SlotRole::Condition,
                     placement: Placement::Construct,
                     expr: cond.to_token_stream(),
-                    kind: expr_kind(cond),
+                    kind: expr_kind_of(cond),
                 });
             }
             UiNode::If {
@@ -547,7 +547,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                 role: SlotRole::Iterator,
                 placement: Placement::Construct,
                 expr: iter.to_token_stream(),
-                kind: expr_kind(iter),
+                kind: expr_kind_of(iter),
             });
             if let Some(k) = key {
                 slots.push(SlotDef {
@@ -556,7 +556,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                     role: SlotRole::Key,
                     placement: Placement::Construct,
                     expr: k.to_token_stream(),
-                    kind: expr_kind(k),
+                    kind: expr_kind_of(k),
                 });
             }
             UiNode::For {
@@ -574,7 +574,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                 role: SlotRole::Scrutinee,
                 placement: Placement::Construct,
                 expr: scrutinee.to_token_stream(),
-                kind: expr_kind(scrutinee),
+                kind: expr_kind_of(scrutinee),
             });
             UiNode::Match {
                 scrutinee: scrutinee.clone(),
@@ -600,7 +600,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                     role: SlotRole::ExprChild,
                     placement: Placement::Construct,
                     expr: e.to_token_stream(),
-                    kind: expr_kind(e),
+                    kind: expr_kind_of(e),
                 });
                 return UiNode::Expr(e.clone());
             }
@@ -611,7 +611,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                 role: SlotRole::ExprChild,
                 placement: Placement::Prelude,
                 expr: e.to_token_stream(),
-                kind: expr_kind(e),
+                kind: expr_kind_of(e),
             });
             UiNode::Expr(local_expr(index))
         }
@@ -646,7 +646,7 @@ fn rewrite_prop(slots: &mut Vec<SlotDef>, canonical: Option<&str>, p: &Prop) -> 
         role: SlotRole::PropValue,
         placement: if stays { Placement::Construct } else { Placement::Prelude },
         expr: p.value.to_token_stream(),
-        kind: expr_kind(&p.value),
+        kind: expr_kind_of(&p.value),
     });
 
     if stays {

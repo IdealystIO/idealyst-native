@@ -10125,6 +10125,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-template"
+version = "1.0.0"
+dependencies = [
+ "runtime-scene",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "runtime-vocabulary"
 version = "1.12.1"
 dependencies = [
@@ -10133,6 +10142,7 @@ dependencies = [
  "runtime-macros",
  "runtime-scene",
  "runtime-shared",
+ "runtime-template",
  "runtime-vocabulary",
  "runtime-world",
 ]

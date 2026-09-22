@@ -1267,6 +1267,13 @@ where
 /// The children-flattening seam: `ui!` children blocks append every node
 /// through this. Mirrors `runtime_shared::ChildList` (Element, Vec,
 /// Option, closures, glue wrappers).
+/// The template lowering's builder + descriptor types, reached from the
+/// emission as `::runtime_core::__template::…` (the `finish()` retarget
+/// maps that onto `::runtime_vocabulary::glue::__template::…`). Double
+/// underscore for the same reason `__mcp` has one: it is macro-support
+/// surface, not an author API.
+pub use crate::template as __template;
+
 pub trait ChildList {
     fn append_to(self, out: &mut Vec<Element>);
 }

@@ -1,0 +1,124 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 view
+create n2 text "one"
+insert n1 <- n2
+create n3 view
+insert_at n1 <- n3 @ 1
+create n4 view
+create n5 text "two"
+insert n4 <- n5
+create n6 view
+insert_at n4 <- n6 @ 1
+insert_at n0 <- n1 @ 0
+insert_at n0 <- n4 @ 1
+
+-- expand --
+remove_child n1 -x n3
+create n7 text "detail"
+insert_at n1 <- n7 @ 1
+remove_child n4 -x n6
+create n8 text "detail"
+insert_at n4 <- n8 @ 1
+
+-- append --
+create n9 view
+create n10 text "three"
+insert n9 <- n10
+create n11 text "detail"
+insert_at n9 <- n11 @ 1
+insert_at n0 <- n9 @ 2
+
+-- collapse --
+remove_child n1 -x n7
+create n12 view
+insert_at n1 <- n12 @ 1
+remove_child n4 -x n8
+create n13 view
+insert_at n4 <- n13 @ 1
+remove_child n9 -x n11
+create n14 view
+insert_at n9 <- n14 @ 1
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 view
+create n2 text "one"
+insert n1 <- n2
+create n3 view
+apply_default_text_font none
+register_stylesheet rules=1
+apply_style n3 width=none
+insert_at n1 <- n3 @ 1
+create n4 view
+create n5 text "two"
+insert n4 <- n5
+create n6 view
+apply_style n6 width=none
+insert_at n4 <- n6 @ 1
+insert_at n0 <- n1 @ 0
+insert_at n0 <- n4 @ 1
+
+-- expand --
+remove_child n1 -x n3
+on_node_unstyled n3
+release_subtree n3
+create n7 text "detail"
+insert_at n1 <- n7 @ 1
+remove_child n4 -x n6
+on_node_unstyled n6
+release_subtree n6
+create n8 text "detail"
+insert_at n4 <- n8 @ 1
+
+-- append --
+create n9 view
+create n10 text "three"
+insert n9 <- n10
+create n11 text "detail"
+insert_at n9 <- n11 @ 1
+insert_at n0 <- n9 @ 2
+
+-- collapse --
+remove_child n1 -x n7
+release_subtree n7
+create n12 view
+apply_style n12 width=none
+insert_at n1 <- n12 @ 1
+remove_child n4 -x n8
+release_subtree n8
+create n13 view
+apply_style n13 width=none
+insert_at n4 <- n13 @ 1
+remove_child n9 -x n11
+release_subtree n11
+create n14 view
+apply_style n14 width=none
+insert_at n9 <- n14 @ 1
+
+-- unmount --
+on_node_unstyled n12
+on_node_unstyled n13
+on_node_unstyled n14
+
+=== scene ===
+n0 view
+  n1 view
+    n2 text "one"
+    n12 view
+  n4 view
+    n5 text "two"
+    n13 view
+  n9 view
+    n10 text "three"
+    n14 view
+n3 view
+n6 view
+n7 text "detail"
+n8 text "detail"
+n11 text "detail"

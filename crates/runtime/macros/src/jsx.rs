@@ -38,6 +38,29 @@
 //! The emitter is shared with `ui!` wherever possible — primitive
 //! dispatch (`Text`/`Button`/`View`/`When`) and user-component dispatch
 //! (`BuildElement::build(Foo { … })`) both go through the existing logic.
+//!
+//! ## `jsx!` is NOT on the slot split
+//!
+//! `ui!` lowers through [`crate::ui_split`], which pulls every dynamic
+//! expression out of a node into a `let` prelude evaluated in SOURCE
+//! order (see that module's docs and `crate::ui_template` for why).
+//! `jsx!` does not: it has its own node type and its own `emit_node` /
+//! `emit_block_as_primitive`, and it still emits props where the builder
+//! chain splices them.
+//!
+//! The observable difference is evaluation ORDER for a side-effecting
+//! prop expression — in `jsx!`, a node's `style` is still evaluated
+//! after its children, because it lowers to a trailing
+//! `.with_style(…)`. Both DSLs build the same tree from the same values;
+//! only the order two side-effecting expressions run in can differ, and
+//! only between the two DSLs, never within one.
+//!
+//! Bringing `jsx!` onto the shared split means either re-parsing its
+//! grammar into `UiNode` or generalising the split over both node types.
+//! Neither is hard; it is simply not what the split was added for
+//! (`ui_lowered!`'s two lowerings both consume `UiNode`). Until then:
+//! `jsx!` has ONE lowering, and the template lowering is not reachable
+//! from it.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};

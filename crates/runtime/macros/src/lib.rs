@@ -8,7 +8,26 @@
 //!
 //! - `ui!` (function-like) — JSX-style DSL for composing components.
 //!   Parses `Name(prop = value) { children }` and desugars to plain Rust
-//!   calls / per-component `name!` invocations. See [`ui`].
+//!   calls / `BuildElement` struct literals. See [`ui`].
+//!
+//! ## `ui!`'s two lowerings
+//!
+//! `ui!` emits the **direct** lowering — builder calls inline. A second,
+//! **template** lowering ([`ui_template`]) turns the same parsed tree
+//! into a `static` descriptor plus a runtime slot array, built by
+//! `runtime_vocabulary::template`. They share the whole front half: the
+//! parser, the [`ui::UiNode`] tree, and [`ui_split`]'s static/slot
+//! classification and hoisting prelude.
+//!
+//! Selection is PER INVOCATION, through the test-only
+//! `ui_lowered!(direct { … })` / `ui_lowered!(template { … })` — never a
+//! cargo feature on this crate, because a proc-macro crate is compiled
+//! once per build graph and a feature here would flip the lowering for
+//! every crate in the same cargo invocation. That is the hazard that
+//! removed the `new-core` feature; see the NOTE in `Cargo.toml`.
+//!
+//! The two must build identical scenes. `crates/dev/ui-lowering-parity`
+//! is the gate.
 //!
 //! ## Heuristics, limitations
 //!

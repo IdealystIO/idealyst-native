@@ -1,0 +1,32 @@
+# runtime-template — the DATA half of `ui!`'s template lowering.
+#
+# A `Descriptor` is everything about a `ui!` site that is not code: the
+# node tree, the tags, the attribute names, the literal values, the child
+# order, and a `SlotSig` describing the ordered dynamic expressions the
+# site leaves to its slot list. `ui_lowered!(template { … })` emits one
+# `static Descriptor` per site; `runtime_vocabulary::template` builds the
+# `Element` from `(descriptor, slots)`.
+#
+# Deliberately narrow dependencies — `runtime-scene` and `serde`, nothing
+# else. No builders, no dev-server, no CLI. That is what keeps a
+# descriptor a portable artifact: it serializes, it validates against a
+# `Registry` without a renderer in the graph, and a future
+# over-the-air source can slot in behind `TemplateSource` without this
+# crate learning anything about transports. That OTA path is NOT built
+# here; the seam is.
+[package]
+name = "runtime-template"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Idealyst ui! template descriptors: the static half of a ui! site, plus slot signatures and patch validation."
+
+[dependencies]
+# For `Element` in the `TemplateSource` docs and to keep the crate in the
+# same version train as the scene model whose trees its descriptors
+# describe. No scene API is called from here.
+runtime-scene = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

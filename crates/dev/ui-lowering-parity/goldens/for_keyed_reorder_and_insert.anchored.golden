@@ -1,0 +1,114 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "a"
+insert n1 <- n2
+create n3 text "b"
+insert n1 <- n3
+create n4 text "c"
+insert n1 <- n4
+insert n0 <- n1
+
+-- reverse --
+clear_children n1
+create n5 text "c"
+insert n1 <- n5
+create n6 text "b"
+insert n1 <- n6
+create n7 text "a"
+insert n1 <- n7
+
+-- insert-middle --
+clear_children n1
+create n8 text "c"
+insert n1 <- n8
+create n9 text "mid"
+insert n1 <- n9
+create n10 text "b"
+insert n1 <- n10
+create n11 text "a"
+insert n1 <- n11
+
+-- remove-first --
+clear_children n1
+create n12 text "mid"
+insert n1 <- n12
+create n13 text "b"
+insert n1 <- n13
+create n14 text "a"
+insert n1 <- n14
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "a"
+insert n1 <- n2
+create n3 text "b"
+insert n1 <- n3
+create n4 text "c"
+insert n1 <- n4
+insert n0 <- n1
+
+-- reverse --
+release_subtree n2
+release_subtree n3
+release_subtree n4
+clear_children n1
+create n5 text "c"
+insert n1 <- n5
+create n6 text "b"
+insert n1 <- n6
+create n7 text "a"
+insert n1 <- n7
+
+-- insert-middle --
+release_subtree n5
+release_subtree n6
+release_subtree n7
+clear_children n1
+create n8 text "c"
+insert n1 <- n8
+create n9 text "mid"
+insert n1 <- n9
+create n10 text "b"
+insert n1 <- n10
+create n11 text "a"
+insert n1 <- n11
+
+-- remove-first --
+release_subtree n8
+release_subtree n9
+release_subtree n10
+release_subtree n11
+clear_children n1
+create n12 text "mid"
+insert n1 <- n12
+create n13 text "b"
+insert n1 <- n13
+create n14 text "a"
+insert n1 <- n14
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 anchor
+    n12 text "mid"
+    n13 text "b"
+    n14 text "a"
+n2 text "a"
+n3 text "b"
+n4 text "c"
+n5 text "c"
+n6 text "b"
+n7 text "a"
+n8 text "c"
+n9 text "mid"
+n10 text "b"
+n11 text "a"

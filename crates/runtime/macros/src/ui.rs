@@ -579,7 +579,7 @@ fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
 /// Primitives and bare expressions are a single value either way, so
 /// they ignore the context.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Ctx {
+pub(crate) enum Ctx {
     Child,
     Single,
 }
@@ -654,8 +654,37 @@ pub(crate) fn emit_with(ui: Ui, input: &TokenStream2, lowering: Lowering) -> Tok
     emit_direct(ui, input)
 }
 
+// The lowering the CURRENT expansion is running under.
+//
+// Thread-local rather than a parameter threaded through ~25 emission
+// functions. It is only ever read by the two body-scope helpers
+// ([`emit_child_scope`] and [`emit_block_as_primitive`]), and it exists
+// so that a TEMPLATE expansion's escaped nodes — a `for`, a `match`, a
+// static `if`, a primitive the descriptor does not model — still have
+// their bodies lowered as nested TEMPLATES. Without it an escape would
+// sink its whole subtree into the direct lowering, and the template
+// half of the parity suite would stop testing anything below the first
+// escape.
+//
+// Safe as a thread-local: a proc-macro expansion is single-threaded and
+// never interleaved with another, and every top-level entry point sets
+// it before emitting.
+thread_local! {
+    static AMBIENT_LOWERING: std::cell::Cell<Lowering> =
+        const { std::cell::Cell::new(Lowering::Direct) };
+}
+
+pub(crate) fn ambient_lowering() -> Lowering {
+    AMBIENT_LOWERING.with(|c| c.get())
+}
+
+pub(crate) fn set_ambient_lowering(lowering: Lowering) {
+    AMBIENT_LOWERING.with(|c| c.set(lowering));
+}
+
 fn emit_direct(ui: Ui, input: &TokenStream2) -> TokenStream2 {
     crate::ui_split::reset_slot_counter();
+    set_ambient_lowering(Lowering::Direct);
     let body = emit_root_scope(&ui.elements);
     emit_shell(input, body)
 }
@@ -687,7 +716,7 @@ fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
 /// Wrap `body` in its scope's slot prelude, or return it unchanged when
 /// the scope hoisted nothing (so a fully-static tree's emission is
 /// byte-identical to the pre-slot-rewrite output).
-fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -> TokenStream2 {
+pub(crate) fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -> TokenStream2 {
     let prelude = scope.prelude_for(&body);
     if prelude.is_empty() {
         body
@@ -705,7 +734,10 @@ fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -> TokenStre
 /// enclosing scope's head. That is also what the direct lowering has
 /// always done, since the author's expressions live inside the
 /// branch/row closure.
-fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
+pub(crate) fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
+    if ambient_lowering() == Lowering::Template {
+        return crate::ui_template::emit_child_scope(nodes);
+    }
     let scope = crate::ui_split::split(nodes);
     let parts: Vec<TokenStream2> =
         scope.nodes.iter().map(|n| emit_node(n, Ctx::Child)).collect();
@@ -1466,7 +1498,7 @@ fn parse_expr_prefix(mut toks: Vec<TokenTree>) -> Option<TokenStream2> {
     None
 }
 
-fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
+pub(crate) fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
     match node {
         UiNode::Component { name, props, children, chain } => {
             emit_component(name, props, children.as_deref(), chain)
@@ -1888,7 +1920,51 @@ pub(crate) fn try_emit_fstring_lit(lit: &syn::LitStr) -> Option<TokenStream2> {
     })
 }
 
+/// What a `text` node's content lowers to. Both lowerings consume this
+/// ONE decision so they cannot drift: `emit_text` renders
+/// `text(<expr>)` from it, and the template emitter turns `Literal` into
+/// descriptor data and `Expr` into a `text` slot.
+pub(crate) enum TextLowering {
+    /// A bare string literal with no f-string placeholders — the one
+    /// content shape a descriptor can carry as data.
+    Literal(String),
+    /// The final content expression to hand to `text(...)`.
+    Expr(TokenStream2),
+    /// The migration guard (a bare `.get()` in text position). Rendered
+    /// as-is by both lowerings so the author sees one diagnostic.
+    Error(TokenStream2),
+}
+
 fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    match text_lowering(props, children) {
+        TextLowering::Literal(_) => {
+            // The literal path is `Expr` too as far as emission goes;
+            // `text_lowering` only splits it out so the descriptor can
+            // see it. Re-render from the original tokens.
+            let content = literal_content_tokens(props, children);
+            quote! { ::runtime_core::text(#content) }
+        }
+        TextLowering::Expr(e) => quote! { ::runtime_core::text(#e) },
+        TextLowering::Error(e) => e,
+    }
+}
+
+/// The literal content tokens for a `TextLowering::Literal` decision —
+/// the author's own literal, so the emitted expression is unchanged from
+/// before the split.
+fn literal_content_tokens(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    if let Some(kids) = children {
+        if let Some(UiNode::Expr(e)) = kids.first() {
+            return e.to_token_stream();
+        }
+    }
+    if let Some(p) = props.iter().find(|p| p.name == "content") {
+        return p.value.to_token_stream();
+    }
+    quote! { "" }
+}
+
+pub(crate) fn text_lowering(props: &[Prop], children: Option<&[UiNode]>) -> TextLowering {
     // Text takes its content from either a `content` prop or a
     // children block. Children win when both are present.
     //
@@ -1928,11 +2004,9 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                 // signal arg via `.get()`, exactly what `Derived`'s
                 // `compute` did.
                 if let Some(call) = reactive_call_with_gets(expr) {
-                    return quote! {
-                        ::runtime_core::text(
-                            move || ::std::format!("{}", #call)
-                        )
-                    };
+                    return TextLowering::Expr(quote! {
+                        move || ::std::format!("{}", #call)
+                    });
                 }
                 // Path (2): a CLOSURE child is reactive — the 0.1.0 type-driven
                 // boundary. `text { move || … }` re-evaluates on each fire; the
@@ -1943,16 +2017,16 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
                 // `String`.
                 if let Expr::Closure(closure) = expr {
                     let body = &closure.body;
-                    return quote! {
-                        ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #body }))
-                    };
+                    return TextLowering::Expr(quote! {
+                        move || ::std::string::ToString::to_string(&{ #body })
+                    });
                 }
                 // Path (2b): F-STRING — a literal child with `{name}`
                 // placeholders interpolates, slots live-or-static by
                 // TYPE. Placeholder-free literals fall through to the
                 // static path untouched (see `parse_fstring`).
                 if let Some(src) = try_emit_fstring(expr) {
-                    return quote! { ::runtime_core::text(#src) };
+                    return TextLowering::Expr(src);
                 }
             }
         }
@@ -1964,12 +2038,12 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         if let Some(p) = props.iter().find(|p| p.name == "content") {
             if let Expr::Closure(closure) = &p.value {
                 let body = &closure.body;
-                return quote! {
-                    ::runtime_core::text(move || ::std::string::ToString::to_string(&{ #body }))
-                };
+                return TextLowering::Expr(quote! {
+                    move || ::std::string::ToString::to_string(&{ #body })
+                });
             }
             if let Some(src) = try_emit_fstring(&p.value) {
-                return quote! { ::runtime_core::text(#src) };
+                return TextLowering::Expr(src);
             }
         }
     }
@@ -1990,20 +2064,37 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     // is NOT a signal (`Cell`/`OnceCell::get()`) in bare text — is resolved by
     // binding to a `let` first: `let v = cell.get(); text { v }`.
     if text_content_reads_signal_bare(children, props) {
-        return quote! {
+        return TextLowering::Error(quote! {
             ::std::compile_error!(
                 "0.1.0: reactive text must be a closure. Write \
                  `text { move || … }` (e.g. `text { move || format!(\"{}\", sig.get()) }`) \
                  instead of `text { …sig.get()… }` — a bare `.get()` in text is now static. \
                  `rx!(…)` values stay reactive by type."
             )
-        };
+        });
     }
 
+    // Path (3): static — a literal, a build-time `format!()`, a bare value, or a
+    // reactive-BY-TYPE value (`rx!`, a `Reactive<String>` /
+    // `Signal<String>` handle) that `IntoTextSource` routes on its own.
+    //
+    // A bare, placeholder-free STRING LITERAL is split out as `Literal`:
+    // it is the one content shape a descriptor can carry as data, so the
+    // template lowering has to see it as such. The direct lowering
+    // renders it from the author's own tokens, unchanged.
     let content: TokenStream2 = if let Some(kids) = children {
         match kids.len() {
-            0 => quote! { "" },
-            1 => emit_node(&kids[0], Ctx::Single),
+            0 => return TextLowering::Literal(String::new()),
+            1 => {
+                if let UiNode::Expr(Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(lit),
+                    ..
+                })) = &kids[0]
+                {
+                    return TextLowering::Literal(lit.value());
+                }
+                emit_node(&kids[0], Ctx::Single)
+            }
             _ => {
                 let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
                 quote! {
@@ -2016,15 +2107,15 @@ fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
             }
         }
     } else if let Some(p) = props.iter().find(|p| p.name == "content") {
+        if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit), .. }) = &p.value {
+            return TextLowering::Literal(lit.value());
+        }
         p.value.to_token_stream()
     } else {
-        quote! { "" }
+        return TextLowering::Literal(String::new());
     };
 
-    // Path (3): static — a literal, a build-time `format!()`, a bare value, or a
-    // reactive-BY-TYPE value (`rx!`, a `Reactive<String>` /
-    // `Signal<String>` handle) that `IntoTextSource` routes on its own.
-    quote! { ::runtime_core::text(#content) }
+    TextLowering::Expr(content)
 }
 
 /// Migration guard helper — true iff the text content is a **bare** expression
@@ -2100,7 +2191,7 @@ pub(crate) fn is_reactive_call_shape(expr: &Expr) -> bool {
 /// arg (`method((sig_a).get(), (sig_b).get())`). The caller wraps it in
 /// whatever closure form the construct needs. Returns `None` for any
 /// other shape (the caller falls through to its non-structured paths).
-fn reactive_call_with_gets(expr: &Expr) -> Option<TokenStream2> {
+pub(crate) fn reactive_call_with_gets(expr: &Expr) -> Option<TokenStream2> {
     if !is_reactive_call_shape(expr) {
         return None;
     }
@@ -2121,16 +2212,40 @@ fn expression_reads_signal(tokens: &TokenStream2) -> bool {
 }
 
 fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
-    let label = props
+    let label = button_label(props);
+    let on_click = button_on_click(props);
+    let leading = if let Some(p) = props.iter().find(|p| p.name == "leading_icon") {
+        let v = &p.value;
+        quote! { .leading_icon(#v) }
+    } else {
+        quote! {}
+    };
+    let trailing = if let Some(p) = props.iter().find(|p| p.name == "trailing_icon") {
+        let v = &p.value;
+        quote! { .trailing_icon(#v) }
+    } else {
+        quote! {}
+    };
+    quote! { ::runtime_core::button(#label, #on_click) #leading #trailing }
+}
+
+/// A `button`'s label expression. Shared with the template lowering.
+pub(crate) fn button_label(props: &[Prop]) -> TokenStream2 {
+    props
         .iter()
         .find(|p| p.name == "label")
         .map(|p| p.value.to_token_stream())
-        .unwrap_or_else(|| quote! { "" });
+        .unwrap_or_else(|| quote! { "" })
+}
+
+/// A `button`'s press expression. Shared with the template lowering so
+/// the structured-call rewrite below cannot drift between them.
+pub(crate) fn button_on_click(props: &[Prop]) -> TokenStream2 {
     // on_click: three shapes, in priority order:
     //   1. `on_click = method(sig) => out_signal` — structured Action
     //   2. `on_click = method(sig)` — structured Action, fire-and-forget
     //   3. `on_click = closure_expression` — opaque coercion via IntoAction
-    let on_click = match props.iter().find(|p| p.name == "on_click") {
+    match props.iter().find(|p| p.name == "on_click") {
         Some(p) => {
             // The structured `Action` (wire metadata: method name,
             // signal ids) was generator-backend surface and died with
@@ -2149,20 +2264,7 @@ fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
             }
         }
         None => quote! { || {} },
-    };
-    let leading = if let Some(p) = props.iter().find(|p| p.name == "leading_icon") {
-        let v = &p.value;
-        quote! { .leading_icon(#v) }
-    } else {
-        quote! {}
-    };
-    let trailing = if let Some(p) = props.iter().find(|p| p.name == "trailing_icon") {
-        let v = &p.value;
-        quote! { .trailing_icon(#v) }
-    } else {
-        quote! {}
-    };
-    quote! { ::runtime_core::button(#label, #on_click) #leading #trailing }
+    }
 }
 
 fn emit_view(_props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
@@ -2895,7 +2997,7 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
 /// itself portals out of flow. An absolutely-positioned empty view is a
 /// real (When-swappable) node that contributes nothing to layout when the
 /// branch is absent, so a false `if` is truly weightless.
-fn empty_view_primitive() -> TokenStream2 {
+pub(crate) fn empty_view_primitive() -> TokenStream2 {
     quote! { ::runtime_vocabulary::glue::empty_absolute_view() }
 }
 
@@ -3144,7 +3246,7 @@ fn condition_is_reactive(cond: &Expr) -> bool {
 /// type-driven `StaticCond` / `ReactiveCond` dispatch in `emit_if` (its *type*
 /// decides). Macros are checked for a literal `.get()` (the one seam we can't
 /// walk structurally); unrecognized exotic shapes default to reactive.
-fn condition_may_read_signal(expr: &Expr) -> bool {
+pub(crate) fn condition_may_read_signal(expr: &Expr) -> bool {
     match expr {
         // A call of any kind may read a signal — directly (`.get()`) or in the
         // callee (`foo(x)`, `items.len()`, a predicate that reads a signal).
@@ -3618,7 +3720,10 @@ fn try_emit_for_repeat(
 /// either a `Bound<H>` (from a primitive constructor) or a `Element`
 /// (from a user component) and the surrounding `when()` / `if`
 /// expression always sees `Element`.
-fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
+pub(crate) fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
+    if ambient_lowering() == Lowering::Template {
+        return crate::ui_template::emit_single_scope(nodes);
+    }
     // A branch / arm / row / presence body is its own template scope —
     // see `emit_child_scope`.
     let scope = crate::ui_split::split(nodes);

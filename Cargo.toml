@@ -28,6 +28,9 @@ members = [
     # primitive handlers, and `glue` — the author-surface module
     # `runtime-core` re-exports.
     "crates/runtime/vocabulary",
+    # The DATA half of `ui!`'s template lowering: descriptors + slot
+    # signatures + patch validation. Deps: runtime-scene and serde only.
+    "crates/runtime/template",
     "crates/runtime/layout",
 
     # Shared StyleRules → CSS conversion (used by web + ssr backends).
@@ -416,6 +419,7 @@ runtime-shared = { path = "crates/runtime/shared", version = "1.10.2", registry 
 runtime-world = { path = "crates/runtime/world", version = "1.5.2", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.5.3", registry = "idealyst" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.12.1", registry = "idealyst" }
+runtime-template = { path = "crates/runtime/template", version = "1.0.0", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
 # which are never attacker-controlled — SipHash's DoS-resistance is pure

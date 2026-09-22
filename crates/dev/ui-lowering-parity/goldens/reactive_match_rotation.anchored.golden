@@ -1,0 +1,94 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "idle"
+insert n1 <- n2
+insert n0 <- n1
+
+-- to-Busy --
+clear_children n1
+create n3 view
+create n4 text "busy"
+insert n3 <- n4
+create n5 text "spinner"
+insert n3 <- n5
+insert n1 <- n3
+
+-- to-Done --
+clear_children n1
+create n6 text "done"
+insert n1 <- n6
+
+-- back-to-Idle --
+clear_children n1
+create n7 text "idle"
+insert n1 <- n7
+
+-- to-Busy-again --
+clear_children n1
+create n8 view
+create n9 text "busy"
+insert n8 <- n9
+create n10 text "spinner"
+insert n8 <- n10
+insert n1 <- n8
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 anchor
+create n2 text "idle"
+insert n1 <- n2
+insert n0 <- n1
+
+-- to-Busy --
+release_subtree n2
+clear_children n1
+create n3 view
+create n4 text "busy"
+insert n3 <- n4
+create n5 text "spinner"
+insert n3 <- n5
+insert n1 <- n3
+
+-- to-Done --
+release_subtree n3
+clear_children n1
+create n6 text "done"
+insert n1 <- n6
+
+-- back-to-Idle --
+release_subtree n6
+clear_children n1
+create n7 text "idle"
+insert n1 <- n7
+
+-- to-Busy-again --
+release_subtree n7
+clear_children n1
+create n8 view
+create n9 text "busy"
+insert n8 <- n9
+create n10 text "spinner"
+insert n8 <- n10
+insert n1 <- n8
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 anchor
+    n8 view
+      n9 text "busy"
+      n10 text "spinner"
+n2 text "idle"
+n3 view
+  n4 text "busy"
+  n5 text "spinner"
+n6 text "done"
+n7 text "idle"
