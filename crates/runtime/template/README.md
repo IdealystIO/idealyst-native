@@ -131,8 +131,13 @@ Descriptor-native today:
   spelling), `overlay`, `anchored_overlay`, `presence`, `graphics` —
   with the props `runtime_vocabulary::template::build_prim` models,
   which is every prop the corresponding `ui::emit_*` lowers;
-- a `#[component]` whose props are all descriptor literals, plus its
-  children;
+- **every `#[component]` invocation**. Its literal props are descriptor
+  data; a DYNAMIC prop's value is captured by the `ctor` thunk (its type
+  is the component's field type, which only the call site can name) and
+  its NAME is recorded in `Node::Component::dynamic`, so a reader can
+  see which props a descriptor edit could change and which are compiled
+  in. The children and the child order stay data either way, which is
+  most of what a component subtree is;
 - a reactive `if` AND the `when` tag, both as `Dyn` — condition and
   branch thunks in slots, each branch its own nested template.
 
@@ -143,7 +148,6 @@ Escaped today, and why:
 | `flat_list`, `link(route = …)` | GENERIC constructors (`flat_list<T, K, S, R>`, `link<P>`) — a builder driven by data has no type to instantiate them at |
 | `image(asset = …)` | a different constructor (`image_asset(*v)`), not this node kind |
 | an uncontrolled `text_input`/`toggle`/`slider` | an absent `value` makes the direct emitter mint a signal (`glue::fresh_signal(…)`); deciding to allocate state is not a descriptor's job |
-| a component with any dynamic prop | the builder cannot assign an arbitrarily-typed field |
 | a trailing `.method(…)` chain | raw tokens, not a parsed expression — the split pass cannot classify them |
 | `for`, `match`, static `if`, `if let` | the construct is code (patterns, bindings); its BODIES are still nested templates |
 | a bare expression child | it is an expression |

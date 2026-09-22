@@ -321,6 +321,17 @@ pub enum Node {
         ctor: u32,
         literals: List<PropEntry>,
         children: List<u32>,
+        /// Props the site passes as CODE, by name.
+        ///
+        /// A dynamic prop's value is captured by the `ctor` thunk, not
+        /// carried here — its type is the component's field type, which
+        /// only the call site can name. Recording the names anyway is
+        /// what keeps the descriptor honest: a reader can see which of a
+        /// component's props a descriptor edit could change (the
+        /// `literals`) and which are compiled in (these). Pretending
+        /// they were addressable slots would be worse than omitting
+        /// them.
+        dynamic: List<Text>,
     },
     /// A reactive `if`: a `Fn() -> bool` in slot `cond` selects between
     /// two `Fn() -> Element` branch thunks. Each branch is its own

@@ -76,12 +76,16 @@ use crate::style_attach::{IntoStyleProp, StyleProp};
 /// The builder cannot name a component's props type, so the emission
 /// provides this: it mints the props struct's defaults, applies the
 /// descriptor's literals through the generated
-/// `__apply_literal(&mut Props, name, value) -> bool`, moves the built
-/// children in, and calls `BuildElement::build`.
+/// `__apply_literal(&mut Props, name, value) -> bool`, assigns the
+/// DYNAMIC props it captured, moves the built children in, and calls
+/// `BuildElement::build`.
 ///
-/// `Rc<dyn Fn>` rather than `Box<dyn FnOnce>` so a nested template's
-/// branch thunk can hold one across re-invocations.
-pub type ComponentCtor = Rc<dyn Fn(&[PropEntry], Vec<Element>) -> Element>;
+/// `FnOnce`, and that is what lets a dynamic prop work at all: the thunk
+/// captures the prop's already-evaluated value by move, so its type
+/// never has to leave the call site. Taken from the slot array once and
+/// called once — a nested template rebuilds its whole slot array per
+/// invocation, so nothing needs to survive a second call.
+pub type ComponentCtor = Box<dyn FnOnce(&[PropEntry], Vec<Element>) -> Element>;
 
 // ===========================================================================
 // SlotValue
@@ -205,8 +209,8 @@ impl SlotValue {
         SlotValue::Elements(out)
     }
 
-    pub fn ctor(f: impl Fn(&[PropEntry], Vec<Element>) -> Element + 'static) -> SlotValue {
-        SlotValue::Ctor(Rc::new(f))
+    pub fn ctor(f: impl FnOnce(&[PropEntry], Vec<Element>) -> Element + 'static) -> SlotValue {
+        SlotValue::Ctor(Box::new(f))
     }
 
     pub fn cond(f: impl Fn() -> bool + 'static) -> SlotValue {

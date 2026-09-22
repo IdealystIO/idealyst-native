@@ -546,31 +546,29 @@ impl<'a> DescBuilder<'a> {
         children: Option<&[UiNode]>,
         ctx: Ctx,
     ) -> u32 {
-        // Every prop must be a descriptor literal. A dynamic prop would
-        // need the builder to assign an arbitrarily-typed field, which
-        // it cannot do; the whole invocation escapes instead. (That is
-        // also the fallback for a component with no `#[component]`:
-        // slot-only, never an error.)
-        let mut literals: Vec<(String, StaticValue)> = Vec::with_capacity(props.len());
+        let _ = (node, ctx);
+        // Props split two ways. A LITERAL goes into the descriptor as
+        // data, which is what makes editing it a data change. Anything
+        // else is captured by the ctor thunk below: its type is the
+        // component's field type, which only the call site can name, so
+        // it cannot become an addressable slot — but it does not have to
+        // escape the whole node either. The children and the child ORDER
+        // stay descriptor data regardless, which is most of what a
+        // component subtree is.
+        let mut entries: Vec<TokenStream2> = Vec::new();
+        let mut dynamic: Vec<String> = Vec::new();
         for p in props {
-            match ui_split::classify_static(&p.value) {
-                Some(stat) => literals.push((p.name.to_string(), stat)),
-                None => return self.escape(node, ctx),
+            match ui_split::classify_static(&p.value).and_then(|stat| literal_tokens(&stat)) {
+                Some(lit) => entries.push(prop_entry(&p.name.to_string(), lit)),
+                None => dynamic.push(p.name.to_string()),
             }
-        }
-
-        let entries: Vec<TokenStream2> = literals
-            .iter()
-            .filter_map(|(n, stat)| literal_tokens(stat).map(|lit| prop_entry(n, lit)))
-            .collect();
-        if entries.len() != literals.len() {
-            return self.escape(node, ctx);
         }
 
         // The site-local constructor: the builder cannot name the props
         // type, so the emission mints defaults, applies the descriptor's
         // literals through the generated `__apply_literal`, resolves the
-        // ones it refuses, and builds.
+        // ones it refuses, assigns the dynamic props it captured, and
+        // builds.
         let ctor = self.component_ctor(name, props, children.is_some());
         let ctor_slot = self.push_slot(ctor, Some("__ctor"), "prop", "ctor");
 
@@ -586,6 +584,9 @@ impl<'a> DescBuilder<'a> {
                 ctor: #ctor_slot,
                 literals: ::std::borrow::Cow::Borrowed(&[#(#entries),*]),
                 children: ::std::borrow::Cow::Borrowed(&[#(#child_indices),*]),
+                dynamic: ::std::borrow::Cow::Borrowed(&[
+                    #(::std::borrow::Cow::Borrowed(#dynamic)),*
+                ]),
             }
         })
     }
@@ -622,14 +623,35 @@ impl<'a> DescBuilder<'a> {
         props: &[Prop],
         has_children: bool,
     ) -> TokenStream2 {
-        let fallback_arms = props.iter().map(|p| {
-            let key = p.name.to_string();
-            let field = &p.name;
-            let value = &p.value;
-            quote! {
-                #key => { __props.#field = (#value).into(); }
-            }
-        });
+        // Only LITERAL props get a fallback arm — a dynamic one is
+        // never in the descriptor's `literals`, so `__apply_literal`
+        // would never be asked about it.
+        let fallback_arms: Vec<TokenStream2> = props
+            .iter()
+            .filter(|p| ui_split::classify_static(&p.value).is_some())
+            .map(|p| {
+                let key = p.name.to_string();
+                let field = &p.name;
+                let value = &p.value;
+                quote! {
+                    #key => { __props.#field = (#value).into(); }
+                }
+            })
+            .collect();
+
+        // Dynamic props are assigned directly. The value is already
+        // bound — a `Prelude` slot's local, or the author's expression
+        // where the split left it — so this is the same `(v).into()`
+        // `emit_user` performs, at the same point in the same order.
+        let dynamic_assigns: Vec<TokenStream2> = props
+            .iter()
+            .filter(|p| ui_split::classify_static(&p.value).is_none())
+            .map(|p| {
+                let field = &p.name;
+                let value = &p.value;
+                quote! { __props.#field = (#value).into(); }
+            })
+            .collect();
         let children_field = if has_children {
             quote! { children: __children, }
         } else {
@@ -658,6 +680,7 @@ impl<'a> DescBuilder<'a> {
                             _ => {}
                         }
                     }
+                    #(#dynamic_assigns)*
                     ::runtime_core::BuildElement::build(#name {
                         #children_field
                         ..__props
@@ -1190,15 +1213,36 @@ mod tests {
         assert!(out.contains(r#""count"=>{__props.count=(5).into();}"#), "{out}");
     }
 
-    /// A component with a DYNAMIC prop escapes whole: the builder cannot
-    /// assign an arbitrarily-typed field, and a partially-applied
-    /// descriptor would silently drop it.
+    /// A component with a DYNAMIC prop is still a `Component` node: the
+    /// prop's value is CAPTURED by the ctor thunk, so its type never has
+    /// to leave the call site. The node, its tag, its literal props and
+    /// its children stay descriptor data — which is most of what a
+    /// component subtree is.
     #[test]
-    fn a_component_with_a_dynamic_prop_escapes() {
+    fn a_component_with_a_dynamic_prop_is_native_with_the_prop_captured() {
         let out = emitted(quote::quote! { Counter(value = count) });
-        assert!(out.contains("TemplateNode::Escape{"), "{out}");
-        assert!(!out.contains("TemplateNode::Component{"), "{out}");
-        assert!(out.contains("BuildElement::build"), "{out}");
+        assert!(out.contains("TemplateNode::Component{"), "{out}");
+        assert!(!out.contains("TemplateNode::Escape{"), "{out}");
+        // The prop is named in the descriptor so a reader can see it is
+        // compiled in, not patchable…
+        assert!(out.contains(r#"dynamic:::std::borrow::Cow::Borrowed(&[::std::borrow::Cow::Borrowed("value")])"#), "{out}");
+        // …and its value is assigned from the hoisted local, with the
+        // same `.into()` at the same point `emit_user` uses.
+        assert!(out.contains("__props.value=(__ui_s0).into();"), "{out}");
+    }
+
+    /// A component mixing literal and dynamic props splits them: the
+    /// literals become descriptor DATA (patchable), the dynamic one is
+    /// captured. Only the literals get a `__apply_literal` fallback arm.
+    #[test]
+    fn a_component_splits_literal_props_from_dynamic_ones() {
+        let out = emitted(quote::quote! { Badge(label = "alpha", count = n) });
+        assert!(out.contains(r#"TemplateLiteral::Str(::std::borrow::Cow::Borrowed("alpha"))"#), "{out}");
+        assert!(out.contains(r#"dynamic:::std::borrow::Cow::Borrowed(&[::std::borrow::Cow::Borrowed("count")])"#), "{out}");
+        assert!(out.contains("__props.count=(__ui_s0).into();"), "{out}");
+        // The fallback covers `label` (a literal) and not `count`.
+        assert!(out.contains(r#""label"=>{__props.label=("alpha").into();}"#), "{out}");
+        assert!(!out.contains(r#""count"=>"#), "{out}");
     }
 
     /// A trailing `.method(args)` chain is raw tokens, not a parsed
@@ -1473,7 +1517,7 @@ mod tests {
             }),
             // A component with a DYNAMIC prop: the builder cannot assign
             // an arbitrarily-typed field.
-            ("component_dynamic_props", (0, 1), quote::quote! {
+            ("component_dynamic_props", (1, 0), quote::quote! {
                 Counter(value = count)
             }),
             // Generic constructors — structural, not a backlog.
@@ -1506,7 +1550,7 @@ mod tests {
         assert!(wrong.is_empty(), "descriptor-native coverage moved:\n{}", wrong.join("\n"));
         assert_eq!(
             (native_total, escaped_total),
-            (54, 7),
+            (55, 6),
             "corpus totals moved — update the per-case numbers above first"
         );
     }
