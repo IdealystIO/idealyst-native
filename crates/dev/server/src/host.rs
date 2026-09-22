@@ -176,6 +176,63 @@ pub fn run(
         user_crate,
     } = cfg;
 
+    // The port sentinel goes up FIRST, before anything expensive.
+    //
+    // The CLI parent blocks for 10s waiting for this file — it cannot
+    // bake `IDEALYST_DEV_ENDPOINT` into a platform launch without the
+    // number. Everything below this point does real work before the
+    // listener binds: parsing the sidecar binary's symbol table for the
+    // hot-patch cache, and scanning the crate's `ui!` sites. On a small
+    // app both are milliseconds. On a real one they are seconds, and
+    // the sentinel thread — which only polls a mutex — used to be
+    // started AFTER them, so the session died at startup with "the host
+    // process likely crashed" while the host was in fact fine and
+    // merely busy.
+    let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
+
+    if let Ok(path) = std::env::var("IDEALYST_RUNTIME_SERVER_PORT_FILE") {
+        let port_for_file = port_mirror.clone();
+        std::thread::spawn(move || {
+            // Ensure the sentinel's parent dir exists before the
+            // write loop starts. Pre-fix every fresh project printed
+            // `could not write port sentinel … No such file or
+            // directory (os error 2)` on first launch because the
+            // path lives under `target/idealyst/<project>/aas/` —
+            // a dir build-runtime-server creates only when the host wrapper
+            // itself is compiled, not when the orchestrator points
+            // a pre-built host at the path. mkdir_p is idempotent.
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    eprintln!(
+                        "[runtime-server-host] could not create port-sentinel parent {}: {}",
+                        parent.display(),
+                        e
+                    );
+                }
+            }
+            for _ in 0..200 {
+                if let Ok(g) = port_for_file.lock() {
+                    if let Some(p) = *g {
+                        if let Err(e) = std::fs::write(&path, p.to_string()) {
+                            eprintln!(
+                                "[runtime-server-host] could not write port sentinel {}: {}",
+                                path, e
+                            );
+                        } else {
+                            eprintln!("[runtime-server-host] wrote bound port {} to {}", p, path);
+                        }
+                        return;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            eprintln!(
+                "[runtime-server-host] timed out waiting for serve to bind; no port sentinel written"
+            );
+        });
+    }
+
+
     let recorder = WireRecordingBackend::new();
     let sidecar_slot: SidecarSlot = Arc::new(Mutex::new(None));
     let session_tracker = SessionTracker::new();
@@ -431,50 +488,6 @@ pub fn run(
             rescan_archive(&mut overlay_archive, overlay_crate_dir.as_deref());
         }),
     );
-
-    let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
-
-    if let Ok(path) = std::env::var("IDEALYST_RUNTIME_SERVER_PORT_FILE") {
-        let port_for_file = port_mirror.clone();
-        std::thread::spawn(move || {
-            // Ensure the sentinel's parent dir exists before the
-            // write loop starts. Pre-fix every fresh project printed
-            // `could not write port sentinel … No such file or
-            // directory (os error 2)` on first launch because the
-            // path lives under `target/idealyst/<project>/aas/` —
-            // a dir build-runtime-server creates only when the host wrapper
-            // itself is compiled, not when the orchestrator points
-            // a pre-built host at the path. mkdir_p is idempotent.
-            if let Some(parent) = std::path::Path::new(&path).parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    eprintln!(
-                        "[runtime-server-host] could not create port-sentinel parent {}: {}",
-                        parent.display(),
-                        e
-                    );
-                }
-            }
-            for _ in 0..200 {
-                if let Ok(g) = port_for_file.lock() {
-                    if let Some(p) = *g {
-                        if let Err(e) = std::fs::write(&path, p.to_string()) {
-                            eprintln!(
-                                "[runtime-server-host] could not write port sentinel {}: {}",
-                                path, e
-                            );
-                        } else {
-                            eprintln!("[runtime-server-host] wrote bound port {} to {}", p, path);
-                        }
-                        return;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            eprintln!(
-                "[runtime-server-host] timed out waiting for serve to bind; no port sentinel written"
-            );
-        });
-    }
 
     replay_sessions_to_sidecar(&sidecar_slot, &session_tracker);
 
