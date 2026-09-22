@@ -372,8 +372,8 @@ fn capture_if_ui_or_jsx(mac: &syn::Macro, out: &mut Vec<(String, u32)>) {
         return;
     };
     if last.ident == "ui" {
-        if let Ok(parsed) = syn::parse2::<crate::ui::Ui>(mac.tokens.clone()) {
-            crate::ui::collect_component_refs(&parsed, out);
+        if let Ok(parsed) = syn::parse2::<runtime_macros_parse::Ui>(mac.tokens.clone()) {
+            runtime_macros_parse::ast::collect_component_refs(&parsed, out);
         }
     } else if last.ident == "jsx" {
         if let Ok(parsed) = syn::parse2::<crate::jsx::Jsx>(mac.tokens.clone()) {

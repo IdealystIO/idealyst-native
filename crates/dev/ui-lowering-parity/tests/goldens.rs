@@ -118,6 +118,7 @@ fn a_site_numbers_a_node_before_everything_under_it() {
     let mut checked = 0;
     for fixture in fixtures::all() {
         for (parent, child) in (fixture.direct)(Mode::Spliced).tags {
+            let Some(parent) = parent else { continue };
             if parent.site != child.site {
                 // A component boundary: the child belongs to the
                 // component's own `ui!`, which numbers from 0 again.

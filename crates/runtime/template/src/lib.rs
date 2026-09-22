@@ -374,11 +374,18 @@ pub enum Node {
     /// nested-template nodes under this one, so a row template's
     /// literals stay patchable even though the iteration is not.
     Opaque {
-        /// The slot carrying the construct's defining expression — a
-        /// condition, an iterable, a scrutinee. `None` where there is no
-        /// single such expression (a chained node, an escaped
-        /// primitive).
-        slot: Option<u32>,
+        /// The construct's defining expression — a condition, an
+        /// iterable, a scrutinee, a bare expression child — as
+        /// whitespace-squashed source text. `None` where there is no
+        /// single such expression (a node whose only irreducible part is
+        /// a trailing `.method(…)` chain).
+        ///
+        /// Text and not a slot index: the only consumer is a DIFFER,
+        /// which needs to know whether the expression changed between
+        /// two source versions, and text answers that exactly. A slot
+        /// index would answer a question nobody asks — the expression is
+        /// compiled code either way, so an edit to it is a rebuild.
+        expr: Option<Text>,
         children: List<u32>,
     },
 }
@@ -416,7 +423,7 @@ impl Descriptor {
                         }
                     }
                 }
-                Node::Opaque { slot, .. } => out.extend(*slot),
+                Node::Opaque { .. } => {}
             }
         }
         out.sort_unstable();
@@ -629,10 +636,7 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError>
                     node_ok(c)?;
                 }
             }
-            Node::Opaque { slot, children } => {
-                if let Some(s) = slot {
-                    slot_ok(*s)?;
-                }
+            Node::Opaque { children, .. } => {
                 for &c in children.iter() {
                     node_ok(c)?;
                 }
@@ -775,7 +779,7 @@ mod tests {
         reg.register(one_text("a"));
         let mut patched = one_text("a");
         patched.slots = sig(&[("prop", "path")]);
-        patched.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
+        patched.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
         let patch = Patch { site: site("a"), descriptor: patched };
         assert_eq!(
             validate(&patch, &reg),
@@ -788,12 +792,12 @@ mod tests {
         let mut reg = Registry::new();
         let mut compiled = one_text("a");
         compiled.slots = sig(&[("prop", "path")]);
-        compiled.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
+        compiled.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
         reg.register(compiled);
 
         let mut patched = one_text("a");
         patched.slots = sig(&[("cond", "closure")]);
-        patched.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
+        patched.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
         let patch = Patch { site: site("a"), descriptor: patched };
         assert!(matches!(
             validate(&patch, &reg),
@@ -816,7 +820,7 @@ mod tests {
                 kind: Cow::Borrowed("path"),
             }]),
         };
-        compiled.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
+        compiled.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
         reg.register(compiled);
 
         let mut patched = one_text("a");
@@ -827,7 +831,7 @@ mod tests {
                 kind: Cow::Borrowed("path"),
             }]),
         };
-        patched.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(0), children: Cow::Borrowed(&[]) }]);
+        patched.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
         let patch = Patch { site: site("a"), descriptor: patched };
         assert_eq!(validate(&patch, &reg), Ok(()));
     }
@@ -845,7 +849,14 @@ mod tests {
         );
 
         let mut bad_slot = one_text("a");
-        bad_slot.nodes = Cow::Owned(vec![Node::Opaque { slot: Some(2), children: Cow::Borrowed(&[]) }]);
+        bad_slot.nodes = Cow::Owned(vec![Node::Prim {
+            kind: Cow::Borrowed("view"),
+            props: Cow::Owned(vec![PropEntry {
+                name: Cow::Borrowed("style"),
+                value: PropValue::Slot(2),
+            }]),
+            children: Cow::Borrowed(&[]),
+        }]);
         assert_eq!(
             validate(&Patch { site: site("a"), descriptor: bad_slot }, &reg),
             Err(ValidationError::SlotIndexOutOfRange { index: 2, slots: 0 })
@@ -877,14 +888,22 @@ mod tests {
                         name: Cow::Borrowed("style"),
                         value: PropValue::Slot(0),
                     }]),
-                    children: Cow::Owned(vec![1]),
+                    children: Cow::Owned(vec![1, 2]),
                 },
-                Node::Opaque { slot: Some(1), children: Cow::Borrowed(&[]) },
+                Node::Prim {
+                    kind: Cow::Borrowed("text"),
+                    props: Cow::Owned(vec![PropEntry {
+                        name: Cow::Borrowed("content"),
+                        value: PropValue::Slot(1),
+                    }]),
+                    children: Cow::Borrowed(&[]),
+                },
+                Node::Opaque { expr: Some(Cow::Borrowed("items.get()")), children: Cow::Borrowed(&[]) },
             ]),
             roots: Cow::Owned(vec![0]),
         };
         assert_eq!(d.referenced_slots(), vec![0, 1]);
-        assert_eq!(d.patchable_node_count(), 1);
+        assert_eq!(d.patchable_node_count(), 2);
         assert_eq!(check_well_formed(&d), Ok(()));
     }
 

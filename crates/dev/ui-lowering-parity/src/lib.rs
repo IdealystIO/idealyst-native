@@ -91,7 +91,7 @@ pub struct Recording {
     /// suite asserts on it is the relation — see
     /// `runtime_vocabulary::overlay::tag_tree`.
     #[cfg(feature = "ui-overlay")]
-    pub tags: Vec<(runtime_scene::NodeTag, runtime_scene::NodeTag)>,
+    pub tags: Vec<(Option<runtime_scene::NodeTag>, runtime_scene::NodeTag)>,
 }
 
 /// Op families that make up the STRUCTURAL projection: node creation
@@ -187,7 +187,7 @@ pub fn record<St: 'static>(
     let state: Rc<RefCell<Option<St>>> = Rc::new(RefCell::new(None));
 
     #[cfg(feature = "ui-overlay")]
-    let mut tags: Vec<(runtime_scene::NodeTag, runtime_scene::NodeTag)> = Vec::new();
+    let mut tags: Vec<(Option<runtime_scene::NodeTag>, runtime_scene::NodeTag)> = Vec::new();
 
     let realized: Realized<Node> = h.world.enter(|| {
         let st = make();
@@ -196,12 +196,7 @@ pub fn record<St: 'static>(
         // Read the tags off the BUILT tree, before realize consumes it.
         #[cfg(feature = "ui-overlay")]
         {
-            // Only the edges with a tagged parent: a root tag has
-            // nothing to be checked against.
-            tags = runtime_vocabulary::overlay::tag_tree(&element)
-                .into_iter()
-                .filter_map(|(p, c)| p.map(|p| (p, c)))
-                .collect();
+            tags = runtime_vocabulary::overlay::tag_tree(&element);
         }
         realize(&h.backend, &h.registry, element)
     });
@@ -254,9 +249,19 @@ fn scene_snapshot(h: &Harness) -> String {
 // Fixture registry
 // ===========================================================================
 
-/// One corpus entry: a name plus a recorder per lowering.
+/// One corpus entry: a name, its source, and a recorder.
 pub struct Fixture {
     pub name: &'static str,
+    /// The fixture's `ui!` body as SOURCE.
+    ///
+    /// The same tokens the macro expanded, kept so the suite can hand
+    /// them to `runtime_macros_parse` and check that the descriptor it
+    /// produces numbers nodes the way the expansion tagged them. Without
+    /// it there would be no way to run both halves on one input — the
+    /// corpus is a `macro_rules!` precisely so a fixture is authored
+    /// once, and `stringify!` is how that single authoring reaches the
+    /// library half.
+    pub body: &'static str,
     /// Record the fixture's mounted scene.
     pub direct: fn(Mode) -> Recording,
 }

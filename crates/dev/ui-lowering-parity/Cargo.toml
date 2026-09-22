@@ -52,3 +52,13 @@ runtime-shared = { workspace = true }
 # canonical test substrate and already carries the op-log format the
 # other golden suites speak.
 host-mock = { workspace = true }
+
+[dev-dependencies]
+# The BUILD-TIME half of the overlay. The suite's job is to prove that
+# the descriptor it produces from a fixture's source numbers nodes
+# exactly the way the expansion tagged them — the one agreement the
+# whole addressing scheme rests on, and the one that cannot be checked
+# from either side alone.
+runtime-macros-parse = { workspace = true }
+runtime-template = { workspace = true }
+syn = { workspace = true }

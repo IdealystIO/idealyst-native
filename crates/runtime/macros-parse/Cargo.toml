@@ -1,0 +1,40 @@
+# runtime-macros-parse — the `ui!` front end, as a plain library.
+#
+# Parsing a `ui!` body and splitting it into a static descriptor + an
+# ordered slot list is not proc-macro work: it is a pure function from
+# tokens to data. Two very different callers need it and only one of
+# them is a compiler plugin —
+#
+#   * `runtime-macros`, expanding `ui!` in rustc, and
+#   * the CLI, producing a build's descriptor set from source so a dev
+#     server can diff two versions of it.
+#
+# A proc-macro crate cannot be depended on as a library, so as long as
+# the parser lived inside one there was no way for the second caller to
+# reach it without reimplementing it — and a reimplementation that
+# disagreed with the macro by one node would mis-address every patch
+# after that node. Hence a plain library both depend on: ONE parser, ONE
+# split, ONE node numbering.
+#
+# `proc-macro2` works outside a proc-macro context (that is its whole
+# purpose), so nothing here needs a compiler.
+[package]
+name = "runtime-macros-parse"
+version = "1.8.0"
+edition.workspace = true
+license.workspace = true
+description = "Idealyst ui! front end: parser, split pass, and the descriptor both the macro and the CLI address by."
+
+[features]
+# Forwarded from `runtime-macros`. Gates `ast::collect_component_refs`,
+# which only the catalog emission calls — the walk is cheap but the
+# gate keeps the two crates' surfaces in step, so a catalog-off build
+# has no dead public function to explain.
+catalog = []
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
+# The descriptor this crate produces.
+runtime-template = { workspace = true }

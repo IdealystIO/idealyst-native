@@ -21,7 +21,7 @@
 /// snake_case form. Only the snake_case spelling is recognized —
 /// PascalCase names return `None` so the caller dispatches to
 /// user-component code (`emit_user`).
-pub(crate) fn canonical_primitive(name: &str) -> Option<&'static str> {
+pub fn canonical_primitive(name: &str) -> Option<&'static str> {
     match name {
         "text" => Some("text"),
         "button" => Some("button"),

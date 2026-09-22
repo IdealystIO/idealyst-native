@@ -64,13 +64,18 @@ mod scope_emit;
 mod methods_block;
 mod new_core;
 mod path_analysis;
-mod primitives;
+// The `ui!` front end — parser, split pass, numbering, recovery — lives
+// in `runtime-macros-parse`, a PLAIN library, because the CLI needs the
+// same answers at build time and cannot depend on a proc-macro crate.
+// These aliases keep the in-crate paths (`crate::ui_split::…`,
+// `crate::primitives::…`) that the emission has always used.
+use runtime_macros_parse::primitives;
+use runtime_macros_parse::recovery;
 mod props_attr;
 mod reactivity;
 mod stylesheet;
 mod ui;
 mod ui_overlay;
-mod ui_split;
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -212,9 +217,9 @@ pub fn ui(input: TokenStream) -> TokenStream {
     // keeps the diagnostic but also re-surfaces every complete sub-expr
     // in a dead-but-typed position so the IDE stays useful while typing.
     let input: proc_macro2::TokenStream = input.into();
-    match syn::parse2::<ui::Ui>(input.clone()) {
+    match syn::parse2::<runtime_macros_parse::Ui>(input.clone()) {
         Ok(parsed) => finish(ui::emit(parsed, &input)),
-        Err(err) => finish(ui::emit_recovery(input, &err)),
+        Err(err) => finish(recovery::emit_recovery(input, &err)),
     }
 }
 
@@ -251,7 +256,7 @@ pub fn jsx(input: TokenStream) -> TokenStream {
     let input: proc_macro2::TokenStream = input.into();
     match syn::parse2::<jsx::Jsx>(input.clone()) {
         Ok(parsed) => finish(jsx::emit(parsed, &input)),
-        Err(err) => finish(ui::emit_recovery(input, &err)),
+        Err(err) => finish(recovery::emit_recovery(input, &err)),
     }
 }
 

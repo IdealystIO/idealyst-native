@@ -70,7 +70,7 @@ hot-reload = []
 #
 # Pulls `prettyplease` — used only by `recipe!` to format captured
 # recipe source for the catalog — so it compiles only in catalog builds.
-catalog = ["dep:prettyplease"]
+catalog = ["dep:prettyplease", "runtime-macros-parse/catalog"]
 
 # Backward-compatible alias. The catalog used to be called "mcp" (after
 # its first consumer); the gate is now `catalog` since the data feeds
@@ -95,6 +95,10 @@ strict-docs = []
 strict-naming = []
 
 [dependencies]
+# The `ui!` front end: parser, split pass, node numbering, IDE recovery.
+# A plain library so the CLI can run the same code at build time — a
+# proc-macro crate cannot be depended on as one. See its manifest.
+runtime-macros-parse = { workspace = true }
 # Only for `site_key` — the fold of package/file/line/column that a
 # node's tag carries. Enabled by `ui-overlay`; absent otherwise, so the
 # default proc-macro build graph is untouched.

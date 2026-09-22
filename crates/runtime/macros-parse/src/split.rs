@@ -94,7 +94,8 @@ use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, ToTokens};
 use syn::{Expr, Ident};
 
-use crate::ui::{is_reactive_call_shape, MatchArm, Prop, UiNode};
+use crate::ast::{MatchArm, Prop, UiNode};
+use crate::reactive_shape::is_reactive_call_shape;
 
 // ===========================================================================
 // Slot identity
@@ -110,7 +111,7 @@ thread_local! {
 }
 
 /// Start a fresh expansion's slot numbering.
-pub(crate) fn reset_slot_counter() {
+pub fn reset_slot_counter() {
     NEXT_SLOT.with(|c| c.set(0));
 }
 
@@ -124,7 +125,7 @@ fn next_slot() -> usize {
 
 /// The local a `Prelude` slot is bound to. `__`-prefixed and
 /// call-site-spanned: author code cannot name it.
-pub(crate) fn slot_ident(index: usize) -> Ident {
+pub fn slot_ident(index: usize) -> Ident {
     Ident::new(&format!("__ui_s{index}"), Span::call_site())
 }
 
@@ -134,7 +135,7 @@ pub(crate) fn slot_ident(index: usize) -> Ident {
 
 /// When a slot's expression is evaluated. See the module docs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Placement {
+pub enum Placement {
     Prelude,
     Construct,
 }
@@ -142,7 +143,7 @@ pub(crate) enum Placement {
 /// What the slot feeds. Carried into the template descriptor's
 /// `SlotSig`, and useful in diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SlotRole {
+pub enum SlotRole {
     /// A named prop's value.
     PropValue,
     /// A `text` node's content (children block or `content` prop).
@@ -159,8 +160,25 @@ pub(crate) enum SlotRole {
     Key,
 }
 
+impl SlotRole {
+    /// The stable label a descriptor's `SlotSig` records. Compared
+    /// shape-for-shape by `runtime_template::validate`, so it must not
+    /// drift with a rename of the variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SlotRole::PropValue => "prop",
+            SlotRole::TextContent => "text",
+            SlotRole::ExprChild => "child",
+            SlotRole::Condition => "cond",
+            SlotRole::Scrutinee => "scrutinee",
+            SlotRole::Iterator => "iter",
+            SlotRole::Key => "key",
+        }
+    }
+}
+
 /// One dynamic expression pulled out of a scope.
-pub(crate) struct SlotDef {
+pub struct SlotDef {
     /// Expansion-unique index; also the name of the `Prelude` local.
     pub index: usize,
     /// The prop name this slot feeds, when it has one. Unused for now —
@@ -181,7 +199,7 @@ pub(crate) struct SlotDef {
 
 /// One template scope: the nodes as the emitter should see them, plus
 /// the slots pulled out of them.
-pub(crate) struct Scope {
+pub struct Scope {
     pub slots: Vec<SlotDef>,
     /// The node list with every `Prelude` slot replaced by its local.
     pub nodes: Vec<UiNode>,
@@ -191,7 +209,7 @@ impl Scope {
     /// The `let` prelude for this scope, restricted to the slots the
     /// emitted `body` actually reads (see the module docs on unused
     /// props).
-    pub(crate) fn prelude_for(&self, body: &TokenStream2) -> TokenStream2 {
+    pub fn prelude_for(&self, body: &TokenStream2) -> TokenStream2 {
         let used = used_idents(body);
         let lets = self.slots.iter().filter(|s| s.placement == Placement::Prelude).filter_map(
             |s| {
@@ -237,7 +255,7 @@ fn used_idents(stream: &TokenStream2) -> std::collections::HashSet<String> {
 /// the shapes a static edit should be able to change without
 /// recompiling.
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) enum StaticValue {
+pub enum StaticValue {
     Str(String),
     Int(i64),
     Float(f64),
@@ -261,7 +279,7 @@ pub(crate) enum StaticValue {
 /// - style-token accessors of the shape `t.a.b()` / `theme.x.y()`,
 /// - enum-like paths: two or more segments, last one PascalCase, no
 ///   generic arguments (`tone::Danger`, `StackAxis::Row`).
-pub(crate) fn classify_static(expr: &Expr) -> Option<StaticValue> {
+pub fn classify_static(expr: &Expr) -> Option<StaticValue> {
     match expr {
         Expr::Lit(lit) => lit_value(&lit.lit, false),
         Expr::Unary(u) if matches!(u.op, syn::UnOp::Neg(_)) => match &*u.expr {
@@ -381,7 +399,7 @@ fn prop_stays_put(kind: Option<&str>, name: &str) -> bool {
 }
 
 /// A coarse syntactic label for a slot expression.
-pub(crate) fn expr_kind_of(expr: &Expr) -> &'static str {
+pub fn expr_kind_of(expr: &Expr) -> &'static str {
     match expr {
         Expr::Closure(_) => "closure",
         Expr::Macro(_) => "macro",
@@ -415,14 +433,14 @@ fn effect_free_to_construct(expr: &Expr) -> bool {
 // ===========================================================================
 
 /// Split one scope's node list.
-pub(crate) fn split(nodes: &[UiNode]) -> Scope {
+pub fn split(nodes: &[UiNode]) -> Scope {
     let mut slots: Vec<SlotDef> = Vec::new();
     let rewritten: Vec<UiNode> = nodes.iter().map(|n| rewrite_node(&mut slots, n)).collect();
     Scope { slots, nodes: rewritten }
 }
 
 /// How a primitive treats its `{ … }` block.
-enum ChildrenKind {
+pub enum ChildrenKind {
     /// A child list built inline in the parent's block — same scope.
     List,
     /// `text`: the block is content, shape-inspected by `emit_text`.
@@ -434,7 +452,7 @@ enum ChildrenKind {
     Ignored,
 }
 
-fn children_kind(canonical: Option<&str>, is_primitive: bool) -> ChildrenKind {
+pub fn children_kind(canonical: Option<&str>, is_primitive: bool) -> ChildrenKind {
     if !is_primitive {
         // A `#[component]`'s children become its `children` field, built
         // inline in the parent's block.
@@ -452,7 +470,7 @@ fn children_kind(canonical: Option<&str>, is_primitive: bool) -> ChildrenKind {
 
 fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
     match node {
-        UiNode::Component { name, props, children, chain } => {
+        UiNode::Component { name, props, children, chain, node } => {
             let name_str = name.to_string();
             let canonical = crate::primitives::canonical_primitive(&name_str);
             let is_primitive = canonical.is_some();
@@ -496,6 +514,10 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
                 props: new_props,
                 children: new_children,
                 chain: chain.clone(),
+                // Carried, not recomputed: the stamp is what ties this
+                // rewritten node back to the tree the descriptor
+                // describes.
+                node: *node,
             }
         }
 
@@ -640,6 +662,20 @@ fn rewrite_prop(slots: &mut Vec<SlotDef>, canonical: Option<&str>, p: &Prop) -> 
     }
 }
 
+/// The slot index a `__ui_sN` local names, if `expr` is one.
+///
+/// The inverse of [`local_expr`]. The descriptor producer needs it
+/// because by the time a node is described its `Prelude` props have
+/// already been rewritten to their locals — the slot index is
+/// recoverable only from the name.
+pub fn slot_index_of(expr: &Expr) -> Option<usize> {
+    let Expr::Path(p) = expr else { return None };
+    if p.qself.is_some() || p.path.segments.len() != 1 {
+        return None;
+    }
+    p.path.segments[0].ident.to_string().strip_prefix("__ui_s")?.parse().ok()
+}
+
 /// `__ui_sN` as an `Expr`.
 fn local_expr(index: usize) -> Expr {
     let ident = slot_ident(index);
@@ -743,7 +779,7 @@ mod tests {
     #[test]
     fn prelude_keeps_only_the_slots_the_body_reads() {
         reset_slot_counter();
-        let scope = split(&[syn::parse2::<crate::ui::Ui>(quote! {
+        let scope = split(&[syn::parse2::<crate::ast::Ui>(quote! {
             view(style = compute_style(), gap = dropped_by_view())
         })
         .unwrap()
@@ -766,7 +802,7 @@ mod tests {
     #[test]
     fn prelude_uses_deferred_init_so_use_site_inference_still_works() {
         reset_slot_counter();
-        let scope = split(&[syn::parse2::<crate::ui::Ui>(quote! { Badge(label = name) })
+        let scope = split(&[syn::parse2::<crate::ast::Ui>(quote! { Badge(label = name) })
             .unwrap()
             .elements
             .remove(0)]);

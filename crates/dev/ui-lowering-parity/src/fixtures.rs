@@ -81,7 +81,11 @@ macro_rules! fixture {
             }
 
             pub fn fixture() -> Fixture {
-                Fixture { name: stringify!($name), direct: record_direct }
+                Fixture {
+                    name: stringify!($name),
+                    body: stringify!($($body)*),
+                    direct: record_direct,
+                }
             }
         }
     };

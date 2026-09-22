@@ -10081,8 +10081,19 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
+ "runtime-macros-parse",
  "runtime-template",
  "sha2 0.10.9",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "runtime-macros-parse"
+version = "1.8.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "runtime-template",
  "syn 2.0.117",
 ]
 
@@ -12730,10 +12741,13 @@ dependencies = [
  "host-mock",
  "runtime-core",
  "runtime-macros",
+ "runtime-macros-parse",
  "runtime-scene",
  "runtime-shared",
+ "runtime-template",
  "runtime-vocabulary",
  "runtime-world",
+ "syn 2.0.117",
 ]
 
 [[package]]

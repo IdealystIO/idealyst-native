@@ -41,25 +41,26 @@
 //! patch needs — which site, which node — are the only things that
 //! cannot be recovered from source, and they are what stays.
 //!
-//! # Why the index comes from the emission walk
+//! # Where the node index comes from
 //!
-//! A tag's only job is to map a descriptor node back to the `Element`
-//! that node produced. That mapping is trustworthy exactly when both
-//! come from the SAME walk. So the counter is threaded through the
-//! emission itself: `emit_component` calls [`open_node`] as it emits and
-//! tags with the index it gets back, and the build-time producer runs
-//! the same split pass to get the same numbering. A test over the parity
-//! corpus asserts the two agree; `runtime_template::SPLIT_VERSION`
-//! exists so a differ can refuse a binary numbered by a walk it does not
-//! know.
+//! Not from here. `runtime_macros_parse::number` stamps every node of
+//! the parsed tree in a preorder walk, before any emission happens, and
+//! the stamp rides through the split pass's clone into the tree the
+//! emission walks. [`tag`] is handed that number.
 //!
-//! One counter per expansion, in a thread-local — a proc-macro expansion
-//! is single-threaded and never interleaved, the same reason
-//! `ui_split`'s slot counter is one. Note that nothing held across the
-//! expansion boundary is a `TokenStream` any more, which also retires a
-//! sharp edge: a `proc_macro2` token wraps a bridge handle valid only
-//! inside its own expansion, and the descriptor accumulator used to hold
-//! them.
+//! The alternative — a counter incremented once per `emit_component` —
+//! was what this module did first, and it is subtly wrong: emission
+//! order is not source order for every primitive (`anchored_overlay`
+//! splits its children, `presence` builds a thunk), so a counter numbers
+//! some trees differently from a walk of the same tree. The build-time
+//! descriptor producer has only the tree. Taking the number FROM the
+//! tree is what makes the two agree by construction rather than by
+//! coincidence, and `runtime_template::SPLIT_VERSION` is what lets a
+//! differ refuse a binary numbered by a walk it does not know.
+//!
+//! What is left here is the site KEY, which does depend on the
+//! expansion (it is read off the call span), and is therefore the only
+//! thing this module keeps in a thread-local.
 
 #[cfg(not(feature = "ui-overlay"))]
 use proc_macro2::TokenStream as TokenStream2;
@@ -69,31 +70,19 @@ pub(crate) use inert::*;
 #[cfg(feature = "ui-overlay")]
 pub(crate) use live::*;
 
-/// A node's identity within its site, handed back by [`open_node`] and
-/// spliced into its tag.
-///
-/// `Option`-shaped so the feature-off path has a zero-sized "no index"
-/// to return without every caller branching on a `cfg`.
-pub(crate) type NodeIndex = Option<u32>;
-
 // ===========================================================================
 // Feature OFF
 // ===========================================================================
 
 #[cfg(not(feature = "ui-overlay"))]
 mod inert {
-    use super::{NodeIndex, TokenStream2};
+    use super::TokenStream2;
 
     #[inline(always)]
     pub(crate) fn begin_site() {}
 
     #[inline(always)]
-    pub(crate) fn open_node() -> NodeIndex {
-        None
-    }
-
-    #[inline(always)]
-    pub(crate) fn tag(body: TokenStream2, _index: NodeIndex) -> TokenStream2 {
+    pub(crate) fn tag(body: TokenStream2, _node: u32) -> TokenStream2 {
         body
     }
 }
@@ -109,34 +98,19 @@ mod live {
     use proc_macro2::TokenStream as TokenStream2;
     use quote::quote;
 
-    use super::NodeIndex;
-
     thread_local! {
-        /// The current site's key, and how many nodes it has opened.
-        static SITE: Cell<(u64, u32)> = const { Cell::new((0, 0)) };
+        /// The site currently being expanded.
+        static SITE: Cell<u64> = const { Cell::new(0) };
     }
 
-    /// Start a site: compute its key from the invocation's location and
-    /// restart node numbering at 0.
+    /// Start a site: compute its key from the invocation's location.
     pub(crate) fn begin_site() {
-        SITE.with(|s| s.set((site_key(), 0)));
+        SITE.with(|s| s.set(site_key()));
     }
 
-    /// Take this node's index. Reserved BEFORE its children are emitted,
-    /// so a parent always precedes its children — the same order the
-    /// split pass numbers them in.
-    pub(crate) fn open_node() -> NodeIndex {
-        SITE.with(|s| {
-            let (key, next) = s.get();
-            s.set((key, next + 1));
-            Some(next)
-        })
-    }
-
-    pub(crate) fn tag(body: TokenStream2, index: NodeIndex) -> TokenStream2 {
-        let Some(index) = index else { return body };
-        let site = SITE.with(|s| s.get().0);
-        quote! { ::runtime_core::__overlay::tag(#body, #site, #index) }
+    pub(crate) fn tag(body: TokenStream2, node: u32) -> TokenStream2 {
+        let site = SITE.with(|s| s.get());
+        quote! { ::runtime_core::__overlay::tag(#body, #site, #node) }
     }
 
     /// The key for the `ui!` invocation being expanded.

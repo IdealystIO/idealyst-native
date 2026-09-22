@@ -1,101 +1,21 @@
-//! `ui!` proc-macro — a JSX-style DSL that desugars to component calls.
+//! `ui!` EMISSION — the parsed tree into builder calls.
 //!
-//! Grammar (informal):
+//! The grammar, the syntax tree, the split pass, node numbering and the
+//! IDE-recovery shell all live in `runtime-macros-parse`, a plain
+//! library, because the CLI needs the same answers at build time and
+//! cannot depend on a proc-macro crate. This module is what is left: the
+//! part that can only run inside rustc.
 //!
-//! ```text
-//! ui!         := node*
-//! node        := component
-//!              | 'if' rust_expr '{' node* '}' ('else' if_or_block)?
-//!              | 'for' pat 'in' rust_expr '{' node* '}'
-//!              | rust_expr       (anything else parses as a Rust expression
-//!                                 and gets passed through to ChildList)
-//! component   := ident '(' prop_list? ')' children?
-//!              | ident children
-//! prop_list   := prop (',' prop)* ','?
-//! prop        := ident '=' rust_expr
-//! children    := '{' node* '}'
-//! ```
+//! ## Two halves, one decision each
 //!
-//! ## Component recognition
+//! | question | answered in |
+//! |---|---|
+//! | what did the author write? | `runtime_macros_parse::ast` |
+//! | which of it is data and which is code? | `runtime_macros_parse::split` |
+//! | which node is node 7? | `runtime_macros_parse::number` |
+//! | what tokens build it? | here |
 //!
-//! An identifier is parsed as a component invocation **only** when
-//! immediately followed by `(` or `{`. Capitalization is purely a
-//! convention; the parser doesn't consult it. A bare `Foo` (no parens,
-//! no brace) is parsed as a plain Rust expression — useful for things
-//! like dropping a precomputed `Element` into a children slot.
-//!
-//! ## Children — what's legal inside `{ … }`
-//!
-//! A children block is a sequence of *nodes*, and a node is any of:
-//!
-//!  - **a component or primitive invocation** — `Foo(...)`,
-//!    `Foo(...) { ... }`, `Foo { ... }`, `view { ... }`, `text(...) { ... }`;
-//!  - **control flow** — `if cond { … } else { … }`, `for x in iter { … }`,
-//!    `match scrutinee { … }` (a reactive `if`/`match`, i.e. a condition
-//!    that calls `.get()`, desugars to `when(...)`);
-//!  - **any Rust expression** that yields a `ChildList`-compatible value
-//!    (anything `IntoElement`). This is the escape hatch and it is *not*
-//!    restricted to bare identifiers: a precomputed `let el = …; … el …`,
-//!    a **helper-fn call** (`my_section()`), a `Vec<Element>` splat, or an
-//!    iterator chain all work as children — and equally as the body of a
-//!    `for`. If a child "isn't allowed," it's almost always because the
-//!    expression's *type* isn't `IntoElement`, not because the position
-//!    forbids expressions.
-//!
-//! The one thing to keep straight: a bare identifier becomes a component
-//! only when followed by `(` or `{` (see *Component recognition*). So
-//! `widget` is an expression child, while `widget()` and `widget { … }`
-//! are invocations.
-//!
-//! ## Dispatch
-//!
-//! Each parsed component emits one of:
-//!  - `text(expr)` for `Text` — content from a single-expr children block
-//!    or from a `content = expr` prop.
-//!  - `button(label, on_click)` for `Button`.
-//!  - `view(children)` for `View`.
-//!  - For any other identifier `Foo`, a struct-literal dispatch through the
-//!    `BuildElement` trait — `BuildElement::build(Foo { field: (v).into(),
-//!    ..<Foo as BuildElement>::defaults() })`. `Foo` names the props type
-//!    (via a `pub type Foo = FooProps` alias that `#[component]` / the
-//!    component library provides). No per-component `macro_rules!` — see
-//!    `emit_user`.
-//!
-//! Reactive `if` (conditions containing `.get()`) is rewritten to
-//! `when(cond, then, otherwise)`; non-reactive `if` is emitted verbatim.
-//! `for` desugars to a `Vec<Element>` built by mapping over the
-//! iterable.
-//!
-//! ## Attribute coercion
-//!
-//! String literal attribute values get an implicit `.into()` so
-//! `label = "Score"` flows into a `String` field. Other attribute values
-//! pass through verbatim — we don't apply generalized `.into()` because
-//! of Rust inference fragility on non-literal types.
-//!
-//! ## Two lowerings, one front half
-//!
-//! `ui!` emits the **direct** lowering (this module). A second,
-//! **template** lowering ([`crate::ui_template`]) turns the same parsed
-//! tree into a `static` descriptor plus a runtime slot array. Both are
-//! reachable from the test-only `ui_lowered!(direct { … })` /
-//! `ui_lowered!(template { … })` entry point, and both must produce
-//! identical scenes — `crates/dev/ui-lowering-parity` is the gate.
-//!
-//! What they share is everything up to tree construction: the parser,
-//! the [`UiNode`] tree, and the [`crate::ui_split`] pass that separates
-//! each *template scope* into descriptor data (literals, enum-like
-//! paths, style-token accessors, attribute names, child order) and an
-//! ordered list of dynamic **slots**.
-//!
-//! The direct lowering reads its dynamic values out of that slot list:
-//! a `Prelude` slot is bound to a `__ui_sN` local at the head of its
-//! scope, in SOURCE order, and the construction reads the local. That is
-//! the one behavioural change the split made — a node's props used to be
-//! evaluated *after* its children, because `style` lowers to a trailing
-//! `.with_style(…)` — and it is what makes the two lowerings'
-//! observable evaluation order identical by construction. See
-//! [`crate::ui_split`] for the placement rules and their rationale.
+//! ## Template scopes
 //!
 //! A *template scope* is one Rust scope's worth of nodes: the `ui!`
 //! body, and every body the emission puts inside a fresh Rust scope —
@@ -103,452 +23,27 @@
 //! [`emit_child_scope`]), a `for` row builder, a `presence` child thunk.
 //! A `view`'s (or component's) children are NOT a new scope: they are
 //! built inline in the parent's block, so they share its slot list and
-//! its prelude.
+//! its prelude. The split pass decides those boundaries
+//! (`runtime_macros_parse::split::children_kind`) and the emission honours them; the
+//! build-time descriptor producer reads the same function, which is why
+//! both see the same hoisted locals.
+//!
+//! ## Primitives vs components
+//!
+//! Framework primitives are a fixed snake_case set
+//! (`runtime_macros_parse::primitives::canonical_primitive`); every other tag is a `#[component]`
+//! dispatched to its own `Name!` macro, so import renames, qualified
+//! paths and IDE navigation all work.
 
-use proc_macro2::{Delimiter, Span, Spacing, TokenStream as TokenStream2, TokenTree};
+use runtime_macros_parse::ast::{is_a11y_attr, MatchArm, Prop, Ui, UiNode};
+use runtime_macros_parse::split as ui_split;
+use runtime_macros_parse::reactive_shape::is_reactive_call_shape;
+use runtime_macros_parse::recovery::emit_shell;
+
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};
-use syn::parse::{Parse, ParseStream};
-use syn::punctuated::Punctuated;
-use syn::{braced, parenthesized, Expr, Ident, Token};
+use syn::{Expr, Ident};
 
-/// Top-level entry: a `ui! { ... }` invocation parses to a list of elements.
-pub struct Ui {
-    pub(crate) elements: Vec<UiNode>,
-}
-
-/// A single node in the UI tree. Either a component invocation we parsed,
-/// or a raw Rust expression that goes through ChildList passthrough.
-///
-/// `Clone` because the split pass ([`crate::ui_split`]) rewrites a scope's
-/// nodes (substituting hoisted slot locals) rather than mutating the
-/// parsed tree in place.
-#[derive(Clone)]
-pub(crate) enum UiNode {
-    Component {
-        name: Ident,
-        props: Vec<Prop>,
-        children: Option<Vec<UiNode>>,
-        /// Trailing `.method(args)` chains. Used to attach builder
-        /// methods like `.bind(r)` to the constructed primitive
-        /// without burying them in the prop list. Stored as raw
-        /// token streams and appended verbatim to the emitted call.
-        chain: Vec<TokenStream2>,
-    },
-    /// A `for` loop whose body is itself a UI block.
-    For {
-        pat: syn::Pat,
-        iter: Expr,
-        /// Optional `, key = EXPR` clause between the iterable and the
-        /// body. Required when `iter` is a reactive collection (a
-        /// `Signal<Vec<_>>`) — the type system rejects a keyless reactive
-        /// loop; harmless on a static loop. The expression is evaluated
-        /// per item with the loop pattern in scope (e.g. `key = item.id`).
-        key: Option<Expr>,
-        body: Vec<UiNode>,
-        /// Trailing `.method(args)` chain after the for-block's
-        /// closing brace. Author syntax:
-        /// `for i in iter { body }.style(expr)`. Each chain entry
-        /// is applied to the Virtualizer's emission — the
-        /// `.style(expr)` slot pins the row container's flex
-        /// style; future chains can set `.horizontal()` /
-        /// `.overscan(...)` / etc.
-        chain: Vec<TokenStream2>,
-    },
-    /// An `if` / `if let` / `match`: parsed as a raw Rust expression with
-    /// `ui!` recursively applied to each branch's contents.
-    /// Branches always evaluate to a single UI node (or nothing for absent else).
-    If {
-        cond: Expr,
-        then_body: Vec<UiNode>,
-        else_body: Option<Vec<UiNode>>,
-    },
-    /// A reactive `match` over an arbitrary scrutinee. When the
-    /// scrutinee reads a signal (heuristic: `.get()` in its tokens),
-    /// the emitter lowers to a `runtime_core::switch(...)` call so
-    /// the active arm re-evaluates whenever the scrutinee changes.
-    /// Non-reactive `match` emits plain Rust `match`.
-    ///
-    /// Each arm's body is a UI block ({ child child child ... }) just
-    /// like `if`'s branches.
-    Match {
-        scrutinee: Expr,
-        arms: Vec<MatchArm>,
-    },
-    /// Arbitrary Rust expression to be flattened via ChildList.
-    Expr(Expr),
-}
-
-#[derive(Clone)]
-pub(crate) struct MatchArm {
-    pub(crate) pat: syn::Pat,
-    /// Optional `if guard` after the pattern.
-    pub(crate) guard: Option<Expr>,
-    pub(crate) body: Vec<UiNode>,
-}
-
-#[derive(Clone)]
-pub(crate) struct Prop {
-    pub(crate) name: Ident,
-    pub(crate) value: Expr,
-    /// Optional `=> output_signal` clause for structured actions.
-    /// Set when a prop is written as `on_click = method(sig) =>
-    /// out_signal` — the `=>` token follows the prop's value
-    /// expression and an output signal expression follows the `=>`.
-    /// `emit_button` reads this to construct a fully-populated
-    /// `Action` directly (no `action!`/`bind_press!` macro needed).
-    pub(crate) arrow_target: Option<Expr>,
-}
-
-/// Recognized accessibility attribute names. Each maps 1:1 to a
-/// `Bound<H>` setter of the same name (`a11y_label` → `.a11y_label(..)`,
-/// `accessibility` → `.accessibility(..)`, etc.), so both `ui!` and
-/// `jsx!` lower them by emitting `.<name>(<value>)`. Keeping the list
-/// here (the single source of truth) keeps the two macros in lockstep
-/// with the `Element` accessibility surface. When a new author-facing
-/// a11y field lands, add its attr name here.
-pub(crate) fn is_a11y_attr(name: &str) -> bool {
-    matches!(
-        name,
-        "accessibility"
-            | "a11y_label"
-            | "a11y_hint"
-            | "a11y_role"
-            | "a11y_hidden"
-            | "a11y_traits"
-            | "live_region"
-    )
-}
-
-impl Parse for Ui {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let elements = parse_ui_nodes(input)?;
-        Ok(Ui { elements })
-    }
-}
-
-/// Parses a sequence of `UiNode`s until end-of-input.
-fn parse_ui_nodes(input: ParseStream) -> syn::Result<Vec<UiNode>> {
-    let mut out = Vec::new();
-    while !input.is_empty() {
-        out.push(parse_ui_node(input)?);
-        // Optional commas between elements — purely cosmetic.
-        let _ = input.parse::<Token![,]>();
-    }
-    Ok(out)
-}
-
-fn parse_ui_node(input: ParseStream) -> syn::Result<UiNode> {
-    // Control flow keywords first.
-    if input.peek(Token![if]) {
-        return parse_if(input);
-    }
-    if input.peek(Token![for]) {
-        return parse_for(input);
-    }
-    if input.peek(Token![match]) {
-        return parse_match(input);
-    }
-    // Identifier followed by `(` or `{` is a component invocation:
-    //   Foo()              Foo(props)              Foo { children }
-    //   Foo(props) { children }
-    // A bare `Foo` (no parens, no brace) is NOT a component — it parses
-    // as a normal Rust expression. Capitalization is purely a convention;
-    // the parser doesn't consult it.
-    if input.peek(Ident) && next_is_component_invocation(input) {
-        return parse_component(input);
-    }
-    // Fallback: parse a Rust expression. Goes through ChildList::append_to.
-    let expr: Expr = input.parse()?;
-    Ok(UiNode::Expr(expr))
-}
-
-/// Peeks past an identifier to see whether the *next* token is `(` or `{` —
-/// the two shapes that mark a component invocation. We have to fork the
-/// stream to do the lookahead.
-///
-/// Treats two identifier shapes as component invocations:
-/// 1. **PascalCase** — any identifier starting with an uppercase ASCII
-///    letter (the user-component convention). `Foo(...)` and `Foo { ... }`
-///    are tag invocations.
-/// 2. **Lowercase framework primitives** — `view`, `text`, `button`,
-///    `text_input`, etc., recognized via `primitives::canonical_primitive`.
-///    To avoid breaking bare-fn-call sites like `icon(LIGHT_LOGO)` that
-///    pre-date the lowercase-tag convention, a lowercase primitive only
-///    counts as a tag invocation if its `(...)` is **empty** or its first
-///    token is `Ident =` (the prop-list shape). Otherwise it falls through
-///    to the expression parser as `runtime_core::icon(LIGHT_LOGO)`.
-///
-/// Everything else (lowercase non-primitive identifiers like
-/// `count_label(count)`) falls through to the expression parser, so an
-/// embedded reactive method call inside `text { ... }` doesn't get
-/// mis-parsed as a tag.
-fn next_is_component_invocation(input: ParseStream) -> bool {
-    let fork = input.fork();
-    let ident = match fork.parse::<Ident>() {
-        Ok(i) => i,
-        Err(_) => return false,
-    };
-    let name = ident.to_string();
-    let first_upper = name
-        .chars()
-        .next()
-        .map(|c| c.is_ascii_uppercase())
-        .unwrap_or(false);
-
-    if first_upper {
-        return fork.peek(syn::token::Paren) || fork.peek(syn::token::Brace);
-    }
-
-    // Lowercase: only treat as tag if it's a known primitive AND the call
-    // shape is unambiguously tag-like (empty parens, `{ children }`, or
-    // parens whose first token is `Ident =`).
-    if crate::primitives::canonical_primitive(&name).is_none() {
-        return false;
-    }
-    if fork.peek(syn::token::Brace) {
-        return true;
-    }
-    if !fork.peek(syn::token::Paren) {
-        return false;
-    }
-    // Look inside the parens for the prop-list shape. `step` lets us walk
-    // the cursor without committing the parent stream.
-    fork.step(|cursor| {
-        let (group_cursor, _span, _after) = cursor
-            .group(proc_macro2::Delimiter::Parenthesis)
-            .ok_or_else(|| cursor.error("expected `(`"))?;
-        // Empty `()` → no props → tag form.
-        if group_cursor.eof() {
-            return Ok((true, *cursor));
-        }
-        // First token is an identifier followed by `=` → prop-list shape.
-        let mut walk = group_cursor;
-        if let Some((tt, rest)) = walk.token_tree() {
-            if matches!(tt, proc_macro2::TokenTree::Ident(_)) {
-                walk = rest;
-                if let Some((tt2, _)) = walk.token_tree() {
-                    if matches!(tt2, proc_macro2::TokenTree::Punct(ref p) if p.as_char() == '=') {
-                        return Ok((true, *cursor));
-                    }
-                }
-            }
-        }
-        Ok((false, *cursor))
-    })
-    .unwrap_or(false)
-}
-
-fn parse_component(input: ParseStream) -> syn::Result<UiNode> {
-    let name: Ident = input.parse()?;
-
-    // Optional `(prop = expr, ...)` props list.
-    let props = if input.peek(syn::token::Paren) {
-        let content;
-        parenthesized!(content in input);
-        let pairs: Punctuated<Prop, Token![,]> = content.parse_terminated(Prop::parse, Token![,])?;
-        pairs.into_iter().collect()
-    } else {
-        Vec::new()
-    };
-
-    // Optional `{ children }` block.
-    let children = if input.peek(syn::token::Brace) {
-        let content;
-        braced!(content in input);
-        Some(parse_ui_nodes(&content)?)
-    } else {
-        None
-    };
-
-    // Optional trailing `.method(args)` chain. Each segment is parsed
-    // as `. ident ( token_stream )` and stored verbatim — we don't
-    // interpret the args, just forward them. Supports zero or more
-    // chained calls, e.g. `Button(...).bind(r).with_style(...)`.
-    let chain = parse_method_chain(input)?;
-
-    Ok(UiNode::Component { name, props, children, chain })
-}
-
-/// Parses a sequence of trailing `.method(args)` calls. Stops at the
-/// first token that isn't `.`. Each call's args are captured as an
-/// opaque `TokenStream2` and replayed verbatim during emission.
-fn parse_method_chain(input: ParseStream) -> syn::Result<Vec<TokenStream2>> {
-    let mut chain = Vec::new();
-    while input.peek(Token![.]) {
-        let _: Token![.] = input.parse()?;
-        let method: Ident = input.parse()?;
-        let args_content;
-        parenthesized!(args_content in input);
-        let args: TokenStream2 = args_content.parse()?;
-        chain.push(quote! { . #method ( #args ) });
-    }
-    Ok(chain)
-}
-
-fn parse_if(input: ParseStream) -> syn::Result<UiNode> {
-    let _if_token: Token![if] = input.parse()?;
-    // Parse the condition as a Rust expression. `Expr::parse_without_eager_brace`
-    // stops the parser from consuming the trailing `{` as a struct-literal.
-    let cond: Expr = Expr::parse_without_eager_brace(input)?;
-    let then_content;
-    braced!(then_content in input);
-    let then_body = parse_ui_nodes(&then_content)?;
-
-    let else_body = if input.peek(Token![else]) {
-        let _: Token![else] = input.parse()?;
-        // Allow chained `else if` by wrapping the rest as a single If node.
-        if input.peek(Token![if]) {
-            let nested = parse_if(input)?;
-            Some(vec![nested])
-        } else {
-            let else_content;
-            braced!(else_content in input);
-            Some(parse_ui_nodes(&else_content)?)
-        }
-    } else {
-        None
-    };
-
-    Ok(UiNode::If { cond, then_body, else_body })
-}
-
-fn parse_for(input: ParseStream) -> syn::Result<UiNode> {
-    let _for_token: Token![for] = input.parse()?;
-    let pat = syn::Pat::parse_single(input)?;
-    let _in_token: Token![in] = input.parse()?;
-    let iter: Expr = Expr::parse_without_eager_brace(input)?;
-    // Optional `, key = EXPR` clause: the reconciliation key for a
-    // reactive list. `parse_without_eager_brace` stopped at the comma
-    // (a comma can't continue an expression), so peek for it here. The
-    // key expression itself is parsed brace-agnostically so it stops at
-    // the body's opening `{`.
-    let key = if input.peek(Token![,]) {
-        let _comma: Token![,] = input.parse()?;
-        let kw: Ident = input.parse()?;
-        if kw != "key" {
-            return Err(syn::Error::new(
-                kw.span(),
-                "expected `key` after `,` in a `for` loop (the reactive-list \
-                 reconciliation key), e.g. `for item in items, key = item.id { … }`",
-            ));
-        }
-        let _eq: Token![=] = input.parse()?;
-        Some(Expr::parse_without_eager_brace(input)?)
-    } else {
-        None
-    };
-    let body_content;
-    braced!(body_content in input);
-    let body = parse_ui_nodes(&body_content)?;
-    // Optional trailing `.method(args)` chain after the closing
-    // brace — same shape components support. Each entry is replayed
-    // verbatim by the Virtualizer-emitting path so authors can pin
-    // the row container's style / flex direction / overscan / etc.
-    // Example: `for i in count(sig) { ... }.style(row_style())`.
-    let chain = parse_method_chain(input)?;
-    Ok(UiNode::For { pat, iter, key, body, chain })
-}
-
-/// Parse `match scrutinee { pat => { ui_nodes }, pat if guard => { ui_nodes }, ... }`.
-///
-/// Each arm's body must be a brace-delimited UI block; we don't
-/// accept the shorter `pat => single_node` form because the parser
-/// would have to decide between "single UiNode" and "single Rust
-/// expression that happens to be a tuple, etc." — the brace
-/// requirement removes the ambiguity at zero ergonomic cost.
-fn parse_match(input: ParseStream) -> syn::Result<UiNode> {
-    let _match_token: Token![match] = input.parse()?;
-    let scrutinee: Expr = Expr::parse_without_eager_brace(input)?;
-    let body_content;
-    braced!(body_content in input);
-
-    let mut arms = Vec::new();
-    while !body_content.is_empty() {
-        let pat = syn::Pat::parse_multi_with_leading_vert(&body_content)?;
-        let guard = if body_content.peek(Token![if]) {
-            let _: Token![if] = body_content.parse()?;
-            Some(Expr::parse_without_eager_brace(&body_content)?)
-        } else {
-            None
-        };
-        let _: Token![=>] = body_content.parse()?;
-        let arm_content;
-        braced!(arm_content in &body_content);
-        let body = parse_ui_nodes(&arm_content)?;
-        arms.push(MatchArm { pat, guard, body });
-        // Optional comma between arms.
-        let _ = body_content.parse::<Token![,]>();
-    }
-    Ok(UiNode::Match { scrutinee, arms })
-}
-
-impl Parse for Prop {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let name: Ident = input.parse()?;
-        let _: Token![=] = input.parse()?;
-        let value: Expr = input.parse()?;
-        // Optional `=> rhs` clause for structured action props
-        // (e.g. `on_click = method(sig) => out_signal`). The Rust
-        // expression parser stops at the `=>` because it isn't a
-        // valid binary operator — we eat it here and parse the
-        // right-hand side as a separate expression so callers can
-        // pick it up.
-        let arrow_target = if input.peek(Token![=>]) {
-            input.parse::<Token![=>]>()?;
-            Some(input.parse::<Expr>()?)
-        } else {
-            None
-        };
-        Ok(Prop { name, value, arrow_target })
-    }
-}
-
-// =============================================================================
-// Emit
-// =============================================================================
-
-/// Walk a parsed `ui! { ... }` and append every component-position
-/// ident — i.e. every `UiNode::Component { name }` — into `out` along
-/// with its source line. Recurses into nested children, for/if/match
-/// bodies. Arbitrary expression-position calls (`UiNode::Expr`) are
-/// NOT captured: per the MCP spec (§6.3) a "component" is something
-/// that appears as a child in JSX position, not any function call.
-///
-/// Used by `mcp_emit` (under `feature = "catalog"`) to build the
-/// `composes` edge list for each `#[component]` entry. Kept here so
-/// the AST stays encapsulated in this module.
-#[cfg(feature = "catalog")]
-pub(crate) fn collect_component_refs(ui: &Ui, out: &mut Vec<(String, u32)>) {
-    collect_from_nodes(&ui.elements, out);
-}
-
-#[cfg(feature = "catalog")]
-fn collect_from_nodes(nodes: &[UiNode], out: &mut Vec<(String, u32)>) {
-    for node in nodes {
-        match node {
-            UiNode::Component { name, children, .. } => {
-                let line = name.span().start().line as u32;
-                out.push((name.to_string(), line));
-                if let Some(c) = children {
-                    collect_from_nodes(c, out);
-                }
-            }
-            UiNode::For { body, .. } => collect_from_nodes(body, out),
-            UiNode::If { then_body, else_body, .. } => {
-                collect_from_nodes(then_body, out);
-                if let Some(e) = else_body {
-                    collect_from_nodes(e, out);
-                }
-            }
-            UiNode::Match { arms, .. } => {
-                for arm in arms {
-                    collect_from_nodes(&arm.body, out);
-                }
-            }
-            UiNode::Expr(_) => {}
-        }
-    }
-}
 
 /// Top-level emit: produce a single expression that yields a `Element`.
 /// If the `ui!` body has exactly one element, emit it directly. Otherwise
@@ -584,12 +79,20 @@ pub(crate) enum Ctx {
     Single,
 }
 
-pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
-    crate::ui_split::reset_slot_counter();
-    // Under `ui-overlay`, keys this site and restarts its node
-    // numbering. A no-op otherwise, and nothing is prepended to the
-    // body either way — a tagged site adds per-NODE calls and nothing
-    // per site. See `ui_overlay`'s module docs for why.
+pub fn emit(mut ui: Ui, input: &TokenStream2) -> TokenStream2 {
+    ui_split::reset_slot_counter();
+    // Stamp every node with its index within this site, BEFORE the split
+    // pass clones the tree — the clone carries the stamps, and that is
+    // what ties the `Element` a node builds to the node the build-time
+    // descriptor calls by the same number. Unconditional: it is a walk
+    // over already-parsed data, it emits nothing, and having the tree
+    // numbered whether or not the feature is on means the two states
+    // cannot diverge in the one place divergence would be silent.
+    runtime_macros_parse::number_elements(&mut ui.elements);
+    // Under `ui-overlay`, keys this site off its call span. A no-op
+    // otherwise, and nothing is prepended to the body either way — a
+    // tagged site adds per-NODE calls and nothing per site. See
+    // `ui_overlay`'s module docs.
     crate::ui_overlay::begin_site();
     let body = emit_root_scope(&ui.elements);
     emit_shell(input, body)
@@ -598,7 +101,7 @@ pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
 /// Emit the `ui!` body's TOP-LEVEL scope: split it, evaluate the prelude,
 /// then build.
 fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
-    let scope = crate::ui_split::split(elements);
+    let scope = ui_split::split(elements);
     let body = match scope.nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole element: it is coerced to one `Element` below, so emit
@@ -622,7 +125,7 @@ fn emit_root_scope(elements: &[UiNode]) -> TokenStream2 {
 /// Wrap `body` in its scope's slot prelude, or return it unchanged when
 /// the scope hoisted nothing (so a fully-static tree's emission is
 /// byte-identical to the pre-slot-rewrite output).
-pub(crate) fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -> TokenStream2 {
+pub(crate) fn with_prelude(scope: &ui_split::Scope, body: TokenStream2) -> TokenStream2 {
     let prelude = scope.prelude_for(&body);
     if prelude.is_empty() {
         body
@@ -641,7 +144,7 @@ pub(crate) fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -
 /// always done, since the author's expressions live inside the
 /// branch/row closure.
 pub(crate) fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
-    let scope = crate::ui_split::split(nodes);
+    let scope = ui_split::split(nodes);
     let parts: Vec<TokenStream2> =
         scope.nodes.iter().map(|n| emit_node(n, Ctx::Child)).collect();
     let body = quote! {
@@ -655,756 +158,11 @@ pub(crate) fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
     with_prelude(&scope, body)
 }
 
-/// Wrap an emission tail (the real build chain on the happy path, or the
-/// diagnostic + empty view on the recovery path) in the SHARED shell that
-/// carries the salvage closure.
-///
-/// Why the happy path carries a salvage copy at all: rust-analyzer's
-/// completion inside a macro call expands the buffer TWICE — once as
-/// written ("real") and once with a placeholder ident spliced at the
-/// cursor ("speculative") — and then resolves nodes of the speculative
-/// expansion against the real expansion's HIR **by text range**. That
-/// only works when the two expansions are textually aligned up to the
-/// cursor. A mid-typing state like a dangling `c.` above an existing
-/// statement token-glues into VALID code (`c.` + `c.reset()` ⇒
-/// `c.c.reset()`), so the real buffer takes the happy path while the
-/// speculative one hits recovery — two structurally unrelated expansions,
-/// and the receiver's range lands on an arbitrary expression of the real
-/// one (observed: dot-completion on a `CounterHandle` offering `Ref`
-/// methods, because the offset happened to cover `counter`). Emitting the
-/// SAME salvage closure, at the SAME offset, in BOTH paths restores the
-/// alignment for every (valid, mid-typing) buffer pair. Span line info
-/// can't help instead: rust-analyzer's proc-macro server reports 1:0 for
-/// every span (verified empirically), so the glue is undetectable at
-/// macro level.
-///
-/// The shell is emitted ONLY under an IDE-style expansion host (detected
-/// by [`host_has_no_span_lines`]): under real rustc the happy expansion
-/// is byte-identical to the pre-shell output. That keeps real builds
-/// clean three ways — no `unexpected_cfgs`-style lint games in consumer
-/// crates, no type-checking of the salvage copy (a `move` closure in the
-/// salvage would steal captures from the real chain and break VALID code
-/// with E0382), and no salvage noise in `cargo expand` or in the error
-/// output of genuinely broken builds. Flycheck runs rustc, so editor
-/// diagnostics never see the salvage either; rust-analyzer's own
-/// diagnostics don't include borrowck.
-///
-/// The diagnostic (recovery path) must come AFTER the closure: parse
-/// error messages differ between the real and speculative buffers, and a
-/// leading `compile_error!("…")` of a different length would shift every
-/// salvage offset — breaking the very alignment this shell exists for.
-pub(crate) fn emit_shell(input: &TokenStream2, rest: TokenStream2) -> TokenStream2 {
-    if !host_has_no_span_lines(input) {
-        return quote! { ::runtime_core::IntoElement::into_element(#rest) };
-    }
-    let salvaged = salvage_stmts(input.clone());
-    quote! {
-        ::runtime_core::IntoElement::into_element({
-            #[allow(unused, unreachable_code, clippy::all)]
-            let __ui_recover = || {
-                #( #salvaged )*
-            };
-            #rest
-        })
-    }
-}
-
-/// True when the expansion host provides no real span positions — the
-/// discriminator between rustc and IDE proc-macro servers. rust-analyzer's
-/// server reports a degenerate zero-width `1:0` (or `0:0`) for EVERY
-/// token span (verified empirically — which is also why a line-aware
-/// parse can't detect the `c.`-glues-with-next-line shape and this shell
-/// exists at all); under rustc ≥1.88 with proc-macro2's `span-locations`,
-/// real tokens carry real positions, and a multi-token input can never be
-/// all zero-width at column 0. proc-macro2's fallback spans (unit tests,
-/// non-rustc hosts) are degenerate the same way, so tests exercise the
-/// shell path. If rust-analyzer ever starts reporting real span lines,
-/// this returns false there and completion inside broken `ui!` bodies
-/// regresses to the bare-`compile_error!` baseline — revisit the gate
-/// (a `#[cfg(rust_analyzer)]` emission, which currently trips
-/// `unexpected_cfgs` in consumer crates, becomes the alternative).
-fn host_has_no_span_lines(input: &TokenStream2) -> bool {
-    input.clone().into_iter().all(|tt| {
-        let (s, e) = (tt.span().start(), tt.span().end());
-        s == e && s.line <= 1 && s.column == 0
-    })
-}
-
-/// Emit a *recovery* expansion for a `ui!`/`jsx!` body that failed to
-/// parse. Two jobs:
-///
-/// 1. Re-emit the real `compile_error!` (with the parser's span) so the
-///    build still fails with the correct diagnostic at the correct place.
-/// 2. Re-surface as much of the raw input as possible in
-///    dead-but-type-checked positions, so rust-analyzer keeps full type
-///    info (completion, hover, go-to-def) for the parts of the block that
-///    *are* well-formed — i.e. everything except the token you're mid-way
-///    through typing. Without this, a single in-progress expression turns
-///    the entire `ui! { … }` into an opaque `compile_error!` and the IDE
-///    goes dark for the whole block.
-///
-/// Three salvage forms, matched to what completion needs per position:
-///
-/// - **Prop values** (`label = <expr>`): the RHS as a value expression —
-///   variable/method completion inside prop values.
-/// - **Component invocations** (`PascalTag(…)`): a STRUCT LITERAL over
-///   the tag (which aliases the props type) with every leading ident of
-///   the prop list as a `field: todo!()` entry — this is what makes
-///   rust-analyzer complete prop NAMES at `Counter(sta|)`, the single
-///   most common mid-typing state. See [`salvage_component_invocations`].
-/// - **Statement runs** (children blocks): iterated longest-valid-prefix
-///   expression salvage, so ONE broken child doesn't eat its siblings —
-///   bare exprs, half-typed tag names (value-position ident completion),
-///   primitive calls, and the conditions of `if`/`for`/`match` headers
-///   whose ui!-flavored bodies aren't valid Rust statements. See
-///   [`salvage_statement_run`].
-///
-/// The salvaged expressions live inside a never-called closure: they're
-/// analyzed but never executed, and `&(expr)` avoids moving out of
-/// the user's bindings. The whole thing still evaluates to an `Element`
-/// so the surrounding code type-checks as far as it can. The closure is
-/// emitted through [`emit_shell`] — shared with the HAPPY path — so the
-/// real and speculative expansions rust-analyzer compares stay textually
-/// aligned regardless of which path each buffer takes (see `emit_shell`
-/// for why that alignment is what makes completion resolve at all).
-///
-/// Everything emitted here is guaranteed-valid Rust syntax: salvage only
-/// keeps token runs that successfully parse as a `syn::Expr` (plus the
-/// synthesized struct literals, valid by construction). If it emitted
-/// unparseable tokens, rust-analyzer's own expansion of `ui!` would fail
-/// and we'd be worse off than the `compile_error!` baseline. Original
-/// token SPANS are preserved throughout (tokens are reused, never
-/// re-created) — that's what lets RA map completions back to the cursor.
-pub(crate) fn emit_recovery(input: TokenStream2, err: &syn::Error) -> TokenStream2 {
-    let diag = err.to_compile_error();
-    emit_shell(
-        &input,
-        quote! {
-            #diag
-            ::runtime_core::view(::std::vec::Vec::new())
-        },
-    )
-}
-
-/// Walk a raw token stream and collect salvage STATEMENTS (most are
-/// `let _ = &(expr);` wrappers; `let` statements are preserved verbatim),
-/// preserving spans. Used by [`emit_shell`] for BOTH the happy and the
-/// recovery expansion.
-///
-/// Strategy: within each token group, split on top-level commas. A
-/// segment shaped `ident = <tokens>` (a prop assignment — the lone `=`
-/// is `Spacing::Alone`, which rules out `==`/`=>`/`<=`) yields its RHS as
-/// a candidate expression. We also recurse into every nested group so
-/// children blocks and call arguments get salvaged too. We deliberately
-/// do NOT try to parse whole segments as expressions: `Card { … }` is a
-/// syntactically valid struct literal but semantically bogus (Card isn't
-/// a struct), and emitting it would inject spurious type errors that
-/// drown out the real completions.
-///
-/// PREFIX-STABILITY INVARIANT: because the happy and recovery paths both
-/// carry this salvage, and rust-analyzer resolves its speculative
-/// expansion against the real one BY TEXT RANGE, the salvage of two
-/// inputs that agree up to a position must agree in output up to that
-/// position. Every decomposition decision below is therefore made from
-/// the FRONT of the token run — never by whether some enclosing run
-/// happens to parse as a whole (which would let tokens after the cursor
-/// change output before it). That's why control-flow headers and bare
-/// calls decompose canonically even when the full expression is valid.
-fn salvage_stmts(stream: TokenStream2) -> Vec<TokenStream2> {
-    let mut out = Vec::new();
-    salvage_from_stream(stream, &mut out, SalvageCtx::Children);
-    out
-}
-
-/// Push an expression-shaped salvage as a `let _ = &(expr);` statement.
-/// `&(expr)` avoids moving out of the user's bindings.
-fn push_expr(out: &mut Vec<TokenStream2>, e: TokenStream2) {
-    out.push(quote! { let _ = &(#e); });
-}
-
-/// Which grammatical position a token run being salvaged sits in. The
-/// `ui!` grammar gives `Pascal ( … )` two meanings by position: in CHILD
-/// position it is a component tag (struct-literal salvage → prop-NAME
-/// completion), but inside a prop value or handler body it is ordinary
-/// Rust — a tuple-struct/enum-variant CONSTRUCTOR call (`P2(w, h)`,
-/// `Dir::North(steps)`), and struct-literal-salvaging those plants
-/// `E0560 no such field` squiggles from rust-analyzer's pull diagnostics
-/// on VALID code (user-hit via the always-on happy shell). So the
-/// struct-literal salvage fires only in `Children` context.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SalvageCtx {
-    /// Direct children of a tag body — `Pascal(…)` is a component tag.
-    Children,
-    /// Prop values, call arguments, handler bodies — plain Rust.
-    Value,
-}
-
-fn salvage_from_stream(stream: TokenStream2, out: &mut Vec<TokenStream2>, ctx: SalvageCtx) {
-    let mut segment: Vec<TokenTree> = Vec::new();
-    let mut segments: Vec<Vec<TokenTree>> = Vec::new();
-    for tt in stream {
-        match &tt {
-            TokenTree::Punct(p) if p.as_char() == ',' && p.spacing() == Spacing::Alone => {
-                segments.push(std::mem::take(&mut segment));
-            }
-            _ => segment.push(tt),
-        }
-    }
-    if !segment.is_empty() {
-        segments.push(segment);
-    }
-
-    for seg in segments {
-        // Component invocations (`PascalTag ( … )`) get a STRUCT-LITERAL
-        // salvage so rust-analyzer offers prop-NAME completion at a
-        // half-typed prop — see [`salvage_component_invocations`]. Only
-        // in CHILD position, where the grammar says a Pascal call IS a
-        // tag (see [`SalvageCtx`]).
-        if ctx == SalvageCtx::Children {
-            salvage_component_invocations(&seg, out);
-        }
-        // A prop assignment: `ident = <rhs>`. Salvage the RHS only — the
-        // whole segment would parse as an assignment to an undefined
-        // name and inject noise. STRUCTURED salvage first: a closure /
-        // control-flow RHS whose brace body is what's broken keeps its
-        // BINDINGS via scaffolding — `on_click = move || { if let Some(c)
-        // = … { c.│ } }` must keep `c` bound, or dot-completion at the
-        // cursor degrades to unknown-receiver noise (the bug that made
-        // handle methods invisible until a prefix was typed).
-        if let Some(rhs) = prop_value_tokens(&seg) {
-            if let Some(composite) = try_scaffold(&rhs, SalvageCtx::Value) {
-                push_expr(out, composite);
-            } else if let Some(expr_ts) = parse_expr_prefix(rhs.clone()) {
-                push_expr(out, expr_ts);
-            } else {
-                // Nothing parseable at this level — groups inside may
-                // still hold salvageable content.
-                for tt in &rhs {
-                    if let TokenTree::Group(g) = tt {
-                        salvage_from_stream(g.stream(), out, SalvageCtx::Value);
-                    }
-                }
-            }
-            continue;
-        }
-        // Otherwise treat the segment as a STATEMENT RUN — ui! children
-        // are whitespace-separated, so one broken child must not eat its
-        // siblings. Owns ALL group recursion for its tokens: a scaffolded
-        // body must not ALSO be salvaged flat, or the bound copies get
-        // shadowed by unbound duplicates full of unresolved-name noise.
-        salvage_statement_run(seg, out, ctx);
-    }
-}
-
-/// Try to rebuild `HEAD { BODY }` where the BODY is what failed to
-/// parse: keep HEAD as REAL scaffolding — preserving pattern bindings
-/// (`if let Some(c) = …`, `for x in …`) and closure parameters
-/// (`move |e| …`) — around a recursively salvaged body. The candidate is
-/// validated by parsing the actual composite, so a header whose block
-/// isn't statement-shaped (`match` needs arms, a bogus head, …) returns
-/// `None` and falls back to coarser salvage.
-fn try_scaffold(toks: &[TokenTree], ctx: SalvageCtx) -> Option<TokenStream2> {
-    let TokenTree::Group(g) = toks.last()? else {
-        return None;
-    };
-    if g.delimiter() != Delimiter::Brace || toks.len() < 2 {
-        return None;
-    }
-    let head: TokenStream2 = toks[..toks.len() - 1].iter().cloned().collect();
-    let mut inner: Vec<TokenStream2> = Vec::new();
-    salvage_from_stream(g.stream(), &mut inner, ctx);
-    let candidate = quote! {
-        #head {
-            #( #inner )*
-        }
-    };
-    syn::parse2::<Expr>(candidate.clone()).ok().map(|_| candidate)
-}
-
-/// Scaffold a plain `if`/`for` through the SAME type dispatch the real
-/// `ui!` lowering uses, so the salvage accepts exactly what the DSL
-/// accepts (see the call site in [`salvage_statement_run`] for the full
-/// rationale — the plain-Rust form E0308-squiggles valid reactive
-/// conditions under rust-analyzer). Returns the number of consumed
-/// tokens on success; `None` (nothing emitted) when the construct is too
-/// broken to scaffold this way.
-///
-/// For `if`, the whole `else if …`/`else` chain is consumed: the else
-/// branch becomes the dispatch's second closure, with a chained
-/// `else if` salvaged recursively inside it.
-fn salvage_dispatch_construct(
-    kw: &str,
-    toks: &[TokenTree],
-    out: &mut Vec<TokenStream2>,
-    ctx: SalvageCtx,
-) -> Option<usize> {
-    let body_at = toks.iter().position(
-        |t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace),
-    )?;
-    let TokenTree::Group(body) = &toks[body_at] else {
-        return None;
-    };
-
-    if kw == "for" {
-        let in_pos = toks[..body_at]
-            .iter()
-            .position(|t| matches!(t, TokenTree::Ident(i) if i == "in"))?;
-        if in_pos < 1 || in_pos + 1 >= body_at {
-            return None;
-        }
-        let pat: TokenStream2 = toks[1..in_pos].iter().cloned().collect();
-        let iter: TokenStream2 = toks[in_pos + 1..body_at].iter().cloned().collect();
-        let mut body_stmts: Vec<TokenStream2> = Vec::new();
-        salvage_from_stream(body.stream(), &mut body_stmts, ctx);
-        let candidate = quote! {
-            {
-                #[allow(unused_imports)]
-                use ::runtime_core::{StaticForEach as _, ReactiveForEach as _};
-                (#iter).__idealyst_for_each(move |#pat| {
-                    #( #body_stmts )*
-                    ::std::vec::Vec::new()
-                })
-            }
-        };
-        return syn::parse2::<Expr>(candidate.clone()).ok().map(|_| {
-            push_expr(out, candidate);
-            body_at + 1
-        });
-    }
-
-    // `if` — a nonempty condition is required.
-    if body_at < 2 {
-        return None;
-    }
-    let cond: TokenStream2 = toks[1..body_at].iter().cloned().collect();
-    let mut then_stmts: Vec<TokenStream2> = Vec::new();
-    salvage_from_stream(body.stream(), &mut then_stmts, ctx);
-
-    let mut consumed = body_at + 1;
-    let mut else_stmts: Vec<TokenStream2> = Vec::new();
-    if matches!(toks.get(consumed), Some(TokenTree::Ident(i)) if i == "else") {
-        match (toks.get(consumed + 1), toks.get(consumed + 2)) {
-            (Some(TokenTree::Group(g)), _) if g.delimiter() == Delimiter::Brace => {
-                salvage_from_stream(g.stream(), &mut else_stmts, ctx);
-                consumed += 2;
-            }
-            (Some(TokenTree::Ident(i)), _) if i == "if" => {
-                let end = if_chain_extent(toks, consumed + 1);
-                salvage_statement_run(toks[consumed + 1..end].to_vec(), &mut else_stmts, ctx);
-                consumed = end;
-            }
-            _ => {}
-        }
-    }
-    let candidate = quote! {
-        {
-            #[allow(unused_imports)]
-            use ::runtime_core::{StaticCond as _, ReactiveCond as _};
-            (#cond).__idealyst_if(
-                move || { #( #then_stmts )* ::std::vec::Vec::new() },
-                move || { #( #else_stmts )* ::std::vec::Vec::new() },
-            )
-        }
-    };
-    syn::parse2::<Expr>(candidate.clone()).ok().map(|_| {
-        push_expr(out, candidate);
-        consumed
-    })
-}
-
-/// Index just past an `if … { … } (else if … { … })* (else { … })?`
-/// chain whose `if` sits at `start`. Bodies are single brace-group
-/// tokens, so the scan can't be confused by nested constructs.
-fn if_chain_extent(toks: &[TokenTree], start: usize) -> usize {
-    let mut pos = start;
-    loop {
-        let Some(b) = toks[pos..].iter().position(
-            |t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace),
-        ) else {
-            return toks.len();
-        };
-        pos += b + 1;
-        match (toks.get(pos), toks.get(pos + 1)) {
-            (Some(TokenTree::Ident(e)), Some(TokenTree::Group(g)))
-                if e == "else" && g.delimiter() == Delimiter::Brace =>
-            {
-                return pos + 2;
-            }
-            (Some(TokenTree::Ident(e)), Some(TokenTree::Ident(i)))
-                if e == "else" && i == "if" =>
-            {
-                pos += 2;
-            }
-            _ => return pos,
-        }
-    }
-}
-
-/// Salvage a statement-shaped token run: repeatedly take the longest
-/// valid leading expression, emit it, and continue with the remainder;
-/// when no prefix parses, drop one leading token and keep going. Two
-/// head shapes are consumed WITHOUT expression salvage:
-///
-/// - `Ident { … }` (tag-with-children) — parses as a struct literal but
-///   is semantically bogus from a children block (`Card { … }` would
-///   type-check the wrong way); its braces were already recursed.
-/// - `PascalTag ( … )` — parses as a fn call to the component fn, whose
-///   arity/types won't match the prop list (noise); the struct-literal
-///   salvage from [`salvage_component_invocations`] is the useful
-///   surface for it.
-fn salvage_statement_run(mut toks: Vec<TokenTree>, out: &mut Vec<TokenStream2>, ctx: SalvageCtx) {
-    while !toks.is_empty() {
-        let head_pair_to_skip = match (toks.first(), toks.get(1)) {
-            (Some(TokenTree::Ident(_)), Some(TokenTree::Group(g)))
-                if g.delimiter() == Delimiter::Brace =>
-            {
-                true
-            }
-            (Some(TokenTree::Ident(i)), Some(TokenTree::Group(g)))
-                if g.delimiter() == Delimiter::Parenthesis && is_pascal(i) =>
-            {
-                true
-            }
-            _ => false,
-        };
-        if head_pair_to_skip {
-            // The pair itself isn't expression-salvaged, but its group
-            // still holds salvageable content: a BRACE group is a tag's
-            // children block (Children ctx), a PAREN group is its prop
-            // list (Value ctx — Pascal calls inside are constructors).
-            if let Some(TokenTree::Group(g)) = toks.get(1) {
-                let inner_ctx = if g.delimiter() == Delimiter::Brace {
-                    SalvageCtx::Children
-                } else {
-                    SalvageCtx::Value
-                };
-                salvage_from_stream(g.stream(), out, inner_ctx);
-            }
-            toks.drain(..2);
-            continue;
-        }
-
-        // `let` statements: a whole, valid `let … ;` is preserved
-        // VERBATIM so the binding stays live for the statements after it
-        // — `let c = counter.get().unwrap(); c.│` needs `c` bound in the
-        // salvage copy or dot-completion has no receiver type. Decided
-        // entirely from the front (`let` … first top-level `;`), so it's
-        // prefix-stable. A broken/mid-typed `let` falls back to salvaging
-        // the `=`-RHS prefix (binding lost — acceptable, the buffer is
-        // already broken at exactly that statement).
-        if matches!(toks.first(), Some(TokenTree::Ident(i)) if i == "let") {
-            let semi = toks.iter().position(
-                |t| matches!(t, TokenTree::Punct(p) if p.as_char() == ';'),
-            );
-            if let Some(semi) = semi {
-                let stmt: TokenStream2 = toks[..=semi].iter().cloned().collect();
-                if syn::parse2::<syn::Block>(quote! { { #stmt } }).is_ok() {
-                    out.push(stmt);
-                    toks.drain(..=semi);
-                    continue;
-                }
-            }
-            let upto = semi.unwrap_or(toks.len());
-            if let Some(eq) = toks[..upto].iter().position(|t| {
-                matches!(t, TokenTree::Punct(p)
-                    if p.as_char() == '=' && p.spacing() == Spacing::Alone)
-            }) {
-                if let Some(ts) = parse_expr_prefix(toks[eq + 1..upto].to_vec()) {
-                    push_expr(out, ts);
-                }
-            }
-            let drain_to = if semi.is_some() { upto + 1 } else { upto };
-            toks.drain(..drain_to);
-            continue;
-        }
-
-        // Control-flow with a statement-shaped body scaffolds CANONICALLY
-        // — even when the whole expression is valid. If only the broken
-        // variant scaffolded, a buffer whose glued form parses (`c.` +
-        // `c.reset()` ⇒ `c.c.reset()`) would emit `if … { c.bump(10); }`
-        // whole while its speculative twin emits the scaffold, and the
-        // two expansions would diverge BEFORE the cursor (see
-        // [`emit_shell`] on why that kills completion). `match` is
-        // excluded: its arms aren't statements, so a scaffold body would
-        // flat-salvage the arms and strip their pattern bindings on
-        // VALID code; it keeps whole-expression salvage below.
-        //
-        // WHICH scaffold form depends on the construct:
-        // - Plain `if`/`for` go through the SAME type dispatch the real
-        //   lowering uses (`__idealyst_if` / `__idealyst_for_each`), NOT
-        //   a plain Rust `if`/`for` — `ui!` legally accepts a
-        //   `ReadSignal<bool>` condition and a `Signal<Vec<_>>` iterable,
-        //   which a plain `if`/`for` rejects, and rust-analyzer surfaces
-        //   that as an E0308 squiggle ON VALID CODE via its pull-model
-        //   diagnostics (user-hit: `if is_high` where
-        //   `is_high = memo(…)`). The dispatch accepts exactly what the
-        //   DSL accepts, so the salvage typechecks iff the real code
-        //   does; it also keeps `for`-loop items TYPED for either world.
-        // - `if let`/`while let`/`while` keep the plain-Rust scaffold:
-        //   their conditions are plain Rust in valid code (a `let`
-        //   pattern must already match its RHS type; `while` has no
-        //   reactive form), and the `let` forms need the real construct
-        //   to keep their pattern BINDINGS live.
-        if let Some(TokenTree::Ident(kw)) = toks.first() {
-            let kw = kw.to_string();
-            let let_form =
-                matches!(toks.get(1), Some(TokenTree::Ident(i)) if i == "let");
-            if (kw == "if" || kw == "for") && !let_form {
-                if let Some(consumed) = salvage_dispatch_construct(&kw, &toks, out, ctx) {
-                    toks.drain(..consumed);
-                    continue;
-                }
-                // Mid-typed condition / no body yet: fall through to the
-                // keyword-condition branch below.
-            } else if kw == "if" || kw == "while" {
-                if let Some(body_at) = toks.iter().position(|t| {
-                    matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
-                }) {
-                    if let Some(composite) = try_scaffold(&toks[..=body_at], ctx) {
-                        push_expr(out, composite);
-                        toks.drain(..=body_at);
-                        continue;
-                    }
-                }
-            }
-        }
-
-        // Bare call in statement position (`ident ( … )`, lowercase, not
-        // chained): decompose CANONICALLY into the callee name plus the
-        // salvage of its arguments, even when the whole call is valid —
-        // whether the interior parses must not change the output emitted
-        // before it (prefix stability again). Chained calls
-        // (`foo(x).bar()`) keep whole-expression salvage: decomposing
-        // would orphan the chain, and the front-token rule stays
-        // deterministic by peeking only at the token after the group.
-        if let (Some(TokenTree::Ident(head)), Some(TokenTree::Group(g))) =
-            (toks.first(), toks.get(1))
-        {
-            let chained = matches!(toks.get(2), Some(TokenTree::Punct(p))
-                if p.as_char() == '.' || p.as_char() == '?');
-            let keyword = matches!(
-                head.to_string().as_str(),
-                "if" | "while" | "for" | "match" | "move" | "return" | "break"
-            );
-            if g.delimiter() == Delimiter::Parenthesis
-                && !is_pascal(head)
-                && !keyword
-                && !chained
-            {
-                push_expr(out, head.to_token_stream());
-                salvage_from_stream(g.stream(), out, SalvageCtx::Value);
-                toks.drain(..2);
-                continue;
-            }
-        }
-
-        // A LEADING brace group is descended, never block-expr-salvaged
-        // whole: `{ for x in rows { … } }` parses as a block expression,
-        // and swallowing it would re-emit DSL-flavored contents as plain
-        // Rust (the exact type-error class the dispatch scaffolds above
-        // exist to prevent) — and break prefix stability, since whether
-        // the block parses depends on its interior.
-        if matches!(toks.first(), Some(TokenTree::Group(g))
-            if g.delimiter() == Delimiter::Brace)
-        {
-            if let TokenTree::Group(g) = &toks[0] {
-                salvage_from_stream(g.stream(), out, ctx);
-            }
-            toks.remove(0);
-            continue;
-        }
-
-        let mut n = toks.len();
-        let mut consumed = 0;
-        while n > 0 {
-            let ts: TokenStream2 = toks[..n].iter().cloned().collect();
-            if let Ok(expr) = syn::parse2::<Expr>(ts) {
-                push_expr(out, expr.to_token_stream());
-                consumed = n;
-                break;
-            }
-            n -= 1;
-        }
-        if consumed > 0 {
-            toks.drain(..consumed);
-            continue;
-        }
-        // Nothing parseable starts here. STRUCTURED attempt first: if a
-        // brace group follows a header, rebuild `HEAD { salvaged-body }`
-        // so pattern bindings survive (`if let Some(c) = … { c.│ }`
-        // keeps `c` bound — the difference between real dot-completion
-        // and unknown-receiver noise at the cursor). Reached for
-        // non-keyword headers (statement-position closures etc.) — the
-        // control-flow keywords already tried this above.
-        if let Some(body_at) = toks.iter().position(|t| {
-            matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
-        }) {
-            if body_at > 0 {
-                if let Some(composite) = try_scaffold(&toks[..=body_at], ctx) {
-                    push_expr(out, composite);
-                    toks.drain(..=body_at);
-                    continue;
-                }
-            }
-        }
-        // Scaffolding didn't apply (no header/brace, or a non-statement
-        // body like `match` arms). For control-flow headers, the
-        // condition is still salvageable Rust — pull it out so
-        // `if fro…` keeps completion, then step over the header. The
-        // body group is recursed flat before draining.
-        if let Some(TokenTree::Ident(kw)) = toks.first() {
-            let kw = kw.to_string();
-            if kw == "if" || kw == "while" || kw == "match" || kw == "for" {
-                let body_at = toks
-                    .iter()
-                    .position(|t| {
-                        matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace)
-                    })
-                    .unwrap_or(toks.len());
-                // `for pat in iter` — the expression is what follows
-                // `in`; for the others it's everything after the keyword.
-                // `if let PAT = expr` — a bare `let` expression is only
-                // valid inside `if`/`while`, so salvage the expr after
-                // `=` instead of the whole let (emitting `&(let …)` used
-                // to produce a bogus-position error squiggle right on
-                // the author's pattern).
-                let cond_from = if kw == "for" {
-                    toks[..body_at]
-                        .iter()
-                        .position(|t| matches!(t, TokenTree::Ident(i) if i == "in"))
-                        .map(|i| i + 1)
-                        .unwrap_or(1)
-                } else if matches!(toks.get(1), Some(TokenTree::Ident(i)) if i == "let") {
-                    toks[..body_at]
-                        .iter()
-                        .position(|t| {
-                            matches!(t, TokenTree::Punct(p)
-                                if p.as_char() == '=' && p.spacing() == Spacing::Alone)
-                        })
-                        .map(|i| i + 1)
-                        .unwrap_or(1)
-                } else {
-                    1
-                };
-                if cond_from < body_at {
-                    if let Some(ts) = parse_expr_prefix(toks[cond_from..body_at].to_vec()) {
-                        push_expr(out, ts);
-                    }
-                }
-                if let Some(TokenTree::Group(g)) = toks.get(body_at) {
-                    salvage_from_stream(g.stream(), out, ctx);
-                }
-                let drain_to = (body_at + 1).min(toks.len());
-                toks.drain(..drain_to);
-                continue;
-            }
-        }
-        // Mid-typed operator, stray punct, or an unrecognized head —
-        // step past it, salvaging a group's interior on the way.
-        if let TokenTree::Group(g) = &toks[0] {
-            salvage_from_stream(g.stream(), out, ctx);
-        }
-        toks.remove(0);
-    }
-}
-
-/// True when the ident starts uppercase — the `ui!` component-tag
-/// convention (primitives are lowercase-only).
-fn is_pascal(i: &proc_macro2::Ident) -> bool {
-    i.to_string().chars().next().is_some_and(|c| c.is_ascii_uppercase())
-}
-
-/// For every `PascalTag ( … )` pair in the segment, emit a struct-literal
-/// salvage:
-///
-/// ```ignore
-/// Counter { sta: ::core::todo!(), start: ::core::todo!(), ..Default::default() }
-/// ```
-///
-/// The tag doubles as the props type (`#[component]` emits `pub type Tag =
-/// TagProps`), so with the ORIGINAL ident spans preserved rust-analyzer
-/// treats the half-typed `sta` as a field name of the real props struct
-/// and completes `start` — the single most common mid-typing state.
-/// `todo!()` types as `!` and coerces to every field type, so the
-/// complete prop names add zero type-mismatch noise; only the half-typed
-/// name shows an unknown-field error, and that sits under the cursor
-/// where an error is expected anyway. `..Default::default()` is valid on
-/// every props struct (the `BuildElement: Default` contract).
-fn salvage_component_invocations(seg: &[TokenTree], out: &mut Vec<TokenStream2>) {
-    // PascalCase enum constructors that pattern/expression code uses
-    // constantly — `Some(c)` in an `if let` is NOT a component
-    // invocation, and emitting `Some { c: todo!() … }` would plant a
-    // type-error squiggle on the author's own pattern.
-    const NOT_COMPONENTS: &[&str] = &["Some", "Ok", "Err", "None"];
-    for pair in seg.windows(2) {
-        let (TokenTree::Ident(name), TokenTree::Group(g)) = (&pair[0], &pair[1]) else {
-            continue;
-        };
-        if g.delimiter() != Delimiter::Parenthesis || !is_pascal(name) {
-            continue;
-        }
-        if NOT_COMPONENTS.contains(&name.to_string().as_str()) {
-            continue;
-        }
-        // Leading ident of each top-level comma segment inside the parens
-        // — covers `sta`, `start = 3`, and `start =` alike.
-        let mut fields: Vec<proc_macro2::Ident> = Vec::new();
-        let mut at_start = true;
-        for tt in g.stream() {
-            match &tt {
-                TokenTree::Punct(p) if p.as_char() == ',' && p.spacing() == Spacing::Alone => {
-                    at_start = true;
-                }
-                TokenTree::Ident(i) if at_start => {
-                    fields.push(i.clone());
-                    at_start = false;
-                }
-                _ => at_start = false,
-            }
-        }
-        push_expr(
-            out,
-            quote! {
-                #name {
-                    #( #fields: ::core::todo!(), )*
-                    ..::core::default::Default::default()
-                }
-            },
-        );
-    }
-}
-
-/// If `seg` begins with `ident =` (a lone `=`, not `==`/`=>`/…), return
-/// the right-hand-side tokens. Otherwise `None`.
-fn prop_value_tokens(seg: &[TokenTree]) -> Option<Vec<TokenTree>> {
-    match (seg.first(), seg.get(1)) {
-        (Some(TokenTree::Ident(_)), Some(TokenTree::Punct(p)))
-            if p.as_char() == '=' && p.spacing() == Spacing::Alone =>
-        {
-            Some(seg[2..].to_vec())
-        }
-        _ => None,
-    }
-}
-
-/// Parse the longest prefix of `toks` that forms a valid `syn::Expr`,
-/// returning it re-tokenized (spans preserved). Trimming the tail lets us
-/// recover `foo` from a half-typed `foo.` and `foo.bar` from `foo.bar(`.
-fn parse_expr_prefix(mut toks: Vec<TokenTree>) -> Option<TokenStream2> {
-    while !toks.is_empty() {
-        let ts: TokenStream2 = toks.iter().cloned().collect();
-        if let Ok(expr) = syn::parse2::<Expr>(ts) {
-            return Some(expr.to_token_stream());
-        }
-        toks.pop();
-    }
-    None
-}
 
 pub(crate) fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
     match node {
-        UiNode::Component { name, props, children, chain } => {
-            emit_component(name, props, children.as_deref(), chain)
+        UiNode::Component { name, props, children, chain, node } => {
+            emit_component(name, props, children.as_deref(), chain, *node)
         }
         UiNode::If { cond, then_body, else_body } => {
             emit_if(cond, then_body, else_body.as_deref(), ctx)
@@ -1437,13 +195,11 @@ fn emit_component(
     props: &[Prop],
     children: Option<&[UiNode]>,
     chain: &[TokenStream2],
+    // This node's index within its site, stamped on the parsed tree by
+    // `runtime_macros_parse::number` — NOT a count of emissions. See
+    // that module for why the difference matters.
+    node: u32,
 ) -> TokenStream2 {
-    // Reserve this node's index BEFORE its children are emitted, so a
-    // parent always precedes its children — the same order the split
-    // pass numbers them in, which is what makes a build-time
-    // descriptor's node indices address this tree. No-op with
-    // `ui-overlay` off.
-    let __overlay_index = crate::ui_overlay::open_node();
     // Framework primitives are a fixed set, canonicalized to snake_case
     // (`view`, `text`, `text_input`, …) to match the `runtime_core::view(...)`
     // builder fn names and React's lowercase-intrinsic convention. PascalCase
@@ -1599,7 +355,7 @@ fn emit_component(
         quote! { (#with_a11y) #(#chain)* }
     };
 
-    crate::ui_overlay::tag(built, __overlay_index)
+    crate::ui_overlay::tag(built, node)
 }
 
 /// One piece of an f-string text literal: a literal fragment or a
@@ -2050,51 +806,6 @@ fn text_content_reads_signal_bare(children: Option<&[UiNode]>, props: &[Prop]) -
     false
 }
 
-/// Does `expr` have the "reactive call" shape — a single-segment
-/// function call whose every argument is a bare single-segment path
-/// (a signal reference)? This is the SAME syntactic shape
-/// `try_emit_derived_call` / `try_emit_structured_match` accept, and
-/// it is the shape that, by contract, reads signals: the structured
-/// lowering calls `(arg).get()` on each argument.
-///
-/// `condition_is_reactive` only fires on a literal `.get()` substring,
-/// so a scrutinee like `key(state)` (the signal read is hidden inside
-/// `key`, the args are bare `Signal`s) is NOT caught by it. For `if`
-/// this didn't matter — `if key(state) { … }` is always claimed by the
-/// structured `try_emit_derived_call::<bool>` path, which makes it
-/// reactive. But `match`'s structured path requires *literal* arm
-/// keys, so `match key(state) { Enum::A => …, _ => … }` (enum/non-literal
-/// arms) fell through `try_emit_structured_match` AND past
-/// `condition_is_reactive`, landing on the static plain-`match` arm —
-/// it built once and never re-ran when `state` changed. This predicate
-/// closes that gap so the closure-`switch` reactive path also claims
-/// the bare-call shape (matching `if`'s behavior).
-pub(crate) fn is_reactive_call_shape(expr: &Expr) -> bool {
-    let call = match expr {
-        Expr::Call(c) => c,
-        _ => return false,
-    };
-    // Function position must be a single-segment path with no generic args.
-    match &*call.func {
-        Expr::Path(syn::ExprPath { qself: None, path, .. }) => {
-            if path.segments.len() != 1 || !path.segments[0].arguments.is_empty() {
-                return false;
-            }
-        }
-        _ => return false,
-    }
-    if call.args.is_empty() {
-        return false;
-    }
-    // Every arg must be a bare single-segment path (a signal reference).
-    call.args.iter().all(|a| {
-        matches!(
-            a,
-            Expr::Path(syn::ExprPath { qself: None, path, .. })
-                if path.segments.len() == 1 && path.segments[0].arguments.is_empty()
-        )
-    })
-}
 
 /// `new-core` counterpart of the structured lowerings: for the same
 /// "reactive call" shape (`method(sig_a, sig_b)` — single-segment fn,
@@ -3664,7 +2375,7 @@ fn try_emit_for_repeat(
 pub(crate) fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
     // A branch / arm / row / presence body is its own template scope —
     // see `emit_child_scope`.
-    let scope = crate::ui_split::split(nodes);
+    let scope = ui_split::split(nodes);
     let body = match scope.nodes.len() {
         0 => quote! { ::runtime_core::view(::std::vec::Vec::new()) },
         // Sole node must itself be one Element: single-slot context.
@@ -3722,6 +2433,10 @@ fn _unused(_: Span) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The recovery shell lives in `runtime-macros-parse` now; its tests
+    // stay here, where they exercise it through the same entry point a
+    // real expansion takes.
+    use runtime_macros_parse::recovery::emit_recovery;
 
     /// Parse a `ui!` body and emit it, returning the emitted token stream
     /// as a string for substring assertions. NOTE: the output includes the

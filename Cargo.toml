@@ -17,6 +17,7 @@ members = [
     # part of the old runtime-core that outlives the walker.
     "crates/runtime/shared",
     "crates/runtime/macros",
+    "crates/runtime/macros-parse",
     # The reactive kernel: worlds, staged commits, derivation-class flush.
     "crates/runtime/world",
     # The scene core: Element/realize/Host/Registry + the Dyn/Keyed
@@ -442,6 +443,7 @@ premint-dump = { path = "crates/tools/premint-dump" }
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.5.2", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.8.0", registry = "idealyst" }
+runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.8.0", registry = "idealyst" }
 mcp-catalog = { path = "crates/mcp/catalog", version = "1.8.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }

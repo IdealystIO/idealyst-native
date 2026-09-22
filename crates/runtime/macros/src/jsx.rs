@@ -430,7 +430,7 @@ pub fn emit(jsx: Jsx, input: &TokenStream2) -> TokenStream2 {
             }
         }
     };
-    crate::ui::emit_shell(input, body)
+    crate::recovery::emit_shell(input, body)
 }
 
 /// Wraps a fragment's children in `view(...)` so it can stand in where a
@@ -516,7 +516,7 @@ fn emit_element(
             for p in props {
                 if p.name == "style" && style.is_none() {
                     style = Some(&p.value);
-                } else if crate::ui::is_a11y_attr(&p.name.to_string()) {
+                } else if runtime_macros_parse::ast::is_a11y_attr(&p.name.to_string()) {
                     a11y.push(p);
                 } else {
                     rest.push(p);
