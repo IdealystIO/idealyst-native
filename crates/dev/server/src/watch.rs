@@ -85,10 +85,17 @@ pub fn spawn_rebuild_loop(config: RebuildConfig) -> std::thread::JoinHandle<()> 
 /// burst. No command execution, no exec, no `on_success` ladder.
 /// Used by the runtime-server host's hot-patch driver, which owns the entire
 /// build pipeline itself.
+/// Watch `watch_paths` and call `on_change` with the changed paths on
+/// every debounced burst.
+///
+/// The paths are passed because a caller may want to DECIDE something
+/// about them before acting — the overlay's patch-or-rebuild question
+/// needs to read the files that changed, and a callback taking nothing
+/// can only rebuild.
 pub fn spawn_change_loop(
     watch_paths: Vec<PathBuf>,
     debounce: Duration,
-    mut on_change: Box<dyn FnMut() + Send>,
+    mut on_change: Box<dyn FnMut(&[PathBuf]) + Send>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let (tx, rx) = std_mpsc::channel::<DebounceEventResult>();
@@ -110,7 +117,8 @@ pub fn spawn_change_loop(
             match evt {
                 Ok(ref ev) if !ev.is_empty() => {
                     eprintln!("[dev-server] change detected ({} event(s))", ev.len());
-                    on_change();
+                    let paths: Vec<PathBuf> = ev.iter().map(|e| e.path.clone()).collect();
+                    on_change(&paths);
                 }
                 Ok(_) => {}
                 Err(e) => {

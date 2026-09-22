@@ -229,7 +229,7 @@ pub fn run(
     spawn_change_loop(
         vec![user_src],
         std::time::Duration::from_millis(100),
-        Box::new(move || {
+        Box::new(move |_changed: &[std::path::PathBuf]| {
             let t_total = std::time::Instant::now();
             let force_respawn = std::env::var("IDEALYST_RUNTIME_SERVER_NO_HOTPATCH")
                 .ok()
