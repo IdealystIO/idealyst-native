@@ -253,7 +253,6 @@ pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
             runtime_vocabulary::overlay::apply_live_to(
                 &app._backend,
                 &app._registry,
-                &mut app.realized.root,
                 patch.site,
                 &edits,
             )

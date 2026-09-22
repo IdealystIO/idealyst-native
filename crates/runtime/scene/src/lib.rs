@@ -65,5 +65,9 @@ pub use realize::{
     Retired, MAX_DEPTH,
 };
 #[cfg(feature = "ui-overlay")]
+pub mod live;
+#[cfg(feature = "ui-overlay")]
+pub use live::{instances, live_count, LiveOrigin};
+#[cfg(feature = "ui-overlay")]
 pub use realize::visit_tagged;
 pub use registry::{Handler, ManyHandler, Registry};

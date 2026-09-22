@@ -189,7 +189,8 @@ impl SceneSession {
         fn first(live: &runtime_scene::LiveNode<wire::NodeId>) -> Option<u64> {
             match live {
                 runtime_scene::LiveNode::Item { origin, children, .. } => origin
-                    .map(|(tag, _)| tag.site)
+                    .as_ref()
+                    .map(|o| o.tag.site)
                     .or_else(|| children.iter().find_map(first)),
                 runtime_scene::LiveNode::Fragment(children) => children.iter().find_map(first),
                 _ => None,
@@ -223,7 +224,6 @@ impl SceneSession {
             runtime_vocabulary::overlay::apply_live_to(
                 &self.backend,
                 &self.registry,
-                &mut self.realized.root,
                 site,
                 edits,
             )

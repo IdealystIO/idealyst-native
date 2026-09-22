@@ -73,19 +73,19 @@ pub enum LiveNode<N> {
     Item {
         node: N,
         children: Vec<LiveNode<N>>,
-        /// Which `ui!` node built this, and what kind of payload it is.
+        /// Which `ui!` node built this, what kind of payload it is, and
+        /// the handles a patch needs to reach it.
         ///
-        /// The `Element` that produced this carried the tag; keeping it
-        /// on the LIVE side is what lets a patch reach an instance that
-        /// is already mounted, rather than only the next build of its
-        /// site. The `TypeId` rides along because the live tree has no
-        /// payload — it is how an applier knows whether this node takes
-        /// `update_text` or `update_button_label`.
+        /// Held by `Rc` because the OVERLAY REGISTRY holds the matching
+        /// `Weak` — see [`crate::live`]. That is the whole
+        /// unregistration story: dropping this live tree is unmount, and
+        /// it drops the `Rc`, so the registry's entry goes dead with no
+        /// cleanup hook to forget to fire.
         ///
         /// Only under `ui-overlay`, so a normal build carries no
         /// per-node cost. Match with `..`.
         #[cfg(feature = "ui-overlay")]
-        origin: Option<(crate::element::NodeTag, std::any::TypeId)>,
+        origin: Option<Rc<crate::live::LiveOrigin<N>>>,
     },
     /// Flat siblings, no node of their own.
     Fragment(Vec<LiveNode<N>>),
@@ -713,11 +713,32 @@ impl<'a, H: Host> MountCx<'a, H> {
         self.frames.push(Vec::new());
         let node = handler(self, payload, children);
         let kids = self.frames.pop().expect("handler frame imbalance");
+
+        // Register this node with the overlay, if the macro tagged it.
+        // Here and nowhere else: `mount_item` is the one place every
+        // mounted node passes through, so a handler that realizes into
+        // its own storage — every navigator screen — is covered without
+        // knowing anything about the overlay.
+        #[cfg(feature = "ui-overlay")]
+        let origin = tag.map(|t| {
+            let children: Vec<H::Node> =
+                kids.iter().flat_map(|k| k.collect_nodes()).collect();
+            let origin = Rc::new(crate::live::LiveOrigin {
+                tag: t,
+                type_id,
+                node: node.clone(),
+                children: RefCell::new(children),
+                retired: std::cell::Cell::new(false),
+            });
+            crate::live::register(&origin);
+            origin
+        });
+
         LiveNode::Item {
             node,
             children: kids,
             #[cfg(feature = "ui-overlay")]
-            origin: tag.map(|t| (t, type_id)),
+            origin,
         }
     }
 }
@@ -1435,7 +1456,7 @@ pub fn visit_tagged<N: Clone>(
 ) {
     match root {
         LiveNode::Item { origin, .. } => {
-            if let Some((tag, type_id)) = *origin {
+            if let Some((tag, type_id)) = origin.as_ref().map(|o| (o.tag, o.type_id)) {
                 if tag.site == site {
                     f(&tag, type_id, root);
                 }

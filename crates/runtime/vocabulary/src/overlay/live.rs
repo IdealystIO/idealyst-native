@@ -37,10 +37,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_scene::{realize, visit_tagged, Element, Host, LiveNode, Realized, Registry};
+use runtime_scene::{realize, LiveOrigin, Realized, Registry};
 use runtime_template::{Edit, LiteralValue, NewNode, Patch};
 
-use crate::caps::{AllCaps, ButtonOps, StyleOps, TextInputOps, TextOps};
+// The individual `*Ops` traits come in through `AllCaps`, which is
+// the bound this module is generic over.
+use crate::caps::AllCaps;
 use crate::prims::{ButtonPrim, PrimCell, TextInputPrim, TextPrim};
 
 use super::apply::Outcome;
@@ -70,19 +72,13 @@ pub(crate) fn release_all() {
     INSERTED.with(|i| i.borrow_mut().clear());
 }
 
-/// Apply `patch` to the mounted tree under `root`.
-///
-/// `root` is a live tree the caller owns — an app's root `Realized`, or a
-/// subtree in a test. Every instance the patch addresses is visited: one
-/// `(site, node)` pair matches several live nodes when the node is inside
-/// a `for`, and all of them are updated.
+/// Apply `patch` to every mounted instance of its site.
 pub fn apply_live<H: AllCaps + 'static>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
-    root: &mut LiveNode<H::Node>,
     patch: &Patch,
 ) -> Outcome {
-    apply_live_to(backend, registry, root, patch.key(), &patch.edits)
+    apply_live_to(backend, registry, patch.key(), &patch.edits)
 }
 
 /// As [`apply_live`], addressed by the key a tag carries.
@@ -90,10 +86,14 @@ pub fn apply_live<H: AllCaps + 'static>(
 /// The primitive of the pair, for the same reason `stage_key` is: a
 /// caller that read the key off a mounted tree has the number, and a
 /// `SiteId` cannot be hashed backwards into one.
+///
+/// Takes no root. Instances come from `runtime_scene::live`, which
+/// registers every node `mount_item` builds — so a subtree a handler
+/// realized into its OWN storage (every navigator screen) is reachable,
+/// and a subtree that has unmounted is not.
 pub fn apply_live_to<H: AllCaps + 'static>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
-    root: &mut LiveNode<H::Node>,
     site: u64,
     edits: &[Edit],
 ) -> Outcome {
@@ -101,21 +101,21 @@ pub fn apply_live_to<H: AllCaps + 'static>(
 
     let mut outcome = Outcome::default();
     for edit in edits.iter() {
-        let mut matched = false;
-        visit_tagged(root, site, &mut |tag, type_id, live: &mut LiveNode<H::Node>| {
-            let node_index = match edit {
-                Edit::SetProp { node, .. } | Edit::SetChildren { node, .. } => *node,
-            };
-            if tag.node != node_index {
-                return;
-            }
-            matched = true;
+        let node_index = match edit {
+            Edit::SetProp { node, .. } | Edit::SetChildren { node, .. } => *node,
+        };
+        // An edit addressed to a node that is not currently mounted (an
+        // `if` branch that is false right now) is not a refusal: the
+        // `Element` path has it, and it will be there when the branch
+        // flips. Counting it as refused would tell a dev server to warn
+        // about something that is going to work.
+        for instance in runtime_scene::instances::<H::Node>(site, node_index) {
             let ok = match edit {
                 Edit::SetProp { name, value, .. } => {
-                    set_prop_live(backend, type_id, live, name, value)
+                    set_prop_live(backend, &instance, name, value)
                 }
                 Edit::SetChildren { children, .. } => {
-                    set_children_live(backend, registry, site, live, children)
+                    set_children_live(backend, registry, site, &instance, children)
                 }
             };
             if ok {
@@ -123,13 +123,7 @@ pub fn apply_live_to<H: AllCaps + 'static>(
             } else {
                 outcome.refused += 1;
             }
-        });
-        // An edit addressed to a node that is not currently mounted (an
-        // `if` branch that is false right now) is not a refusal: the
-        // `Element` path has it, and it will be there when the branch
-        // flips. Counting it as refused would tell a dev server to warn
-        // about something that is going to work.
-        let _ = matched;
+        }
     }
     outcome
 }
@@ -142,12 +136,11 @@ pub fn apply_live_to<H: AllCaps + 'static>(
 /// when the seam has a setter for it.
 fn set_prop_live<H: AllCaps + 'static>(
     backend: &Rc<RefCell<H>>,
-    type_id: std::any::TypeId,
-    live: &LiveNode<H::Node>,
+    instance: &LiveOrigin<H::Node>,
     name: &str,
     value: &LiteralValue,
 ) -> bool {
-    let LiveNode::Item { node, .. } = live else { return false };
+    let (type_id, node) = (instance.type_id, &instance.node);
 
     if type_id == std::any::TypeId::of::<PrimCell<TextPrim>>() {
         return match (name, value) {
@@ -189,46 +182,41 @@ fn set_prop_live<H: AllCaps + 'static>(
 
 /// Replace a mounted node's children with freshly realized subtrees.
 ///
-/// Realize first, then detach, then attach: a failure at any depth leaves
-/// the tree exactly as it was rather than half-replaced.
+/// Realize first, then detach, then attach: a failure at any depth
+/// leaves the tree exactly as it was rather than half-replaced.
+///
+/// Works from the registry's recorded child HANDLES rather than from a
+/// live tree, because the registry is handle-based. The differ has
+/// already guaranteed every old child is fully static, so nothing that
+/// outlives them is bound to them.
 fn set_children_live<H: AllCaps + 'static>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
     site: u64,
-    live: &mut LiveNode<H::Node>,
+    instance: &LiveOrigin<H::Node>,
     children: &[NewNode],
 ) -> bool {
-    let LiveNode::Item { node, children: old, .. } = live else { return false };
-    // The same guard the `Element` applier makes: a child list holding a
-    // region is one whose contents are decided at runtime, and replacing
-    // it would delete live code.
-    if !old.iter().all(|c| matches!(c, LiveNode::Item { .. })) {
-        return false;
-    }
-
     let mut built: Vec<(Realized<H::Node>, Vec<H::Node>)> = Vec::with_capacity(children.len());
     for new in children {
         let Some(element) = super::construct::build(new) else {
             return false;
         };
-        let realized = realize_subtree(backend, registry, element);
+        let realized = realize(backend, registry, element);
         let nodes = realized.collect_nodes();
         built.push((realized, nodes));
     }
 
-    let parent = node.clone();
+    let parent = instance.node.clone();
+    let old = instance.children.borrow().clone();
     {
         let mut b = backend.borrow_mut();
         // Detach each old child individually and tell the seam it is
         // going away, rather than `clear_children`: `release_subtree` is
         // the hook a backend uses to drop whatever it hung off those
-        // nodes. The differ has already guaranteed every one of them is
-        // fully static, so nothing that outlives them is bound to them.
-        for child in old.iter() {
-            for n in child.collect_nodes() {
-                b.release_subtree(&n);
-                b.remove_child(&parent, &n);
-            }
+        // nodes.
+        for n in &old {
+            b.release_subtree(n);
+            b.remove_child(&parent, n);
         }
         for (_, nodes) in &built {
             for n in nodes {
@@ -238,22 +226,15 @@ fn set_children_live<H: AllCaps + 'static>(
         }
     }
 
-    // The old children's scopes go with the old `LiveNode`s; the new
-    // ones are held for as long as this site's patch stands.
-    *old = Vec::new();
+    *instance.children.borrow_mut() =
+        built.iter().flat_map(|(_, nodes)| nodes.iter().cloned()).collect();
+    // The new subtrees' scopes are held for as long as this site's patch
+    // stands — a patched-in subtree has no enclosing region to hold it,
+    // and a `Realized` IS its scope.
     INSERTED.with(|i| {
         for (realized, _) in built {
             i.borrow_mut().push((site, Box::new(realized)));
         }
     });
     true
-}
-
-/// Realize a patch-built subtree outside any enclosing region.
-fn realize_subtree<H: Host + 'static>(
-    backend: &Rc<RefCell<H>>,
-    registry: &Rc<Registry<H>>,
-    element: Element,
-) -> Realized<H::Node> {
-    realize(backend, registry, element)
 }

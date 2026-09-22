@@ -128,6 +128,10 @@ pub fn reset() {
     STAGED.with(|s| s.borrow_mut().clear());
     AMBIENT.with(|a| a.borrow_mut().clear());
     live::release_all();
+    // The scene's live-instance registry too: it is thread-local and
+    // per-process, so a suite that mounts a tree in one case would
+    // otherwise leave its instances matching in the next.
+    runtime_scene::live::reset();
     construct::clear_ctors();
 }
 
