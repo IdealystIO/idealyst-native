@@ -117,6 +117,13 @@ pub struct SceneSession {
     // slots' owner — dies and unregisters from the thread's world
     // table. Same contract as `backend_ssr::newcore::render_path`.
     realized: Realized<wire::NodeId>,
+    /// Kept only under `ui-overlay`, and only so a patch can be applied
+    /// to this mounted tree. Declared AFTER `realized` so the drop order
+    /// above is unchanged.
+    #[cfg(feature = "ui-overlay")]
+    backend: Rc<RefCell<WireRecordingBackend>>,
+    #[cfg(feature = "ui-overlay")]
+    registry: Rc<SceneRegistry>,
     world: World,
 }
 
@@ -162,7 +169,67 @@ impl SceneSession {
         // driver-effect state) — the mount's first flush.
         world.flush();
 
-        Self { realized, world }
+        Self {
+            realized,
+            #[cfg(feature = "ui-overlay")]
+            backend,
+            #[cfg(feature = "ui-overlay")]
+            registry,
+            world,
+        }
+    }
+
+    /// The site key of the mounted tree's outermost tagged node.
+    ///
+    /// A dev server normally gets the key from the patch it was handed;
+    /// this is for the case where it needs to ask the tree instead —
+    /// tests, and a dev-tools readout of "which sites are on screen".
+    #[cfg(feature = "ui-overlay")]
+    pub fn overlay_site(&self) -> Option<u64> {
+        fn first(live: &runtime_scene::LiveNode<wire::NodeId>) -> Option<u64> {
+            match live {
+                runtime_scene::LiveNode::Item { origin, children, .. } => origin
+                    .map(|(tag, _)| tag.site)
+                    .or_else(|| children.iter().find_map(first)),
+                runtime_scene::LiveNode::Fragment(children) => children.iter().find_map(first),
+                _ => None,
+            }
+        }
+        first(&self.realized.root)
+    }
+
+    /// Apply an overlay patch to this mounted scene.
+    ///
+    /// The dev server APPLIES rather than forwards, and that is the
+    /// whole point of doing it here. Every backend call the apply makes
+    /// goes through the recorder, which funnels through
+    /// `RecorderState::emit` — so the scene mirror updates with it and a
+    /// client connecting a second later snapshots the PATCHED tree.
+    /// Forwarding `DevToApp::OverlayPatch` to the clients instead would
+    /// update the ones already attached and leave the mirror describing
+    /// the old text, which is the bug this arrangement exists to avoid.
+    ///
+    /// Both halves are staged: `stage_key` so every future build of the
+    /// site carries the edit (a state-driven rebuild must not revert
+    /// it), then `apply_live_to` for the instances already mounted.
+    #[cfg(feature = "ui-overlay")]
+    pub fn apply_overlay_patch(
+        &mut self,
+        site: u64,
+        edits: &[runtime_template::Edit],
+    ) -> runtime_vocabulary::overlay::Outcome {
+        runtime_vocabulary::overlay::stage_key(site, edits.to_vec());
+        let outcome = self.world.enter(|| {
+            runtime_vocabulary::overlay::apply_live_to(
+                &self.backend,
+                &self.registry,
+                &mut self.realized.root,
+                site,
+                edits,
+            )
+        });
+        self.world.flush();
+        outcome
     }
 
     /// Commit pending reactive work (signal writes from dispatched

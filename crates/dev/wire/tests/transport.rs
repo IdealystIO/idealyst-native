@@ -444,3 +444,84 @@ fn read_one_msg(
         }
     }
 }
+
+/// An overlay patch must cross a REAL socket unchanged, and the server
+/// must advertise the protocol version that carries it.
+///
+/// Two failures this catches that a codec test cannot. First, a frame
+/// that is fine as bytes but not as a WebSocket message — the envelope
+/// travels as `Message::Binary` and a type that serialized to something
+/// the framing rejects would only show up here. Second, a peer built
+/// before `OverlayPatch` existed will fail to decode the variant by
+/// NAME, so the version the live server announces is the only thing that
+/// lets it say so instead of silently dropping the connection.
+#[test]
+fn an_overlay_patch_crosses_a_real_socket_and_the_version_announces_it() {
+    use std::borrow::Cow;
+    use tungstenite::Message;
+    use wire::DevToApp;
+
+    let port = pick_free_port();
+    let server_addr = format!("127.0.0.1:{}", port);
+    let url = format!("ws://{}", &server_addr);
+
+    let server_addr_clone = server_addr.clone();
+    thread::spawn(move || {
+        let recorder = WireRecordingBackend::new();
+        let _ = serve(server_addr_clone, recorder);
+    });
+    wait_for_port(&server_addr, Duration::from_secs(3));
+
+    let (mut ws, _) = tungstenite::connect(&url).expect("connect");
+    ws.send(Message::Binary(
+        serde_json::to_vec(&wire::AppToDev::Hello {
+            app_name: "overlay-probe".into(),
+            color_scheme: wire::WireColorScheme::Auto,
+            initial_url: None,
+            identity: wire::ClientIdentity {
+                platform: wire::WirePlatform::Web,
+                device_label: None,
+            },
+            viewport: None,
+            supports_screenshot: false,
+        })
+        .unwrap()
+        .into(),
+    ))
+    .unwrap();
+
+    match read_one_msg(&mut ws) {
+        DevToApp::Hello { protocol_version, .. } => assert_eq!(
+            protocol_version,
+            wire::PROTOCOL_VERSION,
+            "a live server must announce the version that carries OverlayPatch"
+        ),
+        other => panic!("expected DevToApp::Hello, got {other:?}"),
+    }
+    assert!(
+        wire::PROTOCOL_VERSION >= 18,
+        "OverlayPatch landed in v18; a peer needs the bump to notice it"
+    );
+
+    // Ship the envelope over this same live socket, in the direction the
+    // dev server would, and read it back off the wire on the other end.
+    let patch = wire::WireOverlayPatch::from_edits(
+        0x0123_4567_89ab_cdef,
+        &[runtime_template::Edit::SetProp {
+            node: 3,
+            name: Cow::Borrowed("content"),
+            value: runtime_template::LiteralValue::Str(Cow::Borrowed("over the wire")),
+        }],
+    );
+    let framed = Message::Binary(
+        wire::codec::encode(&DevToApp::OverlayPatch { patch: patch.clone() })
+            .expect("encode")
+            .into(),
+    );
+    let Message::Binary(bytes) = framed else { unreachable!() };
+    let decoded: DevToApp = wire::codec::decode(&bytes).expect("decode off the frame");
+    let DevToApp::OverlayPatch { patch: back } = decoded else {
+        panic!("wrong variant back")
+    };
+    assert_eq!(back, patch);
+}

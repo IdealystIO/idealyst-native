@@ -181,7 +181,13 @@ pub use payload_serde::{
 /// bytes, different home). A bump is a compatibility signal to a peer
 /// binary; there is nothing here for a peer to be incompatible with, so
 /// bumping would have forced a needless dev/app lockstep upgrade.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// **Bumped to 18 for `DevToApp::OverlayPatch`.** Adding an
+/// externally-tagged enum variant is not backward compatible in the
+/// direction that matters: an app built against 17 cannot deserialize a
+/// message named `OverlayPatch` and would drop the connection rather
+/// than ignore it. The bump is the signal that lets the two sides
+/// notice.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -295,6 +301,20 @@ pub enum DevToApp {
     /// sent to clients that advertised
     /// [`AppToDev::Hello::supports_screenshot`].
     CaptureScreenshot { request_id: u64 },
+
+    /// A dev-time **overlay patch**: static edits to one `ui!` site,
+    /// applied without a rebuild.
+    ///
+    /// Sent only to a client that RUNS its own reactive runtime. In
+    /// runtime-server mode the app runs in the sidecar, so the sidecar
+    /// applies the patch to its own tree and the resulting backend calls
+    /// reach every client as ordinary [`Commands`](DevToApp::Commands) —
+    /// which is also what keeps a LATE-JOINING client correct, since
+    /// those calls funnel through the recorder's single emit point and
+    /// so update its scene mirror. Forwarding the patch instead would
+    /// leave the mirror describing the unpatched tree, and the next
+    /// client to connect would snapshot the old text.
+    OverlayPatch { patch: WireOverlayPatch },
 
     /// Ask the client for `node`'s rect in **physical device-screen
     /// pixels** (`Backend::device_frame`) and reply with
@@ -1840,6 +1860,210 @@ pub mod codec {
 
     pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> serde_json::Result<T> {
         serde_json::from_slice(bytes)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Overlay patches
+// ---------------------------------------------------------------------------
+
+/// Static edits to one `ui!` site, as the protocol carries them.
+///
+/// A mirror of `runtime_template::Patch`, like every other `Wire*` type
+/// here, so the protocol's shape stays independent of the in-memory one.
+/// Enable this crate's `runtime-patch` feature for the conversions.
+///
+/// `site` is the `u64` the compiled code carries in each node's tag, not
+/// a path — the app addresses by that number and cannot hash a path back
+/// into it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireOverlayPatch {
+    pub site: u64,
+    pub edits: Vec<WireOverlayEdit>,
+}
+
+/// One edit of a [`WireOverlayPatch`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WireOverlayEdit {
+    /// Give a node's prop a new literal value.
+    SetProp {
+        node: u32,
+        name: String,
+        value: WireOverlayLiteral,
+    },
+    /// Replace a node's children with these subtrees. Insert, remove and
+    /// reorder are all this one edit.
+    SetChildren {
+        node: u32,
+        children: Vec<WireOverlayNode>,
+    },
+}
+
+/// A literal an overlay edit carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WireOverlayLiteral {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    /// An enum-like path or style-token accessor, as source TEXT. Not
+    /// applicable by a receiver — a value of an arbitrary type cannot be
+    /// rebuilt from a string — and carried so a receiver can say so.
+    Path(String),
+}
+
+/// A subtree an overlay edit asks to be constructed. Literals only: a
+/// subtree referencing compiled code cannot be built from data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireOverlayNode {
+    pub kind: String,
+    pub props: Vec<(String, WireOverlayPropValue)>,
+    pub children: Vec<WireOverlayNode>,
+}
+
+/// A prop's value inside a [`WireOverlayNode`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WireOverlayPropValue {
+    Lit(WireOverlayLiteral),
+    /// A reference to compiled code. Carried so a receiver can refuse
+    /// the subtree rather than build it half-right.
+    Slot(u32),
+}
+
+/// Conversions to and from `runtime_template`'s own types.
+///
+/// Behind a feature because this crate's manifest promises no runtime
+/// dependency, and that promise is what lets the wire format evolve
+/// separately from the in-memory one. The two crates that actually
+/// convert — the dev server and the dev client — turn it on; nothing
+/// else pays for it.
+#[cfg(feature = "runtime-patch")]
+mod overlay_convert {
+    use super::*;
+    use runtime_template as rt;
+
+    impl From<&rt::LiteralValue> for WireOverlayLiteral {
+        fn from(v: &rt::LiteralValue) -> Self {
+            match v {
+                rt::LiteralValue::Str(s) => WireOverlayLiteral::Str(s.to_string()),
+                rt::LiteralValue::Int(i) => WireOverlayLiteral::Int(*i),
+                rt::LiteralValue::Float(f) => WireOverlayLiteral::Float(*f),
+                rt::LiteralValue::Bool(b) => WireOverlayLiteral::Bool(*b),
+                rt::LiteralValue::Path(p) => WireOverlayLiteral::Path(p.to_string()),
+            }
+        }
+    }
+
+    impl From<&WireOverlayLiteral> for rt::LiteralValue {
+        fn from(v: &WireOverlayLiteral) -> Self {
+            match v {
+                WireOverlayLiteral::Str(s) => rt::LiteralValue::Str(s.clone().into()),
+                WireOverlayLiteral::Int(i) => rt::LiteralValue::Int(*i),
+                WireOverlayLiteral::Float(f) => rt::LiteralValue::Float(*f),
+                WireOverlayLiteral::Bool(b) => rt::LiteralValue::Bool(*b),
+                WireOverlayLiteral::Path(p) => rt::LiteralValue::Path(p.clone().into()),
+            }
+        }
+    }
+
+    impl From<&rt::NewNode> for WireOverlayNode {
+        fn from(n: &rt::NewNode) -> Self {
+            WireOverlayNode {
+                kind: n.kind.to_string(),
+                props: n
+                    .props
+                    .iter()
+                    .map(|p| {
+                        let value = match &p.value {
+                            rt::PropValue::Lit(v) => WireOverlayPropValue::Lit(v.into()),
+                            rt::PropValue::Slot(i) => WireOverlayPropValue::Slot(*i),
+                        };
+                        (p.name.to_string(), value)
+                    })
+                    .collect(),
+                children: n.children.iter().map(WireOverlayNode::from).collect(),
+            }
+        }
+    }
+
+    impl From<&WireOverlayNode> for rt::NewNode {
+        fn from(n: &WireOverlayNode) -> Self {
+            rt::NewNode {
+                kind: n.kind.clone().into(),
+                props: n
+                    .props
+                    .iter()
+                    .map(|(name, value)| rt::PropEntry {
+                        name: name.clone().into(),
+                        value: match value {
+                            WireOverlayPropValue::Lit(v) => rt::PropValue::Lit(v.into()),
+                            WireOverlayPropValue::Slot(i) => rt::PropValue::Slot(*i),
+                        },
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+                children: n
+                    .children
+                    .iter()
+                    .map(rt::NewNode::from)
+                    .collect::<Vec<_>>()
+                    .into(),
+            }
+        }
+    }
+
+    impl From<&rt::Edit> for WireOverlayEdit {
+        fn from(e: &rt::Edit) -> Self {
+            match e {
+                rt::Edit::SetProp { node, name, value } => WireOverlayEdit::SetProp {
+                    node: *node,
+                    name: name.to_string(),
+                    value: value.into(),
+                },
+                rt::Edit::SetChildren { node, children } => WireOverlayEdit::SetChildren {
+                    node: *node,
+                    children: children.iter().map(WireOverlayNode::from).collect(),
+                },
+            }
+        }
+    }
+
+    impl From<&WireOverlayEdit> for rt::Edit {
+        fn from(e: &WireOverlayEdit) -> Self {
+            match e {
+                WireOverlayEdit::SetProp { node, name, value } => rt::Edit::SetProp {
+                    node: *node,
+                    name: name.clone().into(),
+                    value: value.into(),
+                },
+                WireOverlayEdit::SetChildren { node, children } => rt::Edit::SetChildren {
+                    node: *node,
+                    children: children
+                        .iter()
+                        .map(rt::NewNode::from)
+                        .collect::<Vec<_>>()
+                        .into(),
+                },
+            }
+        }
+    }
+
+    impl WireOverlayPatch {
+        /// Wrap edits for the wire. `site` is the key the compiled code
+        /// carries; it is passed rather than hashed out of a `SiteId` so
+        /// a caller that only has the number — one that read a tag — can
+        /// use this too.
+        pub fn from_edits(site: u64, edits: &[rt::Edit]) -> WireOverlayPatch {
+            WireOverlayPatch {
+                site,
+                edits: edits.iter().map(WireOverlayEdit::from).collect(),
+            }
+        }
+
+        /// The edits, in `runtime_template`'s own form.
+        pub fn to_edits(&self) -> Vec<rt::Edit> {
+            self.edits.iter().map(rt::Edit::from).collect()
+        }
     }
 }
 

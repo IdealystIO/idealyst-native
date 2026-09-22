@@ -37,6 +37,21 @@ robot = ["runtime-shared/robot"]
 # dev-server transport pull this feature in via dev-deps.
 test-support = []
 
+# The dev-time UI overlay. Lets a saved static edit be applied to the
+# mounted scene without a rebuild; the resulting backend calls funnel
+# through the recorder's single emit point, so the scene mirror — and
+# therefore every late-joining client — sees the patched tree.
+#
+# Forwards to the crates that own the gate (rule 6): `runtime-vocabulary`
+# for the applier, `runtime-scene` for the per-node tag it addresses by,
+# and `wire` for the protocol mirror's conversions.
+ui-overlay = [
+    "runtime-vocabulary/ui-overlay",
+    "runtime-scene/ui-overlay",
+    "wire/runtime-patch",
+    "dep:runtime-template",
+]
+
 # Pulls in the runtime-server dev runtimes — `host::run` (long-lived dev-host
 # process) and `sidecar::run` (per-project worker that links the user
 # crate). Enables both because both modules share most deps
@@ -74,6 +89,7 @@ wire = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["robot"] }
 runtime-world = { workspace = true }
+runtime-template = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

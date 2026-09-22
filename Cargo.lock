@@ -3411,6 +3411,7 @@ dependencies = [
  "runtime-scene",
  "runtime-server-shell-native",
  "runtime-shared",
+ "runtime-template",
  "runtime-vocabulary",
  "runtime-world",
  "serde",
@@ -14587,14 +14588,17 @@ version = "1.5.2"
 dependencies = [
  "dev-client",
  "dev-server",
+ "runtime-macros",
  "runtime-scene",
  "runtime-server-shell-native",
  "runtime-shared",
+ "runtime-template",
  "runtime-vocabulary",
  "runtime-world",
  "serde",
  "serde_json",
  "tungstenite 0.24.0",
+ "wire",
 ]
 
 [[package]]

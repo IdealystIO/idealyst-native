@@ -189,6 +189,12 @@ impl MockClient {
                 // MockClient has no real layout; ignore (server verb times
                 // out and reports "no frame").
             }
+            DevToApp::OverlayPatch { .. } => {
+                // MockClient replays commands and does not run the app,
+                // so it has no `ui!` site to patch. The server applies
+                // overlay patches to its own tree and the result
+                // arrives as ordinary `Commands`.
+            }
         }
     }
 }

@@ -137,6 +137,19 @@ where
             // outbound channel and flushed by the caller's drain loop.
             wire.capture_screenshot_and_reply(request_id);
         }
+        // A wire-replay client does not run the app, so it has no `ui!`
+        // site to patch: in runtime-server mode the sidecar applies the
+        // patch to ITS tree and the resulting backend calls arrive here
+        // as ordinary `Commands`. Receiving one directly means a dev
+        // server forwarded instead of applying, which would also leave
+        // its scene mirror describing the unpatched tree.
+        DevToApp::OverlayPatch { .. } => {
+            eprintln!(
+                "[{}] ignoring DevToApp::OverlayPatch: this client replays commands and \
+                 does not run the app — the dev server must apply the patch itself",
+                "runtime-server-shell"
+            );
+        }
         DevToApp::QueryDeviceFrame { request_id, node } => {
             // Measure the node's physical screen-pixel rect on the real
             // backend; the reply is queued on the outbound channel.

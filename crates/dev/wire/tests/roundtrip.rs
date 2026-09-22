@@ -990,3 +990,94 @@ fn color_scheme_helper_maps_correctly() {
         WireColorScheme::Auto
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Overlay patches
+// ---------------------------------------------------------------------------
+
+/// The protocol's overlay-patch mirror must survive the wire and come
+/// back as the same `runtime_template` edits.
+///
+/// Both halves matter. The codec half is ordinary. The CONVERSION half
+/// is where a mirror type earns its keep or quietly loses a field — a
+/// `Cow` that became a `String`, a slot index dropped from a prop — and
+/// nothing downstream would report it: the patch would just apply less
+/// than it should.
+#[test]
+fn an_overlay_patch_survives_the_wire_and_converts_back() {
+    use runtime_template::{Edit, LiteralValue, NewNode, PropEntry, PropValue};
+    use std::borrow::Cow;
+
+    let edits = vec![
+        Edit::SetProp {
+            node: 4,
+            name: Cow::Borrowed("content"),
+            value: LiteralValue::Str(Cow::Borrowed("Sign in.")),
+        },
+        Edit::SetProp {
+            node: 1,
+            name: Cow::Borrowed("count"),
+            value: LiteralValue::Int(-3),
+        },
+        Edit::SetProp {
+            node: 1,
+            name: Cow::Borrowed("ratio"),
+            value: LiteralValue::Float(0.5),
+        },
+        Edit::SetProp {
+            node: 1,
+            name: Cow::Borrowed("loud"),
+            value: LiteralValue::Bool(true),
+        },
+        Edit::SetProp {
+            node: 2,
+            name: Cow::Borrowed("tone"),
+            value: LiteralValue::Path(Cow::Borrowed("tone::Danger")),
+        },
+        Edit::SetChildren {
+            node: 0,
+            children: Cow::Owned(vec![NewNode {
+                kind: Cow::Borrowed("view"),
+                props: Cow::Owned(vec![PropEntry {
+                    name: Cow::Borrowed("style"),
+                    // A slot inside a new subtree: the receiver must be
+                    // able to SEE it in order to refuse the subtree, so
+                    // the wire has to carry it rather than drop it.
+                    value: PropValue::Slot(7),
+                }]),
+                children: Cow::Owned(vec![NewNode {
+                    kind: Cow::Borrowed("text"),
+                    props: Cow::Owned(vec![PropEntry {
+                        name: Cow::Borrowed("content"),
+                        value: PropValue::Lit(LiteralValue::Str(Cow::Borrowed("nested"))),
+                    }]),
+                    children: Cow::Borrowed(&[]),
+                }]),
+            }]),
+        },
+    ];
+
+    let wired = wire::WireOverlayPatch::from_edits(0xdead_beef_cafe_f00d, &edits);
+    let envelope = DevToApp::OverlayPatch { patch: wired.clone() };
+
+    let bytes = wire::codec::encode(&envelope).expect("encode");
+    let decoded: DevToApp = wire::codec::decode(&bytes).expect("decode");
+    let DevToApp::OverlayPatch { patch } = decoded else {
+        panic!("wrong variant back");
+    };
+    assert_eq!(patch, wired, "the mirror must round-trip byte for byte");
+    assert_eq!(patch.site, 0xdead_beef_cafe_f00d);
+    assert_eq!(patch.to_edits(), edits, "and convert back to the same edits");
+}
+
+/// The site key is a full `u64` and must not be narrowed anywhere on the
+/// way. A key that lost its high bits would address a different site, or
+/// none — and would do it silently, since a patch for an unknown site is
+/// simply never applied.
+#[test]
+fn the_site_key_keeps_all_sixty_four_bits() {
+    let wired = wire::WireOverlayPatch::from_edits(u64::MAX, &[]);
+    let bytes = wire::codec::encode(&wired).expect("encode");
+    let back: wire::WireOverlayPatch = wire::codec::decode(&bytes).expect("decode");
+    assert_eq!(back.site, u64::MAX);
+}

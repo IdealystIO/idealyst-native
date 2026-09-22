@@ -10,11 +10,38 @@ license.workspace = true
 # dependency so the wire format can evolve independently of the
 # in-memory representation.
 
+[features]
+# Conversions between the protocol's overlay-patch mirror and
+# `runtime_template`'s own types. Optional, so the base crate keeps the
+# property stated above — no runtime dependency — while the two crates
+# that actually convert (dev-server, dev-client) can.
+runtime-patch = ["dep:runtime-template"]
+
+# Test-only: the overlay mirror-rule test needs the dev server and the
+# vocabulary built with the overlay on. A feature rather than a
+# dev-dependency default so `cargo test -p wire` stays fast for everyone
+# not touching the overlay.
+# `runtime-macros` is in the list because the test's own `ui!` has to
+# be TAGGED — `runtime-vocabulary/ui-overlay` turns on the applier, not
+# the emission, and the two live in different crates. An app crate
+# enables `runtime-core/ui-overlay`, which covers both.
+ui-overlay = [
+    "runtime-patch",
+    "dev-server/ui-overlay",
+    "runtime-vocabulary/ui-overlay",
+    "runtime-macros/ui-overlay",
+]
+
 [dependencies]
 serde = { workspace = true, features = ["rc"] }
+runtime-template = { workspace = true, optional = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# The overlay-patch conversions are exercised by the codec round-trip
+# test, so the test build turns their feature on.
+wire = { path = ".", features = ["runtime-patch"] }
+runtime-template = { workspace = true }
 # Used by the round-trip integration test (tests/roundtrip.rs), which
 # exercises the dev-side recorder + app-side replay engine against a
 # stand-in `TraceHost`, and by tests/virtual_layout_roundtrip.rs.
@@ -30,6 +57,7 @@ dev-client = { path = "../client", features = ["dev-hot-reload"] }
 # exercises it against a TraceBackend.
 runtime-server-shell-native = { path = "../runtime-server-shell", features = ["runtime-server"] }
 dev-server = { path = "../server" }
+runtime-macros = { workspace = true }
 # Used by tests/transport.rs to open the WebSocket directly so it can
 # run the read loop on this thread (the WireBackend isn't Send).
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

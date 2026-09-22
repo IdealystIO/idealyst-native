@@ -33,10 +33,13 @@ robot = []
 # (repeat batch, dynamic-sheet effect). Same discipline as the other
 # crates' debug-stats (CLAUDE.md §6): OFF by default, counters land in
 # runtime-core's thread-local phase map, zero code when off.
-# `ui-overlay`: the dev-time overlay — descriptor registration plus the
-# per-node origin tag it addresses nodes by. OFF by default. Forwards to
-# `runtime-scene`, which owns the `Element` tag field; `runtime-macros`
-# (which emits the tags) is forwarded separately by `runtime-core`.
+# `ui-overlay`: the dev-time overlay's RUNTIME half — the per-node tag a
+# patch addresses by, the applier that edits a built `Element`, and the
+# live applier that edits a mounted tree through the backend seam.
+#
+# NOT the emission: that is `runtime-macros/ui-overlay`, in a crate this
+# one does not depend on. A consumer wanting both enables
+# `runtime-core/ui-overlay`, which forwards to each.
 ui-overlay = ["runtime-scene/ui-overlay"]
 
 debug-stats = ["runtime-shared/debug-stats"]
