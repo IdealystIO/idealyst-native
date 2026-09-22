@@ -66,6 +66,17 @@ pub use realize::{
     realize, DeferredLive, DynLive, DynWatch, KeyedLive, KeyedState, LiveNode, MountCx, Realized,
     Retired, MAX_DEPTH,
 };
+/// Every mounted node a `ui!` site built, reachable by tag.
+///
+/// The overlay's live path finds an instance from a `(site, node)`
+/// pair. Walking down from one `Realized` cannot: a handler may realize
+/// a subtree into its OWN storage rather than into the tree it was
+/// called from, and the navigator handlers do — a screen's `Realized`
+/// is held by the navigator. So registration happens in `mount_item`,
+/// the one place every mounted node passes through, and the registry
+/// holds `Weak` while the `Rc` lives in the `LiveNode`: dropping a
+/// `Realized` is unmount, so a popped screen's entries go dead with no
+/// cleanup hook to forget to fire.
 #[cfg(feature = "ui-overlay")]
 pub mod live;
 #[cfg(feature = "ui-overlay")]

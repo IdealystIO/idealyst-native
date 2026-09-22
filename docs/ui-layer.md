@@ -537,7 +537,7 @@ whole table:
 | the edit | what happens |
 |---|---|
 | a string, number or bool literal in a `ui!` body | **patched** |
-| a `#[component]`'s literal prop | **patched**, applied on that site's next render |
+| a `#[component]`'s literal prop | **patched**; live when its props are `Clone` and its root is a tagged node, otherwise on that site's next render |
 | a static child added, removed or reordered — where every old child is fully static | **patched** |
 | a changed `if` condition, `for` iterable or `match` scrutinee | rebuild — it is compiled code |
 | a literal becoming a closure, or the reverse | rebuild — the value moved between data and code |
@@ -625,18 +625,23 @@ capability calls — `update_text`, `update_button_label`, `set_disabled`,
 `cfg(target)`: every backend gets it from one replay, which is the
 standing rule about where platform differences are allowed to live.
 
-**The live path does not reach inside a navigator screen.** A navigator
-handler realizes each screen into its OWN state
-(`handlers::navigator`'s `realized: Realized<N>`), not as a child of the
-live tree, so the walk that finds tagged nodes never gets there. In a
-navigator-based app that is most of the UI: the patch is delivered and
-staged, the applier reports `0 applied`, and the edit appears when that
-screen next rebuilds. Reaching those subtrees means giving the navigator
-handlers a way to expose them to the walk — a `runtime_scene` seam
-change across every navigator handler. Not built.
+**A node is reachable live only if it is TAGGED and mounted.**
+`runtime_scene::live` registers every node `mount_item` builds, so a
+subtree a handler realized into its own storage — every navigator screen
+— is reachable, and a subtree that has unmounted is not. Registration is
+at the one place every mounted node passes through, so a handler that
+does not exist yet is covered too.
 
-A live edit also needs a SETTER on the seam, so the live half covers less
-than the `Element` half: a `#[component]`'s prop has no setter (its body
+The gap that remains is in TAGGING, not reaching. `with_tag` tags an
+`Item` root, and recurses through an `Owned` to reach one. A component
+whose root is a REACTIVE REGION — idea-ui's `Button` returns a `switch`
+when any structural prop is live — is returned untagged, so it never
+registers and a patch addressed to it applies nothing. Tagging through a
+region means tagging the region and following its current contents; not
+built.
+
+A live edit also needs a SETTER on the seam, or — for a component — a
+way to run it again: a `#[component]`'s prop has no setter (its body
 already ran, and re-running it would need every dynamic prop it was
 given, which is compiled code the patch does not carry). Those appear on
 the site's next render. The applier COUNTS what it could not do rather
