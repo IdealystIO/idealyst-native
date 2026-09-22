@@ -30,6 +30,16 @@ pub enum Element {
         /// it; every match in the workspace does.
         #[cfg(feature = "ui-overlay")]
         tag: Option<NodeTag>,
+        /// A way to build this node's `#[component]` again with new
+        /// literal props, type-erased.
+        ///
+        /// Erased because this crate has no idea what a component is —
+        /// it carries the value from the `ui!` call site that made it to
+        /// the mounted node that will use it, and `runtime-vocabulary`
+        /// owns both ends. `None` for a primitive, and for a component
+        /// whose props are not `Clone`.
+        #[cfg(feature = "ui-overlay")]
+        rebuild: Option<std::rc::Rc<dyn Any>>,
     },
     /// Siblings with no node of their own. Spliced flat into the enclosing
     /// children list; the threaded `inserted` index counts THROUGH it so a
@@ -82,6 +92,8 @@ pub fn item<T: Any>(data: T, children: Vec<Element>) -> Element {
         children,
         #[cfg(feature = "ui-overlay")]
         tag: None,
+        #[cfg(feature = "ui-overlay")]
+        rebuild: None,
     }
 }
 
@@ -120,6 +132,26 @@ pub fn item_tagged<T: Any>(data: T, children: Vec<Element>, tag: NodeTag) -> Ele
         data: Box::new(data),
         children,
         tag: Some(tag),
+        rebuild: None,
+    }
+}
+
+/// Attach a rebuilder to an already-built element.
+///
+/// Recurses through `Owned` for the same reason [`with_tag`] does: a
+/// component's `Element` is a subtree behind a scope boundary, and the
+/// node that represents it is the root of that subtree.
+#[cfg(feature = "ui-overlay")]
+pub fn with_rebuild(element: Element, rebuilder: std::rc::Rc<dyn Any>) -> Element {
+    match element {
+        Element::Item { data, children, tag, .. } => {
+            Element::Item { data, children, tag, rebuild: Some(rebuilder) }
+        }
+        Element::Owned { element, owned } => Element::Owned {
+            element: Box::new(with_rebuild(*element, rebuilder)),
+            owned,
+        },
+        other => other,
     }
 }
 
@@ -133,8 +165,8 @@ pub fn item_tagged<T: Any>(data: T, children: Vec<Element>, tag: NodeTag) -> Ele
 #[cfg(feature = "ui-overlay")]
 pub fn with_tag(element: Element, tag: NodeTag) -> Element {
     match element {
-        Element::Item { data, children, .. } => {
-            Element::Item { data, children, tag: Some(tag) }
+        Element::Item { data, children, rebuild, .. } => {
+            Element::Item { data, children, tag: Some(tag), rebuild }
         }
         // An `Owned` is a component boundary: tag the subtree ROOT it
         // wraps, so a component's own node carries the tag of the call

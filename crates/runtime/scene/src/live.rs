@@ -62,6 +62,21 @@ pub struct LiveOrigin<N> {
     /// Set by a rebuilder that replaced this instance's subtree, so the
     /// stale entry stops matching. See `runtime_vocabulary::overlay`.
     pub retired: std::cell::Cell<bool>,
+    /// How to build this node's `#[component]` again with new literal
+    /// props, type-erased — `runtime-vocabulary` owns both ends of it.
+    ///
+    /// `None` for a primitive, and for a component whose props are not
+    /// `Clone`: there is nothing to rebuild FROM.
+    pub rebuild: Option<Rc<dyn Any>>,
+    /// The node this one hangs under, and where in its backend child
+    /// order it sits.
+    ///
+    /// Recorded by the PARENT's `mount_item`, because a child does not
+    /// know its parent when it is mounted. A rebuild needs both: it
+    /// detaches this node and inserts the replacement in the same place,
+    /// and a node whose parent is unknown cannot be swapped — a root, or
+    /// one mounted by a handler that places its children itself.
+    pub parent: RefCell<Option<(N, usize)>>,
 }
 
 struct Entry {
@@ -104,6 +119,22 @@ pub fn instances<N: 'static>(site: u64, node: u32) -> Vec<Rc<LiveOrigin<N>>> {
             .filter(|o| !o.retired.get())
             .collect()
     })
+}
+
+/// The registered origin of a freshly realized tree's ROOT node, if it
+/// has one.
+///
+/// A subtree realized on its own — one a patch built and spliced in —
+/// has no parent `mount_item` to record where it sits, so the caller
+/// that placed it has to say. This is how it reaches the entry.
+pub fn root_origin<N: Clone + 'static>(
+    live: &crate::LiveNode<N>,
+) -> Option<Rc<LiveOrigin<N>>> {
+    match live {
+        crate::LiveNode::Item { origin, .. } => origin.clone(),
+        crate::LiveNode::Fragment(children) => children.iter().find_map(root_origin),
+        _ => None,
+    }
 }
 
 /// How many live instances are registered. Diagnostics and tests.

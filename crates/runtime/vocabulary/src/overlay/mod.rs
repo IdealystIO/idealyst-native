@@ -64,6 +64,7 @@ mod apply;
 mod construct;
 pub mod live;
 mod prims;
+pub mod rebuild;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -73,6 +74,7 @@ use runtime_template::{Edit, LiteralValue, Patch, SiteId};
 
 pub use apply::Outcome;
 pub use live::{apply_live, apply_live_to};
+pub use rebuild::{OverlayProps, Probe, Rebuilder, ViaClone, ViaFallback};
 pub use construct::{ctor_count, register_ctor, ComponentCtor};
 
 thread_local! {
@@ -127,7 +129,9 @@ pub fn staged_count() -> usize {
 pub fn reset() {
     STAGED.with(|s| s.borrow_mut().clear());
     AMBIENT.with(|a| a.borrow_mut().clear());
+    REBUILDER.with(|r| r.borrow_mut().clear());
     live::release_all();
+    rebuild::release_all();
     // The scene's live-instance registry too: it is thread-local and
     // per-process, so a suite that mounts a tree in one case would
     // otherwise leave its instances matching in the next.
@@ -152,6 +156,15 @@ thread_local! {
     /// itself. A missed patch is recoverable; a patch applied to the
     /// wrong node is not.
     static AMBIENT: RefCell<Vec<Option<(u64, u32)>>> = const { RefCell::new(Vec::new()) };
+
+    /// The rebuilder for each open frame, parallel to `AMBIENT`.
+    ///
+    /// Separate from `AMBIENT` because they are taken at different
+    /// moments: the address is consumed by the component's `build`, the
+    /// rebuilder by `exit` once the element exists.
+    static REBUILDER: RefCell<Vec<Option<rebuild::Rebuilder>>> = const {
+        RefCell::new(Vec::new())
+    };
 }
 
 /// Announce which node of which site is about to be built.
@@ -163,7 +176,18 @@ thread_local! {
 /// scope — is resolution work multiplied by thousands of call sites. See
 /// `runtime_macros`' `ui_overlay` for what that cost measured.
 pub fn enter(site: u64, node: u32) {
+    enter_with(site, node, None)
+}
+
+/// [`enter`], carrying a way to build this instance again.
+///
+/// The rebuilder is attached to the element by [`exit`], travels with it
+/// through realize, and ends up on the mounted node — which is where a
+/// live patch to a component's prop needs it. See
+/// [`rebuild`](crate::overlay::rebuild).
+pub fn enter_with(site: u64, node: u32, rebuilder: Option<rebuild::Rebuilder>) {
     AMBIENT.with(|a| a.borrow_mut().push(Some((site, node))));
+    REBUILDER.with(|r| r.borrow_mut().push(rebuilder));
 }
 
 /// End the frame [`enter`] opened, returning the element unchanged.
@@ -175,7 +199,11 @@ pub fn exit(element: Element) -> Element {
     AMBIENT.with(|a| {
         a.borrow_mut().pop();
     });
-    element
+    let rebuilder = REBUILDER.with(|r| r.borrow_mut().pop().flatten());
+    match rebuild::erase(rebuilder) {
+        Some(erased) => runtime_scene::with_rebuild(element, erased),
+        None => element,
+    }
 }
 
 /// Take the innermost address, if this build has one.

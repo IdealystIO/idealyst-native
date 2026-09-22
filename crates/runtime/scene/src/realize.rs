@@ -676,9 +676,9 @@ impl<'a, H: Host> MountCx<'a, H> {
         // the budget is enforced here and nowhere else.
         let _level = depth::enter();
         #[cfg(feature = "ui-overlay")]
-        let tag = match &element {
-            Element::Item { tag, .. } => *tag,
-            _ => None,
+        let (tag, rebuild) = match &element {
+            Element::Item { tag, rebuild, .. } => (*tag, rebuild.clone()),
+            _ => (None, None),
         };
         let Element::Item { data, children, .. } = element else {
             unreachable!("mount_item called on a non-Item")
@@ -729,10 +729,29 @@ impl<'a, H: Host> MountCx<'a, H> {
                 node: node.clone(),
                 children: RefCell::new(children),
                 retired: std::cell::Cell::new(false),
+                rebuild,
+                parent: RefCell::new(None),
             });
             crate::live::register(&origin);
             origin
         });
+
+        // Tell each tagged child where it sits. A child cannot know this
+        // when it mounts — its parent's node does not exist yet — and a
+        // rebuild needs it to put the replacement back in the same
+        // place. The index is in BACKEND child order, so a fragment
+        // child that contributed several nodes advances it by that many.
+        #[cfg(feature = "ui-overlay")]
+        {
+            let mut index = 0usize;
+            for kid in &kids {
+                let contributed = kid.collect_nodes().len();
+                if let LiveNode::Item { origin: Some(o), .. } = kid {
+                    *o.parent.borrow_mut() = Some((node.clone(), index));
+                }
+                index += contributed;
+            }
+        }
 
         LiveNode::Item {
             node,

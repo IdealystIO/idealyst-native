@@ -58,6 +58,8 @@ pub use element::{
 /// The overlay's node-origin surface — only under `ui-overlay`.
 #[cfg(feature = "ui-overlay")]
 pub use element::{item_tagged, with_tag, NodeTag};
+#[cfg(feature = "ui-overlay")]
+pub use element::with_rebuild;
 pub use host::Host;
 pub use late::{defer_registration, drain_registrations, has_pending_registrations};
 pub use realize::{
@@ -67,7 +69,7 @@ pub use realize::{
 #[cfg(feature = "ui-overlay")]
 pub mod live;
 #[cfg(feature = "ui-overlay")]
-pub use live::{instances, live_count, LiveOrigin};
+pub use live::{instances, live_count, root_origin, LiveOrigin};
 #[cfg(feature = "ui-overlay")]
 pub use realize::visit_tagged;
 pub use registry::{Handler, ManyHandler, Registry};

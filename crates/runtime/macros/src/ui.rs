@@ -1631,14 +1631,16 @@ fn emit_user(
         }
     });
 
+    // The props LITERAL, not the built element: under `ui-overlay` the
+    // emission keeps a copy of it before building (see
+    // `ui_overlay::component_props`), and with the feature off it is
+    // wrapped straight back into `build`.
     let built = quote! {
-        ::runtime_core::BuildElement::build(
-            #props_ty {
-                #(#field_assignments)*
-                #children_field
-                ..<#props_ty as ::runtime_core::BuildElement>::defaults()
-            }
-        )
+        #props_ty {
+            #(#field_assignments)*
+            #children_field
+            ..<#props_ty as ::runtime_core::BuildElement>::defaults()
+        }
     };
     // Under `ui-overlay`, brackets the whole BUILD with this node's
     // address, which the generated `build` reads. A no-op otherwise.
@@ -2450,6 +2452,44 @@ mod tests {
     /// as a string for substring assertions. NOTE: the output includes the
     /// `__ui_recover` salvage shell (same as a real expansion) — counted
     /// assertions must account for the salvage copy of the input.
+    /// A component call site must compile whatever its props type is.
+    ///
+    /// The overlay wants a COPY of the props so it can run the component
+    /// again with a new literal, and that needs `Clone` — which
+    /// `#[component]` does not require and, because
+    /// `children: Vec<Element>` is not `Clone`, could not require. So the
+    /// call site decides with autoref specialization: the emission names
+    /// both the `ViaClone` and `ViaFallback` traits and lets method
+    /// probing pick. A props type that is not `Clone` reaches the
+    /// fallback and yields `None` — not a compile error, which is what a
+    /// bound would have cost every component with children.
+    ///
+    /// This pins the SHAPE of that decision in the emitted tokens. That
+    /// it resolves correctly at each end is `ui-lowering-parity`'s
+    /// `live_component.rs`, which mounts both kinds and patches them.
+    #[cfg(feature = "ui-overlay")]
+    #[test]
+    fn a_component_call_site_probes_for_clone_rather_than_requiring_it() {
+        let out = parse_and_emit(quote! { Badge(label = "x") });
+        assert!(out.contains("ViaClone"), "{out}");
+        assert!(out.contains("ViaFallback"), "{out}");
+        assert!(out.contains("Probe"), "{out}");
+        assert!(
+            out.contains("rebuilder"),
+            "the probe's result must reach the overlay: {out}"
+        );
+    }
+
+    /// With the feature OFF none of it is emitted — a component call
+    /// site is the struct literal and `build`, exactly as before.
+    #[cfg(not(feature = "ui-overlay"))]
+    #[test]
+    fn a_component_call_site_carries_no_overlay_tokens_when_the_feature_is_off() {
+        let out = parse_and_emit(quote! { Badge(label = "x") });
+        assert!(!out.contains("__overlay"), "{out}");
+        assert!(!out.contains("Probe"), "{out}");
+    }
+
     fn parse_and_emit(input: TokenStream2) -> String {
         let ui: Ui = syn::parse2(input.clone()).expect("parse ui");
         emit(ui, &input).to_string()

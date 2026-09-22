@@ -95,6 +95,11 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
     };
 
     let (build_mut, overlay_prologue) = crate::props_attr::overlay_build_prologue(fn_name);
+    // The EXPLICIT props form gets its `OverlayProps` impl here, because
+    // this is where its `BuildElement` is. (The inline-props form gets
+    // one from `props_attr`, next to its own `BuildElement`.) Exactly
+    // one of the two paths emits it for any given type.
+    let overlay_props = crate::props_attr::overlay_props_impl(path);
 
     quote! {
         // Tag alias: `ui! { Foo(...) }` uses the tag as the type name, so
@@ -105,6 +110,8 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
         #(#docs)*
         #[allow(non_camel_case_types)]
         #vis type #fn_name = #path;
+
+        #overlay_props
 
         #[automatically_derived]
         impl ::runtime_core::BuildElement for #path {

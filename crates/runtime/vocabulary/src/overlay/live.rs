@@ -97,9 +97,25 @@ pub fn apply_live_to<H: AllCaps + 'static>(
     site: u64,
     edits: &[Edit],
 ) -> Outcome {
-    release_inserted(site);
 
     let mut outcome = Outcome::default();
+    // A component instance takes ALL of its `SetProp`s at once: a
+    // rebuild runs the component body, and running it once per changed
+    // prop would both waste the work and leave the earlier props
+    // reverted, since each rebuild starts from the remembered copy.
+    let props_for_node = |index: u32| -> Vec<(String, LiteralValue)> {
+        edits
+            .iter()
+            .filter_map(|e| match e {
+                Edit::SetProp { node, name, value } if *node == index => {
+                    Some((name.to_string(), value.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let mut rebuilt: Vec<u32> = Vec::new();
+
     for edit in edits.iter() {
         let node_index = match edit {
             Edit::SetProp { node, .. } | Edit::SetChildren { node, .. } => *node,
@@ -109,14 +125,43 @@ pub fn apply_live_to<H: AllCaps + 'static>(
         // `Element` path has it, and it will be there when the branch
         // flips. Counting it as refused would tell a dev server to warn
         // about something that is going to work.
-        for instance in runtime_scene::instances::<H::Node>(site, node_index) {
+        if matches!(edit, Edit::SetProp { .. }) && rebuilt.contains(&node_index) {
+            continue;
+        }
+        for (slot, instance) in
+            runtime_scene::instances::<H::Node>(site, node_index).into_iter().enumerate()
+        {
             let ok = match edit {
                 Edit::SetProp { name, value, .. } => {
-                    set_prop_live(backend, &instance, name, value)
+                    // A primitive has a setter on the seam. A component
+                    // does not — its props were consumed and its body
+                    // already ran — so the only way to show the new
+                    // value is to run it again from the copy the call
+                    // site kept, and swap the subtree.
+                    if instance.rebuild.is_some() {
+                        let props = props_for_node(node_index);
+                        let ok = rebuild_instance(
+                            backend,
+                            registry,
+                            (site, node_index, slot),
+                            &instance,
+                            &props,
+                        );
+                        if ok {
+                            rebuilt.push(node_index);
+                        }
+                        ok
+                    } else {
+                        set_prop_live(backend, &instance, name, value)
+                    }
                 }
-                Edit::SetChildren { children, .. } => {
-                    set_children_live(backend, registry, site, &instance, children)
-                }
+                Edit::SetChildren { children, .. } => set_children_live(
+                    backend,
+                    registry,
+                    (site, node_index, slot),
+                    &instance,
+                    children,
+                ),
             };
             if ok {
                 outcome.applied += 1;
@@ -192,7 +237,7 @@ fn set_prop_live<H: AllCaps + 'static>(
 fn set_children_live<H: AllCaps + 'static>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
-    site: u64,
+    key: (u64, u32, usize),
     instance: &LiveOrigin<H::Node>,
     children: &[NewNode],
 ) -> bool {
@@ -226,15 +271,85 @@ fn set_children_live<H: AllCaps + 'static>(
         }
     }
 
+    // Same reason as a rebuild: these were realized on their own, so
+    // nothing recorded where they sit.
+    {
+        let mut at = 0usize;
+        for (realized, nodes) in &built {
+            if let Some(origin) = runtime_scene::root_origin(&realized.root) {
+                *origin.parent.borrow_mut() = Some((parent.clone(), at));
+            }
+            at += nodes.len();
+        }
+    }
+
     *instance.children.borrow_mut() =
         built.iter().flat_map(|(_, nodes)| nodes.iter().cloned()).collect();
-    // The new subtrees' scopes are held for as long as this site's patch
-    // stands — a patched-in subtree has no enclosing region to hold it,
-    // and a `Realized` IS its scope.
-    INSERTED.with(|i| {
-        for (realized, _) in built {
-            i.borrow_mut().push((site, Box::new(realized)));
+    // The new subtrees have no enclosing region to hold them, and a
+    // `Realized` IS its scope. Held per instance, so a later patch to a
+    // DIFFERENT node cannot unmount these.
+    let scopes: Vec<Realized<H::Node>> = built.into_iter().map(|(r, _)| r).collect();
+    super::rebuild::hold(key, Box::new(scopes));
+    true
+}
+
+/// Run a component again with new literal props and swap its subtree in
+/// place.
+///
+/// Realize first, then detach, then attach — a failure anywhere leaves
+/// the old subtree mounted rather than the screen half-empty.
+///
+/// The old instance is RETIRED rather than left registered: its node is
+/// gone from the backend, and a second patch that found it would issue
+/// calls against a node nothing is showing. The new subtree registers
+/// itself on the way through `mount_item`, so the next patch finds it
+/// instead.
+fn rebuild_instance<H: AllCaps + 'static>(
+    backend: &Rc<RefCell<H>>,
+    registry: &Rc<Registry<H>>,
+    key: (u64, u32, usize),
+    instance: &LiveOrigin<H::Node>,
+    props: &[(String, LiteralValue)],
+) -> bool {
+    let Some(erased) = instance.rebuild.as_ref() else { return false };
+    let Some(rebuilder) = super::rebuild::recover(erased) else { return false };
+    // A node whose parent is unknown cannot be swapped: a root, or one a
+    // handler placed itself. Refusing is right — the alternative is
+    // realizing a subtree nothing is holding.
+    let Some((parent, index)) = instance.parent.borrow().clone() else { return false };
+
+    // The rebuilt element comes out of the component's own body, so it
+    // carries the tags of the component's INTERNAL `ui!` — not the
+    // caller's tag for this instance, which `exit` applied at the call
+    // site and which is not running now. Re-apply both, or the
+    // replacement is unreachable and the NEXT patch silently finds
+    // nothing.
+    let element = rebuilder(props);
+    let element = runtime_scene::with_tag(element, instance.tag);
+    let element = runtime_scene::with_rebuild(element, Rc::clone(erased));
+    let realized = realize(backend, registry, element);
+    let fresh = realized.collect_nodes();
+
+    {
+        let mut b = backend.borrow_mut();
+        b.release_subtree(&instance.node);
+        b.remove_child(&parent, &instance.node);
+        let mut at = index;
+        for node in &fresh {
+            let mut p = parent.clone();
+            b.insert_at(&mut p, node.clone(), at);
+            at += 1;
         }
-    });
+    }
+
+    // The replacement was realized on its own, so no parent's
+    // `mount_item` recorded where it sits. Say so here, or the NEXT
+    // patch to this instance finds it and cannot swap it.
+    if let Some(origin) = runtime_scene::root_origin(&realized.root) {
+        *origin.parent.borrow_mut() = Some((parent, index));
+    }
+
+    instance.retired.set(true);
+    super::rebuild::hold(key, Box::new(realized));
     true
 }

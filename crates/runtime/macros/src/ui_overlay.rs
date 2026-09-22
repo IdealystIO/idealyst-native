@@ -120,11 +120,11 @@ mod inert {
 
     #[inline(always)]
     pub(crate) fn component_props(
-        body: TokenStream2,
+        props: TokenStream2,
         _name: &proc_macro2::Ident,
         _node: u32,
     ) -> TokenStream2 {
-        body
+        quote::quote! { ::runtime_core::BuildElement::build(#props) }
     }
 }
 
@@ -172,8 +172,22 @@ mod live {
         let site = SITE.with(|s| s.get());
         quote! {
             {
-                ::runtime_core::__overlay::enter(#site, #node);
-                ::runtime_core::__overlay::exit(#body)
+                let __ui_props = #body;
+                // Remember the props, so this instance can be RUN AGAIN
+                // with a new literal. Only when they are `Clone` and
+                // macro-generated: `(&Probe(&p)).rebuilder()` resolves
+                // to the `ViaClone` impl when both hold and autorefs
+                // once more to a `None` fallback when they do not. No
+                // specialization feature, no bound on `#[component]`,
+                // and a props type that is not `Clone` still compiles.
+                ::runtime_core::__overlay::enter_with(#site, #node, {
+                    #[allow(unused_imports)]
+                    use ::runtime_core::__overlay::{ViaClone as _, ViaFallback as _};
+                    (&::runtime_core::__overlay::Probe(&__ui_props)).rebuilder()
+                });
+                ::runtime_core::__overlay::exit(
+                    ::runtime_core::BuildElement::build(__ui_props),
+                )
             }
         }
     }

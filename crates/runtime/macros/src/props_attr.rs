@@ -320,6 +320,15 @@ fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
     // from data; one without (a hand-rolled impl, or a bare `#[props]`
     // struct) falls back to the trait's "no", so the overlay refuses to
     // insert it rather than guessing.
+    // `OverlayProps` is a REAL impl, and that is the whole point: a
+    // generic rebuild body cannot call an inherent `__apply_literal` —
+    // it would bind the blanket fallback and apply nothing. Only a
+    // buildable props type gets it, which is also how the call-site
+    // probe tells a rebuildable component from a props struct the
+    // macros never touched.
+    let overlay_props =
+        if buildable { overlay_props_impl(&quote!(#ty)) } else { TokenStream2::new() };
+
     let ctor_path = if buildable {
         quote! { Self::__overlay_ctor }
     } else {
@@ -400,11 +409,53 @@ fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
 
             #ctor
         }
+
+        #overlay_props
     }
 }
 
 #[cfg(not(feature = "ui-overlay"))]
 fn overlay_hooks(_ty: &syn::Ident, _buildable: bool) -> TokenStream2 {
+    TokenStream2::new()
+}
+
+/// The `OverlayProps` impl a rebuildable props type gets.
+///
+/// A REAL impl, and that is the whole point: a generic rebuild body
+/// cannot call an inherent `__apply_literal` — it would bind the blanket
+/// fallback and apply nothing. It is also how the call-site probe tells
+/// a rebuildable component from a props struct the macros never touched,
+/// since only this emission creates one.
+#[cfg(feature = "ui-overlay")]
+pub(crate) fn overlay_props_impl(ty: &TokenStream2) -> TokenStream2 {
+    quote! {
+        #[automatically_derived]
+        impl ::runtime_core::__overlay::OverlayProps for #ty {
+            fn overlay_apply(
+                &mut self,
+                name: &str,
+                value: &::runtime_core::__template::TemplateLiteral,
+            ) -> bool {
+                // Inherent-before-trait: a props type the macros
+                // generated fields for has its own `__apply_literal` and
+                // uses that; one that does not — a marker struct for a
+                // no-prop component, a hand-rolled props type — falls
+                // back to the blanket impl's "nothing applied". Both
+                // are correct, and neither is a compile error.
+                #[allow(unused_imports)]
+                use ::runtime_core::__template::ApplyLiteralFallback as _;
+                self.__apply_literal(name, value)
+            }
+
+            fn overlay_build(self) -> ::runtime_core::Element {
+                ::runtime_core::BuildElement::build(self)
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "ui-overlay"))]
+pub(crate) fn overlay_props_impl(_ty: &TokenStream2) -> TokenStream2 {
     TokenStream2::new()
 }
 
