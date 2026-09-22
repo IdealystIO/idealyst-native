@@ -487,6 +487,16 @@ thing a site had to resolve (an inherent method whose fallback is a
 blanket `impl<T>`, which pulls trait selection into every one of
 thousands of sites).
 
+Running a component again needs a `Clone` copy of its props, and the
+autoref-specialization probe that decides whether one exists was first
+emitted at the call site — which put trait selection back, at +1.2 s. It
+belongs on the props TYPE: `#[component]` generates an
+`__overlay_rebuilder` beside the other per-type items and the type's own
+`build` hands the result to the open ambient frame. Re-measured on
+CrewForge (arm64, 9 one-edit rebuilds per arm, interleaved): 6.18 s off
+vs 6.22 s on at the minimum, and `macro_expand_crate` 1.72 s vs 1.82 s —
+the overlay is back inside the noise of the feature being off.
+
 Because registration now happens inside `build`, the contract for
 inserting a component is "any component type this program has built
 once", not "any component currently on screen". And because the ambient
