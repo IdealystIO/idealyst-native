@@ -21,6 +21,15 @@ pub enum Element {
     Item {
         data: Box<dyn Any>,
         children: Vec<Element>,
+        /// Where this node came from in its `ui!` site — see
+        /// [`NodeTag`]. `None` for a node built by hand through
+        /// [`item`] rather than by the macro.
+        ///
+        /// The field exists only under `ui-overlay`, so a normal build
+        /// carries no per-node cost. Match with `..` if you do not need
+        /// it; every match in the workspace does.
+        #[cfg(feature = "ui-overlay")]
+        tag: Option<NodeTag>,
     },
     /// Siblings with no node of their own. Spliced flat into the enclosing
     /// children list; the threaded `inserted` index counts THROUGH it so a
@@ -71,6 +80,65 @@ pub fn item<T: Any>(data: T, children: Vec<Element>) -> Element {
     Element::Item {
         data: Box::new(data),
         children,
+        #[cfg(feature = "ui-overlay")]
+        tag: None,
+    }
+}
+
+/// Where a node came from: the `ui!` site that emitted it, and which
+/// node of that site's `Descriptor` it is.
+///
+/// This is what lets an overlay patch a BUILT tree. A descriptor edit
+/// names a descriptor node; the tag is the only thing that maps it back
+/// to the `Element` that node produced. Position cannot: a reactive
+/// branch, a keyed row or a `for` changes how many siblings exist, so
+/// the n-th child of a parent is not a stable identity — which is why
+/// dynamic slots are located by tag and never by index.
+///
+/// `Copy` and pointer-sized-ish: `site` is a `&'static str` the macro
+/// interns as a literal (`module_path!()#hash`), `node` is the index
+/// into that descriptor's flat node array.
+#[cfg(feature = "ui-overlay")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NodeTag {
+    pub site: &'static str,
+    pub node: u32,
+}
+
+/// As [`item`], with an origin tag. Emitted by `ui!` under
+/// `ui-overlay`; the untagged [`item`] stays the constructor everything
+/// else uses, so no public signature changes.
+#[cfg(feature = "ui-overlay")]
+pub fn item_tagged<T: Any>(data: T, children: Vec<Element>, tag: NodeTag) -> Element {
+    #[cfg(debug_assertions)]
+    remember_payload_name::<T>();
+    Element::Item {
+        data: Box::new(data),
+        children,
+        tag: Some(tag),
+    }
+}
+
+/// Attach an origin tag to an already-built `Element`.
+///
+/// The macro wraps each node's finished expression with this rather than
+/// threading a tag through every builder: the builders are the author
+/// surface and must not grow a parameter for a dev-time feature. A
+/// non-`Item` element (a `Fragment`, a `Dyn`, a component's `Owned`) is
+/// returned unchanged — those are structure, not nodes.
+#[cfg(feature = "ui-overlay")]
+pub fn with_tag(element: Element, tag: NodeTag) -> Element {
+    match element {
+        Element::Item { data, children, .. } => {
+            Element::Item { data, children, tag: Some(tag) }
+        }
+        // An `Owned` is a component boundary: tag the subtree ROOT it
+        // wraps, so a component's own node carries the tag of the call
+        // site that built it.
+        Element::Owned { element, owned } => {
+            Element::Owned { element: Box::new(with_tag(*element, tag)), owned }
+        }
+        other => other,
     }
 }
 

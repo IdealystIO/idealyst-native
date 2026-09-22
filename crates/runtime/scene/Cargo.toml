@@ -16,6 +16,22 @@ version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# `ui-overlay`: carry a per-node ORIGIN TAG on `Element::Item`, so a
+# dev-time overlay can find the node a `ui!` site's descriptor node
+# produced and patch it in place.
+#
+# Default OFF and a real cargo feature rather than `cfg(debug_assertions)`
+# on purpose: an over-the-air path would want it in a release build. The
+# `Element` field exists ONLY under the feature, so an app that never
+# enables it pays nothing — not a byte per node, not a branch.
+#
+# Forwarded from `runtime-core` / `idealyst` (and `runtime-macros`, which
+# emits the tags) the way `runtime-shared`'s `debug-stats` is. Enabling
+# it here alone is SOUND but inert: the macro emits no tags, so every
+# node's tag is `None`.
+ui-overlay = []
+
 [dependencies]
 runtime-world = { workspace = true }
 # Registry map keyed by payload TypeId — internal, never attacker-controlled

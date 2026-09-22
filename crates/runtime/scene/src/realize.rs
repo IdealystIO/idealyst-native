@@ -659,7 +659,7 @@ impl<'a, H: Host> MountCx<'a, H> {
         // One nesting level of the realize recursion. See `depth` for why
         // the budget is enforced here and nowhere else.
         let _level = depth::enter();
-        let Element::Item { data, children } = element else {
+        let Element::Item { data, children, .. } = element else {
             unreachable!("mount_item called on a non-Item")
         };
         let type_id = (*data).type_id();

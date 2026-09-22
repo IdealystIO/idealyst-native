@@ -241,7 +241,7 @@ mod imp {
             Element::Dyn(_) => P::Other("dyn"),
             Element::Keyed { .. } => P::Other("keyed"),
             Element::Many { .. } => P::Other("many"),
-            Element::Item { data, children } => classify_item(data, children),
+            Element::Item { data, children, .. } => classify_item(data, children),
             _ => P::Other("unmodeled"),
         }
     }

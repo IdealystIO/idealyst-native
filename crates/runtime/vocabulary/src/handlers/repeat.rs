@@ -311,7 +311,7 @@ fn enqueue_element<H>(
 where
     H: BatchOps + InputOps + StyleServices,
 {
-    let Element::Item { data, children } = element else {
+    let Element::Item { data, children, .. } = element else {
         // Fragments, holes, keyed lists, nested repeats, component
         // scopes: all break out (the old walker's `_ => None`).
         return None;
