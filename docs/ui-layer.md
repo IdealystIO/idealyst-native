@@ -625,7 +625,17 @@ capability calls — `update_text`, `update_button_label`, `set_disabled`,
 `cfg(target)`: every backend gets it from one replay, which is the
 standing rule about where platform differences are allowed to live.
 
-A live edit needs a SETTER on the seam, so the live half covers less
+**The live path does not reach inside a navigator screen.** A navigator
+handler realizes each screen into its OWN state
+(`handlers::navigator`'s `realized: Realized<N>`), not as a child of the
+live tree, so the walk that finds tagged nodes never gets there. In a
+navigator-based app that is most of the UI: the patch is delivered and
+staged, the applier reports `0 applied`, and the edit appears when that
+screen next rebuilds. Reaching those subtrees means giving the navigator
+handlers a way to expose them to the walk — a `runtime_scene` seam
+change across every navigator handler. Not built.
+
+A live edit also needs a SETTER on the seam, so the live half covers less
 than the `Element` half: a `#[component]`'s prop has no setter (its body
 already ran, and re-running it would need every dynamic prop it was
 given, which is compiled code the patch does not carry). Those appear on

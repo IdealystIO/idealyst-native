@@ -77,6 +77,30 @@ fn start(port: u16) -> std::sync::Arc<ReloadSignal> {
     signal
 }
 
+/// The injected script and the bundle have to agree on ONE name.
+///
+/// `#[wasm_bindgen]` puts an export on the MODULE, not on `window`, so
+/// `backend-web` explicitly publishes `window.__idealyst_overlay_patch`
+/// at boot. This pins the script's half of that agreement; the bundle's
+/// half is `backend_web::newcore::install_overlay_patch_entry`.
+///
+/// Getting it wrong is quiet: the script looks, finds nothing, logs
+/// "this bundle has no overlay" and does nothing — on a bundle that has
+/// one. That is exactly how it failed the first time, and only looking
+/// at a real page caught it.
+#[test]
+fn the_injected_script_calls_the_name_the_bundle_publishes() {
+    let script = dev_http::reload_script_tag("http://127.0.0.1:1234/__idealyst/reload");
+    assert!(
+        script.contains("window.__idealyst_overlay_patch"),
+        "{script}"
+    );
+    assert!(
+        script.contains("http://127.0.0.1:1234/__idealyst/reload"),
+        "{script}"
+    );
+}
+
 #[test]
 fn the_sse_route_allows_a_cross_origin_page() {
     let port = pick_port();

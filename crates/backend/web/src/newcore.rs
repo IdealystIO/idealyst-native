@@ -206,6 +206,38 @@ struct App {
 /// dev-loop event; the page's handler logs it and reloads, which is the
 /// correct fallback and a much better outcome than a wasm trap taking
 /// the app down mid-edit.
+/// Publish [`overlay_patch`] as `window.__idealyst_overlay_patch`.
+///
+/// `#[wasm_bindgen]` puts an export on the MODULE, not on `window` — so
+/// the livereload script, which is plain inline JS in the page and never
+/// imports the module, could not see it. It looked, found nothing, and
+/// logged "this bundle has no overlay" on a bundle that had one.
+///
+/// The closure is leaked on purpose: it has to outlive this call and
+/// stay callable for the life of the page, and a dev session's page is
+/// the only thing that ever holds it.
+#[cfg(feature = "ui-overlay")]
+fn install_overlay_patch_entry() {
+    use wasm_bindgen::prelude::Closure;
+    use wasm_bindgen::JsCast;
+
+    let Some(window) = web_sys::window() else { return };
+    let apply = Closure::<dyn Fn(String)>::new(|json: String| {
+        if let Err(e) = overlay_patch(&json) {
+            web_sys::console::error_2(
+                &wasm_bindgen::JsValue::from_str("[idealyst] overlay patch failed"),
+                &e,
+            );
+        }
+    });
+    let _ = js_sys::Reflect::set(
+        &window,
+        &wasm_bindgen::JsValue::from_str("__idealyst_overlay_patch"),
+        apply.as_ref().unchecked_ref(),
+    );
+    apply.forget();
+}
+
 #[cfg(feature = "ui-overlay")]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = __idealyst_overlay_patch)]
 pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
@@ -425,6 +457,13 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     // actions settle via flush_sync (see robot_transport).
     #[cfg(feature = "robot")]
     crate::robot_transport::install_newcore_driver_env();
+
+    // The overlay's page entry point, published on `window` so the
+    // livereload script — plain inline JS that never imports this
+    // module — can reach it. After the mount, because it patches a
+    // mounted app.
+    #[cfg(feature = "ui-overlay")]
+    install_overlay_patch_entry();
 
     // Live viewport source: window resizes re-fire breakpoint-dependent
     // author reactivity (the idea-ui-docs hamburger bug).
