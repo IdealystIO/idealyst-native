@@ -200,6 +200,18 @@ pub(crate) fn apply_literal_impl(
     ty: &syn::Ident,
     fields: &[(syn::Ident, Type)],
 ) -> TokenStream2 {
+    // A `children: Vec<Element>` field, if this struct has one. Matched
+    // by NAME and by the field's outer type being a `Vec`: the type is
+    // the contract `ui!` already enforces at every call site with a
+    // children block, so nothing new is being assumed here.
+    let children_arm = match fields.iter().find(|(name, ty)| name == "children" && is_vec(ty)) {
+        Some((name, _)) => quote! {
+            self.#name = children;
+            true
+        },
+        None => quote! { false },
+    };
+
     let arms = fields.iter().filter_map(|(name, field_ty)| {
         let key = name.to_string();
         match literal_target(field_ty) {
@@ -248,7 +260,35 @@ pub(crate) fn apply_literal_impl(
                 }
             }
         }
+
+        #[automatically_derived]
+        impl #ty {
+            /// Move a patch-built child list into this props struct's
+            /// `children` field, reporting whether it has one.
+            ///
+            /// The other half of `__apply_literal`, for the same reason
+            /// and by the same mechanism: an overlay that is asked to
+            /// INSERT a component has to fill its children, and only
+            /// code generated on the concrete type can name the field.
+            /// A props struct without a `children: Vec<Element>` field
+            /// gets the blanket-trait `false`, and inserting that
+            /// component with children is refused rather than silently
+            /// dropping them.
+            #[doc(hidden)]
+            #[allow(unused_variables, unused_mut, clippy::all)]
+            pub fn __apply_children(
+                &mut self,
+                children: ::std::vec::Vec<::runtime_core::Element>,
+            ) -> bool {
+                #children_arm
+            }
+        }
     }
+}
+
+/// Whether a field's outer type is a `Vec<…>`.
+fn is_vec(ty: &Type) -> bool {
+    matches!(ty, Type::Path(tp) if tp.path.segments.last().is_some_and(|s| s.ident == "Vec"))
 }
 
 /// Default-wrap with a skip-list: returns true unless the type is a known

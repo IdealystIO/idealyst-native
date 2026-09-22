@@ -228,6 +228,28 @@ pub fn record<St: 'static>(
     }
 }
 
+/// Mount one `Element` against a fresh harness and return the scene
+/// snapshot it produces.
+///
+/// The overlay suite's assertion surface: a patch's whole job is to
+/// change what ends up on screen, so what a test compares is the
+/// rendered tree, not the `Element` that produced it. Separate from
+/// [`record`] because a patch test builds its tree at the call site
+/// (it has to stage a patch between two builds of the same `ui!`)
+/// rather than handing over a `fn`.
+pub fn mount_scene(build: impl FnOnce() -> Element) -> String {
+    let h = Harness::new();
+    h.record_all();
+    let realized: Realized<Node> = h.world.enter(|| {
+        let element = build();
+        realize(&h.backend, &h.registry, element)
+    });
+    h.flush();
+    let scene = scene_snapshot(&h);
+    drop(realized);
+    scene
+}
+
 /// Every root tree in creation order. Roots are the nodes the harness
 /// minted that nothing ever inserted into — derived rather than assumed
 /// to be `n0`, because a tree whose root is a reactive region mints its

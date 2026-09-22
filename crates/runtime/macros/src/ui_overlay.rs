@@ -17,8 +17,36 @@
 //! runtime_core::__overlay::tag(<expr>, 0x1234_5678_9abc_def0u64, 7u32)
 //! ```
 //!
-//! Two integer literals and a call. No `static`, no descriptor, no
-//! prelude, nothing per SITE at all.
+//! and, per `#[component]` call site, around the props struct literal:
+//!
+//! ```ignore
+//! {
+//!     let mut __p = Badge { .. };
+//!     for (n, v) in runtime_core::__overlay::staged_props(SITE, NODE) {
+//!         __p.__apply_literal(&n, &v);
+//!     }
+//!     runtime_core::__overlay::register_ctor("Badge", |props, children| { .. });
+//!     __p
+//! }
+//! ```
+//!
+//! Two integer literals and a call per node; a lookup and a registration
+//! per component. No `static`, no descriptor, no prelude, nothing per
+//! SITE at all.
+//!
+//! # Why a component is patched at its PROPS
+//!
+//! Everything else is patched on the built `Element`, inside
+//! `__overlay::tag`. A component cannot be: by the time its `Element`
+//! exists its props have been consumed and its body has run. The props
+//! struct literal is the last moment they are reachable.
+//!
+//! And the loop has to be EMITTED, not called: `__apply_literal` is an
+//! inherent method on the generated props type with a blanket-trait
+//! fallback, and inherent-before-trait resolution only happens where the
+//! concrete type is known. A generic helper in the vocabulary would bind
+//! the fallback and silently apply nothing — the worst possible failure
+//! here, since it looks exactly like "no patch staged".
 //!
 //! # Why the descriptor is not here any more
 //!
@@ -85,6 +113,15 @@ mod inert {
     pub(crate) fn tag(body: TokenStream2, _node: u32) -> TokenStream2 {
         body
     }
+
+    #[inline(always)]
+    pub(crate) fn component_props(
+        body: TokenStream2,
+        _name: &proc_macro2::Ident,
+        _node: u32,
+    ) -> TokenStream2 {
+        body
+    }
 }
 
 // ===========================================================================
@@ -111,6 +148,51 @@ mod live {
     pub(crate) fn tag(body: TokenStream2, node: u32) -> TokenStream2 {
         let site = SITE.with(|s| s.get());
         quote! { ::runtime_core::__overlay::tag(#body, #site, #node) }
+    }
+
+    /// Wrap a `#[component]`'s props struct literal so a staged patch
+    /// reaches it, and teach the overlay how to build this component.
+    ///
+    /// The constructor is a non-capturing closure, so it coerces to a
+    /// plain `fn` pointer; it exists here rather than in a link-time
+    /// registry because only this call site knows the props TYPE, which
+    /// is what makes `__apply_literal` / `__apply_children` resolve
+    /// inherently.
+    pub(crate) fn component_props(
+        body: TokenStream2,
+        name: &proc_macro2::Ident,
+        node: u32,
+    ) -> TokenStream2 {
+        let site = SITE.with(|s| s.get());
+        let name_str = name.to_string();
+        quote! {
+            {
+                #[allow(unused_imports)]
+                use ::runtime_core::__template::ApplyLiteralFallback as _;
+                ::runtime_core::__overlay::register_ctor(
+                    #name_str,
+                    |__props, __children| {
+                        #[allow(unused_imports)]
+                        use ::runtime_core::__template::ApplyLiteralFallback as _;
+                        let mut __p = <#name as ::runtime_core::BuildElement>::defaults();
+                        for (__n, __v) in __props {
+                            __p.__apply_literal(__n, __v);
+                        }
+                        if !__children.is_empty() && !__p.__apply_children(__children) {
+                            return ::core::option::Option::None;
+                        }
+                        ::core::option::Option::Some(
+                            ::runtime_core::BuildElement::build(__p),
+                        )
+                    },
+                );
+                let mut __p = #body;
+                for (__n, __v) in ::runtime_core::__overlay::staged_props(#site, #node) {
+                    __p.__apply_literal(&__n, &__v);
+                }
+                __p
+            }
+        }
     }
 
     /// The key for the `ui!` invocation being expanded.

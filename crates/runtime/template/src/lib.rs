@@ -486,139 +486,66 @@ impl Registry {
 }
 
 // ===========================================================================
-// Patch + validation
+// Well-formedness
 // ===========================================================================
 
-/// A replacement descriptor for one site.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Patch {
-    pub site: SiteId,
-    pub descriptor: Descriptor,
-}
-
-/// Why a [`Patch`] cannot be applied.
+/// Why a [`Descriptor`] is malformed.
+///
+/// These are the errors a descriptor can have ON ITS OWN. Whether one
+/// descriptor may REPLACE another — whether an edit disturbed a slot the
+/// compiled code supplies — is a question about two source versions, and
+/// it is answered by the differ, which has both. It was never answerable
+/// here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ValidationError {
-    /// The patch's own `site` and its descriptor's `site` disagree.
-    SiteIdMismatch { patch: SiteId, descriptor: SiteId },
-    /// Nothing registered under that site — there is no signature to
-    /// check the patch against, so accepting it would be a guess.
-    UnknownSite(SiteId),
-    /// The patch expects a different number of slots than the compiled
-    /// site supplies.
-    SlotCountMismatch { expected: usize, found: usize },
-    /// A slot's recorded shape drifted. The compiled code supplies a
-    /// value of one shape; the patch would use it as another.
-    SlotShapeMismatch { index: usize, expected: SlotInfo, found: SlotInfo },
+pub enum Malformed {
     /// A child / root index points past the node array.
     NodeIndexOutOfRange { index: u32, nodes: usize },
-    /// A prop or thunk references a slot the signature does not declare.
+    /// A prop references a slot the signature does not declare.
     SlotIndexOutOfRange { index: u32, slots: usize },
     /// The descriptor has nodes but no roots, so nothing reaches them.
-    /// A descriptor with NEITHER is legal — that is an empty `ui! {}`,
-    /// which the builder renders as an empty `view`.
+    /// A descriptor with NEITHER is legal — that is an empty `ui! {}`.
     UnreachableNodes,
 }
 
-impl fmt::Display for ValidationError {
+impl fmt::Display for Malformed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ValidationError::SiteIdMismatch { patch, descriptor } => {
-                write!(f, "patch site {patch} does not match its descriptor's site {descriptor}")
-            }
-            ValidationError::UnknownSite(s) => write!(f, "no descriptor registered for site {s}"),
-            ValidationError::SlotCountMismatch { expected, found } => {
-                write!(f, "slot count mismatch: compiled site supplies {expected}, patch wants {found}")
-            }
-            ValidationError::SlotShapeMismatch { index, expected, found } => write!(
-                f,
-                "slot {index} shape mismatch: compiled site supplies {:?}/{:?}, patch wants {:?}/{:?}",
-                expected.role, expected.kind, found.role, found.kind
-            ),
-            ValidationError::NodeIndexOutOfRange { index, nodes } => {
+            Malformed::NodeIndexOutOfRange { index, nodes } => {
                 write!(f, "node index {index} out of range ({nodes} nodes)")
             }
-            ValidationError::SlotIndexOutOfRange { index, slots } => {
+            Malformed::SlotIndexOutOfRange { index, slots } => {
                 write!(f, "slot index {index} out of range ({slots} slots)")
             }
-            ValidationError::UnreachableNodes => {
-                write!(f, "descriptor has nodes but no roots")
-            }
+            Malformed::UnreachableNodes => write!(f, "descriptor has nodes but no roots"),
         }
     }
 }
 
-impl std::error::Error for ValidationError {}
+impl std::error::Error for Malformed {}
 
-/// Check that `patch` could replace the descriptor registered for its
-/// site.
+/// Check a descriptor's internal consistency: every child and root index
+/// in range, every slot reference declared.
 ///
-/// Two classes of check, and both matter:
-///
-/// - **internal consistency** — every node/root index is in range and
-///   every slot reference is declared. A descriptor that fails these is
-///   malformed whatever it replaces.
-/// - **slot-signature compatibility** — the patch must expect exactly
-///   the slot list the compiled site supplies, shape for shape. The
-///   slots are CODE: they were compiled into the binary and cannot be
-///   patched. A descriptor that used slot 3 as a condition where the
-///   binary supplies a text value would type-confuse the builder, so it
-///   is rejected here rather than discovered at build time.
-pub fn validate(patch: &Patch, registry: &Registry) -> Result<(), ValidationError> {
-    if patch.site != patch.descriptor.site {
-        return Err(ValidationError::SiteIdMismatch {
-            patch: patch.site.clone(),
-            descriptor: patch.descriptor.site.clone(),
-        });
-    }
-    let compiled = registry
-        .get(&patch.site)
-        .ok_or_else(|| ValidationError::UnknownSite(patch.site.clone()))?;
-
-    let expected = &compiled.slots;
-    let found = &patch.descriptor.slots;
-    if expected.count() != found.count() {
-        return Err(ValidationError::SlotCountMismatch {
-            expected: expected.count(),
-            found: found.count(),
-        });
-    }
-    for (index, (e, f)) in expected.slots.iter().zip(found.slots.iter()).enumerate() {
-        // `name` is not compared: it is reserved for a name-matched
-        // protocol that does not exist yet, and comparing it now would
-        // reject harmless descriptor edits.
-        if e.role != f.role || e.kind != f.kind {
-            return Err(ValidationError::SlotShapeMismatch {
-                index,
-                expected: e.clone(),
-                found: f.clone(),
-            });
-        }
-    }
-
-    check_well_formed(&patch.descriptor)
-}
-
-/// The internal-consistency half of [`validate`], usable on its own (the
-/// emission's own descriptors are checked with it in tests).
-pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError> {
+/// Run on the producer's own output over the whole parity corpus, so it
+/// is checked against real trees rather than hand-written ones.
+pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), Malformed> {
     let nodes = descriptor.nodes.len();
     let slots = descriptor.slots.count();
     if descriptor.roots.is_empty() && nodes > 0 {
-        return Err(ValidationError::UnreachableNodes);
+        return Err(Malformed::UnreachableNodes);
     }
-    let node_ok = |i: u32| -> Result<(), ValidationError> {
+    let node_ok = |i: u32| -> Result<(), Malformed> {
         if (i as usize) < nodes {
             Ok(())
         } else {
-            Err(ValidationError::NodeIndexOutOfRange { index: i, nodes })
+            Err(Malformed::NodeIndexOutOfRange { index: i, nodes })
         }
     };
-    let slot_ok = |i: u32| -> Result<(), ValidationError> {
+    let slot_ok = |i: u32| -> Result<(), Malformed> {
         if (i as usize) < slots {
             Ok(())
         } else {
-            Err(ValidationError::SlotIndexOutOfRange { index: i, slots })
+            Err(Malformed::SlotIndexOutOfRange { index: i, slots })
         }
     };
     for &r in descriptor.roots.iter() {
@@ -644,6 +571,85 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError>
         }
     }
     Ok(())
+}
+
+// ===========================================================================
+// Patch
+// ===========================================================================
+
+/// What a patch asks an applier to change about one node.
+///
+/// Every edit names a node by the index the split pass gave it, which is
+/// the index the compiled code tags the built `Element` with. Nothing
+/// here refers to a descriptor: the applier has only the running tree
+/// and this list, and it must be able to act on the pair alone. That is
+/// why every new value is inline.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Edit {
+    /// Give a node's prop a new literal value.
+    ///
+    /// The prop must be one the node carries as DATA. A prop whose value
+    /// is a slot is compiled code; changing it is a rebuild, and a
+    /// differ never emits this edit for one.
+    SetProp { node: u32, name: Text, value: LiteralValue },
+    /// Replace a node's children with these subtrees.
+    ///
+    /// Insert, remove and reorder are all this one edit, because all
+    /// three are "the child list is now that" — and expressing them
+    /// separately would mean the applier reconciling positions against a
+    /// descriptor it does not have.
+    ///
+    /// Only legal where every current child is a plain node. An applier
+    /// that finds a reactive region, a keyed list or a component
+    /// boundary among them refuses the edit: those are code, and their
+    /// position in the list is decided at runtime.
+    SetChildren { node: u32, children: List<NewNode> },
+}
+
+/// A subtree a patch asks to be CONSTRUCTED.
+///
+/// Fully static by construction: `props` carries literals only. A
+/// subtree that referenced a slot would be code, and code cannot be
+/// built from data — a differ that meets one rejects the edit rather
+/// than emitting a `NewNode` that no applier could honour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewNode {
+    /// A canonical primitive name (`"view"`, `"text"`) or a
+    /// `#[component]` tag. Whether it can actually be built is the
+    /// applier's table to answer; an unknown name is a refused edit,
+    /// never a panic.
+    pub kind: Text,
+    pub props: List<PropEntry>,
+    pub children: List<NewNode>,
+}
+
+/// One site's worth of edits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Patch {
+    pub site: SiteId,
+    pub edits: List<Edit>,
+}
+
+impl Patch {
+    /// The site key the compiled code tags with — what an applier
+    /// stores this patch under.
+    pub fn key(&self) -> u64 {
+        self.site.key()
+    }
+
+    /// Every node index this patch touches, lowest first.
+    pub fn nodes(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self
+            .edits
+            .iter()
+            .map(|e| match e {
+                Edit::SetProp { node, .. } | Edit::SetChildren { node, .. } => *node,
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 #[cfg(test)]
@@ -745,111 +751,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_accepts_a_matching_patch() {
-        let mut reg = Registry::new();
-        reg.register(one_text("a"));
-        let mut patched = one_text("a");
-        patched.nodes = Cow::Owned(vec![text_node("bye")]);
-        let patch = Patch { site: site("a"), descriptor: patched };
-        assert_eq!(validate(&patch, &reg), Ok(()));
-    }
-
-    #[test]
-    fn validate_rejects_an_unregistered_site() {
-        let reg = Registry::new();
-        let patch = Patch { site: site("a"), descriptor: one_text("a") };
-        assert_eq!(validate(&patch, &reg), Err(ValidationError::UnknownSite(site("a"))));
-    }
-
-    #[test]
-    fn validate_rejects_a_site_id_mismatch() {
-        let reg = Registry::new();
-        let patch = Patch { site: site("a"), descriptor: one_text("b") };
-        assert!(matches!(
-            validate(&patch, &reg),
-            Err(ValidationError::SiteIdMismatch { .. })
-        ));
-    }
-
-    /// The slots are CODE: compiled into the binary and unpatchable. A
-    /// patch that wants a different number of them cannot be honoured.
-    #[test]
-    fn validate_rejects_a_slot_count_change() {
-        let mut reg = Registry::new();
-        reg.register(one_text("a"));
-        let mut patched = one_text("a");
-        patched.slots = sig(&[("prop", "path")]);
-        patched.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
-        let patch = Patch { site: site("a"), descriptor: patched };
+    fn a_child_index_past_the_node_array_is_malformed() {
+        let mut d = one_text("a");
+        d.roots = Cow::Owned(vec![7]);
         assert_eq!(
-            validate(&patch, &reg),
-            Err(ValidationError::SlotCountMismatch { expected: 0, found: 1 })
+            check_well_formed(&d),
+            Err(Malformed::NodeIndexOutOfRange { index: 7, nodes: 1 })
         );
     }
 
     #[test]
-    fn validate_rejects_a_slot_shape_change() {
-        let mut reg = Registry::new();
-        let mut compiled = one_text("a");
-        compiled.slots = sig(&[("prop", "path")]);
-        compiled.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
-        reg.register(compiled);
-
-        let mut patched = one_text("a");
-        patched.slots = sig(&[("cond", "closure")]);
-        patched.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
-        let patch = Patch { site: site("a"), descriptor: patched };
-        assert!(matches!(
-            validate(&patch, &reg),
-            Err(ValidationError::SlotShapeMismatch { index: 0, .. })
-        ));
-    }
-
-    /// A slot's `name` is reserved for a name-matched protocol that does
-    /// not exist yet, so it must NOT participate in compatibility —
-    /// otherwise renaming a prop in a descriptor edit would be rejected
-    /// for no reason.
-    #[test]
-    fn validate_ignores_slot_names() {
-        let mut reg = Registry::new();
-        let mut compiled = one_text("a");
-        compiled.slots = SlotSig {
-            slots: Cow::Owned(vec![SlotInfo {
-                name: Some(Cow::Borrowed("label")),
-                role: Cow::Borrowed("prop"),
-                kind: Cow::Borrowed("path"),
-            }]),
-        };
-        compiled.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
-        reg.register(compiled);
-
-        let mut patched = one_text("a");
-        patched.slots = SlotSig {
-            slots: Cow::Owned(vec![SlotInfo {
-                name: Some(Cow::Borrowed("title")),
-                role: Cow::Borrowed("prop"),
-                kind: Cow::Borrowed("path"),
-            }]),
-        };
-        patched.nodes = Cow::Owned(vec![Node::Opaque { expr: None, children: Cow::Borrowed(&[]) }]);
-        let patch = Patch { site: site("a"), descriptor: patched };
-        assert_eq!(validate(&patch, &reg), Ok(()));
-    }
-
-    #[test]
-    fn validate_rejects_out_of_range_indices() {
-        let mut reg = Registry::new();
-        reg.register(one_text("a"));
-
-        let mut bad_root = one_text("a");
-        bad_root.roots = Cow::Owned(vec![7]);
-        assert_eq!(
-            validate(&Patch { site: site("a"), descriptor: bad_root }, &reg),
-            Err(ValidationError::NodeIndexOutOfRange { index: 7, nodes: 1 })
-        );
-
-        let mut bad_slot = one_text("a");
-        bad_slot.nodes = Cow::Owned(vec![Node::Prim {
+    fn a_prop_referencing_an_undeclared_slot_is_malformed() {
+        let mut d = one_text("a");
+        d.nodes = Cow::Owned(vec![Node::Prim {
             kind: Cow::Borrowed("view"),
             props: Cow::Owned(vec![PropEntry {
                 name: Cow::Borrowed("style"),
@@ -858,22 +772,63 @@ mod tests {
             children: Cow::Borrowed(&[]),
         }]);
         assert_eq!(
-            validate(&Patch { site: site("a"), descriptor: bad_slot }, &reg),
-            Err(ValidationError::SlotIndexOutOfRange { index: 2, slots: 0 })
+            check_well_formed(&d),
+            Err(Malformed::SlotIndexOutOfRange { index: 2, slots: 0 })
         );
+    }
 
-        let mut no_roots = one_text("a");
-        no_roots.roots = Cow::Borrowed(&[]);
-        assert_eq!(
-            validate(&Patch { site: site("a"), descriptor: no_roots }, &reg),
-            Err(ValidationError::UnreachableNodes)
-        );
+    /// Nodes with no roots are unreachable; NEITHER is `ui! {}`, which
+    /// is legal and must not be reported.
+    #[test]
+    fn nodes_without_roots_are_unreachable_but_emptiness_is_legal() {
+        let mut d = one_text("a");
+        d.roots = Cow::Borrowed(&[]);
+        assert_eq!(check_well_formed(&d), Err(Malformed::UnreachableNodes));
 
-        // An EMPTY descriptor is legal — that is `ui! {}`.
         let mut empty = one_text("a");
         empty.nodes = Cow::Borrowed(&[]);
         empty.roots = Cow::Borrowed(&[]);
-        assert_eq!(validate(&Patch { site: site("a"), descriptor: empty }, &reg), Ok(()));
+        assert_eq!(check_well_formed(&empty), Ok(()));
+    }
+
+    /// A patch names nodes and carries its new values inline. It must
+    /// survive the trip through JSON a dev server puts it on, and it
+    /// must be able to say "these edits touch nodes 1 and 4" without
+    /// anything else in hand — that is all an applier gets.
+    #[test]
+    fn a_patch_round_trips_and_names_the_nodes_it_touches() {
+        let patch = Patch {
+            site: site("src/screen.rs"),
+            edits: Cow::Owned(vec![
+                Edit::SetProp {
+                    node: 4,
+                    name: Cow::Borrowed("content"),
+                    value: LiteralValue::Str(Cow::Borrowed("Sign in.")),
+                },
+                Edit::SetProp {
+                    node: 1,
+                    name: Cow::Borrowed("label"),
+                    value: LiteralValue::Int(3),
+                },
+                Edit::SetChildren {
+                    node: 1,
+                    children: Cow::Owned(vec![NewNode {
+                        kind: Cow::Borrowed("text"),
+                        props: Cow::Owned(vec![PropEntry {
+                            name: Cow::Borrowed("content"),
+                            value: PropValue::Lit(LiteralValue::Str(Cow::Borrowed("new"))),
+                        }]),
+                        children: Cow::Borrowed(&[]),
+                    }]),
+                },
+            ]),
+        };
+        assert_eq!(patch.nodes(), vec![1, 4]);
+        assert_eq!(patch.key(), patch.site.key());
+
+        let json = serde_json::to_string(&patch).expect("serialize");
+        let back: Patch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, patch);
     }
 
     #[test]

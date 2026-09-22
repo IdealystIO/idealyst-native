@@ -300,7 +300,7 @@ fn emit_component(
         (Some("anchored_overlay"), _) => emit_anchored_overlay(&other_props, children),
         (Some("presence"), _) => emit_presence(&other_props, children),
         (_, "DrawerNavigator") => emit_drawer_navigator(&other_props, children),
-        _ => emit_user(name, props, children),
+        _ => emit_user(name, props, children, node),
     };
 
     let with_style = if let Some(p) = style_prop.first() {
@@ -1583,7 +1583,12 @@ const FLAT_LIST_BUILDER_ONLY: &[&str] = &["on_handle", "spacing", "gap"];
 /// Emit a user-defined component invocation as a `BuildElement` struct
 /// literal (see the function body for the full rationale). A children
 /// block (if present) becomes the `children` field, a `Vec<Element>`.
-fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+fn emit_user(
+    name: &Ident,
+    props: &[Prop],
+    children: Option<&[UiNode]>,
+    node: u32,
+) -> TokenStream2 {
     // A tag `Foo` dispatches through the `BuildElement` trait: a plain
     // struct literal plus a UFCS `build` call — NO per-component
     // `macro_rules!`. This resolves across crate boundaries by ordinary
@@ -1626,14 +1631,17 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[UiNode]>) -> Token
         }
     });
 
+    let built = quote! {
+        #props_ty {
+            #(#field_assignments)*
+            #children_field
+            ..<#props_ty as ::runtime_core::BuildElement>::defaults()
+        }
+    };
+    let built = crate::ui_overlay::component_props(built, name, node);
+
     quote! {
-        ::runtime_core::BuildElement::build(
-            #props_ty {
-                #(#field_assignments)*
-                #children_field
-                ..<#props_ty as ::runtime_core::BuildElement>::defaults()
-            }
-        )
+        ::runtime_core::BuildElement::build(#built)
     }
 }
 

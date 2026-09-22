@@ -1299,6 +1299,16 @@ pub mod __template {
         fn __apply_literal(&mut self, _name: &str, _value: &TemplateLiteral) -> bool {
             false
         }
+
+        /// Returns whether the props type has a `children` field to put
+        /// them in. See `__apply_literal` — same mechanism, same
+        /// reason.
+        fn __apply_children(
+            &mut self,
+            _children: ::std::vec::Vec<runtime_scene::Element>,
+        ) -> bool {
+            false
+        }
     }
 
     impl<T> ApplyLiteralFallback for T {}
