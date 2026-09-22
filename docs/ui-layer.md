@@ -544,18 +544,46 @@ whole table:
 | a changed style token or enum path (`t.card()`, `tone::Danger`) | rebuild — recorded as source TEXT, and no value can be rebuilt from a string |
 | a structural change where any old child carries a style or other slot | rebuild — its prop bindings are owned by the enclosing scope, not the node |
 | anything outside a `ui!` body, in a file that also has one | rebuild — the whole file's save rebuilds |
-| a `ui!` body gaining or losing a LINE | rebuild — it moves every site below it in that file, and position is part of site identity |
-| a `ui!` nested inside another macro's tokens (`vec![ui!{…}]`) | rebuild — `syn` does not descend into a macro's tokens, so the scanner never sees that site |
+| a `ui!` body gaining or losing a LINE | **patched** — the sites below it re-key, but the save is matched to the build by ORDINAL and the patch is addressed to the key the binary carries |
+| a `ui!` nested inside another macro's tokens (`vec![ui!{…}]`) | **patched** — every macro's token tree is walked for them |
+| a site ADDED or REMOVED | rebuild — a new site has no compiled tag to address at all |
 | a `jsx!` body | rebuild — `jsx!` has its own grammar, produces no descriptor, and carries no tags |
 
-Two practical consequences worth knowing before you reach for this:
+One practical consequence worth knowing before you reach for this:
 
-- **A heavily styled tree patches its text but not its shape.** Almost
-  every node in a real app carries `style = …`, which is a slot, so the
-  fully-static requirement for a structural change is rarely met. Text
-  and literal props are where the win is.
-- **Reformatting rebuilds.** Anything that changes line numbers inside a
-  file with several `ui!` sites re-keys the ones below it.
+**A heavily styled tree patches its text but not its shape.** Almost
+every node in a real app carries `style = …`, which is a slot, so the
+fully-static requirement for a structural change is rarely met. Text and
+literal props are where the win is. (Letting a styled sibling be
+inserted needs slot aliasing — knowing that the new node's `style`
+expression is the same compiled code as its neighbour's. Not built.)
+
+### Why a moved site still patches
+
+A site is keyed by `(package, file, line, col)`, so a `ui!` body gaining
+a line re-keys every site below it in that file — while the running
+binary still carries the OLD keys in its tags. Keying alone would make
+"add one line to a `ui!` body" cost a full compile.
+
+So the build's descriptor set records, per site, its compiled **key** AND
+its **ordinal** among that file's `ui!` invocations. Both the archive and
+the on-save scan walk the file in document order, so the ordinals line
+up; the save is matched by ordinal, the current source is described under
+the ARCHIVED site id, and the patch is addressed to the key the binary
+actually has. The key is never advanced by a patch — only by a rebuild,
+which is the only thing that changes what the binary's tags say.
+
+The ordinal set changing — a site added or removed — is the one case
+that still rebuilds, and it has to: a new site has no compiled tag
+anywhere to address.
+
+Nested sites count in that ordering too. `syn` does not descend into a
+macro's tokens, so `pressable(vec![ui! { … }], …)` was invisible to the
+scanner even though the macro expands it and tags it. Every macro's
+token tree is now walked for `ui !` groups, recursively, and the results
+are merged and sorted by byte offset — because a nested site appended at
+the end instead of slotted into document order would renumber every site
+after it, and every later patch would address the wrong one.
 
 ### What an edit can and cannot change
 

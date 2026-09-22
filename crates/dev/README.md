@@ -25,6 +25,7 @@ Two flavors of remote execution use the same machinery:
 | `dev-reload` | [`reload/`](./reload) | The reload loop logic — what changes survive a patch, what forces a full rebuild. |
 | `dev-http` | [`http/`](./http) | HTTP transport for the dev server (bundles, source maps, browser refresh signals). |
 | `web-dev-host` | [`web-host/`](./web-host) | Browser-side host that bootstraps a web app under `idealyst dev`. |
+| `dev-overlay` | [`overlay/`](./overlay) | A build's descriptor set, and the patch-or-rebuild decision for a save. Its own crate because BOTH dev shapes need the decision and they share nothing else — the web watcher pulls the bundler, the runtime-server host pulls the wire protocol. |
 | `runtime-server-shell-native` | [`runtime-server-shell/`](./runtime-server-shell) | The device-side shell that runs when an app is launched in runtime-server mode — it boots the Backend, opens the connection, and feeds incoming wire commands into `dev-client`. |
 
 ## How the pieces connect
@@ -73,11 +74,19 @@ a PATCH:
    ├─ runtime_template::diff refuses  ──────────────────────────► rebuild
    │
    ▼  Patch
-   ├─ web --local: an SSE `patch` event → the page's
-   │               `__idealyst_overlay_patch` → stage + apply live
-   └─ runtime-server: the sidecar applies it to its own tree; the
-                      resulting Host calls reach every client as
-                      ordinary wire commands
+   ├─ web --local (static):     dev-http's SSE `patch` event
+   ├─ web --local (full-stack): the same SSE, from a stream running
+   │                            ALONE on a CLI-owned port beside the
+   │                            app's own server (absolute URL in the
+   │                            staged index.html, CORS on the route)
+   │        │
+   │        ▼  the page's `__idealyst_overlay_patch` → stage + apply live
+   │
+   └─ runtime-server: host → `SidecarIn::OverlayPatch` → the sidecar
+                      applies it to its OWN tree, so the resulting Host
+                      calls reach every client as ordinary wire commands
+                      and update the recorder's scene mirror (which is
+                      what a late-joining client is snapshotted from)
 
   [dev] patched 1 site(s) in 18 ms, no rebuild
 ```
@@ -98,6 +107,11 @@ reason:
       expressions changed (5 slots before, 6 after)
 ```
 
+The full-stack stream is why a full-stack page now gets **livereload**
+too: before this there was no push channel to it at all — dev-http's SSE
+and its injected `EventSource` existed only on the static path, and a
+full-stack project's own server hands out `index.html`.
+
 See [docs/ui-layer.md](../../docs/ui-layer.md) for what patches and what
-rebuilds, and `crates/dev/reload/src/overlay_decide.rs` for the decision
-table itself.
+rebuilds, and `crates/dev/overlay/src/decide.rs` for the decision table
+itself.
