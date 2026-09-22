@@ -163,6 +163,17 @@ impl SceneModel {
     /// This mirrors the same state the iOS / web client will reach
     /// when they apply the same command, so on snapshot we can
     /// re-derive the equivalent command stream.
+    /// Has this node been created and not yet released?
+    ///
+    /// The model is the recorder's record of what the CLIENT has, so
+    /// this is the authority on whether an op naming `node` can mean
+    /// anything on the other end. See
+    /// `WireRecordingBackend::virtualizer_data_changed` for the case
+    /// that needed it.
+    pub fn is_live(&self, node: &NodeId) -> bool {
+        self.node_create.contains_key(node)
+    }
+
     pub fn apply(&mut self, cmd: &Command) {
         match cmd {
             // -- Create commands. Stored verbatim; later Update*
@@ -1262,5 +1273,59 @@ mod tests {
             }
             other => panic!("expected a folded CreateTextInput, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    fn create_virtualizer(id: u64) -> Command {
+        Command::CreateVirtualizer {
+            id: NodeId(id),
+            overscan: 0.0,
+            layout: Default::default(),
+            initial_size: wire::WireItemSize { measured: false, sizes: Vec::new() },
+            initial_keys: Vec::new(),
+            a11y: Default::default(),
+        }
+    }
+
+    /// The recorder's model is its record of what the CLIENT has, so it
+    /// is the authority on whether an op naming a node can mean
+    /// anything on the other end.
+    #[test]
+    fn a_node_is_live_between_its_create_and_its_release() {
+        let mut m = SceneModel::new();
+        assert!(!m.is_live(&NodeId(7)), "never created");
+        m.apply(&create_virtualizer(7));
+        assert!(m.is_live(&NodeId(7)));
+        m.apply(&Command::ReleaseNode { node: NodeId(7) });
+        assert!(!m.is_live(&NodeId(7)), "released");
+    }
+
+    /// The bug this exists for: a virtualizer's data effect and its
+    /// node have different lifetimes. A screen swap releases the node,
+    /// and an effect scheduled in the same flush still fires. Against a
+    /// real backend the call lands on a detached view and nothing
+    /// observes it; over the wire the client validates every node id
+    /// and `apply_batch` stops at the first bad op — so ONE stale
+    /// notification drops the rest of the frame.
+    ///
+    /// On CrewForge that was the entire content pane after a sign-in:
+    /// the shell painted, the screen did not, and the only clue was
+    /// `UnknownNode(NodeId(559))`.
+    #[test]
+    fn regression_a_released_virtualizer_is_not_live_so_its_data_change_is_droppable() {
+        let mut m = SceneModel::new();
+        m.apply(&create_virtualizer(559));
+        // The screen swap.
+        m.apply(&Command::ReleaseNode { node: NodeId(559) });
+        // The late data effect asks whether it may still speak.
+        assert!(
+            !m.is_live(&NodeId(559)),
+            "a released virtualizer must not be reported live, or the recorder \
+             will emit an op the client refuses and lose the rest of the frame"
+        );
     }
 }

@@ -2215,9 +2215,30 @@ impl WireRecordingBackend {
     }
 
     pub fn virtualizer_data_changed(&mut self, node: &NodeId) {
+        let mut inner = self.inner.borrow_mut();
+        // A data change for a virtualizer that is no longer mounted is
+        // DROPPED, not sent.
+        //
+        // The data effect and the node have different lifetimes: a
+        // screen swap tears the node down, and an effect scheduled in
+        // the same flush can still fire afterwards. Against a real
+        // backend that is harmless — the call lands on a detached view
+        // and nothing observes it. Over the wire it is fatal: the
+        // client validates every node id, and `apply_batch` stops at
+        // the first bad op, so ONE stale notification silently drops
+        // the rest of the frame. On CrewForge that was the whole
+        // content pane after a sign-in — the shell painted, the screen
+        // did not, and the only clue was
+        // `UnknownNode(NodeId(559))`.
+        //
+        // The scene model is the recorder's record of what the client
+        // actually has, which makes it the right authority here.
+        if !inner.scene.is_live(node) {
+            return;
+        }
         // Re-snapshot count for now — keys/sizes refresh in a follow-up
         // alongside mount-on-demand wiring above.
-        self.inner.borrow_mut().emit(Command::VirtualizerDataChanged {
+        inner.emit(Command::VirtualizerDataChanged {
             node: *node,
             item_count: 0,
         });
