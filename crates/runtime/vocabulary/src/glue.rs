@@ -1309,6 +1309,29 @@ pub mod __template {
         ) -> bool {
             false
         }
+
+        /// Register a constructor and apply whatever the overlay
+        /// staged for this node. The generated inherent version does
+        /// both; this one is what a props type the macros never touched
+        /// gets, and it correctly does nothing.
+        fn __overlay_bind(&mut self, _tag: &'static str, _site: u64, _node: u32) {}
+
+        /// Build one of these from literal props and children.
+        ///
+        /// `None` here means "this type cannot be constructed from
+        /// data", which is the right answer for a props type with no
+        /// generated `BuildElement` — a hand-rolled one, or a struct
+        /// that is not props at all. The overlay then refuses to insert
+        /// it rather than guessing.
+        fn __overlay_ctor(
+            _props: &[(&str, &TemplateLiteral)],
+            _children: ::std::vec::Vec<runtime_scene::Element>,
+        ) -> ::core::option::Option<runtime_scene::Element>
+        where
+            Self: Sized,
+        {
+            ::core::option::Option::None
+        }
     }
 
     impl<T> ApplyLiteralFallback for T {}

@@ -22,17 +22,21 @@
 //! ```ignore
 //! {
 //!     let mut __p = Badge { .. };
-//!     for (n, v) in runtime_core::__overlay::staged_props(SITE, NODE) {
-//!         __p.__apply_literal(&n, &v);
-//!     }
-//!     runtime_core::__overlay::register_ctor("Badge", |props, children| { .. });
+//!     __p.__overlay_bind("Badge", SITE, NODE);
 //!     __p
 //! }
 //! ```
 //!
-//! Two integer literals and a call per node; a lookup and a registration
-//! per component. No `static`, no descriptor, no prelude, nothing per
-//! SITE at all.
+//! Two integer literals and a call per node; ONE call per component
+//! call site. No `static`, no descriptor, no prelude, nothing
+//! per SITE at all.
+//!
+//! Both component hooks are BODIES generated once per props TYPE by
+//! `#[component]` / `#[props]`, not here. That is a measurement: writing
+//! them inline at every call site cost +1.7 s on CrewForge's one-edit
+//! rebuild, +1.1 s of it the constructor closure alone, because a large
+//! app has thousands of component call sites and each was a fresh body
+//! to expand, type-check and monomorphize.
 //!
 //! # Why a component is patched at its PROPS
 //!
@@ -169,27 +173,8 @@ mod live {
             {
                 #[allow(unused_imports)]
                 use ::runtime_core::__template::ApplyLiteralFallback as _;
-                ::runtime_core::__overlay::register_ctor(
-                    #name_str,
-                    |__props, __children| {
-                        #[allow(unused_imports)]
-                        use ::runtime_core::__template::ApplyLiteralFallback as _;
-                        let mut __p = <#name as ::runtime_core::BuildElement>::defaults();
-                        for (__n, __v) in __props {
-                            __p.__apply_literal(__n, __v);
-                        }
-                        if !__children.is_empty() && !__p.__apply_children(__children) {
-                            return ::core::option::Option::None;
-                        }
-                        ::core::option::Option::Some(
-                            ::runtime_core::BuildElement::build(__p),
-                        )
-                    },
-                );
                 let mut __p = #body;
-                for (__n, __v) in ::runtime_core::__overlay::staged_props(#site, #node) {
-                    __p.__apply_literal(&__n, &__v);
-                }
+                __p.__overlay_bind(#name_str, #site, #node);
                 __p
             }
         }

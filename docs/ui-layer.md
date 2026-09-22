@@ -467,8 +467,18 @@ rebuilt from the compiled code would silently revert.
 
 A `#[component]`'s props are the exception. By the time its `Element`
 exists they have been consumed and its body has run, so the emission
-wraps the props struct literal instead and applies literals through the
+wraps the props struct literal instead — one generated call,
+`__p.__overlay_bind("Badge", SITE, NODE)`, which registers the
+component's constructor and applies any staged literals through the
 generated `__apply_literal`.
+
+The BODIES of both hooks are generated once per props TYPE rather than
+written at each call site, and that is a measurement: inline at every
+call site they cost +1.7 s on CrewForge's one-edit rebuild, +1.1 s of it
+the constructor alone, because a large app has thousands of component
+call sites and each was a fresh body to expand, type-check and
+monomorphize. One body per component and one call per site brings the
+whole feature to about +0.6 s of rustc time on that loop.
 
 ### Descriptors are a build artifact, not binary contents
 

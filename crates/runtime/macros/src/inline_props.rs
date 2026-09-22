@@ -274,6 +274,9 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
     let apply_literal = crate::props_attr::apply_literal_impl(
         &props_ident,
         &fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect::<Vec<_>>(),
+        // The inline-props form always emits a `BuildElement` impl, so
+        // the overlay's constructor can be generated for it.
+        true,
     );
 
     quote! {

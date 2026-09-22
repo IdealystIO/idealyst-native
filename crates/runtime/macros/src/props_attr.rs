@@ -98,7 +98,7 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
         }
     }
 
-    let literals = apply_literal_impl(&input.ident, &collect_fields(&input));
+    let literals = apply_literal_impl(&input.ident, &collect_fields(&input), false);
     quote! {
         #input
         #literals
@@ -199,6 +199,12 @@ fn reactive_inner(ty: &Type) -> Option<&Type> {
 pub(crate) fn apply_literal_impl(
     ty: &syn::Ident,
     fields: &[(syn::Ident, Type)],
+    // Whether this props type also gets a `BuildElement` impl —
+    // `#[component]` and the inline-props form do, a bare `#[props]`
+    // struct does not. The overlay's CONSTRUCTOR needs it (it builds
+    // an `Element`), so it is generated only for the former; a bare
+    // props struct still gets the patch hook.
+    buildable: bool,
 ) -> TokenStream2 {
     // A `children: Vec<Element>` field, if this struct has one. Matched
     // by NAME and by the field's outer type being a `Vec`: the type is
@@ -242,6 +248,19 @@ pub(crate) fn apply_literal_impl(
             LitTarget::None => None,
         }
     });
+    // The overlay's two per-component entry points. Generated ONCE per
+    // props TYPE, and emitted at a `ui!` call site as two short
+    // statements — a path and a method call.
+    //
+    // That split is a measurement, not a preference. Emitting these
+    // bodies at every call site instead cost +1.7 s on CrewForge's
+    // one-edit rebuild (5.0 s to 6.7 s): the constructor closure alone
+    // was +1.1 s of it, because a large app has thousands of component
+    // call sites and each one was a fresh closure body to expand,
+    // type-check and monomorphize. One body per component definition is
+    // the same capability for a fraction of the front end.
+    let overlay_impl = overlay_hooks(ty, buildable);
+
     quote! {
         #[automatically_derived]
         impl #ty {
@@ -260,6 +279,8 @@ pub(crate) fn apply_literal_impl(
                 }
             }
         }
+
+        #overlay_impl
 
         #[automatically_derived]
         impl #ty {
@@ -284,6 +305,89 @@ pub(crate) fn apply_literal_impl(
             }
         }
     }
+}
+
+/// The overlay's per-props-type hooks: apply a staged patch, and build
+/// one of these from literals.
+///
+/// Feature-gated because both name `runtime_core::__overlay`, which only
+/// exists under `ui-overlay` — and the emission that calls them is
+/// behind the same gate, so the two are never out of step within one
+/// build graph.
+#[cfg(feature = "ui-overlay")]
+fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
+    // A props type with a generated `BuildElement` can be CONSTRUCTED
+    // from data; one without (a hand-rolled impl, or a bare `#[props]`
+    // struct) falls back to the trait's "no", so the overlay refuses to
+    // insert it rather than guessing.
+    let ctor_path = if buildable {
+        quote! { Self::__overlay_ctor }
+    } else {
+        quote! {
+            <Self as ::runtime_core::__template::ApplyLiteralFallback>::__overlay_ctor
+        }
+    };
+    let ctor = if buildable {
+        quote! {
+            /// Build this component from literal props and children.
+            ///
+            /// Registered by the call site under the component's TAG, so
+            /// an overlay asked to INSERT one can. Returns `None` when
+            /// the props struct has no `children` field to put the
+            /// children in — refused rather than silently dropping them.
+            #[doc(hidden)]
+            #[allow(clippy::all)]
+            pub fn __overlay_ctor(
+                props: &[(&str, &::runtime_core::__template::TemplateLiteral)],
+                children: ::std::vec::Vec<::runtime_core::Element>,
+            ) -> ::core::option::Option<::runtime_core::Element> {
+                let mut __p = <#ty as ::runtime_core::BuildElement>::defaults();
+                for (__n, __v) in props {
+                    __p.__apply_literal(__n, __v);
+                }
+                if !children.is_empty() && !__p.__apply_children(children) {
+                    return ::core::option::Option::None;
+                }
+                ::core::option::Option::Some(::runtime_core::BuildElement::build(__p))
+            }
+        }
+    } else {
+        TokenStream2::new()
+    };
+    quote! {
+        #[automatically_derived]
+        impl #ty {
+            /// The overlay's whole per-call-site job, in one call:
+            /// teach it how to build this component, then apply
+            /// whatever it has staged for this node.
+            ///
+            /// Called on the props struct BEFORE `BuildElement::build`
+            /// — a component's props do not survive into the built tree,
+            /// so this is the only moment they can be changed.
+            ///
+            /// `tag` is the name as WRITTEN at the call site, which is
+            /// what a descriptor calls this node and therefore what the
+            /// constructor must be registered under. It is the one thing
+            /// the type itself cannot know (`Badge` vs `BadgeProps`), so
+            /// it is the one argument the call site supplies beyond its
+            /// address.
+            #[doc(hidden)]
+            #[allow(clippy::all)]
+            pub fn __overlay_bind(&mut self, tag: &'static str, site: u64, node: u32) {
+                ::runtime_core::__overlay::register_ctor(tag, #ctor_path);
+                for (__n, __v) in ::runtime_core::__overlay::staged_props(site, node) {
+                    self.__apply_literal(&__n, &__v);
+                }
+            }
+
+            #ctor
+        }
+    }
+}
+
+#[cfg(not(feature = "ui-overlay"))]
+fn overlay_hooks(_ty: &syn::Ident, _buildable: bool) -> TokenStream2 {
+    TokenStream2::new()
 }
 
 /// Whether a field's outer type is a `Vec<…>`.
