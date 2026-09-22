@@ -59,10 +59,6 @@
 //!   lowerings. A static `match` scrutinee additionally MUST stay put:
 //!   hoisting `match self.kind { … }` to a `let` forces a move where
 //!   Rust's match ergonomics borrow.
-//! - **`icon`'s `draw_in`** — the emitter splices it twice
-//!   (`.draw_in((v).0, (v).1)`). Hoisting would silently turn two
-//!   evaluations into one; that is a fix, but not this change's.
-//!
 //! Everything else is `Prelude`.
 //!
 //! # Why hoisting is safe for inference
@@ -394,8 +390,6 @@ fn prop_stays_put(kind: Option<&str>, name: &str) -> bool {
         // Shape-inspected: `emit_button` rewrites the reactive-call
         // shape into a fire closure.
         (Some("button"), "on_click") => true,
-        // Spliced twice (`.draw_in((v).0, (v).1)`).
-        (Some("icon"), "draw_in") => true,
         _ => false,
     }
 }

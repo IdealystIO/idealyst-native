@@ -2310,18 +2310,37 @@ fn emit_icon(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     } else {
         quote! {}
     };
-    // `animate` takes a StrokeAnimation struct directly.
-    // `draw_in` is shorthand for (duration, easing) tuple.
-    let anim_call = if let Some(p) = props.iter().find(|p| p.name == "animate") {
-        let v = &p.value;
-        quote! { .animate(#v) }
-    } else if let Some(p) = props.iter().find(|p| p.name == "draw_in") {
-        let v = &p.value;
-        quote! { .draw_in((#v).0, (#v).1) }
+    // `animate` takes a StrokeAnimation struct directly. `draw_in` is
+    // shorthand for a `(duration, easing)` tuple.
+    //
+    // The tuple is bound to a local FIRST, and that is a fix, not a
+    // style choice: the emission used to splice the author's expression
+    // TWICE (`.draw_in((#v).0, (#v).1)`), so `draw_in = next_anim()` ran
+    // the call once per element — the duration and the easing came from
+    // two different evaluations, and any side effect happened twice.
+    let (anim_prelude, anim_call) =
+        if let Some(p) = props.iter().find(|p| p.name == "animate") {
+            let v = &p.value;
+            (quote! {}, quote! { .animate(#v) })
+        } else if let Some(p) = props.iter().find(|p| p.name == "draw_in") {
+            let v = &p.value;
+            (
+                quote! { let __ui_draw_in = #v; },
+                quote! { .draw_in(__ui_draw_in.0, __ui_draw_in.1) },
+            )
+        } else {
+            (quote! {}, quote! {})
+        };
+    if anim_prelude.is_empty() {
+        quote! { ::runtime_core::icon(#data) #color_call #stroke_call #anim_call }
     } else {
-        quote! {}
-    };
-    quote! { ::runtime_core::icon(#data) #color_call #stroke_call #anim_call }
+        quote! {
+            {
+                #anim_prelude
+                ::runtime_core::icon(#data) #color_call #stroke_call #anim_call
+            }
+        }
+    }
 }
 
 /// `Image(src = ..., alt = ...)` or `Image(asset = &LOGO, alt = ...)`.
@@ -2913,20 +2932,31 @@ const FLAT_LIST_BUILDER_PROPS: &[&str] = &[
     "overscan",
     "axis",
     "lanes",
-    "gap",
+    // NOTE: `gap` is deliberately ABSENT. `emit_flat_list`'s
+    // `spacing_call` already lowers it (it is the `gap = v` spelling of
+    // the `main_spacing`/`cross_spacing` pair), so listing it here as
+    // well emitted `.gap(v).gap(v)` — the author's expression evaluated
+    // twice. Idempotent for a literal, not for a call.
     "safe_area",
     "on_scroll",
     "on_end_reached",
     "end_reached_threshold",
 ];
 
-/// `GlueFlatList` setters that are not lowered by name, with the reason.
+/// `GlueFlatList` setters `builder_calls` does not lower BY NAME, with
+/// the reason each is exempt from
+/// `setter_tables_cover_every_glue_setter`.
 ///
 /// - `on_handle` takes a `FnOnce(VirtualizerHandle)` and is spelled
 ///   after the call like every `on_handle`.
 /// - `spacing(main, cross)` is two inline props, `main_spacing` and
 ///   `cross_spacing`, not one — `emit_flat_list` lowers those itself.
-const FLAT_LIST_BUILDER_ONLY: &[&str] = &["on_handle", "spacing"];
+/// - `gap` IS reachable from `ui!`, just not from the table:
+///   `emit_flat_list`'s `spacing_call` owns it (it is the one-value
+///   spelling of the `main_spacing`/`cross_spacing` pair). It used to be
+///   in BOTH, which emitted `.gap(v).gap(v)` and evaluated the author's
+///   expression twice.
+const FLAT_LIST_BUILDER_ONLY: &[&str] = &["on_handle", "spacing", "gap"];
 
 /// Emit a user-defined component invocation as a `BuildElement` struct
 /// literal (see the function body for the full rationale). A children
@@ -3887,6 +3917,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Regression: `icon(draw_in = expr)` evaluated `expr` TWICE.
+    ///
+    /// The emission was `.draw_in((#v).0, (#v).1)`, so a call-valued
+    /// `draw_in` ran once per tuple element — the duration and the
+    /// easing came from two different evaluations, and any side effect
+    /// happened twice. `ui-lowering-parity`'s
+    /// `icon_draw_in_evaluates_its_tuple_once` is the behavioural half;
+    /// this pins the emission so the shape cannot come back.
+    #[test]
+    fn regression_icon_draw_in_is_evaluated_once() {
+        let raw = parse_and_emit(quote! {
+            icon(data = ICON, draw_in = next_anim())
+        });
+        let out: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        // The salvage shell carries one copy of the input, so the real
+        // chain must add exactly one more.
+        assert_eq!(
+            out.matches("next_anim()").count(),
+            2,
+            "`draw_in` must be evaluated once (1 salvage copy + 1 real): {out}"
+        );
+        // Post-fix shape: the author's expression is hoisted into the
+        // scope prelude (it no longer needs `Construct` placement, since
+        // the emitter binds the tuple once), and `draw_in` reads that
+        // one binding for both arguments.
+        assert!(out.contains("__ui_s1=next_anim();"), "{out}");
+        assert!(out.contains("let__ui_draw_in=__ui_s1;"), "{out}");
+        assert!(out.contains(".draw_in(__ui_draw_in.0,__ui_draw_in.1)"), "{out}");
+    }
+
+    /// Regression: `flat_list(gap = expr)` lowered to `.gap(v).gap(v)`.
+    ///
+    /// `gap` was in `FLAT_LIST_BUILDER_PROPS` *and* claimed by
+    /// `emit_flat_list`'s `spacing_call`, so both fired. Idempotent for a
+    /// literal, not for a call. `ui-lowering-parity`'s
+    /// `flat_list_gap_evaluates_once` is the behavioural half.
+    #[test]
+    fn regression_flat_list_gap_lowers_to_one_call() {
+        let raw = parse_and_emit(quote! {
+            flat_list(data = rows, gap = compute_gap())
+        });
+        let out: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(out.matches(".gap(").count(), 1, "one `.gap(…)` call only: {out}");
+        assert_eq!(
+            out.matches("compute_gap()").count(),
+            2,
+            "`gap` must be evaluated once (1 salvage copy + 1 real): {out}"
+        );
     }
 
     /// Regression (47d014a2): `scroll_view(on_end_reached = cb)` compiled
