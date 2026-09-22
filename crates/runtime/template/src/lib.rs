@@ -342,6 +342,24 @@ pub enum Node {
         then: u32,
         otherwise: u32,
     },
+    /// STATIC branching — a plain `if`, an `if let`, a non-reactive
+    /// `match`.
+    ///
+    /// The dispatch itself is irreducibly code: patterns bind names, and
+    /// a descriptor has no way to say "match this value against these
+    /// patterns". So `selector` is a compiled `Fn() -> usize` returning
+    /// which arm is taken, and `arms` is one thunk slot per arm.
+    ///
+    /// What this buys over an [`Escape`](Node::Escape) is structure: the
+    /// descriptor says how many arms there are and that exactly one
+    /// runs, instead of one opaque node where the tree had a branch.
+    /// Exactly one arm thunk is ever called, so the untaken arms' work —
+    /// including their own slot preludes — never happens, as in the
+    /// direct lowering.
+    Select {
+        selector: u32,
+        arms: List<u32>,
+    },
     /// A subtree the descriptor does not model: the site built it and
     /// left the finished `Element`(s) in slot `slot`.
     ///
@@ -398,6 +416,10 @@ impl Descriptor {
                     out.push(*cond);
                     out.push(*then);
                     out.push(*otherwise);
+                }
+                Node::Select { selector, arms } => {
+                    out.push(*selector);
+                    out.extend(arms.iter().copied());
                 }
                 Node::Escape { slot } => out.push(*slot),
             }
@@ -627,6 +649,12 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), ValidationError>
                 slot_ok(*cond)?;
                 slot_ok(*then)?;
                 slot_ok(*otherwise)?;
+            }
+            Node::Select { selector, arms } => {
+                slot_ok(*selector)?;
+                for &a in arms.iter() {
+                    slot_ok(a)?;
+                }
             }
             Node::Escape { slot } => slot_ok(*slot)?,
         }

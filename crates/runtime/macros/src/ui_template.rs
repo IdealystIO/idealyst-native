@@ -263,13 +263,24 @@ impl<'a> DescBuilder<'a> {
             // Only a reactive `if` is descriptor-native; the rest of
             // control flow escapes (its bodies are still nested
             // templates — see the module docs).
-            UiNode::If { cond, then_body, else_body } => {
-                match self.lower_reactive_if(cond, then_body, else_body.as_deref()) {
+            UiNode::If { cond, then_body, else_body } => self
+                .lower_reactive_if(cond, then_body, else_body.as_deref())
+                .or_else(|| self.lower_static_if(cond, then_body, else_body.as_deref(), ctx))
+                .unwrap_or_else(|| self.escape(node, ctx)),
+            UiNode::Match { scrutinee, arms } => {
+                match self.lower_static_match(scrutinee, arms, ctx) {
                     Some(index) => index,
                     None => self.escape(node, ctx),
                 }
             }
-            UiNode::For { .. } | UiNode::Match { .. } => self.escape(node, ctx),
+            // A `for` stays escaped. Its ROW BODY is already a nested
+            // template, so the row's tree is data either way; what the
+            // descriptor cannot express is the instantiation — one row
+            // template built N times with N different slot arrays, which
+            // the "one descriptor, one slot array" model has no shape
+            // for. Adding a second mechanism for it would buy the
+            // iteration's bookkeeping, not any more of the tree.
+            UiNode::For { .. } => self.escape(node, ctx),
             UiNode::Expr(_) => self.escape(node, ctx),
         }
     }
@@ -303,9 +314,26 @@ impl<'a> DescBuilder<'a> {
         chain: &[TokenStream2],
         ctx: Ctx,
     ) -> u32 {
-        // A trailing `.method(args)` chain is raw tokens, not a parsed
-        // expression — the split pass cannot classify it and the
-        // descriptor cannot carry it.
+        // A trailing `.method(args)` chain escapes its node, and stays
+        // that way by decision.
+        //
+        // A chain is RAW TOKENS: `parse_method_chain` keeps
+        // `TokenStream2`s, not parsed expressions, because the surface
+        // is open-ended (`.bind(r)`, `.on_touch(…)`, `.container()`,
+        // anything the glue wrapper exposes). Modelling it would mean
+        // parsing each call, mapping every wrapper method to a slot
+        // constructor — the `prim_prop_slot_ctor` table again, but over
+        // the whole builder surface rather than the `ui!` prop set — and
+        // teaching the builder to replay an ordered call list. That is a
+        // large, drift-prone table for a construct that appears on a
+        // small minority of nodes and whose arguments are almost always
+        // a `Ref` handle or a closure (compiled either way).
+        //
+        // The cost of escaping is bounded and local: the node is built
+        // by the direct emitter and handed over as a finished `Element`,
+        // so its literals are compiled in — but its CHILDREN are still
+        // lowered by the ambient lowering, so the subtree under a
+        // chained node stays descriptor-native.
         if !chain.is_empty() {
             return self.escape(node, ctx);
         }
@@ -691,6 +719,146 @@ impl<'a> DescBuilder<'a> {
     }
 
     // -----------------------------------------------------------------
+    // Static branching
+    // -----------------------------------------------------------------
+
+    /// How an arm body is built, given the position the whole construct
+    /// sits in. A children slot takes 0/1/N siblings; a single slot
+    /// takes exactly one `Element` — including the empty-`else`
+    /// placeholder, which is NOT an empty `view` (see
+    /// `ui::empty_view_primitive`).
+    fn arm_body(&self, nodes: Option<&[UiNode]>, ctx: Ctx) -> TokenStream2 {
+        match (ctx, nodes) {
+            (Ctx::Child, Some(nodes)) => ui::emit_child_scope(nodes),
+            (Ctx::Child, None) => quote! { ::std::vec::Vec::new() },
+            (Ctx::Single, Some(nodes)) => {
+                let one = ui::emit_block_as_primitive(nodes);
+                quote! { ::std::vec![#one] }
+            }
+            (Ctx::Single, None) => {
+                let empty = ui::empty_view_primitive();
+                quote! { ::std::vec![::runtime_core::IntoElement::into_element(#empty)] }
+            }
+        }
+    }
+
+    fn push_arm(&mut self, body: TokenStream2) -> u32 {
+        self.push_slot(
+            quote! { ::runtime_core::__template::SlotValue::arm(move || #body) },
+            None,
+            "child",
+            "arm",
+        )
+    }
+
+    /// A STATIC `if` / `if let` as [`runtime_template::Node::Select`].
+    ///
+    /// The condition stays compiled — an `if let` binds names the arm
+    /// body uses, and a plain condition borrows rather than moves (which
+    /// is why `emit_plain_if` does not `move`-capture). The selector
+    /// closure is where that code goes; the descriptor gets the
+    /// structure.
+    fn lower_static_if(
+        &mut self,
+        cond: &Expr,
+        then_body: &[UiNode],
+        else_body: Option<&[UiNode]>,
+        ctx: Ctx,
+    ) -> Option<u32> {
+        // An `if let` binds names the ARM BODY uses, and a `Select`
+        // splits the selector from the arms — so the binding would not
+        // be in scope where the body needs it. Structural, not a gap:
+        // the two halves are separate closures by construction.
+        if matches!(cond, Expr::Let(_)) {
+            return None;
+        }
+        // A reactive condition was already claimed by `lower_reactive_if`.
+        if ui::condition_may_read_signal(cond) {
+            return None;
+        }
+        // A call-free bare path / field is TYPE-dispatched by
+        // `emit_if` (`StaticCond` vs `ReactiveCond` decide reactivity
+        // from the value's type, which the macro cannot see). That
+        // decision has to stay in the emitted code, so it escapes.
+        if matches!(cond, Expr::Path(_) | Expr::Field(_)) {
+            return None;
+        }
+        let selector = self.push_slot(
+            quote! {
+                ::runtime_core::__template::SlotValue::selector(
+                    move || if #cond { 0usize } else { 1usize },
+                )
+            },
+            None,
+            SlotRole::Condition.as_str(),
+            "selector",
+        );
+        let then_body = self.arm_body(Some(then_body), ctx);
+        let then_arm = self.push_arm(then_body);
+        let else_body = self.arm_body(else_body, ctx);
+        let else_arm = self.push_arm(else_body);
+        Some(self.push_node(quote! {
+            ::runtime_core::__template::TemplateNode::Select {
+                selector: #selector,
+                arms: ::std::borrow::Cow::Borrowed(&[#then_arm, #else_arm]),
+            }
+        }))
+    }
+
+    /// A STATIC `match` as [`runtime_template::Node::Select`]. The
+    /// selector is the author's own `match`, rewritten to yield an arm
+    /// INDEX; the arm bodies become thunk slots.
+    ///
+    /// A reactive scrutinee is a different construct (`glue::switch`,
+    /// which re-dispatches on change) and keeps escaping.
+    fn lower_static_match(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[crate::ui::MatchArm],
+        ctx: Ctx,
+    ) -> Option<u32> {
+        if ui::condition_may_read_signal(scrutinee) || ui::is_reactive_call_shape(scrutinee) {
+            return None;
+        }
+        // A pattern that BINDS puts a name in scope that only the arm
+        // body can see — and a `Select` splits the dispatch (the
+        // selector) from the body (an arm thunk), so the binding cannot
+        // cross. `match screen { Screen::Home => … }` is fine;
+        // `match opt { Some(v) => text { v } }` is not, and escapes.
+        if !arms.iter().all(|a| pattern_binds_nothing(&a.pat)) {
+            return None;
+        }
+        let index_arms = arms.iter().enumerate().map(|(i, arm)| {
+            let pat = &arm.pat;
+            let guard = arm.guard.as_ref().map(|g| quote! { if #g });
+            quote! { #pat #guard => #i }
+        });
+        let selector = self.push_slot(
+            quote! {
+                ::runtime_core::__template::SlotValue::selector(move || match #scrutinee {
+                    #(#index_arms,)*
+                })
+            },
+            None,
+            SlotRole::Scrutinee.as_str(),
+            "selector",
+        );
+        let arm_slots: Vec<u32> = arms
+            .iter()
+            .map(|arm| {
+                let body = self.arm_body(Some(&arm.body), ctx);
+                self.push_arm(body)
+            })
+            .collect();
+        Some(self.push_node(quote! {
+            ::runtime_core::__template::TemplateNode::Select {
+                selector: #selector,
+                arms: ::std::borrow::Cow::Borrowed(&[#(#arm_slots),*]),
+            }
+        }))
+    }
+
+    // -----------------------------------------------------------------
     // Reactive `if`
     // -----------------------------------------------------------------
 
@@ -970,6 +1138,29 @@ fn literal_fits(canonical: &str, name: &str, stat: &StaticValue) -> bool {
     }
 }
 
+/// Does this pattern introduce NO bindings?
+///
+/// Conservative by construction: anything the walk does not recognise
+/// counts as binding, so an unhandled `syn::Pat` variant escapes the
+/// node rather than dropping a name the body needs.
+fn pattern_binds_nothing(pat: &syn::Pat) -> bool {
+    use syn::Pat;
+    match pat {
+        Pat::Wild(_) | Pat::Lit(_) | Pat::Path(_) | Pat::Rest(_) => true,
+        Pat::Const(_) => true,
+        Pat::Paren(p) => pattern_binds_nothing(&p.pat),
+        Pat::Reference(p) => pattern_binds_nothing(&p.pat),
+        Pat::Range(_) => true,
+        Pat::Or(p) => p.cases.iter().all(pattern_binds_nothing),
+        Pat::Tuple(p) => p.elems.iter().all(pattern_binds_nothing),
+        Pat::TupleStruct(p) => p.elems.iter().all(pattern_binds_nothing),
+        Pat::Slice(p) => p.elems.iter().all(pattern_binds_nothing),
+        Pat::Struct(p) => p.fields.iter().all(|f| pattern_binds_nothing(&f.pat)),
+        // `Pat::Ident` is the binding case; everything else is unknown.
+        _ => false,
+    }
+}
+
 /// Which primitives carry the shared `test_id` + a11y setter surface
 /// (`glue_wrapper_common!`, or a hand-rolled copy of it). `overlay` and
 /// `anchored_overlay` are the two that do not.
@@ -1186,8 +1377,11 @@ mod tests {
         assert!(out.contains("build_list(&__UI_DESC"), "{out}");
     }
 
+    /// A static `match` over BINDING-FREE patterns is a `Select`: the
+    /// dispatch stays compiled (patterns are code) and each arm body is
+    /// a nested template.
     #[test]
-    fn a_static_match_escapes_and_each_arm_is_a_nested_template() {
+    fn a_binding_free_static_match_is_a_select() {
         let out = emitted(quote::quote! {
             view {
                 match mode {
@@ -1196,9 +1390,51 @@ mod tests {
                 }
             }
         });
-        assert!(out.contains("TemplateNode::Escape{"), "{out}");
+        assert!(out.contains("TemplateNode::Select{"), "{out}");
+        assert!(!out.contains("TemplateNode::Escape{"), "{out}");
+        // The selector is the author's own match, yielding an arm index.
+        assert!(out.contains("matchmode{Mode::A=>0usize,Mode::B=>1usize,}"), "{out}");
+        assert_eq!(out.matches("SlotValue::arm(").count(), 2, "{out}");
         // outer + one per arm
         assert_eq!(out.matches("static__UI_DESC").count(), 3, "{out}");
+    }
+
+    /// A pattern that BINDS escapes the node: a `Select` splits the
+    /// dispatch from the body, so the name cannot cross. Same for an
+    /// `if let`.
+    #[test]
+    fn a_binding_pattern_escapes() {
+        let m = emitted(quote::quote! {
+            view { match opt { Some(v) => { text { v } } None => { text { "-" } } } }
+        });
+        assert!(m.contains("TemplateNode::Escape{"), "{m}");
+
+        let l = emitted(quote::quote! {
+            view { if let Some(v) = opt { text { v } } }
+        });
+        assert!(l.contains("TemplateNode::Escape{"), "{l}");
+    }
+
+    /// A provably signal-free condition is a `Select`.
+    #[test]
+    fn a_static_if_is_a_select() {
+        let out = emitted(quote::quote! {
+            view { if kind == Kind::Scope { text { "yes" } } else { text { "no" } } }
+        });
+        assert!(out.contains("TemplateNode::Select{"), "{out}");
+        assert!(out.contains("move||ifkind==Kind::Scope{0usize}else{1usize}"), "{out}");
+        assert_eq!(out.matches("SlotValue::arm(").count(), 2, "{out}");
+    }
+
+    /// A call-free bare path / field condition escapes: `emit_if`
+    /// dispatches it by the value's TYPE (`StaticCond` vs
+    /// `ReactiveCond`), and the macro cannot see types — so that
+    /// decision has to stay in the emitted code.
+    #[test]
+    fn a_type_dispatched_condition_escapes() {
+        let out = emitted(quote::quote! { view { if show { text { "shown" } } } });
+        assert!(out.contains("TemplateNode::Escape{"), "{out}");
+        assert!(out.contains("__idealyst_if"), "{out}");
     }
 
     #[test]
@@ -1509,7 +1745,7 @@ mod tests {
             ("static_if", (2, 1), quote::quote! {
                 view { if show { text { "shown" } } }
             }),
-            ("static_match", (3, 1), quote::quote! {
+            ("static_match", (3, 0), quote::quote! {
                 view { match mode { Mode::A => { text { "a" } } Mode::B => { text { "b" } } } }
             }),
             ("for_keyed_reactive", (2, 1), quote::quote! {
@@ -1550,7 +1786,7 @@ mod tests {
         assert!(wrong.is_empty(), "descriptor-native coverage moved:\n{}", wrong.join("\n"));
         assert_eq!(
             (native_total, escaped_total),
-            (55, 6),
+            (55, 5),
             "corpus totals moved — update the per-case numbers above first"
         );
     }

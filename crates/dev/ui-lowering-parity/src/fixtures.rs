@@ -506,6 +506,29 @@ fixture! {
     }
 }
 
+/// A provably signal-free comparison — the shape that becomes a
+/// `Select` node under the template lowering (a bare-path condition is
+/// type-dispatched and escapes; see `static_if`).
+fixture! {
+    name = static_if_comparison;
+    state { }
+    locals { let kind = 2u8; let label = String::from("moved"); }
+    drive { }
+    body {
+        view {
+            if kind == 2u8 {
+                text { "two" }
+                text { label }
+            } else {
+                text { "other" }
+            }
+            if kind > 9u8 {
+                text { "never" }
+            }
+        }
+    }
+}
+
 fixture! {
     name = if_let_binding;
     state { }
@@ -1074,6 +1097,7 @@ pub fn all() -> Vec<Fixture> {
         reactive_if_no_else::fixture(),
         reactive_if_else_chain::fixture(),
         static_if::fixture(),
+        static_if_comparison::fixture(),
         if_let_binding::fixture(),
         static_match::fixture(),
         reactive_match::fixture(),

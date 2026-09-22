@@ -114,6 +114,12 @@ pub enum SlotValue {
     Ctor(ComponentCtor),
     Cond(Rc<dyn Fn() -> bool>),
     Branch(Rc<dyn Fn() -> Element>),
+    /// Which arm of a [`Node::Select`] is taken. Compiled, because the
+    /// dispatch is patterns.
+    Selector(Box<dyn FnOnce() -> usize>),
+    /// One arm of a [`Node::Select`]. `FnOnce` because exactly one arm
+    /// ever runs and it runs once.
+    Arm(Box<dyn FnOnce() -> Vec<Element>>),
     /// A value of whatever type the (kind, prop) pair demands, erased.
     ///
     /// The concrete variants above cover the props that appear on almost
@@ -146,6 +152,8 @@ impl SlotValue {
             SlotValue::Ctor(_) => "ctor",
             SlotValue::Cond(_) => "cond",
             SlotValue::Branch(_) => "branch",
+            SlotValue::Selector(_) => "selector",
+            SlotValue::Arm(_) => "arm",
             SlotValue::Any(_) => "any",
         }
     }
@@ -211,6 +219,16 @@ impl SlotValue {
 
     pub fn ctor(f: impl FnOnce(&[PropEntry], Vec<Element>) -> Element + 'static) -> SlotValue {
         SlotValue::Ctor(Box::new(f))
+    }
+
+    /// A static branch's arm chooser.
+    pub fn selector(f: impl FnOnce() -> usize + 'static) -> SlotValue {
+        SlotValue::Selector(Box::new(f))
+    }
+
+    /// One arm of a static branch, producing that arm's children.
+    pub fn arm(f: impl FnOnce() -> Vec<Element> + 'static) -> SlotValue {
+        SlotValue::Arm(Box::new(f))
     }
 
     pub fn cond(f: impl Fn() -> bool + 'static) -> SlotValue {
@@ -411,6 +429,41 @@ fn append_node(desc: &Descriptor, index: u32, slots: &mut [SlotValue], out: &mut
                 move || then(),
                 move || otherwise(),
             ));
+        }
+        Node::Select { selector, arms } => {
+            let choose = match take(desc, *selector, slots) {
+                SlotValue::Selector(f) => f,
+                other => panic!(
+                    "{}: slot {selector} must be a selector, got `{}`",
+                    desc.site,
+                    other.shape()
+                ),
+            };
+            let taken = choose();
+            let slot = *arms.get(taken).unwrap_or_else(|| {
+                panic!(
+                    "{}: selector chose arm {taken} of {} — the emission and the \
+                     descriptor disagree about the arm count",
+                    desc.site,
+                    arms.len()
+                )
+            });
+            // Only the taken arm's thunk runs, so the untaken arms'
+            // work — their slot preludes included — never happens, as
+            // in the direct lowering. The rest are dropped unused.
+            for (i, &a) in arms.iter().enumerate() {
+                if i != taken {
+                    let _ = take(desc, a, slots);
+                }
+            }
+            match take(desc, slot, slots) {
+                SlotValue::Arm(f) => out.append(&mut f()),
+                other => panic!(
+                    "{}: slot {slot} must be an arm, got `{}`",
+                    desc.site,
+                    other.shape()
+                ),
+            }
         }
         // A children-slot escape carries N elements and flattens, the
         // way `ChildList::append_to` does in the direct lowering; a

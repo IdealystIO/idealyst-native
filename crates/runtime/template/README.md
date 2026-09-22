@@ -139,7 +139,12 @@ Descriptor-native today:
   in. The children and the child order stay data either way, which is
   most of what a component subtree is;
 - a reactive `if` AND the `when` tag, both as `Dyn` — condition and
-  branch thunks in slots, each branch its own nested template.
+  branch thunks in slots, each branch its own nested template;
+- STATIC branching as `Select` — a plain `if` with a provably
+  signal-free condition, and a `match` whose patterns bind nothing. The
+  dispatch stays compiled in a `Fn() -> usize` selector (patterns are
+  code); the descriptor gets the arm count and each arm's body as a
+  nested template, and exactly one arm thunk ever runs.
 
 Escaped today, and why:
 
@@ -148,8 +153,11 @@ Escaped today, and why:
 | `flat_list`, `link(route = …)` | GENERIC constructors (`flat_list<T, K, S, R>`, `link<P>`) — a builder driven by data has no type to instantiate them at |
 | `image(asset = …)` | a different constructor (`image_asset(*v)`), not this node kind |
 | an uncontrolled `text_input`/`toggle`/`slider` | an absent `value` makes the direct emitter mint a signal (`glue::fresh_signal(…)`); deciding to allocate state is not a descriptor's job |
-| a trailing `.method(…)` chain | raw tokens, not a parsed expression — the split pass cannot classify them |
-| `for`, `match`, static `if`, `if let` | the construct is code (patterns, bindings); its BODIES are still nested templates |
+| a trailing `.method(…)` chain | raw tokens over an open-ended surface; modelling it means a slot-constructor table over the whole builder API, for a construct on a minority of nodes whose arguments are compiled anyway. Decided, not pending |
+| `for` | a row template instantiated N times with N slot arrays — no shape in the "one descriptor, one slot array" model. The row BODY is already a nested template |
+| `if let`, a `match` arm that BINDS | a `Select` splits dispatch from body, so a pattern binding cannot cross into the arm thunk |
+| a bare-path / field `if` condition | `emit_if` dispatches it by the value's TYPE (`StaticCond` vs `ReactiveCond`); the macro cannot see types, so that decision stays in the emitted code |
+| a reactive `match` | `glue::switch` re-dispatches on change over an arbitrary scrutinee type |
 | a bare expression child | it is an expression |
 | a prop the direct emitter drops (`view(gap = …)`, `overlay(click_through = …)`) | escaping is what keeps the two lowerings agreeing on the drop |
 
