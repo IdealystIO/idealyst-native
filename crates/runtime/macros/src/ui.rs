@@ -620,16 +620,13 @@ pub(crate) fn split_lowered_invocation(
             let ident: Ident = input
                 .parse()
                 .map_err(|e| syn::Error::new(e.span(), "expected `direct` or `template`"))?;
-            let lowering = match ident.to_string().as_str() {
-                "direct" => Lowering::Direct,
-                "template" => Lowering::Template,
-                other => {
-                    return Err(syn::Error::new(
-                        ident.span(),
-                        format!("unknown lowering `{other}` — expected `direct` or `template`"),
-                    ))
-                }
-            };
+            let name = ident.to_string();
+            let lowering = parse_lowering(&name).map_err(|_| {
+                syn::Error::new(
+                    ident.span(),
+                    format!("unknown lowering `{name}` — expected `direct` or `template`"),
+                )
+            })?;
             let body;
             braced!(body in input);
             if !input.is_empty() {
@@ -642,8 +639,54 @@ pub(crate) fn split_lowered_invocation(
     Ok((env.lowering, env.body))
 }
 
+/// The env var that selects `ui!`'s lowering for a whole build graph.
+pub(crate) const LOWERING_ENV: &str = "IDEALYST_UI_LOWERING";
+
+/// Read [`LOWERING_ENV`], defaulting to [`Lowering::Direct`].
+///
+/// An env var and not a cargo feature: a proc-macro crate is compiled
+/// ONCE per build graph, so a feature on `runtime-macros` would flip the
+/// lowering for every crate in the same cargo invocation — the hazard
+/// that removed `new-core`. An env var read at expansion is per graph
+/// and per cargo invocation, which is the granularity wanted.
+///
+/// The catch, and why the CLI has work to do: **cargo cannot see a
+/// proc-macro's env reads**. Nothing about this var enters the
+/// fingerprint, so flipping it does not by itself invalidate anything —
+/// a rebuild would happily serve expansions from the other lowering.
+/// The CLI therefore folds the value into its `config_key`, giving each
+/// lowering its own target directory. Setting the var by hand without
+/// doing that is a way to get a mixed binary.
+///
+/// An unrecognised value is an ERROR, not a fallback to `direct`: a typo
+/// that silently built the wrong lowering is exactly the failure this
+/// whole split exists to make impossible to hide.
+pub(crate) fn lowering_from_env() -> Result<Lowering, String> {
+    match std::env::var(LOWERING_ENV) {
+        Err(_) => Ok(Lowering::Direct),
+        Ok(v) => parse_lowering(v.trim()),
+    }
+}
+
+/// Parse a lowering name. Shared with the `ui_lowered!` envelope so both
+/// spellings accept exactly the same set.
+pub(crate) fn parse_lowering(value: &str) -> Result<Lowering, String> {
+    match value {
+        // An empty value means "unset" — a shell that exports the var
+        // as `""` should not be an error.
+        "" | "direct" => Ok(Lowering::Direct),
+        "template" => Ok(Lowering::Template),
+        other => Err(format!(
+            "unknown `{LOWERING_ENV}` value `{other}` — expected `direct` or `template`"
+        )),
+    }
+}
+
 pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
-    emit_with(ui, input, Lowering::Direct)
+    match lowering_from_env() {
+        Ok(lowering) => emit_with(ui, input, lowering),
+        Err(message) => quote! { ::std::compile_error!(#message) },
+    }
 }
 
 /// Emit a parsed `ui!` body under an explicit lowering.
@@ -3822,6 +3865,50 @@ mod tests {
     fn parse_and_emit(input: TokenStream2) -> String {
         let ui: Ui = syn::parse2(input.clone()).expect("parse ui");
         emit(ui, &input).to_string()
+    }
+
+    // -------------------------------------------------------------------
+    // Lowering selection
+    // -------------------------------------------------------------------
+
+    /// `IDEALYST_UI_LOWERING` parsing. Not read from the real
+    /// environment here — env vars are process-global and these tests
+    /// run in parallel threads, so a `set_var` would race every other
+    /// test in this binary. `lowering_from_env` is a two-line wrapper
+    /// over this; the value mapping is what matters.
+    #[test]
+    fn the_lowering_env_var_parses_both_names() {
+        assert_eq!(parse_lowering("direct"), Ok(Lowering::Direct));
+        assert_eq!(parse_lowering("template"), Ok(Lowering::Template));
+    }
+
+    /// An exported-but-empty var is "unset", not an error: a shell that
+    /// does `IDEALYST_UI_LOWERING= cargo build` means the default.
+    #[test]
+    fn an_empty_lowering_value_means_the_default() {
+        assert_eq!(parse_lowering(""), Ok(Lowering::Direct));
+    }
+
+    /// A typo must FAIL, never fall back to `direct`. Silently building
+    /// the wrong lowering is precisely the failure this split exists to
+    /// make impossible to hide — and it would be invisible, because
+    /// both lowerings produce working programs.
+    #[test]
+    fn an_unknown_lowering_value_is_an_error_naming_the_valid_ones() {
+        let err = parse_lowering("tempalte").expect_err("a typo must not fall back");
+        assert!(err.contains("tempalte"), "{err}");
+        assert!(err.contains("direct"), "{err}");
+        assert!(err.contains("template"), "{err}");
+        assert!(err.contains(LOWERING_ENV), "{err}");
+    }
+
+    /// Whitespace around the value is trimmed by `lowering_from_env`
+    /// before it reaches `parse_lowering`; pin that the parser itself
+    /// does not also accept padded values, so the trim is the one place
+    /// it happens.
+    #[test]
+    fn the_parser_does_not_trim_on_its_own() {
+        assert!(parse_lowering(" template ").is_err());
     }
 
     /// `link(test_id = …)` must emit a `.test_id(…)` call.

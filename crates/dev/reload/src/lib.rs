@@ -213,6 +213,12 @@ pub struct BuildOptions {
     /// framework-crate edit invalidating every workspace member
     /// downstream — over the leaf-only edit.
     pub dev_opt: build_web::DevOpt,
+    /// Which `ui!` lowering each rebuild expands to (`--ui-lowering`).
+    /// Passed through to [`build_web::BuildOptions::ui_lowering`], which
+    /// keys the target dir on it — cargo cannot see a proc macro's env
+    /// reads, so that is what keeps a dev session from serving
+    /// expansions from the other lowering after a flip.
+    pub ui_lowering: build_web::UiLowering,
 }
 
 /// Run a single rebuild. Useful for callers that want one build
@@ -251,6 +257,7 @@ pub fn start(
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
+            ui_lowering: build_web::UiLowering::default(),
         },
     )
 }
@@ -699,6 +706,7 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // the project's `index.html` fresh each time.
         robot_relay_url: opts.robot_relay_url.clone(),
         dev_opt: opts.dev_opt,
+        ui_lowering: opts.ui_lowering,
         gzip: false,
         // Dev rebuilds skip the q11 encode; `.br` siblings are a
         // deploy-artifact concern (`idealyst build --web --release`).

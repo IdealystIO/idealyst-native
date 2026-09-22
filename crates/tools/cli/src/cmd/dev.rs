@@ -276,6 +276,25 @@ pub struct Args {
     #[arg(long, default_value = "optimized")]
     pub dev_opt: String,
 
+    /// Web only: which `ui!` lowering the build expands to.
+    ///
+    /// `direct` (default) emits builder calls inline — what `ui!` has
+    /// always done. `template` emits a `static` descriptor plus a
+    /// runtime slot array per `ui!` site, built by
+    /// `runtime_vocabulary::template`. Both produce identical scenes
+    /// (`crates/dev/ui-lowering-parity` is the gate); the template form
+    /// is the shape a static edit could change without recompiling.
+    ///
+    /// Reaches the compiler as `IDEALYST_UI_LOWERING`, read by
+    /// `runtime-macros` at macro-expansion time. Cargo does NOT
+    /// fingerprint a proc macro's env reads, so each lowering gets its
+    /// own target directory — flipping the flag is a directory switch,
+    /// and a stale expansion from the other lowering can never be
+    /// served. Setting the variable by hand instead of using this flag
+    /// skips that, and is a way to get a mixed binary.
+    #[arg(long, default_value = "direct")]
+    pub ui_lowering: String,
+
     /// Web + `--local` only: run the `wasm-split` pass on every rebuild,
     /// the way a release build does. OFF by default: lazy loading is a
     /// deploy-time optimization, and in dev the splitter is a fixed cost
@@ -1489,6 +1508,7 @@ fn launch_web(
                     wasm_split: true,
                     debuginfo: build_web::DebugInfo::default(),
                     dev_opt: build_web::DevOpt::default(),
+                    ui_lowering: build_web::UiLowering::from_cli(&args.ui_lowering)?,
                 },
             )
             .context("web build failed (runtime-server)")?;
@@ -1571,6 +1591,7 @@ fn launch_web(
                     wasm_split: args.split,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                ui_lowering: build_web::UiLowering::from_cli(&args.ui_lowering)?,
                 },
             )?;
             std::mem::forget(handle);
@@ -1866,6 +1887,7 @@ fn launch_ssr(
                 wasm_split: args.split,
                 debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                ui_lowering: build_web::UiLowering::from_cli(&args.ui_lowering)?,
                 // Follows the session's resolved core (runtime-v2
                 // defaults flip) so the served SSR HTML and the
                 // hydrating bundle agree on a core.
@@ -2116,6 +2138,7 @@ fn full_stack_bundle_options(
         wasm_split: args.split,
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                ui_lowering: build_web::UiLowering::from_cli(&args.ui_lowering)?,
     })
 }
 
@@ -3140,6 +3163,7 @@ impl Args {
             split: self.split,
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
+            ui_lowering: self.ui_lowering.clone(),
             no_robot: self.no_robot,
             shared_target: self.shared_target,
             headless_client: self.headless_client,

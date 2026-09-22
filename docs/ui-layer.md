@@ -361,13 +361,43 @@ method. Inherent-before-trait resolution is what makes a props type
 compile — such a component is slot-only under the template lowering,
 never an error.
 
-There is deliberately **no cargo feature** selecting the lowering. A
-proc-macro crate is compiled once per build graph, so a feature on
-`runtime-macros` would flip the lowering for every crate in the same
-cargo invocation — the hazard that removed the `new-core` feature (see
-the NOTE in `crates/runtime/macros/Cargo.toml`). Selection is per
-invocation; a per-build-graph switch would be an env var read at
-expansion time.
+### Selecting the lowering
+
+There is deliberately **no cargo feature** for this. A proc-macro crate
+is compiled once per build graph, so a feature on `runtime-macros` would
+flip the lowering for every crate in the same cargo invocation — the
+hazard that removed the `new-core` feature (see the NOTE in
+`crates/runtime/macros/Cargo.toml`).
+
+Two switches instead, at two granularities:
+
+- **Per invocation** — `ui_lowered!(direct { … })` /
+  `ui_lowered!(template { … })`. Test-only; it is how the parity suite
+  expands one fixture both ways in one binary.
+- **Per build graph** — `IDEALYST_UI_LOWERING=direct|template`, read by
+  `runtime-macros` at expansion. `direct` is the default; an
+  unrecognised value is a `compile_error!` naming the valid ones, never
+  a silent fallback (building the wrong lowering would be invisible,
+  since both produce working programs).
+
+Set it through the CLI, not by hand:
+
+```
+idealyst dev   --web --ui-lowering template
+idealyst build --web --ui-lowering template
+```
+
+**Why the flag and not the variable.** Cargo does not fingerprint a
+proc macro's environment reads. Setting `IDEALYST_UI_LOWERING` alone
+leaves every already-compiled crate looking fresh, so a rebuild happily
+serves expansions from the *other* lowering — a mixed binary, with no
+error. The CLI folds the value into `config_key`
+(`crates/tools/build/web/src/lib.rs`), giving each lowering its own
+target directory, which turns the flip into a directory switch and makes
+a stale expansion impossible. That is a different reason from every
+other field in that key: the others ride in `CARGO_ENCODED_RUSTFLAGS` or
+the feature set, where keying the directory is a performance fix. Here
+it is a correctness one.
 
 The two must produce identical scenes. `crates/dev/ui-lowering-parity`
 is the gate: every fixture is authored once, expanded through both

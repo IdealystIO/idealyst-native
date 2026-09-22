@@ -232,6 +232,25 @@ pub struct Args {
     #[arg(long, default_value = "optimized")]
     pub dev_opt: String,
 
+    /// Web only: which `ui!` lowering the build expands to.
+    ///
+    /// `direct` (default) emits builder calls inline — what `ui!` has
+    /// always done. `template` emits a `static` descriptor plus a
+    /// runtime slot array per `ui!` site, built by
+    /// `runtime_vocabulary::template`. Both produce identical scenes
+    /// (`crates/dev/ui-lowering-parity` is the gate); the template form
+    /// is the shape a static edit could change without recompiling.
+    ///
+    /// Reaches the compiler as `IDEALYST_UI_LOWERING`, read by
+    /// `runtime-macros` at macro-expansion time. Cargo does NOT
+    /// fingerprint a proc macro's env reads, so each lowering gets its
+    /// own target directory — flipping the flag is a directory switch,
+    /// and a stale expansion from the other lowering can never be
+    /// served. Setting the variable by hand instead of using this flag
+    /// skips that, and is a way to get a mixed binary.
+    #[arg(long, default_value = "direct")]
+    pub ui_lowering: String,
+
     /// Web only: skip the `wasm-split` pass. `#[component(lazy)]`
     /// boundaries still work — their bodies ship in the main bundle and
     /// resolve immediately instead of over the network. Without a
@@ -618,6 +637,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             wasm_split: !args.no_split,
             debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
             dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                ui_lowering: build_web::UiLowering::from_cli(&args.ui_lowering)?,
             // `--premint-only` strips the engine, so it MUST also premint —
             // otherwise the bundle has neither build-time classes nor a
             // runtime to mint them, and every styled node panics.

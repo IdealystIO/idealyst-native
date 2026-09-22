@@ -222,6 +222,63 @@ pub struct BuildOptions {
     /// no-split — relocations still emitted, exports still pinned — served
     /// 113.7 MB, which is why it used to read as a bad trade.
     pub wasm_split: bool,
+    /// Which `ui!` lowering the build expands to (`--ui-lowering`).
+    ///
+    /// Reaches cargo as the `IDEALYST_UI_LOWERING` environment variable,
+    /// read by `runtime-macros` AT EXPANSION.
+    ///
+    /// **This field must key the target dir** ([`config_key`]), and the
+    /// reason is different from every other field's. The others ride in
+    /// `CARGO_ENCODED_RUSTFLAGS` or the feature set, which cargo hashes —
+    /// keying the dir is a performance fix there, turning a rebuild into
+    /// a directory switch. Here cargo hashes NOTHING: a proc macro's
+    /// `env::var` is invisible to the fingerprint, so flipping the value
+    /// alone leaves every already-compiled crate looking fresh and the
+    /// build serves expansions from the OTHER lowering. Keying the
+    /// directory is what makes the switch correct, not just fast.
+    pub ui_lowering: UiLowering,
+}
+
+/// The environment variable `runtime-macros` reads at expansion to
+/// choose `ui!`'s lowering. Mirrored from `runtime_macros::ui`, which
+/// cannot be depended on from here (it is a proc-macro crate).
+pub const UI_LOWERING_ENV: &str = "IDEALYST_UI_LOWERING";
+
+/// Which lowering `ui!` expands to. See [`BuildOptions::ui_lowering`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiLowering {
+    /// Builder calls inline — what `ui!` has always emitted.
+    #[default]
+    Direct,
+    /// A `static` descriptor plus a runtime slot array, built by
+    /// `runtime_vocabulary::template`.
+    Template,
+}
+
+impl UiLowering {
+    /// The `IDEALYST_UI_LOWERING` value `runtime-macros` parses.
+    ///
+    /// Doubles as the stable [`config_key`] tag — NOT the discriminant,
+    /// for the reason [`DevOpt::key_tag`] spells out: hashing
+    /// declaration order hands one posture the other's directory the
+    /// moment the variants are reordered.
+    pub fn env_value(self) -> &'static str {
+        match self {
+            UiLowering::Direct => "direct",
+            UiLowering::Template => "template",
+        }
+    }
+
+    /// Parse the `--ui-lowering` CLI value.
+    pub fn from_cli(value: &str) -> Result<Self> {
+        match value {
+            "direct" => Ok(UiLowering::Direct),
+            "template" => Ok(UiLowering::Template),
+            other => anyhow::bail!(
+                "unknown --ui-lowering `{other}` (expected `direct` or `template`)"
+            ),
+        }
+    }
 }
 
 /// How much debug information the wasm carries.
@@ -606,6 +663,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             opts.premint_report,
             opts.hydrate,
             &opts.user_features,
+            opts.ui_lowering,
             &opts.source,
             &project_dir,
         )
@@ -1931,6 +1989,12 @@ fn config_key(opts: &BuildOptions) -> String {
     h.update(opts.debuginfo.cargo_value().as_bytes());
     h.update(b"\x1f");
     h.update(opts.dev_opt.key_tag().as_bytes());
+    h.update(b"\x1f");
+    // The lowering is the one field cargo cannot see for itself: a proc
+    // macro's `env::var` never enters the fingerprint, so without this
+    // the two lowerings would share a directory and a flip would serve
+    // stale expansions. See `BuildOptions::ui_lowering`.
+    h.update(opts.ui_lowering.env_value().as_bytes());
     // Feature order reaches cargo sorted+deduped; mirror that so a caller
     // passing the same set in a different order lands in the same dir.
     let mut features: Vec<&str> = opts.user_features.iter().map(String::as_str).collect();
@@ -1965,6 +2029,9 @@ fn config_summary(opts: &BuildOptions) -> String {
     }
     if opts.hydrate {
         parts.push("hydrate".into());
+    }
+    if opts.ui_lowering != UiLowering::Direct {
+        parts.push(format!("ui={}", opts.ui_lowering.env_value()));
     }
     parts.push(format!("debug={}", opts.debuginfo.cargo_value().trim_matches('"')));
     if !opts.release {
@@ -2085,10 +2152,21 @@ fn cargo_build_wasm(
     premint_report: bool,
     hydrate: bool,
     user_features: &[String],
+    ui_lowering: UiLowering,
     source: &FrameworkSource,
     project_root: &Path,
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
+    // The lowering switch reaches `runtime-macros` as an env var read at
+    // EXPANSION — set on the cargo invocation only, never exported into
+    // the CLI's own process, so nothing else in the session inherits it.
+    //
+    // Cargo does not fingerprint a proc macro's env reads, so this alone
+    // would not invalidate anything; `config_key` gives each lowering its
+    // own target dir, which is what makes the flip correct. Always set
+    // (even for the default) so a value inherited from the surrounding
+    // shell cannot quietly disagree with the target dir we picked.
+    cmd.env(UI_LOWERING_ENV, ui_lowering.env_value());
     // `panic_immediate_abort` lives in std/core, so stripping panics
     // means recompiling std from source with `-Z build-std` — both of
     // which are nightly-only. We select nightly via the rustup `+`
@@ -2796,6 +2874,7 @@ mod regression_tests {
             gzip: false,
             brotli: false,
             wasm_split: true,
+            ui_lowering: UiLowering::default(),
             debuginfo: DebugInfo::default(),
             dev_opt: DevOpt::default(),
             user_features: Vec::new(),
@@ -2805,6 +2884,49 @@ mod regression_tests {
             bundle_out_dir: None,
             prune_dead_data_min: None,
         }
+    }
+
+    /// The env var name must match what `runtime-macros` actually reads.
+    ///
+    /// Read as TEXT on purpose: this crate cannot depend on
+    /// `runtime-macros` (it is a proc-macro crate), so the constant is
+    /// mirrored — and a mirror with no check is a rename waiting to
+    /// silently disable the flag. Same technique, and the same reason,
+    /// as `ui.rs`'s `setter_tables_cover_every_glue_setter`.
+    #[test]
+    fn the_lowering_env_var_matches_the_macro_crates() {
+        let ui_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../runtime/macros/src/ui.rs"
+        ))
+        .expect("read runtime-macros/src/ui.rs");
+        let needle = format!(r#"LOWERING_ENV: &str = "{UI_LOWERING_ENV}""#);
+        assert!(
+            ui_rs.contains(&needle),
+            "`{UI_LOWERING_ENV}` is not the name runtime-macros reads — the flag \
+             would be set and ignored"
+        );
+        // And both values this crate can emit must be ones it parses.
+        for v in [UiLowering::Direct, UiLowering::Template] {
+            assert!(
+                ui_rs.contains(&format!(r#""{}" => Ok(Lowering::"#, v.env_value())),
+                "runtime-macros does not parse `{}`",
+                v.env_value()
+            );
+        }
+    }
+
+    /// `--ui-lowering` values round-trip to the env values the macro
+    /// parses, and an unknown one is an error rather than a silent
+    /// default — building the wrong lowering would be invisible, since
+    /// both produce working programs.
+    #[test]
+    fn ui_lowering_cli_values_round_trip() {
+        for v in [UiLowering::Direct, UiLowering::Template] {
+            assert_eq!(UiLowering::from_cli(v.env_value()).unwrap(), v);
+        }
+        let err = UiLowering::from_cli("tempalte").unwrap_err().to_string();
+        assert!(err.contains("tempalte") && err.contains("template"), "{err}");
     }
 
     /// Regression guard for the thrash that made a dev rebuild look like
@@ -2848,6 +2970,7 @@ mod regression_tests {
             ("debuginfo", |o| o.debuginfo = DebugInfo::Full),
             ("dev_opt", |o| o.dev_opt = DevOpt::Fast),
             ("user_features", |o| o.user_features = vec!["vello".into()]),
+            ("ui_lowering", |o| o.ui_lowering = UiLowering::Template),
         ];
         for (name, f) in mutate {
             let mut o = key_opts();
