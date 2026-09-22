@@ -81,8 +81,52 @@ pub use graphics::{
 #[derive(Debug)]
 pub enum ReplayError {
     UnknownNode(NodeId),
+    /// A command in a frame failed. Wraps the real cause with WHERE it
+    /// happened — see [`ReplayClient::apply_batch`].
+    InBatch {
+        /// 0-based position of the failing command in the frame.
+        index: usize,
+        /// How many commands the frame carried.
+        total: usize,
+        /// The command's variant name plus the node ids it names.
+        command: String,
+        cause: Box<ReplayError>,
+    },
     UnknownStyle(StyleId),
     MissingHandler(HandlerId),
+}
+
+/// One command, as a diagnostic string: the variant name plus every
+/// node id it names.
+///
+/// `Command` is `Debug`, but a single `ApplyStyle` prints its whole
+/// `StyleRules` — hundreds of lines for one op, which is why nothing
+/// logged the command before. This is the short form: enough to find
+/// the op in the recorder's log, nothing that floods a console.
+fn describe_command(cmd: &Command) -> String {
+    let full = format!("{cmd:?}");
+    let name = full
+        .split(|c: char| c == ' ' || c == '{' || c == '(')
+        .next()
+        .unwrap_or("?")
+        .to_string();
+    // Node ids, in the order they appear — `NodeId(123)`.
+    let mut ids = Vec::new();
+    let mut rest = full.as_str();
+    while let Some(at) = rest.find("NodeId(") {
+        rest = &rest[at + "NodeId(".len()..];
+        if let Some(end) = rest.find(')') {
+            ids.push(rest[..end].to_string());
+            rest = &rest[end..];
+        } else {
+            break;
+        }
+    }
+    if ids.is_empty() {
+        name
+    } else {
+        format!("{name}(nodes: {})", ids.join(", "))
+    }
 }
 
 thread_local! {
@@ -395,9 +439,29 @@ where
     /// real backend; errors short-circuit the batch and surface to
     /// the caller (in production-dev, log + continue; in tests,
     /// fail loudly).
+    /// Apply a frame, naming the command that failed.
+    ///
+    /// The error used to carry only the offending `NodeId`, which is
+    /// the one fact that identifies nothing: a replay error reads
+    /// `UnknownNode(NodeId(565))` and the 565 refers to a node the
+    /// client never heard of, so there is no way to look it up. What
+    /// the reader needs is the COMMAND — which op referenced it, and
+    /// how far into the frame the batch got before it stopped.
+    ///
+    /// The batch still stops at the first error. Continuing would
+    /// paper over a desynchronized mirror with a half-applied frame,
+    /// and a tree that is silently missing a subtree is harder to
+    /// diagnose than one that stopped and said so.
     pub fn apply_batch(&mut self, commands: Vec<Command>) -> Result<(), ReplayError> {
-        for cmd in commands {
-            self.apply(cmd)?;
+        let total = commands.len();
+        for (index, cmd) in commands.into_iter().enumerate() {
+            let described = describe_command(&cmd);
+            self.apply(cmd).map_err(|e| ReplayError::InBatch {
+                index,
+                total,
+                command: described,
+                cause: Box::new(e),
+            })?;
         }
         Ok(())
     }
@@ -1792,5 +1856,51 @@ pub fn color_scheme_to_wire(scheme: ColorScheme) -> WireColorScheme {
         ColorScheme::Light => WireColorScheme::Light,
         ColorScheme::Dark => WireColorScheme::Dark,
         ColorScheme::Auto => WireColorScheme::Auto,
+    }
+}
+
+#[cfg(test)]
+mod replay_diagnostics_tests {
+    use super::*;
+
+    /// A replay failure used to print `UnknownNode(NodeId(565))` and
+    /// nothing else — the one fact that identifies nothing, since the
+    /// id names a node the client has never heard of. Finding the
+    /// offending op meant reading the whole frame by hand.
+    #[test]
+    fn regression_a_replay_error_names_the_command_and_its_place_in_the_frame() {
+        let err = ReplayError::InBatch {
+            index: 41,
+            total: 180,
+            command: "Insert(nodes: 565, 610)".to_string(),
+            cause: Box::new(ReplayError::UnknownNode(NodeId(565))),
+        };
+        let text = format!("{err:?}");
+        assert!(text.contains("41"), "the position in the frame: {text}");
+        assert!(text.contains("180"), "the frame's size: {text}");
+        assert!(text.contains("Insert"), "the command: {text}");
+        assert!(text.contains("565"), "the node it named: {text}");
+    }
+
+    /// The description is the SHORT form on purpose: `Command`'s own
+    /// `Debug` prints a whole `StyleRules` for one `ApplyStyle`, which
+    /// is why nothing logged it before.
+    #[test]
+    fn a_described_command_is_its_name_and_its_node_ids() {
+        let d = describe_command(&Command::Insert {
+            parent: NodeId(610),
+            child: NodeId(565),
+        });
+        assert!(d.starts_with("Insert"), "{d}");
+        assert!(d.contains("610") && d.contains("565"), "{d}");
+        assert!(d.len() < 60, "must stay short: {d}");
+    }
+
+    /// A command that names no node still describes as something
+    /// readable rather than an empty string.
+    #[test]
+    fn a_command_with_no_nodes_still_has_a_name() {
+        let d = describe_command(&Command::Finish { root: NodeId(1) });
+        assert!(d.starts_with("Finish"), "{d}");
     }
 }
