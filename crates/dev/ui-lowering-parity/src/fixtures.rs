@@ -24,7 +24,7 @@
 
 use std::rc::Rc;
 
-use runtime_macros::{component, stylesheet, ui, ui_lowered};
+use runtime_macros::{component, stylesheet, ui};
 use runtime_vocabulary::glue::{
     memo, signal, Color, Easing, Element, Ref, Signal, Tokenized, ViewHandle,
 };
@@ -73,37 +73,15 @@ macro_rules! fixture {
             pub fn direct(s: &St) -> Element {
                 $( let $sname = s.$sname; )*
                 $($locals)*
-                ui_lowered!(direct { $($body)* })
-            }
-
-            /// The TEMPLATE expansion of the same tokens. Gated so
-            /// phase 1 (no template emitter yet) still compiles; phase 2
-            /// turns the feature on for good.
-            #[cfg(feature = "template")]
-            pub fn template(s: &St) -> Element {
-                $( let $sname = s.$sname; )*
-                $($locals)*
-                ui_lowered!(template { $($body)* })
+                ui! { $($body)* }
             }
 
             pub fn record_direct(mode: Mode) -> Recording {
                 record(make, direct, DRIVES, mode)
             }
 
-            #[cfg(feature = "template")]
-            pub fn record_template(mode: Mode) -> Recording {
-                record(make, template, DRIVES, mode)
-            }
-
             pub fn fixture() -> Fixture {
-                Fixture {
-                    name: stringify!($name),
-                    direct: record_direct,
-                    #[cfg(feature = "template")]
-                    template: Some(record_template),
-                    #[cfg(not(feature = "template"))]
-                    template: None,
-                }
+                Fixture { name: stringify!($name), direct: record_direct }
             }
         }
     };

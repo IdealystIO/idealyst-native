@@ -144,7 +144,6 @@ pub fn run(args: Args) -> Result<()> {
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
-            ui_lowering: build_web::UiLowering::default(),
             premint: false,
         },
     )

@@ -58,11 +58,6 @@ pub(crate) fn generate_and_run_dump(
     } else {
         format!("{existing} --cfg idealyst_premint_dump")
     };
-    // Deliberately NOT given `IDEALYST_UI_LOWERING`. The dump compiles
-    // the app to harvest `stylesheet!` registrations, and a sheet's CSS
-    // is identical under either `ui!` lowering — so pinning one here
-    // would fragment this wrapper's isolated, un-keyed target dir for no
-    // change in output.
     eprintln!("[build-web] premint dump: cargo build (in {})", dump_dir.display());
     let status = Command::new("cargo")
         .arg("build")

@@ -314,105 +314,24 @@ A primitive silently ignores props it doesn't recognise
 prelude rather than evaluated, so the split never starts running an
 expression the emitter discards.
 
-### Two lowerings
+### Why the split exists
 
-The split exists so a second lowering can consume it. `ui!` emits the
-**direct** lowering (builder calls inline, reading slots out of their
-locals). The **template** lowering turns the same split into a `static`
-descriptor plus a runtime slot array:
+`ui!` has ONE lowering. The split is not a step toward a second one — it
+is the producer of a **descriptor**: the data half of a site, addressable
+and patchable without recompiling.
 
-```rust
-{
-    let __ui_s0; __ui_s0 = sheet();          // the SHARED prelude
-    static __UI_DESC: Descriptor = …;        // the STATIC half: data
-    runtime_core::__template::build(&__UI_DESC, &mut [
-        SlotValue::style(__ui_s0),           // the DYNAMIC half
-    ])
-}
-```
+`runtime-template` (`crates/runtime/template`) owns those types —
+`Descriptor`, `Node`, `PropEntry`, `SlotSig`, `SiteId`, `Registry`,
+`Patch`/`validate`. It depends on `runtime-scene` and `serde` and
+nothing else, so a descriptor serializes and validates with no renderer
+in the graph.
 
-Both are reachable from the test-only `ui_lowered!(direct { … })` /
-`ui_lowered!(template { … })` entry point in `runtime-macros`; `ui!`
-stays on `direct`.
-
-- `runtime-template` (`crates/runtime/template`) owns the descriptor
-  types: `Descriptor`, `Node`, `PropEntry`, `SlotSig`, `SiteId`,
-  `Registry`, `Patch`/`validate`, and the `TemplateSource` seam. It
-  depends on `runtime-scene` and `serde` and nothing else, so a
-  descriptor is a portable, serializable, validatable artifact.
-- `runtime_vocabulary::template` owns the builder — it needs the glue
-  wrappers, the coercion traits and `BuildElement`, which is why it
-  cannot live in the data crate.
-
-A node the descriptor cannot model becomes a `Node::Escape`: the direct
-emitter builds it and the finished `Element` lands in a slot. Every
-`ui!` construct is expressible that way, so the template lowering is
-complete from day one and the descriptor-native set
-(`view`/`text`/`button`/`image`/`activity_indicator`/`scroll_view`,
-literal-prop components, reactive `if`) grows without ever being a
-correctness precondition. An escaped node's *bodies* are still nested
-templates.
-
-A component node carries its literal props as descriptor data and
-applies them through `__apply_literal(&mut Props, name, &LiteralValue)
--> bool`, which `#[component]` / `#[props]` generate as an **inherent**
-method. Inherent-before-trait resolution is what makes a props type
-*without* the macro fall back to a blanket `false` rather than fail to
-compile — such a component is slot-only under the template lowering,
-never an error.
-
-### Selecting the lowering
-
-There is deliberately **no cargo feature** for this. A proc-macro crate
-is compiled once per build graph, so a feature on `runtime-macros` would
-flip the lowering for every crate in the same cargo invocation — the
-hazard that removed the `new-core` feature (see the NOTE in
-`crates/runtime/macros/Cargo.toml`).
-
-Two switches instead, at two granularities:
-
-- **Per invocation** — `ui_lowered!(direct { … })` /
-  `ui_lowered!(template { … })`. Test-only; it is how the parity suite
-  expands one fixture both ways in one binary.
-- **Per build graph** — `IDEALYST_UI_LOWERING=direct|template`, read by
-  `runtime-macros` at expansion. `direct` is the default; an
-  unrecognised value is a `compile_error!` naming the valid ones, never
-  a silent fallback (building the wrong lowering would be invisible,
-  since both produce working programs).
-
-Set it through the CLI, not by hand:
-
-```
-idealyst dev   --web --ui-lowering template
-idealyst build --web --ui-lowering template
-```
-
-**Why the flag and not the variable.** Cargo does not fingerprint a
-proc macro's environment reads. Setting `IDEALYST_UI_LOWERING` alone
-leaves every already-compiled crate looking fresh, so a rebuild happily
-serves expansions from the *other* lowering — a mixed binary, with no
-error. The CLI folds the value into `config_key`
-(`crates/tools/build/web/src/lib.rs`), giving each lowering its own
-target directory, which turns the flip into a directory switch and makes
-a stale expansion impossible. That is a different reason from every
-other field in that key: the others ride in `CARGO_ENCODED_RUSTFLAGS` or
-the feature set, where keying the directory is a performance fix. Here
-it is a correctness one.
-
-The two must produce identical scenes. `crates/dev/ui-lowering-parity`
-is the gate: every fixture is authored once, expanded through both
-entry points in the same binary, mounted against `host-mock` in both
-structural modes, and compared on three projections (structural ops,
-every capability call, the final scene). It additionally pins BOTH
-lowerings against goldens frozen *before* the slot rewrite, so "the
-hoist changed nothing else" is falsifiable rather than self-asserted.
-
-Why a descriptor is worth the machinery: most of a UI tree is not code.
-Separating the data half makes a static edit (a changed literal, a
-reordered child) a data change — the basis for hot reload without
-recompiling, and, if it is ever built, for over-the-air UI patches.
-Neither of those is built here; `TemplateSource`'s only implementation
-is `CompiledIn`.
+Most of a UI tree is not code: tags, attribute names, child order,
+literals, enum-like paths, style-token accessors. Separating that half
+makes a static edit (a changed label, a reordered child, a different
+style) a DATA change — the basis for hot reload without recompiling.
+What consumes it is a dev-time **overlay** (below), not a second
+emission.
 
 ### Reactive `if`
 
@@ -509,10 +428,8 @@ Anything that satisfies those four can serve as a front-end. The
 shipped `jsx!` is the proof-of-concept: identical primitive output,
 different surface grammar, fully interoperable in the same component.
 
-The template lowering satisfies the same four, just indirectly — the
-builder in `runtime_vocabulary::template` makes the calls on the
-descriptor's behalf. That is the other half of the claim: the surface
-DSL is a frontend, and so is the *lowering strategy*.
+The DSL is a frontend. What it emits — one lowering, builder calls
+inline — is the framework's only structural commitment.
 
 ---
 

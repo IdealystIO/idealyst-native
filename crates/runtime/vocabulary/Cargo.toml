@@ -72,11 +72,12 @@ catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
 runtime-shared = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
-# The DATA half of `ui!`'s template lowering. `src/template.rs` is the
-# builder for it: descriptors need the glue wrappers + coercion traits,
-# which live here; the descriptor types stay in a crate that depends on
-# neither, so a descriptor remains a portable artifact.
+# Descriptor DATA types. `#[component]` / `#[props]` generate an
+# `__apply_literal` naming `LiteralValue` on EVERY props struct, so the
+# type must resolve in every build — the dependency is unconditional even
+# though the overlay that consumes descriptors is feature-gated.
 runtime-template = { workspace = true }
+
 # Catalog anchor (see the `catalog` feature above).
 mcp-catalog = { workspace = true, optional = true }
 

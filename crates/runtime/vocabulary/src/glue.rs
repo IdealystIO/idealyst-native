@@ -1267,12 +1267,42 @@ where
 /// The children-flattening seam: `ui!` children blocks append every node
 /// through this. Mirrors `runtime_shared::ChildList` (Element, Vec,
 /// Option, closures, glue wrappers).
-/// The template lowering's builder + descriptor types, reached from the
-/// emission as `::runtime_core::__template::…` (the `finish()` retarget
-/// maps that onto `::runtime_vocabulary::glue::__template::…`). Double
-/// underscore for the same reason `__mcp` has one: it is macro-support
-/// surface, not an author API.
-pub use crate::template as __template;
+/// Descriptor DATA types, reached from macro output as
+/// `::runtime_core::__template::…` (the `finish()` retarget maps that
+/// onto `::runtime_vocabulary::glue::__template::…`). Double underscore
+/// for the same reason `__mcp` has one: macro-support surface, not an
+/// author API.
+///
+/// Re-exported UNCONDITIONALLY, because `#[component]` / `#[props]`
+/// generate an `__apply_literal` naming `TemplateLiteral` on every props
+/// struct. The overlay that consumes descriptors is behind the
+/// `ui-overlay` feature; these types are not.
+pub mod __template {
+    pub use runtime_template::{
+        Descriptor as TemplateDescriptor, LiteralValue as TemplateLiteral, Node as TemplateNode,
+        Patch as TemplatePatch, PrimKind as TemplatePrimKind, PropEntry as TemplatePropEntry,
+        PropValue as TemplatePropValue, Registry as TemplateRegistry, SiteId as TemplateSiteId,
+        SlotInfo as TemplateSlotInfo, SlotSig as TemplateSlotSig,
+    };
+
+    /// The fallback half of `#[component]`'s generated
+    /// `__apply_literal`.
+    ///
+    /// A blanket impl so a props type WITHOUT the generated inherent
+    /// method still compiles at a call site. Rust resolves inherent
+    /// methods before trait methods, so a `#[component]` / `#[props]`
+    /// struct uses its own and everything else silently answers "not
+    /// applied" — which is the contract: such a component is not
+    /// patchable, never an error.
+    pub trait ApplyLiteralFallback {
+        /// Returns whether the literal was applied.
+        fn __apply_literal(&mut self, _name: &str, _value: &TemplateLiteral) -> bool {
+            false
+        }
+    }
+
+    impl<T> ApplyLiteralFallback for T {}
+}
 
 pub trait ChildList {
     fn append_to(self, out: &mut Vec<Element>);

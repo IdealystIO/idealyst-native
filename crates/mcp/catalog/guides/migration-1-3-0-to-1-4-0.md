@@ -1,17 +1,19 @@
 +++
 title = "Migrating 1.3 → 1.4"
 order = 909
-tags = ["migration", "1.4.0", "breaking", "table", "sdk", "cell", "row", "hover", "style", "map_cell_style", "cell_base_application"]
+tags = ["migration", "1.4.0", "breaking", "table", "sdk", "cell", "row", "hover", "style", "map_cell_style", "cell_base_application", "ui", "evaluation-order", "props", "children"]
 +++
 
 # Migrating 1.3 → 1.4
 
 > Status: in development — this guide fills in as 1.4.0 breaking changes land.
 
-One break, in the `table` SDK's built-cell post-processing. If you do not
-post-process table cells — if you use `Table` / `TableRow` / `TableCell` and
-nothing lower — **nothing in your code changes**, and you get a rendering fix
-for free (see *What you get*, below).
+Two breaks. One is in the `table` SDK's built-cell post-processing; if you
+do not post-process table cells — if you use `Table` / `TableRow` /
+`TableCell` and nothing lower — nothing in your code changes there, and you
+get a rendering fix for free (see *What you get*, below). The other is an
+**evaluation-order** change inside `ui!` that affects only expressions with
+side effects.
 
 ## `table::cell_base_application` is removed; compose with `map_cell_style`
 
@@ -95,6 +97,69 @@ reactive style for you. idea-ui's own table tests moved to the latter.
 
 Status: landed
 
+## `ui!` evaluates a node's props BEFORE its children
+
+**What changed.** Inside `ui!`, every dynamic expression is now evaluated at
+the head of its scope, in **source order**, before anything is constructed.
+
+It used not to be. `style` lowers to a trailing `.with_style(…)` on the
+constructed builder, so a node's props were evaluated *after* its children:
+
+```rust
+ui! {
+    view(style = a()) {
+        Badge(label = b())
+    }
+}
+```
+
+**Before 1.4:** `b()` then `a()` — the children were built first, then the
+style was applied to the result.
+**From 1.4:** `a()` then `b()` — source order.
+
+**Who is affected.** Only code whose prop expressions have *observable side
+effects* or depend on each other's effects: a call that mutates a signal,
+pushes to a log, increments a counter, or takes a `RefCell` borrow. An
+expression that only reads values — which is nearly all of them — cannot tell
+the difference. Nothing about the tree, the styles, or the reactivity changes;
+this is purely *when* two side-effecting expressions run relative to each
+other.
+
+```rust
+// Affected: `next_id()` is called twice and the ORDER decides which
+// node gets which id.
+ui! {
+    view(test_id = next_id()) {
+        text(test_id = next_id()) { "x" }
+    }
+}
+```
+
+**What to do.** If you have a case like that, hoist the effects above the
+`ui!` block and pass the bound values in — which is clearer regardless of
+order:
+
+```rust
+let outer = next_id();
+let inner = next_id();
+ui! {
+    view(test_id = outer) {
+        text(test_id = inner) { "x" }
+    }
+}
+```
+
+**Why.** `ui!` now hoists every dynamic expression into a `let` at the head of
+its scope (a *slot*), leaving the rest of the site as static data. That split
+is what lets a dev-time overlay patch a site's literals, child order and
+styles without recompiling, and it is only sound if the slots have one
+well-defined evaluation order. Source order is the one an author can predict
+from reading the code. See `docs/ui-layer.md` for the split and the overlay.
+
+A branch, a `match` arm and a `for` row body each hoist into their OWN scope,
+so their expressions still run when that branch activates or that row builds —
+unchanged.
+
 ## What you get
 
 `TableRow(on_row_click = …)` layers its `interactive` / `row_hovered` axes
@@ -109,6 +174,10 @@ will drop whatever the row put there first.
 
 ## Migration checklist
 
+- [ ] Prop expressions with side effects: check none of them depended on
+      children being evaluated first (see the evaluation-order section). A
+      `grep` for calls in prop position that mutate something is the way in;
+      most codebases have none.
 - [ ] `grep -rn "cell_base_application"` — no hits left in your code.
 - [ ] Every hit rewritten as `map_cell_style(&cell, Rc::new(move |app| …))`,
       with the `if let Some(base)` wrapper dropped and `base.clone()` replaced

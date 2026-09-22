@@ -584,150 +584,8 @@ pub(crate) enum Ctx {
     Single,
 }
 
-/// Which lowering a `ui!`-family invocation expands to.
-///
-/// Both lowerings share the whole front half — the same parser, the same
-/// [`UiNode`] tree, and the same [`split`](crate::ui_split) pass that
-/// separates each site into a static descriptor and an ordered slot
-/// list. They differ ONLY in how the tree is constructed from that
-/// split.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lowering {
-    /// Builder calls emitted inline (what `ui!` has always done, and
-    /// still does). Dynamic values are read out of the slot list as
-    /// hoisted locals.
-    Direct,
-    /// A `static` descriptor plus a runtime slot array, handed to
-    /// `runtime_vocabulary`'s template builder.
-    Template,
-}
-
-/// Parse the `ui_lowered!(direct { … })` / `ui_lowered!(template { … })`
-/// envelope, returning the selected lowering and the `ui!` body tokens.
-///
-/// The mode and the body share ONE delimiter because a Rust macro call
-/// carries exactly one: `ui_lowered!(direct) { … }` would parse as an
-/// invocation followed by an unrelated block.
-pub(crate) fn split_lowered_invocation(
-    input: TokenStream2,
-) -> syn::Result<(Lowering, TokenStream2)> {
-    struct Envelope {
-        lowering: Lowering,
-        body: TokenStream2,
-    }
-    impl Parse for Envelope {
-        fn parse(input: ParseStream) -> syn::Result<Self> {
-            let ident: Ident = input
-                .parse()
-                .map_err(|e| syn::Error::new(e.span(), "expected `direct` or `template`"))?;
-            let name = ident.to_string();
-            let lowering = parse_lowering(&name).map_err(|_| {
-                syn::Error::new(
-                    ident.span(),
-                    format!("unknown lowering `{name}` — expected `direct` or `template`"),
-                )
-            })?;
-            let body;
-            braced!(body in input);
-            if !input.is_empty() {
-                return Err(input.error("expected nothing after the `ui_lowered!` body"));
-            }
-            Ok(Envelope { lowering, body: body.parse()? })
-        }
-    }
-    let env: Envelope = syn::parse2(input)?;
-    Ok((env.lowering, env.body))
-}
-
-/// The env var that selects `ui!`'s lowering for a whole build graph.
-pub(crate) const LOWERING_ENV: &str = "IDEALYST_UI_LOWERING";
-
-/// Read [`LOWERING_ENV`], defaulting to [`Lowering::Direct`].
-///
-/// An env var and not a cargo feature: a proc-macro crate is compiled
-/// ONCE per build graph, so a feature on `runtime-macros` would flip the
-/// lowering for every crate in the same cargo invocation — the hazard
-/// that removed `new-core`. An env var read at expansion is per graph
-/// and per cargo invocation, which is the granularity wanted.
-///
-/// The catch, and why the CLI has work to do: **cargo cannot see a
-/// proc-macro's env reads**. Nothing about this var enters the
-/// fingerprint, so flipping it does not by itself invalidate anything —
-/// a rebuild would happily serve expansions from the other lowering.
-/// The CLI therefore folds the value into its `config_key`, giving each
-/// lowering its own target directory. Setting the var by hand without
-/// doing that is a way to get a mixed binary.
-///
-/// An unrecognised value is an ERROR, not a fallback to `direct`: a typo
-/// that silently built the wrong lowering is exactly the failure this
-/// whole split exists to make impossible to hide.
-pub(crate) fn lowering_from_env() -> Result<Lowering, String> {
-    match std::env::var(LOWERING_ENV) {
-        Err(_) => Ok(Lowering::Direct),
-        Ok(v) => parse_lowering(v.trim()),
-    }
-}
-
-/// Parse a lowering name. Shared with the `ui_lowered!` envelope so both
-/// spellings accept exactly the same set.
-pub(crate) fn parse_lowering(value: &str) -> Result<Lowering, String> {
-    match value {
-        // An empty value means "unset" — a shell that exports the var
-        // as `""` should not be an error.
-        "" | "direct" => Ok(Lowering::Direct),
-        "template" => Ok(Lowering::Template),
-        other => Err(format!(
-            "unknown `{LOWERING_ENV}` value `{other}` — expected `direct` or `template`"
-        )),
-    }
-}
-
 pub fn emit(ui: Ui, input: &TokenStream2) -> TokenStream2 {
-    match lowering_from_env() {
-        Ok(lowering) => emit_with(ui, input, lowering),
-        Err(message) => quote! { ::std::compile_error!(#message) },
-    }
-}
-
-/// Emit a parsed `ui!` body under an explicit lowering.
-pub(crate) fn emit_with(ui: Ui, input: &TokenStream2, lowering: Lowering) -> TokenStream2 {
-    if lowering == Lowering::Template {
-        return crate::ui_template::emit(&ui.elements, input);
-    }
-    emit_direct(ui, input)
-}
-
-// The lowering the CURRENT expansion is running under.
-//
-// Thread-local rather than a parameter threaded through ~25 emission
-// functions. It is only ever read by the two body-scope helpers
-// ([`emit_child_scope`] and [`emit_block_as_primitive`]), and it exists
-// so that a TEMPLATE expansion's escaped nodes — a `for`, a `match`, a
-// static `if`, a primitive the descriptor does not model — still have
-// their bodies lowered as nested TEMPLATES. Without it an escape would
-// sink its whole subtree into the direct lowering, and the template
-// half of the parity suite would stop testing anything below the first
-// escape.
-//
-// Safe as a thread-local: a proc-macro expansion is single-threaded and
-// never interleaved with another, and every top-level entry point sets
-// it before emitting.
-thread_local! {
-    static AMBIENT_LOWERING: std::cell::Cell<Lowering> =
-        const { std::cell::Cell::new(Lowering::Direct) };
-}
-
-pub(crate) fn ambient_lowering() -> Lowering {
-    AMBIENT_LOWERING.with(|c| c.get())
-}
-
-pub(crate) fn set_ambient_lowering(lowering: Lowering) {
-    AMBIENT_LOWERING.with(|c| c.set(lowering));
-}
-
-fn emit_direct(ui: Ui, input: &TokenStream2) -> TokenStream2 {
     crate::ui_split::reset_slot_counter();
-    set_ambient_lowering(Lowering::Direct);
     let body = emit_root_scope(&ui.elements);
     emit_shell(input, body)
 }
@@ -778,9 +636,6 @@ pub(crate) fn with_prelude(scope: &crate::ui_split::Scope, body: TokenStream2) -
 /// always done, since the author's expressions live inside the
 /// branch/row closure.
 pub(crate) fn emit_child_scope(nodes: &[UiNode]) -> TokenStream2 {
-    if ambient_lowering() == Lowering::Template {
-        return crate::ui_template::emit_child_scope(nodes);
-    }
     let scope = crate::ui_split::split(nodes);
     let parts: Vec<TokenStream2> =
         scope.nodes.iter().map(|n| emit_node(n, Ctx::Child)).collect();
@@ -3794,9 +3649,6 @@ fn try_emit_for_repeat(
 /// (from a user component) and the surrounding `when()` / `if`
 /// expression always sees `Element`.
 pub(crate) fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
-    if ambient_lowering() == Lowering::Template {
-        return crate::ui_template::emit_single_scope(nodes);
-    }
     // A branch / arm / row / presence body is its own template scope —
     // see `emit_child_scope`.
     let scope = crate::ui_split::split(nodes);
@@ -3865,50 +3717,6 @@ mod tests {
     fn parse_and_emit(input: TokenStream2) -> String {
         let ui: Ui = syn::parse2(input.clone()).expect("parse ui");
         emit(ui, &input).to_string()
-    }
-
-    // -------------------------------------------------------------------
-    // Lowering selection
-    // -------------------------------------------------------------------
-
-    /// `IDEALYST_UI_LOWERING` parsing. Not read from the real
-    /// environment here — env vars are process-global and these tests
-    /// run in parallel threads, so a `set_var` would race every other
-    /// test in this binary. `lowering_from_env` is a two-line wrapper
-    /// over this; the value mapping is what matters.
-    #[test]
-    fn the_lowering_env_var_parses_both_names() {
-        assert_eq!(parse_lowering("direct"), Ok(Lowering::Direct));
-        assert_eq!(parse_lowering("template"), Ok(Lowering::Template));
-    }
-
-    /// An exported-but-empty var is "unset", not an error: a shell that
-    /// does `IDEALYST_UI_LOWERING= cargo build` means the default.
-    #[test]
-    fn an_empty_lowering_value_means_the_default() {
-        assert_eq!(parse_lowering(""), Ok(Lowering::Direct));
-    }
-
-    /// A typo must FAIL, never fall back to `direct`. Silently building
-    /// the wrong lowering is precisely the failure this split exists to
-    /// make impossible to hide — and it would be invisible, because
-    /// both lowerings produce working programs.
-    #[test]
-    fn an_unknown_lowering_value_is_an_error_naming_the_valid_ones() {
-        let err = parse_lowering("tempalte").expect_err("a typo must not fall back");
-        assert!(err.contains("tempalte"), "{err}");
-        assert!(err.contains("direct"), "{err}");
-        assert!(err.contains("template"), "{err}");
-        assert!(err.contains(LOWERING_ENV), "{err}");
-    }
-
-    /// Whitespace around the value is trimmed by `lowering_from_env`
-    /// before it reaches `parse_lowering`; pin that the parser itself
-    /// does not also accept padded values, so the trim is the one place
-    /// it happens.
-    #[test]
-    fn the_parser_does_not_trim_on_its_own() {
-        assert!(parse_lowering(" template ").is_err());
     }
 
     /// `link(test_id = …)` must emit a `.test_id(…)` call.

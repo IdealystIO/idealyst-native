@@ -208,9 +208,6 @@ pub mod scoped_spawn;
 pub mod scoped_scheduling;
 pub mod slots;
 pub mod style_attach;
-// The `ui_lowered!(template { … })` builder: `(descriptor, slots) ->
-// Element`. See src/template.rs.
-pub mod template;
 pub mod theme;
 pub mod viewport;
 

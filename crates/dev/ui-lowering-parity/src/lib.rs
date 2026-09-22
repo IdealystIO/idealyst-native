@@ -229,11 +229,8 @@ fn scene_snapshot(h: &Harness) -> String {
 /// One corpus entry: a name plus a recorder per lowering.
 pub struct Fixture {
     pub name: &'static str,
-    /// Record the fixture as expanded by `ui_lowered!(direct)`.
+    /// Record the fixture's mounted scene.
     pub direct: fn(Mode) -> Recording,
-    /// Record the fixture as expanded by `ui_lowered!(template)`.
-    /// `None` until the template lowering exists (phase 2).
-    pub template: Option<fn(Mode) -> Recording>,
 }
 
 // ===========================================================================
@@ -280,27 +277,27 @@ pub fn check_golden(name: &str, mode: Mode, recording: &Recording) {
     }
 }
 
-/// Assert two recordings of the same fixture are identical, reporting
-/// the coarsest differing projection first (structural → full → scene),
-/// because that is the order in which a divergence is diagnosable.
+/// Assert two recordings are identical, reporting the coarsest
+/// differing projection first (structural → full → scene), because that
+/// is the order in which a divergence is diagnosable.
 pub fn assert_parity(name: &str, a: &Recording, b: &Recording) {
     if a.structural() != b.structural() {
         panic!(
-            "`{name}`: structural op sequences differ\n\n--- direct ---\n{}\n--- template ---\n{}",
+            "`{name}`: structural op sequences differ\n\n--- a ---\n{}\n--- b ---\n{}",
             a.structural(),
             b.structural()
         );
     }
     if a.full() != b.full() {
         panic!(
-            "`{name}`: full op streams differ\n\n--- direct ---\n{}\n--- template ---\n{}",
+            "`{name}`: full op streams differ\n\n--- a ---\n{}\n--- b ---\n{}",
             a.full(),
             b.full()
         );
     }
     if a.scene != b.scene {
         panic!(
-            "`{name}`: final scenes differ\n\n--- direct ---\n{}\n--- template ---\n{}",
+            "`{name}`: final scenes differ\n\n--- a ---\n{}\n--- b ---\n{}",
             a.scene, b.scene
         );
     }

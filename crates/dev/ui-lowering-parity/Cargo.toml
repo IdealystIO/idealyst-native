@@ -25,16 +25,6 @@ license.workspace = true
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
 
-[features]
-default = ["template"]
-# Compiles the TEMPLATE half of every fixture and the cross-lowering
-# tests. On by default now that the template emitter exists — the whole
-# point of the crate is that both halves run in ONE process, so an
-# off-by-default parity gate would be a gate nobody runs. Kept as a
-# feature so the direct-only goldens can still be checked in isolation
-# (`--no-default-features`) when bisecting a divergence.
-template = []
-
 [dependencies]
 # `ui_lowered!` / `#[component]` / `stylesheet!` — the macro set under test.
 runtime-macros = { workspace = true }

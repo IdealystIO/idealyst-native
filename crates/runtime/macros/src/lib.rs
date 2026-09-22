@@ -10,24 +10,17 @@
 //!   Parses `Name(prop = value) { children }` and desugars to plain Rust
 //!   calls / `BuildElement` struct literals. See [`ui`].
 //!
-//! ## `ui!`'s two lowerings
+//! ## The split pass
 //!
-//! `ui!` emits the **direct** lowering — builder calls inline. A second,
-//! **template** lowering ([`ui_template`]) turns the same parsed tree
-//! into a `static` descriptor plus a runtime slot array, built by
-//! `runtime_vocabulary::template`. They share the whole front half: the
-//! parser, the [`ui::UiNode`] tree, and [`ui_split`]'s static/slot
-//! classification and hoisting prelude.
+//! `ui!` has ONE lowering — builder calls inline. Before emitting, it
+//! runs [`ui_split`], which separates each site into descriptor DATA
+//! (literals, enum-like paths, style-token accessors, attribute names,
+//! child order) and an ordered list of dynamic **slots**, and hoists
+//! every slot into a `let` at the head of its scope in source order.
 //!
-//! Selection is PER INVOCATION, through the test-only
-//! `ui_lowered!(direct { … })` / `ui_lowered!(template { … })` — never a
-//! cargo feature on this crate, because a proc-macro crate is compiled
-//! once per build graph and a feature here would flip the lowering for
-//! every crate in the same cargo invocation. That is the hazard that
-//! removed the `new-core` feature; see the NOTE in `Cargo.toml`.
-//!
-//! The two must build identical scenes. `crates/dev/ui-lowering-parity`
-//! is the gate.
+//! The split is not an implementation detail of the emission: it is the
+//! producer of the `runtime_template::Descriptor` a dev-time overlay
+//! patches. See `crates/runtime/template`.
 //!
 //! ## Heuristics, limitations
 //!
@@ -74,7 +67,6 @@ mod reactivity;
 mod stylesheet;
 mod ui;
 mod ui_split;
-mod ui_template;
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -219,37 +211,6 @@ pub fn ui(input: TokenStream) -> TokenStream {
     match syn::parse2::<ui::Ui>(input.clone()) {
         Ok(parsed) => finish(ui::emit(parsed, &input)),
         Err(err) => finish(ui::emit_recovery(input, &err)),
-    }
-}
-
-/// `ui_lowered!(direct { … })` / `ui_lowered!(template { … })` —
-/// TEST-ONLY entry point that pins which of the two `ui!` lowerings a
-/// call site expands to.
-///
-/// `ui!` always emits the DIRECT lowering (builder calls inline, as it
-/// always has). The TEMPLATE lowering turns the same parsed tree into a
-/// `static` descriptor plus an ordered slot list and hands both to
-/// `runtime_vocabulary`'s template builder. Both must produce identical
-/// scenes; `crates/dev/ui-lowering-parity` is the suite that proves it.
-///
-/// Why an explicit-mode macro instead of a cargo feature on this crate:
-/// a proc-macro crate is compiled ONCE per build graph, so a feature
-/// here flips the lowering for every crate in the same cargo
-/// invocation. That hazard is exactly why the `new-core` feature was
-/// removed (see the NOTE in this crate's `Cargo.toml`). Selection is
-/// therefore per invocation; a per-build-graph switch, when it lands,
-/// will be an env var read at expansion time (the shape `lazy!`'s
-/// retired `IDEALYST_DYNAMIC_SPLIT` used).
-#[proc_macro]
-pub fn ui_lowered(input: TokenStream) -> TokenStream {
-    let input: proc_macro2::TokenStream = input.into();
-    let (lowering, body) = match ui::split_lowered_invocation(input) {
-        Ok(pair) => pair,
-        Err(err) => return err.to_compile_error().into(),
-    };
-    match syn::parse2::<ui::Ui>(body.clone()) {
-        Ok(parsed) => finish(ui::emit_with(parsed, &body, lowering)),
-        Err(err) => finish(ui::emit_recovery(body, &err)),
     }
 }
 
