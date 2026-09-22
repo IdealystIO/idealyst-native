@@ -545,11 +545,20 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         describe(&watch_paths),
     );
 
-    // The descriptor set the current build left behind, if any. Kept
-    // across saves and advanced after each decided patch, so the NEXT
-    // save diffs against what is actually running rather than against
-    // the source the last compiler saw.
-    let mut archive = overlay_decide::load_archive(&dir, &dir_package_name(&dir));
+    // The descriptor set describing the build now running. Written
+    // HERE, before the first save, rather than only after a rebuild:
+    // the initial build already happened by the time this loop starts,
+    // and without an archive from it the very first save of every
+    // session would have nothing to diff against and would rebuild.
+    //
+    // Kept across saves and advanced after each decided patch, so the
+    // NEXT save diffs against what is actually running rather than
+    // against the source the last compiler saw.
+    let package = dir_package_name(&dir);
+    if let Err(e) = overlay::write_for(&dir, &dir) {
+        eprintln!("[dev-reload] no descriptor set for this build: {e}");
+    }
+    let mut archive = overlay_decide::load_archive(&dir, &package);
 
     while let Ok(events) = rx.recv() {
         let changed_paths: Vec<PathBuf> = match &events {
@@ -660,7 +669,7 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         // has the edits compiled in, so re-sending them would be
         // applying the same change twice.
         match overlay::write_for(&dir, &dir) {
-            Ok(_) => archive = overlay_decide::load_archive(&dir, &dir_package_name(&dir)),
+            Ok(_) => archive = overlay_decide::load_archive(&dir, &package),
             Err(e) => {
                 eprintln!("[dev-reload] no descriptor set for this build: {e}");
                 archive = None;

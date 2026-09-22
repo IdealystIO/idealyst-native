@@ -1193,13 +1193,15 @@ fn web_dev_features(no_robot: bool) -> Vec<String> {
     // A cargo feature, so cargo fingerprints it and `config_key` already
     // keys the target dir on `user_features`: flipping it cannot serve a
     // half-tagged build.
-    f.push("runtime-core/ui-overlay".to_string());
-    // The PAGE half: `backend-web`'s `__idealyst_overlay_patch`, the
-    // entry point the livereload script calls when the dev loop decided
-    // a save needs no rebuild. A separate feature because it is a
-    // separate crate — `runtime-core/ui-overlay` reaches the emission
-    // and the applier, not the wasm-bindgen export.
-    f.push("backend-web/ui-overlay".to_string());
+    // Spelled as a FRAMEWORK feature (build-web maps it to
+    // `idealyst/ui-overlay`), not as two package specs. An app depends
+    // on the `idealyst` facade, not on `backend-web`, and naming a
+    // package the app does not depend on is a hard cargo error. The
+    // facade forwards to both halves: the emission and applier in
+    // `runtime-core`, and `backend-web`'s `__idealyst_overlay_patch`,
+    // the entry point the livereload script calls when the dev loop
+    // decided a save needs no rebuild.
+    f.push("ui-overlay".to_string());
     f
 }
 
@@ -1575,16 +1577,11 @@ fn launch_web(
         // SSE stream so all change sources fan into one reload event.
         let signal = local_signal.expect("local_signal allocated for local mode");
         if !args.no_build {
-            // The overlay's build-time half: the descriptor set for
-            // this crate's `ui!` sites, written beside the build. Only
-            // here, because only `dev` compiles the tags that address
-            // it. A failure is reported and ignored — a dev server that
-            // refused to start because a descriptor could not be
-            // written would be trading the whole loop for an
-            // enhancement to it.
-            if let Err(e) = dev_reload::overlay::write_for(dir, dir) {
-                eprintln!("[overlay] no descriptor set for this build: {e}");
-            }
+            // The overlay's build-time half — the descriptor set for
+            // this crate's `ui!` sites — is written by the watcher
+            // itself, once the initial build has actually happened. See
+            // `dev_reload::watch_loop`.
+            //
             // `dev_reload::start_with` does the first build
             // synchronously and then keeps a watcher thread alive in
             // the returned handle. Forget the handle: it lives as
@@ -3397,8 +3394,7 @@ mod tests {
             opts.features,
             vec![
                 "runtime-core/dev".to_string(),
-                "runtime-core/ui-overlay".to_string(),
-                "backend-web/ui-overlay".to_string(),
+                "ui-overlay".to_string(),
             ],
         );
         assert_eq!(opts.robot_relay_url, None);
@@ -3413,17 +3409,12 @@ mod tests {
             vec![
                 "runtime-core/dev".to_string(),
                 "robot".to_string(),
-                "runtime-core/ui-overlay".to_string(),
-                "backend-web/ui-overlay".to_string(),
+                "ui-overlay".to_string(),
             ],
         );
         assert_eq!(
             web_dev_features(true),
-            vec![
-                "runtime-core/dev".to_string(),
-                "runtime-core/ui-overlay".to_string(),
-                "backend-web/ui-overlay".to_string(),
-            ],
+            vec!["runtime-core/dev".to_string(), "ui-overlay".to_string()],
         );
     }
 
@@ -3433,8 +3424,7 @@ mod tests {
     /// only means anything next to a tagged build).
     #[test]
     fn the_overlay_is_dev_only() {
-        assert!(web_dev_features(false).iter().any(|f| f == "runtime-core/ui-overlay"));
-        assert!(web_dev_features(false).iter().any(|f| f == "backend-web/ui-overlay"));
+        assert!(web_dev_features(false).iter().any(|f| f == "ui-overlay"));
         let build_rs = include_str!("build.rs");
         assert!(
             !build_rs.contains("ui-overlay"),
@@ -3444,10 +3434,10 @@ mod tests {
             !build_rs.contains("overlay::"),
             "`idealyst build` must not produce a descriptor set"
         );
-        assert!(
-            include_str!("dev.rs").contains("overlay::write_for"),
-            "`idealyst dev` must produce one"
-        );
+        // That `dev` PRODUCES one is asserted where the code lives —
+        // `dev_reload`'s `the_watcher_writes_an_archive_the_decision_can_load`.
+        // Asserting it from here once meant grepping this file for a
+        // string only the assertion itself contained.
     }
 
     /// A project manifest with whatever `[package.metadata.idealyst.app]`

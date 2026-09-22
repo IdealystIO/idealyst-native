@@ -1685,7 +1685,7 @@ fn default_nightly_toolchain() -> String {
 /// wrapper gone they resolve against the `idealyst` facade the app
 /// depends on. Anything NOT listed here is one of the app's own
 /// features and is passed through untouched.
-const FRAMEWORK_FEATURES: &[&str] = &["runtime-server", "robot", "hydrate"];
+const FRAMEWORK_FEATURES: &[&str] = &["runtime-server", "robot", "hydrate", "ui-overlay"];
 
 /// Map a CLI-supplied feature name to the spec cargo needs on the app
 /// crate: `robot` → `idealyst/robot`, `my-thing` → `my-thing`.

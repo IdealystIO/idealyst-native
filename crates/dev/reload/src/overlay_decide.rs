@@ -548,3 +548,42 @@ mod payload_tests {
         assert!(!json.contains('\n'), "{json}");
     }
 }
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+
+    /// What the producer writes, the decision must be able to load.
+    ///
+    /// Two halves that only meet on disk: `write_for` names the file by
+    /// content hash under `target/idealyst/<app>/overlay/`, and
+    /// `load_archive` finds the newest one there. A mismatch in either
+    /// spelling would make every save rebuild — quietly, because
+    /// "no archive" is a perfectly ordinary reason to rebuild.
+    #[test]
+    fn the_watcher_writes_an_archive_the_decision_can_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"archive-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/app.rs"),
+            "#[component]\nfn S() -> Element { ui! { text { \"x\" } } }\n",
+        )
+        .unwrap();
+
+        assert!(
+            load_archive(dir.path(), "archive-fixture").is_none(),
+            "nothing to load before a build"
+        );
+
+        crate::overlay::write_for(dir.path(), dir.path()).expect("write");
+        let loaded = load_archive(dir.path(), "archive-fixture").expect("load");
+        assert_eq!(loaded.package, "archive-fixture");
+        assert_eq!(loaded.sites.len(), 1);
+        assert_eq!(loaded, crate::overlay::scan_crate(dir.path()).unwrap());
+    }
+}

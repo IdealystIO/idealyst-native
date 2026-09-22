@@ -40,13 +40,18 @@ terminal = ["dep:host-terminal"]
 runtime-server = ["dep:dev-client", "backend-web/runtime-server"]
 # Robot bridge — the MCP server's remote-control transport.
 robot = ["backend-web/robot"]
-# Dev-time UI overlay: each `ui!` site registers its descriptor and tags
-# the nodes it builds, so the dev loop can patch a site's static half
-# (literals, styles, child order) without recompiling. OFF by default;
-# `idealyst dev` turns it on. A cargo feature and not
-# `cfg(debug_assertions)` so an over-the-air path could use it in a
-# release build.
-ui-overlay = ["runtime-core/ui-overlay"]
+# Both halves of the dev-time UI overlay, from one name: the emission
+# and the applier in `runtime-core`, and `backend-web`'s
+# `__idealyst_overlay_patch` — the entry point the livereload script
+# calls when the dev loop decided a save needs no rebuild. `idealyst dev
+# --web` passes it; `build --web` never does.
+#
+# It has to be spelled here rather than as `runtime-core/...` plus
+# `backend-web/...` on the app crate: an app depends on this facade and
+# not on `backend-web`, and a feature spec naming a package the app does
+# not depend on is a hard cargo error — which is exactly how the first
+# attempt failed against CrewForge.
+ui-overlay = ["runtime-core/ui-overlay", "backend-web/ui-overlay"]
 
 # Adopt server-rendered DOM instead of mounting fresh. Set by the build
 # when the app is paired with an SSR/SSG server binary; `boot::web`'s
