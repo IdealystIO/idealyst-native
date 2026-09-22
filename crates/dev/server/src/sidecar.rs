@@ -943,10 +943,11 @@ mod runtime {
     /// `--new-core` sidecar wrapper passes the user crate's
     /// `register_scene_extensions_recorder`.
     ///
-    /// Hot-patch note: the `#[component]` macro's new-core emission has
-    /// no `dev_hot` split yet, so `ApplyPatch` frames are refused with a
-    /// log line (returning to the host's rebuild-and-respawn path)
-    /// instead of silently re-rendering unpatched code.
+    /// Hot-patch note: the sidecar wrapper is built with
+    /// `runtime-core/hot-reload`, so every `#[component]` in the graph
+    /// dispatches through the subsecond jump table and an `ApplyPatch`
+    /// frame really does rebind the patched bodies. Each live session
+    /// is then told to re-run (`SessionMsg::Rerender`).
     pub fn run_newcore(
         app: fn() -> crate::newcore::SceneElement,
         register: fn(&mut crate::newcore::SceneRegistry),
@@ -1245,21 +1246,35 @@ mod runtime {
     ///
     /// - **Mount**: `SceneSession::mount` (world + `register_builtins`
     ///   + `realize` + `finish` + first flush) instead of
-    ///   `runtime_shared::mount`. No `dev_hot::with_retry` wrapper — the
-    ///   new-core `#[component]` emission has no hot-dispatch split,
-    ///   so there is no stale-pointer panic to retry.
+    ///   `runtime_shared::mount`, wrapped in `dev_hot::with_retry` —
+    ///   subsecond's catch-unwind boundary for a stale `HotFnPanic`
+    ///   raised by a nested dispatch. (Subsecond 0.7 never raises one:
+    ///   `HotFn::try_call` returns `Ok` on every path, so the wrapper is
+    ///   a direct call today. It is here because the mount walk is the
+    ///   OUTERMOST frame that runs user component bodies — if a future
+    ///   subsecond reinstates the panic, this is the frame that has to
+    ///   catch it, and without it a stale call unwinds through the
+    ///   session thread and the UI silently freezes.)
     /// - **Event commit**: world signals have no ambient flush driver
     ///   on this thread, so every dispatched message is followed by
     ///   `session.flush()` BEFORE the command drain — that's what
     ///   makes an event's effects emit their wire deltas into this
     ///   drain instead of the next one.
     /// - **Rerender**: drop the session (cleanups fire against the
-    ///   live world), reset the recorder log/scene, remount fresh.
+    ///   live world), reset the recorder log/scene, remount fresh —
+    ///   IN PROCESS. This is what turns an applied jump table into
+    ///   pixels: a patched body only runs the next time the component
+    ///   is built, and nothing re-builds a mounted tree on its own.
+    ///   No rebuild, no relink, no respawn, no client reconnect: the
+    ///   WebSocket and the session id both survive, and the client sees
+    ///   the new tree as ordinary wire commands.
     ///   Node/style id memos survive the reset exactly as on the old
     ///   core, but the new-core realize path doesn't set ambient
     ///   identities yet, so remounts mint fresh ids and clients
     ///   rebuild from the epoch-bumped snapshot (see
     ///   `crate::newcore` module docs — named gap, not silent).
+    ///   Signal state does NOT survive a re-run today; that is the
+    ///   named gap tracked in `docs/hot-reload.md`.
     fn run_session_thread_newcore(
         session: String,
         rx: mpsc::Receiver<SessionMsg>,
@@ -1278,7 +1293,14 @@ mod runtime {
             crate::set_session_viewport(v.width, v.height);
         }
 
-        let mount = || crate::newcore::SceneSession::mount(&recorder, |r| register(r), app);
+        // `with_retry` is subsecond's catch-unwind boundary; see this
+        // fn's doc comment for why the mount walk is the frame that
+        // owns it.
+        let mount = || {
+            dev_hot::with_retry(|| {
+                crate::newcore::SceneSession::mount(&recorder, |r| register(r), app)
+            })
+        };
         // `Rc<RefCell<Option<...>>>` (not a plain local) so the Robot
         // driver-env closures installed below can reach the CURRENT
         // session across Rerender remounts.
@@ -1394,12 +1416,11 @@ mod runtime {
                     apply_overlay_patch_json(&scene_session, &patch_json);
                 }
                 SessionMsg::Rerender => {
-                    // Reached only if the host applied a patch anyway —
-                    // `run_newcore` can't rebind new-core component
-                    // bodies (no hot-dispatch emission), but a full
-                    // re-realize against the current process image is
-                    // still coherent, so honour the request the same
-                    // way a respawn would: fresh scene, fresh snapshot.
+                    // A jump table was applied; the patched bodies are
+                    // live but nothing has called them. Re-realize this
+                    // session's tree against the current process image:
+                    // fresh scene, fresh snapshot, same socket and same
+                    // session id.
                     let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                         || drop(scene_session.borrow_mut().take()),
                     ));

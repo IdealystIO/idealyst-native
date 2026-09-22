@@ -104,6 +104,34 @@ pub trait HotPatchAdapter: Send + Sync {
         user_crate: &str,
         aslr_reference: u64,
     ) -> anyhow::Result<JumpTable>;
+
+    /// Extra environment the respawn fallback's `cargo build` must run
+    /// with.
+    ///
+    /// A respawn is not a neutral operation for the fast path: the
+    /// initial "fat" build sets `RUSTFLAGS` and a rustc wrapper that
+    /// together keep the artifacts a patch needs (saved object files,
+    /// undropped symbols, captured invocations). Rebuilding without
+    /// them recompiles the whole graph from a different fingerprint,
+    /// leaves the captures describing the PREVIOUS source, and relinks
+    /// the sidecar with symbols stripped. The adapter owns that
+    /// knowledge; the host just applies what it is handed.
+    fn rebuild_env(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Called after the host has respawned the sidecar from a fresh
+    /// binary.
+    ///
+    /// The adapter caches the sidecar's symbol table, and a relink
+    /// moves every address in it. Patching against the stale copy does
+    /// not render stale UI — it jumps into unrelated text and takes the
+    /// process down. Returning `Err` therefore means "the fast path is
+    /// no longer safe", and the host retires the adapter for the rest
+    /// of the session rather than risk it.
+    fn sidecar_rebuilt(&self, _sidecar_bin: &std::path::Path) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Run the dev-host loop. Blocks the calling thread until the
@@ -221,6 +249,9 @@ pub fn run(
 
     let sidecar_for_rebuild = sidecar_slot.clone();
     let hotpatch_for_rebuild = hot_patch.clone();
+    // The watch callback is the only reader/writer and the change loop
+    // runs it on one thread, so a `Cell` is enough. See its use below.
+    let retired = std::cell::Cell::new(false);
     let tracker_for_rebuild = session_tracker.clone();
     let sidecar_path_for_rebuild = sidecar_path.clone();
     let sidecar_manifest_for_rebuild = sidecar_manifest.clone();
@@ -287,37 +318,39 @@ pub fn run(
                 .ok()
                 .map(|v| !v.is_empty() && v != "0")
                 .unwrap_or(false);
-            if force_respawn {
+            // `retired` latches once the adapter's cached view of the
+            // sidecar binary can no longer be refreshed — see
+            // `note_respawn`. Cheaper to lose the fast path than to
+            // patch against addresses that have moved.
+            let adapter: Option<&dyn HotPatchAdapter> = if retired.get() {
+                None
+            } else {
+                hotpatch_for_rebuild.as_deref().map(|b| &**b)
+            };
+            let mut respawn = |why: &str| {
                 respawn_sidecar(
                     &sidecar_for_rebuild,
                     &tracker_for_rebuild,
                     &sidecar_path_for_rebuild,
                     &sidecar_manifest_for_rebuild,
                     &cargo_target_for_rebuild,
+                    adapter,
                 );
+                if !note_respawn(adapter, &sidecar_path_for_rebuild) {
+                    retired.set(true);
+                }
                 eprintln!(
-                    "[runtime-server-host] respawn applied in {}ms (force_respawn)",
+                    "[runtime-server-host] respawn applied in {}ms ({why})",
                     t_total.elapsed().as_millis()
                 );
+            };
+            if force_respawn {
+                respawn("force_respawn");
                 return;
             }
-            if let Err(e) = try_hotpatch(
-                hotpatch_for_rebuild.as_deref().map(|b| &**b),
-                &sidecar_for_rebuild,
-                &user_crate_for_rebuild,
-            ) {
+            if let Err(e) = try_hotpatch(adapter, &sidecar_for_rebuild, &user_crate_for_rebuild) {
                 eprintln!("[runtime-server-host] hot-patch failed: {e:#} — respawning sidecar");
-                respawn_sidecar(
-                    &sidecar_for_rebuild,
-                    &tracker_for_rebuild,
-                    &sidecar_path_for_rebuild,
-                    &sidecar_manifest_for_rebuild,
-                    &cargo_target_for_rebuild,
-                );
-                eprintln!(
-                    "[runtime-server-host] respawn applied in {}ms (after hot-patch failure)",
-                    t_total.elapsed().as_millis()
-                );
+                respawn("after hot-patch failure");
             } else {
                 eprintln!(
                     "[runtime-server-host] hot-patch applied in {}ms",
@@ -486,16 +519,9 @@ fn respawn_sidecar(
     sidecar_path: &std::path::Path,
     sidecar_manifest: &std::path::Path,
     cargo_target: &std::path::Path,
+    hot_patch: Option<&dyn HotPatchAdapter>,
 ) {
-    let status = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "--manifest-path",
-        ])
-        .arg(sidecar_manifest)
-        .arg("--target-dir")
-        .arg(cargo_target)
-        .status();
+    let status = respawn_cargo_command(sidecar_manifest, cargo_target, hot_patch).status();
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => {
@@ -522,6 +548,57 @@ fn respawn_sidecar(
         }
     }
     replay_sessions_to_sidecar(sidecar_slot, tracker);
+}
+
+/// The respawn's `cargo build`, with the adapter's environment applied.
+///
+/// Split out so the env can be asserted without spawning cargo. The env
+/// is the whole point: rebuilding the sidecar WITHOUT the fat build's
+/// `RUSTFLAGS` + rustc wrapper keys a different cargo fingerprint (so
+/// every fallback recompiles the entire graph instead of a few crates),
+/// leaves the per-crate rustc captures describing the previous source,
+/// and relinks the binary without `-Clink-dead-code` — which strips the
+/// symbols the next patch's stub has to resolve. One dropped env var
+/// turns the fast path off for the rest of the session, silently.
+fn respawn_cargo_command(
+    sidecar_manifest: &std::path::Path,
+    cargo_target: &std::path::Path,
+    hot_patch: Option<&dyn HotPatchAdapter>,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["build", "--manifest-path"])
+        .arg(sidecar_manifest)
+        .arg("--target-dir")
+        .arg(cargo_target);
+    if let Some(a) = hot_patch {
+        for (k, v) in a.rebuild_env() {
+            cmd.env(k, v);
+        }
+    }
+    cmd
+}
+
+/// Tell the adapter the sidecar binary was relinked, and report whether
+/// the fast path is still safe.
+///
+/// `false` means the adapter could not re-read the new binary, so every
+/// address it holds is stale. A patch built from a stale cache does not
+/// render old UI — it jumps into whatever now occupies those offsets and
+/// kills the sidecar. The caller retires the adapter on `false`; respawn
+/// alone is slower but always correct.
+fn note_respawn(hot_patch: Option<&dyn HotPatchAdapter>, sidecar_path: &std::path::Path) -> bool {
+    let Some(a) = hot_patch else { return true };
+    match a.sidecar_rebuilt(sidecar_path) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "[runtime-server-host] could not re-read the respawned sidecar ({e:#}) — \
+                 hot-patching is DISABLED for the rest of this session (every save will \
+                 respawn). Restart `idealyst dev` to get it back."
+            );
+            false
+        }
+    }
 }
 
 /// `[package] name` of the crate at `dir`, for locating its overlay
@@ -582,5 +659,118 @@ fn send_overlay_patches(slot: &SidecarSlot, patches: &[dev_overlay::SitePatch]) 
             Ok(patch_json) => sidecar.send(SidecarIn::OverlayPatch { patch_json }),
             Err(e) => eprintln!("[runtime-server-host] cannot encode overlay patch: {e}"),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// An adapter that records what the host asked of it.
+    struct FakeAdapter {
+        env: Vec<(String, String)>,
+        rebuilt_ok: bool,
+        rebuilt_calls: AtomicUsize,
+    }
+
+    impl HotPatchAdapter for FakeAdapter {
+        fn build(&self, _user_crate: &str, _aslr: u64) -> anyhow::Result<JumpTable> {
+            anyhow::bail!("not used in these tests")
+        }
+        fn rebuild_env(&self) -> Vec<(String, String)> {
+            self.env.clone()
+        }
+        fn sidecar_rebuilt(&self, _bin: &Path) -> anyhow::Result<()> {
+            self.rebuilt_calls.fetch_add(1, Ordering::Relaxed);
+            if self.rebuilt_ok {
+                Ok(())
+            } else {
+                anyhow::bail!("symbol table unreadable")
+            }
+        }
+    }
+
+    fn fake(rebuilt_ok: bool) -> FakeAdapter {
+        FakeAdapter {
+            env: vec![
+                ("RUSTFLAGS".into(), "-Csave-temps=true -Clink-dead-code".into()),
+                ("RUSTC_WRAPPER".into(), "/path/to/idealyst".into()),
+            ],
+            rebuilt_ok,
+            rebuilt_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn envs_of(cmd: &std::process::Command) -> Vec<(String, String)> {
+        cmd.get_envs()
+            .filter_map(|(k, v)| {
+                Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned()))
+            })
+            .collect()
+    }
+
+    /// The respawn fallback used to run a bare `cargo build`, dropping
+    /// the fat build's `RUSTFLAGS` and rustc wrapper. Two consequences,
+    /// both silent: cargo saw a different fingerprint and recompiled the
+    /// WHOLE graph on every fallback (observed as a multi-minute
+    /// "respawn" on a warm tree), and the relinked sidecar lost both the
+    /// dead-code symbols and the refreshed rustc captures the next patch
+    /// depends on — so the fast path stayed broken afterwards.
+    #[test]
+    fn regression_respawn_build_carries_the_adapters_fat_env() {
+        let a = fake(true);
+        let cmd = respawn_cargo_command(
+            Path::new("/p/Cargo.toml"),
+            Path::new("/p/target"),
+            Some(&a),
+        );
+        let envs = envs_of(&cmd);
+        assert!(
+            envs.iter().any(|(k, v)| k == "RUSTFLAGS" && v.contains("-Clink-dead-code")),
+            "respawn must keep the fat build's RUSTFLAGS: {envs:?}"
+        );
+        assert!(
+            envs.iter().any(|(k, _)| k == "RUSTC_WRAPPER"),
+            "respawn must keep the capture wrapper: {envs:?}"
+        );
+    }
+
+    /// No adapter (hot-patching unavailable) is still a valid session —
+    /// the respawn just runs plain cargo.
+    #[test]
+    fn respawn_without_an_adapter_sets_no_extra_env() {
+        let cmd =
+            respawn_cargo_command(Path::new("/p/Cargo.toml"), Path::new("/p/target"), None);
+        assert!(envs_of(&cmd).is_empty(), "{:?}", envs_of(&cmd));
+    }
+
+    /// A respawn relinks the sidecar, so every link-time address the
+    /// adapter cached moves. It MUST be told, and a refusal must retire
+    /// the fast path rather than let the next patch resolve its stub
+    /// trampolines and jump-table targets against addresses that are no
+    /// longer there — which does not render stale UI, it jumps into
+    /// unrelated text and kills the sidecar.
+    #[test]
+    fn regression_respawn_tells_the_adapter_the_binary_moved() {
+        let a = fake(true);
+        assert!(note_respawn(Some(&a), Path::new("/p/sidecar")));
+        assert_eq!(a.rebuilt_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn regression_a_respawn_the_adapter_cannot_re_read_retires_the_fast_path() {
+        let a = fake(false);
+        assert!(
+            !note_respawn(Some(&a), Path::new("/p/sidecar")),
+            "an unreadable sidecar must disable patching, not be ignored"
+        );
+    }
+
+    #[test]
+    fn note_respawn_is_a_no_op_without_an_adapter() {
+        assert!(note_respawn(None, Path::new("/p/sidecar")));
     }
 }

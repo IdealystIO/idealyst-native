@@ -367,7 +367,13 @@ mod tests {
     //! investigation: in the live welcome scene, timeline-driven
     //! tweens flow after rerender but the raf_loop body never fires.
     use super::*;
-    use runtime_shared::scheduling::{after_ms_scoped, raf_loop_scoped};
+    // The `*_scoped` pair moved when the old core was deleted:
+    // runtime-shared kept the substrate copy `pub(crate)` and the
+    // author-facing one lives in the vocabulary's `scoped_scheduling`
+    // (see [[project_scoped_timers_two_apis]]). This module's imports
+    // were not updated, so `cargo test -p dev-server` has not compiled
+    // since that deletion.
+    use runtime_vocabulary::scoped_scheduling::{after_ms_scoped, raf_loop_scoped};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -398,12 +404,18 @@ mod tests {
     fn rerender_re_registers_nested_raf_loop() {
         ensure_installed();
 
-        // Helper: build one "lifetime" of the welcome pattern,
-        // return an owning Subscription + a per-lifetime call counter.
-        fn build_lifetime() -> (runtime_shared::Subscription, Rc<Cell<u32>>) {
+        // Helper: build one "lifetime" of the welcome pattern, and
+        // return the `Owned` that OWNS it plus a per-lifetime counter.
+        //
+        // `Owned`, not a `runtime_shared::Subscription`: the `*_scoped`
+        // pair anchors on the reactive-kernel scope now, so what has to
+        // be dropped to cancel the deadline and the raf is the world
+        // scope the registration was collected into. That is also what
+        // the sidecar actually drops on `SessionMsg::Rerender`.
+        fn build_lifetime() -> (runtime_world::Owned, Rc<Cell<u32>>) {
             let calls = Rc::new(Cell::new(0u32));
             let calls_for_body = calls.clone();
-            let effect = runtime_shared::watch(move || {
+            let ((), owned) = runtime_world::collect_owned(|| {
                 let counter = calls_for_body.clone();
                 // delay=0 matches `session::after_ms(at, ...)` after
                 // the session epoch has already passed `at`.
@@ -414,8 +426,11 @@ mod tests {
                     });
                 });
             });
-            (effect, calls)
+            (owned, calls)
         }
+
+        let world = runtime_world::World::new();
+        let _entered = world.enter(|| {
 
         // First lifetime — like the initial mount.
         let (first_effect, first_calls) = build_lifetime();
@@ -448,6 +463,7 @@ mod tests {
             "second lifetime (post-rerender): raf should fire on each drive (got {})",
             second_calls.get()
         );
+        });
     }
 
     #[test]
@@ -456,14 +472,18 @@ mod tests {
 
         let raf_calls = Rc::new(Cell::new(0u32));
         let raf_calls_for_body = raf_calls.clone();
-        let _sub = runtime_shared::watch(move || {
-            let raf_calls_inner = raf_calls_for_body.clone();
-            after_ms_scoped(0, move || {
-                let counter = raf_calls_inner.clone();
-                raf_loop_scoped(move || {
-                    counter.set(counter.get() + 1);
+        let world = runtime_world::World::new();
+        let _owned = world.enter(|| {
+            let (_, owned) = runtime_world::collect_owned(|| {
+                let raf_calls_inner = raf_calls_for_body.clone();
+                after_ms_scoped(0, move || {
+                    let counter = raf_calls_inner.clone();
+                    raf_loop_scoped(move || {
+                        counter.set(counter.get() + 1);
+                    });
                 });
             });
+            owned
         });
 
         // 1st drive: should fire the deadline (delay=0) which

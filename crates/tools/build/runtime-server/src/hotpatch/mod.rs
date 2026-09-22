@@ -67,13 +67,29 @@ pub use subsecond_types::JumpTable;
 pub struct HotPatchBuilder {
     /// Where `<crate>.<crate-type>.json` capture files live.
     captures_dir: PathBuf,
-    /// The sidecar bin's symbol cache (parsed once).
-    host_cache: HostBinCache,
+    /// The sidecar bin's symbol cache.
+    ///
+    /// Re-parsed, not parsed once: a respawn relinks the sidecar and
+    /// every link-time address in here moves. Patching against a stale
+    /// cache writes jump-table targets that point into whatever now
+    /// occupies those offsets — the `stub` trampolines and the table
+    /// entries BOTH go wrong, and the sidecar SIGSEGVs inside a
+    /// component body on the next render. `RwLock` because the host
+    /// calls `build` from the watch thread and `sidecar_rebuilt` from
+    /// the same thread, but the adapter is `Send + Sync` by trait.
+    host_cache: std::sync::RwLock<HostBinCache>,
     /// Where to drop the per-edit patch dylib. Each apply uses a
     /// unique filename to defeat dyld's path-keyed dlopen cache.
     target_dir: PathBuf,
     /// Sequence counter that suffixes `libpatch-N.dylib` per apply.
     seq: std::sync::atomic::AtomicU64,
+    /// Absolute path to the `idealyst` CLI binary — the rustc wrapper
+    /// a respawn's cargo build has to run through. Baked in by the
+    /// generated host wrapper because the HOST cannot discover it:
+    /// `current_exe()` there is `<project>-runtime-server-host`, which
+    /// has no `rustc-capture` dispatch, and pointing `RUSTC_WRAPPER` at
+    /// it would break every respawn.
+    idealyst_bin: PathBuf,
 }
 
 impl HotPatchBuilder {
@@ -81,6 +97,7 @@ impl HotPatchBuilder {
         captures_dir: PathBuf,
         host_bin: &Path,
         target_dir: PathBuf,
+        idealyst_bin: PathBuf,
     ) -> Result<Self> {
         let host_cache = HostBinCache::load(host_bin)
             .with_context(|| format!("parsing host bin {}", host_bin.display()))?;
@@ -88,10 +105,51 @@ impl HotPatchBuilder {
             .with_context(|| format!("create target dir {}", target_dir.display()))?;
         Ok(Self {
             captures_dir,
-            host_cache,
+            host_cache: std::sync::RwLock::new(host_cache),
             target_dir,
             seq: std::sync::atomic::AtomicU64::new(0),
+            idealyst_bin,
         })
+    }
+
+    /// Re-read `host_bin`'s symbol table after the host respawned the
+    /// sidecar.
+    ///
+    /// A respawn relinks the binary; every link-time address the cache
+    /// holds is then meaningless, and the next patch built against it
+    /// resolves its stub trampolines and its jump-table entries to the
+    /// wrong offsets. The failure is not a bad render — it is a jump
+    /// into unrelated text, i.e. a SIGSEGV inside a component body,
+    /// which is exactly the crash class `dev-server`'s crash handler
+    /// exists to make legible. Re-parsing is the fix; failing to
+    /// re-parse must therefore DISABLE patching rather than carry on,
+    /// so this returns `Err` and the host treats it as fatal for the
+    /// fast path.
+    pub fn sidecar_rebuilt(&self, host_bin: &Path) -> Result<()> {
+        let fresh = HostBinCache::load(host_bin)
+            .with_context(|| format!("re-parsing respawned sidecar {}", host_bin.display()))?;
+        let mut guard = self
+            .host_cache
+            .write()
+            .map_err(|_| anyhow::anyhow!("host-bin cache lock poisoned"))?;
+        *guard = fresh;
+        Ok(())
+    }
+
+    /// The env a respawn's `cargo build` has to run with.
+    ///
+    /// Not cosmetic: the fat build sets `RUSTFLAGS=-Csave-temps=true
+    /// -Clink-dead-code` and a `RUSTC_WRAPPER` that captures each
+    /// crate's rustc invocation. A respawn that builds WITHOUT them
+    /// (a) keys a different fingerprint, so cargo recompiles the entire
+    /// graph from scratch on every fallback — the cold rebuild that
+    /// made respawn cost minutes rather than seconds; (b) leaves the
+    /// captures stale, so the next replay re-emits the PREVIOUS
+    /// source; and (c) relinks the sidecar without `-Clink-dead-code`,
+    /// dropping the very symbols the next patch's stub needs to
+    /// resolve. Same env, same fingerprint, same artifact shape.
+    pub fn rebuild_env(&self) -> Vec<(String, String)> {
+        fat_build_env(&self.idealyst_bin, &self.captures_dir)
     }
 
     /// Re-run the captured rustc invocation for `user_crate` with
@@ -121,12 +179,17 @@ impl HotPatchBuilder {
             anyhow::bail!("rustc --emit=obj produced no object files");
         }
 
+        let host_cache = self
+            .host_cache
+            .read()
+            .map_err(|_| anyhow::anyhow!("host-bin cache lock poisoned"))?;
+
         let t_stub = std::time::Instant::now();
         let stub_obj = self.target_dir.join("patch.stub.o");
         let stub_s = self.target_dir.join("patch.stub.s");
         stub::synthesize(
             &objs,
-            &self.host_cache,
+            &host_cache,
             runtime_main_addr,
             &stub_s,
             &stub_obj,
@@ -144,7 +207,7 @@ impl HotPatchBuilder {
         let link_ms = t_link.elapsed().as_millis();
 
         let t_jt = std::time::Instant::now();
-        let table = jumptable::build(&out_dylib, &self.host_cache, runtime_main_addr)
+        let table = jumptable::build(&out_dylib, &host_cache, runtime_main_addr)
             .context("building jump table")?;
         let jt_ms = t_jt.elapsed().as_millis();
 
