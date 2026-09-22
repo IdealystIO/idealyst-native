@@ -1,0 +1,47 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 portal
+create n2 view
+create n3 text "passthrough"
+insert n2 <- n3
+insert n1 <- n2
+insert_at n0 <- n1 @ 0
+
+-- close --
+remove_child n0 -x n1
+create n4 view
+insert_at n0 <- n4 @ 0
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 portal
+create n2 view
+create n3 text "passthrough"
+insert n2 <- n3
+insert n1 <- n2
+insert_at n0 <- n1 @ 0
+
+-- close --
+remove_child n0 -x n1
+release_portal n1
+release_subtree n1
+create n4 view
+apply_default_text_font none
+register_stylesheet rules=1
+apply_style n4 width=none
+insert_at n0 <- n4 @ 0
+
+-- unmount --
+on_node_unstyled n4
+
+=== scene ===
+n0 view
+  n4 view
+n1 portal
+  n2 view
+    n3 text "passthrough"

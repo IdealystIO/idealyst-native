@@ -311,9 +311,56 @@ impl<'a> DescBuilder<'a> {
         }
         let name_str = name.to_string();
         match crate::primitives::canonical_primitive(&name_str) {
+            // `when` is the `Dyn` construct spelled as a tag, not a
+            // `Prim`: the same `glue::when(cond, then, otherwise)` a
+            // reactive `if` lowers to.
+            Some("when") => self.lower_when(props),
             Some(canonical) => self.lower_prim(node, canonical, props, children, ctx),
             None => self.lower_user_component(node, name, props, children, ctx),
         }
+    }
+
+    /// The `when(cond = …, then = …, otherwise = …)` tag, as
+    /// [`runtime_template::Node::Dyn`]. The defaults match
+    /// `ui::emit_when` exactly: a false condition and two empty views.
+    fn lower_when(&mut self, props: &[Prop]) -> u32 {
+        let cond = props
+            .iter()
+            .find(|p| p.name == "cond")
+            .map(|p| p.value.to_token_stream())
+            .unwrap_or_else(|| quote! { || false });
+        let cond_kind = props.iter().find(|p| p.name == "cond").map_or("closure", |p| {
+            self.kind_of(&p.value)
+        });
+        let cond_slot = self.push_slot(
+            quote! { ::runtime_core::__template::SlotValue::cond(#cond) },
+            Some("cond"),
+            SlotRole::Condition.as_str(),
+            cond_kind,
+        );
+        let mut branch = |label: &'static str, default: TokenStream2, this: &mut Self| {
+            let expr = props
+                .iter()
+                .find(|p| p.name == label)
+                .map(|p| p.value.to_token_stream())
+                .unwrap_or(default);
+            this.push_slot(
+                quote! { ::runtime_core::__template::SlotValue::branch(#expr) },
+                Some(label),
+                "child",
+                "branch",
+            )
+        };
+        let empty = quote! { || ::runtime_vocabulary::glue::empty_absolute_view() };
+        let then_slot = branch("then", empty.clone(), self);
+        let else_slot = branch("otherwise", empty, self);
+        self.push_node(quote! {
+            ::runtime_core::__template::TemplateNode::Dyn {
+                cond: #cond_slot,
+                then: #then_slot,
+                otherwise: #else_slot,
+            }
+        })
     }
 
     // -----------------------------------------------------------------
@@ -337,6 +384,16 @@ impl<'a> DescBuilder<'a> {
             return self.escape(node, ctx);
         }
         if canonical == "text" && !text_is_native(props, children) {
+            return self.escape(node, ctx);
+        }
+        // A missing required prop escapes too. These are the props whose
+        // ABSENT case the direct emitter fills with something a
+        // descriptor cannot express: an uncontrolled input mints a fresh
+        // signal (`glue::fresh_signal(…)`), and `icon` /
+        // `anchored_overlay` / the native `link` fail at the macro level
+        // outright. Reproducing "mint a signal" from data would mean the
+        // descriptor deciding to allocate state, which is not its job.
+        if required_props(canonical).iter().any(|r| !props.iter().any(|p| p.name == r)) {
             return self.escape(node, ctx);
         }
 
@@ -416,7 +473,24 @@ impl<'a> DescBuilder<'a> {
             if canonical == "button" && (name == "label" || name == "on_click") {
                 continue;
             }
-            entries.push(self.lower_prim_prop(&name, p));
+            entries.push(self.lower_prim_prop(canonical, &name, p));
+        }
+
+        // `presence(move || child)` rebuilds its child per mount, so the
+        // block is a branch THUNK (a nested template), not a child list —
+        // the same shape a `Dyn` branch takes. Always emitted, even for
+        // an empty block, so the "no children" case reproduces
+        // `emit_presence`'s `view(Vec::new())` default rather than
+        // escaping.
+        if canonical == "presence" {
+            let child_expr = ui::emit_block_as_primitive(children.unwrap_or(&[]));
+            let slot = self.push_slot(
+                quote! { ::runtime_core::__template::SlotValue::branch(move || #child_expr) },
+                Some("child"),
+                "child",
+                "branch",
+            );
+            entries.push(prop_entry("child", slot_ref(slot)));
         }
 
         let child_indices: Vec<u32> = match (children, prim_takes_children(canonical)) {
@@ -434,19 +508,19 @@ impl<'a> DescBuilder<'a> {
         })
     }
 
-    fn lower_prim_prop(&mut self, name: &str, p: &Prop) -> TokenStream2 {
+    fn lower_prim_prop(&mut self, canonical: &str, name: &str, p: &Prop) -> TokenStream2 {
         let value = &p.value;
         // Literal props the builder reads as data.
         if let Some(stat) = ui_split::classify_static(value) {
             if let Some(lit) = literal_tokens(&stat) {
-                if literal_fits(name, &stat) {
+                if literal_fits(canonical, name, &stat) {
                     return prop_entry(name, lit);
                 }
             }
         }
         let ctor = Ident::new(
-            prim_prop_slot_ctor(name).unwrap_or_else(|| {
-                unreachable!("`{name}` was declared native with no slot constructor")
+            prim_prop_slot_ctor(canonical, name).unwrap_or_else(|| {
+                unreachable!("`{canonical}.{name}` was declared native with no slot constructor")
             }),
             Span::call_site(),
         );
@@ -659,6 +733,12 @@ impl<'a> DescBuilder<'a> {
 
 /// The primitives the template builder constructs from data. Mirrors
 /// `runtime_template::PrimKind` — a tag absent here escapes.
+///
+/// `flat_list` and the in-app `link` (the `route =` spelling) are absent
+/// STRUCTURALLY, not pending: `flat_list<T, K, S, R>` and `link<P>` have
+/// generic constructors, and a builder driven by data has no type to
+/// instantiate them at. `when` is absent because it is not a `Prim` — it
+/// lowers to `Node::Dyn`, the same construct a reactive `if` does.
 fn native_prim(canonical: &str) -> Option<&'static str> {
     Some(match canonical {
         "view" => "View",
@@ -667,6 +747,15 @@ fn native_prim(canonical: &str) -> Option<&'static str> {
         "image" => "Image",
         "activity_indicator" => "ActivityIndicator",
         "scroll_view" => "ScrollView",
+        "icon" => "Icon",
+        "text_input" => "TextInput",
+        "toggle" => "Toggle",
+        "slider" => "Slider",
+        "link" => "Link",
+        "overlay" => "Overlay",
+        "anchored_overlay" => "AnchoredOverlay",
+        "presence" => "Presence",
+        "graphics" => "Graphics",
         _ => return None,
     })
 }
@@ -678,9 +767,10 @@ fn prim_kind_tokens(variant: &str) -> TokenStream2 {
 
 /// Which primitives build their `{ … }` block into a child list. Matches
 /// `ui_split`'s `children_kind`: everything else either treats the block
-/// as content (`text`) or ignores it.
+/// as content (`text`), turns it into a thunk (`presence`), or ignores
+/// it.
 fn prim_takes_children(canonical: &str) -> bool {
-    matches!(canonical, "view" | "scroll_view")
+    matches!(canonical, "view" | "scroll_view" | "link" | "overlay" | "anchored_overlay")
 }
 
 /// The `SlotValue` constructor for a dynamic prop — the same (kind,
@@ -688,15 +778,90 @@ fn prim_takes_children(canonical: &str) -> bool {
 /// what gives the author's expression an expected type at the call site,
 /// which is why an un-annotated closure still compiles in a slot.
 ///
+/// Keyed on (kind, prop) and not on the prop name alone, because the
+/// same name is a different TYPE on different primitives: `icon`'s
+/// `color` is `impl IntoValue<Color>` while `activity_indicator`'s is a
+/// plain `Color`, and `value` is a `String` / `bool` / `f32` signal
+/// depending on the input.
+///
 /// `None` means the prop has no slot form, so it is native only as a
 /// literal. [`prim_prop_is_native`] consults this, which is what stops a
 /// prop from being declared native without a way to carry its dynamic
 /// value — that would drop it in silence.
-fn prim_prop_slot_ctor(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "style" => "style",
-        "a11y_label" | "a11y_hint" | "src" | "alt" => "string",
-        "disabled" => "boolean",
+fn prim_prop_slot_ctor(canonical: &str, name: &str) -> Option<&'static str> {
+    // `style` is on every wrapper; the a11y surface is on every wrapper
+    // that takes `glue_wrapper_common!` (or hand-rolls it, as
+    // `presence` does). `overlay` / `anchored_overlay` do NOT have it —
+    // `overlay(a11y_label = …)` does not compile under the direct
+    // lowering either, so leaving it un-native here costs nothing and
+    // stops the builder from applying something the direct emitter
+    // cannot.
+    if name == "style" {
+        return Some("style");
+    }
+    if has_common_surface(canonical) {
+        let common = match name {
+            "a11y_label" | "a11y_hint" => Some("string"),
+            "accessibility" | "a11y_role" | "a11y_traits" | "live_region" => Some("plain"),
+            "a11y_hidden" => Some("plain_bool"),
+            _ => None,
+        };
+        if let Some(c) = common {
+            return Some(c);
+        }
+    }
+    Some(match (canonical, name) {
+        ("scroll_view", "safe_area") => "plain",
+        ("overlay", "backdrop_style") | ("anchored_overlay", "backdrop_style") => "style",
+        ("button", "disabled") => "boolean",
+        ("button", "leading_icon") | ("button", "trailing_icon") => "plain",
+        ("image", "src") => "string_value",
+        ("image", "alt") => "string",
+        ("activity_indicator", "size") | ("activity_indicator", "color") => "plain",
+        ("scroll_view", "horizontal")
+        | ("scroll_view", "bounces")
+        | ("scroll_view", "always_bounce") => "plain_bool",
+        ("scroll_view", "end_reached_threshold") => "f32",
+        ("scroll_view", "on_scroll") => "on_scroll",
+        ("scroll_view", "on_end_reached") => "on_void",
+        ("icon", "data") | ("icon", "animate") => "plain",
+        ("icon", "color") => "color_value",
+        ("icon", "stroke") => "f32_value",
+        ("icon", "draw_in") => "draw_in",
+        ("text_input", "value") => "string_value",
+        ("text_input", "on_change") => "on_string",
+        ("text_input", "placeholder") => "string",
+        ("text_input", "secure") => "bool_value",
+        ("toggle", "value") => "bool_value",
+        ("toggle", "on_change") => "on_bool",
+        ("slider", "value") => "f32_value",
+        ("slider", "on_change") => "on_f32",
+        ("slider", "min") | ("slider", "max") | ("slider", "step") => "f32",
+        ("link", "external") => "string_value",
+        ("overlay", "placement")
+        | ("overlay", "backdrop")
+        | ("anchored_overlay", "side")
+        | ("anchored_overlay", "align")
+        | ("anchored_overlay", "backdrop")
+        | ("anchored_overlay", "target")
+        | ("presence", "enter")
+        | ("presence", "exit") => "plain",
+        // NOTE: `overlay`'s `click_through` is deliberately absent.
+        // `emit_overlay` does not lower it — `overlay(click_through =
+        // true)` compiles and reaches nothing under the DIRECT lowering
+        // — so declaring it native here would make the template
+        // lowering apply a prop the direct one drops. The parity suite
+        // found exactly that. Fixing the drop is a behaviour change in
+        // the direct emitter and belongs in its own commit with its own
+        // regression test; until then the two lowerings agree on
+        // dropping it.
+        ("overlay", "trap_focus") | ("anchored_overlay", "trap_focus") => "plain_bool",
+        ("anchored_overlay", "offset") => "f32",
+        ("overlay", "on_dismiss") | ("anchored_overlay", "on_dismiss") => "on_void",
+        ("presence", "present") => "bool_value",
+        ("graphics", "on_ready") => "on_ready",
+        ("graphics", "on_resize") => "on_resize",
+        ("graphics", "on_lost") => "on_lost",
         _ => return None,
     })
 }
@@ -716,37 +881,92 @@ fn prim_prop_is_native(canonical: &str, p: &Prop) -> bool {
         return canonical == "button" && p.name == "on_click";
     }
     let name = p.name.to_string();
-    // A literal is native when the builder reads that literal shape for
-    // this prop; a dynamic value is native when the prop has a slot
-    // constructor. `content`/`label`/`on_click` are positional on the
-    // constructor and handled by `lower_prim` itself.
-    let as_literal = ui_split::classify_static(&p.value)
-        .is_some_and(|stat| literal_fits(&name, &stat));
-    let as_slot = prim_prop_slot_ctor(&name).is_some();
     match (canonical, name.as_str()) {
+        // Positional on the constructor, handled by `lower_prim` itself.
         ("text", "content") => true,
         ("button", "label") | ("button", "on_click") => true,
-        (_, "test_id") | (_, "a11y_hidden") => as_literal,
-        ("scroll_view", "horizontal") | ("scroll_view", "bounces") => as_literal,
-        (_, "style") | (_, "a11y_label") | (_, "a11y_hint") => as_literal || as_slot,
-        ("button", "disabled") => as_literal || as_slot,
-        ("image", "src") | ("image", "alt") => as_literal || as_slot,
-        _ => false,
+        // `test_id` takes `&'static str` all the way down to the robot
+        // registry, so only a literal can supply it without leaking —
+        // and only on a wrapper that has the setter at all.
+        (_, "test_id") => {
+            has_common_surface(canonical)
+                && matches!(ui_split::classify_static(&p.value), Some(StaticValue::Str(_)))
+        }
+        // `image(asset = …)` routes through a DIFFERENT constructor
+        // (`image_asset(*v)`), so it is not this node kind.
+        ("image", "asset") => false,
+        // The in-app `link(route = …, params = …)` is generic over the
+        // route's params type; only the `external` spelling is native.
+        ("link", "route") | ("link", "params") => false,
+        // Everything else: native as a literal when the builder reads
+        // that literal shape, or as a slot when the (kind, prop) pair
+        // has a constructor.
+        _ => {
+            let as_literal = ui_split::classify_static(&p.value)
+                .is_some_and(|stat| literal_fits(canonical, &name, &stat));
+            as_literal || prim_prop_slot_ctor(canonical, &name).is_some()
+        }
     }
 }
 
 /// Does a literal of this shape fit the prop's setter?
-fn literal_fits(name: &str, stat: &StaticValue) -> bool {
-    match name {
-        "test_id" | "a11y_label" | "a11y_hint" | "src" | "alt" => {
-            matches!(stat, StaticValue::Str(_))
-        }
-        "a11y_hidden" | "disabled" | "horizontal" | "bounces" => {
-            matches!(stat, StaticValue::Bool(_))
-        }
-        // A style has no literal spelling.
-        "style" => false,
+///
+/// A prop absent from here is still native through its SLOT constructor;
+/// this only decides which values the descriptor can carry as DATA. A
+/// `Path` literal (an enum value) never fits: the builder cannot
+/// reconstruct a variant from its source text, so such a prop goes
+/// through its slot and the enum stays compiled in.
+fn literal_fits(canonical: &str, name: &str, stat: &StaticValue) -> bool {
+    let str_lit = matches!(stat, StaticValue::Str(_));
+    let bool_lit = matches!(stat, StaticValue::Bool(_));
+    let num_lit = matches!(stat, StaticValue::Int(_) | StaticValue::Float(_));
+    match (canonical, name) {
+        (_, "test_id") | (_, "a11y_label") | (_, "a11y_hint") => str_lit,
+        (_, "a11y_hidden") => bool_lit,
+        ("image", "src") | ("image", "alt") => str_lit,
+        ("button", "disabled") => bool_lit,
+        ("scroll_view", "horizontal")
+        | ("scroll_view", "bounces")
+        | ("scroll_view", "always_bounce") => bool_lit,
+        ("scroll_view", "end_reached_threshold") => num_lit,
+        ("icon", "stroke") => num_lit,
+        ("text_input", "value") | ("text_input", "placeholder") => str_lit,
+        ("text_input", "secure") | ("toggle", "value") => bool_lit,
+        ("slider", "value")
+        | ("slider", "min")
+        | ("slider", "max")
+        | ("slider", "step") => num_lit,
+        ("link", "external") => str_lit,
+        ("overlay", "trap_focus")
+        | ("anchored_overlay", "trap_focus")
+        | ("presence", "present") => bool_lit,
+        ("anchored_overlay", "offset") => num_lit,
+        // A style, an enum, a handle and a callback have no literal
+        // spelling the builder can rebuild.
         _ => false,
+    }
+}
+
+/// Which primitives carry the shared `test_id` + a11y setter surface
+/// (`glue_wrapper_common!`, or a hand-rolled copy of it). `overlay` and
+/// `anchored_overlay` are the two that do not.
+fn has_common_surface(canonical: &str) -> bool {
+    !matches!(canonical, "overlay" | "anchored_overlay")
+}
+
+/// Props whose ABSENCE the descriptor cannot model — see the escape in
+/// `lower_prim` for why each one is here.
+fn required_props(canonical: &str) -> &'static [&'static str] {
+    match canonical {
+        // Uncontrolled inputs mint a fresh signal in `emit_*`.
+        "text_input" | "toggle" | "slider" => &["value"],
+        // Required at the macro level (`compile_error!` without them).
+        "icon" => &["data"],
+        "anchored_overlay" => &["target"],
+        // Only the off-app spelling is native; the `route =` form is
+        // generic over its params type.
+        "link" => &["external"],
+        _ => &[],
     }
 }
 
@@ -990,14 +1210,79 @@ mod tests {
         assert!(out.contains(".bind(handle)"), "{out}");
     }
 
-    /// A primitive the builder does not model must ESCAPE, never be
-    /// half-applied — a dropped prop would be a silent behavior change.
+    /// The two primitives that escape do so STRUCTURALLY: both have
+    /// generic constructors (`flat_list<T, K, S, R>`, `link<P>`) and a
+    /// builder driven by data has no type to instantiate them at. This
+    /// is not a backlog item, so the test says why.
     #[test]
-    fn an_unmodelled_primitive_escapes() {
+    fn generic_constructors_escape() {
+        let flat = emitted(quote::quote! {
+            flat_list(data = rows, key = |i, _r: &Row| i as u64,
+                      size = fixed_size(8.0), render = |_i, _r: &Row| ui! { text { "r" } }.into())
+        });
+        assert!(flat.contains("TemplateNode::Escape{"), "{flat}");
+        assert!(!flat.contains("TemplatePrimKind::"), "{flat}");
+
+        // The in-app `link` is generic over the route's params type…
+        let route = emitted(quote::quote! { link(route = HOME, params = ()) { text { "go" } } });
+        assert!(route.contains("TemplateNode::Escape{"), "{route}");
+        // …while the off-app spelling is monomorphic and native.
+        let external = emitted(quote::quote! { link(external = "https://x") { text { "go" } } });
+        assert!(external.contains("TemplatePrimKind::Link"), "{external}");
+        assert!(!external.contains("TemplateNode::Escape{"), "{external}");
+    }
+
+    /// The remaining primitives are native, including their setters.
+    #[test]
+    fn the_monomorphic_primitives_are_native() {
+        for (body, variant) in [
+            (quote::quote! { icon(data = ICON, color = tint, stroke = 0.5) }, "Icon"),
+            (
+                quote::quote! { text_input(value = draft, on_change = move |s: String| draft.set(s), placeholder = "type") },
+                "TextInput",
+            ),
+            (
+                quote::quote! { toggle(value = on, on_change = move |v: bool| on.set(v)) },
+                "Toggle",
+            ),
+            (
+                quote::quote! { slider(value = amount, on_change = move |v: f32| amount.set(v), min = 0.0, max = 1.0) },
+                "Slider",
+            ),
+            (
+                quote::quote! { overlay(placement = ViewportPlacement::Center, trap_focus = true) { text { "m" } } },
+                "Overlay",
+            ),
+            (
+                quote::quote! { anchored_overlay(target = anchor, side = ElementSide::Below) { text { "t" } } },
+                "AnchoredOverlay",
+            ),
+            (
+                quote::quote! { presence(present = move || on.get()) { text { "toast" } } },
+                "Presence",
+            ),
+            (quote::quote! { graphics(on_ready = move |_e| {}) }, "Graphics"),
+            (quote::quote! { activity_indicator() }, "ActivityIndicator"),
+        ] {
+            let out = emitted(body);
+            assert!(
+                out.contains(&format!("TemplatePrimKind::{variant}")),
+                "expected `{variant}` to be native: {out}"
+            );
+            assert!(!out.contains("TemplateNode::Escape{"), "{variant} escaped: {out}");
+        }
+    }
+
+    /// An UNCONTROLLED input escapes: the direct emitter fills an absent
+    /// `value` with `glue::fresh_signal(…)`, and "mint a signal" is not
+    /// something a descriptor can express — deciding to allocate state
+    /// is not a descriptor's job.
+    #[test]
+    fn an_uncontrolled_input_escapes() {
         for body in [
-            quote::quote! { toggle(value = on, on_change = move |v: bool| on.set(v)) },
-            quote::quote! { icon(data = ICON) },
-            quote::quote! { slider(value = amount, on_change = move |v: f32| amount.set(v)) },
+            quote::quote! { text_input(on_change = move |_s: String| {}) },
+            quote::quote! { toggle(on_change = move |_v: bool| {}) },
+            quote::quote! { slider(on_change = move |_v: f32| {}) },
         ] {
             let out = emitted(body);
             assert!(out.contains("TemplateNode::Escape{"), "{out}");
@@ -1006,12 +1291,48 @@ mod tests {
     }
 
     /// A prop a modelled primitive does not model escapes the WHOLE
-    /// node, for the same reason.
+    /// node: a partially-applied descriptor would drop it in silence.
+    /// `view(gap = …)` is the real case — `emit_view` ignores it, so the
+    /// escape preserves that (and keeps the drop visible here).
     #[test]
     fn an_unmodelled_prop_escapes_a_modelled_primitive() {
-        let out = emitted(quote::quote! { view(a11y_role = Role::Button) { text { "x" } } });
+        let out = emitted(quote::quote! { view(gap = 4) { text { "x" } } });
         assert!(out.contains("TemplateNode::Escape{"), "{out}");
         assert!(!out.contains("TemplatePrimKind::View"), "{out}");
+    }
+
+    /// `image(asset = …)` routes through a different constructor
+    /// (`image_asset(*v)`), so it is not the `Image` node kind.
+    #[test]
+    fn an_asset_image_escapes() {
+        let out = emitted(quote::quote! { image(asset = &LOGO, alt = "logo") });
+        assert!(out.contains("TemplateNode::Escape{"), "{out}");
+        assert!(!out.contains("TemplatePrimKind::Image"), "{out}");
+    }
+
+    /// The `when` TAG is the same construct a reactive `if` is, so it
+    /// lowers to `Dyn` rather than getting a `PrimKind` of its own.
+    #[test]
+    fn the_when_tag_is_a_dyn_node() {
+        let out = emitted(quote::quote! {
+            when(cond = move || flag.get(), then = move || ui! { text { "y" } })
+        });
+        assert!(out.contains("TemplateNode::Dyn{"), "{out}");
+        assert!(out.contains("SlotValue::cond(move||flag.get())"), "{out}");
+        // The absent `otherwise` takes `emit_when`'s own default.
+        assert_eq!(out.matches("SlotValue::branch(").count(), 2, "{out}");
+        assert!(out.contains("empty_absolute_view"), "{out}");
+    }
+
+    /// `presence`'s block is a branch THUNK, not a child list:
+    /// `presence(move || child)` rebuilds it per mount.
+    #[test]
+    fn a_presence_child_is_a_branch_thunk() {
+        let out = emitted(quote::quote! { presence(present = move || on.get()) { text { "t" } } });
+        assert!(out.contains(r#"name:::std::borrow::Cow::Borrowed("child")"#), "{out}");
+        assert!(out.contains("SlotValue::branch(move||"), "{out}");
+        // Its own nested descriptor — outer + the child's.
+        assert_eq!(out.matches("static__UI_DESC").count(), 2, "{out}");
     }
 
     #[test]
@@ -1044,6 +1365,150 @@ mod tests {
         let start = emission.find(needle).expect("hash in emission") + needle.len();
         let rest = &emission[start..];
         rest[..rest.find('"').expect("closing quote")].to_string()
+    }
+
+    // -------------------------------------------------------------------
+    // Descriptor-native coverage
+    // -------------------------------------------------------------------
+
+    /// How many nodes of an emission are descriptor-native vs escaped.
+    fn coverage(input: TokenStream2) -> (usize, usize) {
+        let out = emitted(input);
+        let native = out.matches("TemplateNode::Prim{").count()
+            + out.matches("TemplateNode::Component{").count()
+            + out.matches("TemplateNode::Dyn{").count();
+        (native, out.matches("TemplateNode::Escape{").count())
+    }
+
+    /// The descriptor-native COVERAGE of the corpus, pinned node by node.
+    ///
+    /// The template lowering is correct whatever this says — an escaped
+    /// node is built by the direct emitter and handed over as a finished
+    /// `Element`. What this number decides is how much of a tree is
+    /// DATA: an escape's literals are compiled in, so a static edit
+    /// inside one still needs a rebuild, and a template-mode build whose
+    /// tree is mostly escapes would be measuring escaped direct code.
+    ///
+    /// Pinned as exact counts on purpose. Widening the native set moves
+    /// numbers here, which puts the widening in the diff next to the
+    /// table that caused it; narrowing it moves them the other way,
+    /// which is a regression nobody would otherwise notice. The shapes
+    /// mirror `crates/dev/ui-lowering-parity`'s fixtures — that suite
+    /// proves the scenes stay identical, this one says how much of them
+    /// stopped being code.
+    #[test]
+    fn descriptor_native_coverage_of_the_corpus() {
+        let cases: Vec<(&str, (usize, usize), TokenStream2)> = vec![
+            // --- fully native -------------------------------------------
+            ("static_nested_views", (6, 0), quote::quote! {
+                view { view { text { "a" } text { "b" } } view { text { "c" } } }
+            }),
+            ("literal_props_and_identity", (3, 0), quote::quote! {
+                view(test_id = "root") { text(test_id = "l") { "hi" } button(label = "p", on_click = || {}) }
+            }),
+            ("a11y_attrs", (2, 0), quote::quote! {
+                view(a11y_label = "region", a11y_hidden = false) { text(a11y_label = "t") { "x" } }
+            }),
+            ("static_style_sheet", (2, 0), quote::quote! {
+                view(style = Panel()) { text { "styled" } }
+            }),
+            ("reactive_text_closure", (2, 0), quote::quote! {
+                view { text { move || format!("n={}", count.get()) } }
+            }),
+            ("fstring_text", (3, 0), quote::quote! {
+                view { text { "{count} items" } text { "static" } }
+            }),
+            ("component_literal_props", (1, 0), quote::quote! {
+                Badge(label = "alpha", count = 5, loud = true)
+            }),
+            ("nested_components", (4, 0), quote::quote! {
+                Frame(title = "shell") { Badge(label = "n", count = 1) Frame(title = "d") { text { "leaf" } } }
+            }),
+            ("reactive_if", (4, 0), quote::quote! {
+                view { if flag.get() { text { "on" } } else { text { "off" } } }
+            }),
+            ("when_tag", (2, 0), quote::quote! {
+                view { when(cond = move || f.get(), then = move || ui! { text { "y" } }) }
+            }),
+            ("input_primitives", (4, 0), quote::quote! {
+                view {
+                    text_input(value = draft, on_change = move |v: String| draft.set(v), placeholder = "t")
+                    toggle(value = on, on_change = move |v: bool| on.set(v))
+                    slider(value = amount, on_change = move |v: f32| amount.set(v), min = 0.0, max = 1.0, step = 0.1)
+                }
+            }),
+            ("media_primitives", (5, 0), quote::quote! {
+                view {
+                    image(src = "https://x.png", alt = "an image")
+                    activity_indicator()
+                    link(external = "https://x") { text { "out" } }
+                }
+            }),
+            ("icon_primitive", (3, 0), quote::quote! {
+                view { icon(data = ICON) icon(data = ICON, color = tint, stroke = 0.5) }
+            }),
+            ("graphics_primitive", (1, 0), quote::quote! {
+                graphics(on_ready = move |_e| {}, on_lost = move || {})
+            }),
+            ("overlay_and_presence", (5, 0), quote::quote! {
+                view {
+                    overlay(placement = ViewportPlacement::Center, trap_focus = true) { text { "m" } }
+                    presence(present = move || t.get()) { text { "toast" } }
+                }
+            }),
+            // --- still escaping -----------------------------------------
+            // Control flow other than a reactive `if`: the construct
+            // itself is code, though its BODIES are nested templates —
+            // which is why these still count native nodes. That is the
+            // ambient-lowering flag earning its keep: the lowering does
+            // not stop at the first escape.
+            ("static_if", (2, 1), quote::quote! {
+                view { if show { text { "shown" } } }
+            }),
+            ("static_match", (3, 1), quote::quote! {
+                view { match mode { Mode::A => { text { "a" } } Mode::B => { text { "b" } } } }
+            }),
+            ("for_keyed_reactive", (2, 1), quote::quote! {
+                view { for row in rows, key = row.id { text { "r" } } }
+            }),
+            // A component with a DYNAMIC prop: the builder cannot assign
+            // an arbitrarily-typed field.
+            ("component_dynamic_props", (0, 1), quote::quote! {
+                Counter(value = count)
+            }),
+            // Generic constructors — structural, not a backlog.
+            ("flat_list_primitive", (0, 1), quote::quote! {
+                flat_list(data = rows, key = |i, _r: &Row| i as u64,
+                          size = fixed_size(8.0), render = |_i, _r: &Row| ui! { text { "r" } }.into())
+            }),
+            // Raw tokens the split pass cannot classify.
+            ("method_chain_bind", (0, 1), quote::quote! {
+                view { text { "chained" } }.bind(handle)
+            }),
+            // A prop the direct emitter drops, kept escaping so both
+            // lowerings drop it (see `prim_prop_slot_ctor`).
+            ("view_with_unmodelled_prop", (0, 1), quote::quote! {
+                view(gap = 4) { text { "x" } }
+            }),
+        ];
+
+        let mut native_total = 0usize;
+        let mut escaped_total = 0usize;
+        let mut wrong: Vec<String> = Vec::new();
+        for (name, expected, body) in cases {
+            let got = coverage(body);
+            if got != expected {
+                wrong.push(format!("{name}: expected {expected:?} (native, escaped), got {got:?}"));
+            }
+            native_total += got.0;
+            escaped_total += got.1;
+        }
+        assert!(wrong.is_empty(), "descriptor-native coverage moved:\n{}", wrong.join("\n"));
+        assert_eq!(
+            (native_total, escaped_total),
+            (54, 7),
+            "corpus totals moved — update the per-case numbers above first"
+        );
     }
 
     /// `ui_lowered!` rejects an unknown mode rather than silently

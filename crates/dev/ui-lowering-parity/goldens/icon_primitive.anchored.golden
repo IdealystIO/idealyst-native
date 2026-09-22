@@ -1,0 +1,55 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 icon
+insert n0 <- n1
+create n2 icon
+insert n0 <- n2
+create n3 icon
+insert n0 <- n3
+create n4 icon
+insert n0 <- n4
+
+-- tint=blue --
+(none)
+
+-- progress=1 --
+(none)
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 icon
+insert n0 <- n1
+create n2 icon
+update_icon_color n2 #ff0000
+update_icon_stroke n2 0.5
+update_icon_stroke n2 0.5
+insert n0 <- n2
+create n3 icon
+update_icon_stroke n3 0
+animate_icon_stroke n3 0->1 200ms
+insert n0 <- n3
+create n4 icon
+update_icon_stroke n4 0
+animate_icon_stroke n4 0->1 150ms
+insert n0 <- n4
+
+-- tint=blue --
+update_icon_color n2 #0000ff
+
+-- progress=1 --
+update_icon_stroke n2 1
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 icon
+  n2 icon
+  n3 icon
+  n4 icon

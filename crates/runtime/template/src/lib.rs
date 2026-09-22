@@ -207,13 +207,17 @@ pub struct PropEntry {
 /// The builtin primitives the template builder constructs from the
 /// descriptor directly.
 ///
-/// This is deliberately a CLOSED set, and deliberately smaller than the
-/// builtin vocabulary. A primitive is listed here only once the builder
-/// drives its glue wrapper from data; everything else reaches the scene
-/// through [`Node::Escape`], which is correct but opaque to a static
-/// edit. Widening the list is additive — a new variant plus its arm in
-/// the builder — and the parity suite's coverage report is what says
-/// whether it is worth it.
+/// This is a CLOSED set. A primitive is listed here only once the
+/// builder drives its glue wrapper from data; everything else reaches
+/// the scene through [`Node::Escape`], which is correct but opaque to a
+/// static edit.
+///
+/// The set now covers every builtin primitive whose constructor and
+/// setters are MONOMORPHIC. What is left out is left out structurally:
+/// `flat_list<T, K, S, R>` and the in-app `link<P>` are generic over the
+/// row / route-params type, and a builder driven by data has no type to
+/// instantiate them at. (`when` is not missing either — it lowers to
+/// [`Node::Dyn`].)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrimKind {
     View,
@@ -222,7 +226,43 @@ pub enum PrimKind {
     Image,
     ActivityIndicator,
     ScrollView,
+    Icon,
+    TextInput,
+    Toggle,
+    Slider,
+    /// `link(external = "https://…")` only. The in-app form is
+    /// `link<P>(route: &Route<P>, params: P, …)`, generic over the
+    /// route's params type — a builder driven by data cannot name `P`,
+    /// so that spelling escapes.
+    Link,
+    Overlay,
+    AnchoredOverlay,
+    /// The child arrives as a branch THUNK slot, not as
+    /// [`Node::Prim::children`]: `presence(move || child)` rebuilds its
+    /// child per mount, so the child is a nested template the same way
+    /// a [`Node::Dyn`] branch is.
+    Presence,
+    Graphics,
 }
+
+/// Every [`PrimKind`], for exhaustiveness in tests and tooling.
+pub const ALL_PRIM_KINDS: &[PrimKind] = &[
+    PrimKind::View,
+    PrimKind::Text,
+    PrimKind::Button,
+    PrimKind::Image,
+    PrimKind::ActivityIndicator,
+    PrimKind::ScrollView,
+    PrimKind::Icon,
+    PrimKind::TextInput,
+    PrimKind::Toggle,
+    PrimKind::Slider,
+    PrimKind::Link,
+    PrimKind::Overlay,
+    PrimKind::AnchoredOverlay,
+    PrimKind::Presence,
+    PrimKind::Graphics,
+];
 
 impl PrimKind {
     /// The `ui!` tag that lowers to this kind.
@@ -234,21 +274,28 @@ impl PrimKind {
             PrimKind::Image => "image",
             PrimKind::ActivityIndicator => "activity_indicator",
             PrimKind::ScrollView => "scroll_view",
+            PrimKind::Icon => "icon",
+            PrimKind::TextInput => "text_input",
+            PrimKind::Toggle => "toggle",
+            PrimKind::Slider => "slider",
+            PrimKind::Link => "link",
+            PrimKind::Overlay => "overlay",
+            PrimKind::AnchoredOverlay => "anchored_overlay",
+            PrimKind::Presence => "presence",
+            PrimKind::Graphics => "graphics",
         }
     }
 
     /// Parse a canonical `ui!` primitive tag. `None` for a primitive the
     /// descriptor does not model — the emission escapes those.
+    ///
+    /// The two absences are deliberate and structural, not a backlog:
+    /// `flat_list<T, K, S, R>` and the in-app `link<P>` have GENERIC
+    /// constructors, and a builder that works from data cannot name a
+    /// type parameter. `when` is absent because it lowers to
+    /// [`Node::Dyn`], which is the same construct.
     pub fn from_tag(tag: &str) -> Option<PrimKind> {
-        Some(match tag {
-            "view" => PrimKind::View,
-            "text" => PrimKind::Text,
-            "button" => PrimKind::Button,
-            "image" => PrimKind::Image,
-            "activity_indicator" => PrimKind::ActivityIndicator,
-            "scroll_view" => PrimKind::ScrollView,
-            _ => return None,
-        })
+        ALL_PRIM_KINDS.iter().copied().find(|k| k.tag() == tag)
     }
 }
 
@@ -663,17 +710,18 @@ mod tests {
 
     #[test]
     fn prim_kinds_round_trip_their_tags() {
-        for kind in [
-            PrimKind::View,
-            PrimKind::Text,
-            PrimKind::Button,
-            PrimKind::Image,
-            PrimKind::ActivityIndicator,
-            PrimKind::ScrollView,
-        ] {
+        for &kind in ALL_PRIM_KINDS {
             assert_eq!(PrimKind::from_tag(kind.tag()), Some(kind));
         }
-        assert_eq!(PrimKind::from_tag("overlay"), None);
+        // Tags are unique — a duplicate would make `from_tag` pick the
+        // first and silently mis-key the other.
+        let mut tags: Vec<&str> = ALL_PRIM_KINDS.iter().map(|k| k.tag()).collect();
+        let before = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(before, tags.len(), "duplicate PrimKind tag");
+        assert_eq!(PrimKind::from_tag("flat_list"), None);
+        assert_eq!(PrimKind::from_tag("when"), None);
     }
 
     #[test]

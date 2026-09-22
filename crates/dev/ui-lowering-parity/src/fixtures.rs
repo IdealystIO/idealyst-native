@@ -34,6 +34,10 @@ use runtime_vocabulary::glue::primitives::overlay::{
     AnchorTarget, BackdropMode, ElementSide, ViewportPlacement,
 };
 use runtime_vocabulary::glue::primitives::presence::PresenceAnim;
+use runtime_shared::accessibility::{AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role};
+use runtime_shared::primitives::graphics::{OnReadyEvent, OnResizeEvent};
+use runtime_shared::primitives::icon::{FillRule, IconData, StrokeAnimation};
+use runtime_shared::SafeAreaSides;
 
 use crate::{record, Fixture, Mode, Recording};
 
@@ -194,6 +198,16 @@ pub enum Phase {
 pub struct Row {
     pub id: u32,
     pub label: String,
+}
+
+/// A minimal `IconData` for the icon fixtures.
+fn an_icon() -> IconData {
+    IconData {
+        view_box: (24, 24),
+        paths: &["M0 0"],
+        fill_rule: FillRule::NonZero,
+        filled: false,
+    }
 }
 
 /// File-local helper returning an `Element` — the bare-expression child
@@ -927,6 +941,111 @@ fixture! {
     }
 }
 
+fixture! {
+    name = icon_primitive;
+    state { tint: Color = Color("#ff0000".into()), progress: f32 = 0.5 }
+    locals { }
+    drive { "tint=blue" => |s| s.tint.set(Color("#0000ff".into())), "progress=1" => |s| s.progress.set(1.0) }
+    body {
+        view {
+            icon(data = an_icon())
+            icon(data = an_icon(), color = tint, stroke = progress)
+            icon(data = an_icon(), draw_in = (200u32, Easing::EaseOut))
+            icon(data = an_icon(), animate = StrokeAnimation::new(150, Easing::Linear))
+        }
+    }
+}
+
+fixture! {
+    name = graphics_primitive;
+    state { }
+    locals { }
+    drive { }
+    body {
+        graphics(
+            on_ready = move |_e: OnReadyEvent| {},
+            on_resize = move |_e: OnResizeEvent| {},
+            on_lost = move || {}
+        )
+    }
+}
+
+fixture! {
+    name = scroll_view_full_props;
+    state { }
+    locals { }
+    drive { }
+    body {
+        scroll_view(
+            horizontal = true,
+            bounces = false,
+            always_bounce = true,
+            end_reached_threshold = 48.0,
+            safe_area = SafeAreaSides::ALL,
+            on_scroll = move |_x: f32, _y: f32| {},
+            on_end_reached = move || {}
+        ) {
+            text { "scrolled" }
+        }
+    }
+}
+
+fixture! {
+    name = uncontrolled_inputs;
+    state { }
+    locals { }
+    drive { }
+    body {
+        view {
+            text_input(on_change = move |_s: String| {})
+            toggle(on_change = move |_v: bool| {})
+            slider(on_change = move |_v: f32| {})
+        }
+    }
+}
+
+fixture! {
+    name = a11y_full_surface;
+    state { }
+    locals { }
+    drive { }
+    body {
+        view(
+            accessibility = AccessibilityProps::default(),
+            a11y_role = Role::Button,
+            a11y_traits = AccessibilityTraits::default(),
+            live_region = LiveRegionPriority::Polite
+        ) {
+            text(a11y_hidden = true) { "x" }
+        }
+    }
+}
+
+/// `overlay`'s NON-modal shape. `click_through` is deliberately not
+/// here: `emit_overlay` does not lower it (it compiles and reaches
+/// nothing), so neither lowering applies it — see the note in
+/// `ui_template`'s `prim_prop_slot_ctor`. This fixture is what found
+/// that, by making the template lowering try.
+fixture! {
+    name = overlay_non_modal;
+    state { open: bool = true }
+    locals { }
+    drive { "close" => |s| s.open.set(false) }
+    body {
+        view {
+            if open.get() {
+                overlay(
+                    placement = ViewportPlacement::Center,
+                    backdrop = BackdropMode::None,
+                    trap_focus = false
+                ) {
+                    text { "passthrough" }
+                }
+            }
+        }
+    }
+}
+
 // ===========================================================================
 // Registry
 // ===========================================================================
@@ -976,5 +1095,11 @@ pub fn all() -> Vec<Fixture> {
         for_keyed_reorder_and_insert::fixture(),
         reactive_if_in_keyed_row::fixture(),
         reactive_match_rotation::fixture(),
+        icon_primitive::fixture(),
+        graphics_primitive::fixture(),
+        scroll_view_full_props::fixture(),
+        uncontrolled_inputs::fixture(),
+        a11y_full_surface::fixture(),
+        overlay_non_modal::fixture(),
     ]
 }

@@ -123,30 +123,41 @@ the template lowering be *complete* while the descriptor-native set
 grows independently. An escape is correct but opaque — its literals are
 compiled in, so a static edit inside one still needs a rebuild.
 
-Descriptor-native today (`PrimKind`, plus `Component` and `Dyn`):
+Descriptor-native today:
 
-- `view`, `text`, `button`, `image`, `activity_indicator`,
-  `scroll_view`, with the props
-  `runtime_vocabulary::template::build_prim` models — `style`,
-  `content`/`label`, `on_click`, `disabled`, `src`, `alt`, `test_id`,
-  `a11y_label`, `a11y_hint`, `a11y_hidden`, `horizontal`, `bounces`;
+- **every builtin primitive with a monomorphic constructor** — `view`,
+  `text`, `button`, `image`, `activity_indicator`, `scroll_view`,
+  `icon`, `text_input`, `toggle`, `slider`, `link` (the `external =`
+  spelling), `overlay`, `anchored_overlay`, `presence`, `graphics` —
+  with the props `runtime_vocabulary::template::build_prim` models,
+  which is every prop the corresponding `ui::emit_*` lowers;
 - a `#[component]` whose props are all descriptor literals, plus its
   children;
-- a reactive `if`, as `Dyn` — condition and branch thunks in slots, each
-  branch its own nested template.
+- a reactive `if` AND the `when` tag, both as `Dyn` — condition and
+  branch thunks in slots, each branch its own nested template.
 
-Escaped today: every other primitive (`icon`, `text_input`, `toggle`,
-`slider`, `link`, `overlay`, `anchored_overlay`, `presence`,
-`flat_list`, `graphics`, `when`), a component with any dynamic prop, any
-node with a trailing `.method(…)` chain, `for`, `match`, static `if`,
-`if let`, and bare expression children. An escaped node's *bodies* are
-still nested templates, so the lowering does not stop at the first
-escape.
+Escaped today, and why:
+
+| shape | why |
+|---|---|
+| `flat_list`, `link(route = …)` | GENERIC constructors (`flat_list<T, K, S, R>`, `link<P>`) — a builder driven by data has no type to instantiate them at |
+| `image(asset = …)` | a different constructor (`image_asset(*v)`), not this node kind |
+| an uncontrolled `text_input`/`toggle`/`slider` | an absent `value` makes the direct emitter mint a signal (`glue::fresh_signal(…)`); deciding to allocate state is not a descriptor's job |
+| a component with any dynamic prop | the builder cannot assign an arbitrarily-typed field |
+| a trailing `.method(…)` chain | raw tokens, not a parsed expression — the split pass cannot classify them |
+| `for`, `match`, static `if`, `if let` | the construct is code (patterns, bindings); its BODIES are still nested templates |
+| a bare expression child | it is an expression |
+| a prop the direct emitter drops (`view(gap = …)`, `overlay(click_through = …)`) | escaping is what keeps the two lowerings agreeing on the drop |
+
+An escaped node's *bodies* stay template-lowered, so the lowering does
+not stop at the first escape — an escaped `for`'s rows are still
+descriptor-native.
 
 Widening the native set is additive: a `PrimKind` variant plus its arm
-in the builder plus its entry in the macro's table. The macro's unit
-tests pin the current boundary node kind by node kind, so a widening is
-visible in the diff.
+in the builder plus its entry in the macro's table. `runtime-macros`'
+`descriptor_native_coverage_of_the_corpus` pins the exact native/escaped
+node counts for a corpus mirroring the parity fixtures, so a widening —
+or a narrowing — lands in the diff next to the table that caused it.
 
 ## Tests
 

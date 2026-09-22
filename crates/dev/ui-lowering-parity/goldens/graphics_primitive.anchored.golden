@@ -1,0 +1,16 @@
+=== structural ===
+-- mount --
+create n0 graphics
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 graphics
+
+-- unmount --
+release_graphics n0
+
+=== scene ===
+n0 graphics

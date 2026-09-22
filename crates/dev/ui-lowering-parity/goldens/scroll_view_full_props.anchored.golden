@@ -1,0 +1,25 @@
+=== structural ===
+-- mount --
+create n0 scroll_view
+create n1 text "scrolled"
+insert n0 <- n1
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 scroll_view
+observe_scroll_end n0 horizontal=true threshold=48
+create n1 text "scrolled"
+insert n0 <- n1
+apply_safe_area_padding n0
+bounces n0 false
+always_bounce n0 true
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 scroll_view
+  n1 text "scrolled"

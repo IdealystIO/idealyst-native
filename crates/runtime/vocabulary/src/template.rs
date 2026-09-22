@@ -49,10 +49,14 @@
 //! `String`. So it panics, loudly, naming the site, the node, the prop
 //! and both shapes. Same policy as an unregistered scene payload.
 
+use std::any::Any;
 use std::rc::Rc;
 
 use runtime_scene::Element;
-use runtime_shared::{Action, IntoAction};
+use runtime_shared::primitives::graphics::{OnReadyEvent, OnResizeEvent};
+use runtime_shared::primitives::icon::IconData;
+use runtime_shared::primitives::portal::AnchorTarget;
+use runtime_shared::{Action, Color, Easing, IntoAction};
 use runtime_template::{
     CompiledIn, Descriptor, LiteralValue, Node, PrimKind, PropEntry, PropValue, TemplateSource,
 };
@@ -106,6 +110,22 @@ pub enum SlotValue {
     Ctor(ComponentCtor),
     Cond(Rc<dyn Fn() -> bool>),
     Branch(Rc<dyn Fn() -> Element>),
+    /// A value of whatever type the (kind, prop) pair demands, erased.
+    ///
+    /// The concrete variants above cover the props that appear on almost
+    /// every node — style, text, press, bool, string — so the hot
+    /// primitives (`view`/`text`/`button`) allocate nothing extra. The
+    /// long tail (a `ViewportPlacement`, an `ActivityIndicatorSize`, an
+    /// `Rc<dyn Fn(f32)>`, …) would otherwise need one enum variant and
+    /// one `shape()` arm each, twenty-plus of them, every one a place
+    /// for the emitter's table and this one to drift apart. Erasing them
+    /// costs a `Box` per such prop — rare per tree — and buys a single
+    /// seam, [`SlotValue::take_as`].
+    ///
+    /// The type is still fixed AT THE CALL SITE by the typed constructor
+    /// the emitter picked, so an un-annotated closure still infers; the
+    /// erasure is only between the constructor and the builder arm.
+    Any(Box<dyn Any>),
 }
 
 impl SlotValue {
@@ -122,6 +142,30 @@ impl SlotValue {
             SlotValue::Ctor(_) => "ctor",
             SlotValue::Cond(_) => "cond",
             SlotValue::Branch(_) => "branch",
+            SlotValue::Any(_) => "any",
+        }
+    }
+
+    /// Unwrap an [`SlotValue::Any`] as `T`.
+    ///
+    /// A mismatch is an emitter bug — the constructor and the builder
+    /// arm disagree about the (kind, prop) pair's type — and there is no
+    /// recovery, so it panics with both type names. Every pair is
+    /// exercised by `ui-lowering-parity`.
+    fn take_as<T: 'static>(self, what: &str) -> T {
+        match self {
+            SlotValue::Any(boxed) => match boxed.downcast::<T>() {
+                Ok(v) => *v,
+                Err(_) => panic!(
+                    "template slot for `{what}` is not a {}: the emitter's slot \
+                     constructor and the builder's arm disagree",
+                    std::any::type_name::<T>()
+                ),
+            },
+            other => panic!(
+                "template slot for `{what}` must be an erased value, got `{}`",
+                other.shape()
+            ),
         }
     }
 }
@@ -171,6 +215,102 @@ impl SlotValue {
 
     pub fn branch<E: IntoElement>(f: impl Fn() -> E + 'static) -> SlotValue {
         SlotValue::Branch(Rc::new(move || f().into_element()))
+    }
+
+    // --- the erased long tail -------------------------------------------
+    //
+    // One constructor per (kind, prop) TYPE, not per prop. Each exists to
+    // give the author's expression an expected type at the call site;
+    // `take_as` in the matching builder arm is the other end. The
+    // emitter's `prim_prop_slot_ctor` table names these.
+
+    /// A reactive `String` — `text_input`'s value, `image`'s `src`,
+    /// `link`'s url.
+    pub fn string_value(v: impl IntoValue<String>) -> SlotValue {
+        SlotValue::Any(Box::new(v.into_value()))
+    }
+
+    /// A reactive `bool` — `presence`'s `present`, `text_input`'s
+    /// `secure`.
+    pub fn bool_value(v: impl IntoValue<bool>) -> SlotValue {
+        SlotValue::Any(Box::new(v.into_value()))
+    }
+
+    /// A reactive `f32` — `icon`'s `stroke`.
+    pub fn f32_value(v: impl IntoValue<f32>) -> SlotValue {
+        SlotValue::Any(Box::new(v.into_value()))
+    }
+
+    /// A reactive `Color` — `icon`'s `color`.
+    pub fn color_value(v: impl IntoValue<Color>) -> SlotValue {
+        SlotValue::Any(Box::new(v.into_value()))
+    }
+
+    /// A plain `f32` — `slider`'s range/step, `anchored_overlay`'s
+    /// `offset`, `scroll_view`'s `end_reached_threshold`.
+    pub fn f32(v: f32) -> SlotValue {
+        SlotValue::Any(Box::new(v))
+    }
+
+    /// A plain `bool` — `scroll_view`'s flags, `trap_focus`, `a11y_hidden`.
+    pub fn plain_bool(v: bool) -> SlotValue {
+        SlotValue::Any(Box::new(v))
+    }
+
+    /// A value the builder hands to a setter unchanged: an enum, a
+    /// handle, an animation config. `T` is pinned by the setter's
+    /// parameter type at the call site.
+    pub fn plain<T: 'static>(v: T) -> SlotValue {
+        SlotValue::Any(Box::new(v))
+    }
+
+    /// `text_input`'s `on_change`.
+    pub fn on_string(f: impl Fn(String) + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(String)>))
+    }
+
+    /// `toggle`'s `on_change`, `text_input`'s `on_focus`.
+    pub fn on_bool(f: impl Fn(bool) + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(bool)>))
+    }
+
+    /// `slider`'s `on_change`.
+    pub fn on_f32(f: impl Fn(f32) + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(f32)>))
+    }
+
+    /// `on_scroll(offset_x, offset_y)`.
+    pub fn on_scroll(f: impl Fn(f32, f32) + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(f32, f32)>))
+    }
+
+    /// A no-argument callback — `on_dismiss`, `on_end_reached`,
+    /// `on_activate`, `on_error`.
+    pub fn on_void(f: impl Fn() + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn()>))
+    }
+
+    /// `graphics`' `on_ready`. `FnMut`, because the platform hands the
+    /// surface back more than once.
+    pub fn on_ready(f: impl FnMut(OnReadyEvent) + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Box::new(f) as Box<dyn FnMut(OnReadyEvent)>))
+    }
+
+    /// `graphics`' `on_resize`.
+    pub fn on_resize(f: impl FnMut(OnResizeEvent) + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Box::new(f) as Box<dyn FnMut(OnResizeEvent)>))
+    }
+
+    /// `graphics`' `on_lost`.
+    pub fn on_lost(f: impl FnMut() + 'static) -> SlotValue {
+        SlotValue::Any(Box::new(Box::new(f) as Box<dyn FnMut()>))
+    }
+
+    /// `icon`'s `draw_in` — a `(duration_ms, easing)` tuple the builder
+    /// spreads across the two-argument setter. Bound ONCE (the direct
+    /// emitter used to splice it twice; see `emit_icon`).
+    pub fn draw_in(v: (u32, Easing)) -> SlotValue {
+        SlotValue::Any(Box::new(v))
     }
 }
 
@@ -299,11 +439,18 @@ fn build_children(desc: &Descriptor, children: &[u32], slots: &mut [SlotValue]) 
 /// prop was one of them, so the per-kind arm can fall through to its own
 /// names.
 ///
-/// `a11y_role` / `a11y_traits` / `live_region` / `accessibility` are
-/// absent on purpose: each takes an ENUM or struct value, which a
-/// descriptor records as source text (`LiteralValue::Path`) and cannot
-/// reconstruct. The emission escapes a node carrying one rather than
-/// half-applying it.
+/// Every one of these is applied by `emit_component` for the primitives
+/// that HAVE the setters — the wrappers taking `glue_wrapper_common!`,
+/// plus `presence`'s hand-rolled copy. `overlay` / `anchored_overlay`
+/// have neither `test_id` nor the a11y setters, so the emitter does not
+/// declare those props native for them (they do not compile under the
+/// direct lowering either) and the arms below are never reached for
+/// those two kinds.
+///
+/// `accessibility` / `a11y_role` / `a11y_traits` / `live_region` take an
+/// enum or struct, which a descriptor records as source text
+/// (`LiteralValue::Path`) and cannot rebuild — so they arrive through an
+/// erased SLOT, and the enum itself stays compiled in.
 macro_rules! common_prop {
     ($desc:expr, $node:expr, $w:expr, $entry:expr, $slots:expr) => {{
         let name: &str = &$entry.name;
@@ -325,7 +472,23 @@ macro_rules! common_prop {
                 true
             }
             "a11y_hidden" => {
-                $w = $w.a11y_hidden(plain_bool($desc, $node, $entry, $slots));
+                $w = $w.a11y_hidden(plain_flag($desc, $node, $entry, $slots));
+                true
+            }
+            "accessibility" => {
+                $w = $w.accessibility(erased($desc, $node, $entry, $slots));
+                true
+            }
+            "a11y_role" => {
+                $w = $w.a11y_role(erased($desc, $node, $entry, $slots));
+                true
+            }
+            "a11y_traits" => {
+                $w = $w.a11y_traits(erased($desc, $node, $entry, $slots));
+                true
+            }
+            "live_region" => {
+                $w = $w.live_region(erased($desc, $node, $entry, $slots));
                 true
             }
             _ => false,
@@ -395,6 +558,14 @@ fn build_prim(
                     w = w.disabled(value_bool(desc, node, entry, slots));
                     continue;
                 }
+                if name == "leading_icon" {
+                    w = w.leading_icon(erased(desc, node, entry, slots));
+                    continue;
+                }
+                if name == "trailing_icon" {
+                    w = w.trailing_icon(erased(desc, node, entry, slots));
+                    continue;
+                }
                 if common_prop!(desc, node, w, entry, slots) {
                     continue;
                 }
@@ -439,22 +610,331 @@ fn build_prim(
             let mut w = glue::primitives::scroll_view::scroll_view(children);
             for entry in props {
                 let name: &str = &entry.name;
-                if name == "horizontal" {
-                    w = w.horizontal(plain_bool(desc, node, entry, slots));
-                    continue;
+                match name {
+                    "horizontal" => w = w.horizontal(plain_flag(desc, node, entry, slots)),
+                    "bounces" => w = w.bounces(plain_flag(desc, node, entry, slots)),
+                    "always_bounce" => {
+                        w = w.always_bounce(plain_flag(desc, node, entry, slots))
+                    }
+                    "end_reached_threshold" => {
+                        w = w.end_reached_threshold(plain_f32(desc, node, entry, slots))
+                    }
+                    "safe_area" => w = w.safe_area(erased(desc, node, entry, slots)),
+                    "on_scroll" => {
+                        let f = callback::<dyn Fn(f32, f32)>(desc, node, entry, slots);
+                        w = w.on_scroll(move |x, y| f(x, y));
+                    }
+                    "on_end_reached" => {
+                        let f = callback::<dyn Fn()>(desc, node, entry, slots);
+                        w = w.on_end_reached(move || f());
+                    }
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
                 }
-                if name == "bounces" {
-                    w = w.bounces(plain_bool(desc, node, entry, slots));
-                    continue;
+            }
+            w.into_element()
+        }
+
+        PrimKind::Icon => {
+            let data: IconData = props
+                .iter()
+                .find(|p| p.name == "data")
+                .map(|p| erased(desc, node, p, slots))
+                .unwrap_or_else(|| missing_positional(desc, node, kind, "data"));
+            let mut w = glue::icon(data);
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "data" => {}
+                    "color" => w = w.color(f32_or_color(desc, node, entry, slots)),
+                    "stroke" => w = w.stroke(f32_value_of(desc, node, entry, slots)),
+                    "animate" => w = w.animate(erased(desc, node, entry, slots)),
+                    "draw_in" => {
+                        // Bound once — the two-argument setter reads one
+                        // value, never two evaluations (see `emit_icon`).
+                        let (ms, easing): (u32, Easing) = erased(desc, node, entry, slots);
+                        w = w.draw_in(ms, easing);
+                    }
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
                 }
-                if common_prop!(desc, node, w, entry, slots) {
-                    continue;
+            }
+            w.into_element()
+        }
+
+        PrimKind::TextInput => {
+            let value = positional_string(desc, node, props, "value", slots);
+            let on_change = positional_cb::<dyn Fn(String)>(desc, node, props, "on_change", slots, || {
+                Rc::new(|_: String| {})
+            });
+            let mut w = glue::primitives::text_input::text_input(value, move |s| on_change(s));
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "value" | "on_change" => {}
+                    "placeholder" => {
+                        w = w.placeholder(string_of(desc, node, entry, slots))
+                    }
+                    "secure" => w = w.secure(bool_value_of(desc, node, entry, slots)),
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
                 }
-                unknown_prop(desc, node, kind, entry);
+            }
+            w.into_element()
+        }
+
+        PrimKind::Toggle => {
+            let value = positional_bool(desc, node, props, "value", slots);
+            let on_change = positional_cb::<dyn Fn(bool)>(desc, node, props, "on_change", slots, || {
+                Rc::new(|_: bool| {})
+            });
+            let mut w = glue::primitives::toggle::toggle(value, move |b| on_change(b));
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "value" | "on_change" => {}
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
+            }
+            w.into_element()
+        }
+
+        PrimKind::Slider => {
+            let value = positional_f32(desc, node, props, "value", slots);
+            let on_change = positional_cb::<dyn Fn(f32)>(desc, node, props, "on_change", slots, || {
+                Rc::new(|_: f32| {})
+            });
+            let mut w = glue::primitives::slider::slider(value, move |v| on_change(v));
+            // `.range(min, max)` is ONE setter over two props, so it is
+            // applied together or not at all — the direct emitter makes
+            // the same choice (a lone `min` reaches nothing there too).
+            let min = props.iter().find(|p| p.name == "min");
+            let max = props.iter().find(|p| p.name == "max");
+            if let (Some(min), Some(max)) = (min, max) {
+                let a = plain_f32(desc, node, min, slots);
+                let b = plain_f32(desc, node, max, slots);
+                w = w.range(a, b);
+            }
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "value" | "on_change" | "min" | "max" => {}
+                    "step" => w = w.step(plain_f32(desc, node, entry, slots)),
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
+            }
+            w.into_element()
+        }
+
+        PrimKind::Link => {
+            let url = props
+                .iter()
+                .find(|p| p.name == "external")
+                .map(|p| string_value(desc, node, p, slots))
+                .unwrap_or_else(|| missing_positional(desc, node, kind, "external"));
+            let mut w = glue::primitives::link::external_link(url, children);
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "external" => {}
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
+            }
+            w.into_element()
+        }
+
+        PrimKind::Overlay => {
+            let mut w = glue::primitives::overlay::overlay(children);
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "placement" => w = w.placement(erased(desc, node, entry, slots)),
+                    "backdrop" => w = w.backdrop(erased(desc, node, entry, slots)),
+                    "backdrop_style" => {
+                        w = w.backdrop_style(style_of(desc, node, entry, slots))
+                    }
+                    "trap_focus" => w = w.trap_focus(plain_flag(desc, node, entry, slots)),
+                    "on_dismiss" => {
+                        let f = callback::<dyn Fn()>(desc, node, entry, slots);
+                        w = w.on_dismiss(move || f());
+                    }
+                    "style" => w = w.with_style(style_of(desc, node, entry, slots)),
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
+            }
+            w.into_element()
+        }
+
+        PrimKind::AnchoredOverlay => {
+            let target: AnchorTarget = props
+                .iter()
+                .find(|p| p.name == "target")
+                .map(|p| erased(desc, node, p, slots))
+                .unwrap_or_else(|| missing_positional(desc, node, kind, "target"));
+            let mut w = glue::primitives::overlay::anchored_overlay(target, children);
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "target" => {}
+                    "side" => w = w.side(erased(desc, node, entry, slots)),
+                    "align" => w = w.align(erased(desc, node, entry, slots)),
+                    "offset" => w = w.offset(plain_f32(desc, node, entry, slots)),
+                    "backdrop" => w = w.backdrop(erased(desc, node, entry, slots)),
+                    "backdrop_style" => {
+                        w = w.backdrop_style(style_of(desc, node, entry, slots))
+                    }
+                    "trap_focus" => w = w.trap_focus(plain_flag(desc, node, entry, slots)),
+                    "on_dismiss" => {
+                        let f = callback::<dyn Fn()>(desc, node, entry, slots);
+                        w = w.on_dismiss(move || f());
+                    }
+                    "style" => w = w.with_style(style_of(desc, node, entry, slots)),
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
+            }
+            w.into_element()
+        }
+
+        PrimKind::Presence => {
+            // The child is a branch THUNK, not a realized child list:
+            // `presence(move || child)` rebuilds it per mount, so it is
+            // a nested template exactly like a `Dyn` branch.
+            let child = props
+                .iter()
+                .find(|p| p.name == "child")
+                .map(|p| match &p.value {
+                    PropValue::Slot(i) => take_branch(desc, *i, slots),
+                    PropValue::Lit(other) => {
+                        mismatch(desc, node, p, "branch slot", other.kind())
+                    }
+                })
+                .unwrap_or_else(|| missing_positional(desc, node, kind, "child"));
+            let mut w = glue::primitives::presence::presence(move || child());
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "child" => {}
+                    "present" => w = w.present(bool_value_of(desc, node, entry, slots)),
+                    "enter" => w = w.enter(erased(desc, node, entry, slots)),
+                    "exit" => w = w.exit(erased(desc, node, entry, slots)),
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
+            }
+            w.into_element()
+        }
+
+        PrimKind::Graphics => {
+            let mut on_ready: Box<dyn FnMut(OnReadyEvent)> = props
+                .iter()
+                .find(|p| p.name == "on_ready")
+                .map(|p| erased::<Box<dyn FnMut(OnReadyEvent)>>(desc, node, p, slots))
+                .unwrap_or_else(|| Box::new(|_| {}));
+            let mut w = glue::primitives::graphics::graphics(move |e| on_ready(e));
+            for entry in props {
+                let name: &str = &entry.name;
+                match name {
+                    "on_ready" => {}
+                    "on_resize" => {
+                        let mut f: Box<dyn FnMut(OnResizeEvent)> =
+                            erased(desc, node, entry, slots);
+                        w = w.on_resize(move |e| f(e));
+                    }
+                    "on_lost" => {
+                        let mut f: Box<dyn FnMut()> = erased(desc, node, entry, slots);
+                        w = w.on_lost(move || f());
+                    }
+                    _ if common_prop!(desc, node, w, entry, slots) => {}
+                    _ => unknown_prop(desc, node, kind, entry),
+                }
             }
             w.into_element()
         }
     }
+}
+
+/// `icon`'s `color` takes `impl IntoValue<Color>`; the slot carries a
+/// `Value<Color>` (which implements it).
+fn f32_or_color(
+    desc: &Descriptor,
+    node: u32,
+    entry: &PropEntry,
+    slots: &mut [SlotValue],
+) -> Value<Color> {
+    erased(desc, node, entry, slots)
+}
+
+fn positional_string(
+    desc: &Descriptor,
+    node: u32,
+    props: &[PropEntry],
+    name: &str,
+    slots: &mut [SlotValue],
+) -> Value<String> {
+    props
+        .iter()
+        .find(|p| p.name == name)
+        .map(|p| string_value(desc, node, p, slots))
+        .unwrap_or(Value::Const(String::new()))
+}
+
+fn positional_bool(
+    desc: &Descriptor,
+    node: u32,
+    props: &[PropEntry],
+    name: &str,
+    slots: &mut [SlotValue],
+) -> Value<bool> {
+    props
+        .iter()
+        .find(|p| p.name == name)
+        .map(|p| bool_value_of(desc, node, p, slots))
+        .unwrap_or(Value::Const(false))
+}
+
+fn positional_f32(
+    desc: &Descriptor,
+    node: u32,
+    props: &[PropEntry],
+    name: &str,
+    slots: &mut [SlotValue],
+) -> Value<f32> {
+    props
+        .iter()
+        .find(|p| p.name == name)
+        .map(|p| f32_value_of(desc, node, p, slots))
+        .unwrap_or(Value::Const(0.0))
+}
+
+/// A constructor-positional callback. Absent means "no-op", matching the
+/// direct emitter's `|_| {}` defaults — `fallback` supplies that no-op,
+/// because `Rc<dyn Fn(T)>` has no `Default`.
+fn positional_cb<F: 'static + ?Sized>(
+    desc: &Descriptor,
+    node: u32,
+    props: &[PropEntry],
+    name: &str,
+    slots: &mut [SlotValue],
+    fallback: impl FnOnce() -> Rc<F>,
+) -> Rc<F> {
+    match props.iter().find(|p| p.name == name) {
+        Some(p) => callback::<F>(desc, node, p, slots),
+        None => fallback(),
+    }
+}
+
+/// A positional the emitter must always supply. Reaching this means the
+/// emitter declared a node native without its required prop.
+fn missing_positional(desc: &Descriptor, node: u32, kind: PrimKind, name: &str) -> ! {
+    panic!(
+        "{}: node {node} ({}) is missing its required `{name}` prop — the emission \
+         must escape a node it cannot supply one for",
+        desc.site,
+        kind.tag()
+    )
 }
 
 /// A [`TextSourceProp`] the caller already assembled, handed back to a
@@ -613,6 +1093,98 @@ fn press_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotVa
             other => mismatch(desc, node, entry, "press action", other.shape()),
         },
         PropValue::Lit(other) => mismatch(desc, node, entry, "press slot", other.kind()),
+    }
+}
+
+/// Read an erased slot for a prop that has no literal spelling (an
+/// enum, a handle, a callback). A literal there is an emitter bug.
+fn erased<T: 'static>(
+    desc: &Descriptor,
+    node: u32,
+    entry: &PropEntry,
+    slots: &mut [SlotValue],
+) -> T {
+    match &entry.value {
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<T>(&entry.name),
+        PropValue::Lit(other) => mismatch(desc, node, entry, "slot", other.kind()),
+    }
+}
+
+/// Read a prop that is native BOTH as a literal and as a slot, where the
+/// setter takes a plain (non-reactive) `f32`.
+fn plain_f32(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> f32 {
+    match &entry.value {
+        PropValue::Lit(LiteralValue::Float(f)) => *f as f32,
+        PropValue::Lit(LiteralValue::Int(i)) => *i as f32,
+        PropValue::Lit(other) => mismatch(desc, node, entry, "number", other.kind()),
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<f32>(&entry.name),
+    }
+}
+
+/// As [`plain_f32`], for a setter taking a plain `bool`.
+fn plain_flag(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> bool {
+    match &entry.value {
+        PropValue::Lit(LiteralValue::Bool(b)) => *b,
+        PropValue::Lit(other) => mismatch(desc, node, entry, "bool", other.kind()),
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<bool>(&entry.name),
+    }
+}
+
+/// As [`plain_f32`], for a setter taking a reactive `Value<String>` —
+/// a literal becomes `Value::Const`.
+fn string_value(
+    desc: &Descriptor,
+    node: u32,
+    entry: &PropEntry,
+    slots: &mut [SlotValue],
+) -> Value<String> {
+    match &entry.value {
+        PropValue::Lit(LiteralValue::Str(v)) => Value::Const(v.to_string()),
+        PropValue::Lit(other) => mismatch(desc, node, entry, "string", other.kind()),
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<Value<String>>(&entry.name),
+    }
+}
+
+/// As [`string_value`], for a reactive `bool`.
+fn bool_value_of(
+    desc: &Descriptor,
+    node: u32,
+    entry: &PropEntry,
+    slots: &mut [SlotValue],
+) -> Value<bool> {
+    match &entry.value {
+        PropValue::Lit(LiteralValue::Bool(b)) => Value::Const(*b),
+        PropValue::Lit(other) => mismatch(desc, node, entry, "bool", other.kind()),
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<Value<bool>>(&entry.name),
+    }
+}
+
+/// As [`string_value`], for a reactive `f32`.
+fn f32_value_of(
+    desc: &Descriptor,
+    node: u32,
+    entry: &PropEntry,
+    slots: &mut [SlotValue],
+) -> Value<f32> {
+    match &entry.value {
+        PropValue::Lit(LiteralValue::Float(f)) => Value::Const(*f as f32),
+        PropValue::Lit(LiteralValue::Int(i)) => Value::Const(*i as f32),
+        PropValue::Lit(other) => mismatch(desc, node, entry, "number", other.kind()),
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<Value<f32>>(&entry.name),
+    }
+}
+
+/// A `Fn`-shaped callback slot, cloned out of its `Rc` so the builder can
+/// hand the setter an owning closure.
+fn callback<F: 'static + ?Sized>(
+    desc: &Descriptor,
+    node: u32,
+    entry: &PropEntry,
+    slots: &mut [SlotValue],
+) -> Rc<F> {
+    match &entry.value {
+        PropValue::Slot(i) => take(desc, *i, slots).take_as::<Rc<F>>(&entry.name),
+        PropValue::Lit(other) => mismatch(desc, node, entry, "callback slot", other.kind()),
     }
 }
 

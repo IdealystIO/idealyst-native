@@ -83,8 +83,12 @@ and a fixture that silently dropped its drive list would assert nothing.
 Node kinds: `view`, `text` (literal / closure / f-string / `content`
 prop), `button` (literal label, closure handler, and the
 `on_click = f(sig) => out` arrow shape), `image`, `activity_indicator`,
-`link`, `scroll_view`, `text_input`, `toggle`, `slider`, `overlay`,
-`anchored_overlay`, `presence`, `flat_list`, `when`.
+`link`, `scroll_view` (both a minimal and a full-prop form),
+`text_input`, `toggle`, `slider` (controlled and uncontrolled),
+`icon` (bare, reactive `color`/`stroke`, `draw_in`, `animate`),
+`graphics`, `overlay` (modal and non-modal), `anchored_overlay`,
+`presence`, `flat_list`, `when`, and the full a11y surface
+(`accessibility` / `a11y_role` / `a11y_traits` / `live_region`).
 
 Composition: components with all-literal props, with defaulted props,
 with dynamic (signal / `Option<Rc<dyn Fn()>>`) props, with a `children`
@@ -188,11 +192,19 @@ first commit, and what grows over time is how much of each fixture is
 DATA rather than code.
 
 That boundary is pinned where it is decided — in `runtime-macros`'
-`ui_template` unit tests, node kind by node kind (`view`/`text`/`button`
-are `Prim`; a reactive `if` is `Dyn`; a `for`, a `match`, a chained node,
-an unmodelled primitive, a component with a dynamic prop all `Escape`).
-A widening of the native set therefore shows up in that diff, and this
+`ui_template` unit tests, node kind by node kind, plus
+`descriptor_native_coverage_of_the_corpus`, which pins the exact
+native/escaped node COUNTS for a corpus mirroring these fixtures. A
+widening of the native set therefore shows up in that diff, and this
 suite is what proves the widening did not change any scene.
+
+This suite also finds props the DIRECT emitter silently drops. The
+`overlay_non_modal` fixture is how `overlay(click_through = …)` surfaced:
+`emit_overlay` never lowered it, so declaring it native made the template
+lowering apply a prop the direct one discarded, and the full-op
+projection failed. It is left un-native, so both lowerings agree on the
+drop; fixing the drop is a behaviour change for the direct emitter and
+belongs in its own commit.
 
 An escaped node's BODIES stay template-lowered (the macro keeps an
 ambient-lowering flag for exactly this), so a fixture like
