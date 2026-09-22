@@ -1554,6 +1554,7 @@ fn launch_web(
                     ],
                     bundle_out_dir: None,
                     robot_relay_url: None,
+                    head_script: None,
                     // Unreachable with premint flags set: run() bails on
                     // premint without --local, and this is the !local arm.
                     premint: false,
@@ -1643,6 +1644,7 @@ fn launch_web(
                     // this path (see below) — there is no staged
                     // `index.html` to write it into.
                     robot_relay_url: None,
+                    head_script: None,
                     premint: args.premint,
                     premint_only: args.premint_only,
                     premint_report: args.premint_report,
@@ -1931,6 +1933,7 @@ fn launch_ssr(
                 user_features: Vec::new(),
                 bundle_out_dir: Some(bundle_dir.clone()),
                 robot_relay_url: None,
+                head_script: None,
                 gzip: false,
                 brotli: false,
                 strip_panics: false,
@@ -2163,11 +2166,29 @@ fn dev_web_bundle_dir(project_dir: &Path) -> PathBuf {
 /// loop it feeds spawns cargo, a file watcher and a server child, and
 /// the bug it guards against (see [`web_dev_features`]) was invisible
 /// for exactly as long as nothing asserted on these values.
+/// The livereload + overlay `<script>` for the full-stack shape.
+///
+/// A full-stack project's own server hands out `index.html` and
+/// `dev-http` never runs as a file server for it, so there is no
+/// serve-time injection to hook — without this the page has no push
+/// channel at all and gets neither livereload nor overlay patches. The
+/// stream runs on its own CLI-owned port beside the app server, so the
+/// URL must be ABSOLUTE and the stream must answer with CORS (see
+/// `dev_http::serve_signal_only`).
+fn full_stack_reload_script(sse_port: Option<u16>) -> Option<String> {
+    let port = sse_port?;
+    Some(dev_http::reload_script_tag(&format!(
+        "http://127.0.0.1:{port}{}",
+        dev_http::RELOAD_SSE_URL
+    )))
+}
+
 fn full_stack_bundle_options(
     args: &Args,
     source: &build_ios::FrameworkSource,
     dist_web: PathBuf,
     relay_url: Option<String>,
+    sse_port: Option<u16>,
 ) -> Result<dev_reload::BuildOptions> {
     Ok(dev_reload::BuildOptions {
         source: source.clone(),
@@ -2186,6 +2207,10 @@ fn full_stack_bundle_options(
         // it at serve time. Restaged (and so re-injected) every
         // rebuild.
         robot_relay_url: relay_url,
+        // The push channel this shape would otherwise not have. Same
+        // reasoning as the relay URL above, and restaged on every
+        // rebuild for the same reason.
+        head_script: full_stack_reload_script(sse_port),
         // Full-stack premint dev: the staged-bundle path injects
         // the stylesheet <link> into the staged index.html itself,
         // so threading the flags is the whole feature here.
@@ -2229,6 +2254,38 @@ fn launch_web_with_backend(
     // runs the build before returning, so by the time we move on the
     // bundle is populated and the watcher thread is live.
     let signal = dev_reload::ReloadSignal::new();
+
+    // The reload/overlay stream, on its own port beside the app server.
+    // Bound BEFORE the build so the staged `index.html` can advertise a
+    // port that is already listening; a page that loaded first would
+    // reconnect on its own, but starting in the right order means the
+    // first save after a cold start lands too.
+    let sse_port = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => match listener.local_addr() {
+            Ok(addr) => {
+                drop(listener);
+                let port = addr.port();
+                let signal_for_sse = signal.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) =
+                        dev_http::serve_signal_only("127.0.0.1", port, signal_for_sse)
+                    {
+                        eprintln!("[dev web] reload/overlay stream stopped: {e}");
+                    }
+                });
+                Some(port)
+            }
+            Err(_) => None,
+        },
+        // No port, no push channel — the app still builds and serves.
+        // Livereload and overlay patches are an enhancement to the loop,
+        // not a precondition for it.
+        Err(e) => {
+            eprintln!("[dev web] no reload/overlay stream: {e}");
+            None
+        }
+    };
+
     if !args.no_build {
         crate::dlog!(
             "dev web",
@@ -2239,7 +2296,7 @@ fn launch_web_with_backend(
         let handle = dev_reload::start_with(
             dir,
             signal.clone(),
-            full_stack_bundle_options(args, source, dist_web.clone(), relay_url.clone())?,
+            full_stack_bundle_options(args, source, dist_web.clone(), relay_url.clone(), sse_port)?,
         )
         .context("web bundle initial build + watcher start failed")?;
         // Hand the watcher thread to the runtime — it lives as long
@@ -3376,6 +3433,7 @@ mod tests {
             &test_source(),
             PathBuf::from("/tmp/dist/web"),
             Some("ws://127.0.0.1:44885".to_string()),
+            None,
         )
         .unwrap();
 
@@ -3405,6 +3463,7 @@ mod tests {
             &test_source(),
             PathBuf::from("/tmp/dist/web"),
             Some("ws://127.0.0.1:44885".to_string()),
+            None,
         )
         .unwrap();
 
@@ -3418,7 +3477,13 @@ mod tests {
     fn no_robot_drops_the_feature_and_the_relay_url() {
         let args = parse_dev(&["idealyst", "dev", "--web", "--local", "--no-robot"]);
         let opts =
-            full_stack_bundle_options(&args, &test_source(), PathBuf::from("/tmp/dist/web"), None)
+            full_stack_bundle_options(
+                &args,
+                &test_source(),
+                PathBuf::from("/tmp/dist/web"),
+                None,
+                None,
+            )
                 .unwrap();
 
         assert_eq!(
@@ -3469,6 +3534,52 @@ mod tests {
         // `dev_reload`'s `the_watcher_writes_an_archive_the_decision_can_load`.
         // Asserting it from here once meant grepping this file for a
         // string only the assertion itself contained.
+    }
+
+    /// A full-stack page is served by the APP's own server, so the
+    /// `EventSource` it opens has to name an absolute URL on the port
+    /// the stream actually listens on. A relative one would resolve
+    /// against the app server, which serves no such route — and the
+    /// failure is silent: `EventSource` retries forever and the author
+    /// sees a dev loop that simply never pushes anything.
+    #[test]
+    fn the_full_stack_reload_script_targets_an_absolute_url() {
+        let script = full_stack_reload_script(Some(44321)).expect("a port yields a script");
+        assert!(
+            script.contains("http://127.0.0.1:44321/__idealyst/reload"),
+            "{script}"
+        );
+        assert!(script.contains("EventSource"), "{script}");
+        // Both channels ride this one stream: a generation bump reloads,
+        // a `patch` event applies without reloading.
+        assert!(script.contains("__idealyst_overlay_patch"), "{script}");
+    }
+
+    /// No port, no script — and no crash. The stream is an enhancement
+    /// to the loop, not a precondition for it, so a project that could
+    /// not bind one still builds and serves.
+    #[test]
+    fn no_stream_port_means_no_injected_script() {
+        assert!(full_stack_reload_script(None).is_none());
+    }
+
+    /// The staged `index.html` is where it has to land: a full-stack
+    /// project's own server hands that file out, and `dev-http` never
+    /// runs as a file server for it, so there is no serve-time
+    /// injection to hook.
+    #[test]
+    fn the_full_stack_bundle_carries_the_script_into_the_staged_html() {
+        let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        let opts = full_stack_bundle_options(
+            &args,
+            &test_source(),
+            PathBuf::from("/tmp/dist/web"),
+            None,
+            Some(44321),
+        )
+        .unwrap();
+        let script = opts.head_script.expect("a port yields a script");
+        assert!(script.contains("http://127.0.0.1:44321/__idealyst/reload"), "{script}");
     }
 
     /// A project manifest with whatever `[package.metadata.idealyst.app]`
@@ -3872,7 +3983,8 @@ mod tests {
         let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);
         let project = Path::new("/tmp/some-project");
         let staged = dev_web_bundle_dir(project);
-        let opts = full_stack_bundle_options(&args, &test_source(), staged.clone(), None).unwrap();
+        let opts =
+            full_stack_bundle_options(&args, &test_source(), staged.clone(), None, None).unwrap();
         assert_eq!(opts.bundle_out_dir.as_deref(), Some(staged.as_path()));
     }
 }

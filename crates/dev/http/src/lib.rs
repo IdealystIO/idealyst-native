@@ -149,7 +149,7 @@ pub struct HeadInjectionContext {
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
   var baseline = null;
-  var es = new EventSource("/__idealyst/reload");
+  var es = new EventSource("__SSE_URL__");
   es.onmessage = function (e) {
     if (baseline === null) {
       baseline = e.data;
@@ -172,6 +172,65 @@ const RELOAD_SCRIPT: &str = r#"<script>
   });
 })();
 </script>"#;
+
+/// The livereload + overlay `<script>`, pointed at `sse_url`.
+///
+/// Parameterised because the page and the stream do not always share an
+/// origin. In the static shape `dev-http` serves both and a relative
+/// path is right; in the FULL-STACK shape the app's own server hands out
+/// `index.html` and this stream runs beside it on a CLI-owned port, so
+/// the page needs an absolute URL — and the stream needs CORS, which is
+/// why [`serve_signal_only`] sends it.
+///
+/// The URL is escaped rather than interpolated: it is assembled from a
+/// port number today, but a `"` reaching it would close the string
+/// literal and leave the rest of the page's `<head>` executable.
+pub fn reload_script_tag(sse_url: &str) -> String {
+    RELOAD_SCRIPT.replace("__SSE_URL__", &sse_url.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Serve ONLY the livereload/overlay SSE stream, on `port`.
+///
+/// For the full-stack shape, where the app's own server serves the page
+/// and `dev-http` has no files to hand out. Without this a full-stack
+/// project gets neither livereload nor overlay patches — the push
+/// channel simply does not exist for it, because the SSE endpoint lives
+/// here and nothing was running here.
+///
+/// Every route answers with `Access-Control-Allow-Origin: *`: the page
+/// is on the app server's origin and this is on another port, so the
+/// browser treats the `EventSource` as cross-origin.
+pub fn serve_signal_only(host: &str, port: u16, signal: Arc<ReloadSignal>) -> Result<()> {
+    let addr = format!("{host}:{port}");
+    let server = Server::http(&addr)
+        .map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
+    eprintln!("[dev-http] reload/overlay stream on http://{addr}{RELOAD_SSE_URL}");
+
+    for request in server.incoming_requests() {
+        let url_path = request.url().split('?').next().unwrap_or("/").to_string();
+        if url_path != RELOAD_SSE_URL {
+            let _ = request.respond(cors(Response::empty(404)));
+            continue;
+        }
+        let signal = Some(signal.clone());
+        if let Err(e) = thread::Builder::new()
+            .name("dev-http-sse".into())
+            .spawn(move || serve_sse(request, signal))
+        {
+            eprintln!("[dev-http] cannot spawn SSE thread: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// Add the permissive CORS header every route on the signal-only server
+/// carries. See [`serve_signal_only`].
+fn cors<R: std::io::Read>(response: Response<R>) -> Response<R> {
+    response.with_header(
+        tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+            .expect("static header"),
+    )
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn serve_static(
@@ -400,10 +459,16 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
     // keep-alive accounting (we're holding the writer for the
     // lifetime of the stream anyway), and lets the browser detect
     // disconnects via TCP close.
+    // `Access-Control-Allow-Origin` unconditionally: in the full-stack
+    // shape the page is served by the app's own server on another port,
+    // so the browser treats this stream as cross-origin and drops it
+    // without the header. Harmless on the same-origin static path, and
+    // this is a dev-only server that binds localhost.
     let head = b"HTTP/1.1 200 OK\r\n\
                  Content-Type: text/event-stream\r\n\
                  Cache-Control: no-store\r\n\
                  Connection: close\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
                  X-Accel-Buffering: no\r\n\
                  \r\n";
     if writer.write_all(head).is_err() || writer.flush().is_err() {
@@ -737,14 +802,15 @@ fn inject_reload_script(html: String) -> String {
     // browser is forgiving about scripts after the closing tag.
     if let Some(idx) = html.rfind("</body>") {
         let (head, tail) = html.split_at(idx);
-        let mut out = String::with_capacity(html.len() + RELOAD_SCRIPT.len() + 1);
+        let script = reload_script_tag(RELOAD_SSE_URL);
+        let mut out = String::with_capacity(html.len() + script.len() + 1);
         out.push_str(head);
-        out.push_str(RELOAD_SCRIPT);
+        out.push_str(&script);
         out.push('\n');
         out.push_str(tail);
         out
     } else {
-        format!("{html}\n{RELOAD_SCRIPT}")
+        format!("{html}\n{}", reload_script_tag(RELOAD_SSE_URL))
     }
 }
 

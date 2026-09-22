@@ -130,6 +130,19 @@ pub struct BuildOptions {
     /// `None` for every deploy build — a staged bundle must never ship
     /// a dev machine's relay port.
     pub robot_relay_url: Option<String>,
+    /// A `<script>` to splice into the staged `index.html` head.
+    ///
+    /// Carries the livereload + overlay `EventSource` for the FULL-STACK
+    /// shape, where the app's own server hands out `index.html` and
+    /// `dev-http` never runs as a file server — so there is no
+    /// serve-time injection to hook and the page would otherwise have no
+    /// push channel at all. The CLI builds it with
+    /// `dev_http::reload_script_tag` and an ABSOLUTE URL, because the
+    /// stream runs on a different port than the page.
+    ///
+    /// Ignored when `bundle_out_dir` is `None`, same as
+    /// `robot_relay_url`.
+    pub head_script: Option<String>,
     /// Pre-gzip every text-ish file in the staged bundle, writing
     /// gzipped bytes under the original filename. Only meaningful
     /// when `bundle_out_dir` is `Some`; ignored otherwise. The static
@@ -779,6 +792,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // inspector / evaluators. Same `</head>` splice and the same
         // pre-gzip ordering as the injections above.
         stage_robot_relay_url(&staged.join("index.html"), opts.robot_relay_url.as_deref())?;
+        stage_head_script(&staged.join("index.html"), opts.head_script.as_deref())?;
         // Stage any EXTERNAL dirs the app links in (e.g. a component
         // library's `fonts/`), copied under their final path component so
         // `../whiteboard/fonts` → `<bundle>/fonts/`. Lets a library own the
@@ -1111,6 +1125,20 @@ fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -
 /// picked up a dev machine's relay port would ship an app that dials a
 /// developer's laptop, and every `idealyst build` path relies on this
 /// staying a no-op.
+/// Splice an arbitrary `<script>` into the staged `index.html` head.
+///
+/// Same read-modify-write shape as the relay-URL injector, and it must
+/// run BEFORE gzip for the same reason.
+fn stage_head_script(index_path: &Path, script: Option<&str>) -> Result<()> {
+    let Some(script) = script else { return Ok(()) };
+    let html = fs::read_to_string(index_path)
+        .with_context(|| format!("read {}", index_path.display()))?;
+    let rewritten = inject_into_head(html, &format!("\n    {script}"));
+    fs::write(index_path, rewritten)
+        .with_context(|| format!("write {}", index_path.display()))?;
+    Ok(())
+}
+
 fn stage_robot_relay_url(index_path: &Path, url: Option<&str>) -> Result<()> {
     let Some(url) = url else { return Ok(()) };
     inject_robot_relay_url_into_staged_index(index_path, url)
@@ -2803,6 +2831,7 @@ mod regression_tests {
             // Not graph-invalidating: it rewrites the staged
             // `index.html`, never the cargo build.
             robot_relay_url: None,
+            head_script: None,
             bundle_out_dir: None,
             prune_dead_data_min: None,
         }

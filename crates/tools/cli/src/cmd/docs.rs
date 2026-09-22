@@ -130,6 +130,7 @@ pub fn run(args: Args) -> Result<()> {
             user_features: Vec::new(),
             bundle_out_dir: Some(bundle_out.clone()),
             robot_relay_url: None,
+            head_script: None,
             gzip: false,
                 brotli: false,
             strip_panics: false,

@@ -263,6 +263,10 @@ pub struct BuildOptions {
     /// directly, so a rebuild that restages `index.html` would drop a
     /// serve-time injection. `None` everywhere else.
     pub robot_relay_url: Option<String>,
+    /// A `<script>` to splice into the staged `index.html` head —
+    /// the full-stack shape's livereload + overlay `EventSource`. See
+    /// [`build_web::BuildOptions::head_script`].
+    pub head_script: Option<String>,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -330,6 +334,7 @@ pub fn start(
             features: Vec::new(),
             bundle_out_dir: None,
             robot_relay_url: None,
+            head_script: None,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -890,6 +895,7 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // Re-injected on every rebuild because `stage_bundle` copies
         // the project's `index.html` fresh each time.
         robot_relay_url: opts.robot_relay_url.clone(),
+        head_script: opts.head_script.clone(),
         dev_opt: opts.dev_opt,
         gzip: false,
         // Dev rebuilds skip the q11 encode; `.br` siblings are a
@@ -1009,6 +1015,7 @@ mod tests {
             features: Vec::new(),
             bundle_out_dir: None,
             robot_relay_url: None,
+            head_script: None,
             premint,
             premint_only: only,
             premint_report: report,
