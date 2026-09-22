@@ -37,6 +37,19 @@ description = "Integration app: a ui! + #[component] authored tree, e2e-tested t
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
 
+[features]
+# Opt-in, never on by default: `runtime-macros` is a proc-macro crate,
+# so enabling its `hot-reload` gate flips the `#[component]` split for
+# EVERY crate in the same cargo invocation. Same discipline as
+# `ui-lowering-parity`'s `ui-overlay` feature — run the split suite
+# explicitly:
+#
+#   cargo test -p newcore-app --features hot-reload --test hot_split
+#
+# `tests/hot_split.rs` is `#![cfg(feature = "hot-reload")]`, so a plain
+# `cargo test -p newcore-app` compiles it away entirely.
+hot-reload = ["runtime-core/hot-reload"]
+
 [dependencies]
 runtime-macros = { workspace = true }
 # The `runtime_core::…` author-surface alias target: `runtime-core`.
@@ -59,3 +72,10 @@ scene-parity = { path = "../scene-parity" }
 # real public surface, not a replica.
 swap-navigator = { workspace = true }
 stack-navigator = { workspace = true }
+
+[dev-dependencies]
+# Symbol-table reader for `tests/hot_split.rs`: the split is only useful
+# if `__*_hot_impl` survives as a real symbol in the linked artifact, and
+# the only way to know is to look. Same crate the jump-table generator
+# uses, so the two agree on what "present" means.
+object = { version = "0.39", default-features = false, features = ["read", "std"] }

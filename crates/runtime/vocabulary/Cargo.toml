@@ -73,6 +73,26 @@ style-dump = ["runtime-shared/style-dump"]
 # whichever wrapper/app wants capture (see runtime-core/catalog).
 catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
 
+# `hot-reload`: the subsecond dispatch anchor for the `#[component]`
+# split. Links `dev-hot` (with its own `hot` feature, i.e. the real
+# subsecond substrate) and re-exports it at `glue::__hot`, where the
+# split's `::runtime_core::__hot::call(..)` emission lands after the
+# retarget pass.
+#
+# Both halves in one switch, deliberately — same reasoning as
+# `runtime-core/ui-overlay`. The EMISSION gate lives on
+# `runtime-macros` (a crate this one does not depend on), so a consumer
+# turns on `runtime-core/hot-reload`, which forwards to both. Turning on
+# only the macro half emits calls to an anchor that does not exist (a
+# loud compile error — fine); turning on only this half links dev-hot
+# and dispatches nothing (silent, and the bad one). One switch, no
+# half-configuration.
+#
+# Off by default: production graphs carry zero hot-reload code, and
+# `dev-hot` is an optional dep so the default build graph is unchanged.
+# Only `idealyst dev`'s generated runtime-server sidecar enables it.
+hot-reload = ["dep:dev-hot", "dev-hot/hot"]
+
 [dependencies]
 # The shared prop/data types (StyleRules, AccessibilityProps, handler
 # aliases, primitives::* payloads, robot bridge, host slots) live in
@@ -89,6 +109,12 @@ runtime-template = { workspace = true }
 
 # Catalog anchor (see the `catalog` feature above).
 mcp-catalog = { workspace = true, optional = true }
+
+# Hot-reload dispatch anchor (see the `hot-reload` feature above).
+# Crate-type rlib, so it is statically linked ONCE into whichever
+# binary the graph produces — there must be exactly one copy of
+# subsecond's global jump table in a process.
+dev-hot = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Self-dev-dep so the test targets compile the lib WITH `async-driver`

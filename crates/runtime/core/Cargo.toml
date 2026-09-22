@@ -63,6 +63,35 @@ ui-overlay = [
     "runtime-vocabulary/ui-overlay",
 ]
 
+# `hot-reload`: subsecond in-place patching of `#[component]` BODIES.
+# The three-way forward mirrors `ui-overlay` above, and for the same
+# reason — the emission and the anchor it resolves against live in
+# different crates:
+#
+#   * `runtime-macros/hot-reload` makes `#[component]` split each
+#     component into an outer dispatcher and an inner
+#     `__<Name>_hot_impl` carrying the body;
+#   * `runtime-vocabulary/hot-reload` provides `glue::__hot` (a
+#     `dev-hot` re-export, with `dev-hot/hot` on) — the anchor the
+#     split's retargeted emission calls into.
+#
+# Leaving the macro out links the substrate and patches nothing;
+# leaving the vocabulary out fails the build loudly. One switch.
+#
+# OFF by default and enabled ONLY by `idealyst dev`'s generated
+# runtime-server sidecar wrapper: with it off, `#[component]` emits the
+# author's function verbatim (proved byte-for-byte by
+# `runtime-macros`' `component_golden` goldens) and nothing links
+# subsecond.
+#
+# NOTE, as with `ui-overlay`: `runtime-macros` is a proc-macro crate, so
+# this flips the emission for EVERY crate in one cargo invocation. That
+# is wanted — a half-split tree is a half-patchable app.
+hot-reload = [
+    "runtime-macros/hot-reload",
+    "runtime-vocabulary/hot-reload",
+]
+
 # `runtime_core::premint` — the linkme registry the `stylesheet!`
 # expansion registers into under `cfg(idealyst_premint_dump)`. Enabled
 # only by the CLI's ephemeral premint-dump wrapper and by the

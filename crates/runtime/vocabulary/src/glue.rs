@@ -216,6 +216,23 @@ pub use runtime_shared::debug;
 #[doc(hidden)]
 pub use ::mcp_catalog as __mcp;
 
+// Hot-reload dispatch anchor, the `__mcp` of the subsecond split. The
+// `#[component]` hot-reload emission spells
+// `::runtime_core::__hot::call(inner_fn_ptr, args)`, which the retarget
+// pass rewrites to `::runtime_vocabulary::glue::__hot::call(..)` — so
+// `dev_hot` has to be reachable HERE, not only from the author-facing
+// root (a component in a component LIBRARY expands to the same path and
+// that crate need not depend on runtime-core).
+//
+// `dev-hot` is rlib-only on purpose: subsecond's jump table is a
+// process-global, so the whole graph must share one statically linked
+// copy. Gated by `hot-reload`, which also turns on `dev-hot/hot` — see
+// the feature's comment in Cargo.toml for why both live behind one
+// switch.
+#[cfg(feature = "hot-reload")]
+#[doc(hidden)]
+pub use ::dev_hot as __hot;
+
 // Premint style-dump registry anchor. `stylesheet!` emits its
 // `cfg(idealyst_premint_dump)` linkme registration as
 // `::runtime_core::premint::{linkme, PREMINT_SHEETS, PremintSheet}`, and

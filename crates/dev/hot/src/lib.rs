@@ -34,24 +34,41 @@
 //!
 //! # Macro emission shape
 //!
-//! `#[component]` (under `hot-reload`) rewrites
+//! `#[component]` (under `runtime-core/hot-reload`) rewrites
 //!
 //! ```ignore
-//! fn Counter(props: &CounterProps) -> Element { /* body */ }
+//! pub fn Counter(props: &CounterProps) -> Element { /* body */ }
 //! ```
 //!
 //! into
 //!
 //! ```ignore
-//! fn Counter(props: &CounterProps) -> Element {
-//!     ::dev_hot::call(__Counter_hot_impl, (props,))
-//! }
 //! #[doc(hidden)]
+//! #[inline(never)]
 //! fn __Counter_hot_impl(props: &CounterProps) -> Element { /* body */ }
+//!
+//! pub fn Counter(props: &CounterProps) -> Element {
+//!     let __idealyst_hot_inner: fn(&CounterProps) -> Element = __Counter_hot_impl;
+//!     ::runtime_core::__hot::call(__idealyst_hot_inner, (props,))
+//! }
 //! ```
 //!
+//! The explicit `fn(..)` local is not cosmetic: a bare fn item is a
+//! ZST, which routes [`call`] through subsecond's trait-object path
+//! (keyed on `<F as HotFunction>::call_it`) instead of through the
+//! function's own address — and the jump table this crate applies is
+//! built by pairing `__*_hot_impl` SYMBOLS, so only the fn-pointer path
+//! finds an entry. `runtime-macros`' `hot_split` module owns that
+//! emission and documents the rest.
+//!
+//! `::runtime_core::__hot` rather than `::dev_hot` because the macro's
+//! retarget pass rewrites it to `::runtime_vocabulary::glue::__hot` —
+//! so a component in ANY crate resolves the anchor without that crate
+//! depending on this one.
+//!
 //! Without the feature, no wrapper is generated — `Counter` is
-//! emitted unchanged.
+//! emitted unchanged, proved byte for byte by `runtime-macros`'
+//! `goldens/component_*.txt`.
 
 #![cfg_attr(not(feature = "hot"), allow(unused_imports, dead_code))]
 
@@ -193,6 +210,12 @@ impl_direct_call!(A, B, C, D, E, F);
 impl_direct_call!(A, B, C, D, E, F, G);
 #[cfg(not(feature = "hot"))]
 impl_direct_call!(A, B, C, D, E, F, G, H);
+// Nine is subsecond's widest `HotFunction` impl (`Fn9Marker`) and
+// therefore `runtime_macros::hot_split::MAX_SPLIT_ARITY`. The shim has
+// to reach exactly as far, or a nine-prop component would compile with
+// the substrate on and fail with it off.
+#[cfg(not(feature = "hot"))]
+impl_direct_call!(A, B, C, D, E, F, G, H, I);
 
 /// Install a new jump table built from a freshly-rebuilt user
 /// dylib. Each entry maps an old function address (the one statically

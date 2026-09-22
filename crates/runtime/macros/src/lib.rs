@@ -49,8 +49,14 @@ mod invocation_macro;
 mod jsx;
 mod lazy;
 mod lazy_component;
+mod component_golden;
 #[cfg(feature = "catalog")]
 mod external_emit;
+/// The `#[component]` hot-reload split (outer dispatcher + inner
+/// `__<Name>_hot_impl`). Compiled unconditionally; whether it RUNS is
+/// the `hot-reload` feature, threaded as `hot_split` so one test binary
+/// can drive both legs.
+mod hot_split;
 #[cfg(feature = "catalog")]
 mod mcp_emit;
 #[cfg(feature = "catalog")]
@@ -87,7 +93,14 @@ use syn::ItemFn;
 /// `::runtime_vocabulary::glue` (see [`new_core`]); otherwise it passes
 /// through byte-identical.
 fn finish(out: proc_macro2::TokenStream) -> TokenStream {
-    new_core::retarget(out).into()
+    finish2(out).into()
+}
+
+/// `finish` without the `proc_macro` round-trip, so in-crate unit tests
+/// can assert on a fully-retargeted expansion (a `proc_macro::TokenStream`
+/// cannot be constructed outside a real macro invocation).
+fn finish2(out: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    new_core::retarget(out)
 }
 
 /// `#[derive(IdealystSchema)]` — registers a props struct's per-field
@@ -373,7 +386,29 @@ pub fn lazy_component(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> TokenStream {
-    let mut item_fn = parse_macro_input!(item as ItemFn);
+    emit_component_tokens(attr, item.into(), HOT_RELOAD_SPLIT).into()
+}
+
+/// Whether `#[component]` splits each component into an outer dispatcher
+/// plus an inner `__<Name>_hot_impl`. Mirrors the `hot-reload` cargo
+/// feature; a `const` rather than a bare `cfg!` so the emission core can
+/// be driven BOTH ways from one test binary — which is how
+/// `component_golden` proves the feature-off output is byte-identical
+/// to the frozen goldens.
+const HOT_RELOAD_SPLIT: bool = cfg!(feature = "hot-reload");
+
+/// The `#[component]` emission core, in `proc_macro2` terms so unit tests
+/// can call it. `hot_split` is the `hot-reload` gate, threaded as a
+/// parameter instead of read from `cfg!` at the use site.
+pub(crate) fn emit_component_tokens(
+    attr: component_attr::ComponentAttr,
+    item: proc_macro2::TokenStream,
+    hot_split: bool,
+) -> proc_macro2::TokenStream {
+    let mut item_fn = match syn::parse2::<ItemFn>(item) {
+        Ok(f) => f,
+        Err(e) => return e.to_compile_error(),
+    };
     // Unmigrated-shape rejection — loud, named, never silent (repo
     // rule: an unmigrated feature must fail with its migration status).
     //
@@ -399,8 +434,7 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
              pre-v2 `Element` and cannot lower; generic components can't \
              take the injected prop either.",
         )
-        .to_compile_error()
-        .into();
+        .to_compile_error();
     }
     // `strict-docs`: require a doc comment on the component fn. Computed
     // from the original attrs before any rewrite; emitted alongside the
@@ -464,7 +498,7 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     // attrs. `None` → classic explicit-props path, unchanged.
     let inline_glue = match inline_props::try_expand(&mut item_fn, &attr) {
         Ok(g) => g,
-        Err(e) => return e.to_compile_error().into(),
+        Err(e) => return e.to_compile_error(),
     };
     // Lazy mode threads the component's props across the chunk boundary and
     // generates the `loading`/`error` config fields — both of which need the
@@ -479,8 +513,7 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
              props struct is monomorphic); for a component you need both eager and \
              lazy, wrap the eager one with `lazy_component!(LazyFoo = Foo)`.",
         )
-        .to_compile_error()
-        .into();
+        .to_compile_error();
     }
     // Components read as PascalCase at the `ui!` call site. Authors who
     // also name the fn itself PascalCase — the "true `fn` component"
@@ -494,7 +527,7 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     // return type are rewritten in place when #[method] fns are present.
     let (methods_extra, method_infos) = match methods_block::extract_and_rewrite(&mut item_fn, bind_to_injected) {
         Ok((extra, infos)) => (extra, infos),
-        Err(e) => return e.to_compile_error().into(),
+        Err(e) => return e.to_compile_error(),
     };
     reactivity::rewrite(&mut item_fn);
 
@@ -568,18 +601,34 @@ fn emit_component(attr: component_attr::ComponentAttr, item: TokenStream) -> Tok
     // When the `hot-reload` feature is on, split the function into
     // an inner `__<Name>_hot_impl` containing the rewritten body and
     // an outer `<Name>` that dispatches through
-    // `dev_hot::call`. This puts every component on the
-    // jump-table fast path — replacing a component's body at
-    // runtime swaps the function pointer the outer fn calls. When
-    // the feature is off, `item_fn` is emitted unchanged. The
+    // `runtime_core::__hot::call` (→ `dev_hot::call`). This puts every
+    // component on the jump-table fast path — replacing a component's
+    // body at runtime swaps the function pointer the outer fn calls.
+    // When the feature is off, `item_fn` is emitted unchanged. The
     // wrapper is the LAST transform so it sees the fully-rewritten
     // body (reactivity, #[method] lifting, debug-stats).
-    #[cfg(feature = "hot-reload")]
-    let item_fn = split_for_hot_reload(item_fn);
-    #[cfg(not(feature = "hot-reload"))]
-    let item_fn = quote! { #item_fn };
+    //
+    // `hot_split` rather than a `cfg!` read here: the same emission
+    // core has to be drivable both ways inside one test binary (see
+    // `hot_reload_split::tests`).
+    let item_fn = if hot_split {
+        match hot_split::split(item_fn) {
+            Ok(split) => split,
+            // A shape the fn-pointer dispatch cannot express stays
+            // whole — hot-patchable components around it still are.
+            // `Refusal` is a value, not a diagnostic: refusing loudly
+            // would turn a dev-only accelerator into a compile error
+            // on code that builds fine in production.
+            Err((refusal, item_fn)) => {
+                let _ = refusal;
+                quote! { #item_fn }
+            }
+        }
+    } else {
+        quote! { #item_fn }
+    };
 
-    finish(quote! {
+    finish2(quote! {
         #strict_doc_err
         #strict_naming_err
         #methods_extra
@@ -614,137 +663,6 @@ fn wrap_component_body_new_core(item_fn: &mut ItemFn) {
     item_fn.block = syn::parse_quote!({
         ::runtime_core::component_scope(move || #block)
     });
-}
-
-/// Split a fully-rewritten component fn into an inner impl + outer
-/// hot-reload dispatcher. The outer keeps the original name and
-/// signature; the inner gets `__<Name>_hot_impl` and the actual
-/// body. The outer's body is
-///
-/// ```ignore
-/// ::dev_hot::call(__<Name>_hot_impl, (arg1, arg2, ...))
-/// ```
-///
-/// which dispatches through subsecond's jump table. Generics and
-/// where clauses propagate to both; `pub`/`pub(crate)` etc. stays
-/// on the outer; the inner is `#[doc(hidden)]` `fn` (not pub) so
-/// authors can't accidentally call it.
-#[cfg(feature = "hot-reload")]
-fn split_for_hot_reload(item_fn: ItemFn) -> proc_macro2::TokenStream {
-    use proc_macro2::Span;
-    use syn::{parse_quote, FnArg, Ident, ItemFn, Pat, PatIdent};
-
-    let outer_name = item_fn.sig.ident.clone();
-    let inner_name = Ident::new(&format!("__{}_hot_impl", outer_name), outer_name.span());
-
-    // Build the inner fn: same signature minus the visibility, body
-    // unchanged. Renaming preserves debug names — the inner is what
-    // panics / shows in backtraces.
-    let mut inner = item_fn.clone();
-    inner.vis = syn::Visibility::Inherited;
-    inner.sig.ident = inner_name.clone();
-    let inner_attrs_doc_hidden: syn::Attribute = parse_quote!(#[doc(hidden)]);
-    let inner_attrs_allow_nonsnake: syn::Attribute =
-        parse_quote!(#[allow(non_snake_case)]);
-    inner.attrs.push(inner_attrs_doc_hidden);
-    inner.attrs.push(inner_attrs_allow_nonsnake);
-
-    // Build the outer fn: same signature, body replaced with a
-    // tail-call through dev_hot::call. We need to pass the
-    // args as a tuple. Walk the fn args, generate fresh idents that
-    // match each arg's binding, and pack them.
-    //
-    // For a `props: &CounterProps` parameter, the outer fn keeps
-    // that signature so callers see no change; the body just does
-    // `dev_hot::call(__Counter_hot_impl, (props,))`.
-    let mut outer = item_fn;
-    outer.attrs.retain(|a| !a.path().is_ident("inline")); // don't double-inline
-    let args = collect_arg_idents(&outer.sig.inputs);
-    let arg_tuple = if args.is_empty() {
-        quote::quote! { () }
-    } else if args.len() == 1 {
-        let a = &args[0];
-        quote::quote! { (#a,) }
-    } else {
-        quote::quote! { (#(#args),*) }
-    };
-    // Body: forward to the inner impl via dev_hot's wrapper.
-    // Reach `dev_hot` through `runtime_core::__hot` so the
-    // generated code resolves in every consumer crate without
-    // forcing them to take a direct dep on dev-hot.
-    //
-    // Critical: assign the inner fn item to a `fn(...)` typed local
-    // first. A bare named function in Rust is a *zero-sized fn item
-    // type* — passing it directly into `dev_hot::call` makes
-    // `F` a ZST, which routes through subsecond's trait-object code
-    // path (it keys the jump table on `<F as HotFunction>::call_it`,
-    // not on the user's function). Our diff generator emits entries
-    // for `__*_hot_impl` symbols by name, so we need the dispatch to
-    // go through the fn-pointer path. Coercing the fn item to an
-    // explicit `fn(...)` pointer here forces `size_of::<F>() ==
-    // size_of::<fn()>()` inside `HotFn::try_call`, taking
-    // `call_as_ptr` — which uses the function pointer's runtime
-    // address as the lookup key. That's the address our diff
-    // generator wrote into the table.
-    let inner_fn_pointer_types: Vec<&syn::Type> = outer
-        .sig
-        .inputs
-        .iter()
-        .filter_map(|arg| match arg {
-            syn::FnArg::Typed(pt) => Some(&*pt.ty),
-            _ => None,
-        })
-        .collect();
-    let inner_fn_pointer_ret = match &outer.sig.output {
-        syn::ReturnType::Default => quote::quote! { () },
-        syn::ReturnType::Type(_, t) => quote::quote! { #t },
-    };
-    outer.block = parse_quote! {
-        {
-            let __idealyst_hot_inner: fn(#(#inner_fn_pointer_types),*) -> #inner_fn_pointer_ret
-                = #inner_name;
-            ::runtime_core::__hot::call(__idealyst_hot_inner, #arg_tuple)
-        }
-    };
-    // Avoid spurious lints on the outer's generated body.
-    outer
-        .attrs
-        .push(parse_quote!(#[allow(clippy::needless_pass_by_value)]));
-
-    let _ = Span::call_site();
-    let _ = std::marker::PhantomData::<PatIdent>;
-    let _ = std::marker::PhantomData::<Pat>;
-    let _ = std::marker::PhantomData::<FnArg>;
-    let _ = std::marker::PhantomData::<ItemFn>;
-
-    quote::quote! {
-        #inner
-        #outer
-    }
-}
-
-/// Extract the binding idents from a fn's parameter list. Patterns
-/// other than a plain `name: Type` (e.g. tuple destructuring,
-/// `mut name`) are normalized to their binding ident. Components in
-/// this framework use simple `props: &SomeProps` shapes so this is
-/// always a clean unwrap; we conservatively bail to an empty list if
-/// the shape is unexpected, which yields a `()` arg tuple — fine,
-/// the inner fn's signature will reject it at compile time and the
-/// author gets a normal Rust error pointing at their component.
-#[cfg(feature = "hot-reload")]
-fn collect_arg_idents(
-    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
-) -> Vec<syn::Ident> {
-    let mut out = Vec::new();
-    for arg in inputs.iter() {
-        let syn::FnArg::Typed(pat_type) = arg else {
-            continue;
-        };
-        if let syn::Pat::Ident(pi) = pat_type.pat.as_ref() {
-            out.push(pi.ident.clone());
-        }
-    }
-    out
 }
 
 /// Wrap the component's body with `record_component_enter` /

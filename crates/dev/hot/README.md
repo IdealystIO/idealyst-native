@@ -35,31 +35,64 @@ upstream API surface.
 
 ## How `#[component]` uses it
 
-Under `hot-reload`, the `#[component]` macro rewrites:
+Under `runtime-core/hot-reload`, the `#[component]` macro
+(`runtime-macros/src/hot_split.rs`) rewrites:
 
 ```rust
-fn Counter(props: &CounterProps) -> Element { /* body */ }
+pub fn Counter(props: &CounterProps) -> Element { /* body */ }
 ```
 
 into:
 
 ```rust
-fn Counter(props: &CounterProps) -> Element {
-    ::dev_hot::call(__Counter_hot_impl, (props,))
-}
 #[doc(hidden)]
+#[inline(never)]
 fn __Counter_hot_impl(props: &CounterProps) -> Element { /* body */ }
+
+pub fn Counter(props: &CounterProps) -> Element {
+    let __idealyst_hot_inner: fn(&CounterProps) -> Element = __Counter_hot_impl;
+    ::runtime_core::__hot::call(__idealyst_hot_inner, (props,))
+}
 ```
+
+Three details are load-bearing:
+
+- **The outer keeps name, visibility and signature.** A component's SHAPE —
+  props struct, `Tag = TagProps` alias, `BuildElement` impl, every call site
+  — is identical with the feature on or off. `runtime-macros`' frozen
+  `goldens/component_*.txt` prove the feature-off emission byte for byte.
+- **`::runtime_core::__hot`, not `::dev_hot`.** The macro's retarget pass
+  rewrites that to `::runtime_vocabulary::glue::__hot`, so a component in any
+  crate resolves it without that crate depending on this one.
+- **The explicit `fn(..)` local.** A bare fn item is a zero-sized type;
+  subsecond would then dispatch through `<F as HotFunction>::call_it` (the
+  trait-object path) instead of through the function's own address. The jump
+  table is built by pairing `__*_hot_impl` SYMBOLS, so dispatch has to take
+  the fn-pointer path. `#[inline(never)]` on the inner half is what keeps
+  that symbol in the linked artifact at all (`[profile.dev] opt-level = "z"`
+  would otherwise be free to fold it away) —
+  `newcore-app`'s `tests/hot_split.rs` reads the binary's symbol table to
+  prove it.
+
+A component whose signature cannot be spelled as a plain fn pointer —
+generics, arity above 9, `impl Trait`, a destructuring parameter — is emitted
+unsplit and falls back to rebuild-and-respawn. See `hot_split::Refusal`.
 
 Without the feature, no wrapper is generated; `Counter` is emitted unchanged.
 
 ## Where the patches come from
 
-The dev server bundles a fresh dylib of the user's component crate on each
-edit and ships it over the wire. On native targets, [`backend/aas-shell-native`](../../backend/aas-shell-native)
-receives the dylib, `dlopen`s it locally, and calls `apply_patch` with the
-new jump table. On web, the same flow runs through `backend-web`'s
-`dev_transport` module.
+`idealyst dev` (runtime-server mode) is the live consumer. The host process
+watches the user's source tree; on a save whose shape is unchanged it replays
+the captured rustc invocation with `--emit=obj`, synthesizes a stub object
+that resolves every reference back into the running sidecar's text, links a
+patch dylib, and pairs `__*_hot_impl` symbols between the sidecar binary and
+the dylib into a `JumpTable`
+(`crates/tools/build/runtime-server/src/hotpatch/`). That table crosses the
+host↔sidecar pipe as `SidecarIn::ApplyPatch`, and the sidecar calls
+[`apply_patch`] and re-runs each mounted session.
 
 Hot-reload is wire-protocol-orthogonal: the `wire::Command` stream and the
-hot-patch dylib travel over the same WebSocket but at different layers.
+hot-patch jump table travel over different layers, and a browser attached to
+a runtime-server session sees only ordinary wire commands — no page reload,
+no reconnect.
