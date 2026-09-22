@@ -85,7 +85,7 @@ use crate::style_attach::{IntoStyleProp, StyleProp};
 /// never has to leave the call site. Taken from the slot array once and
 /// called once — a nested template rebuilds its whole slot array per
 /// invocation, so nothing needs to survive a second call.
-pub type ComponentCtor = Box<dyn FnOnce(&[PropEntry], Vec<Element>) -> Element>;
+pub type ComponentCtor<'a> = Box<dyn FnOnce(&[PropEntry], Vec<Element>) -> Element + 'a>;
 
 // ===========================================================================
 // SlotValue
@@ -98,7 +98,7 @@ pub type ComponentCtor = Box<dyn FnOnce(&[PropEntry], Vec<Element>) -> Element>;
 /// what gives the author's expression an expected type at the call site:
 /// `SlotValue::press(move |…| …)` types the closure the way
 /// `glue::button`'s parameter would.
-pub enum SlotValue {
+pub enum SlotValue<'a> {
     /// Already taken. A descriptor references each slot exactly once;
     /// meeting this means the descriptor double-referenced one.
     Taken,
@@ -111,15 +111,15 @@ pub enum SlotValue {
     Element(Element),
     /// A finished child list (a children-slot escape).
     Elements(Vec<Element>),
-    Ctor(ComponentCtor),
+    Ctor(ComponentCtor<'a>),
     Cond(Rc<dyn Fn() -> bool>),
     Branch(Rc<dyn Fn() -> Element>),
     /// Which arm of a [`Node::Select`] is taken. Compiled, because the
     /// dispatch is patterns.
-    Selector(Box<dyn FnOnce() -> usize>),
+    Selector(Box<dyn FnOnce() -> usize + 'a>),
     /// One arm of a [`Node::Select`]. `FnOnce` because exactly one arm
     /// ever runs and it runs once.
-    Arm(Box<dyn FnOnce() -> Vec<Element>>),
+    Arm(Box<dyn FnOnce() -> Vec<Element> + 'a>),
     /// A value of whatever type the (kind, prop) pair demands, erased.
     ///
     /// The concrete variants above cover the props that appear on almost
@@ -138,7 +138,7 @@ pub enum SlotValue {
     Any(Box<dyn Any>),
 }
 
-impl SlotValue {
+impl<'a> SlotValue<'a> {
     fn shape(&self) -> &'static str {
         match self {
             SlotValue::Taken => "taken",
@@ -186,56 +186,56 @@ impl SlotValue {
 /// expected type at the call site — which is also why an un-annotated
 /// closure works here (`SlotValue::press(|| …)`) where a bare
 /// `let x = |e| …;` would not.
-impl SlotValue {
-    pub fn string(v: impl Into<String>) -> SlotValue {
+impl<'a> SlotValue<'a> {
+    pub fn string(v: impl Into<String>) -> SlotValue<'a> {
         SlotValue::Str(v.into())
     }
 
-    pub fn boolean(v: impl IntoValue<bool>) -> SlotValue {
+    pub fn boolean(v: impl IntoValue<bool>) -> SlotValue<'a> {
         SlotValue::Bool(v.into_value())
     }
 
-    pub fn text(v: impl TextContent) -> SlotValue {
+    pub fn text(v: impl TextContent) -> SlotValue<'a> {
         SlotValue::Text(v.into_content_prop())
     }
 
-    pub fn style(v: impl IntoStyleProp) -> SlotValue {
+    pub fn style(v: impl IntoStyleProp) -> SlotValue<'a> {
         SlotValue::Style(v.into_style_prop())
     }
 
-    pub fn press(v: impl IntoAction) -> SlotValue {
+    pub fn press(v: impl IntoAction) -> SlotValue<'a> {
         SlotValue::Press(v.into_action())
     }
 
-    pub fn element(v: impl IntoElement) -> SlotValue {
+    pub fn element(v: impl IntoElement) -> SlotValue<'a> {
         SlotValue::Element(v.into_element())
     }
 
-    pub fn children(v: impl ChildList) -> SlotValue {
+    pub fn children(v: impl ChildList) -> SlotValue<'a> {
         let mut out = Vec::new();
         v.append_to(&mut out);
         SlotValue::Elements(out)
     }
 
-    pub fn ctor(f: impl FnOnce(&[PropEntry], Vec<Element>) -> Element + 'static) -> SlotValue {
+    pub fn ctor(f: impl FnOnce(&[PropEntry], Vec<Element>) -> Element + 'a) -> SlotValue<'a> {
         SlotValue::Ctor(Box::new(f))
     }
 
     /// A static branch's arm chooser.
-    pub fn selector(f: impl FnOnce() -> usize + 'static) -> SlotValue {
+    pub fn selector(f: impl FnOnce() -> usize + 'a) -> SlotValue<'a> {
         SlotValue::Selector(Box::new(f))
     }
 
     /// One arm of a static branch, producing that arm's children.
-    pub fn arm(f: impl FnOnce() -> Vec<Element> + 'static) -> SlotValue {
+    pub fn arm(f: impl FnOnce() -> Vec<Element> + 'a) -> SlotValue<'a> {
         SlotValue::Arm(Box::new(f))
     }
 
-    pub fn cond(f: impl Fn() -> bool + 'static) -> SlotValue {
+    pub fn cond(f: impl Fn() -> bool + 'static) -> SlotValue<'a> {
         SlotValue::Cond(Rc::new(f))
     }
 
-    pub fn branch<E: IntoElement>(f: impl Fn() -> E + 'static) -> SlotValue {
+    pub fn branch<E: IntoElement>(f: impl Fn() -> E + 'static) -> SlotValue<'a> {
         SlotValue::Branch(Rc::new(move || f().into_element()))
     }
 
@@ -248,90 +248,90 @@ impl SlotValue {
 
     /// A reactive `String` — `text_input`'s value, `image`'s `src`,
     /// `link`'s url.
-    pub fn string_value(v: impl IntoValue<String>) -> SlotValue {
+    pub fn string_value(v: impl IntoValue<String>) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v.into_value()))
     }
 
     /// A reactive `bool` — `presence`'s `present`, `text_input`'s
     /// `secure`.
-    pub fn bool_value(v: impl IntoValue<bool>) -> SlotValue {
+    pub fn bool_value(v: impl IntoValue<bool>) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v.into_value()))
     }
 
     /// A reactive `f32` — `icon`'s `stroke`.
-    pub fn f32_value(v: impl IntoValue<f32>) -> SlotValue {
+    pub fn f32_value(v: impl IntoValue<f32>) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v.into_value()))
     }
 
     /// A reactive `Color` — `icon`'s `color`.
-    pub fn color_value(v: impl IntoValue<Color>) -> SlotValue {
+    pub fn color_value(v: impl IntoValue<Color>) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v.into_value()))
     }
 
     /// A plain `f32` — `slider`'s range/step, `anchored_overlay`'s
     /// `offset`, `scroll_view`'s `end_reached_threshold`.
-    pub fn f32(v: f32) -> SlotValue {
+    pub fn f32(v: f32) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v))
     }
 
     /// A plain `bool` — `scroll_view`'s flags, `trap_focus`, `a11y_hidden`.
-    pub fn plain_bool(v: bool) -> SlotValue {
+    pub fn plain_bool(v: bool) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v))
     }
 
     /// A value the builder hands to a setter unchanged: an enum, a
     /// handle, an animation config. `T` is pinned by the setter's
     /// parameter type at the call site.
-    pub fn plain<T: 'static>(v: T) -> SlotValue {
+    pub fn plain<T: 'static>(v: T) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v))
     }
 
     /// `text_input`'s `on_change`.
-    pub fn on_string(f: impl Fn(String) + 'static) -> SlotValue {
+    pub fn on_string(f: impl Fn(String) + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(String)>))
     }
 
     /// `toggle`'s `on_change`, `text_input`'s `on_focus`.
-    pub fn on_bool(f: impl Fn(bool) + 'static) -> SlotValue {
+    pub fn on_bool(f: impl Fn(bool) + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(bool)>))
     }
 
     /// `slider`'s `on_change`.
-    pub fn on_f32(f: impl Fn(f32) + 'static) -> SlotValue {
+    pub fn on_f32(f: impl Fn(f32) + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(f32)>))
     }
 
     /// `on_scroll(offset_x, offset_y)`.
-    pub fn on_scroll(f: impl Fn(f32, f32) + 'static) -> SlotValue {
+    pub fn on_scroll(f: impl Fn(f32, f32) + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn(f32, f32)>))
     }
 
     /// A no-argument callback — `on_dismiss`, `on_end_reached`,
     /// `on_activate`, `on_error`.
-    pub fn on_void(f: impl Fn() + 'static) -> SlotValue {
+    pub fn on_void(f: impl Fn() + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Rc::new(f) as Rc<dyn Fn()>))
     }
 
     /// `graphics`' `on_ready`. `FnMut`, because the platform hands the
     /// surface back more than once.
-    pub fn on_ready(f: impl FnMut(OnReadyEvent) + 'static) -> SlotValue {
+    pub fn on_ready(f: impl FnMut(OnReadyEvent) + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Box::new(f) as Box<dyn FnMut(OnReadyEvent)>))
     }
 
     /// `graphics`' `on_resize`.
-    pub fn on_resize(f: impl FnMut(OnResizeEvent) + 'static) -> SlotValue {
+    pub fn on_resize(f: impl FnMut(OnResizeEvent) + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Box::new(f) as Box<dyn FnMut(OnResizeEvent)>))
     }
 
     /// `graphics`' `on_lost`.
-    pub fn on_lost(f: impl FnMut() + 'static) -> SlotValue {
+    pub fn on_lost(f: impl FnMut() + 'static) -> SlotValue<'a> {
         SlotValue::Any(Box::new(Box::new(f) as Box<dyn FnMut()>))
     }
 
     /// `icon`'s `draw_in` — a `(duration_ms, easing)` tuple the builder
     /// spreads across the two-argument setter. Bound ONCE (the direct
     /// emitter used to splice it twice; see `emit_icon`).
-    pub fn draw_in(v: (u32, Easing)) -> SlotValue {
+    pub fn draw_in(v: (u32, Easing)) -> SlotValue<'a> {
         SlotValue::Any(Box::new(v))
     }
 }
@@ -396,7 +396,7 @@ impl PhaseTimer {
 // ===========================================================================
 
 /// Build the site's `Element` from its compiled-in descriptor.
-pub fn build(descriptor: &Descriptor, slots: &mut [SlotValue]) -> Element {
+pub fn build(descriptor: &Descriptor, slots: &mut [SlotValue<'_>]) -> Element {
     build_from(&CompiledIn, descriptor, slots)
 }
 
@@ -407,7 +407,7 @@ pub fn build(descriptor: &Descriptor, slots: &mut [SlotValue]) -> Element {
 /// the direct lowering's `Ctx::Child` and `Ctx::Single` differ: a
 /// children slot takes 0/1/N siblings, a single slot takes one
 /// `Element` and wraps a multi-node body in a `view`.
-pub fn build_list(descriptor: &Descriptor, slots: &mut [SlotValue]) -> Vec<Element> {
+pub fn build_list(descriptor: &Descriptor, slots: &mut [SlotValue<'_>]) -> Vec<Element> {
     let _t = PhaseTimer::start("realize_template");
     let desc = CompiledIn.resolve(&descriptor.site, descriptor);
     debug_check(desc);
@@ -424,7 +424,7 @@ pub fn build_list(descriptor: &Descriptor, slots: &mut [SlotValue]) -> Vec<Eleme
 pub fn build_from(
     source: &impl TemplateSource,
     descriptor: &Descriptor,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Element {
     let _t = PhaseTimer::start("realize_template");
     let desc = source.resolve(&descriptor.site, descriptor);
@@ -463,7 +463,7 @@ fn debug_check(desc: &Descriptor) {
 // Nodes
 // ===========================================================================
 
-fn append_node(desc: &Descriptor, index: u32, slots: &mut [SlotValue], out: &mut Vec<Element>) {
+fn append_node(desc: &Descriptor, index: u32, slots: &mut [SlotValue<'_>], out: &mut Vec<Element>) {
     let node = desc
         .node(index)
         .unwrap_or_else(|| panic!("{}: node {index} out of range", desc.site));
@@ -537,7 +537,7 @@ fn append_node(desc: &Descriptor, index: u32, slots: &mut [SlotValue], out: &mut
     }
 }
 
-fn build_children(desc: &Descriptor, children: &[u32], slots: &mut [SlotValue]) -> Vec<Element> {
+fn build_children(desc: &Descriptor, children: &[u32], slots: &mut [SlotValue<'_>]) -> Vec<Element> {
     let mut out = Vec::with_capacity(children.len());
     for &child in children {
         append_node(desc, child, slots, &mut out);
@@ -616,7 +616,7 @@ fn build_prim(
     kind: PrimKind,
     props: &[PropEntry],
     children: Vec<Element>,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Element {
     match kind {
         PrimKind::View => {
@@ -976,7 +976,7 @@ fn f32_or_color(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<Color> {
     erased(desc, node, entry, slots)
 }
@@ -986,7 +986,7 @@ fn positional_string(
     node: u32,
     props: &[PropEntry],
     name: &str,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<String> {
     props
         .iter()
@@ -1000,7 +1000,7 @@ fn positional_bool(
     node: u32,
     props: &[PropEntry],
     name: &str,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<bool> {
     props
         .iter()
@@ -1014,7 +1014,7 @@ fn positional_f32(
     node: u32,
     props: &[PropEntry],
     name: &str,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<f32> {
     props
         .iter()
@@ -1031,7 +1031,7 @@ fn positional_cb<F: 'static + ?Sized>(
     node: u32,
     props: &[PropEntry],
     name: &str,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
     fallback: impl FnOnce() -> Rc<F>,
 ) -> Rc<F> {
     match props.iter().find(|p| p.name == name) {
@@ -1085,7 +1085,7 @@ impl TextContent for Prepared {
 // Slot / literal readers
 // ===========================================================================
 
-fn take(desc: &Descriptor, index: u32, slots: &mut [SlotValue]) -> SlotValue {
+fn take<'a>(desc: &Descriptor, index: u32, slots: &mut [SlotValue<'a>]) -> SlotValue<'a> {
     let slot = slots
         .get_mut(index as usize)
         .unwrap_or_else(|| panic!("{}: slot {index} out of range", desc.site));
@@ -1112,7 +1112,7 @@ fn mismatch(
     )
 }
 
-fn string_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> String {
+fn string_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue<'_>]) -> String {
     match &entry.value {
         PropValue::Lit(LiteralValue::Str(s)) => s.to_string(),
         PropValue::Lit(other) => mismatch(desc, node, entry, "string", other.kind()),
@@ -1131,7 +1131,7 @@ fn static_str(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> &'static str {
     match &entry.value {
         PropValue::Lit(LiteralValue::Str(std::borrow::Cow::Borrowed(s))) => s,
@@ -1150,7 +1150,7 @@ fn value_bool(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<bool> {
     match &entry.value {
         PropValue::Lit(LiteralValue::Bool(b)) => Value::Const(*b),
@@ -1162,7 +1162,7 @@ fn value_bool(
     }
 }
 
-fn plain_bool(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> bool {
+fn plain_bool(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue<'_>]) -> bool {
     match value_bool(desc, node, entry, slots) {
         Value::Const(b) => b,
         // A setter that takes a plain `bool` cannot carry a reactive
@@ -1175,7 +1175,7 @@ fn text_of(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> TextSourceProp {
     match &entry.value {
         PropValue::Lit(LiteralValue::Str(s)) => TextSourceProp::Value(Value::Const(s.to_string())),
@@ -1188,7 +1188,7 @@ fn text_of(
     }
 }
 
-fn style_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> StyleProp {
+fn style_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue<'_>]) -> StyleProp {
     match &entry.value {
         PropValue::Slot(i) => match take(desc, *i, slots) {
             SlotValue::Style(s) => s,
@@ -1200,7 +1200,7 @@ fn style_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotVa
     }
 }
 
-fn press_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> Action {
+fn press_of(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue<'_>]) -> Action {
     match &entry.value {
         PropValue::Slot(i) => match take(desc, *i, slots) {
             SlotValue::Press(a) => a,
@@ -1216,7 +1216,7 @@ fn erased<T: 'static>(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> T {
     match &entry.value {
         PropValue::Slot(i) => take(desc, *i, slots).take_as::<T>(&entry.name),
@@ -1226,7 +1226,7 @@ fn erased<T: 'static>(
 
 /// Read a prop that is native BOTH as a literal and as a slot, where the
 /// setter takes a plain (non-reactive) `f32`.
-fn plain_f32(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> f32 {
+fn plain_f32(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue<'_>]) -> f32 {
     match &entry.value {
         PropValue::Lit(LiteralValue::Float(f)) => *f as f32,
         PropValue::Lit(LiteralValue::Int(i)) => *i as f32,
@@ -1236,7 +1236,7 @@ fn plain_f32(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotV
 }
 
 /// As [`plain_f32`], for a setter taking a plain `bool`.
-fn plain_flag(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue]) -> bool {
+fn plain_flag(desc: &Descriptor, node: u32, entry: &PropEntry, slots: &mut [SlotValue<'_>]) -> bool {
     match &entry.value {
         PropValue::Lit(LiteralValue::Bool(b)) => *b,
         PropValue::Lit(other) => mismatch(desc, node, entry, "bool", other.kind()),
@@ -1250,7 +1250,7 @@ fn string_value(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<String> {
     match &entry.value {
         PropValue::Lit(LiteralValue::Str(v)) => Value::Const(v.to_string()),
@@ -1264,7 +1264,7 @@ fn bool_value_of(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<bool> {
     match &entry.value {
         PropValue::Lit(LiteralValue::Bool(b)) => Value::Const(*b),
@@ -1278,7 +1278,7 @@ fn f32_value_of(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Value<f32> {
     match &entry.value {
         PropValue::Lit(LiteralValue::Float(f)) => Value::Const(*f as f32),
@@ -1294,7 +1294,7 @@ fn callback<F: 'static + ?Sized>(
     desc: &Descriptor,
     node: u32,
     entry: &PropEntry,
-    slots: &mut [SlotValue],
+    slots: &mut [SlotValue<'_>],
 ) -> Rc<F> {
     match &entry.value {
         PropValue::Slot(i) => take(desc, *i, slots).take_as::<Rc<F>>(&entry.name),
@@ -1302,7 +1302,7 @@ fn callback<F: 'static + ?Sized>(
     }
 }
 
-fn take_ctor(desc: &Descriptor, index: u32, slots: &mut [SlotValue]) -> ComponentCtor {
+fn take_ctor<'a>(desc: &Descriptor, index: u32, slots: &mut [SlotValue<'a>]) -> ComponentCtor<'a> {
     match take(desc, index, slots) {
         SlotValue::Ctor(c) => c,
         other => panic!(
@@ -1313,7 +1313,7 @@ fn take_ctor(desc: &Descriptor, index: u32, slots: &mut [SlotValue]) -> Componen
     }
 }
 
-fn take_cond(desc: &Descriptor, index: u32, slots: &mut [SlotValue]) -> Rc<dyn Fn() -> bool> {
+fn take_cond(desc: &Descriptor, index: u32, slots: &mut [SlotValue<'_>]) -> Rc<dyn Fn() -> bool> {
     match take(desc, index, slots) {
         SlotValue::Cond(c) => c,
         other => panic!(
@@ -1324,7 +1324,7 @@ fn take_cond(desc: &Descriptor, index: u32, slots: &mut [SlotValue]) -> Rc<dyn F
     }
 }
 
-fn take_branch(desc: &Descriptor, index: u32, slots: &mut [SlotValue]) -> Rc<dyn Fn() -> Element> {
+fn take_branch(desc: &Descriptor, index: u32, slots: &mut [SlotValue<'_>]) -> Rc<dyn Fn() -> Element> {
     match take(desc, index, slots) {
         SlotValue::Branch(b) => b,
         other => panic!(

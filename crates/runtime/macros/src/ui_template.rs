@@ -127,18 +127,36 @@ fn emit_scope(nodes: &[UiNode], shape: Shape, site: &SiteTokens) -> TokenStream2
 
     let descriptor = desc.finish(site, &roots);
     let slot_values = desc.slot_values();
-    let call = match shape {
-        Shape::Root | Shape::Single => quote! {
-            ::runtime_core::__template::build(&__UI_DESC, &mut [#(#slot_values),*])
-        },
-        Shape::List => quote! {
-            ::runtime_core::__template::build_list(&__UI_DESC, &mut [#(#slot_values),*])
-        },
+    let builder = match shape {
+        Shape::Root | Shape::Single => quote! { build },
+        Shape::List => quote! { build_list },
     };
-    let body = quote! {
-        {
-            static __UI_DESC: ::runtime_core::__template::TemplateDescriptor = #descriptor;
-            #call
+    // The slot array is bound to a LOCAL, not passed as a temporary.
+    // A `SlotValue` may borrow (a component ctor derived from a
+    // `&FooProps` parameter, a static branch's arm capturing a local),
+    // so the array's type carries a lifetime — and a temporary with a
+    // lifetime in its type is dropped at the end of the enclosing
+    // STATEMENT, which the borrow checker reports as "temporary value
+    // dropped while borrowed" (E0716) at every `let x = ui! { … };`.
+    // A named binding lives to the end of this block, which is after
+    // the builder returns.
+    //
+    // The empty case skips the binding: `let a = [];` cannot infer an
+    // element type, and with no slots there is nothing to borrow.
+    let body = if slot_values.is_empty() {
+        quote! {
+            {
+                static __UI_DESC: ::runtime_core::__template::TemplateDescriptor = #descriptor;
+                ::runtime_core::__template::#builder(&__UI_DESC, &mut [])
+            }
+        }
+    } else {
+        quote! {
+            {
+                static __UI_DESC: ::runtime_core::__template::TemplateDescriptor = #descriptor;
+                let mut __ui_slots = [#(#slot_values),*];
+                ::runtime_core::__template::#builder(&__UI_DESC, &mut __ui_slots)
+            }
         }
     };
     ui::with_prelude(&scope, body)
@@ -686,9 +704,17 @@ impl<'a> DescBuilder<'a> {
             quote! {}
         };
         quote! {
+            // NOT `move`, and the ctor's type is NOT `'static`. A
+            // component's props are often derived from a `&FooProps`
+            // parameter, so forcing a `move` closure made that reference
+            // escape into a `'static` type (E0521) and moved
+            // non-`Copy` captures out of enclosing `Fn` closures
+            // (E0507) — five errors across CrewForge. `emit_user` builds
+            // a struct literal inline and borrows; letting Rust infer a
+            // capture mode per variable reproduces that exactly.
             ::runtime_core::__template::SlotValue::ctor(
-                move |__lits: &[::runtime_core::__template::TemplatePropEntry],
-                      __children: ::std::vec::Vec<::runtime_core::Element>| {
+                |__lits: &[::runtime_core::__template::TemplatePropEntry],
+                 __children: ::std::vec::Vec<::runtime_core::Element>| {
                     #[allow(unused_imports)]
                     use ::runtime_core::__template::ApplyLiteralFallback as _;
                     #[allow(unused_mut)]
@@ -744,7 +770,12 @@ impl<'a> DescBuilder<'a> {
 
     fn push_arm(&mut self, body: TokenStream2) -> u32 {
         self.push_slot(
-            quote! { ::runtime_core::__template::SlotValue::arm(move || #body) },
+            // NOT `move`: `emit_plain_if` borrows its branch captures
+            // (a branch may name a value used after the `if`), and Rust
+            // infers a capture mode per variable — the body's own moves
+            // still move, the rest is borrowed. A blanket `move` here
+            // broke `Rc<dyn Fn()>` captures with E0507.
+            quote! { ::runtime_core::__template::SlotValue::arm(|| #body) },
             None,
             "child",
             "arm",
@@ -786,7 +817,7 @@ impl<'a> DescBuilder<'a> {
         let selector = self.push_slot(
             quote! {
                 ::runtime_core::__template::SlotValue::selector(
-                    move || if #cond { 0usize } else { 1usize },
+                    || if #cond { 0usize } else { 1usize },
                 )
             },
             None,
@@ -835,7 +866,7 @@ impl<'a> DescBuilder<'a> {
         });
         let selector = self.push_slot(
             quote! {
-                ::runtime_core::__template::SlotValue::selector(move || match #scrutinee {
+                ::runtime_core::__template::SlotValue::selector(|| match #scrutinee {
                     #(#index_arms,)*
                 })
             },
@@ -1422,7 +1453,7 @@ mod tests {
             view { if kind == Kind::Scope { text { "yes" } } else { text { "no" } } }
         });
         assert!(out.contains("TemplateNode::Select{"), "{out}");
-        assert!(out.contains("move||ifkind==Kind::Scope{0usize}else{1usize}"), "{out}");
+        assert!(out.contains("||ifkind==Kind::Scope{0usize}else{1usize}"), "{out}");
         assert_eq!(out.matches("SlotValue::arm(").count(), 2, "{out}");
     }
 
