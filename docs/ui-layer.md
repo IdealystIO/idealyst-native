@@ -537,7 +537,8 @@ whole table:
 | the edit | what happens |
 |---|---|
 | a string, number or bool literal in a `ui!` body | **patched** |
-| a `#[component]`'s literal prop | **patched**; live when its props are `Clone` and its root is a tagged node, otherwise on that site's next render |
+| a `#[component]`'s literal prop | **patched**; live when its props are `Clone` and its root is a node, otherwise on that site's next render |
+| …of a component whose root is a `switch`, `when` or keyed list | **patched**; live when the seam has a setter for the prop (a text's content, a button's label), otherwise on that site's next render — the region's contents carry the tag, so the node is reached and the refusal names it |
 | a static child added, removed or reordered — where every old child is fully static | **patched** |
 | a changed `if` condition, `for` iterable or `match` scrutinee | rebuild — it is compiled code |
 | a literal becoming a closure, or the reverse | rebuild — the value moved between data and code |
@@ -632,21 +633,31 @@ subtree a handler realized into its own storage — every navigator screen
 at the one place every mounted node passes through, so a handler that
 does not exist yet is covered too.
 
-The gap that remains is in TAGGING, not reaching. `with_tag` tags an
-`Item` root, and recurses through an `Owned` to reach one. A component
-whose root is a REACTIVE REGION — idea-ui's `Button` returns a `switch`
-when any structural prop is live — is returned untagged, so it never
-registers and a patch addressed to it applies nothing. Tagging through a
-region means tagging the region and following its current contents; not
-built.
+`with_tag` tags an `Item` root, recurses through an `Owned` to reach
+one, and follows a REACTIVE REGION to its contents — idea-ui's `Button`
+returns a `switch` the moment a structural prop is live, and a region
+has no node of its own, so the contents are the only thing the call site
+ever puts on screen. The tag is attached from INSIDE the region's build
+closure, which a region runs again on every swap: the branch showing now
+carries the tag, the branch that replaces it carries it too, and each
+one registers on its way through `mount_item` while the outgoing one's
+registration dies with its subtree. A `Fragment` root is still left
+alone — it stands for several sibling nodes and none of them is *the*
+node the call site's tag belongs to.
 
 A live edit also needs a SETTER on the seam, or — for a component — a
 way to run it again: a `#[component]`'s prop has no setter (its body
 already ran, and re-running it would need every dynamic prop it was
-given, which is compiled code the patch does not carry). Those appear on
-the site's next render. The applier COUNTS what it could not do rather
-than pretending, so a dev server can say "showing on next render"
-instead of leaving the author wondering.
+given, which is compiled code the patch does not carry). Running it
+again needs a `Clone` copy of its props AND a node whose place the
+replacement can take, which a region's contents do not have: they stand
+inside the region's anchor, which belongs to the region's own driver.
+So a region-rooted component's prop applies live when the seam has a
+setter for it and otherwise on the site's next render. The applier
+COUNTS what it could not do rather than pretending, so a dev server can
+say "showing on next render" instead of leaving the author wondering —
+and, since the node is now reached, it says it about the node the author
+edited rather than reporting nothing at all.
 
 ## The primitive builders
 

@@ -30,6 +30,17 @@
 //! given, which is compiled code the patch does not carry. Those apply on
 //! the next build of the site, which the `Element` path guarantees.
 //!
+//! Running the component again bridges that, from a `Clone` copy of its
+//! props — but only for a component whose root is a NODE. A component
+//! whose root is a reactive region (idea-ui's `Button` with a live
+//! structural prop) is reached, because `with_tag` follows a region to
+//! its current contents, and those contents take a seam setter like any
+//! other node. What they cannot take is a whole-subtree swap: they stand
+//! inside the region's anchor, which belongs to the region's own driver,
+//! so `runtime_scene::with_rebuild` deliberately stops at a region and
+//! the prop falls through to the next render. Reached and refused is the
+//! useful answer; unreachable and silent was the old one.
+//!
 //! That split is reported, not hidden: [`Outcome::refused`] counts what
 //! the live pass could not do, so a dev server can say "showing on next
 //! render" instead of leaving the author wondering.

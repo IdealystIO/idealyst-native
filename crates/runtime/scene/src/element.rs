@@ -141,6 +141,17 @@ pub fn item_tagged<T: Any>(data: T, children: Vec<Element>, tag: NodeTag) -> Ele
 /// Recurses through `Owned` for the same reason [`with_tag`] does: a
 /// component's `Element` is a subtree behind a scope boundary, and the
 /// node that represents it is the root of that subtree.
+///
+/// Deliberately does NOT follow a reactive region the way [`with_tag`]
+/// does. A rebuilder is a promise that the overlay can swap this node's
+/// subtree out and put the replacement back where it stood; the contents
+/// of a region stand inside the region's anchor (or at its spliced base
+/// index), both of which belong to the region's own driver, and the
+/// replacement would be a whole new region nested inside the old one —
+/// which the next fire of the old driver would then wipe. A region-rooted
+/// component's literal props apply live when the seam has a setter for
+/// them, and otherwise wait for the next render. The applier reports
+/// that; see `runtime_vocabulary::overlay::live`.
 #[cfg(feature = "ui-overlay")]
 pub fn with_rebuild(element: Element, rebuilder: std::rc::Rc<dyn Any>) -> Element {
     match element {
@@ -159,9 +170,14 @@ pub fn with_rebuild(element: Element, rebuilder: std::rc::Rc<dyn Any>) -> Elemen
 ///
 /// The macro wraps each node's finished expression with this rather than
 /// threading a tag through every builder: the builders are the author
-/// surface and must not grow a parameter for a dev-time feature. A
-/// non-`Item` element (a `Fragment`, a `Dyn`, a component's `Owned`) is
-/// returned unchanged — those are structure, not nodes.
+/// surface and must not grow a parameter for a dev-time feature.
+///
+/// An `Item` takes the tag. Structure is followed to the node it stands
+/// for: a component's `Owned`, and a REACTIVE REGION, which has no node
+/// of its own but whose contents are the only thing a call site that
+/// returned one ever puts on screen. A `Fragment` is left alone — it
+/// stands for several sibling nodes, and there is no single one of them
+/// the call site's tag belongs to.
 #[cfg(feature = "ui-overlay")]
 pub fn with_tag(element: Element, tag: NodeTag) -> Element {
     match element {
@@ -174,6 +190,27 @@ pub fn with_tag(element: Element, tag: NodeTag) -> Element {
         Element::Owned { element, owned } => {
             Element::Owned { element: Box::new(with_tag(*element, tag)), owned }
         }
+        // A region is not a node, but a component whose body IS one
+        // (idea-ui's `Button` the moment a structural prop is live) has
+        // no other root to carry the call site's tag — and before this
+        // it carried none, so nothing registered and a patch to that
+        // call site reported `0 applied` with nothing to point at.
+        //
+        // Tag what the region BUILDS, from inside its build closure,
+        // rather than the region itself. A region runs that closure
+        // again on every swap, so the tag follows its CURRENT contents
+        // for free: the branch showing now carries it, and so does the
+        // branch that replaces it. Registration then happens where it
+        // happens for every other node — `mount_item`, on the way in —
+        // and the outgoing branch's registration dies with its subtree.
+        Element::Dyn(spec) => Element::Dyn(spec.map_build(move |e| with_tag(e, tag))),
+        // A keyed root means the call site's ONE node renders N times,
+        // so the tag names all N. That is the same accounting a `for`
+        // over components already gets.
+        Element::Keyed { items, render } => Element::Keyed {
+            items,
+            render: Box::new(move |data| with_tag(render(data), tag)),
+        },
         other => other,
     }
 }
@@ -320,6 +357,28 @@ pub(crate) enum DynKind {
 pub struct DynSpec {
     pub(crate) kind: DynKind,
     pub(crate) retire: Option<RetireHook>,
+}
+
+#[cfg(feature = "ui-overlay")]
+impl DynSpec {
+    /// Wrap whatever this hole builds, on EVERY build.
+    ///
+    /// That "every build" is the whole property [`with_tag`] needs: the
+    /// wrapper it installs runs again each time the region swaps, so the
+    /// contents that are showing are always the ones carrying the tag.
+    /// The guard (`changed`) is untouched — wrapping it would change when
+    /// the region fires, and this must change only what it produces.
+    pub(crate) fn map_build(self, f: impl Fn(Element) -> Element + 'static) -> DynSpec {
+        let DynSpec { kind, retire } = self;
+        let kind = match kind {
+            DynKind::Plain(build) => DynKind::Plain(Box::new(move || f(build()))),
+            DynKind::Guarded { changed, build } => DynKind::Guarded {
+                changed,
+                build: Box::new(move || f(build())),
+            },
+        };
+        DynSpec { kind, retire }
+    }
 }
 
 /// A structural hole that rebuilds on EVERY dependency change. The closure
