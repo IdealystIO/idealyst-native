@@ -109,7 +109,7 @@ fn crate_name(dir: &Path) -> Result<String> {
     Ok(name.replace('-', "_"))
 }
 
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

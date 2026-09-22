@@ -47,9 +47,10 @@ fn descriptor_of(body: &str) -> runtime_template::Descriptor {
 /// "Element-shaped" is `Prim`, `Component`, or an `Opaque` with no
 /// defining expression — the last being a node carrying a trailing
 /// `.method(…)` chain, which is still one built `Element`. An `Opaque`
-/// WITH an expression is control flow (`if`, `for`, `match`, a bare
-/// expression child): it occupies an index and never becomes a tagged
-/// element, so a tag landing on one means the two walks have drifted.
+/// that DOES record an expression is a construct the emission never
+/// turns into one tagged element: control flow (`if`, `for`, `match`)
+/// or a bare expression child. It occupies an index and carries no tag,
+/// so a tag landing on one means the two walks have drifted.
 ///
 /// That is what makes this a real check rather than a bounds check. A
 /// tree of nothing but primitives would survive any consistent
@@ -95,19 +96,22 @@ fn every_tag_lands_on_the_node_the_descriptor_gives_that_number() {
 /// A fixture whose body contains control flow must actually produce
 /// control-flow nodes in its descriptor.
 ///
-/// Without this the test above could pass vacuously on a describe()
-/// that called everything a `Prim`. It pins the other direction: the
-/// corpus does exercise the interleaving that makes the agreement
-/// non-trivial.
+/// Without this the test above could pass vacuously on a `describe` that
+/// called everything a `Prim`. It pins the other direction: the corpus
+/// does exercise the interleaving that makes the agreement non-trivial.
+///
+/// Control flow specifically means an `Opaque` WITH CHILDREN — an `if`,
+/// a `for`, a `match` whose body hangs beneath it. A childless `Opaque`
+/// is a bare expression, which nearly every fixture has and which would
+/// make the count meaningless.
 #[test]
 fn the_corpus_interleaves_control_flow_with_elements() {
     let with_control_flow = fixtures::all()
         .iter()
         .filter(|f| {
-            descriptor_of(f.body)
-                .nodes
-                .iter()
-                .any(|n| matches!(n, Node::Opaque { expr: Some(_), .. }))
+            descriptor_of(f.body).nodes.iter().any(
+                |n| matches!(n, Node::Opaque { expr: Some(_), children } if !children.is_empty()),
+            )
         })
         .count();
     assert!(

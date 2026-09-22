@@ -144,25 +144,41 @@ mod live {
         Some((relative_to_manifest(&span.file()), span.line() as u32, span.column() as u32))
     }
 
-    /// Strip the compiling package's root from a source path and
-    /// normalize separators.
+    /// Make a source path package-relative and `/`-separated.
     ///
-    /// rustc reports whatever path it was invoked with: cargo passes a
-    /// package-relative one for a workspace member (`src/app.rs`) and an
-    /// absolute one for a registry dependency. Stripping
-    /// `CARGO_MANIFEST_DIR` makes both `src/app.rs`, so the key does not
-    /// depend on where the crate happened to be checked out — which is
-    /// what lets a descriptor produced on one machine address a binary
-    /// built on another.
+    /// rustc reports whatever path it was invoked with, and that varies:
+    /// cargo passes a WORKSPACE-ROOT-relative path for a workspace
+    /// member (`crates/app/src/main.rs`) and an absolute one for a
+    /// registry dependency. Neither is what a descriptor should be keyed
+    /// by — one depends on where in the workspace the crate sits, the
+    /// other on where the machine keeps its cargo registry.
+    ///
+    /// So: absolutize against rustc's working directory (which is the
+    /// workspace root, and is what the relative form is relative to),
+    /// then strip `CARGO_MANIFEST_DIR`. Both spellings become
+    /// `src/main.rs`, and a descriptor produced on one machine addresses
+    /// a binary built on another.
+    ///
+    /// A path that is not under the manifest dir — an `include!` of a
+    /// generated file under `target/`, say — keeps its absolute form.
+    /// It is still stable within a machine, which is the most that can
+    /// be said for a file the package does not own.
     fn relative_to_manifest(file: &str) -> String {
-        let file = file.replace('\\', "/");
-        let Ok(root) = std::env::var("CARGO_MANIFEST_DIR") else {
-            return file;
+        let path = std::path::Path::new(file);
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(path),
+                Err(_) => path.to_path_buf(),
+            }
         };
-        let root = root.replace('\\', "/");
-        match file.strip_prefix(&root).and_then(|rest| rest.strip_prefix('/')) {
-            Some(rest) => rest.to_string(),
-            None => file,
+        let Ok(root) = std::env::var("CARGO_MANIFEST_DIR") else {
+            return absolute.to_string_lossy().replace('\\', "/");
+        };
+        match absolute.strip_prefix(&root) {
+            Ok(rest) => rest.to_string_lossy().replace('\\', "/"),
+            Err(_) => absolute.to_string_lossy().replace('\\', "/"),
         }
     }
 }

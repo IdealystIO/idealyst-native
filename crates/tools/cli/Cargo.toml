@@ -40,6 +40,14 @@ ctrlc = { version = "3", features = ["termination"] }
 # Dev-mode infrastructure. Both crates are intentionally small and
 # usable independently — `dev-http` for plain static serving,
 # `dev-reload` for the watch+wasm-pack loop. The CLI is the wiring.
+# The `ui!` front end, as a library: the CLI runs the SAME parser, split
+# pass and node numbering the proc macro does, to produce a build's
+# overlay descriptor set from source. A second implementation that
+# disagreed by one node would mis-address every patch after it.
+runtime-macros-parse = { workspace = true }
+runtime-template = { workspace = true }
+# File-content digests for the overlay build key.
+sha2 = { workspace = true }
 dev-http = { workspace = true }
 dev-reload = { workspace = true }
 # Robot bridge relay for `dev --web --local --robot`: the dev process hosts a

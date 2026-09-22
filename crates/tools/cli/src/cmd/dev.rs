@@ -1157,10 +1157,12 @@ fn web_dev_features(no_robot: bool) -> Vec<String> {
     if !no_robot {
         f.push("robot".to_string());
     }
-    // The dev-time UI overlay: each `ui!` site registers its descriptor
-    // and tags the nodes it builds, so the dev loop can address a site's
-    // static half. DEV ONLY — `idealyst build --web` never passes it, so
-    // a shipped bundle carries neither the descriptors nor the tags.
+    // The dev-time UI overlay: each node a `ui!` site builds carries a
+    // site key and a node index, so the dev loop can address a site's
+    // static half. The DESCRIPTOR those numbers refer to is produced
+    // from source by `cmd::overlay`, not compiled in — see that module
+    // for the measurement that settled it. DEV ONLY: `idealyst build
+    // --web` never passes it, so a shipped bundle carries no tags.
     //
     // A cargo feature, so cargo fingerprints it and `config_key` already
     // keys the target dir on `user_features`: flipping it cannot serve a
@@ -1541,6 +1543,16 @@ fn launch_web(
         // SSE stream so all change sources fan into one reload event.
         let signal = local_signal.expect("local_signal allocated for local mode");
         if !args.no_build {
+            // The overlay's build-time half: the descriptor set for
+            // this crate's `ui!` sites, written beside the build. Only
+            // here, because only `dev` compiles the tags that address
+            // it. A failure is reported and ignored — a dev server that
+            // refused to start because a descriptor could not be
+            // written would be trading the whole loop for an
+            // enhancement to it.
+            if let Err(e) = crate::cmd::overlay::write_for(dir, dir) {
+                eprintln!("[overlay] no descriptor set for this build: {e}");
+            }
             // `dev_reload::start_with` does the first build
             // synchronously and then keeps a watcher thread alive in
             // the returned handle. Forget the handle: it lives as
@@ -3374,17 +3386,25 @@ mod tests {
         );
     }
 
-    /// The overlay is a DEV feature. `idealyst build --web` must never
-    /// pass it — a shipped bundle carrying a descriptor per `ui!` site
-    /// and a tag per node would pay for a dev-loop capability nobody
-    /// can use in production.
+    /// The overlay is a DEV capability, on BOTH sides. `idealyst build
+    /// --web` must neither enable the feature (which would put a tag on
+    /// every node of a shipped bundle) nor write a descriptor set (which
+    /// only means anything next to a tagged build).
     #[test]
-    fn the_overlay_feature_is_dev_only() {
+    fn the_overlay_is_dev_only() {
         assert!(web_dev_features(false).iter().any(|f| f == "runtime-core/ui-overlay"));
         let build_rs = include_str!("build.rs");
         assert!(
             !build_rs.contains("ui-overlay"),
             "`idealyst build` must not enable the overlay"
+        );
+        assert!(
+            !build_rs.contains("overlay::"),
+            "`idealyst build` must not produce a descriptor set"
+        );
+        assert!(
+            include_str!("dev.rs").contains("overlay::write_for"),
+            "`idealyst dev` must produce one"
         );
     }
 
