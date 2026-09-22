@@ -118,15 +118,20 @@ where
     subsecond::HotFn::current(f).call(args)
 }
 
+/// How many dispatches to log, per patch generation.
+///
+/// The interesting window is the first few calls AFTER a patch lands —
+/// that is when "the table applied but nothing changed" shows up as a
+/// `jt_hit=None` on a pointer that should have been rebound. Logging
+/// only the first calls of the PROCESS missed exactly that, because a
+/// patch by definition arrives later.
+#[cfg(feature = "hot")]
+static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[cfg(feature = "hot")]
 fn debug_log_call<F>(f: &F) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CALLS: AtomicU64 = AtomicU64::new(0);
+    use std::sync::atomic::Ordering;
     let n = CALLS.fetch_add(1, Ordering::Relaxed);
-    // Log only the first call of each session so we don't spam the
-    // tick loop. Prints the runtime fn-ptr value, `cfg!
-    // (debug_assertions)`, and whether the current jump-table maps
-    // that pointer.
     if n < 3 {
         let size = std::mem::size_of::<F>();
         let ptr: usize = if size == std::mem::size_of::<fn()>() {
@@ -234,7 +239,12 @@ impl_direct_call!(A, B, C, D, E, F, G, H, I);
 /// by construction.
 #[cfg(feature = "hot")]
 pub unsafe fn apply_patch(table: JumpTable) -> Result<(), PatchError> {
-    subsecond::apply_patch(table)
+    let result = subsecond::apply_patch(table);
+    if result.is_ok() {
+        // Re-arm the dispatch log for the next few calls — see `CALLS`.
+        CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    result
 }
 
 #[cfg(not(feature = "hot"))]

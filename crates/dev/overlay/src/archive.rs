@@ -59,20 +59,41 @@ use sha2::{Digest, Sha256};
 
 /// What a build recorded about one source file.
 ///
-/// Two digests, because a dev loop has to answer two different
-/// questions about a save:
+/// Three digests, because a dev loop has to sort a save into three
+/// outcomes, each strictly more expensive than the last:
 ///
 /// - **`content`** — did this file change at all? Cheapest possible
 ///   filter, and what makes a build identifiable.
 /// - **`skeleton`** — did anything change OUTSIDE its `ui!` bodies? A
 ///   descriptor cannot answer that: `let x = 1;` becoming `let x = 2;`
 ///   moves no site and changes no descriptor, and it is compiled code.
-///   Together the two partition a file into the part an overlay can
-///   patch and the part that needs a compiler.
+///   Unchanged ⇒ the overlay can apply the save with no compiler at
+///   all.
+/// - **`shape`** — did anything change outside its FUNCTION bodies?
+///   Unchanged ⇒ the save is a subsecond hot patch: a jump table
+///   rebinds function addresses, so new statements inside a function
+///   can be spliced into the running process. CHANGED ⇒ rebuild, and
+///   this one is a safety boundary rather than a speed tier. A patch
+///   dylib is spliced into a process where everything else is the old
+///   build; if a props struct gained a field, the framework's own
+///   generic instantiations over that type — compiled into an rlib
+///   that is NOT re-emitted — still use the old layout. That is memory
+///   corruption, not a stale render.
+///
+/// Together they partition a file into "an overlay can patch it",
+/// "subsecond can patch it", and "only a compiler and a fresh process
+/// can".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDigest {
     pub content: String,
     pub skeleton: String,
+    /// See the struct docs. Defaulted so a document written before
+    /// this field existed still deserializes — it then equals no
+    /// file's real shape, so every save from such an archive rebuilds,
+    /// which is the safe reading. (`overlay_version` refuses those
+    /// documents outright; the default is belt and braces.)
+    #[serde(default)]
+    pub shape: String,
 }
 
 /// One build's descriptor set.
@@ -97,7 +118,12 @@ pub struct DescriptorSet {
 
 /// The document format's own version. See
 /// [`DescriptorSet::overlay_version`].
-pub const OVERLAY_VERSION: u32 = 2;
+///
+/// `3` added [`FileDigest::shape`], which the hot-patch tier decides
+/// on. A `2` document cannot answer "did only function bodies change",
+/// and guessing would route a shape change into a patch — so a reader
+/// that meets one rebuilds.
+pub const OVERLAY_VERSION: u32 = 3;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -186,14 +212,30 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                 // whole file: a file this scan could not read is a file
                 // any change to must rebuild, and recording it that way
                 // is what makes that happen.
-                set.files.insert(relative, FileDigest { content: content.clone(), skeleton: content });
+                set.files.insert(
+                    relative,
+                    FileDigest {
+                        content: content.clone(),
+                        skeleton: content.clone(),
+                        shape: content,
+                    },
+                );
                 continue;
             }
         };
         let skeleton = hex(&Sha256::digest(
             runtime_macros_parse::skeleton_of(&text, &sites).as_bytes(),
         ));
-        set.files.insert(relative.clone(), FileDigest { content, skeleton });
+        // A file whose shape cannot be computed records its own content
+        // digest as the shape — no later save can match it, so every
+        // change to it rebuilds. Same posture as the unparseable branch
+        // above, for the same reason.
+        let shape = hex(&Sha256::digest(
+            runtime_macros_parse::shape_of(&text)
+                .unwrap_or_else(|| text.to_string())
+                .as_bytes(),
+        ));
+        set.files.insert(relative.clone(), FileDigest { content, skeleton, shape });
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();
             let Some(ui) = site.ui.as_mut() else {

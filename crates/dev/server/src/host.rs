@@ -297,13 +297,29 @@ pub fn run(
         vec![user_src.clone()],
         std::time::Duration::from_millis(100),
         Box::new(move |changed: &[std::path::PathBuf]| {
-            // Can this save skip the compiler entirely? Asked before
-            // anything expensive starts. A patch reaches the running
-            // app through the sidecar, which applies it to its own tree
-            // — so the resulting backend calls stream to every attached
-            // client as ordinary commands AND update the recorder's
-            // scene mirror, which is what a late-joining client is
-            // snapshotted from.
+            // What does this save cost? Three live answers, cheapest
+            // first, decided before anything expensive starts:
+            //
+            //   Patch     — literals only. No compiler at all. The
+            //               sidecar edits its own mounted tree, so the
+            //               resulting backend calls stream to every
+            //               attached client as ordinary commands AND
+            //               update the recorder's scene mirror, which
+            //               is what a late joiner is snapshotted from.
+            //   HotPatch  — function bodies only. Re-emit the user
+            //               crate, link a dylib, rebind the jump table,
+            //               re-run the mounted tree. Still in process:
+            //               no respawn, no reconnect.
+            //   Rebuild   — anything that moves a file's SHAPE.
+            //
+            // The last boundary is safety, not speed: a patch dylib is
+            // spliced into a process where every other crate is still
+            // the old build, so a changed layout would be corruption
+            // rather than a stale screen. Which is why a hot patch is
+            // attempted ONLY on an explicit `HotPatch` — an absent or
+            // unreadable archive means "cannot tell", and cannot-tell
+            // respawns.
+            let mut hot_patch_allowed = false;
             if let (Some(dir), Some(archive)) =
                 (overlay_crate_dir.as_ref(), overlay_archive.as_ref())
             {
@@ -321,6 +337,10 @@ pub fn run(
                             started.elapsed().as_millis()
                         );
                         return;
+                    }
+                    dev_overlay::Decision::HotPatch(files) => {
+                        eprintln!("[dev] hot-patching bodies in: {}", files.join(", "));
+                        hot_patch_allowed = true;
                     }
                     dev_overlay::Decision::Unchanged if !files.is_empty() => {
                         eprintln!("[dev] no UI or code change in this save, no rebuild");
@@ -342,7 +362,15 @@ pub fn run(
             // sidecar binary can no longer be refreshed — see
             // `note_respawn`. Cheaper to lose the fast path than to
             // patch against addresses that have moved.
-            let adapter: Option<&dyn HotPatchAdapter> = if retired.get() {
+            let adapter: Option<&dyn HotPatchAdapter> = if retired.get() || !hot_patch_allowed {
+                None
+            } else {
+                hotpatch_for_rebuild.as_deref().map(|b| &**b)
+            };
+            // A respawn keeps the adapter (it supplies the fat build
+            // env); it is only the DECISION to patch that
+            // `hot_patch_allowed` gates.
+            let respawn_adapter: Option<&dyn HotPatchAdapter> = if retired.get() {
                 None
             } else {
                 hotpatch_for_rebuild.as_deref().map(|b| &**b)
@@ -354,9 +382,9 @@ pub fn run(
                     &sidecar_path_for_rebuild,
                     &sidecar_manifest_for_rebuild,
                     &cargo_target_for_rebuild,
-                    adapter,
+                    respawn_adapter,
                 );
-                if !note_respawn(adapter, &sidecar_path_for_rebuild) {
+                if !note_respawn(respawn_adapter, &sidecar_path_for_rebuild) {
                     retired.set(true);
                 }
                 eprintln!(
@@ -366,17 +394,28 @@ pub fn run(
             };
             if force_respawn {
                 respawn("force_respawn");
+                rescan_archive(&mut overlay_archive, overlay_crate_dir.as_deref());
                 return;
             }
             if let Err(e) = try_hotpatch(adapter, &sidecar_for_rebuild, &user_crate_for_rebuild) {
-                eprintln!("[runtime-server-host] hot-patch failed: {e:#} — respawning sidecar");
-                respawn("after hot-patch failure");
+                if adapter.is_some() {
+                    eprintln!("[runtime-server-host] hot-patch failed: {e:#} — respawning sidecar");
+                }
+                respawn("rebuild");
             } else {
                 eprintln!(
                     "[runtime-server-host] hot-patch applied in {}ms",
                     t_total.elapsed().as_millis()
                 );
             }
+            // Either way the running binary is not the one the archive
+            // describes any more: a rebuild relinks it, and a hot patch
+            // splices in re-emitted `ui!` sites whose keys were computed
+            // from the NEW line numbers. Re-scanning is what keeps the
+            // next literal-only save addressable — without it the
+            // overlay would emit patches keyed to sites the running code
+            // no longer carries, and they would silently do nothing.
+            rescan_archive(&mut overlay_archive, overlay_crate_dir.as_deref());
         }),
     );
 
@@ -572,6 +611,28 @@ fn respawn_sidecar(
         }
     }
     replay_sessions_to_sidecar(sidecar_slot, tracker);
+}
+
+/// Re-read the crate's `ui!` sites into the archive after the running
+/// binary changed.
+///
+/// See the call site for why this has to happen on both the hot-patch
+/// and the rebuild paths. Failure leaves the previous archive in place
+/// and logs — a stale archive costs the overlay tier, never
+/// correctness, because every patch it then proposes is addressed at a
+/// site key the sidecar will simply not find.
+fn rescan_archive(
+    archive: &mut Option<dev_overlay::DescriptorSet>,
+    crate_dir: Option<&std::path::Path>,
+) {
+    let Some(dir) = crate_dir else { return };
+    match dev_overlay::scan_crate(dir) {
+        Ok(fresh) => *archive = Some(fresh),
+        Err(e) => eprintln!(
+            "[runtime-server-host] could not re-scan `ui!` sites after the rebuild ({e:#}) — \
+             literal-only saves will rebuild until the next restart"
+        ),
+    }
 }
 
 /// The respawn's `cargo build`, with the adapter's environment applied.

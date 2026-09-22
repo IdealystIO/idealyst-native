@@ -37,13 +37,21 @@ use runtime_template::{diff, Edit, Rejection};
 use crate::archive::DescriptorSet;
 
 /// What to do with a save.
+///
+/// Three live outcomes and one fallback, cheapest first. See
+/// [`crate::archive::FileDigest`] for what each one is decided on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
     /// Nothing changed that matters. No patch, no rebuild.
     Unchanged,
-    /// Apply these patches; skip the rebuild.
+    /// Apply these patches; skip the compiler entirely.
     Patch(Vec<SitePatch>),
-    /// Rebuild, for this reason.
+    /// Only function BODIES changed. Re-emit the user crate, link a
+    /// patch dylib, rebind the jump table, re-run the mounted tree —
+    /// all in the running process. Carries the files whose bodies
+    /// moved, for the log.
+    HotPatch(Vec<String>),
+    /// Rebuild and respawn, for this reason.
     Rebuild(Reason),
 }
 
@@ -76,6 +84,12 @@ pub enum Reason {
     SitesMoved { file: String },
     /// A site's edit cannot be expressed as a patch.
     Refused { file: String, why: Rejection },
+    /// The file's SHAPE moved — a signature, a props struct, a
+    /// `static`, an attribute, the set of items. A hot patch cannot
+    /// express this: the patch dylib is spliced into a process where
+    /// every other crate is still the old build, so the two would
+    /// disagree about layout. Only a rebuild is correct.
+    ShapeChanged { file: String },
 }
 
 impl std::fmt::Display for Reason {
@@ -87,6 +101,9 @@ impl std::fmt::Display for Reason {
             Reason::CodeChanged { file } => write!(f, "{file} changed outside its `ui!` bodies"),
             Reason::SitesMoved { file } => write!(f, "{file}'s `ui!` sites moved"),
             Reason::Refused { file, why } => write!(f, "{file}: {why}"),
+            Reason::ShapeChanged { file } => {
+                write!(f, "{file} changed outside its function bodies")
+            }
         }
     }
 }
@@ -126,6 +143,11 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
     }
 
     let mut patches = Vec::new();
+    // Files whose `ui!` skeleton moved but whose SHAPE did not — the
+    // subsecond tier. Collected rather than returned early because a
+    // save can touch several files and the answer is the most
+    // expensive one any of them needs.
+    let mut body_only: Vec<String> = Vec::new();
     for file in changed {
         let Some(recorded) = archive.files.get(&file.path) else {
             return Decision::Rebuild(Reason::UnknownFile { file: file.path.clone() });
@@ -147,7 +169,28 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
         let skeleton =
             crate::archive::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
         if skeleton != recorded.skeleton {
-            return Decision::Rebuild(Reason::CodeChanged { file: file.path.clone() });
+            // Something outside the `ui!` bodies moved, so the overlay
+            // is out. Ask the weaker question the hot-patch tier needs:
+            // did anything outside the FUNCTION bodies move?
+            //
+            // This is the safety boundary, not an optimization. Routing
+            // a shape change into a patch would splice code with a new
+            // layout into a process that still holds the old one
+            // everywhere else — silent corruption rather than a stale
+            // screen. So anything this cannot prove is body-only
+            // rebuilds.
+            let Some(shape) = runtime_macros_parse::shape_of(&file.text) else {
+                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
+            };
+            if crate::archive::digest(shape.as_bytes()) != recorded.shape {
+                return Decision::Rebuild(Reason::ShapeChanged { file: file.path.clone() });
+            }
+            body_only.push(file.path.clone());
+            // Its sites are not diffed: a hot patch re-emits the whole
+            // crate from source, so every literal in this file arrives
+            // with it. Diffing would only risk a patch addressed at
+            // keys the patched binary no longer carries.
+            continue;
         }
 
         // Match by ORDINAL, not by site key. A body gaining a line moves
@@ -198,7 +241,13 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
         }
     }
 
-    if patches.is_empty() {
+    // Most expensive outcome wins. A save that edits a literal in one
+    // file and a body in another needs the compiler either way, and the
+    // hot patch carries the literal along — applying the overlay patch
+    // as well would address the pre-patch binary's site keys.
+    if !body_only.is_empty() {
+        Decision::HotPatch(body_only)
+    } else if patches.is_empty() {
         Decision::Unchanged
     } else {
         Decision::Patch(patches)
@@ -227,6 +276,11 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
             crate::archive::FileDigest {
                 content: crate::archive::digest(file.text.as_bytes()),
                 skeleton,
+                shape: crate::archive::digest(
+                    runtime_macros_parse::shape_of(&file.text)
+                        .unwrap_or_else(|| file.text.clone())
+                        .as_bytes(),
+                ),
             },
         );
         for (ordinal, mut site) in sites.into_iter().enumerate() {
@@ -355,28 +409,124 @@ fn Screen() -> Element {
         }
     }
 
+    /// A statement inside a function body is not something the
+    /// overlay can express — but it IS something a jump table can
+    /// rebind, because nothing about the file's shape moved.
     #[test]
-    fn a_logic_edit_rebuilds() {
+    fn a_logic_edit_is_a_hot_patch() {
         let (_d, archive) = archive_of(APP);
         let edited = APP.replace("    1\n", "    2\n");
         assert_eq!(
             decide(Some(&archive), &changed(&edited)),
-            Decision::Rebuild(Reason::CodeChanged { file: "src/app.rs".into() })
+            Decision::HotPatch(vec!["src/app.rs".into()])
         );
     }
 
-    /// The case the whole conservative design is for: one save carrying
-    /// both. Patching the label and skipping the compiler that would
-    /// have picked up the logic change is how a dev loop starts lying
-    /// about what is running.
+    /// One save carrying both. The overlay must not apply its half:
+    /// the compiler is running either way, and a hot patch re-emits the
+    /// whole crate from source, so the literal arrives with it. Applying
+    /// the overlay patch as well would address site keys the patched
+    /// binary no longer carries.
     #[test]
-    fn a_save_with_both_a_ui_edit_and_a_logic_edit_rebuilds() {
+    fn a_save_with_both_a_ui_edit_and_a_logic_edit_is_one_hot_patch() {
         let (_d, archive) = archive_of(APP);
         let edited = APP.replace(r#""hello""#, r#""goodbye""#).replace("    1\n", "    2\n");
         assert_eq!(
             decide(Some(&archive), &changed(&edited)),
-            Decision::Rebuild(Reason::CodeChanged { file: "src/app.rs".into() })
+            Decision::HotPatch(vec!["src/app.rs".into()])
         );
+    }
+
+    // ---------------------------------------------------------------
+    // The decision table for the middle tier. Each of these changes
+    // code the overlay cannot express; the question is only whether a
+    // jump table can carry it, and getting THAT wrong is unsafe rather
+    // than slow (see `Reason::ShapeChanged`).
+    // ---------------------------------------------------------------
+
+    /// A comment or blank line outside a body moves no shape — tokens,
+    /// not text, are what the shape digest compares.
+    #[test]
+    fn a_comment_added_outside_a_body_is_a_hot_patch() {
+        let (_d, archive) = archive_of(APP);
+        let edited = APP.replace("#[component]", "// a new line\n#[component]");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// The dangerous-looking one: a body that gains state. Body-only,
+    /// so it patches. What happens to the OLD state across the re-run
+    /// is the runtime's problem, not the decision's.
+    #[test]
+    fn adding_a_signal_call_is_a_hot_patch() {
+        let (_d, archive) = archive_of(APP);
+        let edited = APP.replace(
+            "fn Screen() -> Element {",
+            "fn Screen() -> Element {\n    let extra = signal(0i32);",
+        );
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// A signature change is the boundary. The patch dylib would
+    /// compute one layout while every un-re-emitted crate in the
+    /// process computes another.
+    #[test]
+    fn changing_a_signature_rebuilds_as_a_shape_change() {
+        let (_d, archive) = archive_of(APP);
+        let edited = APP.replace("fn count() -> i32", "fn count() -> i64");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    #[test]
+    fn adding_a_prop_rebuilds_as_a_shape_change() {
+        let (_d, archive) = archive_of(APP);
+        let edited = APP.replace("fn Screen() -> Element", "fn Screen(tone: String) -> Element");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    #[test]
+    fn adding_an_item_rebuilds_as_a_shape_change() {
+        let (_d, archive) = archive_of(APP);
+        let edited = format!("{APP}\n pub struct Extra {{ pub n: u8 }}\n");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    #[test]
+    fn changing_a_static_rebuilds_as_a_shape_change() {
+        let src = format!("{APP}\n pub static LIMIT: u32 = 1;\n");
+        let (_d, archive) = archive_of(&src);
+        let edited = src.replace("LIMIT: u32 = 1", "LIMIT: u32 = 2");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    /// A literal-only edit still takes the CHEAPEST tier. The hot-patch
+    /// tier must not swallow saves the overlay can already handle
+    /// without a compiler.
+    #[test]
+    fn a_literal_only_edit_still_takes_the_overlay_tier() {
+        let (_d, archive) = archive_of(APP);
+        let edited = APP.replace(r#""hello""#, r#""goodbye""#);
+        assert!(matches!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Patch(_)
+        ));
     }
 
     /// An edit a patch cannot express — here a literal becoming a
@@ -535,18 +685,6 @@ fn C() -> Element {
             }
             other => panic!("expected a patch, got {other:?}"),
         }
-    }
-
-    /// An inserted line ABOVE everything is caught one step earlier, by
-    /// the skeleton — it is code that moved, whatever it does.
-    #[test]
-    fn a_line_inserted_outside_a_body_rebuilds_as_a_code_change() {
-        let (_d, archive) = archive_of(APP);
-        let edited = APP.replace("#[component]", "// a new line\n#[component]");
-        assert_eq!(
-            decide(Some(&archive), &changed(&edited)),
-            Decision::Rebuild(Reason::CodeChanged { file: "src/app.rs".into() })
-        );
     }
 
     #[test]

@@ -93,19 +93,25 @@ pub fn build(
     // all it takes. Without this, an app whose whole tree lives in
     // `app()` — the scaffold's own shape — applies a patch that rebinds
     // nothing and re-renders the old code.
-    if let Some((name, link_addr)) =
-        root_symbol_at(host_cache, runtime_main, app_runtime)
-    {
-        match patch_syms.get(&name) {
+    match root_symbol_at(host_cache, runtime_main, app_runtime) {
+        Some((name, link_addr)) => match patch_syms.get(&name) {
             Some(&patch_addr) => {
                 map.insert(link_addr, patch_addr);
+                eprintln!("[hotpatch] app root paired: {name}");
             }
             None => eprintln!(
                 "[hotpatch] app root `{name}` is not in the patch dylib — edits to the \
                  root fn itself will not apply (components below it still will)"
             ),
-        }
+        },
+        None => eprintln!(
+            "[hotpatch] no app-root entry (runtime_main=0x{runtime_main:x} \
+             app_runtime=0x{app_runtime:x} cache_main=0x{:x}) — edits to the root fn \
+             itself will not apply",
+            host_cache.main_addr,
+        ),
     }
+    eprintln!("[hotpatch] jump table: {} entries", map.len());
 
     Ok(JumpTable {
         lib: patch_dylib.to_path_buf(),
