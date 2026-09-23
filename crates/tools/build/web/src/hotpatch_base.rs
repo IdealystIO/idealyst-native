@@ -60,6 +60,11 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     let mut module = Module::from_buffer(wasm).context("parsing the linked base module")?;
 
     let already_indirect = functions_in_the_table(&module);
+    // Anything that can reach wasm-bindgen's descriptor imports is off
+    // limits to BOTH kinds of root below — a table slot and an export are
+    // equally live to wasm-bindgen's dead-code pass, and it only deletes
+    // the placeholder import when nothing at all reaches it.
+    let descriptor_side = functions_reaching_the_descriptor_imports(&module);
     let mut promote: Vec<FunctionId> = Vec::new();
     let mut exported: HashSet<String> = HashSet::new();
 
@@ -97,7 +102,7 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
         .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
         .filter_map(|f| {
             let name = f.name.as_deref()?;
-            name.starts_with("__wbindgen")
+            (name.starts_with("__wbindgen") && !descriptor_side.contains(&f.id()))
                 .then(|| (f.id(), name.to_string()))
         })
         .collect();
@@ -116,7 +121,6 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     // exist for wasm-bindgen's own descriptor interpreter, which runs
     // over them and then expects them gone. Rooting one keeps it alive
     // into the output where it has no meaning.
-    let descriptor_side = functions_reaching_the_descriptor_imports(&module);
     let candidates: Vec<FunctionId> = module
         .funcs
         .iter()
