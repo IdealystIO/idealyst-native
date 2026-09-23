@@ -1832,7 +1832,8 @@ fn default_nightly_toolchain() -> String {
 /// wrapper gone they resolve against the `idealyst` facade the app
 /// depends on. Anything NOT listed here is one of the app's own
 /// features and is passed through untouched.
-const FRAMEWORK_FEATURES: &[&str] = &["runtime-server", "robot", "hydrate", "ui-overlay"];
+const FRAMEWORK_FEATURES: &[&str] =
+    &["runtime-server", "robot", "hydrate", "ui-overlay", "hot-reload"];
 
 /// Map a CLI-supplied feature name to the spec cargo needs on the app
 /// crate: `robot` → `idealyst/robot`, `my-thing` → `my-thing`.
@@ -3021,6 +3022,11 @@ mod regression_tests {
         assert_eq!(feature_spec("robot"), "idealyst/robot");
         assert_eq!(feature_spec("runtime-server"), "idealyst/runtime-server");
         assert_eq!(feature_spec("hydrate"), "idealyst/hydrate");
+        // The hot-patch tier is a FRAMEWORK feature. Spelled as the app
+        // crate's own it is "the package does not contain this feature"
+        // and the whole dev session fails to start, which is how it
+        // failed the first time.
+        assert_eq!(feature_spec("hot-reload"), "idealyst/hot-reload");
         assert_eq!(feature_spec("my-feature"), "my-feature");
         assert_eq!(feature_spec("dev-hot-reload"), "dev-hot-reload");
         // An already-qualified spec is left alone.
