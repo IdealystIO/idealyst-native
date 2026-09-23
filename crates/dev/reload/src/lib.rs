@@ -651,14 +651,17 @@ impl HotPatchBase {
             };
             match build_web::hotpatch_build::WasmPatchBuilder::new(
                 &self.artifact.served_wasm,
+                self.artifact.symbol_aliases.as_deref(),
                 captures,
                 self.crate_name.clone(),
                 build_web::patches_dir(&self.serve_root),
             ) {
                 Ok(builder) => {
                     eprintln!(
-                        "[hotpatch] base indexed: {} functions reachable through the table",
+                        "[hotpatch] base indexed: {} functions reachable through the table \
+                         ({} of them a second name for one of the others)",
                         builder.base_table_size(),
+                        builder.alias_count(),
                     );
                     self.builder = Some(builder);
                 }

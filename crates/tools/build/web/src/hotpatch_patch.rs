@@ -65,7 +65,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
 use walrus::{
-    ir, ConstExpr, ElementKind, FunctionBuilder, FunctionId, GlobalKind, ImportKind, Module, TableId,
+    ir, ConstExpr, ElementKind, FunctionBuilder, FunctionId, GlobalKind, ImportKind, Module,
+    TableId,
 };
 
 /// Everything a patch needs to know about the base module it will be
@@ -85,12 +86,28 @@ pub struct BaseIndex {
     pub exports: HashSet<String>,
     /// Data symbol name → its absolute address in the base's memory.
     pub data: HashMap<String, u32>,
+    /// Every function the base HAS, under every name the linker knew
+    /// it by.
+    ///
+    /// Only used to explain a failure, and that distinction is the whole
+    /// diagnosis: a symbol in here but not in `ifunc` was dropped by a
+    /// rooting or GC pass and the fix is in `hotpatch_base`, while a
+    /// symbol in neither was never codegened into the base at all and
+    /// the fix is in the compile flags.
+    pub all_funcs: HashSet<String>,
 }
 
 impl BaseIndex {
     /// Read a wasm-bindgen'd base module: its table, its exports, and
     /// its data symbols.
-    pub fn of(wasm: &[u8]) -> Result<Self> {
+    ///
+    /// `aliases` is [`crate::hotpatch_aliases`]'s name-to-name map, read
+    /// from the module BEFORE walrus and wasm-bindgen renumbered it.
+    /// Without it every symbol the linker knew by a second name — 4,060
+    /// of them on the hot-reload lab, `<usize as Display>::fmt` among
+    /// them — looks absent, and the patch is refused over functions that
+    /// are right there in the table under another spelling.
+    pub fn of(wasm: &[u8], aliases: &crate::hotpatch_aliases::AliasMap) -> Result<Self> {
         let module = Module::from_buffer(wasm).context("parsing the base module")?;
 
         let mut ifunc = HashMap::new();
@@ -119,12 +136,49 @@ impl BaseIndex {
 
         let exports = module.exports.iter().map(|e| e.name.clone()).collect();
         let data = data_symbol_addresses(wasm).context("reading the base's data symbols")?;
+        let mut all_funcs: HashSet<String> =
+            module.funcs.iter().filter_map(|f| f.name.clone()).collect();
+
+        // An alias resolves to whatever slot its canonical name got.
+        // `or_insert` rather than `insert`: a name that is BOTH a
+        // function's own name-section name and some other function's
+        // alias must keep its own slot, or a patch calling it would
+        // dispatch into the aliasing function instead.
+        for (alias, canonical) in aliases {
+            if let Some(slot) = ifunc.get(canonical).copied() {
+                ifunc.entry(alias.clone()).or_insert(slot);
+            }
+            if all_funcs.contains(canonical) {
+                all_funcs.insert(alias.clone());
+            }
+        }
 
         Ok(Self {
             ifunc,
             exports,
             data,
+            all_funcs,
         })
+    }
+}
+
+impl BaseIndex {
+    /// Why a symbol could not be resolved, in the terms that pick the
+    /// next move.
+    ///
+    /// The two cases look identical from the link error and have
+    /// opposite fixes, so the message names which one it is rather than
+    /// leaving whoever reads the log to go and dump a name section.
+    pub fn diagnose(&self, name: &str) -> String {
+        if self.all_funcs.contains(name) {
+            "the base HAS this function but it is not in the table: a rooting \
+             or GC pass dropped it"
+                .to_string()
+        } else {
+            "the base does not contain this function at all: rustc never codegened \
+             it into the base, so no rooting pass could have kept it"
+                .to_string()
+        }
     }
 }
 
@@ -156,7 +210,7 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
                     module.globals.get_mut(global).kind =
                         GlobalKind::Local(ConstExpr::Value(ir::Value::I32(*index as i32)));
                 }
-                (None, _) => unresolved.push(format!("GOT.func.{name} (no slot in the base table)")),
+                (None, _) => unresolved.push(format!("GOT.func.{name} — {}", base.diagnose(&name))),
                 (_, _) => unresolved.push(format!("GOT.func.{name} (not a global)")),
             },
 
@@ -199,9 +253,16 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
                             "{namespace}.{name} (a descriptor symbol that is not a function)"
                         ));
                     }
-                } else if let (Some(index), ImportKind::Function(func)) =
-                    (base.ifunc.get(&name), kind)
-                {
+                } else if let (Some(index), ImportKind::Function(func)) = (
+                    base.ifunc.get(&name).or_else(|| {
+                        base.ifunc
+                            .get(&crate::hotpatch_base::shim_trampoline_name(&name))
+                    }),
+                    kind,
+                ) {
+                    // Either the function itself, or — for a JS shim, which
+                    // is an import in the base and has no body of its own —
+                    // the forwarding body `hotpatch_base` rooted for it.
                     // The base has the function itself, reachable through
                     // its table because `hotpatch_base` rooted it there.
                     module.imports.delete(id);
@@ -231,9 +292,7 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
                     // cannot be faked. `__memory_base` / `__table_base`
                     // are the exception: the runtime synthesizes those.
                     _ if name == "__memory_base" || name == "__table_base" => {}
-                    _ => unresolved.push(format!(
-                        "env.{name} (the base neither exports it nor has it in the table)"
-                    )),
+                    _ => unresolved.push(format!("env.{name} — {}", base.diagnose(&name))),
                 }
             }
 
@@ -253,11 +312,31 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
         );
     }
 
-    // A patch must not run anything of its own accord. Its `start` would
-    // fire during instantiation, before the jump table is committed and
-    // therefore before any of its functions are reachable — initializing
-    // state the base already initialized, against a half-applied patch.
-    module.start = None;
+    // A patch must not run anything of its own accord — with ONE
+    // exception, which wasm-ld itself puts there.
+    //
+    // A `--pie` link makes `__wasm_apply_global_relocs` the start
+    // function. It adds `__table_base` to every `GOT.func.internal.*`
+    // global — the address of a function the PATCH defines, which the
+    // linker can only write as an index relative to the patch's own
+    // element segment. Clearing it (the first version of this did) lets
+    // walrus's GC drop the function too, so those globals stay relative:
+    // on the lab, `<Option<u64> as Debug>::fmt` was handed to `format!`
+    // as fn pointer 0, and the first render against the patch trapped
+    // with "null function" inside `core::fmt::write`. It only adds a
+    // constant to globals the patch owns, so running it at instantiation
+    // — before the loader's `__wasm_apply_data_relocs`, the order wasm-ld
+    // intends — touches nothing of the base's.
+    //
+    // Anything else in `start` would fire before the jump table is
+    // committed, initializing state the base already initialized against
+    // a half-applied patch, and is dropped.
+    let keep_start = module
+        .start
+        .is_some_and(|f| module.funcs.get(f).name.as_deref() == Some("__wasm_apply_global_relocs"));
+    if !keep_start {
+        module.start = None;
+    }
 
     // wasm-bindgen's descriptor section describes the base's bindings,
     // not the patch's, and nothing downstream reads it. It is bytes the
@@ -318,7 +397,10 @@ fn call_through_table(
     body.instr(ir::Instr::Const(ir::Const {
         value: ir::Value::I32(index as i32),
     }));
-    body.instr(ir::Instr::CallIndirect(ir::CallIndirect { ty: ty_id, table }));
+    body.instr(ir::Instr::CallIndirect(ir::CallIndirect {
+        ty: ty_id,
+        table,
+    }));
 
     let func = module.funcs.get_mut(func);
     func.kind = walrus::FunctionKind::Local(builder.local_func(locals));
@@ -393,9 +475,9 @@ fn data_symbol_addresses(wasm: &[u8]) -> Result<HashMap<String, u32>> {
                         {
                             out.insert(
                                 name.to_string(),
-                                definition
-                                    .offset
-                                    .saturating_add(segment_offsets.get(&definition.index).copied().unwrap_or(0)),
+                                definition.offset.saturating_add(
+                                    segment_offsets.get(&definition.index).copied().unwrap_or(0),
+                                ),
                             );
                         }
                     }
@@ -425,7 +507,8 @@ mod tests {
             None,
             RefType::FUNCREF,
         );
-        let table_base = module.add_import_global("env", "__table_base", ValType::I32, false, false);
+        let table_base =
+            module.add_import_global("env", "__table_base", ValType::I32, false, false);
 
         let ty = module.types.add(&[], &[]);
         let mut called = Vec::new();
@@ -478,6 +561,11 @@ mod tests {
                 .map(|s| s.to_string())
                 .collect(),
             data: data.iter().map(|(n, a)| (n.to_string(), *a)).collect(),
+            // A fixture's base contains exactly what its table names:
+            // `diagnose` then reports "not in the base at all" for
+            // anything else, which is what a missing symbol in a
+            // fixture means.
+            all_funcs: ifunc.iter().map(|(n, _)| n.to_string()).collect(),
         }
     }
 
@@ -627,16 +715,94 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("never_existed"), "{message}");
         assert!(
-            message.contains("neither exports it nor has it in the table"),
+            message.contains("does not contain this function at all"),
             "{message}"
         );
+    }
+
+    /// A served base with one function, `canonical`, in its table at
+    /// slot 1 — the shape `hotpatch_base` leaves behind.
+    fn served_base_with(canonical: &str) -> Vec<u8> {
+        let mut module = Module::default();
+        let table = module.tables.add_local(false, 2, Some(2), RefType::FUNCREF);
+        module.exports.add("__indirect_function_table", table);
+        let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+        b.name(canonical.to_string()).func_body();
+        let f = module.funcs.add_local(b.local_func(vec![]));
+        module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(vec![f]),
+        );
+        module.emit_wasm()
+    }
+
+    /// Regression: the first wasm patch on a real app was refused over
+    /// `<usize as Display>::fmt` and `<Element as IntoElement>::into_element`,
+    /// both of which the base HAD — as second symbols on functions the
+    /// name section calls `<u32 as Display>::fmt` and
+    /// `<Element as IntoSceneElement>::into_scene_element`. Indexed by
+    /// name-section name alone they looked absent, and the diagnosis said
+    /// "never codegened", which pointed at compile flags that cannot help.
+    ///
+    /// With the alias map, the import resolves through the canonical
+    /// function's slot.
+    #[test]
+    fn regression_an_aliased_symbol_resolves_through_its_canonical_slot() {
+        let canonical = "_RNvXs8_core3fmt3num3impmNtB9_7Display3fmt";
+        let alias = "_RNvXsi_core3fmt3num3impjNtB9_7Display3fmt";
+        let served = served_base_with(canonical);
+        let patch = patch_module(&[("env", alias), ("GOT.func", alias)]);
+
+        // Without the map: refused, and NOT mislabelled as a rooting bug.
+        let blind = BaseIndex::of(&served, &Default::default()).unwrap();
+        let message = format!("{:#}", resolve_against_base(&patch, &blind).unwrap_err());
+        assert!(message.contains(alias), "{message}");
+
+        let mut aliases = crate::hotpatch_aliases::AliasMap::new();
+        aliases.insert(alias.to_string(), canonical.to_string());
+        let base = BaseIndex::of(&served, &aliases).unwrap();
+        assert_eq!(base.ifunc.get(alias), Some(&1));
+        assert_eq!(base.ifunc.get(canonical), Some(&1));
+        let resolved = resolve_against_base(&patch, &base)
+            .unwrap_or_else(|e| panic!("the alias should resolve: {e:#}"));
+        assert!(
+            !imports_of(&resolved).iter().any(|i| i.contains(alias)),
+            "{:?}",
+            imports_of(&resolved)
+        );
+    }
+
+    /// A name that is some function's OWN name must keep its own slot
+    /// even if the alias map also lists it as another function's alias —
+    /// otherwise a call to it would dispatch into the other function.
+    #[test]
+    fn an_alias_never_displaces_a_functions_own_name() {
+        let served = served_base_with("own");
+        let mut aliases = crate::hotpatch_aliases::AliasMap::new();
+        aliases.insert("own".to_string(), "somebody_else".to_string());
+        let base = BaseIndex::of(&served, &aliases).unwrap();
+        assert_eq!(base.ifunc.get("own"), Some(&1));
+    }
+
+    /// The diagnosis names which of the two opposite fixes applies.
+    #[test]
+    fn a_function_the_base_has_but_did_not_table_is_diagnosed_as_such() {
+        let mut base = base_with(&[], &[], &[]);
+        base.all_funcs.insert("kept_but_untabled".to_string());
+        assert!(base
+            .diagnose("kept_but_untabled")
+            .contains("HAS this function"));
+        assert!(base.diagnose("nowhere").contains("does not contain"));
     }
 
     /// A patch's `start` would fire during instantiation — before the
     /// jump table is committed, so before any of its functions are
     /// reachable — re-initializing state the base already owns.
     #[test]
-    fn the_patch_never_keeps_a_start_function() {
+    fn the_patch_never_keeps_an_arbitrary_start_function() {
         let mut module = Module::from_buffer(&patch_module(&[])).unwrap();
         let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         builder.name("ctor".to_string()).func_body();
@@ -644,5 +810,51 @@ mod tests {
 
         let out = resolve_against_base(&module.emit_wasm(), &base_with(&[], &[], &[])).unwrap();
         assert!(Module::from_buffer(&out).unwrap().start.is_none());
+    }
+
+    /// Regression: the first patch to land on the lab trapped with "null
+    /// function" in `core::fmt::write`. wasm-ld makes
+    /// `__wasm_apply_global_relocs` a `--pie` module's start function; it
+    /// rebases every `GOT.func.internal.*` global — a function the patch
+    /// defines, whose address the linker can only write relative to the
+    /// patch's own segment — by `__table_base`. Clearing `start` let GC
+    /// drop it, and `<Option<u64> as Debug>::fmt` went into `format!` as
+    /// fn pointer 0.
+    #[test]
+    fn regression_the_global_reloc_start_function_survives() {
+        let mut module = Module::from_buffer(&patch_module(&[])).unwrap();
+        let got = module.globals.add_local(
+            ValType::I32,
+            true,
+            false,
+            ConstExpr::Value(ir::Value::I32(0)),
+        );
+        let table_base = module
+            .imports
+            .iter()
+            .find_map(|i| match (i.name.as_str(), &i.kind) {
+                ("__table_base", ImportKind::Global(g)) => Some(*g),
+                _ => None,
+            })
+            .unwrap();
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder
+            .name("__wasm_apply_global_relocs".to_string())
+            .func_body()
+            .global_get(table_base)
+            .global_get(got)
+            .binop(ir::BinaryOp::I32Add)
+            .global_set(got);
+        module.start = Some(module.funcs.add_local(builder.local_func(vec![])));
+
+        let out = resolve_against_base(&module.emit_wasm(), &base_with(&[], &[], &[])).unwrap();
+        let module = Module::from_buffer(&out).unwrap();
+        let start = module
+            .start
+            .expect("the global-reloc start function was dropped");
+        assert_eq!(
+            module.funcs.get(start).name.as_deref(),
+            Some("__wasm_apply_global_relocs")
+        );
     }
 }

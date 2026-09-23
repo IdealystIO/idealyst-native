@@ -42,6 +42,7 @@ use build_ios::{
 mod premint;
 pub use premint::PREMINT_CSS_NAME;
 
+pub mod hotpatch_aliases;
 pub mod hotpatch_base;
 pub mod hotpatch_build;
 pub mod hotpatch_patch;
@@ -447,6 +448,13 @@ pub struct BuildArtifact {
     /// Where this build's captured rustc invocations were written, when
     /// the hot-patch tier was armed. `None` otherwise.
     pub captures_dir: Option<PathBuf>,
+    /// The symbol-alias map read from the LINKED module, when the
+    /// hot-patch tier was armed. `None` otherwise.
+    ///
+    /// Written during base prep and not recoverable later: it comes from
+    /// the `linking` section's function indices, which walrus and
+    /// wasm-bindgen both renumber. See [`hotpatch_aliases`].
+    pub symbol_aliases: Option<PathBuf>,
 }
 
 /// The primitives `--primitives` accepts — one per method on
@@ -705,17 +713,26 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         let mut bindgen_input = original_wasm.clone();
         if opts.hot_patch {
             let prepared_path = original_wasm.with_extension("hotbase.wasm");
+            let alias_path = original_wasm.with_extension("aliases.tsv");
             timings.time("hotpatch-base-prep", || {
                 let linked = fs::read(&original_wasm).with_context(|| {
                     format!("read {} for hot-patch prep", original_wasm.display())
                 })?;
-                let prepared = hotpatch_base::prepare_base_module(&linked)
+                // Read BEFORE the prep rewrites the module: the map is
+                // built from the `linking` section's function indices,
+                // and walrus re-emits functions in arena order, so after
+                // this point those indices name different functions.
+                let aliases = hotpatch_aliases::read_from_linked(&linked)
+                    .context("reading the base module's symbol aliases")?;
+                hotpatch_aliases::write(&alias_path, &aliases)?;
+                let (prepared, census) = hotpatch_base::prepare_base_module(&linked)
                     .context("preparing the base module for hot patching")?;
                 eprintln!(
-                    "[build-web] hot-patch base: {} → {} bytes, {} functions reachable through the table",
+                    "[build-web] hot-patch base: {} → {} bytes; {}; {} symbol aliases",
                     linked.len(),
                     prepared.len(),
-                    hotpatch_wasm::table_slot_count(&prepared).unwrap_or(0),
+                    census.summary(),
+                    aliases.len(),
                 );
                 fs::write(&prepared_path, prepared)
                     .with_context(|| format!("write {}", prepared_path.display()))
@@ -948,6 +965,9 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         wasm_changed: !skip_passes,
         served_wasm,
         captures_dir: opts.hot_patch.then(|| captures_dir(&target_dir)),
+        symbol_aliases: opts
+            .hot_patch
+            .then(|| original_wasm.with_extension("aliases.tsv")),
         pkg_dir,
         // No longer a generated crate — the per-app staging dir that
         // holds `pkg/` and the premint dump. Field name kept so the

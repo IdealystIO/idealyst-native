@@ -50,17 +50,94 @@ use walrus::{
     ir, ElementItems, ElementKind, FunctionBuilder, FunctionId, FunctionKind, ImportKind, Module,
 };
 
+/// What one run of [`prepare_base_module`] did, in the four numbers
+/// that decide whether a patch can link.
+///
+/// A patch resolves every call it does not define itself against the
+/// base's table, so "how many functions ended up in the table" is the
+/// whole story — and when a patch fails on an unresolved import, the
+/// first question is always whether that function was dropped here or
+/// never codegened at all. Reporting the census rather than one total
+/// is what separates those two.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BasePrep {
+    /// Local (non-imported) functions in the module we were handed.
+    pub locals: usize,
+    /// Of those, already reachable through an active element segment.
+    pub already_indirect: usize,
+    /// Of those, skipped because they exist only for wasm-bindgen's
+    /// descriptor interpreter.
+    pub bindgen_internal: usize,
+    /// Of those, appended to the element segment by this pass.
+    pub promoted: usize,
+    /// Forwarding bodies added for wasm-bindgen JS-shim imports (and
+    /// rooted on top of `promoted`), so a patch can call a shim.
+    pub shim_trampolines: usize,
+    /// Slots in the emitted module's element segments. Lower than
+    /// `already_indirect + promoted` means walrus's emit-time GC
+    /// dropped something we rooted.
+    pub slots_emitted: usize,
+    /// Local functions in the emitted module. Lower than `locals` is
+    /// the same GC, seen from the other side.
+    pub locals_emitted: usize,
+}
+
+impl BasePrep {
+    /// The one-line census for the build log.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} local fns = {} already in the table + {} bindgen-internal + {} promoted, \
+             + {} JS-shim trampolines → emitted {} slots over {} local fns",
+            self.locals,
+            self.already_indirect,
+            self.bindgen_internal,
+            self.promoted,
+            self.shim_trampolines,
+            self.slots_emitted,
+            self.locals_emitted,
+        )
+    }
+}
+
 /// Rewrite a freshly linked base module so a patch can resolve against
-/// it. Returns the new module's bytes.
+/// it. Returns the new module's bytes and the census of what it did.
 ///
 /// Must run BEFORE wasm-bindgen: the whole point is to be holding the
 /// GC roots when wasm-bindgen's pass runs.
-pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
+pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     let mut module = Module::from_buffer(wasm).context("parsing the linked base module")?;
+    let mut report = BasePrep::default();
 
     let already_indirect = functions_in_the_table(&module);
     let mut promote: Vec<FunctionId> = Vec::new();
-    let mut exported: HashSet<String> = HashSet::new();
+
+    // A JS shim — what an `extern "C"` block under `#[wasm_bindgen]`
+    // becomes — is an IMPORT in the base, not a function, so it has no
+    // table slot, and a patch that calls one has nothing to resolve to.
+    // Give each a local forwarding body under a name wasm-bindgen does
+    // not recognise, and root that. The shim's own import stays exactly
+    // where wasm-bindgen expects it; the trampoline just calls it.
+    //
+    // NOT exported. The first version of this exported the trampoline as
+    // `__saved_wbg_<name>`, and wasm-bindgen then generated its JS
+    // accessors against OUR export name (see below). A table slot is a
+    // GC root without being a name wasm-bindgen can find.
+    let shims: Vec<(FunctionId, String)> = module
+        .imports
+        .iter()
+        .filter(|i| i.module == "__wbindgen_placeholder__" && !is_bindgen_internal(&i.name))
+        .filter_map(|i| match i.kind {
+            ImportKind::Function(f) => Some((f, i.name.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut trampolines: HashSet<FunctionId> = HashSet::new();
+    for (import, name) in shims {
+        let trampoline = call_through(&mut module, import, &shim_trampoline_name(&name));
+        promote.push(trampoline);
+        trampolines.insert(trampoline);
+        report.shim_trampolines += 1;
+    }
 
     // NOTE: no `__saved_wbg_` alias exports. An earlier version added
     // one per `__wbindgen*` function so a patch could import it by that
@@ -85,18 +162,33 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     // exist for wasm-bindgen's own descriptor interpreter, which runs
     // over them and then expects them gone. Rooting one keeps it alive
     // into the output where it has no meaning.
-    let candidates: Vec<FunctionId> = module
-        .funcs
-        .iter()
-        .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
-        .filter(|f| !already_indirect.contains(&f.id()))
-        .filter(|f| !f.name.as_deref().is_some_and(is_bindgen_internal))
-        .map(|f| f.id())
-        .collect();
+    let mut candidates: Vec<FunctionId> = Vec::new();
+    for f in module.funcs.iter() {
+        if !matches!(f.kind, FunctionKind::Local(_)) {
+            continue;
+        }
+        // Already queued above.
+        if trampolines.contains(&f.id()) {
+            continue;
+        }
+        report.locals += 1;
+        if already_indirect.contains(&f.id()) {
+            report.already_indirect += 1;
+            continue;
+        }
+        if f.name.as_deref().is_some_and(is_bindgen_internal) {
+            report.bindgen_internal += 1;
+            continue;
+        }
+        candidates.push(f.id());
+    }
+    report.promoted = candidates.len();
     promote.extend(candidates);
 
     if promote.is_empty() {
-        return Ok(module.emit_wasm());
+        let out = module.emit_wasm();
+        let report = census(&out, report);
+        return Ok((out, report));
     }
     let added = promote.len() as u64;
 
@@ -140,7 +232,39 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
         table.maximum = Some(max.max(table.initial));
     }
 
-    Ok(module.emit_wasm())
+    let out = module.emit_wasm();
+    let report = census(&out, report);
+    Ok((out, report))
+}
+
+/// Fill in the two after-the-fact numbers by re-reading what we emitted.
+///
+/// walrus runs a GC on `emit_wasm`, and its roots are the exports, the
+/// start function and the element segments of IMPORTED tables — a
+/// locally-defined table's segments are reached only through the table,
+/// and only if the table itself is rooted (walrus 0.26
+/// `passes/used.rs`). A base linked without `--export-table` therefore
+/// loses every slot this pass just added, silently. Counting the output
+/// is how that shows up as a number instead of as an unresolved import
+/// three minutes later.
+fn census(out: &[u8], mut report: BasePrep) -> BasePrep {
+    let Ok(module) = Module::from_buffer(out) else {
+        return report;
+    };
+    report.locals_emitted = module
+        .funcs
+        .iter()
+        .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
+        .count();
+    report.slots_emitted = module
+        .elements
+        .iter()
+        .filter_map(|e| match &e.items {
+            ElementItems::Functions(ids) => Some(ids.len()),
+            _ => None,
+        })
+        .sum();
+    report
 }
 
 /// The constant an active segment's offset folds to. A base module is
@@ -154,7 +278,6 @@ fn const_offset(expr: &walrus::ConstExpr) -> u64 {
         _ => 0,
     }
 }
-
 
 /// Give every import wasm-bindgen's generated JS will not supply a local
 /// body that traps, so the module can instantiate.
@@ -247,9 +370,16 @@ fn functions_in_the_table(module: &Module) -> HashSet<FunctionId> {
     out
 }
 
+/// The name the base's forwarding body for JS-shim import `import` goes
+/// by. `hotpatch_patch` resolves a patch's `__wbindgen_placeholder__`
+/// import through the table slot of this name, so the two sides share
+/// this one function rather than two spellings of it.
+pub fn shim_trampoline_name(import: &str) -> String {
+    format!("__idealyst_shim_{import}")
+}
+
 /// Build a local function with the same type as `target` that forwards
-/// its arguments and calls it. Used to give an import a second, local
-/// identity that wasm-bindgen's deletion pass will not match.
+/// its arguments and calls it.
 fn call_through(module: &mut Module, target: FunctionId, name: &str) -> FunctionId {
     let ty_id = module.funcs.get(target).ty();
     let ty = module.types.get(ty_id);
@@ -265,12 +395,6 @@ fn call_through(module: &mut Module, target: FunctionId, name: &str) -> Function
     body.instr(ir::Instr::Call(ir::Call { func: target }));
 
     module.funcs.add_local(builder.local_func(locals))
-}
-
-/// A wasm-bindgen JS-call intrinsic — the thing an `extern "wbg"` block
-/// becomes. Excludes the descriptor machinery, which must not survive.
-fn is_wbg_intrinsic(name: &str) -> bool {
-    (name.starts_with("__wbindgen") || name.starts_with("__wbg_")) && !is_bindgen_internal(name)
 }
 
 /// A symbol that exists only for wasm-bindgen's own descriptor pass.
@@ -299,7 +423,9 @@ mod tests {
     /// in an active element segment.
     fn module_with(n: usize, in_table: usize) -> (Module, Vec<FunctionId>) {
         let mut module = Module::default();
-        let table = module.tables.add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
+        let table = module
+            .tables
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
 
         let mut ids = Vec::new();
         for i in 0..n {
@@ -341,7 +467,7 @@ mod tests {
     #[test]
     fn every_local_function_ends_up_in_the_table() {
         let (mut module, _) = module_with(5, 2);
-        let out = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
         let entries = table_entries(&out);
         assert_eq!(entries.len(), 5, "all five rooted, got {entries:?}");
         for i in 0..5 {
@@ -358,7 +484,7 @@ mod tests {
     #[test]
     fn a_function_already_in_the_table_is_not_added_twice() {
         let (mut module, _) = module_with(4, 3);
-        let out = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
         let entries = table_entries(&out);
         assert_eq!(entries.len(), 4);
         let mut sorted = entries.clone();
@@ -373,7 +499,7 @@ mod tests {
     #[test]
     fn the_table_grows_to_fit_what_was_added() {
         let (mut module, _) = module_with(6, 1);
-        let out = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
         let module = Module::from_buffer(&out).unwrap();
         let table = module.tables.iter().next().unwrap();
         // One entry was in the segment at offset 1; five were added.
@@ -414,10 +540,13 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let out = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
         let module = Module::from_buffer(&out).unwrap();
         assert!(
-            !module.exports.iter().any(|e| e.name.starts_with("__saved_wbg_")),
+            !module
+                .exports
+                .iter()
+                .any(|e| e.name.starts_with("__saved_wbg_")),
             "an alias export makes wasm-bindgen generate the wrong accessor: {:?}",
             module.exports.iter().map(|e| &e.name).collect::<Vec<_>>()
         );
@@ -425,6 +554,58 @@ mod tests {
             table_entries(&out).contains(&"__wbindgen_exn_store".to_string()),
             "it still has to be reachable through the table: {:?}",
             table_entries(&out)
+        );
+    }
+
+    /// Regression: a patch calling a JS shim — `log` from an `extern
+    /// "C"` block under `#[wasm_bindgen]` — was refused, because the shim
+    /// is an IMPORT in the base and imports have no table slot. The
+    /// roundtrip test caught it once the `__saved_wbg_` alias exports
+    /// (which had been covering it) were removed for breaking the page.
+    ///
+    /// Each shim import now gets a forwarding body, rooted in the table
+    /// and NOT exported: an export is a name wasm-bindgen can mistake for
+    /// the shim's own.
+    #[test]
+    fn regression_a_js_shim_import_gets_a_rooted_unexported_trampoline() {
+        let mut module = Module::default();
+        let table = module
+            .tables
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
+        let ty = module.types.add(&[ValType::I32], &[]);
+        let (shim, _) = module.add_import_func("__wbindgen_placeholder__", "__wbg_log_abc", ty);
+        let (_describe, _) =
+            module.add_import_func("__wbindgen_placeholder__", "__wbindgen_describe", ty);
+        let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+        b.name("caller".to_string())
+            .func_body()
+            .i32_const(1)
+            .call(shim);
+        let caller = module.funcs.add_local(b.local_func(vec![]));
+        module.exports.add("caller", caller);
+        module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(vec![]),
+        );
+
+        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        assert_eq!(census.shim_trampolines, 1, "{census:?}");
+        let entries = table_entries(&out);
+        assert!(
+            entries.contains(&shim_trampoline_name("__wbg_log_abc")),
+            "{entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("__wbindgen_describe")),
+            "a descriptor import must not get a live body: {entries:?}"
+        );
+        let module = Module::from_buffer(&out).unwrap();
+        assert!(
+            !module.exports.iter().any(|e| e.name.contains("shim")),
+            "the trampoline must not be exported"
         );
     }
 
@@ -449,7 +630,7 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let out = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
         assert!(
             table_entries(&out).is_empty(),
             "descriptor fn was rooted: {:?}",

@@ -68,7 +68,11 @@ impl BuiltPatch {
             .iter()
             .map(|(name, d)| format!("{name} {}ms", d.as_millis()))
             .collect();
-        format!("{} (total {}ms)", parts.join(" · "), self.total().as_millis())
+        format!(
+            "{} (total {}ms)",
+            parts.join(" · "),
+            self.total().as_millis()
+        )
     }
 }
 
@@ -81,6 +85,7 @@ impl BuiltPatch {
 /// build.
 pub struct WasmPatchBuilder {
     captures_dir: PathBuf,
+    aliases: crate::hotpatch_aliases::AliasMap,
     crate_name: String,
     out_dir: PathBuf,
     wasm_ld: PathBuf,
@@ -94,19 +99,29 @@ impl WasmPatchBuilder {
     /// after wasm-bindgen and after the command-export neutralize pass.
     /// Both rewrite the module, and a table index read before either one
     /// names a different function than the one the page will call.
+    /// `symbol_aliases` is the file the base build wrote from the LINKED
+    /// module (see [`crate::hotpatch_aliases`]). A base built without one
+    /// still patches; it just cannot resolve a symbol the linker knew by
+    /// a second name.
     pub fn new(
         served_wasm: &Path,
+        symbol_aliases: Option<&Path>,
         captures_dir: impl Into<PathBuf>,
         crate_name: impl Into<String>,
         out_dir: impl Into<PathBuf>,
     ) -> Result<Self> {
         let base_wasm = std::fs::read(served_wasm)
             .with_context(|| format!("read the served base module {}", served_wasm.display()))?;
-        let base = BaseIndex::of(&base_wasm).with_context(|| {
+        let aliases = match symbol_aliases {
+            Some(path) => crate::hotpatch_aliases::read(path)?,
+            None => Default::default(),
+        };
+        let base = BaseIndex::of(&base_wasm, &aliases).with_context(|| {
             format!("indexing the served base module {}", served_wasm.display())
         })?;
         Ok(Self {
             captures_dir: captures_dir.into(),
+            aliases,
             crate_name: crate_name.into(),
             out_dir: out_dir.into(),
             wasm_ld: locate_wasm_ld()?,
@@ -121,6 +136,14 @@ impl WasmPatchBuilder {
     /// about to fail on its first `env` import.
     pub fn base_table_size(&self) -> usize {
         self.base.ifunc.len()
+    }
+
+    /// How many of those names are a second spelling of another
+    /// function. Zero on a base linked without `--emit-relocs`, which is
+    /// the shape that refuses ordinary patches over `<usize as
+    /// Display>::fmt`.
+    pub fn alias_count(&self) -> usize {
+        self.aliases.len()
     }
 
     pub fn build(&self) -> Result<BuiltPatch> {
@@ -168,7 +191,7 @@ impl WasmPatchBuilder {
         timings.push(("resolve", started.elapsed()));
 
         let started = Instant::now();
-        let jump_table = build_jump_table(&self.base_wasm, &resolved)
+        let jump_table = build_jump_table(&self.base_wasm, &resolved, &self.aliases)
             .context("pairing the patch's functions to the base's table slots")?;
         if jump_table.is_empty() {
             bail!(
@@ -226,9 +249,9 @@ impl WasmPatchBuilder {
         cmd.arg("-o").arg(out);
         cmd.args(objects);
 
-        let output = cmd.output().with_context(|| {
-            format!("exec {} — the patch link", self.wasm_ld.display())
-        })?;
+        let output = cmd
+            .output()
+            .with_context(|| format!("exec {} — the patch link", self.wasm_ld.display()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(

@@ -32,6 +32,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use build_web::hotpatch_aliases;
 use build_web::hotpatch_base::prepare_base_module;
 use build_web::hotpatch_patch::{resolve_against_base, BaseIndex};
 use build_web::hotpatch_wasm::build_jump_table;
@@ -56,6 +57,13 @@ extern "C" {
 #[inline(never)]
 fn __Probe_hot_impl(a: u32) -> u32 {
     log(GREETING);
+    // Formatting BOTH spellings of one machine type is what puts an
+    // aliased symbol in the base. `usize` is `u32` on wasm32, so the
+    // precompiled `core` rlib defines `<usize as Display>::fmt` and
+    // `<u32 as Display>::fmt` as one function with two symbols — and the
+    // name section keeps only one of the names. A patch asking for the
+    // other one is the failure `hotpatch_aliases` exists to fix.
+    log(&format!("{} {}", a, a as usize));
     a * MULTIPLIER
 }
 
@@ -131,9 +139,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         "the build grew a link arg this test does not exercise: {shipped:?}"
     );
 
-    let link_args = BASE_LINK_ARGS
-        .map(|a| format!("-Clink-arg={a}"))
-        .join(" ");
+    let link_args = BASE_LINK_ARGS.map(|a| format!("-Clink-arg={a}")).join(" ");
 
     run(
         Command::new("cargo")
@@ -145,7 +151,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     let linked = dir.join("target/wasm32-unknown-unknown/debug/roundtrip_probe.wasm");
 
     // ── 2. Root every function, then let wasm-bindgen run ────────────
-    let prepared = prepare_base_module(&std::fs::read(&linked).unwrap()).unwrap();
+    let (prepared, _census) = prepare_base_module(&std::fs::read(&linked).unwrap()).unwrap();
     let prepared_path = dir.join("base.prepared.wasm");
     std::fs::write(&prepared_path, &prepared).unwrap();
 
@@ -165,7 +171,31 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     // dead-code pass keeps a private function only because the element
     // segment roots it. Without `prepare_base_module` this is gone, and
     // with it there is a table slot to redirect.
-    let base = BaseIndex::of(&served).expect("indexing the served base");
+    // The alias map has to be read from the LINKED module: walrus and
+    // wasm-bindgen both renumber functions, and the `linking` section
+    // travels with the stale indices.
+    let aliases = hotpatch_aliases::read_from_linked(&std::fs::read(&linked).unwrap()).unwrap();
+    assert!(
+        !aliases.is_empty(),
+        "no symbol aliases read from the linked base — either `--emit-relocs` is gone from \
+         the link args or the `linking` section stopped carrying a symbol table"
+    );
+    let display_alias = aliases
+        .iter()
+        // v0 mangling: `j` is usize, `m` is u32. Whichever spelling the
+        // name section kept, the other has to be its alias.
+        .find(|(alias, canonical)| {
+            let pair = [alias.as_str(), canonical.as_str()];
+            pair.iter().any(|n| n.contains("3impjNtB9_7Display3fmt"))
+                && pair.iter().any(|n| n.contains("3impmNtB9_7Display3fmt"))
+        })
+        .map(|(a, c)| (a.clone(), c.clone()))
+        .expect(
+            "core's `<usize as Display>::fmt` / `<u32 as Display>::fmt` are one function with \
+             two symbols on wasm32; if that pair is gone the fixture stopped formatting both",
+        );
+
+    let base = BaseIndex::of(&served, &aliases).expect("indexing the served base");
     let hot_impl = base
         .ifunc
         .keys()
@@ -235,7 +265,34 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         )
     });
 
-    let table = build_jump_table(&served, &resolved).unwrap();
+    // The regression, stated as a difference: index the same base
+    // WITHOUT the alias map and the very same patch is refused, naming
+    // the symbol the name section does not know it by. This is the state
+    // the tier shipped in before `hotpatch_aliases` — every ordinary body
+    // edit fell back to a rebuild over `<usize as Display>::fmt`.
+    let (alias_name, canonical_name) = &display_alias;
+    let blind = BaseIndex::of(&served, &Default::default()).unwrap();
+    assert!(
+        blind.ifunc.contains_key(canonical_name),
+        "the canonical spelling must be in the table either way: {canonical_name}"
+    );
+    assert!(
+        !blind.ifunc.contains_key(alias_name),
+        "the alias is supposed to be invisible without the map: {alias_name}"
+    );
+    assert_eq!(
+        base.ifunc.get(alias_name),
+        base.ifunc.get(canonical_name),
+        "with the map, both spellings have to resolve to the one slot they share"
+    );
+    let refused = resolve_against_base(&raw, &blind);
+    assert!(
+        refused.is_err(),
+        "without the alias map this patch should have been refused — if it resolves, the \
+         fixture no longer references an aliased symbol and this test proves nothing"
+    );
+
+    let table = build_jump_table(&served, &resolved, &aliases).unwrap();
     assert!(
         !table.is_empty(),
         "the jump table redirects nothing — the patch and the base did not pair"
@@ -284,7 +341,10 @@ struct Tools {
 
 impl Tools {
     fn find() -> Option<Self> {
-        let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output().ok()?;
+        let sysroot = Command::new("rustc")
+            .args(["--print", "sysroot"])
+            .output()
+            .ok()?;
         let sysroot = PathBuf::from(String::from_utf8(sysroot.stdout).ok()?.trim());
         if !sysroot.join("lib/rustlib/wasm32-unknown-unknown").is_dir() {
             return None;

@@ -104,14 +104,35 @@ impl WasmJumpTable {
 /// copy of everything it calls directly. What cannot be reached that way
 /// is a function at the top of the tree with no redirected caller above
 /// it, which is why the app root has to be a `#[component]`.
-pub fn build_jump_table(base: &[u8], patch: &[u8]) -> Result<WasmJumpTable> {
+pub fn build_jump_table(
+    base: &[u8],
+    patch: &[u8],
+    aliases: &crate::hotpatch_aliases::AliasMap,
+) -> Result<WasmJumpTable> {
     let base_slots = table_index_by_name(base).context("reading the base module")?;
     let patch_slots = table_index_by_name(patch).context("reading the patch module")?;
 
+    // Exact name matches first, aliases second. The base may know one
+    // function by several symbols (see `hotpatch_aliases`), and if the
+    // patch defines separate functions for two of them, only one can own
+    // the single slot they share. Taking the name-section name first
+    // makes that choice the same one every time rather than iteration
+    // order's.
     let mut map = BTreeMap::new();
     for (name, patch_index) in &patch_slots {
         if let Some(base_index) = base_slots.get(name) {
             map.insert(*base_index as u64, *patch_index as u64);
+        }
+    }
+    for (name, patch_index) in &patch_slots {
+        if base_slots.contains_key(name) {
+            continue;
+        }
+        let Some(canonical) = aliases.get(name) else {
+            continue;
+        };
+        if let Some(base_index) = base_slots.get(canonical) {
+            map.entry(*base_index as u64).or_insert(*patch_index as u64);
         }
     }
 
@@ -345,7 +366,7 @@ mod tests {
         let base = module(1, &[(10, "other"), (11, "__Counter_hot_impl")]);
         let patch = pic_module(&[(4, "unrelated"), (5, "__Counter_hot_impl")]);
 
-        let jt = build_jump_table(&base, &patch).unwrap();
+        let jt = build_jump_table(&base, &patch, &Default::default()).unwrap();
         assert_eq!(jt.map.get(&2), Some(&1), "map was {:?}", jt.map);
         assert_eq!(jt.ifunc_count, 2);
     }
@@ -399,9 +420,13 @@ mod tests {
         // Patch: its own segment, so the same function is at offset 1.
         let patch = module(0, &[(4, "unrelated"), (5, "__Counter_hot_impl")]);
 
-        let jt = build_jump_table(&base, &patch).unwrap();
+        let jt = build_jump_table(&base, &patch, &Default::default()).unwrap();
         assert_eq!(jt.map.len(), 1, "one patchable symbol in common");
-        assert_eq!(jt.map.get(&2), Some(&1), "base table idx 2 -> patch elem idx 1");
+        assert_eq!(
+            jt.map.get(&2),
+            Some(&1),
+            "base table idx 2 -> patch elem idx 1"
+        );
         assert_eq!(jt.ifunc_count, 2, "the patch needs both of its slots");
     }
 
@@ -415,7 +440,7 @@ mod tests {
     fn every_shared_table_slot_is_paired_not_only_component_bodies() {
         let base = module(0, &[(1, "_RNvCs_3app4root"), (2, "__A_hot_impl")]);
         let patch = module(0, &[(1, "_RNvCs_3app4root"), (2, "__A_hot_impl")]);
-        let jt = build_jump_table(&base, &patch).unwrap();
+        let jt = build_jump_table(&base, &patch, &Default::default()).unwrap();
         assert_eq!(jt.map.len(), 2, "{:?}", jt.map);
         assert!(jt.map.contains_key(&0) && jt.map.contains_key(&1));
     }
@@ -427,7 +452,7 @@ mod tests {
     fn a_symbol_absent_from_the_base_is_skipped() {
         let base = module(0, &[(1, "__A_hot_impl")]);
         let patch = module(0, &[(1, "__A_hot_impl"), (2, "__BrandNew_hot_impl")]);
-        let jt = build_jump_table(&base, &patch).unwrap();
+        let jt = build_jump_table(&base, &patch, &Default::default()).unwrap();
         assert_eq!(jt.map.len(), 1);
         assert!(!jt.map.values().any(|v| *v == 1));
     }
@@ -441,7 +466,7 @@ mod tests {
         let mut patch = module(0, &[(1, "__A_hot_impl")]);
         // Strip the element section from the patch entirely.
         patch = module_without_elements(&patch);
-        let jt = build_jump_table(&base, &patch).unwrap();
+        let jt = build_jump_table(&base, &patch, &Default::default()).unwrap();
         assert!(jt.is_empty(), "{:?}", jt.map);
         assert_eq!(jt.ifunc_count, 0);
     }
@@ -491,7 +516,7 @@ mod tests {
     #[test]
     fn a_module_with_no_names_yields_an_empty_table() {
         let bare = b"\0asm\x01\0\0\0".to_vec();
-        let jt = build_jump_table(&bare, &bare).unwrap();
+        let jt = build_jump_table(&bare, &bare, &Default::default()).unwrap();
         assert!(jt.is_empty());
     }
 }
