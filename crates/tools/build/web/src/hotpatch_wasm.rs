@@ -83,23 +83,33 @@ impl WasmJumpTable {
     }
 }
 
-/// Pair every patchable function the two modules share.
+/// Pair every function the two modules share a table slot for.
 ///
-/// "Patchable" means the name is one the `#[component]` split produced
-/// (`__*_hot_impl`) — the only functions reached through
-/// `dev_hot::call`'s indirect dispatch, and therefore the only ones a
-/// table entry can redirect. Pairing anything else is at best dead
-/// weight and at worst a same-name-different-signature helper routed
-/// through a wrong-arity trampoline.
+/// The patch's table is already the right scope: an element segment only
+/// holds functions whose address something took, and a patch only
+/// defines what it recompiled. So the candidates are exactly the
+/// recompiled crate's address-taken functions — the `__*_hot_impl` the
+/// `#[component]` split produced, plus anything else the crate points a
+/// `fn` pointer at.
+///
+/// Pairing on identical mangled names is safe because a mangled name
+/// encodes the signature: two functions that share one cannot disagree
+/// about their arity or types.
+///
+/// The corollary is the tier's real limit, and it is worth stating
+/// plainly: a function whose address is never taken has no slot in
+/// either table and can never be redirected. It still gets the new code,
+/// but only through a caller that WAS redirected — the patch holds a
+/// fresh copy of the whole crate, so a patched body calls the patch's
+/// copy of everything it calls directly. What cannot be reached that way
+/// is a function at the top of the tree with no redirected caller above
+/// it, which is why the app root has to be a `#[component]`.
 pub fn build_jump_table(base: &[u8], patch: &[u8]) -> Result<WasmJumpTable> {
     let base_slots = table_index_by_name(base).context("reading the base module")?;
     let patch_slots = table_index_by_name(patch).context("reading the patch module")?;
 
     let mut map = BTreeMap::new();
     for (name, patch_index) in &patch_slots {
-        if !is_patchable_symbol(name) {
-            continue;
-        }
         if let Some(base_index) = base_slots.get(name) {
             map.insert(*base_index as u64, *patch_index as u64);
         }
@@ -109,16 +119,6 @@ pub fn build_jump_table(base: &[u8], patch: &[u8]) -> Result<WasmJumpTable> {
         map,
         ifunc_count: table_slot_count(patch).context("counting the patch's table slots")?,
     })
-}
-
-/// True for a symbol a jump-table entry can usefully redirect.
-///
-/// Mirrors the native builder's rule, and for the same reason: only
-/// `__*_hot_impl` is reached through an indirect call that consults the
-/// table. A mangled name embeds the ident, so a substring test holds for
-/// both legacy and v0 mangling.
-pub fn is_patchable_symbol(name: &str) -> bool {
-    name.contains("_hot_impl")
 }
 
 /// name → the index that function occupies in
@@ -405,16 +405,19 @@ mod tests {
         assert_eq!(jt.ifunc_count, 2, "the patch needs both of its slots");
     }
 
-    /// Only `__*_hot_impl` is reached through an indirect call that
-    /// consults the table. Pairing anything else is dead weight at best
-    /// and a wrong-arity trampoline at worst.
+    /// Every shared slot is paired, not only the `__*_hot_impl` ones.
+    ///
+    /// The patch's table is already the right scope — it holds only the
+    /// recompiled crate's address-taken functions — and restricting
+    /// further left anything that is NOT a component body unpatchable,
+    /// which on wasm includes an app root written as a plain `fn`.
     #[test]
-    fn only_hot_impl_symbols_are_paired() {
-        let base = module(0, &[(1, "core::ptr::drop_in_place"), (2, "__A_hot_impl")]);
-        let patch = module(0, &[(1, "core::ptr::drop_in_place"), (2, "__A_hot_impl")]);
+    fn every_shared_table_slot_is_paired_not_only_component_bodies() {
+        let base = module(0, &[(1, "_RNvCs_3app4root"), (2, "__A_hot_impl")]);
+        let patch = module(0, &[(1, "_RNvCs_3app4root"), (2, "__A_hot_impl")]);
         let jt = build_jump_table(&base, &patch).unwrap();
-        assert_eq!(jt.map.len(), 1);
-        assert!(jt.map.contains_key(&1), "only the hot_impl: {:?}", jt.map);
+        assert_eq!(jt.map.len(), 2, "{:?}", jt.map);
+        assert!(jt.map.contains_key(&0) && jt.map.contains_key(&1));
     }
 
     /// A function the base does not have cannot be redirected — there

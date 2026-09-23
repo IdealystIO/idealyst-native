@@ -11,8 +11,9 @@
 //!    the patch did not recompile comes out as an import.
 //! 3. **Resolve.** [`crate::hotpatch_patch::resolve_against_base`] turns
 //!    those imports into things `subsecond::apply_patch` can supply.
-//! 4. **Pair.** [`crate::hotpatch_wasm::build_jump_table`] matches the
-//!    patch's `__*_hot_impl` functions to the base's table slots.
+//! 4. **Pair.** [`crate::hotpatch_wasm::build_jump_table`] matches every
+//!    function the patch takes the address of to the base's table slot
+//!    for it.
 //!
 //! # Why the invocation is replayed rather than re-derived
 //!
@@ -171,10 +172,10 @@ impl WasmPatchBuilder {
             .context("pairing the patch's functions to the base's table slots")?;
         if jump_table.is_empty() {
             bail!(
-                "the patch redirects nothing: none of its `__*_hot_impl` functions matched a \
-                 slot in the base's table. Either the edit was not inside a component body, or \
-                 the base was built without `runtime-core/hot-reload` so there are no split \
-                 functions to pair."
+                "the patch redirects nothing: not one of the functions it takes the address of \
+                 matched a slot in the base's table. Usually the base was built without \
+                 `runtime-core/hot-reload`, so `#[component]` never split any body and there is \
+                 nothing pointing a `fn` pointer at one."
             );
         }
         timings.push(("jump-table", started.elapsed()));

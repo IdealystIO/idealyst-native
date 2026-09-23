@@ -452,6 +452,17 @@ pub(crate) fn mount_tree(
     registry: &Rc<Registry<WebBackend>>,
     build: &dyn Fn() -> Element,
 ) -> runtime_world::Signal<runtime_shared::ViewportSize> {
+    // Open the kernel's build window for the duration of the mount
+    // walk. Everything `signal()`-shaped created inside it is recorded
+    // by position, which is what a later hot patch's `harvest` reads.
+    // Closed immediately after: creations from event handlers and from
+    // reactive regions that mount later are deliberately not preserved
+    // — see `runtime_world::hot_state`. Without this pair a patch
+    // rebuilds the tree with every signal back at its initial value,
+    // which looks exactly like a page reload and is the one outcome the
+    // tier exists to avoid.
+    #[cfg(feature = "hot-reload")]
+    runtime_world::hot_state::arm();
     let world = World::new();
     let (vp_sig, realized) = world.enter(|| {
         let element = build();
@@ -481,6 +492,8 @@ pub(crate) fn mount_tree(
         ),
     };
     WebBackend::finish_impl(&mut *backend.borrow_mut(), root);
+    #[cfg(feature = "hot-reload")]
+    runtime_world::hot_state::disarm();
 
     // Commit anything staged during mount (ref-fill callbacks, handler
     // setup) before the first paint.
