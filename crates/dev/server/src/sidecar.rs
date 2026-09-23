@@ -1626,6 +1626,11 @@ mod runtime {
                     recorder.reset_log_and_scene();
                     #[cfg(feature = "hot-reload")]
                     runtime_world::hot_state::seed(carried);
+                    // Staged overlay edits describe the pre-patch source;
+                    // re-applied by `tag` they would override the patch.
+                    // See `overlay::unstage_all`.
+                    #[cfg(feature = "ui-overlay")]
+                    runtime_vocabulary::overlay::unstage_all();
                     let remount =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(mount));
                     match remount {

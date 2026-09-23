@@ -117,6 +117,22 @@ pub fn unstage_key(site: u64) {
     STAGED.with(|s| s.borrow_mut().remove(&site));
 }
 
+/// Drop EVERY staged patch, and nothing else.
+///
+/// For a hot-patch rebuild. A staged patch is a difference from the
+/// compiled source; once a hot patch has put new compiled code in the
+/// running program, the staged differences describe a source that no
+/// longer exists, and [`tag`] would re-apply them to the rebuilt tree
+/// anyway — an overlay edit made before a patch then overrides the patch
+/// of the same site (edit a literal to "Lab 2" live, then turn it into
+/// `{ x }` in a body edit: the page kept showing "Lab 2").
+///
+/// Unlike [`reset`], registered constructors and the live-instance
+/// registry stay: the rebuild that follows needs them.
+pub fn unstage_all() {
+    STAGED.with(|s| s.borrow_mut().clear());
+}
+
 /// How many sites have a patch staged.
 pub fn staged_count() -> usize {
     STAGED.with(|s| s.borrow().len())

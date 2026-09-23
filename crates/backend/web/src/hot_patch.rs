@@ -153,6 +153,12 @@ fn remount() -> Result<(), JsValue> {
     let count = carried.len();
     let world = crate::newcore::take_tree();
     runtime_world::hot_state::seed(carried);
+    // Overlay edits staged before this patch describe the OLD compiled
+    // source; left in place, `tag` re-applies them to the rebuilt tree
+    // and they override the patch. The dev loop rescans its archive
+    // after a patch, so later literal saves diff against the new source.
+    #[cfg(feature = "ui-overlay")]
+    runtime_vocabulary::overlay::unstage_all();
 
     crate::newcore::mount_tree(&backend, &registry, &*root, world);
     web_sys::console::info_1(

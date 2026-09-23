@@ -88,6 +88,42 @@ fn a_live_patch_makes_the_mounted_scene_match_the_edited_source() {
     overlay::reset();
 }
 
+/// Regression: a staged overlay edit outlived a hot patch. The rebuild
+/// after a patch re-runs every site, `tag` re-applied what was staged,
+/// and an edit made BEFORE the patch overrode the patched code of the
+/// same site. The remount now drops every staged edit first; the next
+/// build of the site must be its compiled form.
+#[test]
+fn regression_a_hot_patch_remount_drops_staged_overlay_edits() {
+    overlay::reset();
+    let site = Mounted::new(original).site();
+    overlay::stage_key(site, vec![set_str(1, "content", "stale")]);
+    assert!(
+        mount_scene(original).contains("stale"),
+        "fixture: a staged edit applies to every later build of its site"
+    );
+
+    // What `backend_web::hot_patch::remount` and the sidecar's Rerender
+    // do before mounting the tree again.
+    overlay::unstage_all();
+
+    assert_eq!(
+        scene_shape(&mount_scene(original)),
+        scene_shape(&mount_scene(original_compiled)),
+        "the rebuilt site must be its compiled form, not the pre-patch overlay edit"
+    );
+    assert_eq!(overlay::staged_count(), 0);
+    overlay::reset();
+}
+
+fn original_compiled() -> Element {
+    ui! {
+        view() {
+            text { "before" }
+        }
+    }
+}
+
 // ===========================================================================
 // Persistence across a rebuild
 // ===========================================================================
