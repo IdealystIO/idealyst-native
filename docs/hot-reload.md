@@ -511,7 +511,7 @@ page that records when the new content appears. "Builder" is the
 | Lab | `stylesheet!` value edit | 1.31 – 1.97 s | 0.36 – 0.83 s | kept, no reload |
 | Lab | shape edit (add a prop) | 6.0 s (rebuild + reload) | – | reset |
 | CrewForge (large) | body edit, first of session | 34 s | 29 s (rustc 26 s, cold replay cache) | kept, no reload |
-| CrewForge | body edit, later | 8.57 – 8.58 s | 7.85 – 7.86 s (rustc 5.9 s, resolve 1.4 s, link 0.4 s, jump table 0.08 s, strip + write 0.02 s) | kept, no reload |
+| CrewForge | body edit, later | 8.6 – 9.8 s | 7.9 – 9.1 s (rustc 5.9 – 6.8 s, resolve 1.4 – 1.6 s, link 0.4 – 0.6 s, jump table 0.09 s, strip + write 0.02 s) | kept, no reload |
 | CrewForge | rebuild with the tier armed, after patches | 38.6 s (cargo 15 s) | – | reset |
 | CrewForge | rebuild, tier not armed (reference) | ~23 s | – | reset |
 
@@ -530,6 +530,12 @@ changed unit are each under 0.3 s.
 The base is indexed once per base build, right after it is built, and
 the builder keeps the base's slot map rather than re-reading the module
 per patch.
+
+**Before the replay starts** about 0.5 s passes: the file watcher's
+50 ms debounce, then `settle`'s 400 ms quiet window, which coalesces a
+multi-file save into one build, then reading and deciding. Measured save
+to replay start on the lab: 499–515 ms. The patch itself is linked
+`--strip-debug`, since the served module never carried DWARF.
 
 **The served patch has no names.** A patch's `name` section is more than
 half of it (33 of 60 MB on CrewForge; walrus already drops the DWARF on
