@@ -197,6 +197,7 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
 
     if promote.is_empty() {
         let out = module.emit_wasm();
+        drop(module);
         let report = census(&out, report);
         return Ok((out, report));
     }
@@ -243,6 +244,7 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     }
 
     let out = module.emit_wasm();
+    drop(module);
     let report = census(&out, report);
     Ok((out, report))
 }
@@ -257,23 +259,28 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
 /// loses every slot this pass just added, silently. Counting the output
 /// is how that shows up as a number instead of as an unresolved import
 /// three minutes later.
+///
+/// Streams the sections with wasmparser rather than parsing a second
+/// walrus module: on CrewForge the emitted module is 223 MB, and a
+/// second walrus parse of it pushed the CLI over its 4 GB memory cap.
 fn census(out: &[u8], mut report: BasePrep) -> BasePrep {
-    let Ok(module) = Module::from_buffer(out) else {
-        return report;
-    };
-    report.locals_emitted = module
-        .funcs
-        .iter()
-        .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
-        .count();
-    report.slots_emitted = module
-        .elements
-        .iter()
-        .filter_map(|e| match &e.items {
-            ElementItems::Functions(ids) => Some(ids.len()),
-            _ => None,
-        })
-        .sum();
+    use wasmparser::{Parser, Payload};
+    for payload in Parser::new(0).parse_all(out) {
+        match payload {
+            Ok(Payload::FunctionSection(reader)) => {
+                report.locals_emitted = reader.count() as usize;
+            }
+            Ok(Payload::ElementSection(reader)) => {
+                for element in reader.into_iter().flatten() {
+                    if let wasmparser::ElementItems::Functions(funcs) = element.items {
+                        report.slots_emitted += funcs.count() as usize;
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(_) => return report,
+        }
+    }
     report
 }
 
@@ -477,7 +484,16 @@ mod tests {
     #[test]
     fn every_local_function_ends_up_in_the_table() {
         let (mut module, _) = module_with(5, 2);
-        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        // The census is what a failed patch's investigation starts from,
+        // so its arithmetic has to hold: nothing dropped, nothing
+        // double-counted.
+        assert_eq!(
+            (census.locals, census.already_indirect, census.promoted),
+            (5, 2, 3),
+            "{census:?}"
+        );
+        assert_eq!((census.slots_emitted, census.locals_emitted), (5, 5), "{census:?}");
         let entries = table_entries(&out);
         assert_eq!(entries.len(), 5, "all five rooted, got {entries:?}");
         for i in 0..5 {
