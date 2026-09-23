@@ -181,7 +181,27 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
             // `__saved_wbg_<name>`; point at that instead.
             "__wbindgen_placeholder__" | "__wbindgen_externref_xform__" => {
                 let saved = format!("__saved_wbg_{name}");
-                if base.exports.contains(&saved) {
+                if crate::hotpatch_base::is_bindgen_internal(&name) {
+                    // A descriptor symbol. wasm-bindgen interprets these
+                    // at bindgen time and deletes them, so the base has
+                    // none to point at — and the patch only imports one
+                    // because `--no-gc-sections` kept the machinery that
+                    // references it alive. Nothing calls it at runtime.
+                    //
+                    // Point it at table slot 0, which is the null entry:
+                    // the import is satisfied so the patch instantiates,
+                    // and if one somehow IS called the page traps at the
+                    // call rather than running whatever happens to live
+                    // at some plausible-looking index.
+                    if let ImportKind::Function(func) = kind {
+                        module.imports.delete(id);
+                        call_through_table(&mut module, table, func, 0, &name)?;
+                    } else {
+                        unresolved.push(format!(
+                            "{namespace}.{name} (a descriptor symbol that is not a function)"
+                        ));
+                    }
+                } else if base.exports.contains(&saved) {
                     let import = module.imports.get_mut(id);
                     import.module = "env".to_string();
                     import.name = saved;

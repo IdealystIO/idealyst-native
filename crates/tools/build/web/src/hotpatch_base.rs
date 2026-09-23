@@ -235,7 +235,7 @@ fn is_wbg_intrinsic(name: &str) -> bool {
 /// body wasm-bindgen has already consumed. The list mirrors the
 /// heuristics in wasm-bindgen's own `cli-support/src/wit/mod.rs`, which
 /// is where the authority for it lives.
-fn is_bindgen_internal(name: &str) -> bool {
+pub(crate) fn is_bindgen_internal(name: &str) -> bool {
     name.contains("__wbindgen_describe")
         || name.contains("__wbindgen_externref")
         || name.contains("wasm_bindgen8describe6inform")
