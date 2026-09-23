@@ -46,9 +46,31 @@
 //! - A doc comment on a function is an attribute, so editing one
 //!   rebuilds. Conservative, and it matches what the overlay tier does
 //!   with the same edit today.
-//! - A macro invocation in item position (`stylesheet! { … }`) is
-//!   opaque to `syn`, so any edit inside one changes the shape and
-//!   rebuilds. Correct: it can expand to items.
+//! - A macro invocation in item position is opaque to `syn`, so any edit
+//!   inside one changes the shape and rebuilds. Correct in general: it
+//!   can expand to items.
+//!
+//! # The one macro whose values are blanked: `stylesheet!`
+//!
+//! `stylesheet!` expands to items — a builder struct, one enum per
+//! `variant` axis, a setter per axis and per `override`, a
+//! `<name>_style()` fn — but every item is derived from the sheet's
+//! SIGNATURE: its name and vocabulary type, its axes and their arm names
+//! and `#[default]` markers, its `override` names and types, its
+//! `state` / `breakpoint` / `container` / `compound` keys, and its
+//! `transitions` block. The rule VALUES land only inside the
+//! `<name>_style()` body (a `StyleRules { … }` literal) and in string
+//! literals inside the builder's methods (the premint class name, which
+//! hashes the whole invocation). So a value edit is a body edit, and
+//! [`blank_stylesheet_values`] blanks exactly that: the contents of every
+//! rules block, which is always the brace group right after a
+//! parenthesized binding (`base(t) { … }`, `small(t) { … }`,
+//! `state hovered(t) { … }`). Structural braces follow an identifier or
+//! `>` and are kept. `transitions { … }` is kept whole, conservatively.
+//!
+//! A premint session bakes that class-name hash into a stylesheet built
+//! at session start, so there a value edit must still rebuild; see
+//! [`stylesheet_tokens`], which the decider compares when premint is on.
 
 use quote::ToTokens;
 use syn::visit_mut::VisitMut;
@@ -65,7 +87,68 @@ pub fn shape_of(text: &str) -> Option<String> {
 
 struct BlankBodies;
 
+/// Every `stylesheet!` invocation in item position, as token text,
+/// values included. `None` when the file does not parse.
+///
+/// What a PREMINT session compares: there the class names the page uses
+/// were generated from these tokens at session start, so any change to
+/// them, a value included, has to rebuild.
+pub fn stylesheet_tokens(text: &str) -> Option<String> {
+    let file: syn::File = syn::parse_file(text).ok()?;
+    let mut out = String::new();
+    for item in &file.items {
+        if let syn::Item::Macro(m) = item {
+            if is_stylesheet(&m.mac) {
+                out.push_str(&m.mac.tokens.to_string());
+                out.push('\n');
+            }
+        }
+    }
+    Some(out)
+}
+
+fn is_stylesheet(mac: &syn::Macro) -> bool {
+    mac.path.segments.last().is_some_and(|s| s.ident == "stylesheet")
+}
+
+/// Empty the contents of every rules block in a `stylesheet!` body,
+/// keeping everything else. See the module docs for why a rules block
+/// is exactly "a brace group right after a parenthesized group".
+fn blank_stylesheet_values(tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    use proc_macro2::{Delimiter, Group, TokenTree};
+    let mut out: Vec<TokenTree> = Vec::new();
+    for tt in tokens {
+        let after_parens = matches!(
+            out.last(),
+            Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis
+        );
+        match tt {
+            TokenTree::Group(g) if g.delimiter() == Delimiter::Brace && after_parens => {
+                out.push(TokenTree::Group(Group::new(
+                    Delimiter::Brace,
+                    proc_macro2::TokenStream::new(),
+                )));
+            }
+            TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => {
+                // A structural block — the sheet body, a `variant` axis:
+                // keep it, and look inside for the rules blocks it holds.
+                let mut inner = Group::new(Delimiter::Brace, blank_stylesheet_values(g.stream()));
+                inner.set_span(g.span());
+                out.push(TokenTree::Group(inner));
+            }
+            other => out.push(other),
+        }
+    }
+    out.into_iter().collect()
+}
+
 impl VisitMut for BlankBodies {
+    fn visit_item_macro_mut(&mut self, m: &mut syn::ItemMacro) {
+        if is_stylesheet(&m.mac) {
+            m.mac.tokens = blank_stylesheet_values(std::mem::take(&mut m.mac.tokens));
+        }
+    }
+
     fn visit_item_fn_mut(&mut self, f: &mut syn::ItemFn) {
         // Signature and attributes first: a nested `fn` inside the body
         // is about to be discarded with it, and a generic parameter's
@@ -228,13 +311,83 @@ mod tests {
     }
 
     /// `syn` cannot see inside a macro, so an item-position macro's
-    /// tokens are part of the shape. A `stylesheet!` can expand to
-    /// items, so this has to rebuild.
+    /// tokens are part of the shape — any macro but `stylesheet!`, whose
+    /// values are known to land only in function bodies.
     #[test]
-    fn editing_an_item_position_macro_changes_the_shape() {
-        let src = format!("{BASE}\n stylesheet! {{ card {{ padding: 8 }} }}");
+    fn editing_an_unknown_item_position_macro_changes_the_shape() {
+        let src = format!("{BASE}\n widgets! {{ card {{ padding: 8 }} }}");
         let edited = src.replace("padding: 8", "padding: 12");
         assert!(!same(&src, &edited));
+    }
+
+    const SHEET: &str = r#"
+        stylesheet! {
+            pub Banner<IdeaThemeRef> {
+                base(t) {
+                    padding: 8,
+                    background: t.color.surface(),
+                }
+                variant tone {
+                    #[default]
+                    calm(t) { border_color: t.color.border() }
+                    loud(_t) { border_width: 2 }
+                }
+                state hovered(t) { background: t.color.hover() }
+                breakpoint md(_t) { padding: 16 }
+                override width: f32
+                transitions { background: 150ms ease_out }
+            }
+        }
+    "#;
+
+    /// The point of the stylesheet blanking: a VALUE edit — a number, a
+    /// token path, an added rule — is body-only, so it can be a hot
+    /// patch instead of a rebuild.
+    #[test]
+    fn a_stylesheet_value_edit_is_body_only() {
+        let src = format!("{BASE}\n{SHEET}");
+        for (from, to) in [
+            ("padding: 8,", "padding: 12,"),
+            ("t.color.surface()", "t.color.accent()"),
+            ("border_width: 2", "border_width: 3, opacity: 0.5"),
+            ("breakpoint md(_t) { padding: 16 }", "breakpoint md(_t) { padding: 24 }"),
+            ("state hovered(t) { background: t.color.hover() }", "state hovered(t) { }"),
+        ] {
+            let edited = src.replace(from, to);
+            assert_ne!(src, edited, "fixture did not contain {from}");
+            assert!(same(&src, &edited), "{from} -> {to} should be body-only");
+        }
+    }
+
+    /// Everything the generated ITEMS are derived from stays shape. A
+    /// renamed arm is a renamed enum variant; a moved `#[default]` is a
+    /// different `Default` impl; a new override is a new setter.
+    #[test]
+    fn a_stylesheet_signature_edit_changes_the_shape() {
+        let src = format!("{BASE}\n{SHEET}");
+        for (from, to) in [
+            ("loud(_t)", "shouty(_t)"),
+            ("variant tone", "variant mood"),
+            ("#[default]\n                    calm", "calm"),
+            ("override width: f32", "override width: f64"),
+            ("pub Banner<", "pub Ribbon<"),
+            ("state hovered(t)", "state pressed(t)"),
+            ("breakpoint md(_t)", "breakpoint lg(_t)"),
+            ("background: 150ms", "background: 300ms"),
+        ] {
+            let edited = src.replace(from, to);
+            assert_ne!(src, edited, "fixture did not contain {from}");
+            assert!(!same(&src, &edited), "{from} -> {to} must rebuild");
+        }
+    }
+
+    /// A premint session compares the raw invocation, values and all.
+    #[test]
+    fn stylesheet_tokens_see_a_value_edit() {
+        let src = format!("{BASE}\n{SHEET}");
+        let edited = src.replace("padding: 8,", "padding: 12,");
+        assert_ne!(stylesheet_tokens(&src), stylesheet_tokens(&edited));
+        assert_eq!(stylesheet_tokens(&src), stylesheet_tokens(&src.replace("fn app", "fn app ")));
     }
 
     // ---------------------------------------------------------------

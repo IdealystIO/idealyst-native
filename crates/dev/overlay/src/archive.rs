@@ -94,6 +94,13 @@ pub struct FileDigest {
     /// documents outright; the default is belt and braces.)
     #[serde(default)]
     pub shape: String,
+    /// Digest of the file's `stylesheet!` invocations, values included
+    /// (`runtime_macros_parse::stylesheet_tokens`). A premint session
+    /// generated its class names from exactly these tokens, so there a
+    /// value edit the shape ignores still has to rebuild. Defaulted: an
+    /// older document matches no file, which rebuilds — the safe reading.
+    #[serde(default)]
+    pub sheets: String,
 }
 
 /// One build's descriptor set.
@@ -217,7 +224,8 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                     FileDigest {
                         content: content.clone(),
                         skeleton: content.clone(),
-                        shape: content,
+                        shape: content.clone(),
+                        sheets: content,
                     },
                 );
                 continue;
@@ -235,7 +243,8 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                 .unwrap_or_else(|| text.to_string())
                 .as_bytes(),
         ));
-        set.files.insert(relative.clone(), FileDigest { content, skeleton, shape });
+        let sheets = sheets_digest(&text);
+        set.files.insert(relative.clone(), FileDigest { content, skeleton, shape, sheets });
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();
             let Some(ui) = site.ui.as_mut() else {
@@ -283,6 +292,15 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
 ///
 /// Idempotent: the name is the build key, so re-running on unchanged
 /// sources rewrites the same bytes to the same path.
+/// Digest of a file's `stylesheet!` tokens — see [`FileDigest::sheets`].
+pub fn sheets_digest(text: &str) -> String {
+    hex(&Sha256::digest(
+        runtime_macros_parse::stylesheet_tokens(text)
+            .unwrap_or_else(|| text.to_string())
+            .as_bytes(),
+    ))
+}
+
 pub fn write_for(project_root: &Path, crate_dir: &Path) -> Result<PathBuf> {
     let set = scan_crate(crate_dir)?;
     let dir = overlay_dir(project_root, &set.package);

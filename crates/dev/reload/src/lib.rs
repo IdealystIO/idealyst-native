@@ -771,7 +771,11 @@ fn watch_loop(
         if let Some(set) = archive.as_ref() {
             let started = std::time::Instant::now();
             let changed = read_changed(&dir, &changed_paths);
-            match overlay_decide::decide(Some(set), &changed) {
+            // A premint session baked its class names from every
+            // `stylesheet!` at start; a sheet edit there must rebuild even
+            // when the shape says body-only.
+            let premint = opts.premint || opts.premint_only;
+            match overlay_decide::decide_with(Some(set), &changed, premint) {
                 overlay_decide::Decision::Patch(patches) => {
                     let count = patches.len();
                     for patch in &patches {

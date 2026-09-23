@@ -2384,3 +2384,32 @@ fn text_transform_tolerates_empty_input() {
         assert_eq!(t.apply(""), "");
     }
 }
+
+/// A hot patch re-runs the root against a patched `<name>_style()`, and
+/// the sheet it sees must carry the patched values. `stylesheet!` keys
+/// the shared cache by the address of a function-local `static` in that
+/// fn; a patch module defines its own copy of the static in its own data
+/// segment, so the patched fn asks under a NEW key and builds fresh,
+/// while anything still calling the old fn keeps the old sheet. This pins
+/// that the cache is keyed by that address and nothing coarser — a cache
+/// keyed by the sheet's name, say, would hand the patched code the stale
+/// rules and a value edit would never show.
+#[test]
+fn a_patched_sheet_fn_with_its_own_key_static_gets_its_new_rules() {
+    static BASE_KEY: u8 = 0;
+    static PATCHED_KEY: u8 = 0;
+    let sheet = |px: f32| {
+        Rc::new(StyleSheet::r#static(StyleRules {
+            padding_top: Some(Tokenized::Literal(Length::Px(px))),
+            ..Default::default()
+        }))
+    };
+    let padding = |s: &Rc<StyleSheet>| s.resolve(&VariantSet::default()).padding_top;
+
+    let before = cached_stylesheet(&BASE_KEY as *const u8 as usize, || sheet(8.0));
+    let after = cached_stylesheet(&PATCHED_KEY as *const u8 as usize, || sheet(16.0));
+    assert_eq!(padding(&after), Some(Tokenized::Literal(Length::Px(16.0))));
+    // The original fn's key still answers with the original sheet.
+    let again = cached_stylesheet(&BASE_KEY as *const u8 as usize, || sheet(99.0));
+    assert!(Rc::ptr_eq(&before, &again));
+}

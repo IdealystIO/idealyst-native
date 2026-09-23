@@ -92,6 +92,11 @@ pub enum Reason {
     /// every other crate is still the old build, so the two would
     /// disagree about layout. Only a rebuild is correct.
     ShapeChanged { file: String },
+    /// A `stylesheet!` changed in a premint session. The shape ignores a
+    /// value edit (it lands in function bodies), but premint generated
+    /// the page's class names from the whole invocation at session start,
+    /// so only a rebuild regenerates them.
+    PremintStylesheet { file: String },
 }
 
 impl std::fmt::Display for Reason {
@@ -104,6 +109,10 @@ impl std::fmt::Display for Reason {
             Reason::ShapeChanged { file } => {
                 write!(f, "{file} changed outside its function bodies")
             }
+            Reason::PremintStylesheet { file } => write!(
+                f,
+                "{file} changed a `stylesheet!`, and this session preminted its class names"
+            ),
         }
     }
 }
@@ -114,6 +123,28 @@ pub struct ChangedFile {
     pub path: String,
     /// The file's new contents.
     pub text: String,
+}
+
+/// [`decide`], for a session that may be preminting its stylesheets.
+///
+/// With `premint` on, a save that would be a hot patch rebuilds instead
+/// when it touched any `stylesheet!` — see [`Reason::PremintStylesheet`].
+pub fn decide_with(
+    archive: Option<&DescriptorSet>,
+    changed: &[ChangedFile],
+    premint: bool,
+) -> Decision {
+    let decision = decide(archive, changed);
+    let (Decision::HotPatch(_), true, Some(archive)) = (&decision, premint, archive) else {
+        return decision;
+    };
+    for file in changed {
+        let recorded = archive.files.get(&file.path).map(|f| f.sheets.as_str());
+        if recorded != Some(crate::archive::sheets_digest(&file.text).as_str()) {
+            return Decision::Rebuild(Reason::PremintStylesheet { file: file.path.clone() });
+        }
+    }
+    decision
 }
 
 /// Decide what a save means.
@@ -344,6 +375,7 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                         .unwrap_or_else(|| file.text.clone())
                         .as_bytes(),
                 ),
+                sheets: crate::archive::sheets_digest(&file.text),
             },
         );
         if rekey {
@@ -494,6 +526,69 @@ fn Screen() -> Element {
     }
 
     // --- the decision table ------------------------------------------
+
+    const SHEETED: &str = r#"
+use runtime_core::*;
+
+stylesheet! {
+    pub Banner<()> {
+        base(_t) { padding: 8 }
+        variant tone {
+            #[default]
+            calm(_t) { border_width: 1 }
+            loud(_t) { border_width: 3 }
+        }
+    }
+}
+
+#[component]
+fn Screen() -> Element {
+    ui! { view() { text { "hello" } } }
+}
+"#;
+
+    /// Regression: an edit inside `stylesheet!` used to rebuild, because
+    /// the whole invocation counted as shape. A VALUE edit only moves
+    /// the `<name>_style()` body, so it is a hot patch.
+    #[test]
+    fn regression_a_stylesheet_value_edit_is_a_hot_patch() {
+        let (_d, archive) = archive_of(SHEETED);
+        let edited = SHEETED.replace("padding: 8", "padding: 16");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// A renamed arm is a renamed enum variant the rest of the program
+    /// names: a rebuild.
+    #[test]
+    fn a_stylesheet_arm_rename_rebuilds() {
+        let (_d, archive) = archive_of(SHEETED);
+        let edited = SHEETED.replace("loud(_t)", "shouty(_t)");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    /// A premint session generated its class names from the whole
+    /// invocation at start, so the same value edit has to rebuild there.
+    #[test]
+    fn a_stylesheet_value_edit_rebuilds_under_premint() {
+        let (_d, archive) = archive_of(SHEETED);
+        let edited = SHEETED.replace("padding: 8", "padding: 16");
+        assert_eq!(
+            decide_with(Some(&archive), &changed(&edited), true),
+            Decision::Rebuild(Reason::PremintStylesheet { file: "src/app.rs".into() })
+        );
+        // …and a body edit elsewhere is still a patch under premint.
+        let body = SHEETED.replace(r#"text { "hello" }"#, r#"text { "hello" } text { "x" }"#);
+        assert!(!matches!(
+            decide_with(Some(&archive), &changed(&body), true),
+            Decision::Rebuild(Reason::PremintStylesheet { .. })
+        ));
+    }
 
     #[test]
     fn unchanged_source_is_neither_patched_nor_rebuilt() {
