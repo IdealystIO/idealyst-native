@@ -42,6 +42,10 @@ walrus = { workspace = true }
 # seeds the symbol mangling, and the jump table pairs symbols by name —
 # so this is one mechanism, not two.
 build-runtime-server = { workspace = true }
+# `JumpTable` — subsecond's own type. The dev server serializes it and
+# the page hands the deserialized value straight to `apply_patch`, so a
+# shape of our own would be a mismatch nothing checks.
+subsecond-types = "0.7"
 # Vendored wasm-split toolchain. Called as a library (not a
 # subprocess) so our patches apply automatically without users
 # needing to install a separate binary on PATH.

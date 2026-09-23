@@ -1235,6 +1235,35 @@ fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
 /// a project declaring a `server_bin` / `server_manifest`: the relay
 /// started and registered in `~/.idealyst/apps`, so discovery looked
 /// healthy, and every verb then failed with "no app connected".
+/// Whether the subsecond hot-patch tier is armed for this session.
+///
+/// Off when splitting: the splitter moves functions into lazy chunks and
+/// renumbers the main module's table, so a patch built against the base
+/// would pair with the wrong slots or with nothing. Rather than build a
+/// patch per save and watch it fail, the tier stands down and body edits
+/// rebuild — which is what `--split` sessions did before it existed.
+/// Splitting is off by default in dev precisely because it is a
+/// deploy-time concern, so this is armed for the ordinary session.
+fn hot_patch_armed(args: &Args) -> bool {
+    args.local && !args.split
+}
+
+/// Cargo features for a `--local` web dev bundle.
+///
+/// `hot_patch` adds the tier's EMISSION half: `#[component]` splits each
+/// body into a `__<Name>_hot_impl` reached through an indirect call a
+/// jump table can redirect, and the page gets the applier that redirects
+/// it. Spelled as one framework feature for the same reason
+/// `ui-overlay` is — the app depends on the `idealyst` facade, and
+/// naming a package it does not depend on is a hard cargo error.
+fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<String> {
+    let mut f = web_dev_features(no_robot);
+    if hot_patch {
+        f.push("hot-reload".to_string());
+    }
+    f
+}
+
 fn web_dev_features(no_robot: bool) -> Vec<String> {
     let mut f = vec!["runtime-core/dev".to_string()];
     if !no_robot {
@@ -1677,7 +1706,7 @@ fn launch_web(
                     // Robot is on by default in dev → add the wrapper-local
                     // `robot` feature (→ `backend-web/robot`) so the local web
                     // bundle dials the relay run() hosts. --no-robot opts out.
-                    features: web_dev_features(args.no_robot),
+                    features: web_dev_features_with(args.no_robot, hot_patch_armed(args)),
                     bundle_out_dir: None,
                     // `dev-http` injects the relay URL at serve time on
                     // this path (see below) — there is no staged
@@ -1693,8 +1722,7 @@ fn launch_web(
                     // trading a bigger served wasm for a shorter
                     // packaging tail. Splitting stays the default.
                     wasm_split: args.split,
-                    // Set only by the --local web loop when the hot-patch tier is armed.
-                    hot_patch: false,
+                    hot_patch: hot_patch_armed(args),
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 },
@@ -2250,7 +2278,7 @@ fn full_stack_bundle_options(
     let features = if wire {
         vec!["runtime-server".to_string()]
     } else {
-        web_dev_features(args.no_robot)
+        web_dev_features_with(args.no_robot, hot_patch_armed(args))
     };
     Ok(dev_reload::BuildOptions {
         source: source.clone(),
@@ -2292,8 +2320,9 @@ fn full_stack_bundle_options(
         // Same override the plain local-web path honors — the
         // full-stack loop rebuilds the same wasm on every save.
         wasm_split: args.split,
-        // Set only by the --local web loop when the hot-patch tier is armed.
-        hot_patch: false,
+        // Wire mode's browser runs none of the app's code, so there is
+        // nothing in the page for a patch to redirect.
+        hot_patch: !wire && hot_patch_armed(args),
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
     })
@@ -3626,7 +3655,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(opts.features, web_dev_features(false));
+        assert_eq!(
+            opts.features,
+            web_dev_features_with(false, hot_patch_armed(&args)),
+        );
         assert!(opts.runtime_server_url.is_none());
         assert!(opts.head_script.is_some(), "the SSE reload script still rides");
     }
@@ -3711,6 +3743,9 @@ mod tests {
             vec![
                 "runtime-core/dev".to_string(),
                 "ui-overlay".to_string(),
+                // `--local` without `--split`: the hot-patch tier is
+                // armed, and it needs its own feature compiled in.
+                "hot-reload".to_string(),
             ],
         );
         assert_eq!(opts.robot_relay_url, None);
@@ -3754,6 +3789,39 @@ mod tests {
         // `dev_reload`'s `the_watcher_writes_an_archive_the_decision_can_load`.
         // Asserting it from here once meant grepping this file for a
         // string only the assertion itself contained.
+    }
+
+    /// The tier stands down when splitting, and the reason is not
+    /// caution: the splitter moves functions into lazy chunks and
+    /// renumbers the main module's table, so a patch built against the
+    /// base pairs with the wrong slots or with nothing at all.
+    #[test]
+    fn splitting_stands_the_hot_patch_tier_down() {
+        assert!(!hot_patch_armed(&parse_dev(&["idealyst", "dev", "--web", "--local", "--split"])));
+        assert!(
+            hot_patch_armed(&parse_dev(&["idealyst", "dev", "--web", "--local"])),
+            "the ordinary dev session arms it"
+        );
+    }
+
+    /// There is no page running the app's code in runtime-server mode,
+    /// so there is nothing for a patch to redirect.
+    #[test]
+    fn a_non_local_session_never_arms_the_hot_patch_tier() {
+        assert!(!hot_patch_armed(&parse_dev(&["idealyst", "dev", "--web"])));
+    }
+
+    /// The tier needs BOTH halves compiled in: the `#[component]` split
+    /// that gives a jump table something to redirect, and the page-side
+    /// applier that redirects it. One framework feature turns on both.
+    #[test]
+    fn arming_the_tier_asks_for_the_hot_reload_feature() {
+        assert!(web_dev_features_with(false, true)
+            .iter()
+            .any(|f| f == "hot-reload"));
+        assert!(!web_dev_features_with(false, false)
+            .iter()
+            .any(|f| f == "hot-reload"));
     }
 
     /// A full-stack page is served by the APP's own server, so the

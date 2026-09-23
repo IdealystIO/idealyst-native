@@ -101,6 +101,49 @@ fn the_injected_script_calls_the_name_the_bundle_publishes() {
     );
 }
 
+/// The same agreement, for the hot-patch tier. The page publishes
+/// `window.__idealyst_hot_patch`; the script has to call exactly that.
+///
+/// And the FALLBACK differs from the overlay's on purpose. An overlay
+/// patch that cannot be applied is ignored, because the next rebuild
+/// carries the edit anyway. A hot patch that cannot be applied means the
+/// dev loop has already decided NOT to rebuild, so the page would sit
+/// there running code the source no longer describes — it reloads.
+#[test]
+fn the_script_calls_the_hot_patch_name_and_reloads_when_it_is_missing() {
+    let script = dev_http::reload_script_tag("/__idealyst/reload");
+    assert!(script.contains("window.__idealyst_hot_patch"), "{script}");
+    assert!(script.contains(r#"addEventListener("hot-patch""#), "{script}");
+
+    let handler = script
+        .split(r#"addEventListener("hot-patch""#)
+        .nth(1)
+        .expect("the hot-patch handler");
+    let missing = handler
+        .split("this bundle has no patch applier")
+        .nth(1)
+        .expect("the no-applier branch");
+    assert!(
+        missing[..60.min(missing.len())].contains("location.reload()"),
+        "a bundle with no applier must reload, not carry on: {missing}"
+    );
+}
+
+/// The two tiers travel on one ordered channel under different event
+/// names, so a save that produced both reaches the page in the order the
+/// dev loop decided them.
+#[test]
+fn the_two_patch_tiers_are_distinct_sse_events() {
+    use dev_reload::PatchKind;
+    assert_eq!(PatchKind::Overlay.sse_event(), "patch");
+    assert_eq!(PatchKind::Hot.sse_event(), "hot-patch");
+    assert_ne!(
+        PatchKind::Overlay.sse_event(),
+        PatchKind::Hot.sse_event(),
+        "one name for both would route every hot patch into the overlay applier"
+    );
+}
+
 #[test]
 fn the_sse_route_allows_a_cross_origin_page() {
     let port = pick_port();

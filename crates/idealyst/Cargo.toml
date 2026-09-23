@@ -53,6 +53,18 @@ robot = ["backend-web/robot"]
 # attempt failed against CrewForge.
 ui-overlay = ["runtime-core/ui-overlay", "backend-web/ui-overlay"]
 
+# The subsecond hot-patch tier. Both halves, for the same reason
+# `ui-overlay` names both: the EMISSION half is `runtime-core/hot-reload`,
+# where `#[component]` splits each body into a `__<Name>_hot_impl` reached
+# through an indirect call a jump table can redirect; the PAGE half is
+# `backend-web/hot-reload`, which applies a patch and rebuilds the tree
+# against it.
+#
+# Dev-only. `idealyst dev --web --local` passes it; `idealyst build --web`
+# never does, so a shipped bundle carries neither the split nor the
+# applier.
+hot-reload = ["runtime-core/hot-reload", "backend-web/hot-reload"]
+
 # Adopt server-rendered DOM instead of mounting fresh. Set by the build
 # when the app is paired with an SSR/SSG server binary; `boot::web`'s
 # `page_is_prerendered` check picks the path at runtime, but the backend

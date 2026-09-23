@@ -289,7 +289,7 @@ pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
 // `#[inline]` makes it available for cross-crate inlining without emitting a
 // standalone symbol, so an unused default set is never instantiated.
 #[inline]
-pub fn start(build: impl FnOnce() -> Element) {
+pub fn start(build: impl Fn() -> Element + 'static) {
     start_in("#app", |_| {}, build)
 }
 
@@ -310,7 +310,7 @@ pub fn start(build: impl FnOnce() -> Element) {
 pub fn start_in(
     selector: &str,
     register: impl FnOnce(&mut Registry<WebBackend>),
-    build: impl FnOnce() -> Element,
+    build: impl Fn() -> Element + 'static,
 ) {
     start_in_with::<runtime_vocabulary::AllBuiltins>(selector, register, build)
 }
@@ -325,10 +325,16 @@ pub fn start_in(
 ///
 /// Realizing a payload from a family that was not selected panics at mount,
 /// the same loud failure an unregistered third-party payload gets.
+///
+/// `build` is `Fn`, not `FnOnce`, because a hot patch has to run the app
+/// root a second time against the patched code. Every call site already
+/// satisfies it — an `entry!`-generated `main` passes a fn item — and the
+/// stronger bound is what lets `mount_tree` be shared between the boot
+/// and the rebuild.
 pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     selector: &str,
     register: impl FnOnce(&mut Registry<WebBackend>),
-    build: impl FnOnce() -> Element,
+    build: impl Fn() -> Element + 'static,
 ) {
     // The clock/scheduling services this function itself depends on —
     // the flush driver below rides the scheduler, so it must exist
@@ -405,10 +411,51 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
         runtime_shared::set_viewport_size(size);
     }
 
+    // One `Rc` so the boot and any later rebuild run the same closure.
+    let build: std::rc::Rc<dyn Fn() -> Element> = std::rc::Rc::new(build);
+    #[cfg(feature = "hot-reload")]
+    let root_for_rebuild = build.clone();
+    let vp_sig = mount_tree(&backend, &registry, &*build);
+    // Robot driver env: vocabulary Robot queries enter this world,
+    // actions settle via flush_sync (see robot_transport).
+    #[cfg(feature = "robot")]
+    crate::robot_transport::install_newcore_driver_env();
+
+    // The overlay's page entry point, published on `window` so the
+    // livereload script — plain inline JS that never imports this
+    // module — can reach it. After the mount, because it patches a
+    // mounted app.
+    #[cfg(feature = "ui-overlay")]
+    install_overlay_patch_entry();
+
+    // The hot-patch entry point, published the same way and for the same
+    // reason. It keeps the root closure so a patch can rebuild the tree
+    // against the code it just swapped in.
+    #[cfg(feature = "hot-reload")]
+    crate::hot_patch::install(root_for_rebuild);
+
+    // Live viewport source: window resizes re-fire breakpoint-dependent
+    // author reactivity (the idea-ui-docs hamburger bug).
+    install_viewport_source(vp_sig);
+}
+
+/// Build the app root, realize it, put it on screen, and take ownership
+/// of the resulting world. Returns the world's viewport signal, which
+/// the caller wires the window `resize` listener to.
+///
+/// Split out of the boot path because a hot patch has to do exactly this
+/// and nothing else a second time: the backend, the scene registry and
+/// every installed host service outlive the tree, and rebuilding them
+/// would detach the mount point and re-register every handler.
+pub(crate) fn mount_tree(
+    backend: &Rc<RefCell<WebBackend>>,
+    registry: &Rc<Registry<WebBackend>>,
+    build: &dyn Fn() -> Element,
+) -> runtime_world::Signal<runtime_shared::ViewportSize> {
     let world = World::new();
     let (vp_sig, realized) = world.enter(|| {
         let element = build();
-        let realized = realize(&backend, &registry, element);
+        let realized = realize(backend, registry, element);
         // Capture the per-world viewport ctx AFTER the build, never
         // before: a build that reads a breakpoint creates the ctx
         // itself mid-build, AFTER the app's `install_breakpoints` runs
@@ -447,26 +494,35 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     APP.with(|slot| {
         *slot.borrow_mut() = Some(App {
             realized,
-            _backend: backend,
-            _registry: registry,
+            _backend: backend.clone(),
+            _registry: registry.clone(),
             world,
         })
     });
-    // Robot driver env: vocabulary Robot queries enter this world,
-    // actions settle via flush_sync (see robot_transport).
-    #[cfg(feature = "robot")]
-    crate::robot_transport::install_newcore_driver_env();
+    vp_sig
+}
 
-    // The overlay's page entry point, published on `window` so the
-    // livereload script — plain inline JS that never imports this
-    // module — can reach it. After the mount, because it patches a
-    // mounted app.
-    #[cfg(feature = "ui-overlay")]
-    install_overlay_patch_entry();
+/// The live backend and scene registry, for a rebuild that reuses them.
+#[cfg(feature = "hot-reload")]
+pub(crate) fn live_host() -> Option<(Rc<RefCell<WebBackend>>, Rc<Registry<WebBackend>>)> {
+    APP.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|app| (app._backend.clone(), app._registry.clone()))
+    })
+}
 
-    // Live viewport source: window resizes re-fire breakpoint-dependent
-    // author reactivity (the idea-ui-docs hamburger bug).
-    install_viewport_source(vp_sig);
+/// Unmount the current tree and drop its world, leaving the backend and
+/// registry installed.
+///
+/// Separate from [`stop`] on purpose: `stop` takes the page back to
+/// having no app at all, listeners and all. This is the first half of a
+/// rebuild, and the flush driver's world slot has to be cleared with it
+/// or a queued flush lands in a dead world.
+#[cfg(feature = "hot-reload")]
+pub(crate) fn tear_down_tree() {
+    FLUSH_WORLD.with(|w| *w.borrow_mut() = None);
+    APP.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// True while a new-core app is mounted (`start` ran, `stop` hasn't).

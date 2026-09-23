@@ -145,7 +145,7 @@ use crate::WebBackend;
 // `#[inline]` makes it available for cross-crate inlining without emitting a
 // standalone symbol, so an unused default set is never instantiated.
 #[inline]
-pub fn hydrate(build: impl FnOnce() -> Element) {
+pub fn hydrate(build: impl Fn() -> Element + 'static) {
     hydrate_in("#app", |_| {}, build)
 }
 
@@ -165,7 +165,7 @@ pub fn hydrate(build: impl FnOnce() -> Element) {
 pub fn hydrate_in(
     selector: &str,
     register: impl FnOnce(&mut Registry<WebBackend>),
-    build: impl FnOnce() -> Element,
+    build: impl Fn() -> Element + 'static,
 ) {
     hydrate_in_with::<runtime_vocabulary::AllBuiltins>(selector, register, build)
 }
@@ -181,7 +181,7 @@ pub fn hydrate_in(
 pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     selector: &str,
     register: impl FnOnce(&mut Registry<WebBackend>),
-    build: impl FnOnce() -> Element,
+    build: impl Fn() -> Element + 'static,
 ) {
     // Idempotent installs, same as `start_in` — the flush driver and the
     // hydration buffering both ride the scheduler, so it must exist first.

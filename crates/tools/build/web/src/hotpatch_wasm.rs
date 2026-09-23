@@ -59,6 +59,28 @@ impl WasmJumpTable {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// The same table as `subsecond_types::JumpTable`, which is what the
+    /// page deserializes.
+    ///
+    /// Using subsecond's own type on the wire rather than a shape of our
+    /// own is deliberate: the runtime hands the deserialized value
+    /// straight to `apply_patch`, so a field we spelled differently
+    /// would be a mismatch nothing checks.
+    ///
+    /// `lib` is left empty and `aslr_reference` / `new_base_address`
+    /// zero. The first is filled in by the page, which is the only place
+    /// that knows the URL the patch is served from; the other two are
+    /// address-space-layout facts that wasm does not have.
+    pub fn to_subsecond(&self) -> subsecond_types::JumpTable {
+        subsecond_types::JumpTable {
+            lib: std::path::PathBuf::new(),
+            map: self.map.iter().map(|(k, v)| (*k, *v)).collect(),
+            aslr_reference: 0,
+            new_base_address: 0,
+            ifunc_count: self.ifunc_count as u64,
+        }
+    }
 }
 
 /// Pair every patchable function the two modules share.

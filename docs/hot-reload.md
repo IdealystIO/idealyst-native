@@ -274,6 +274,59 @@ what the `__table_base` global the patch imports resolves to. Which is
 also why a segment whose offset is `global.get` (every PIC patch) folds
 to zero rather than being skipped.
 
+### The web save loop
+
+Armed by `idealyst dev --web --local`, and only when the splitter is off
+(`--split` stands the tier down: it moves functions into lazy chunks and
+renumbers the main module's table, so a patch built against the base pairs
+with the wrong slots or with nothing). Splitting is off by default in dev,
+so the ordinary session has it.
+
+1. The base build sets `RUSTC_WRAPPER` to the `idealyst` binary, so every
+   crate's exact rustc invocation is captured to
+   `target/…/idealyst-hotpatch/captures/`.
+2. A save that `overlay_decide` calls `HotPatch` — a change inside function
+   bodies — goes to `build_web::hotpatch_build::WasmPatchBuilder` instead of
+   a rebuild.
+3. The builder replays the user crate's captured invocation with
+   `--emit=obj -Crelocation-model=pic`, links those objects alone with
+   `wasm-ld --pie --experimental-pic`, resolves the imports against the
+   running base, and pairs the two tables.
+4. The patch module is written into the served bundle's
+   `pkg/hotpatch/patch-N.wasm`, and the dev loop pushes an SSE `hot-patch`
+   event carrying `{url, table}`.
+5. The page's livereload script calls `window.__idealyst_hot_patch`, which
+   applies the patch and rebuilds the tree against it.
+
+Every step reports a failure that names what it could not do, and every
+failure falls back to the rebuild-and-reload the save would otherwise have
+got. A patch that half-applies is worse than no patch: the page keeps
+running and dispatches through a table pointing somewhere arbitrary.
+
+### Rebuilding the tree without losing the page
+
+Applying a patch changes nothing on screen — the DOM in front of the user
+was built by the old bodies. So the page re-runs the app root, which is why
+`backend_web::newcore::start_in_with` takes `impl Fn() -> Element` rather
+than `FnOnce`.
+
+State is carried by `runtime_world::hot_state`, and the order is not a
+preference. Values are MOVED out of the dying world's arena:
+
+1. `harvest()` while the arena is alive,
+2. drop the tree and the world,
+3. `seed()` so each `signal()` call in the rebuild finds its predecessor's
+   value.
+
+Harvest after the drop finds nothing; seed before it seeds the world about
+to die. This is the same sequence the native sidecar's `SessionMsg::Rerender`
+runs, deliberately: one hot-patch semantics, two backends.
+
+The rebuild rides `subsecond::register_handler` rather than following the
+`apply_patch` call, because on wasm `apply_patch` finishes asynchronously —
+it awaits a fetch and an instantiate. Rebuilding at the call site would
+rebuild against the old code and show nothing changed.
+
 ### Why components are split
 
 Subsecond rebinds function ADDRESSES. For an entry to do anything the

@@ -43,6 +43,10 @@ mod batch_queue;
 #[cfg(feature = "robot")]
 mod introspect;
 pub mod newcore;
+/// The wasm hot-patch tier's page half. Dev-only: `build --web` never
+/// enables the feature, so a shipped bundle compiles none of it.
+#[cfg(feature = "hot-reload")]
+pub mod hot_patch;
 mod newcore_url_sync;
 #[cfg(idealyst_premint)]
 mod premint_guard;

@@ -45,6 +45,23 @@ async-driver = ["runtime-shared/async-driver", "dep:wasm-bindgen-futures"]
 # `WireBackend` replay engine is available. Off by default — the
 # native-rendering build path pays no cost.
 runtime-server = ["dep:dev-client", "dep:wire", "dev-client/dev-hot-reload"]
+# The wasm hot-patch tier's PAGE half: `__idealyst_hot_patch`, which the
+# livereload script calls with a patch module's URL and a serialized
+# `subsecond_types::JumpTable`. It applies the patch and rebuilds the tree
+# against it, carrying signal values through `runtime_world::hot_state`.
+#
+# Forwards to `dev-hot/hot` (the subsecond facade) and
+# `runtime-world/hot-reload` (the state carry). The SPLIT half — the
+# `__*_hot_impl` functions a jump table redirects — is not reachable from
+# here and comes from the app crate enabling `runtime-core/hot-reload`,
+# which is what `idealyst dev --web --local` passes. `build --web` never
+# does, so a shipped bundle carries none of it.
+hot-reload = [
+    "dep:dev-hot",
+    "dev-hot/hot",
+    "dep:subsecond-types",
+    "runtime-world/hot-reload",
+]
 # Stamp a `data-idealyst-id="N"` attribute on every Element the
 # framework has minted a node id for. Pure developer ergonomic —
 # makes the per-node id visible in browser devtools and e2e
@@ -93,6 +110,13 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 # the `runtime-server` feature is on; the WebSocket transport itself
 # lives in this crate's `dev_transport` module.
 dev-client = { workspace = true, optional = true }
+# The subsecond facade. Optional so a bundle without the hot-patch tier
+# links none of it; `dev-hot`'s own `hot` feature is what pulls subsecond
+# in, and with it off the crate is a pass-through with no runtime cost.
+dev-hot = { workspace = true, optional = true }
+# `JumpTable` — subsecond's own type, deserialized straight off the wire
+# so the dev server and the runtime cannot disagree about its shape.
+subsecond-types = { version = "0.7", optional = true }
 wire = { workspace = true, optional = true }
 # Used by the Graphics primitive to expose the `<canvas>` as a
 # standard `WebCanvasWindowHandle` + `WebDisplayHandle` for any GPU

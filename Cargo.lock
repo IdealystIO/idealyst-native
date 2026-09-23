@@ -1576,6 +1576,7 @@ version = "1.6.4"
 dependencies = [
  "css",
  "dev-client",
+ "dev-hot",
  "inventory",
  "js-sys",
  "raw-window-handle",
@@ -1585,6 +1586,7 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "serde_json",
+ "subsecond-types",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -2003,6 +2005,7 @@ dependencies = [
  "flate2",
  "icon-gen",
  "sha2 0.10.9",
+ "subsecond-types",
  "tempfile",
  "toml 0.8.23",
  "walrus",

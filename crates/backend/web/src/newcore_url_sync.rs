@@ -774,7 +774,13 @@ mod tests {
                     runtime_vocabulary::text().content("detail-screen").build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *handle_for_build.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let handle_for_build = handle_for_build.clone();
+                    move |h| *handle_for_build.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let h = handle.borrow_mut().take().expect("NavHandle filled at mount");
@@ -900,7 +906,13 @@ mod tests {
                         .child(runtime_vocabulary::text().content("BAR"))
                         .build()
                 })
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let h = handle.borrow_mut().take();
@@ -1137,7 +1149,13 @@ mod tests {
                 .screen(DETAIL, |_| runtime_vocabulary::text().content("S-detail").build())
                 .screen(DEEP, |_| runtime_vocabulary::text().content("S-deep").build())
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
@@ -1199,11 +1217,23 @@ mod tests {
                             runtime_vocabulary::text().content("NESTED DETAIL").build()
                         })
                         .layout(|| navigator_outlet().build())
-                        .on_handle(move |h| *i.borrow_mut() = Some(h))
+                        .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let i = i.clone();
+                    move |h| *i.borrow_mut() = Some(h)
+                })
                         .build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *o.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let o = o.clone();
+                    move |h| *o.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
@@ -1273,7 +1303,13 @@ mod tests {
                         })
                         .build()
                 })
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
@@ -1397,7 +1433,13 @@ mod tests {
                         .build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
@@ -1500,11 +1542,23 @@ mod tests {
                             runtime_vocabulary::text().content("NESTED DETAIL").build()
                         })
                         .layout(|| navigator_outlet().build())
-                        .on_handle(move |h| *i.borrow_mut() = Some(h))
+                        .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let i = i.clone();
+                    move |h| *i.borrow_mut() = Some(h)
+                })
                         .build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *o.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let o = o.clone();
+                    move |h| *o.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
@@ -1579,11 +1633,23 @@ mod tests {
                                 .build()
                         })
                         .layout(|| navigator_outlet().build())
-                        .on_handle(move |h| *i.borrow_mut() = Some(h))
+                        .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let i = i.clone();
+                    move |h| *i.borrow_mut() = Some(h)
+                })
                         .build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *o.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let o = o.clone();
+                    move |h| *o.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
@@ -1628,7 +1694,13 @@ mod tests {
                     runtime_vocabulary::text().content("detail-screen").build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
@@ -1702,7 +1774,13 @@ mod tests {
                     runtime_vocabulary::text().content("outer-detail").build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
@@ -1767,7 +1845,13 @@ mod tests {
                         .build()
                 })
                 .layout(|| navigator_outlet().build())
-                .on_handle(move |h| *fill.borrow_mut() = Some(h))
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
                 .build()
         });
         let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };

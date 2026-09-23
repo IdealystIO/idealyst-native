@@ -436,6 +436,17 @@ pub struct BuildArtifact {
     /// and the passes were skipped; the staged bundle was refreshed from
     /// the existing `pkg/`, so nothing downstream needs to reload.
     pub wasm_changed: bool,
+    /// The wasm module the BROWSER runs — after wasm-bindgen and after
+    /// the command-export neutralize pass.
+    ///
+    /// The hot-patch tier reads its function table from here and nowhere
+    /// else: both of those passes rewrite the module, so a table index
+    /// taken from cargo's own artifact names a different function than
+    /// the one the page will call.
+    pub served_wasm: PathBuf,
+    /// Where this build's captured rustc invocations were written, when
+    /// the hot-patch tier was armed. `None` otherwise.
+    pub captures_dir: Option<PathBuf>,
 }
 
 /// The primitives `--primitives` accepts — one per method on
@@ -908,8 +919,11 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .push(("stage+fingerprint", stage_start.elapsed()));
     timings.report();
 
+    let served_wasm = pkg_dir.join(format!("{}_bg.wasm", manifest.lib_name));
     Ok(BuildArtifact {
         wasm_changed: !skip_passes,
+        served_wasm,
+        captures_dir: opts.hot_patch.then(|| captures_dir(&target_dir)),
         pkg_dir,
         // No longer a generated crate — the per-app staging dir that
         // holds `pkg/` and the premint dump. Field name kept so the
@@ -2290,6 +2304,28 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
     out
 }
 
+/// Where a hot-patch base build writes its captured rustc invocations.
+///
+/// A function rather than a constant because the dev loop has to name
+/// the same directory the build wrote to, and the two live in different
+/// crates — a path spelled twice is a path that drifts.
+pub fn captures_dir(target_dir: &Path) -> PathBuf {
+    target_dir.join("idealyst-hotpatch/captures")
+}
+
+/// Where a hot-patch dev loop writes the patch modules it serves.
+///
+/// Under the STAGED bundle directory rather than `target/`, because the
+/// page fetches them over the same origin it fetched the bundle from.
+pub fn patches_dir(staged_dir: &Path) -> PathBuf {
+    staged_dir.join("pkg/hotpatch")
+}
+
+/// The URL path a patch written by [`patches_dir`] is served at.
+pub fn patch_url_path(file_name: &str) -> String {
+    format!("/pkg/hotpatch/{file_name}")
+}
+
 fn cargo_build_wasm(
     project_dir: &Path,
     bin_name: &str,
@@ -2433,6 +2469,32 @@ fn cargo_build_wasm(
         flags.extend(remap_path_flags(source, project_root));
     }
     cmd.env("CARGO_ENCODED_RUSTFLAGS", flags.join("\x1f"));
+
+    // Capture each crate's exact rustc invocation, so a later save can
+    // replay the user crate's with `--emit=obj` and get a patch whose
+    // symbols hash identically to this build's. See `hotpatch_build`
+    // for why re-deriving the invocation instead cannot work.
+    if hot_patch {
+        match std::env::current_exe() {
+            Ok(idealyst) => {
+                let dir = captures_dir(target_dir);
+                if let Err(e) = fs::create_dir_all(&dir) {
+                    eprintln!(
+                        "[build-web] hot patch disabled: cannot create {}: {e}",
+                        dir.display()
+                    );
+                } else {
+                    for (key, value) in hotpatch_build::capture_env(&idealyst, &dir) {
+                        cmd.env(key, value);
+                    }
+                }
+            }
+            // Without our own path there is nothing to point RUSTC_WRAPPER
+            // at. The build still succeeds; the first save falls back to a
+            // rebuild with "no capture" as the stated reason.
+            Err(e) => eprintln!("[build-web] hot patch disabled: cannot find this binary: {e}"),
+        }
+    }
 
     eprintln!(
         "[build-web] cargo build --target wasm32-unknown-unknown{}{} (in {})",

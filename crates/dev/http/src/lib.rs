@@ -146,6 +146,18 @@ pub struct HeadInjectionContext {
 /// and a changed label does not need any of that thrown away. A page
 /// whose bundle was built without the overlay has no entry point, so
 /// the patch is ignored and the next real rebuild carries the edit.
+///
+/// And `hot-patch` events — a body edit, which needs new code rather
+/// than new data. The payload is `{url, table}`: where the patch module
+/// is served from, and a `subsecond_types::JumpTable` pairing the base's
+/// function table slots to the patch's. The page applies it and rebuilds
+/// the tree in place, carrying every signal value across.
+///
+/// The fallback differs from the overlay's on purpose. An overlay patch
+/// that cannot be applied is ignored, because the next rebuild carries
+/// the edit anyway. A hot patch that cannot be applied means the dev loop
+/// has ALREADY decided not to rebuild — so the page would sit there
+/// running code the source no longer describes. It reloads instead.
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
   var baseline = null;
@@ -167,6 +179,28 @@ const RELOAD_SCRIPT: &str = r#"<script>
       apply(e.data);
     } catch (err) {
       console.error("[idealyst] overlay patch failed, reloading", err);
+      location.reload();
+    }
+  });
+  es.addEventListener("hot-patch", function (e) {
+    var apply = window.__idealyst_hot_patch;
+    if (typeof apply !== "function") {
+      console.info("[idealyst] hot patch ignored: this bundle has no patch applier");
+      location.reload();
+      return;
+    }
+    var payload;
+    try {
+      payload = JSON.parse(e.data);
+    } catch (err) {
+      console.error("[idealyst] hot patch: unreadable event, reloading", err);
+      location.reload();
+      return;
+    }
+    try {
+      apply(payload.url, JSON.stringify(payload.table));
+    } catch (err) {
+      console.error("[idealyst] hot patch failed, reloading", err);
       location.reload();
     }
   });
@@ -492,11 +526,12 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
             Some(sig) => {
                 let (new, patch_seq) = sig.wait_past_either(last_seen, last_patch, SSE_KEEPALIVE);
                 if patch_seq > last_patch {
-                    for (seq, json) in sig.patches_since(last_patch) {
-                        if write_patch(&mut writer, &json).is_err() {
+                    for patch in sig.patches_since(last_patch) {
+                        if write_patch(&mut writer, patch.kind.sse_event(), &patch.json).is_err()
+                        {
                             return;
                         }
-                        last_patch = last_patch.max(seq);
+                        last_patch = last_patch.max(patch.seq);
                     }
                     last_patch = last_patch.max(patch_seq);
                 }
@@ -519,19 +554,24 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
     }
 }
 
-/// One overlay patch, as a named SSE event so the page's handler can
-/// tell it from a generation bump without parsing the payload first.
+/// One patch, as a named SSE event so the page's handler can tell it
+/// from a generation bump — and an overlay patch from a hot patch —
+/// without parsing the payload first.
 ///
 /// The JSON is emitted on a single `data:` line — SSE splits a payload
 /// on newlines and the client would have to rejoin them, so the
 /// serializer that produced this must not pretty-print. Asserted rather
 /// than hoped: a newline here would silently truncate the patch.
-fn write_patch(w: &mut Box<dyn Write + Send + 'static>, json: &str) -> std::io::Result<()> {
+fn write_patch(
+    w: &mut Box<dyn Write + Send + 'static>,
+    event: &str,
+    json: &str,
+) -> std::io::Result<()> {
     debug_assert!(
         !json.contains('\n'),
-        "an overlay patch must be one SSE data line; serialize it compactly"
+        "a patch must be one SSE data line; serialize it compactly"
     );
-    w.write_all(format!("event: patch\ndata: {json}\n\n").as_bytes())?;
+    w.write_all(format!("event: {event}\ndata: {json}\n\n").as_bytes())?;
     w.flush()
 }
 

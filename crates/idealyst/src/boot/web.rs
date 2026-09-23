@@ -28,7 +28,7 @@ use super::{AppConfig, SceneExtensions};
 /// which runs `main` — so no `#[wasm_bindgen(start)]` shim is needed
 /// (the old wrapper was a `cdylib` and did need one).
 pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
-    app: impl FnOnce() -> Element,
+    app: impl Fn() -> Element + 'static,
     config: AppConfig,
 ) {
     // This same wasm is also imported and initialized inside Web Workers
@@ -91,7 +91,7 @@ pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
 /// here. It is used only by the defensive local-mount fallback below.
 #[cfg(feature = "runtime-server")]
 fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
-    app: impl FnOnce() -> Element,
+    app: impl Fn() -> Element + 'static,
     config: AppConfig,
 ) {
     use std::cell::RefCell;
@@ -182,7 +182,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
 /// DOM.
 #[cfg(not(feature = "runtime-server"))]
 fn start_local<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
-    app: impl FnOnce() -> Element,
+    app: impl Fn() -> Element + 'static,
     config: AppConfig,
 ) {
     let selector = config.mount_selector;

@@ -101,8 +101,41 @@ pub struct ReloadSignal {
     /// Bounded: a long session must not grow a list nobody will read,
     /// and a listener that fell far enough behind to miss entries is a
     /// listener that should reload anyway.
-    patches: Mutex<Vec<(u64, String)>>,
+    patches: Mutex<Vec<PushedPatch>>,
     patch_seq: AtomicU64,
+}
+
+/// What a page should do with a pushed patch.
+///
+/// The distinction is the page's, not this crate's: an overlay patch is
+/// new DATA for a `ui!` site and the page applies it to what is already
+/// mounted; a hot patch is new CODE and the page has to load a module and
+/// rebuild the tree against it. They share one ordered channel because a
+/// save can produce both and the order they were decided in is the order
+/// they must arrive in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchKind {
+    Overlay,
+    Hot,
+}
+
+impl PatchKind {
+    /// The SSE event name the page listens on, so it can route a payload
+    /// without parsing it first.
+    pub fn sse_event(self) -> &'static str {
+        match self {
+            PatchKind::Overlay => "patch",
+            PatchKind::Hot => "hot-patch",
+        }
+    }
+}
+
+/// One pushed patch, with the sequence number a listener catches up by.
+#[derive(Debug, Clone)]
+pub struct PushedPatch {
+    pub seq: u64,
+    pub kind: PatchKind,
+    pub json: String,
 }
 
 impl ReloadSignal {
@@ -142,17 +175,34 @@ impl ReloadSignal {
         self.patch_seq.load(Ordering::Acquire)
     }
 
-    /// Record a decided patch and wake listeners.
+    /// Record a decided overlay patch and wake listeners.
     ///
     /// `json` is whatever the delivery side agreed on; this type does
     /// not parse it. Keeping the payload opaque is what lets the
     /// protocol between the watcher and the page change without this
     /// crate's public surface moving.
     pub fn push_patch(&self, json: String) -> u64 {
+        self.push(PatchKind::Overlay, json)
+    }
+
+    /// Record a decided HOT patch — new code rather than new data — and
+    /// wake listeners.
+    ///
+    /// A separate kind rather than a separate channel, because the two
+    /// are ordered against each other: a save that changed both a
+    /// literal and a body must reach the page in the order the dev loop
+    /// decided them, and two channels cannot promise that. They travel
+    /// as differently-named SSE events so the page routes each to the
+    /// right applier without parsing the payload first.
+    pub fn push_hot_patch(&self, json: String) -> u64 {
+        self.push(PatchKind::Hot, json)
+    }
+
+    fn push(&self, kind: PatchKind, json: String) -> u64 {
         let seq = self.patch_seq.fetch_add(1, Ordering::AcqRel) + 1;
         {
             let mut patches = self.patches.lock().unwrap();
-            patches.push((seq, json));
+            patches.push(PushedPatch { seq, kind, json });
             let len = patches.len();
             if len > MAX_BUFFERED_PATCHES {
                 patches.drain(..len - MAX_BUFFERED_PATCHES);
@@ -170,12 +220,12 @@ impl ReloadSignal {
     /// not an error: the page it belongs to is about to be told to
     /// reload anyway, and refusing to send the recent ones would make a
     /// reconnect worse than useless.
-    pub fn patches_since(&self, seen: u64) -> Vec<(u64, String)> {
+    pub fn patches_since(&self, seen: u64) -> Vec<PushedPatch> {
         self.patches
             .lock()
             .unwrap()
             .iter()
-            .filter(|(seq, _)| *seq > seen)
+            .filter(|p| p.seq > seen)
             .cloned()
             .collect()
     }
@@ -370,13 +420,13 @@ pub fn start_with(
     eprintln!("[dev-reload] initial build…");
     // The initial build's result is irrelevant: gen 1 is the browsers'
     // first bundle whether the passes ran or were skipped.
-    let _ = build_wasm(dir, &opts).context("initial web build failed")?;
+    let initial = build_wasm(dir, &opts).context("initial web build failed")?;
     signal.set(1);
 
     let dir_owned = dir.to_path_buf();
     thread::Builder::new()
         .name("idealyst-watch".into())
-        .spawn(move || watch_loop(dir_owned, signal, opts))
+        .spawn(move || watch_loop(dir_owned, signal, opts, initial))
         .context("spawn watch thread")
 }
 
@@ -533,6 +583,114 @@ fn local_package_dirs(meta: &serde_json::Value) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The hot-patch tier's state across one dev session.
+///
+/// A [`build_web::hotpatch_build::WasmPatchBuilder`] is valid for
+/// exactly one base build: it holds an index of the served module's
+/// function table, and every rebuild renumbers that table. So the
+/// builder is dropped on each rebuild and made again on the next body
+/// edit — lazily, because indexing a debug-profile wasm module with
+/// every function in its table is the expensive part and a session that
+/// never edits a body should never pay for it.
+struct HotPatchBase {
+    /// Where the page fetches from: the staged bundle for a full-stack
+    /// project, the project directory for a static one.
+    serve_root: PathBuf,
+    crate_name: String,
+    armed: bool,
+    artifact: build_web::BuildArtifact,
+    builder: Option<build_web::hotpatch_build::WasmPatchBuilder>,
+    /// Set after a failure that will recur — a base built without the
+    /// capture wrapper, say. One message, then the tier stays quiet and
+    /// every body edit rebuilds.
+    retired: Option<String>,
+}
+
+impl HotPatchBase {
+    fn new(dir: &Path, opts: &BuildOptions, artifact: build_web::BuildArtifact) -> Self {
+        Self {
+            // A full-stack project's own server hands out the staged
+            // bundle, so a patch written into the project directory
+            // would 404. A static project is served from the project
+            // directory itself.
+            serve_root: opts.bundle_out_dir.clone().unwrap_or_else(|| dir.to_path_buf()),
+            crate_name: dir_package_name(dir),
+            armed: opts.hot_patch,
+            artifact,
+            builder: None,
+            retired: None,
+        }
+    }
+
+    fn rebuilt(&mut self, artifact: build_web::BuildArtifact) {
+        self.artifact = artifact;
+        // The table the old builder indexed no longer describes the
+        // module the page is running.
+        self.builder = None;
+    }
+
+    /// Build a patch for this save, or say why it cannot.
+    fn patch(&mut self) -> std::result::Result<build_web::hotpatch_build::BuiltPatch, String> {
+        if !self.armed {
+            return Err(
+                "the hot-patch tier is off for this session (`idealyst dev --web --local` \
+                 arms it)"
+                    .to_string(),
+            );
+        }
+        if let Some(why) = &self.retired {
+            return Err(why.clone());
+        }
+        if self.builder.is_none() {
+            let Some(captures) = self.artifact.captures_dir.clone() else {
+                let why = "this base was built without the rustc capture wrapper, so there is \
+                           no invocation to replay"
+                    .to_string();
+                self.retired = Some(why.clone());
+                return Err(why);
+            };
+            match build_web::hotpatch_build::WasmPatchBuilder::new(
+                &self.artifact.served_wasm,
+                captures,
+                self.crate_name.clone(),
+                build_web::patches_dir(&self.serve_root),
+            ) {
+                Ok(builder) => {
+                    eprintln!(
+                        "[hotpatch] base indexed: {} functions reachable through the table",
+                        builder.base_table_size(),
+                    );
+                    self.builder = Some(builder);
+                }
+                // Not retired: a base that could not be indexed once may
+                // index fine after the next rebuild, and retiring here
+                // would disarm the tier for the whole session over one
+                // bad build.
+                Err(e) => return Err(format!("{e:#}")),
+            }
+        }
+        self.builder
+            .as_ref()
+            .expect("just built")
+            .build()
+            .map_err(|e| format!("{e:#}"))
+    }
+
+    /// The SSE payload for a built patch: where the page fetches the
+    /// module from, and the table to apply.
+    fn event_json(&self, patch: &build_web::hotpatch_build::BuiltPatch) -> Result<String> {
+        let file = patch
+            .path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .context("the patch has no file name")?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "url": build_web::patch_url_path(file),
+            "table": patch.jump_table.to_subsecond(),
+        }))?)
+    }
+}
+
 /// Watch every local source root in `dir`'s dependency closure (see
 /// [`watch_roots`]) — its own `src/` + `Cargo.toml`, plus those of
 /// each path / workspace-member crate it pulls in. Each debounced
@@ -540,7 +698,18 @@ fn local_package_dirs(meta: &serde_json::Value) -> Vec<PathBuf> {
 /// synchronous on this thread so events arriving while a build is in
 /// flight queue up naturally on the channel and we collapse them by
 /// draining before the next build.
-fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
+fn watch_loop(
+    dir: PathBuf,
+    signal: Arc<ReloadSignal>,
+    opts: BuildOptions,
+    initial: build_web::BuildArtifact,
+) {
+    // The hot-patch tier's builder, valid for the life of ONE base
+    // build: it holds an index of the served module's function table,
+    // which every rebuild invalidates. Rebuilt lazily on the first body
+    // edit after each rebuild, so a session that never makes one never
+    // pays to parse the module.
+    let mut base = HotPatchBase::new(&dir, &opts, initial);
     let (tx, rx) = mpsc::channel();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
         Ok(d) => d,
@@ -627,19 +796,41 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
                 }
                 overlay_decide::Decision::Unchanged => {}
                 overlay_decide::Decision::HotPatch(files) => {
-                    // The subsecond tier exists only in runtime-server
-                    // mode, where a native sidecar holds the app and a
-                    // jump table can be applied to it. `--local` builds
-                    // wasm and reloads the page, so a body-only save is
-                    // a rebuild here — named, rather than falling into
-                    // the generic branch, so the log says which tier the
-                    // save WOULD have taken.
-                    eprintln!(
-                        "[dev] {} changed inside function bodies — that is an in-place \
-                         hot patch in runtime-server mode (`idealyst dev --web` without \
-                         `--local`); rebuilding",
-                        files.join(", "),
-                    );
+                    // A body edit: new CODE, which the overlay cannot
+                    // carry. Build a wasm patch and send it, so the page
+                    // swaps the function bodies and rebuilds its tree
+                    // without losing what is on screen.
+                    //
+                    // Any failure falls through to a rebuild, which is
+                    // always correct. A patch that half-applies would
+                    // leave the page running code the source no longer
+                    // describes, with nothing to say so.
+                    match base.patch() {
+                        Ok(patch) => match base.event_json(&patch) {
+                            Ok(json) => {
+                                signal.push_hot_patch(json);
+                                if let Some(set) = archive.as_mut() {
+                                    overlay_decide::advance_archive(set, &changed);
+                                }
+                                eprintln!(
+                                    "[hotpatch] {} · {} function(s) redirected · {}",
+                                    files.join(", "),
+                                    patch.jump_table.map.len(),
+                                    patch.timing_line(),
+                                );
+                                drain(&rx);
+                                continue;
+                            }
+                            Err(e) => eprintln!(
+                                "[hotpatch] cannot encode the patch event ({e:#}); rebuilding"
+                            ),
+                        },
+                        Err(why) => eprintln!(
+                            "[hotpatch] {} changed inside function bodies, but no patch: \
+                             {why}; rebuilding",
+                            files.join(", "),
+                        ),
+                    }
                 }
                 overlay_decide::Decision::Rebuild(why) => {
                     eprintln!("[dev] rebuilding: {why}");
@@ -652,7 +843,11 @@ fn watch_loop(dir: PathBuf, signal: Arc<ReloadSignal>, opts: BuildOptions) {
         } else {
             eprintln!("[dev-reload] change detected, rebuilding…");
         }
-        match build_wasm(&dir, &opts) {
+        match build_wasm(&dir, &opts).map(|a| {
+            let changed = a.wasm_changed;
+            base.rebuilt(a);
+            changed
+        }) {
             Ok(true) => {
                 let new_gen = signal.bump();
                 eprintln!("[dev-reload] rebuilt — gen={new_gen}");
@@ -889,15 +1084,18 @@ where
         .context("spawn watch thread")
 }
 
-/// Run one bundle build. `Ok(true)` when the packaging passes ran and
-/// `pkg/` may differ; `Ok(false)` when cargo left the `.wasm` untouched
-/// and `build_web` skipped straight to restaging.
-fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<bool> {
+/// Run one bundle build.
+///
+/// Returns the whole artifact rather than just "did the wasm move":
+/// the hot-patch tier needs the served module's path and the captures
+/// directory, and both are decided inside the build. A caller that only
+/// wants the reload decision reads `wasm_changed`.
+fn build_wasm(dir: &Path, opts: &BuildOptions) -> Result<build_web::BuildArtifact> {
     // Delegate to `build_web::build` — it generates the wrapper,
     // runs wasm-pack against it, and copies `pkg/` into `dir`.
     // Same path `idealyst build web` uses; the dev loop is just
     // "do that, but on debounced file changes".
-    build_web::build(dir, to_build_web_options(opts)).map(|a| a.wasm_changed)
+    build_web::build(dir, to_build_web_options(opts))
 }
 
 /// Map the dev-loop options onto a full `build_web::BuildOptions`.
@@ -1277,4 +1475,37 @@ mod tests {
         });
         assert_eq!(local_package_dirs(&meta), vec![PathBuf::from("/w/solo")]);
     }
+    /// Both tiers share ONE ordered channel. A save that changed a
+    /// literal and a body produces an overlay patch and a hot patch, and
+    /// the page must receive them in the order the dev loop decided
+    /// them — two channels could not promise that, and applying the
+    /// overlay's data to a tree the hot patch has not yet rebuilt shows
+    /// the old body with the new label.
+    #[test]
+    fn the_two_patch_tiers_keep_their_decided_order() {
+        let signal = ReloadSignal::new();
+        signal.push_patch("{\"a\":1}".into());
+        signal.push_hot_patch("{\"b\":2}".into());
+        signal.push_patch("{\"c\":3}".into());
+
+        let kinds: Vec<_> = signal.patches_since(0).iter().map(|p| p.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![PatchKind::Overlay, PatchKind::Hot, PatchKind::Overlay],
+        );
+        let seqs: Vec<_> = signal.patches_since(0).iter().map(|p| p.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3], "one sequence, not one per tier");
+    }
+
+    /// A listener catches up by sequence regardless of kind, so a page
+    /// that missed a hot patch is not handed it again after it reloads.
+    #[test]
+    fn catching_up_skips_what_a_listener_already_saw() {
+        let signal = ReloadSignal::new();
+        signal.push_patch("{}".into());
+        signal.push_hot_patch("{}".into());
+        assert_eq!(signal.patches_since(1).len(), 1);
+        assert_eq!(signal.patches_since(2).len(), 0);
+    }
+
 }
