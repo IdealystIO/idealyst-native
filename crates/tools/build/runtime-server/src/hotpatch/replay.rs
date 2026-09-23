@@ -8,14 +8,13 @@
 //! here to:
 //!
 //!  1. Load the on-disk capture file
-//!  2. Rewrite `--emit=link[,…]` to `--emit=obj`
-//!  3. Spawn rustc with the captured argv + env + cwd
-//!  4. Scrape the artifact json messages for emitted `.o` paths
+//!  2. Rewrite the argv into a patch compile — see [`replay_args`]
+//!  3. Spawn rustc with the captured env + cwd
+//!  4. Collect every `.o` from the replay's private out-dir
 //!
-//! Rustc emits one `.rcgu.o` per codegen unit. For a small bin
-//! that's usually 1; for a big crate with default `codegen-units
-//! = 16` it can be a dozen. The full list is what feeds the
-//! stub generator and the patch link.
+//! Rustc emits one `.rcgu.o` per codegen unit, up to
+//! [`REPLAY_CODEGEN_UNITS`]. The full list is what feeds the stub
+//! generator and the patch link.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -109,38 +108,15 @@ pub fn run_rustc_emit_obj_with(
     captured: &CapturedInvocation,
     extra: &[String],
 ) -> Result<Vec<PathBuf>> {
-    // Rewrite emit args in place. The captured args include
-    // `--emit=dep-info,link` (or similar) — we replace with
-    // `--emit=obj` so rustc skips linking and writes one .rcgu.o
-    // per codegen unit.
-    //
-    // We deliberately keep the rest of the captured argv identical
-    // to cargo's: changing flags (e.g. `-Cdebuginfo=0`) keys to a
-    // different incremental-cache slot than cargo's, so subsequent
-    // replays cold-pay 20-30ms recompile every time. For tiny tip
-    // crates this regression outweighs the small per-pass savings
-    // from less codegen work.
-    let mut args: Vec<String> = Vec::with_capacity(captured.args.len() + 1);
-    let mut emit_set = false;
-    let mut iter = captured.args.iter();
-    while let Some(a) = iter.next() {
-        if a == "--emit" {
-            let _ = iter.next();
-            args.push("--emit=obj".to_string());
-            emit_set = true;
-            continue;
-        }
-        if a.starts_with("--emit=") {
-            args.push("--emit=obj".to_string());
-            emit_set = true;
-            continue;
-        }
-        args.push(a.clone());
-    }
-    if !emit_set {
-        args.push("--emit=obj".to_string());
-    }
-    args.extend(extra.iter().cloned());
+    let out_dir = replay_out_dir(&captured.args)?;
+    // A fresh directory per replay. With many codegen units rustc writes
+    // one object per unit under a HASHED name, so a previous replay's
+    // objects never get overwritten, and linking whatever is lying in
+    // the directory would link stale code next to the new.
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("create {}", out_dir.display()))?;
+    let args = replay_args(&captured.args, extra, &out_dir);
 
     let mut cmd = Command::new(&captured.rustc);
     cmd.args(&args).current_dir(&captured.cwd);
@@ -175,47 +151,18 @@ pub fn run_rustc_emit_obj_with(
         );
     }
 
-    // Cargo passes `--json=...artifacts...` so rustc emits
-    // artifact notifications. They land on stdout (or stderr,
-    // depending on rustc version). Scan both.
-    let mut out: Vec<PathBuf> = Vec::new();
-    let scan = |bytes: &[u8], out: &mut Vec<PathBuf>| {
-        for line in bytes.split(|b| *b == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            let Ok(val) = serde_json::from_slice::<serde_json::Value>(line) else {
-                continue;
-            };
-            if val.get("$message_type").and_then(|v| v.as_str()) == Some("artifact") {
-                if let Some(p) = val.get("artifact").and_then(|v| v.as_str()) {
-                    if p.ends_with(".o") {
-                        out.push(PathBuf::from(p));
-                    }
-                }
-            }
-        }
-    };
-    scan(&output.stdout, &mut out);
-    scan(&output.stderr, &mut out);
-
-    if out.is_empty() {
-        // Defensive: rustc may emit objects without artifact
-        // messages on some flag combos. Re-scan for sibling .o
-        // files in the captured `--out-dir`. The captured args
-        // include `--out-dir <DIR>`; pull it out.
-        if let Some(dir) = arg_value(&captured.args, "--out-dir") {
-            if let Ok(read) = std::fs::read_dir(&dir) {
-                for entry in read.flatten() {
-                    let p = entry.path();
-                    if p.extension().and_then(|s| s.to_str()) == Some("o") {
-                        out.push(p);
-                    }
-                }
-            }
-        }
-    }
-
+    // Every object in the private out-dir is this replay's: the dir was
+    // emptied first. Artifact notifications are not enough on their
+    // own — with several codegen units rustc reports the objects it
+    // wrote, but a unit reused from the incremental cache is copied in
+    // without one.
+    let mut out: Vec<PathBuf> = std::fs::read_dir(&out_dir)
+        .with_context(|| format!("read {}", out_dir.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("o"))
+        .collect();
+    out.sort();
     Ok(out)
 }
 
@@ -235,6 +182,106 @@ fn crate_type_rank(file_name: &str) -> usize {
     }
 }
 
+/// The codegen-unit count a replay asks for when the capture names none:
+/// rustc's own default for an incremental build, which is what the base
+/// build (`--emit=link`) got.
+pub const REPLAY_CODEGEN_UNITS: usize = 256;
+
+/// Where a replay writes its objects: beside the captured `--out-dir`,
+/// never in it (see the call site).
+fn replay_out_dir(captured: &[String]) -> Result<PathBuf> {
+    let deps = arg_value(captured, "--out-dir")
+        .context("the captured rustc invocation has no --out-dir")?;
+    let crate_name = arg_value(captured, "--crate-name").unwrap_or_else(|| "crate".into());
+    let deps = PathBuf::from(deps);
+    let parent = deps.parent().map(Path::to_path_buf).unwrap_or(deps);
+    Ok(parent.join("idealyst-hotpatch-obj").join(crate_name))
+}
+
+/// The captured argv, rewritten into a patch compile.
+///
+/// Four rewrites, each a measured cost when missing:
+///
+/// 1. `--emit=obj` instead of cargo's `--emit=dep-info,metadata,link`:
+///    rustc stops at object files.
+/// 2. **An explicit `-C codegen-units`**, unless the capture sets one.
+///    rustc forces codegen-units to 1 when the emit set contains an
+///    object-like output and no count was given, so the replay compiled
+///    the whole crate as ONE unit and any edit re-codegened all of it.
+///    On CrewForge (146,942 mono items) a one-token edit took 40–46 s;
+///    with 256 units it takes 7.4 s, and a line-shifting edit 6.4 s
+///    instead of 63 s.
+/// 3. **A separate incremental dir** (`<dir>-hotpatch`). The base build
+///    and a replay have different tracked options (emit, codegen units,
+///    relocation model), and rustc discards a session whose options
+///    differ, so sharing one directory made each side throw away the
+///    other's cache: the first patch after a rebuild, and the first
+///    rebuild after a patch, both compiled cold.
+/// 4. `--out-dir` pointed at a private directory.
+///
+/// `-Cmetadata` and everything else stays byte-identical: it seeds the
+/// symbol hashes the jump table pairs on.
+pub fn replay_args(captured: &[String], extra: &[String], out_dir: &Path) -> Vec<String> {
+    let mut args: Vec<String> = Vec::with_capacity(captured.len() + 4);
+    let mut emit_set = false;
+    let mut has_cgus = false;
+    let mut iter = captured.iter().peekable();
+    while let Some(a) = iter.next() {
+        if a == "--emit" {
+            let _ = iter.next();
+            args.push("--emit=obj".to_string());
+            emit_set = true;
+            continue;
+        }
+        if a.starts_with("--emit=") {
+            args.push("--emit=obj".to_string());
+            emit_set = true;
+            continue;
+        }
+        if a == "--out-dir" {
+            let _ = iter.next();
+            args.push("--out-dir".to_string());
+            args.push(out_dir.display().to_string());
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--out-dir=") {
+            let _ = v;
+            args.push(format!("--out-dir={}", out_dir.display()));
+            continue;
+        }
+        // `-C incremental=<dir>` (cargo's spelling) or `-Cincremental=<dir>`.
+        if a == "-C" {
+            if let Some(next) = iter.peek() {
+                if let Some(dir) = next.strip_prefix("incremental=") {
+                    args.push("-C".to_string());
+                    args.push(format!("incremental={dir}-hotpatch"));
+                    let _ = iter.next();
+                    continue;
+                }
+                if next.starts_with("codegen-units=") {
+                    has_cgus = true;
+                }
+            }
+        }
+        if let Some(dir) = a.strip_prefix("-Cincremental=") {
+            args.push(format!("-Cincremental={dir}-hotpatch"));
+            continue;
+        }
+        if a.starts_with("-Ccodegen-units=") {
+            has_cgus = true;
+        }
+        args.push(a.clone());
+    }
+    if !emit_set {
+        args.push("--emit=obj".to_string());
+    }
+    if !has_cgus {
+        args.push(format!("-Ccodegen-units={REPLAY_CODEGEN_UNITS}"));
+    }
+    args.extend(extra.iter().cloned());
+    args
+}
+
 fn arg_value(args: &[String], key: &str) -> Option<String> {
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
@@ -251,6 +298,63 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cargo_argv() -> Vec<String> {
+        [
+            "--crate-name", "app", "--edition=2021", "src/lib.rs",
+            "--emit=dep-info,metadata,link", "-C", "debuginfo=2",
+            "-C", "metadata=abc", "--out-dir", "/t/debug/deps",
+            "-C", "incremental=/t/debug/incremental",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    /// Regression: rustc forces codegen-units=1 when the emit set has an
+    /// object-like output and no count is given, so every patch compiled
+    /// the whole crate as one unit — 40–46 s for a one-token edit on
+    /// CrewForge, against 7.4 s with 256 units.
+    #[test]
+    fn regression_a_replay_asks_for_many_codegen_units() {
+        let args = replay_args(&cargo_argv(), &[], Path::new("/t/obj"));
+        assert!(args.contains(&"-Ccodegen-units=256".to_string()), "{args:?}");
+        assert!(args.contains(&"--emit=obj".to_string()));
+    }
+
+    /// An explicit count in the capture is the author's, and kept.
+    #[test]
+    fn an_explicit_codegen_unit_count_is_kept() {
+        let mut argv = cargo_argv();
+        argv.extend(["-C".to_string(), "codegen-units=4".to_string()]);
+        let args = replay_args(&argv, &[], Path::new("/t/obj"));
+        assert!(!args.iter().any(|a| a == "-Ccodegen-units=256"), "{args:?}");
+    }
+
+    /// Regression: the base build and the replay have different tracked
+    /// options, and a shared incremental dir made each discard the
+    /// other's cache.
+    #[test]
+    fn regression_a_replay_uses_its_own_incremental_dir() {
+        let args = replay_args(&cargo_argv(), &[], Path::new("/t/obj"));
+        assert!(args.contains(&"incremental=/t/debug/incremental-hotpatch".to_string()), "{args:?}");
+        assert!(!args.contains(&"incremental=/t/debug/incremental".to_string()));
+    }
+
+    /// Objects go to a private directory; `-Cmetadata`, which seeds the
+    /// symbol hashes the jump table pairs on, is untouched.
+    #[test]
+    fn a_replay_writes_elsewhere_and_keeps_its_symbol_seed() {
+        let args = replay_args(&cargo_argv(), &["-Crelocation-model=pic".into()], Path::new("/t/obj"));
+        let at = args.iter().position(|a| a == "--out-dir").unwrap();
+        assert_eq!(args[at + 1], "/t/obj");
+        assert!(args.contains(&"metadata=abc".to_string()));
+        assert_eq!(args.last().unwrap(), "-Crelocation-model=pic");
+        assert_eq!(
+            replay_out_dir(&cargo_argv()).unwrap(),
+            PathBuf::from("/t/debug/idealyst-hotpatch-obj/app")
+        );
+    }
 
     fn write(dir: &Path, name: &str) {
         let capture = CapturedInvocation {
