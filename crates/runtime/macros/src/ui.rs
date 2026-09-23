@@ -587,27 +587,26 @@ pub(crate) fn try_emit_fstring_lit(lit: &syn::LitStr) -> Option<TokenStream2> {
     })
 }
 
-/// What a `text` node's content lowers to. Both lowerings consume this
-/// ONE decision so they cannot drift: `emit_text` renders
-/// `text(<expr>)` from it, and the template emitter turns `Literal` into
-/// descriptor data and `Expr` into a `text` slot.
+/// What a `text` node's content lowers to.
 pub(crate) enum TextLowering {
     /// A bare string literal with no f-string placeholders — the one
-    /// content shape a descriptor can carry as data.
-    Literal(String),
+    /// content shape the overlay's descriptor carries as data.
+    /// `emit_text` renders it from the author's own tokens, so the
+    /// decision needs no payload.
+    Literal,
     /// The final content expression to hand to `text(...)`.
     Expr(TokenStream2),
-    /// The migration guard (a bare `.get()` in text position). Rendered
-    /// as-is by both lowerings so the author sees one diagnostic.
+    /// The migration guard (a bare `.get()` in text position), rendered
+    /// as-is so the author sees one diagnostic.
     Error(TokenStream2),
 }
 
 fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     match text_lowering(props, children) {
-        TextLowering::Literal(_) => {
+        TextLowering::Literal => {
             // The literal path is `Expr` too as far as emission goes;
-            // `text_lowering` only splits it out so the descriptor can
-            // see it. Re-render from the original tokens.
+            // `text_lowering` only splits it out. Re-render from the
+            // original tokens.
             let content = literal_content_tokens(props, children);
             quote! { ::runtime_core::text(#content) }
         }
@@ -751,14 +750,14 @@ pub(crate) fn text_lowering(props: &[Prop], children: Option<&[UiNode]>) -> Text
     // author's own tokens, unchanged.
     let content: TokenStream2 = if let Some(kids) = children {
         match kids.len() {
-            0 => return TextLowering::Literal(String::new()),
+            0 => return TextLowering::Literal,
             1 => {
                 if let UiNode::Expr(Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit),
+                    lit: syn::Lit::Str(_),
                     ..
                 })) = &kids[0]
                 {
-                    return TextLowering::Literal(lit.value());
+                    return TextLowering::Literal;
                 }
                 emit_node(&kids[0], Ctx::Single)
             }
@@ -774,12 +773,12 @@ pub(crate) fn text_lowering(props: &[Prop], children: Option<&[UiNode]>) -> Text
             }
         }
     } else if let Some(p) = props.iter().find(|p| p.name == "content") {
-        if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit), .. }) = &p.value {
-            return TextLowering::Literal(lit.value());
+        if let Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(_), .. }) = &p.value {
+            return TextLowering::Literal;
         }
         p.value.to_token_stream()
     } else {
-        return TextLowering::Literal(String::new());
+        return TextLowering::Literal;
     };
 
     TextLowering::Expr(content)

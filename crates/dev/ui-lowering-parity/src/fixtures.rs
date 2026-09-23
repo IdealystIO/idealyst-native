@@ -490,9 +490,9 @@ fixture! {
     }
 }
 
-/// A provably signal-free comparison — a plain Rust `if`, chosen once at
-/// construction. A bare-path condition is type-dispatched instead; see
-/// `static_if`.
+// A provably signal-free comparison — a plain Rust `if`, chosen once at
+// construction. A bare-path condition is type-dispatched instead; see
+// `static_if`.
 fixture! {
     name = static_if_comparison;
     state { }

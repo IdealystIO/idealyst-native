@@ -16,7 +16,6 @@
 #![cfg(feature = "ui-overlay")]
 
 use std::borrow::Cow;
-use std::rc::Rc;
 
 use runtime_macros::{component, ui};
 use runtime_template::{Edit, LiteralValue};

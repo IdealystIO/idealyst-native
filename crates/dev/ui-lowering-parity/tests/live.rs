@@ -191,7 +191,7 @@ fn a_patch_survives_a_state_driven_rebuild_of_its_site() {
 #[test]
 fn rebuilding_an_unrelated_site_is_unaffected() {
     overlay::reset();
-    let mut mounted = Mounted::new(reactive_site);
+    let mounted = Mounted::new(reactive_site);
     let real_site = mounted.site();
 
     // Stage against a site that does not exist in this tree.

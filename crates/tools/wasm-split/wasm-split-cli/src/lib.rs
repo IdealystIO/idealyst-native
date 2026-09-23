@@ -1113,7 +1113,6 @@ impl<'a> Splitter<'a> {
             .iter()
             .filter_map(|f| f.name.clone())
             .collect();
-        let live_func_count = live_bindgen_names.len();
         drop(gc_module);
 
         // 2. Map back to ORIGINAL function byte ranges by name. The

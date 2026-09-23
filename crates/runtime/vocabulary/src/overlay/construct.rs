@@ -112,7 +112,7 @@ pub(crate) fn build(node: &NewNode) -> Option<Element> {
 /// prop that can be CHANGED can also be SET on a new node, by
 /// construction rather than by two lists kept in step.
 fn finish(builder: impl crate::glue::IntoElement, node: &NewNode) -> Element {
-    let mut element = crate::glue::IntoElement::into_element(builder);
+    let element = crate::glue::IntoElement::into_element(builder);
     if let Element::Item { data, .. } = &element {
         for prop in node.props.iter() {
             if let PropValue::Lit(value) = &prop.value {

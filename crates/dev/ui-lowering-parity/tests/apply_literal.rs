@@ -34,6 +34,9 @@ fn Chip(
     #[prop(static, default = Tone::Neutral)]
     tone: Tone,
 ) -> Element {
+    // Only `label` is rendered; the other props exist for the applier
+    // tests below, which read them off the props struct.
+    let _ = (weight, ratio, loud, tone);
     ui! { text { move || label.get() } }
 }
 

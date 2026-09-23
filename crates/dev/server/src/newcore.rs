@@ -177,15 +177,21 @@ impl SceneSession {
         }
 
         let world = World::new();
-        let (vp_sig, realized) = world.enter(|| {
+        let realized = world.enter(|| {
             let element = app();
             let realized = realize(&backend, &registry, element);
             // AFTER the build, never before — an app that installs its
             // own breakpoint table does so inside its root component,
             // and the ctx's bucket memo captures the table at creation.
             // Same ordering `backend-web` documents.
-            let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
-            (vp_sig, realized)
+            //
+            // Called for its side effect only: it creates this world's
+            // `ViewportCtx` if the build did not, and captures it as the
+            // one `viewport_ctx()` returns OUTSIDE `World::enter` — which
+            // is where the sidecar's `ViewportChanged` handler calls
+            // `viewport_ctx().set(size)` on a resize.
+            let _ = runtime_vocabulary::viewport::viewport_ctx();
+            realized
         });
 
         // Single-root contract, matching the old-core `mount` and the

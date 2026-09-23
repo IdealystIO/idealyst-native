@@ -147,6 +147,13 @@ fn corpus() -> Vec<(&'static str, TokenStream2, TokenStream2)> {
     ]
 }
 
+// Same gate as the only test that reads it.
+#[cfg(not(any(
+    feature = "catalog",
+    feature = "debug-stats",
+    feature = "strict-docs",
+    feature = "ui-overlay",
+)))]
 fn golden_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("goldens")
