@@ -42,12 +42,17 @@ use build_ios::FrameworkSource;
 use notify_debouncer_mini::new_debouncer;
 use notify_debouncer_mini::notify::RecursiveMode;
 
-const DEBOUNCE_MS: u64 = 150;
+/// notify-debouncer-mini's own window. Short on purpose: every watcher
+/// loop follows its first batch with [`settle`], whose
+/// [`QUIET_WINDOW_MS`] is what actually coalesces a burst. Measured save to
+/// replay start on the lab: ~605 ms with 150 here (two stacked windows);
+/// the 100 ms taken off was waiting that `settle` redoes anyway.
+const DEBOUNCE_MS: u64 = 50;
 
 /// How long the watcher waits for the filesystem to go quiet before it
 /// starts a build, on top of [`DEBOUNCE_MS`].
 ///
-/// The 150ms debounce is tuned for one editor writing one file: a human
+/// The debounce alone is tuned for one editor writing one file: a human
 /// hits ⌘S and exactly one batch arrives. It is much too short for the
 /// way the tree actually changes now — a multi-file refactor, a
 /// formatter sweeping a crate, or a second agent editing several files
@@ -1010,7 +1015,7 @@ fn drain<T>(rx: &mpsc::Receiver<T>) {
 ///
 /// Returns once either no batch has arrived for [`QUIET_WINDOW_MS`] or
 /// [`MAX_COALESCE_MS`] has elapsed since the first one. See
-/// [`QUIET_WINDOW_MS`] for why a fixed 150ms debounce isn't enough.
+/// [`QUIET_WINDOW_MS`] for why a fixed debounce isn't enough.
 ///
 /// Split out from the watcher loops so the policy is unit-testable
 /// against a plain channel — the loops themselves are infinite and own a
