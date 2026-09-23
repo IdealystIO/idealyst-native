@@ -83,6 +83,24 @@ pub fn find_capture(
 /// Replay rustc, modifying `--emit=` to emit only `.o` files.
 /// Returns the absolute paths of every `.o` rustc produced.
 pub fn run_rustc_emit_obj(captured: &CapturedInvocation) -> Result<Vec<PathBuf>> {
+    run_rustc_emit_obj_with(captured, &[])
+}
+
+/// As [`run_rustc_emit_obj`], with extra rustc flags appended.
+///
+/// The wasm patch build needs `-Crelocation-model=pic`, because a wasm
+/// patch is a PIC side module and its data references have to go through
+/// a GOT the loader can point at the base's memory. The flag is appended
+/// to the REPLAYED argv rather than set in `RUSTFLAGS` on the base build
+/// for one reason that is easy to get wrong: cargo folds `RUSTFLAGS` into
+/// the `-Cmetadata` it passes each crate, `-Cmetadata` seeds the symbol
+/// mangling hash, and a patch whose symbols hash differently from the
+/// base's pairs with nothing. Appending here leaves the captured
+/// `-Cmetadata` exactly as it was.
+pub fn run_rustc_emit_obj_with(
+    captured: &CapturedInvocation,
+    extra: &[String],
+) -> Result<Vec<PathBuf>> {
     // Rewrite emit args in place. The captured args include
     // `--emit=dep-info,link` (or similar) — we replace with
     // `--emit=obj` so rustc skips linking and writes one .rcgu.o
@@ -114,6 +132,7 @@ pub fn run_rustc_emit_obj(captured: &CapturedInvocation) -> Result<Vec<PathBuf>>
     if !emit_set {
         args.push("--emit=obj".to_string());
     }
+    args.extend(extra.iter().cloned());
 
     let mut cmd = Command::new(&captured.rustc);
     cmd.args(&args).current_dir(&captured.cwd);

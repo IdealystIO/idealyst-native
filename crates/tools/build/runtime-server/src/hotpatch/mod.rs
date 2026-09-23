@@ -55,7 +55,12 @@ use anyhow::{Context, Result};
 mod cache;
 mod jumptable;
 mod link;
-mod replay;
+/// Public because the wasm hot-patch pipeline in `build-web` replays the
+/// same captures. Cargo folds `RUSTFLAGS` into `-Cmetadata`, `-Cmetadata`
+/// seeds the symbol mangling, and both pipelines pair symbols by name —
+/// so replaying one capture is the only way either of them gets a patch
+/// whose symbols match the base's. One mechanism, two consumers.
+pub mod replay;
 mod stub;
 
 pub use cache::HostBinCache;

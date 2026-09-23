@@ -1999,6 +1999,7 @@ dependencies = [
  "anyhow",
  "brotli 7.0.0",
  "build-ios",
+ "build-runtime-server",
  "flate2",
  "icon-gen",
  "sha2 0.10.9",

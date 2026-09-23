@@ -36,6 +36,12 @@ wasmparser = { workspace = true }
 # which the read-only `wasmparser` cannot give. Paid only on a hot-patch
 # dev build; a release build never calls into it.
 walrus = { workspace = true }
+# The rustc-invocation capture and replay the native hot-patch pipeline
+# already owns. The wasm patch build replays the same captures for the
+# same reason — cargo folds RUSTFLAGS into `-Cmetadata`, `-Cmetadata`
+# seeds the symbol mangling, and the jump table pairs symbols by name —
+# so this is one mechanism, not two.
+build-runtime-server = { workspace = true }
 # Vendored wasm-split toolchain. Called as a library (not a
 # subprocess) so our patches apply automatically without users
 # needing to install a separate binary on PATH.
