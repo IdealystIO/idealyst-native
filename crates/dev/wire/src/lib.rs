@@ -187,7 +187,26 @@ pub use payload_serde::{
 /// message named `OverlayPatch` and would drop the connection rather
 /// than ignore it. The bump is the signal that lets the two sides
 /// notice.
-pub const PROTOCOL_VERSION: u32 = 18;
+///
+/// **Bumped to 19 for the style "definition" block.** `WireStyleRules`
+/// carried 46 of `StyleRules`' 109 properties, and the missing ones
+/// were not exotic — every border width and colour, both shadows, the
+/// cursor, line-height and letter-spacing. A wire-mode app therefore
+/// rendered FLAT next to the same app in `--local`: cards, inputs,
+/// dividers and separators with no edge, nothing raised, the default
+/// arrow over every control, and text at the browser's default
+/// leading. Every added field is `#[serde(default)]`, so a v18 peer on
+/// either side still decodes and simply carries no definition; the
+/// bump is a signal, not a hard break. `WireCursor` reserves its
+/// catch-all for the same reason — a peer that learns a new cursor
+/// first lands on `Auto`, which is what the node would have had.
+///
+/// Still absent, and the reason this is not the last bump here: the 34
+/// `*_transition` fields, `display` / the grid placement family,
+/// `flex_wrap`, `align_self`, `align_content`, the row/column gaps,
+/// text decoration and transform, `user_select`, `pointer_events` and
+/// `caret_color`. See `docs/hot-reload.md`.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -1250,6 +1269,81 @@ pub struct WireStyleRules {
     // means the client falls back to its `ObjectFit::Contain` default. ---
     #[serde(default)]
     pub object_fit: Option<WireObjectFit>,
+
+    // --- Definition (PROTOCOL_VERSION 19). Without these a wire-mode
+    // app renders FLAT: every card, input, divider and separator loses
+    // its edge, nothing casts a shadow, every interactive element shows
+    // the default arrow, and text sets at the browser's default
+    // leading. They were the largest remaining visual difference from
+    // `--local` after the viewport fix. `#[serde(default)]` so a v18
+    // peer on either side still decodes. ---
+    #[serde(default)]
+    pub border_top_width: Option<f32>,
+    #[serde(default)]
+    pub border_right_width: Option<f32>,
+    #[serde(default)]
+    pub border_bottom_width: Option<f32>,
+    #[serde(default)]
+    pub border_left_width: Option<f32>,
+    #[serde(default)]
+    pub border_top_color: Option<WireColor>,
+    #[serde(default)]
+    pub border_right_color: Option<WireColor>,
+    #[serde(default)]
+    pub border_bottom_color: Option<WireColor>,
+    #[serde(default)]
+    pub border_left_color: Option<WireColor>,
+    #[serde(default)]
+    pub shadow: Option<WireShadow>,
+    #[serde(default)]
+    pub text_shadow: Option<WireShadow>,
+    #[serde(default)]
+    pub cursor: Option<WireCursor>,
+    #[serde(default)]
+    pub line_height: Option<f32>,
+    #[serde(default)]
+    pub letter_spacing: Option<f32>,
+}
+
+/// Wire mirror of `runtime_shared::style::Shadow`. The colour is
+/// pre-resolved like every other colour on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireShadow {
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
+    pub color: WireColor,
+}
+
+/// Wire mirror of `runtime_shared::style::Cursor`.
+///
+/// Spelled out rather than sent as a string so an unknown value is a
+/// decode-time fallback rather than an invalid CSS keyword: a peer that
+/// learns a new cursor before this one does lands on `Auto`, which is
+/// what the node would have had anyway.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireCursor {
+    Default,
+    Pointer,
+    Text,
+    Wait,
+    Progress,
+    Help,
+    NotAllowed,
+    Move,
+    Grab,
+    Grabbing,
+    Crosshair,
+    ColResize,
+    RowResize,
+    EwResize,
+    NsResize,
+    /// Also the catch-all: a peer that learns a new cursor before this
+    /// one does lands here, which is what the node would have had
+    /// anyway. Must stay last — `#[serde(other)]` requires it.
+    #[default]
+    #[serde(other)]
+    Auto,
 }
 
 /// Wire mirror of `runtime_core::Position`. The mobile-flavored

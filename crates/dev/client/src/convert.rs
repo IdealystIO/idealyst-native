@@ -285,7 +285,57 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
     s.background_gradient = w.background_gradient.map(wire_gradient);
     s.object_fit = w.object_fit.map(wire_object_fit);
 
+    // Definition (v19). Absent, a wire-mode app renders flat: no
+    // borders on cards/inputs/dividers, no shadows, the default arrow
+    // over every button, and text at the browser's default leading.
+    s.border_top_width = w.border_top_width.map(Tokenized::Literal);
+    s.border_right_width = w.border_right_width.map(Tokenized::Literal);
+    s.border_bottom_width = w.border_bottom_width.map(Tokenized::Literal);
+    s.border_left_width = w.border_left_width.map(Tokenized::Literal);
+    s.border_top_color = w.border_top_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
+    s.border_right_color = w.border_right_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
+    s.border_bottom_color =
+        w.border_bottom_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
+    s.border_left_color = w.border_left_color.map(|c| Tokenized::Literal(wire_color_to_color(c)));
+    s.shadow = w.shadow.map(wire_shadow);
+    s.text_shadow = w.text_shadow.map(wire_shadow);
+    s.cursor = w.cursor.map(wire_cursor);
+    s.line_height = w.line_height.map(Tokenized::Literal);
+    s.letter_spacing = w.letter_spacing.map(Tokenized::Literal);
+
     s
+}
+
+pub fn wire_shadow(s: wire::WireShadow) -> runtime_shared::style::Shadow {
+    runtime_shared::style::Shadow {
+        x: s.x,
+        y: s.y,
+        blur: s.blur,
+        color: wire_color_to_color(s.color),
+    }
+}
+
+pub fn wire_cursor(c: wire::WireCursor) -> runtime_shared::style::Cursor {
+    use runtime_shared::style::Cursor as C;
+    use wire::WireCursor as W;
+    match c {
+        W::Auto => C::Auto,
+        W::Default => C::Default,
+        W::Pointer => C::Pointer,
+        W::Text => C::Text,
+        W::Wait => C::Wait,
+        W::Progress => C::Progress,
+        W::Help => C::Help,
+        W::NotAllowed => C::NotAllowed,
+        W::Move => C::Move,
+        W::Grab => C::Grab,
+        W::Grabbing => C::Grabbing,
+        W::Crosshair => C::Crosshair,
+        W::ColResize => C::ColResize,
+        W::RowResize => C::RowResize,
+        W::EwResize => C::EwResize,
+        W::NsResize => C::NsResize,
+    }
 }
 
 pub fn wire_object_fit(o: WireObjectFit) -> ObjectFit {
@@ -583,5 +633,112 @@ pub fn wire_virtual_layout(
         },
         main_spacing,
         cross_spacing,
+    }
+}
+
+#[cfg(test)]
+mod definition_tests {
+    use super::*;
+
+    /// The fields that make an app look like an app.
+    ///
+    /// `WireStyleRules` carried 46 of `StyleRules`' 109 properties, and
+    /// the absent ones were not exotic: every border width and colour,
+    /// both shadows, the cursor, line-height and letter-spacing. A
+    /// wire-mode app therefore rendered FLAT — cards, inputs, dividers
+    /// and separators with no edge, nothing raised, the default arrow
+    /// over every button, and text at the browser's default leading.
+    ///
+    /// This is the CLIENT half; `dev-server`'s `convert_out` suite
+    /// pins the recorder half, and `mock-backend`'s wire goldens pin
+    /// that the two agree on the encoding.
+    #[test]
+    fn regression_definition_properties_reach_the_style_rules() {
+        let w = wire::WireStyleRules {
+            border_top_width: Some(2.0),
+            border_right_width: Some(3.0),
+            border_bottom_width: Some(4.0),
+            border_left_width: Some(5.0),
+            border_top_color: Some(wire::WireColor("#102030".into())),
+            border_right_color: Some(wire::WireColor("#112233".into())),
+            border_bottom_color: Some(wire::WireColor("#223344".into())),
+            border_left_color: Some(wire::WireColor("#334455".into())),
+            shadow: Some(wire::WireShadow {
+                x: 0.0,
+                y: 4.0,
+                blur: 12.0,
+                color: wire::WireColor("#00000033".into()),
+            }),
+            text_shadow: Some(wire::WireShadow {
+                x: 1.0,
+                y: 1.0,
+                blur: 2.0,
+                color: wire::WireColor("#000000".into()),
+            }),
+            cursor: Some(wire::WireCursor::Pointer),
+            line_height: Some(1.5),
+            letter_spacing: Some(0.4),
+            ..Default::default()
+        };
+        let s = wire_style_to_rules(w);
+
+        assert_eq!(s.border_top_width.map(|t| *t.value()), Some(2.0));
+        assert_eq!(s.border_right_width.map(|t| *t.value()), Some(3.0));
+        assert_eq!(s.border_bottom_width.map(|t| *t.value()), Some(4.0));
+        assert_eq!(s.border_left_width.map(|t| *t.value()), Some(5.0));
+        assert!(s.border_top_color.is_some(), "a card with no edge is the bug");
+        assert!(s.border_left_color.is_some());
+        let sh = s.shadow.expect("shadow must cross");
+        assert_eq!((sh.x, sh.y, sh.blur), (0.0, 4.0, 12.0));
+        assert!(s.text_shadow.is_some());
+        assert_eq!(s.cursor, Some(runtime_shared::style::Cursor::Pointer));
+        assert_eq!(s.line_height.map(|t| *t.value()), Some(1.5));
+        assert_eq!(s.letter_spacing.map(|t| *t.value()), Some(0.4));
+    }
+
+    /// Every cursor maps to its twin — a silent fallback to `Auto` on
+    /// one of them is a control that stops showing its affordance.
+    #[test]
+    fn every_cursor_maps_to_its_twin() {
+        use runtime_shared::style::Cursor as C;
+        use wire::WireCursor as W;
+        let pairs = [
+            (W::Auto, C::Auto), (W::Default, C::Default), (W::Pointer, C::Pointer),
+            (W::Text, C::Text), (W::Wait, C::Wait), (W::Progress, C::Progress),
+            (W::Help, C::Help), (W::NotAllowed, C::NotAllowed), (W::Move, C::Move),
+            (W::Grab, C::Grab), (W::Grabbing, C::Grabbing), (W::Crosshair, C::Crosshair),
+            (W::ColResize, C::ColResize), (W::RowResize, C::RowResize),
+            (W::EwResize, C::EwResize), (W::NsResize, C::NsResize),
+        ];
+        for (w, c) in pairs {
+            assert_eq!(wire_cursor(w), c, "{w:?} mapped wrong");
+        }
+    }
+
+    /// A peer that has not learned a cursor yet decodes it as `Auto` —
+    /// what the node would have had anyway — rather than failing the
+    /// decode and dropping the whole style.
+    #[test]
+    fn an_unknown_cursor_decodes_as_auto() {
+        let c: wire::WireCursor = serde_json::from_str("\"SomethingNewerThanUs\"").unwrap();
+        assert_eq!(c, wire::WireCursor::Auto);
+    }
+
+    /// A v18 peer omits the whole block; decoding must still succeed
+    /// and simply carry no definition, not fail the frame.
+    #[test]
+    fn a_style_from_an_older_peer_still_decodes() {
+        let json = r#"{"background":null,"color":null,"font_size":null,
+            "flex_direction":null,"justify_content":null,"align_items":null,"gap":null,
+            "flex_grow":null,"flex_shrink":null,"flex_basis":null,
+            "width":null,"height":null,"min_width":null,"min_height":null,
+            "max_width":null,"max_height":null,"aspect_ratio":null,
+            "padding_top":null,"padding_right":null,"padding_bottom":null,"padding_left":null,
+            "margin_top":null,"margin_right":null,"margin_bottom":null,"margin_left":null,
+            "border_top_left_radius":null,"border_top_right_radius":null,
+            "border_bottom_left_radius":null,"border_bottom_right_radius":null,
+            "opacity":null,"font_weight":null,"font_family":null,"text_align":null}"#;
+        let w: wire::WireStyleRules = serde_json::from_str(json).expect("v18 style decodes");
+        assert!(w.cursor.is_none() && w.shadow.is_none() && w.border_top_width.is_none());
     }
 }

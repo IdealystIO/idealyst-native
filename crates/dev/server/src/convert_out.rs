@@ -247,6 +247,22 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
         }),
         background_gradient: r.background_gradient.as_ref().map(gradient_to_wire),
         object_fit: r.object_fit.map(object_fit_to_wire),
+
+        // Definition. See `WireStyleRules`' v19 block for why these
+        // matter more than their count suggests.
+        border_top_width: r.border_top_width.as_ref().map(tokenized_f32),
+        border_right_width: r.border_right_width.as_ref().map(tokenized_f32),
+        border_bottom_width: r.border_bottom_width.as_ref().map(tokenized_f32),
+        border_left_width: r.border_left_width.as_ref().map(tokenized_f32),
+        border_top_color: r.border_top_color.as_ref().map(tokenized_color),
+        border_right_color: r.border_right_color.as_ref().map(tokenized_color),
+        border_bottom_color: r.border_bottom_color.as_ref().map(tokenized_color),
+        border_left_color: r.border_left_color.as_ref().map(tokenized_color),
+        shadow: r.shadow.as_ref().map(shadow_to_wire),
+        text_shadow: r.text_shadow.as_ref().map(shadow_to_wire),
+        cursor: r.cursor.map(cursor_to_wire),
+        line_height: r.line_height.as_ref().map(tokenized_f32),
+        letter_spacing: r.letter_spacing.as_ref().map(tokenized_f32),
     }
 }
 
@@ -540,5 +556,89 @@ mod tests {
             length_to_wire(Length::Full),
             WireLength::Px(v) if v == Length::FULL_RADIUS_FALLBACK_PX
         ));
+    }
+}
+
+/// `Shadow` → its wire mirror. The colour resolves like every other
+/// colour on the wire (see `tokenized_color`).
+fn shadow_to_wire(s: &runtime_shared::style::Shadow) -> wire::WireShadow {
+    wire::WireShadow {
+        x: s.x,
+        y: s.y,
+        blur: s.blur,
+        color: color_to_wire(&s.color),
+    }
+}
+
+/// `Cursor` → its wire mirror. Exhaustive on purpose: a new cursor
+/// variant should be a compile error here, not a silent `Auto`.
+fn cursor_to_wire(c: runtime_shared::style::Cursor) -> wire::WireCursor {
+    use runtime_shared::style::Cursor as C;
+    use wire::WireCursor as W;
+    match c {
+        C::Auto => W::Auto,
+        C::Default => W::Default,
+        C::Pointer => W::Pointer,
+        C::Text => W::Text,
+        C::Wait => W::Wait,
+        C::Progress => W::Progress,
+        C::Help => W::Help,
+        C::NotAllowed => W::NotAllowed,
+        C::Move => W::Move,
+        C::Grab => W::Grab,
+        C::Grabbing => W::Grabbing,
+        C::Crosshair => W::Crosshair,
+        C::ColResize => W::ColResize,
+        C::RowResize => W::RowResize,
+        C::EwResize => W::EwResize,
+        C::NsResize => W::NsResize,
+    }
+}
+
+#[cfg(test)]
+mod definition_tests {
+    use super::*;
+    use runtime_shared::style::{Cursor, Shadow};
+
+    /// The recorder half of the v19 definition block. Its twin lives in
+    /// `dev-client`'s `convert` suite; together they pin that a card's
+    /// edge, a raised surface, a pointer cursor and a line-height
+    /// actually leave the sidecar.
+    ///
+    /// Before this, `style_rules_to_wire` started from the 46-field
+    /// subset and silently dropped the rest, so a wire-mode app
+    /// rendered flat with no error anywhere.
+    #[test]
+    fn regression_definition_properties_leave_the_recorder() {
+        let mut r = StyleRules::default();
+        r.border_top_width = Some(Tokenized::Literal(2.0));
+        r.border_left_width = Some(Tokenized::Literal(5.0));
+        r.border_top_color = Some(Tokenized::Literal(Color("#102030".to_string())));
+        r.shadow = Some(Shadow { x: 0.0, y: 4.0, blur: 12.0, color: Color("#000000".to_string()) });
+        r.text_shadow = Some(Shadow { x: 1.0, y: 1.0, blur: 2.0, color: Color("#000000".to_string()) });
+        r.cursor = Some(Cursor::Pointer);
+        r.line_height = Some(Tokenized::Literal(1.5));
+        r.letter_spacing = Some(Tokenized::Literal(0.4));
+
+        let w = style_rules_to_wire(&r);
+        assert_eq!(w.border_top_width, Some(2.0));
+        assert_eq!(w.border_left_width, Some(5.0));
+        assert!(w.border_top_color.is_some());
+        assert!(w.shadow.is_some() && w.text_shadow.is_some());
+        assert_eq!(w.cursor, Some(wire::WireCursor::Pointer));
+        assert_eq!(w.line_height, Some(1.5));
+        assert_eq!(w.letter_spacing, Some(0.4));
+    }
+
+    /// A style with none of them set must not start inventing values —
+    /// `None` has to stay `None` or every node gains a 0px border.
+    #[test]
+    fn an_undecorated_style_carries_no_definition() {
+        let w = style_rules_to_wire(&StyleRules::default());
+        assert!(w.border_top_width.is_none());
+        assert!(w.border_top_color.is_none());
+        assert!(w.shadow.is_none());
+        assert!(w.cursor.is_none());
+        assert!(w.line_height.is_none());
     }
 }
