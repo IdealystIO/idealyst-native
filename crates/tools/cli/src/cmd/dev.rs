@@ -1601,6 +1601,8 @@ fn launch_web(
                     // thin client the user never iterates on, so the
                     // compaction is worth more than the packaging time.
                     wasm_split: true,
+                    // Set only by the --local web loop when the hot-patch tier is armed.
+                    hot_patch: false,
                     debuginfo: build_web::DebugInfo::default(),
                     dev_opt: build_web::DevOpt::default(),
                 },
@@ -1691,6 +1693,8 @@ fn launch_web(
                     // trading a bigger served wasm for a shorter
                     // packaging tail. Splitting stays the default.
                     wasm_split: args.split,
+                    // Set only by the --local web loop when the hot-patch tier is armed.
+                    hot_patch: false,
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 },
@@ -1989,6 +1993,8 @@ fn launch_ssr(
                 // Honors the same `--no-split` the local-web dev path
                 // does — this rebuilds the same wasm on every save.
                 wasm_split: args.split,
+                // Set only by the --local web loop when the hot-patch tier is armed.
+                hot_patch: false,
                 debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
                 // Follows the session's resolved core (runtime-v2
@@ -2286,6 +2292,8 @@ fn full_stack_bundle_options(
         // Same override the plain local-web path honors — the
         // full-stack loop rebuilds the same wasm on every save.
         wasm_split: args.split,
+        // Set only by the --local web loop when the hot-patch tier is armed.
+        hot_patch: false,
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
     })

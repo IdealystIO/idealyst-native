@@ -619,6 +619,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
                 args.no_data_prune,
             ),
             wasm_split: !args.no_split,
+            // Set only by the --local web loop when the hot-patch tier is armed.
+            hot_patch: false,
             debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
             dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
             // `--premint-only` strips the engine, so it MUST also premint —

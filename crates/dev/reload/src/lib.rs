@@ -276,6 +276,10 @@ pub struct BuildOptions {
     /// wire mode on a full-stack project, where the bundle is built
     /// once and the browser is a thin client.
     pub runtime_server_url: Option<String>,
+    /// [`build_web::BuildOptions::hot_patch`] — build a base module a
+    /// subsecond patch can link against. Dev-only; set by the `--local`
+    /// web loop when the hot-patch tier is armed.
+    pub hot_patch: bool,
     /// Premint static styles on every rebuild (`idealyst dev … --premint`).
     /// Each build runs the native style dump and refreshes
     /// `pkg/premint.css` alongside the wasm, and the wasm compiles with
@@ -345,6 +349,7 @@ pub fn start(
             robot_relay_url: None,
             head_script: None,
             runtime_server_url: None,
+            hot_patch: false,
             premint: false,
             premint_only: false,
             premint_report: false,
@@ -902,6 +907,7 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
     let premint = opts.premint || opts.premint_only || opts.premint_report;
     build_web::BuildOptions {
         wasm_split: opts.wasm_split,
+        hot_patch: opts.hot_patch,
         debuginfo: opts.debuginfo,
         // Dev reload always builds the full vocabulary: the flag is a
         // release-bundle lever, and a dev rebuild that dropped a
@@ -1043,6 +1049,7 @@ mod tests {
             robot_relay_url: None,
             head_script: None,
             runtime_server_url: None,
+            hot_patch: false,
             premint,
             premint_only: only,
             premint_report: report,

@@ -145,6 +145,7 @@ pub fn run(args: Args) -> Result<()> {
             // No CLI surface for this on `docs`; splitting is the
             // default everywhere else too.
             wasm_split: true,
+            hot_patch: false,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
             premint: false,

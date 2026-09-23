@@ -579,6 +579,7 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 // No flag on `run server` — split, like every other
                 // build that doesn't ask otherwise.
                 wasm_split: true,
+                hot_patch: false,
                 debuginfo: build_web::DebugInfo::default(),
                 dev_opt: build_web::DevOpt::default(),
             },
