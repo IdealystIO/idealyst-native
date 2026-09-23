@@ -1091,6 +1091,7 @@ const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
 ///
 /// - `bind` takes a `Ref<ScrollViewHandle>`; every primitive spells
 ///   that as `.bind(r)` after the call, never inline.
+#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
 const SCROLL_VIEW_BUILDER_ONLY: &[&str] = &["bind"];
 
 /// `scroll_view(horizontal = bool, on_scroll = …, on_end_reached = …,
@@ -1266,55 +1267,42 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
+/// The `overlay` props `emit_overlay` lowers to a `.name(v)` builder call,
+/// in emission order. `setter_tables_cover_every_glue_setter` checks this
+/// against `GlueOverlay`'s setters, so a setter added to the glue without
+/// an entry here fails a test instead of compiling and being dropped.
+/// (`click_through` was exactly that: `overlay(click_through = true)`
+/// compiled and reached nothing, so a toast strip swallowed the clicks
+/// under it.)
+const OVERLAY_BUILDER_PROPS: &[&str] =
+    &["placement", "backdrop", "backdrop_style", "on_dismiss", "trap_focus", "click_through"];
+
+/// `GlueOverlay` setters the emitter does not lower by name:
+/// - `with_style` is what `style = …` lowers to (the generic style path);
+/// - `on_handle` takes a `FnOnce(PortalHandle)` and is spelled after the
+///   call like every `on_handle`.
+#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
+const OVERLAY_BUILDER_ONLY: &[&str] = &["with_style", "on_handle"];
+
+/// The `anchored_overlay` props lowered by name, in emission order.
+/// `target` is not here: it is positional (see `emit_anchored_overlay`).
+const ANCHORED_OVERLAY_BUILDER_PROPS: &[&str] =
+    &["side", "align", "offset", "backdrop", "backdrop_style", "on_dismiss", "trap_focus"];
+
+/// `GlueAnchoredOverlay` setters not lowered by name — same reasons as
+/// [`OVERLAY_BUILDER_ONLY`].
+#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
+const ANCHORED_OVERLAY_BUILDER_ONLY: &[&str] = &["with_style", "on_handle"];
+
 /// `Overlay(placement = ..., backdrop = ..., backdrop_style = ...,
-///          on_dismiss = ..., trap_focus = ...) { children }`.
+///          on_dismiss = ..., trap_focus = ..., click_through = ...) { children }`.
 /// Lowers to `overlay(children).placement(...).backdrop(...)…` chain.
 /// Viewport-anchored only; for element-anchored cases use
 /// `AnchoredOverlay` (handled by `emit_anchored_overlay`).
 fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
-
-    let placement_call = props
-        .iter()
-        .find(|p| p.name == "placement")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .placement(#v) }
-        })
-        .unwrap_or_default();
-    let backdrop_call = props
-        .iter()
-        .find(|p| p.name == "backdrop")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .backdrop(#v) }
-        })
-        .unwrap_or_default();
-    let backdrop_style_call = props
-        .iter()
-        .find(|p| p.name == "backdrop_style")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .backdrop_style(#v) }
-        })
-        .unwrap_or_default();
-    let on_dismiss_call = props
-        .iter()
-        .find(|p| p.name == "on_dismiss")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .on_dismiss(#v) }
-        })
-        .unwrap_or_default();
-    let trap_focus_call = props
-        .iter()
-        .find(|p| p.name == "trap_focus")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .trap_focus(#v) }
-        })
-        .unwrap_or_default();
+    let calls = builder_calls(props, OVERLAY_BUILDER_PROPS);
 
     quote! {
         ::runtime_core::primitives::overlay::overlay({
@@ -1323,11 +1311,7 @@ fn emit_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
         })
-        #placement_call
-        #backdrop_call
-        #backdrop_style_call
-        #on_dismiss_call
-        #trap_focus_call
+        #calls
     }
 }
 
@@ -1356,63 +1340,7 @@ fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
                 compile_error!("AnchoredOverlay requires a `target = ...` prop")
             }
         });
-
-    let side_call = props
-        .iter()
-        .find(|p| p.name == "side")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .side(#v) }
-        })
-        .unwrap_or_default();
-    let align_call = props
-        .iter()
-        .find(|p| p.name == "align")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .align(#v) }
-        })
-        .unwrap_or_default();
-    let offset_call = props
-        .iter()
-        .find(|p| p.name == "offset")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .offset(#v) }
-        })
-        .unwrap_or_default();
-    let backdrop_call = props
-        .iter()
-        .find(|p| p.name == "backdrop")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .backdrop(#v) }
-        })
-        .unwrap_or_default();
-    let backdrop_style_call = props
-        .iter()
-        .find(|p| p.name == "backdrop_style")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .backdrop_style(#v) }
-        })
-        .unwrap_or_default();
-    let on_dismiss_call = props
-        .iter()
-        .find(|p| p.name == "on_dismiss")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .on_dismiss(#v) }
-        })
-        .unwrap_or_default();
-    let trap_focus_call = props
-        .iter()
-        .find(|p| p.name == "trap_focus")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .trap_focus(#v) }
-        })
-        .unwrap_or_default();
+    let calls = builder_calls(props, ANCHORED_OVERLAY_BUILDER_PROPS);
 
     quote! {
         ::runtime_core::primitives::overlay::anchored_overlay(
@@ -1424,13 +1352,7 @@ fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
                 __c
             },
         )
-        #side_call
-        #align_call
-        #offset_call
-        #backdrop_call
-        #backdrop_style_call
-        #on_dismiss_call
-        #trap_focus_call
+        #calls
     }
 }
 
@@ -1577,6 +1499,7 @@ const FLAT_LIST_BUILDER_PROPS: &[&str] = &[
 ///   spelling of the `main_spacing`/`cross_spacing` pair). It used to be
 ///   in BOTH, which emitted `.gap(v).gap(v)` and evaluated the author's
 ///   expression twice.
+#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
 const FLAT_LIST_BUILDER_ONLY: &[&str] = &["on_handle", "spacing", "gap"];
 
 /// Emit a user-defined component invocation as a `BuildElement` struct
@@ -2523,6 +2446,21 @@ mod tests {
         );
     }
 
+    /// Regression: `overlay(click_through = …)` was dropped by
+    /// `emit_overlay`, which lowered a hand-written prop list that had no
+    /// `click_through` arm. Only a method CALL proves the forwarding (the
+    /// salvage copy of the input mentions the prop name too).
+    #[test]
+    fn regression_overlay_click_through_lowers_to_a_call() {
+        let out = parse_and_emit(quote::quote! {
+            overlay(click_through = true) { text { "toast" } }
+        });
+        assert!(
+            out.contains(". click_through (true)"),
+            "the emitted overlay must carry a `.click_through(…)` CALL; got:\n{out}"
+        );
+    }
+
     /// Every setter on the glue builder is either lowered inline by name
     /// or declared builder-only with a reason. Three times in one week a
     /// new `scroll_view` / `flat_list` setter landed without an entry in
@@ -2572,6 +2510,8 @@ mod tests {
         for (ty, inline, builder_only) in [
             ("GlueScrollView", SCROLL_VIEW_BUILDER_PROPS, SCROLL_VIEW_BUILDER_ONLY),
             ("GlueFlatList", FLAT_LIST_BUILDER_PROPS, FLAT_LIST_BUILDER_ONLY),
+            ("GlueOverlay", OVERLAY_BUILDER_PROPS, OVERLAY_BUILDER_ONLY),
+            ("GlueAnchoredOverlay", ANCHORED_OVERLAY_BUILDER_PROPS, ANCHORED_OVERLAY_BUILDER_ONLY),
         ] {
             for setter in setters_of(&glue, ty) {
                 let covered = inline.contains(&setter.as_str()) || builder_only.contains(&setter.as_str());

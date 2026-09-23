@@ -39,6 +39,7 @@ gate: turning the feature on must not change what a site builds.
 | `round_trip.rs` | `Element(original) + apply(diff(desc(original), desc(edited))) == Element(edited)` |
 | `apply_literal.rs` | `#[component]`/`#[props]`' generated `__apply_literal`: application through the `Reactive` wrap, integer narrowing, refusal reporting, and the blanket fallback for a props type the macro never touched |
 | `double_eval.rs` | props the emitter used to splice twice stay spliced once |
+| `overlay_props.rs` | `overlay(click_through = …)` reaches the portal (it used to compile and be dropped) |
 
 ## How a fixture is recorded
 
