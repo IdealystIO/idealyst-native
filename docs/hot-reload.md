@@ -94,6 +94,46 @@ takes the NATIVE arm. If that arm was written for a phone or for an SSR
 prerender, it may be wrong here — a boot probe skipped "because SSR has
 no reactor" will also be skipped in the sidecar, which does have one.
 
+### Parity with `--local` — what is still different
+
+Wire mode moves the app out of the browser, so anything the browser's
+own engine was doing has to be reproduced over the protocol. Most of it
+is; some is not yet. Measured against the same app in `--local`:
+
+**Fixed (was wrong, now matches):**
+
+| | |
+|---|---|
+| Window size | The sidecar had no viewport at all, so every breakpoint classified as `Xs` and the app painted its MOBILE layout at any width. |
+| Platform identity | The recorder answered `Custom("")`, whose `is_apple()`/`is_mobile()`/`is_tv()` predicates are all `false`. It now reports the CLIENT's platform. |
+| Borders, shadows, cursor, leading | 63 of 109 style properties did not cross. The block that makes an app look like an app now does. |
+
+**Still different, in rough order of how much you notice:**
+
+| | Why |
+|---|---|
+| No hover / pressed / focus styling | The recorder reports `handles_states_natively() == false`, so the engine takes the event-driven path — and the browser's `attach_states` is an intentional no-op, because on web CSS pseudo-classes normally do this job. The loop is built and broken at one point. |
+| Nothing eases; everything snaps | The 34 `*_transition` style fields still do not cross. |
+| Anchored overlays appear centred | `CreatePortal` collapses an `Anchor` target to viewport-centre — the sidecar cannot hand the client a live anchor node. |
+| Closed overlays stay in the DOM | `ReleaseNode` does not call `release_portal`, so backdrops keep swallowing clicks. |
+| Virtualized lists render nothing | `apply_create_virtualizer` is a stub; the node is never registered, so every later op about it is skipped. |
+| Navigator chrome missing | No header, title, back button or transition — a navigator is a `div` that swaps its child. |
+| Grid layouts collapse to flex | `display` and the grid placement family do not cross. |
+| Canvas / chart surfaces are blank | Nothing populates the client's graphics registry. |
+| Dark-mode switch does nothing | `ColorSchemeChanged` is a no-op in the sidecar. |
+| No programmatic scroll or focus | Those capability handles resolve to their no-op defaults. |
+
+If one of these is in your way, `--local` is the escape hatch for that
+session.
+
+### Two sessions of one project
+
+The port sentinel is keyed by the CLI's pid, so two sessions no longer
+hand each other's browser tabs to the wrong sidecar. They DO still
+share the sidecar/host binaries under the framework's `target/` and the
+staged bundle under the project's — so two sessions of the same project
+will rebuild over each other. Use one at a time, or different projects.
+
 ### Navigation is partly wired
 
 The sidecar has no address bar. What works and what does not:

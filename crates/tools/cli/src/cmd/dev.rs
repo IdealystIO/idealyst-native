@@ -3308,11 +3308,23 @@ fn runtime_server_port_file(project_dir: &Path) -> PathBuf {
     // appears and we time out cleanly.
     let workspace_root = build_ios::require_workspace_root(project_dir)
         .unwrap_or_else(|_| project_dir.to_path_buf());
+    // Keyed by THIS CLI's pid.
+    //
+    // Two dev sessions of the same project on one machine shared this
+    // path. Each cleared it, each host wrote to it, and whichever read
+    // first won — so the second session's browser tabs connected to the
+    // FIRST session's sidecar. Nothing errored; the app simply
+    // rendered someone else's tree, and a save in one window changed
+    // the other. Per-pid, the two cannot see each other's.
+    //
+    // The sentinel is written and read within one CLI process, so the
+    // pid is available to both ends by construction. (The binaries and
+    // the staged bundle are still shared — see `docs/hot-reload.md`.)
     workspace_root
         .join("target/idealyst")
         .join(project_name)
         .join("runtime-server")
-        .join("host-port")
+        .join(format!("host-port.{}", std::process::id()))
 }
 
 /// Poll the runtime-server host's port sentinel file. The host writes
