@@ -606,7 +606,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     //
     // The config key is what stops the far nastier version of the same
     // problem — see [`config_key`].
-    let key = config_key(&opts);
+    let key = config_key(&opts, &project_dir);
     let target_dir = opts
         .source
         .cargo_target_dir(&project_dir)
@@ -2105,9 +2105,32 @@ fn passes_skippable(
 /// directories". The cost is disk: each configuration you actually use
 /// keeps its own dependency build. Directories are created lazily, so an
 /// unused combination costs nothing.
-fn config_key(opts: &BuildOptions) -> String {
+///
+/// # One exception to the sharing: an armed hot-patch tier
+///
+/// With `hot_patch` on, the key also carries the PROJECT, so each app
+/// gets a directory of its own. A patch replays the app crate's captured
+/// rustc argv minutes after the build that captured it, outside cargo's
+/// lock, against whatever rlibs and rmetas are on disk by then — and a
+/// sibling app's build in a shared directory rewrites some of them in
+/// place. `backend-web` ships a cdylib, so cargo gives its rlib no hash
+/// suffix: every app writes the one `libbackend_web.rlib`. Measured: with
+/// the user's lab session and CrewForge sharing a directory, the replay
+/// failed with "can't find crate for `crewforge_ui_shared`", the
+/// locator's log reading `video -> backend_web: Rejecting via hash`. The
+/// captures (`idealyst-hotpatch/captures/<crate>.json`, keyed by crate
+/// name) live under the directory too, so they separate with it.
+fn config_key(opts: &BuildOptions, project_dir: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
+    if opts.hot_patch {
+        let project = project_dir
+            .canonicalize()
+            .unwrap_or_else(|_| project_dir.to_path_buf());
+        h.update(b"hot-patch\x1f");
+        h.update(project.to_string_lossy().as_bytes());
+        h.update(b"\x1f");
+    }
     // Every field here MUST be one that invalidates the whole graph. Adding
     // a field that doesn't just fragments the cache for no benefit; leaving
     // one out reintroduces the thrash this exists to prevent.
@@ -3179,8 +3202,8 @@ mod regression_tests {
         dev.hydrate = true;
         let build = key_opts();
         assert_ne!(
-            config_key(&dev),
-            config_key(&build),
+            config_key(&dev, Path::new("/project")),
+            config_key(&build, Path::new("/project")),
             "dev (hydrate on) and build (hydrate off) must not evict each other",
         );
     }
@@ -3191,7 +3214,7 @@ mod regression_tests {
     /// reintroduces the full-rebuild-on-toggle behavior.
     #[test]
     fn config_key_separates_every_graph_invalidating_flag() {
-        let base = config_key(&key_opts());
+        let base = config_key(&key_opts(), Path::new("/project"));
         let mut seen = vec![base.clone()];
         let mutate: Vec<(&str, fn(&mut BuildOptions))> = vec![
             ("release", |o| o.release = true),
@@ -3208,11 +3231,43 @@ mod regression_tests {
         for (name, f) in mutate {
             let mut o = key_opts();
             f(&mut o);
-            let k = config_key(&o);
+            let k = config_key(&o, Path::new("/project"));
             assert_ne!(k, base, "{name} must change the target dir key");
             assert!(!seen.contains(&k), "{name} collided with an earlier key");
             seen.push(k);
         }
+    }
+
+    /// Regression: with the hot-patch tier armed, two apps must never
+    /// share a web target dir. The replay reads rlibs outside cargo's
+    /// lock, and a sibling app's build rewrites the unsuffixed
+    /// `libbackend_web.rlib` in place — CrewForge's first patch of every
+    /// session failed with "can't find crate" while the user's lab session
+    /// built in the same directory.
+    #[test]
+    fn regression_hot_patch_builds_of_two_apps_never_share_a_target_dir() {
+        let mut o = key_opts();
+        o.hot_patch = true;
+        assert_ne!(
+            config_key(&o, Path::new("/apps/lab")),
+            config_key(&o, Path::new("/apps/crewforge")),
+        );
+        // Same app, same key: a session's rebuilds reuse its own cache.
+        assert_eq!(
+            config_key(&o, Path::new("/apps/lab")),
+            config_key(&o, Path::new("/apps/lab")),
+        );
+    }
+
+    /// Without the tier, sibling apps keep sharing dependency builds —
+    /// the reason the directory is not per-project in the first place.
+    #[test]
+    fn without_hot_patch_sibling_apps_still_share_a_target_dir() {
+        let o = key_opts();
+        assert_eq!(
+            config_key(&o, Path::new("/apps/lab")),
+            config_key(&o, Path::new("/apps/crewforge")),
+        );
     }
 
     /// Fields that do NOT change what cargo compiles must not fragment
@@ -3221,7 +3276,7 @@ mod regression_tests {
     /// mean a second full dependency build for nothing.
     #[test]
     fn config_key_ignores_post_cargo_only_options() {
-        let base = config_key(&key_opts());
+        let base = config_key(&key_opts(), Path::new("/project"));
         for f in [
             (|o: &mut BuildOptions| o.gzip = true) as fn(&mut BuildOptions),
             |o: &mut BuildOptions| o.brotli = true,
@@ -3230,7 +3285,7 @@ mod regression_tests {
         ] {
             let mut o = key_opts();
             f(&mut o);
-            assert_eq!(config_key(&o), base, "post-cargo options must not fragment");
+            assert_eq!(config_key(&o, Path::new("/project")), base, "post-cargo options must not fragment");
         }
     }
 
@@ -3253,7 +3308,7 @@ mod regression_tests {
         a.dev_opt = DevOpt::Optimized;
         let mut b = key_opts();
         b.dev_opt = DevOpt::Fast;
-        assert_ne!(config_key(&a), config_key(&b));
+        assert_ne!(config_key(&a, Path::new("/project")), config_key(&b, Path::new("/project")));
     }
 
     /// Feature order is a caller detail — cargo receives the list sorted
@@ -3264,7 +3319,7 @@ mod regression_tests {
         a.user_features = vec!["vello".into(), "robot".into()];
         let mut b = key_opts();
         b.user_features = vec!["robot".into(), "vello".into(), "robot".into()];
-        assert_eq!(config_key(&a), config_key(&b));
+        assert_eq!(config_key(&a, Path::new("/project")), config_key(&b, Path::new("/project")));
     }
 
     /// `--dev-opt optimized` is the historical posture: optimize
