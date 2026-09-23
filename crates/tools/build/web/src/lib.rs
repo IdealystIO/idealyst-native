@@ -42,6 +42,7 @@ use build_ios::{
 mod premint;
 pub use premint::PREMINT_CSS_NAME;
 
+pub mod hotpatch_base;
 pub mod hotpatch_wasm;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -676,12 +677,45 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             .phases
             .push(("passes-skipped", std::time::Duration::ZERO));
     } else {
+        // Root every function in the element table BEFORE wasm-bindgen
+        // runs. wasm-bindgen's dead-code pass keeps only what the
+        // exports and the table reach — measured, 2993 functions in and
+        // 560 out — so this is what decides whether a patch can call
+        // anything at all.
+        //
+        // The result goes to a SIBLING file, never over cargo's own
+        // artifact. Cargo's freshness check is on mtime and it does not
+        // hash what it produced: overwriting `app.wasm` in place would
+        // leave a later non-hot-patch build reusing a module with
+        // thousands of extra table entries, considering it fresh, and
+        // shipping it.
+        let mut bindgen_input = original_wasm.clone();
+        if opts.hot_patch {
+            let prepared_path = original_wasm.with_extension("hotbase.wasm");
+            timings.time("hotpatch-base-prep", || {
+                let linked = fs::read(&original_wasm).with_context(|| {
+                    format!("read {} for hot-patch prep", original_wasm.display())
+                })?;
+                let prepared = hotpatch_base::prepare_base_module(&linked)
+                    .context("preparing the base module for hot patching")?;
+                eprintln!(
+                    "[build-web] hot-patch base: {} → {} bytes, {} functions reachable through the table",
+                    linked.len(),
+                    prepared.len(),
+                    hotpatch_wasm::table_slot_count(&prepared).unwrap_or(0),
+                );
+                fs::write(&prepared_path, prepared)
+                    .with_context(|| format!("write {}", prepared_path.display()))
+            })?;
+            bindgen_input = prepared_path;
+        }
         timings.time("wasm-bindgen", || {
             wasm_bindgen_build(
-                &original_wasm,
+                &bindgen_input,
                 &wrapper_pkg,
                 &manifest.lib_name,
                 opts.wasm_split,
+                opts.hot_patch,
             )
         })
         .with_context(|| "wasm-bindgen")?;
@@ -2176,49 +2210,80 @@ fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
 /// flags whose wrong pairing is invisible in a build log and shows up
 /// as either a bloated release bundle or a hot patch that cannot link.
 fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |arg: &str| {
+        let arg = format!("link-args={arg}");
+        if !out.contains(&arg) {
+            out.push(arg);
+        }
+    };
+
     if wasm_split {
         // Relocation records are the splitter's input and nothing else's:
         // wasm-bindgen ignores them and the compaction drops them. Emitted
         // without a splitter to consume them they only make the module
         // bigger for every pass — and the browser — to read.
-        out.push("link-args=--emit-relocs".to_string());
+        push("--emit-relocs");
     } else {
         // `--no-split`'s inline loader wakes the Rust future through the
         // main module's function table, which LLD only exports when asked.
         // The splitter adds that export itself, so this rides the no-split
         // path alone rather than being set unconditionally — an exported
         // table roots every entry, which would cost release builds DCE.
-        out.push("link-args=--export-table".to_string());
+        push("--export-table");
     }
+
     if hot_patch {
-        // A patchable base module. Dev-only, and only when the
-        // hot-patch tier is actually armed.
+        // A patchable base module. Dev-only, and only when the hot-patch
+        // tier is actually armed.
         //
-        // `--export-dynamic`: a patch module links as a `--shared` PIC
-        // object and imports everything it does not define from `env`,
-        // which resolves against THIS module's exports. Without it a
-        // base exports ~6 symbols after wasm-bindgen and essentially
-        // every patch fails to link. With it, ~1700 survive (measured
-        // on the probe in `docs/hot-reload.md`).
+        // The shape of this set is decided by one measured fact:
+        // wasm-bindgen runs its own dead-code pass, and it does not care
+        // what the linker kept. On the probe crate, rustc linked 2993
+        // functions under `--no-gc-sections` and wasm-bindgen cut them to
+        // 560, keeping only what the exports and the element segment
+        // reach. So the flags below are not the mechanism that makes a
+        // function survivable — `hotpatch_base::prepare_base_module` is,
+        // by rooting every function in the table before wasm-bindgen
+        // runs. These flags exist to give that pass something to work
+        // with and to let the runtime grow what it produced.
         //
-        // `--growable-table`: `subsecond::apply_patch` calls
-        // `funcs.grow(ifunc_count)` to make room for the patch's
-        // functions. A fixed-size table makes that throw.
+        // Notably absent, both deliberately:
         //
-        // NOT `-Clink-dead-code`. It is the obvious companion — keep
-        // functions a patch might call rather than letting them be
-        // stripped — and it PANICS wasm-bindgen 0.2.128 when combined
-        // with `--export-dynamic`:
+        // * `--export-dynamic`. It exports ~1700 symbols instead of ~70,
+        //   and none of them is a `__<Name>_hot_impl`: a private Rust
+        //   `fn` has internal linkage and is not a dynamic symbol. It
+        //   buys module size and no patchability.
+        // * `-Clink-dead-code`. The obvious companion — keep the
+        //   monomorphizations a patch might call rather than only the
+        //   reachable ones — and it PANICS wasm-bindgen 0.2.128 outright:
         //
-        //   wasm-bindgen-cli-support/src/descriptor.rs:324
-        //   index out of bounds: the len is 0 but the index is 0
+        //       wasm-bindgen-cli-support/src/descriptor.rs:324
+        //       index out of bounds: the len is 0 but the index is 0
         //
-        // Either flag alone is fine. The cost of leaving it off is that
-        // a patch referencing a dead-stripped base function fails to
-        // link — which is loud, and falls back to rebuild.
-        out.push("link-args=--export-dynamic".to_string());
-        out.push("link-args=--growable-table".to_string());
+        //   Measured both with and without `--export-dynamic`; the flag
+        //   alone is enough. The cost of leaving it off is that a patch
+        //   referencing a never-codegened function fails to link, which is
+        //   loud and falls back to a rebuild.
+        push("--no-gc-sections");
+        push("--export-table");
+        push("--export-memory");
+        // `subsecond::apply_patch` calls `funcs.grow(ifunc_count)` to make
+        // room for the patch's functions. A fixed-size table makes that
+        // throw.
+        push("--growable-table");
+        // The `linking` custom section, which survives wasm-bindgen and is
+        // the only place a merged function's several names are still
+        // distinguishable. Dev builds are opt-level 0 so merging is rare,
+        // but a wrong pairing here is a silent mis-dispatch, so we keep
+        // the evidence rather than assume.
+        push("--emit-relocs");
+        // A PIC patch's prologue reads these to find the stack and the
+        // heap. They are LLD-internal globals and are not exported by
+        // default.
+        push("--export=__stack_pointer");
+        push("--export=__heap_base");
+        push("--export=__data_end");
     }
     out
 }
@@ -2429,8 +2494,15 @@ fn cargo_build_wasm(
 ///   the splitter's matching works — without it the website's lazy
 ///   hero-simulator chunk measured 469 bytes. A non-splitting build gets
 ///   demangled names, which is what a person wants in a stack trace.
-fn wasm_bindgen_flags(split: bool) -> &'static [&'static str] {
-    if split {
+///
+/// A hot-patch base build takes the splitter's set for its own reasons:
+/// the jump table is built by pairing the base's function names against
+/// the patch's, so the names have to be there (`--keep-debug` keeps the
+/// custom `name` section) and they have to be MANGLED on both sides
+/// (`--no-demangle`), since the patch is linked by wasm-ld and never
+/// sees wasm-bindgen at all. A demangled base pairs with nothing.
+fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
+    if split || hot_patch {
         &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
     } else {
         &["--keep-lld-exports"]
@@ -2445,12 +2517,13 @@ fn wasm_bindgen_build(
     out_dir: &Path,
     lib_name: &str,
     split: bool,
+    hot_patch: bool,
 ) -> Result<()> {
     if out_dir.exists() {
         fs::remove_dir_all(out_dir).with_context(|| format!("clear {}", out_dir.display()))?;
     }
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
-    let split_flags = wasm_bindgen_flags(split);
+    let split_flags = wasm_bindgen_flags(split, hot_patch);
     eprintln!(
         "[build-web] wasm-bindgen --target web {} → {}",
         split_flags.join(" "),
@@ -4390,7 +4463,7 @@ mod wasm_bindgen_flag_tests {
     #[test]
     fn regression_no_split_keeps_the_lld_exports_the_inline_loader_calls_through() {
         assert!(
-            wasm_bindgen_flags(false).contains(&"--keep-lld-exports"),
+            wasm_bindgen_flags(false, false).contains(&"--keep-lld-exports"),
             "without this the function table never reaches JS"
         );
     }
@@ -4400,7 +4473,7 @@ mod wasm_bindgen_flag_tests {
     /// bindgen's debug strip and demangled stack traces.
     #[test]
     fn no_split_does_not_carry_the_splitter_only_flags() {
-        let flags = wasm_bindgen_flags(false);
+        let flags = wasm_bindgen_flags(false, false);
         assert!(!flags.contains(&"--keep-debug"), "{flags:?}");
         assert!(!flags.contains(&"--no-demangle"), "{flags:?}");
     }
@@ -4409,7 +4482,7 @@ mod wasm_bindgen_flag_tests {
     /// degrades to "everything stays in main" with empty chunks.
     #[test]
     fn split_carries_all_three() {
-        let flags = wasm_bindgen_flags(true);
+        let flags = wasm_bindgen_flags(true, false);
         for f in ["--keep-lld-exports", "--keep-debug", "--no-demangle"] {
             assert!(flags.contains(&f), "missing {f} in {flags:?}");
         }
@@ -4420,57 +4493,99 @@ mod wasm_bindgen_flag_tests {
 mod wasm_link_args_tests {
     use super::*;
 
-    /// A shipped bundle must not carry the patch scaffolding. The
-    /// export count is the tell: `--export-dynamic` takes a
-    /// wasm-bindgen'd module from ~6 exports to ~1700, which is right
-    /// for a dev base and wrong for a deploy.
+    fn has(args: &[String], flag: &str) -> bool {
+        args.iter().any(|a| a == &format!("link-args={flag}"))
+    }
+
+    /// A shipped bundle must not carry the patch scaffolding. The tell
+    /// is `--no-gc-sections`: it hands wasm-bindgen every function rustc
+    /// emitted, which is right for a base a patch links against and
+    /// wrong for anything a browser downloads.
     #[test]
     fn a_normal_build_carries_no_hot_patch_flags() {
         for split in [true, false] {
             let args = wasm_link_args(split, false);
-            assert!(
-                !args.iter().any(|a| a.contains("export-dynamic")),
-                "release/normal builds must not export their internals: {args:?}"
-            );
-            assert!(!args.iter().any(|a| a.contains("growable-table")), "{args:?}");
+            for flag in [
+                "--no-gc-sections",
+                "--growable-table",
+                "--export-memory",
+                "--export=__stack_pointer",
+            ] {
+                assert!(
+                    !has(&args, flag),
+                    "a normal build asked for {flag}: {args:?}"
+                );
+            }
         }
     }
 
-    /// The two flags a patchable base needs, and why each is there:
-    /// `--export-dynamic` so the patch's `env` imports resolve against
-    /// this module, `--growable-table` so `apply_patch` can
-    /// `funcs.grow()` room for the patch's functions.
+    /// What a patchable base needs, and why each is there. Together they
+    /// keep rustc's output whole through the link, expose the memory and
+    /// table the patch imports, and leave the table growable so
+    /// `apply_patch` can make room for the patch's own functions.
     #[test]
-    fn a_hot_patch_base_exports_its_internals_and_can_grow_its_table() {
+    fn a_hot_patch_base_keeps_its_functions_and_can_grow_its_table() {
         let args = wasm_link_args(false, true);
-        assert!(args.iter().any(|a| a == "link-args=--export-dynamic"), "{args:?}");
-        assert!(args.iter().any(|a| a == "link-args=--growable-table"), "{args:?}");
-        // …and still exports the table itself, which the no-split path
-        // already needed for its own reasons.
-        assert!(args.iter().any(|a| a == "link-args=--export-table"), "{args:?}");
+        for flag in [
+            "--no-gc-sections",
+            "--export-table",
+            "--export-memory",
+            "--growable-table",
+            "--emit-relocs",
+            "--export=__stack_pointer",
+            "--export=__heap_base",
+            "--export=__data_end",
+        ] {
+            assert!(has(&args, flag), "missing {flag}: {args:?}");
+        }
     }
 
-    /// `-Clink-dead-code` is the obvious companion flag and must stay
-    /// out: combined with `--export-dynamic` it PANICS wasm-bindgen
-    /// 0.2.128 in its descriptor interpreter. Either alone is fine.
-    /// Measured on `scratchpad/picprobe`; see `docs/hot-reload.md`.
+    /// `--export-dynamic` looks like the way to make a patch's imports
+    /// resolve and is not: it takes the module from ~70 exports to
+    /// ~1700 and still exports no `__*_hot_impl`, because a private Rust
+    /// `fn` has internal linkage and is not a dynamic symbol. Rooting
+    /// functions in the element table is what actually works, and that
+    /// is `hotpatch_base`'s job, not the linker's.
+    #[test]
+    fn a_hot_patch_base_does_not_bother_with_export_dynamic() {
+        for split in [true, false] {
+            let args = wasm_link_args(split, true);
+            assert!(
+                !args.iter().any(|a| a.contains("export-dynamic")),
+                "{args:?}"
+            );
+        }
+    }
+
+    /// `-Clink-dead-code` is the obvious companion flag — keep the
+    /// monomorphizations a patch might call — and it PANICS wasm-bindgen
+    /// 0.2.128 in its descriptor interpreter, at descriptor.rs:324
+    /// "index out of bounds: the len is 0 but the index is 0". Measured
+    /// both with and without `--export-dynamic`; the flag alone does it.
+    /// See `docs/hot-reload.md`.
     #[test]
     fn regression_a_hot_patch_base_never_asks_for_link_dead_code() {
         for split in [true, false] {
             let args = wasm_link_args(split, true);
             assert!(
                 !args.iter().any(|a| a.contains("link-dead-code")),
-                "link-dead-code + export-dynamic panics wasm-bindgen: {args:?}"
+                "link-dead-code panics wasm-bindgen 0.2.128: {args:?}"
             );
         }
     }
 
-    /// Splitting still gets its relocation records; the hot-patch flags
-    /// ride alongside rather than replacing them.
+    /// Splitting still gets its relocation records, and the hot-patch
+    /// set asks for them too — so the flag must appear once, not twice.
+    /// A duplicated `-C link-args` is accepted by rustc but makes the
+    /// arg list impossible to diff against a log.
     #[test]
-    fn splitting_and_hot_patching_do_not_displace_each_other() {
+    fn splitting_and_hot_patching_do_not_displace_or_duplicate_each_other() {
         let args = wasm_link_args(true, true);
-        assert!(args.iter().any(|a| a == "link-args=--emit-relocs"), "{args:?}");
-        assert!(args.iter().any(|a| a == "link-args=--export-dynamic"), "{args:?}");
+        assert_eq!(
+            args.iter().filter(|a| *a == "link-args=--emit-relocs").count(),
+            1,
+            "{args:?}"
+        );
+        assert!(has(&args, "--no-gc-sections"), "{args:?}");
     }
 }

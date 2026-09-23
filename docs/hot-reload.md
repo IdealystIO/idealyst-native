@@ -212,6 +212,68 @@ Everything from step 2 lives in
 `crates/tools/build/runtime-server/src/hotpatch/`; the runtime side is
 `crates/dev/hot`.
 
+### On the web the base module has to be prepared first
+
+A wasm patch is a PIC side module: everything it does not define, it
+imports, and those imports resolve against the module already running in
+the page. Making a function resolvable there is not the same problem as
+on a native target, for two measured reasons.
+
+**wasm-bindgen garbage-collects, and it does not care what the linker
+kept.** On the probe crate, rustc linked 2993 functions under
+`--no-gc-sections`; wasm-bindgen's own pass cut that to 560, keeping only
+what the 12 exports and the element segment reach.
+
+**Exporting more does not help.** `--export-dynamic` takes a module from
+~70 exports to ~1700 and still exports no `__<Name>_hot_impl`, because a
+private Rust `fn` has internal linkage and is not a dynamic symbol.
+
+So the mechanism is the element table, not the export table.
+`build_web::hotpatch_base::prepare_base_module` runs between cargo and
+wasm-bindgen and appends every local function to
+`__indirect_function_table`. A table entry is a GC root, so wasm-bindgen
+keeps the function — and a table index is what the patch wants anyway,
+since a wasm `fn` pointer IS a table index. It also copies each
+`__wbindgen*` intrinsic into a trampoline named `__saved_wbg_<name>`,
+because wasm-bindgen deletes those by name-match whether they are used or
+not.
+
+The prepared module is written to a sibling file rather than over
+cargo's artifact. Cargo's freshness check is on mtime and does not hash
+what it produced, so overwriting in place would leave a later
+non-hot-patch build reusing a module with thousands of extra table
+entries, considering it fresh, and shipping it.
+
+### `-Clink-dead-code` is not available on wasm
+
+It is the flag that would make rustc emit every monomorphization rather
+than only the reachable ones, which is what the native pipeline uses. On
+wasm it panics wasm-bindgen 0.2.128 outright:
+
+```
+wasm-bindgen-cli-support-0.2.128/src/descriptor.rs:324
+index out of bounds: the len is 0 but the index is 0
+```
+
+Measured both with and without `--export-dynamic`; the flag alone is
+enough to trigger it. The consequence is that a patch referencing a
+function rustc never codegened fails to link — which is loud, and falls
+back to a rebuild.
+
+### The jump table is indices, not addresses
+
+A native entry pairs two addresses. A wasm entry pairs two
+`__indirect_function_table` indices, found by composing the custom `name`
+section (function index → name) with the element segments (table index →
+function index). `build_web::hotpatch_wasm::build_jump_table` does that.
+
+A key is an ABSOLUTE index in the base's table; a value is an index
+RELATIVE to the patch's own element segment, because `apply_patch` grows
+the table and rebases the patch's entries by the grow's return — which is
+what the `__table_base` global the patch imports resolves to. Which is
+also why a segment whose offset is `global.get` (every PIC patch) folds
+to zero rather than being skipped.
+
 ### Why components are split
 
 Subsecond rebinds function ADDRESSES. For an entry to do anything the

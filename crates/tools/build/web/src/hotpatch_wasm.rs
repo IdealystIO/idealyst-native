@@ -85,7 +85,7 @@ pub fn build_jump_table(base: &[u8], patch: &[u8]) -> Result<WasmJumpTable> {
 
     Ok(WasmJumpTable {
         map,
-        ifunc_count: element_slot_count(patch).context("counting the patch's table slots")?,
+        ifunc_count: table_slot_count(patch).context("counting the patch's table slots")?,
     })
 }
 
@@ -202,13 +202,17 @@ fn element_slots(wasm: &[u8]) -> Result<Vec<(u32, u32)>> {
     Ok(out)
 }
 
-/// How many table slots the patch's element segments occupy — what the
-/// runtime grows `__indirect_function_table` by.
+/// How many table slots a module's element segments occupy.
+///
+/// For a patch this is what the runtime grows
+/// `__indirect_function_table` by; for a base it is how many functions
+/// `hotpatch_base` left reachable, which is worth printing because it is
+/// the number that decides whether a patch can call anything.
 ///
 /// Counts entries rather than reading the segment's declared offset:
 /// the patch is linked `--shared`, so its offset is the imported
 /// `__table_base` global and is not a constant we could read here.
-fn element_slot_count(wasm: &[u8]) -> Result<u32> {
+pub fn table_slot_count(wasm: &[u8]) -> Result<u32> {
     let mut count = 0u32;
     for payload in Parser::new(0).parse_all(wasm) {
         let payload = payload.context("parsing wasm sections")?;
@@ -453,7 +457,7 @@ mod tests {
     #[test]
     fn ifunc_count_counts_entries_not_offsets() {
         let patch = module(0, &[(1, "a"), (2, "b"), (3, "c")]);
-        assert_eq!(element_slot_count(&patch).unwrap(), 3);
+        assert_eq!(table_slot_count(&patch).unwrap(), 3);
     }
 
     /// An empty or nameless module is answered with an empty table

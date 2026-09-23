@@ -31,6 +31,11 @@ sha2 = { workspace = true }
 # cheap; a full `walrus` parse of a multi-hundred-MB debug wasm is the
 # cost `--no-split` exists to avoid.
 wasmparser = { workspace = true }
+# Rewriting the base module before wasm-bindgen sees it needs a MUTABLE
+# module — appending element-segment entries and building trampolines —
+# which the read-only `wasmparser` cannot give. Paid only on a hot-patch
+# dev build; a release build never calls into it.
+walrus = { workspace = true }
 # Vendored wasm-split toolchain. Called as a library (not a
 # subprocess) so our patches apply automatically without users
 # needing to install a separate binary on PATH.

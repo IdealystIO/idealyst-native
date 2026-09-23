@@ -2004,6 +2004,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "toml 0.8.23",
+ "walrus",
  "wasm-split-cli",
  "wasmparser 0.224.1",
 ]
