@@ -1220,6 +1220,13 @@ pub fn set_session_viewport(width: f32, height: f32) {
     SESSION_VIEWPORT.with(|c| c.set(Some((width, height))));
 }
 
+/// The calling session-thread's client viewport, if the client has
+/// reported one. Read by the mount to seed the shared viewport slot —
+/// see `newcore::SceneSession::mount`.
+pub fn session_viewport() -> Option<(f32, f32)> {
+    SESSION_VIEWPORT.with(|c| c.get())
+}
+
 /// `TextOps` mirror of [`RecordingViewOps`]. The framework's
 /// `AnimatedValue::bind_text_color` routes through
 /// `TextHandle::set_animated_color` → here, *not* through

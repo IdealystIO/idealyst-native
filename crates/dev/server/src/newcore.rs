@@ -157,10 +157,35 @@ impl SceneSession {
         register(&mut registry);
         let registry = Rc::new(registry);
 
+        // The client's window size, into the SHARED viewport slot,
+        // BEFORE the build.
+        //
+        // Nothing seeded it on this path, so `viewport_size()` answered
+        // `ViewportSize::ZERO` and every breakpoint classified as `Xs`.
+        // The app painted its MOBILE layout no matter how wide the
+        // browser window was — a one-column CrewForge at 1440px — and
+        // `@container` overlays were evaluated against width 0, so they
+        // never matched either. It is the single largest visual
+        // difference between wire mode and `--local`.
+        //
+        // Before the build for the same reason `backend-web` does it
+        // before its own: the world's `ViewportCtx` seeds from this
+        // slot, and a build that reads a breakpoint creates that ctx
+        // mid-build.
+        if let Some((w, h)) = crate::session_viewport() {
+            runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(w, h));
+        }
+
         let world = World::new();
-        let realized = world.enter(|| {
+        let (vp_sig, realized) = world.enter(|| {
             let element = app();
-            realize(&backend, &registry, element)
+            let realized = realize(&backend, &registry, element);
+            // AFTER the build, never before — an app that installs its
+            // own breakpoint table does so inside its root component,
+            // and the ctx's bucket memo captures the table at creation.
+            // Same ordering `backend-web` documents.
+            let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
+            (vp_sig, realized)
         });
 
         // Single-root contract, matching the old-core `mount` and the
@@ -1038,5 +1063,81 @@ mod tests {
             "remove_child must emit nothing: the wire protocol has no RemoveChild op \
              (got {cmds:?})"
         );
+    }
+}
+
+#[cfg(test)]
+mod env_parity_tests {
+    use super::*;
+
+    /// The sidecar runs the app headlessly, so nothing had ever seeded
+    /// the shared viewport slot: `viewport_size()` answered
+    /// `ViewportSize::ZERO` and every breakpoint classified as `Xs`.
+    /// The app painted its MOBILE layout at every browser width — a
+    /// one-column CrewForge in a 1440px window — and `@container`
+    /// overlays evaluated against width 0 never matched.
+    ///
+    /// It is the largest single visual difference between wire mode and
+    /// `--local`, and it is invisible in a log: the tree is correct, it
+    /// is just the wrong tree.
+    #[test]
+    fn regression_a_sessions_viewport_reaches_the_shared_slot() {
+        // A fresh thread, because the slot and the session viewport are
+        // both thread-locals and other tests in this binary set them.
+        std::thread::spawn(|| {
+            let read = || runtime_shared::viewport_size().get();
+            assert_eq!(read(), runtime_shared::ViewportSize::ZERO,
+                "a session thread starts with no viewport");
+            crate::set_session_viewport(1440.0, 900.0);
+            let (w, h) = crate::session_viewport().expect("the session reported one");
+            runtime_shared::set_viewport_size(runtime_shared::ViewportSize::new(w, h));
+
+            let size = read();
+            assert_eq!((size.width, size.height), (1440.0, 900.0));
+            assert_ne!(
+                size,
+                runtime_shared::ViewportSize::ZERO,
+                "a zero viewport classifies every breakpoint as Xs"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Two sessions on one sidecar must not see each other's window
+    /// size — the slot is per thread, and the sidecar runs one thread
+    /// per session.
+    #[test]
+    fn two_sessions_do_not_share_a_viewport() {
+        let a = std::thread::spawn(|| {
+            crate::set_session_viewport(400.0, 800.0);
+            crate::session_viewport()
+        });
+        let b = std::thread::spawn(|| {
+            crate::set_session_viewport(1920.0, 1080.0);
+            crate::session_viewport()
+        });
+        assert_eq!(a.join().unwrap(), Some((400.0, 800.0)));
+        assert_eq!(b.join().unwrap(), Some((1920.0, 1080.0)));
+    }
+
+    /// The recorder answers for the CLIENT. Left at the trait default
+    /// `Custom("")`, every `is_apple()` / `is_mobile()` / `is_tv()`
+    /// predicate answers `false` and an author's platform branch takes
+    /// the wrong arm silently.
+    #[test]
+    fn regression_the_recorder_reports_the_clients_platform() {
+        std::thread::spawn(|| {
+            crate::set_session_platform(runtime_shared::host::Platform::Web);
+            let b = WireRecordingBackend::new();
+            assert_eq!(caps::AppEnvOps::platform(&b), runtime_shared::host::Platform::Web);
+            assert_ne!(
+                caps::AppEnvOps::platform(&b),
+                runtime_shared::host::Platform::Custom(""),
+                "the default is the value whose predicates all answer false"
+            );
+        })
+        .join()
+        .unwrap();
     }
 }

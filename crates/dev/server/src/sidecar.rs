@@ -1350,6 +1350,21 @@ mod runtime {
         Ok(())
     }
 
+    /// Push a viewport size into the reactive graph AND the shared
+    /// slot the next mount seeds from.
+    ///
+    /// Two destinations because they answer different questions:
+    /// `set_viewport_size` is what a fresh `ViewportCtx` seeds from (so
+    /// a hot-patch re-mount classifies the right breakpoint), and
+    /// `viewport_ctx().set` is what wakes the CURRENT world's
+    /// subscribers. Staged through the signal handle, so it is safe to
+    /// call from the session thread's dispatch.
+    fn publish_viewport(width: f32, height: f32) {
+        let size = runtime_shared::ViewportSize::new(width, height);
+        runtime_shared::set_viewport_size(size);
+        runtime_vocabulary::viewport::viewport_ctx().set(size);
+    }
+
     /// New-core session worker — the [`run_session_thread`] twin for
     /// scene mounts. Owns a `WireRecordingBackend` plus a
     /// [`crate::newcore::SceneSession`] (per-session `World` +
@@ -1688,10 +1703,16 @@ mod runtime {
                 // hardcoded 393×800 fallback.
                 if let Some(v) = viewport {
                     crate::set_session_viewport(v.width, v.height);
+                    publish_viewport(v.width, v.height);
                 }
             }
             ViewportChanged { width, height } => {
                 crate::set_session_viewport(width, height);
+                // …and into the REACTIVE graph, so a resize re-fires
+                // breakpoint-dependent author code. Without this the
+                // app kept whatever breakpoint it mounted at forever,
+                // where the same app on web reflows.
+                publish_viewport(width, height);
             }
             Event { handler, args } => {
                 let _ = recorder.dispatch_event(handler, args);
