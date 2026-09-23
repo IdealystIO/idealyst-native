@@ -109,7 +109,24 @@ pub fn build_jump_table(
     patch: &[u8],
     aliases: &crate::hotpatch_aliases::AliasMap,
 ) -> Result<WasmJumpTable> {
-    let base_slots = table_index_by_name(base).context("reading the base module")?;
+    let base_slots = base_slots(base)?;
+    build_jump_table_with(&base_slots, patch, aliases)
+}
+
+/// The base's `name → table index` map, which [`build_jump_table_with`]
+/// pairs against. It depends only on the base, so a dev session computes
+/// it once per base build: re-reading the base for every patch cost
+/// ~0.15 s per save on CrewForge's 223 MB module.
+pub fn base_slots(base: &[u8]) -> Result<BTreeMap<String, u32>> {
+    table_index_by_name(base).context("reading the base module")
+}
+
+/// [`build_jump_table`] against a precomputed [`base_slots`].
+pub fn build_jump_table_with(
+    base_slots: &BTreeMap<String, u32>,
+    patch: &[u8],
+    aliases: &crate::hotpatch_aliases::AliasMap,
+) -> Result<WasmJumpTable> {
     let patch_slots = table_index_by_name(patch).context("reading the patch module")?;
 
     // Exact name matches first, aliases second. The base may know one
@@ -369,6 +386,20 @@ mod tests {
         let jt = build_jump_table(&base, &patch, &Default::default()).unwrap();
         assert_eq!(jt.map.get(&2), Some(&1), "map was {:?}", jt.map);
         assert_eq!(jt.ifunc_count, 2);
+    }
+
+    /// The session caches the base's slot map instead of re-reading the
+    /// base per patch; pairing against the cache must give the same
+    /// table.
+    #[test]
+    fn pairing_against_cached_base_slots_matches_pairing_against_the_base() {
+        let base = module(1, &[(10, "other"), (11, "__Counter_hot_impl")]);
+        let patch = pic_module(&[(4, "unrelated"), (5, "__Counter_hot_impl")]);
+        let slots = base_slots(&base).unwrap();
+        assert_eq!(
+            build_jump_table_with(&slots, &patch, &Default::default()).unwrap(),
+            build_jump_table(&base, &patch, &Default::default()).unwrap()
+        );
     }
 
     fn section(out: &mut Vec<u8>, id: u8, body: &[u8]) {

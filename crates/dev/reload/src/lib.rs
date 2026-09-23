@@ -588,10 +588,10 @@ fn local_package_dirs(meta: &serde_json::Value) -> Vec<PathBuf> {
 /// A [`build_web::hotpatch_build::WasmPatchBuilder`] is valid for
 /// exactly one base build: it holds an index of the served module's
 /// function table, and every rebuild renumbers that table. So the
-/// builder is dropped on each rebuild and made again on the next body
-/// edit — lazily, because indexing a debug-profile wasm module with
-/// every function in its table is the expensive part and a session that
-/// never edits a body should never pay for it.
+/// builder is dropped on each rebuild and made again right after it
+/// ([`HotPatchBase::warm`]), while the page reloads. Indexing is the
+/// expensive part (2.4 s on CrewForge), and paying it lazily put it on
+/// the first save's save-to-screen time instead.
 struct HotPatchBase {
     /// Where the page fetches from: the staged bundle for a full-stack
     /// project, the project directory for a static one.
@@ -629,18 +629,14 @@ impl HotPatchBase {
         self.builder = None;
     }
 
-    /// Build a patch for this save, or say why it cannot.
-    fn patch(&mut self) -> std::result::Result<build_web::hotpatch_build::BuiltPatch, String> {
-        if !self.armed {
-            return Err(
-                "the hot-patch tier is off for this session (`idealyst dev --web --local` \
-                 arms it)"
-                    .to_string(),
-            );
-        }
-        if let Some(why) = &self.retired {
-            return Err(why.clone());
-        }
+    /// Index the base for patching, if that has not happened since the
+    /// last base build.
+    ///
+    /// Called right after each base build (see [`Self::warm`]) as well as
+    /// from [`Self::patch`]: indexing reads and parses the whole served
+    /// module (2.4 s on CrewForge's 223 MB base), and doing it at the
+    /// first save put that on the first patch's save-to-screen time.
+    fn ensure_builder(&mut self) -> std::result::Result<(), String> {
         if self.builder.is_none() {
             let Some(captures) = self.artifact.captures_dir.clone() else {
                 let why = "this base was built without the rustc capture wrapper, so there is \
@@ -672,6 +668,38 @@ impl HotPatchBase {
                 Err(e) => return Err(format!("{e:#}")),
             }
         }
+        Ok(())
+    }
+
+    /// Index a freshly built base now, while the page is reloading,
+    /// instead of at the first save. Failures are not reported here:
+    /// the first save retries and says why.
+    fn warm(&mut self) {
+        if !self.armed || self.retired.is_some() || self.builder.is_some() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        if self.ensure_builder().is_ok() {
+            eprintln!(
+                "[hotpatch] base indexed ahead of the first save in {} ms",
+                started.elapsed().as_millis()
+            );
+        }
+    }
+
+    /// Build a patch for this save, or say why it cannot.
+    fn patch(&mut self) -> std::result::Result<build_web::hotpatch_build::BuiltPatch, String> {
+        if !self.armed {
+            return Err(
+                "the hot-patch tier is off for this session (`idealyst dev --web --local` \
+                 arms it)"
+                    .to_string(),
+            );
+        }
+        if let Some(why) = &self.retired {
+            return Err(why.clone());
+        }
+        self.ensure_builder()?;
         self.builder
             .as_ref()
             .expect("just built")
@@ -713,6 +741,7 @@ fn watch_loop(
     // edit after each rebuild, so a session that never makes one never
     // pays to parse the module.
     let mut base = HotPatchBase::new(&dir, &opts, initial);
+    base.warm();
     let (tx, rx) = mpsc::channel();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
         Ok(d) => d,
@@ -862,6 +891,10 @@ fn watch_loop(
             Ok(true) => {
                 let new_gen = signal.bump();
                 eprintln!("[dev-reload] rebuilt — gen={new_gen}");
+                // After the reload is signalled: the page reloads while
+                // the base is indexed, rather than the next save waiting
+                // on it.
+                base.warm();
             }
             // Cargo produced nothing new and the packaging passes were
             // skipped, so the served bundle is the one the browser
@@ -869,11 +902,13 @@ fn watch_loop(
             // `pkg/premint.css` is regenerated from a native dump on
             // every rebuild and can move without the wasm moving.
             Ok(false) if !(opts.premint || opts.premint_only || opts.premint_report) => {
-                eprintln!("[dev-reload] wasm unchanged — packaging skipped, nothing to reload")
+                eprintln!("[dev-reload] wasm unchanged — packaging skipped, nothing to reload");
+                base.warm();
             }
             Ok(false) => {
                 let new_gen = signal.bump();
                 eprintln!("[dev-reload] wasm unchanged, premint refreshed — gen={new_gen}");
+                base.warm();
             }
             Err(e) => eprintln!("[dev-reload] rebuild failed: {e}"),
         }
@@ -1174,6 +1209,76 @@ fn rescan_archive(dir: &Path, package: &str) -> Option<overlay::DescriptorSet> {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// A served base that indexes: one function in an active element
+    /// segment. Enough for `WasmPatchBuilder::new`.
+    fn tiny_served_base(dir: &Path) -> PathBuf {
+        let mut m = walrus::Module::default();
+        let table = m.tables.add_local(false, 2, Some(2), walrus::RefType::FUNCREF);
+        m.exports.add("__indirect_function_table", table);
+        let mut b = walrus::FunctionBuilder::new(&mut m.types, &[], &[]);
+        b.name("__Root_hot_impl".to_string()).func_body();
+        let f = m.funcs.add_local(b.local_func(vec![]));
+        m.elements.add(
+            walrus::ElementKind::Active {
+                table,
+                offset: walrus::ConstExpr::Value(walrus::ir::Value::I32(1)),
+            },
+            walrus::ElementItems::Functions(vec![f]),
+        );
+        let path = dir.join("app_bg.wasm");
+        std::fs::write(&path, m.emit_wasm()).unwrap();
+        path
+    }
+
+    fn armed_base(dir: &Path) -> HotPatchBase {
+        std::fs::create_dir_all(dir.join("caps")).unwrap();
+        HotPatchBase {
+            serve_root: dir.to_path_buf(),
+            crate_name: "app".into(),
+            armed: true,
+            artifact: build_web::BuildArtifact {
+                pkg_dir: dir.to_path_buf(),
+                wrapper_dir: dir.to_path_buf(),
+                bundle_dir: None,
+                entry_js: None,
+                wasm_changed: true,
+                served_wasm: tiny_served_base(dir),
+                captures_dir: Some(dir.join("caps")),
+                symbol_aliases: None,
+            },
+            builder: None,
+            retired: None,
+        }
+    }
+
+    /// Regression: the base was indexed at the first SAVE (2.4 s on
+    /// CrewForge), so the first patch after every rebuild paid for it.
+    /// `warm` indexes it right after the build instead, and again after
+    /// each rebuild.
+    #[test]
+    fn regression_the_base_is_indexed_before_the_first_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut base = armed_base(tmp.path());
+        base.warm();
+        assert!(base.builder.is_some(), "warm did not index the base");
+
+        let artifact = armed_base(&tmp.path().join("next")).artifact;
+        base.rebuilt(artifact);
+        assert!(base.builder.is_none(), "a rebuild must drop the old index");
+        base.warm();
+        assert!(base.builder.is_some(), "and warm must index the new base");
+    }
+
+    /// An unarmed session never pays for an index it cannot use.
+    #[test]
+    fn an_unarmed_session_does_not_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut base = armed_base(tmp.path());
+        base.armed = false;
+        base.warm();
+        assert!(base.builder.is_none());
+    }
 
     /// Regression: after a hot patch the archive was advanced over the
     /// SAVED files only, but a patch re-emits every file of the crate.

@@ -42,7 +42,7 @@ use anyhow::{bail, Context, Result};
 use build_runtime_server::hotpatch::replay;
 
 use crate::hotpatch_patch::BaseIndex;
-use crate::hotpatch_wasm::{build_jump_table, WasmJumpTable};
+use crate::hotpatch_wasm::{base_slots, build_jump_table_with, WasmJumpTable};
 
 /// A patch ready to be served and applied.
 #[derive(Debug, Clone)]
@@ -90,7 +90,10 @@ pub struct WasmPatchBuilder {
     out_dir: PathBuf,
     wasm_ld: PathBuf,
     base: BaseIndex,
-    base_wasm: Vec<u8>,
+    /// The base's table by name, for pairing. Computed once, like
+    /// `base`: both describe the base, which does not change between
+    /// patches.
+    base_slots: std::collections::BTreeMap<String, u32>,
     serial: std::cell::Cell<u64>,
 }
 
@@ -119,6 +122,7 @@ impl WasmPatchBuilder {
         let base = BaseIndex::of(&base_wasm, &aliases).with_context(|| {
             format!("indexing the served base module {}", served_wasm.display())
         })?;
+        let base_slots = base_slots(&base_wasm)?;
         Ok(Self {
             captures_dir: captures_dir.into(),
             aliases,
@@ -126,7 +130,7 @@ impl WasmPatchBuilder {
             out_dir: out_dir.into(),
             wasm_ld: locate_wasm_ld()?,
             base,
-            base_wasm,
+            base_slots,
             serial: std::cell::Cell::new(0),
         })
     }
@@ -191,7 +195,7 @@ impl WasmPatchBuilder {
         timings.push(("resolve", started.elapsed()));
 
         let started = Instant::now();
-        let jump_table = build_jump_table(&self.base_wasm, &resolved, &self.aliases)
+        let jump_table = build_jump_table_with(&self.base_slots, &resolved, &self.aliases)
             .context("pairing the patch's functions to the base's table slots")?;
         if jump_table.is_empty() {
             bail!(

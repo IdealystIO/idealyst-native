@@ -35,6 +35,8 @@ serde_json = { workspace = true }
 # and turns absolute paths back into package-relative ones, none of
 # which is exercised by handing it text.
 tempfile = "3"
+# Builds a tiny served base for the hot-patch indexing tests.
+walrus = { workspace = true }
 # The watcher emits its patch payload by hand rather than taking a
 # protocol dependency to say four fields. This holds the two spellings
 # together: the payload must decode as the real wire type.
