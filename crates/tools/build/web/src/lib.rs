@@ -732,6 +732,30 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             )
         })
         .with_context(|| "wasm-bindgen")?;
+        // Rooting every function keeps wasm-bindgen's descriptor
+        // machinery alive, and it emits no JS binding for the
+        // `__wbindgen_placeholder__` import that machinery calls. Give
+        // the leftovers a trapping body so the module can instantiate.
+        if opts.hot_patch {
+            timings.time("hotpatch-strand-imports", || {
+                let path = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
+                let bindgened =
+                    fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+                match hotpatch_base::neutralize_unsupplied_imports(&bindgened)
+                    .context("neutralizing the imports wasm-bindgen did not supply")?
+                {
+                    Some(fixed) => {
+                        eprintln!(
+                            "[build-web] hot-patch: gave wasm-bindgen's unsupplied imports a \
+                             trapping body"
+                        );
+                        fs::write(&path, fixed)
+                            .with_context(|| format!("write {}", path.display()))
+                    }
+                    None => Ok(()),
+                }
+            })?;
+        }
         timings.time("command-export-neutralize", || {
             neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
         })

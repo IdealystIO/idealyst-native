@@ -60,11 +60,6 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     let mut module = Module::from_buffer(wasm).context("parsing the linked base module")?;
 
     let already_indirect = functions_in_the_table(&module);
-    // Anything that can reach wasm-bindgen's descriptor imports is off
-    // limits to BOTH kinds of root below — a table slot and an export are
-    // equally live to wasm-bindgen's dead-code pass, and it only deletes
-    // the placeholder import when nothing at all reaches it.
-    let descriptor_side = functions_calling_the_descriptor_imports(&module);
     let mut promote: Vec<FunctionId> = Vec::new();
     let mut exported: HashSet<String> = HashSet::new();
 
@@ -97,7 +92,6 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
         .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
         .filter(|f| !already_indirect.contains(&f.id()))
         .filter(|f| !f.name.as_deref().is_some_and(is_bindgen_internal))
-        .filter(|f| !descriptor_side.contains(&f.id()))
         .map(|f| f.id())
         .collect();
     promote.extend(candidates);
@@ -163,72 +157,79 @@ fn const_offset(expr: &walrus::ConstExpr) -> u64 {
 }
 
 
-/// Every local function that calls a wasm-bindgen descriptor import
-/// directly.
+/// Give every import wasm-bindgen's generated JS will not supply a local
+/// body that traps, so the module can instantiate.
 ///
-/// These must NOT be rooted. wasm-bindgen interprets the descriptor chain
-/// and then expects the import to become unreachable so its own pass
-/// deletes it; one rooted caller keeps `__wbindgen_placeholder__` alive
-/// in the output, the generated JS has no binding for it, and the page
-/// fails at instantiation with
+/// Run AFTER wasm-bindgen, and only on a hot-patch build.
+///
+/// # What this is for
+///
+/// `prepare_base_module` roots every function so wasm-bindgen's dead-code
+/// pass keeps it, and some of what it keeps is the descriptor machinery:
+/// functions that call `__wbindgen_placeholder__.__wbindgen_describe`.
+/// wasm-bindgen interprets descriptors at build time and emits no JS
+/// binding for that import, so the page dies before it starts:
 ///
 /// ```text
 /// WebAssembly.instantiate(): Import #0 "__wbindgen_placeholder__":
 /// module is not an object or function
 /// ```
 ///
-/// DIRECT callers only, and the bound matters. Walking the call graph
-/// transitively excluded roughly a third of the module — measured on the
-/// lab, 30,607 functions down to 19,734 rooted — because
-/// `Closure::wrap`, and therefore every event handler that reaches it,
-/// calls a `describe` function. Patches then failed to link against
-/// ordinary things like `<u32 as Display>::fmt`.
+/// # Why a trap rather than not rooting them
 ///
-/// One hop is enough because wasm-bindgen rewrites the describe call
-/// sites in ordinary code away as part of its transform: after it runs,
-/// the only things left pointing at the import are the functions
-/// excluded here and the ones [`is_bindgen_internal`] names.
-fn functions_calling_the_descriptor_imports(module: &Module) -> HashSet<FunctionId> {
-    let seeds: HashSet<FunctionId> = module
+/// Deciding which functions keep the import alive, and leaving those
+/// out, was tried twice and is not decidable from the call graph. One hop
+/// missed the survivors; walking transitively excluded a THIRD of the
+/// module — `Closure::wrap` calls a `describe` function, so every event
+/// handler reaching it went too — and ordinary patches then failed to
+/// link against `<u32 as Display>::fmt`.
+///
+/// So root everything, and make the leftover import harmless instead. A
+/// descriptor function is never called at run time: wasm-bindgen has
+/// already read what it describes. If one somehow were, `unreachable`
+/// traps at the call with a stack rather than returning a plausible
+/// value, which is the loud failure this is allowed to have.
+pub fn neutralize_unsupplied_imports(wasm: &[u8]) -> Result<Option<Vec<u8>>> {
+    let mut module = Module::from_buffer(wasm).context("parsing the bindgened module")?;
+
+    // The two namespaces wasm-bindgen uses for "I will resolve this
+    // myself". Everything else in the import list is either a real JS
+    // shim it generated a binding for, or the memory and table.
+    const UNSUPPLIED: [&str; 2] = ["__wbindgen_placeholder__", "__wbindgen_externref_xform__"];
+
+    let stranded: Vec<_> = module
         .imports
         .iter()
+        .filter(|i| UNSUPPLIED.contains(&i.module.as_str()))
         .filter_map(|i| match i.kind {
-            ImportKind::Function(f) if is_bindgen_internal(&i.name) => Some(f),
+            ImportKind::Function(func) => Some((i.id(), func, i.name.clone())),
             _ => None,
         })
         .collect();
-    if seeds.is_empty() {
-        return HashSet::new();
+    if stranded.is_empty() {
+        return Ok(None);
     }
 
-    let mut callers = HashSet::new();
-    for func in module.funcs.iter() {
-        let FunctionKind::Local(local) = &func.kind else {
-            continue;
-        };
-        let mut visitor = CallsSeed {
-            seeds: &seeds,
-            found: false,
-        };
-        walrus::ir::dfs_in_order(&mut visitor, local, local.entry_block());
-        if visitor.found {
-            callers.insert(func.id());
-        }
-    }
-    callers
-}
+    for (import_id, func_id, name) in stranded {
+        let ty_id = module.funcs.get(func_id).ty();
+        let ty = module.types.get(ty_id);
+        let params = ty.params().to_vec();
+        let results = ty.results().to_vec();
+        let locals: Vec<_> = params.iter().map(|t| module.locals.add(*t)).collect();
 
-struct CallsSeed<'a> {
-    seeds: &'a HashSet<FunctionId>,
-    found: bool,
-}
+        let mut builder = FunctionBuilder::new(&mut module.types, &params, &results);
+        builder
+            .name(format!("__idealyst_stranded_{name}"))
+            .func_body()
+            .unreachable();
 
-impl<'instr, 'a> walrus::ir::Visitor<'instr> for CallsSeed<'a> {
-    fn visit_call(&mut self, call: &walrus::ir::Call) {
-        if self.seeds.contains(&call.func) {
-            self.found = true;
-        }
+        module.imports.delete(import_id);
+        let func = module.funcs.get_mut(func_id);
+        func.kind = FunctionKind::Local(builder.local_func(locals));
+        func.name = Some(format!("__idealyst_stranded_{name}"));
     }
+
+    Ok(Some(module.emit_wasm()))
 }
 
 /// Every function already reachable through an active element segment.
@@ -457,77 +458,76 @@ mod tests {
         );
     }
 
-    /// Regression, both directions at once.
+    /// Regression: an import wasm-bindgen will not supply is given a
+    /// trapping body rather than left to fail instantiation.
     ///
-    /// A function that CALLS a descriptor import must not be rooted:
-    /// wasm-bindgen expects the import to become unreachable so its own
-    /// pass deletes it, and one rooted caller leaves
-    /// `__wbindgen_placeholder__` in the output, which the generated JS
-    /// has no binding for — the page then fails at instantiation with
-    /// "Import #0 __wbindgen_placeholder__: module is not an object or
-    /// function". Name matching alone did not catch it: the caller is
-    /// not itself named like a descriptor.
+    /// Rooting every function keeps the descriptor machinery alive, and
+    /// wasm-bindgen emits no JS binding for
+    /// `__wbindgen_placeholder__.__wbindgen_describe` — so the page died
+    /// before it started with "Import #0 __wbindgen_placeholder__: module
+    /// is not an object or function".
     ///
-    /// But the exclusion must stop at ONE hop. Walking transitively took
-    /// the lab's rooted set from 30,607 functions to 19,734, because
-    /// `Closure::wrap` — and so every event handler reaching it — calls
-    /// a `describe` function; patches then failed to link against
-    /// ordinary things like `<u32 as Display>::fmt`. wasm-bindgen
-    /// rewrites those call sites away itself, so one hop suffices.
+    /// Deciding which functions keep it alive and leaving those out was
+    /// tried twice and does not work: one hop missed the survivors, and
+    /// walking transitively excluded a third of the module because
+    /// `Closure::wrap` calls a `describe` function — ordinary patches
+    /// then failed to link against `<u32 as Display>::fmt`. Rooting
+    /// everything and making the leftover harmless is what holds.
     #[test]
-    fn regression_a_direct_caller_of_a_descriptor_import_is_not_rooted() {
+    fn regression_a_stranded_placeholder_import_becomes_a_trap() {
         let mut module = Module::default();
-        let table = module
-            .tables
-            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
-        let ty = module.types.add(&[], &[]);
-        let (describe_import, _) =
+        let ty = module.types.add(&[ValType::I32], &[]);
+        let (describe, _) =
             module.add_import_func("__wbindgen_placeholder__", "__wbindgen_describe", ty);
-
-        // A function that calls it, with a name nothing would flag…
         let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         builder
-            .name("_RNvCs_3app11plain_looking".to_string())
+            .name("caller".to_string())
             .func_body()
-            .call(describe_import);
-        let direct = module.funcs.add_local(builder.local_func(vec![]));
-
-        // …and one that calls THAT, so the exclusion has to be transitive.
-        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-        builder
-            .name("_RNvCs_3app8indirect".to_string())
-            .func_body()
-            .call(direct);
+            .i32_const(7)
+            .call(describe);
         module.funcs.add_local(builder.local_func(vec![]));
 
-        // And one that touches none of it, which MUST still be rooted.
-        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-        builder.name("__Counter_hot_impl".to_string()).func_body();
-        module.funcs.add_local(builder.local_func(vec![]));
+        let out = neutralize_unsupplied_imports(&module.emit_wasm())
+            .unwrap()
+            .expect("a stranded import to neutralize");
+        let module = Module::from_buffer(&out).unwrap();
+        assert!(
+            !module
+                .imports
+                .iter()
+                .any(|i| i.module == "__wbindgen_placeholder__"),
+            "still imported: {:?}",
+            module.imports.iter().map(|i| &i.module).collect::<Vec<_>>()
+        );
+        let stranded = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("__idealyst_stranded___wbindgen_describe"))
+            .expect("the trapping stand-in");
+        let FunctionKind::Local(local) = &stranded.kind else {
+            panic!("the import should have become a local function");
+        };
+        assert!(
+            local
+                .block(local.entry_block())
+                .instrs
+                .iter()
+                .any(|(i, _)| matches!(i, ir::Instr::Unreachable(_))),
+            "a descriptor function is never called at run time; if one is, it must trap \
+             rather than return a plausible value"
+        );
+    }
 
-        module.elements.add(
-            ElementKind::Active {
-                table,
-                offset: ConstExpr::Value(ir::Value::I32(1)),
-            },
-            ElementItems::Functions(vec![]),
-        );
-
-        let out = prepare_base_module(&module.emit_wasm()).unwrap();
-        let entries = table_entries(&out);
-        assert!(
-            entries.contains(&"__Counter_hot_impl".to_string()),
-            "an unrelated function must still be rooted: {entries:?}"
-        );
-        assert!(
-            !entries.iter().any(|e| e.contains("plain_looking")),
-            "a direct caller of the descriptor import was rooted: {entries:?}"
-        );
-        assert!(
-            entries.iter().any(|e| e.contains("indirect")),
-            "an INDIRECT caller must still be rooted — excluding those cost a third of \
-             the module and broke ordinary patches: {entries:?}"
-        );
+    /// A module wasm-bindgen fully satisfied is handed back untouched —
+    /// a normal build must not pay for this at all.
+    #[test]
+    fn a_module_with_no_stranded_imports_is_left_alone() {
+        let mut module = Module::default();
+        let ty = module.types.add(&[], &[]);
+        module.add_import_func("./app_bg.js", "__wbg_log", ty);
+        assert!(neutralize_unsupplied_imports(&module.emit_wasm())
+            .unwrap()
+            .is_none());
     }
 
     /// A module linked without `--export-table` has no segment to grow,
