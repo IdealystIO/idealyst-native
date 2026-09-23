@@ -104,10 +104,11 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
 
     // ── 1. The base build ────────────────────────────────────────────
     //
-    // The same link args `wasm_link_args(false, true)` produces. Spelled
-    // out rather than called so this test fails loudly if that function
-    // changes shape, instead of silently testing whatever it now returns.
-    let link_args = [
+    // The link args the pipeline passes. Spelled out AND checked against
+    // the shipped decision: spelling them out is what makes this test
+    // readable, checking is what stops it quietly proving something about
+    // a flag set the build no longer uses.
+    const BASE_LINK_ARGS: [&str; 8] = [
         "--no-gc-sections",
         "--export-table",
         "--export-memory",
@@ -116,9 +117,23 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         "--export=__stack_pointer",
         "--export=__heap_base",
         "--export=__data_end",
-    ]
-    .map(|a| format!("-Clink-arg={a}"))
-    .join(" ");
+    ];
+    let shipped = build_web::hot_patch_link_args();
+    for flag in BASE_LINK_ARGS {
+        assert!(
+            shipped.iter().any(|a| a == flag),
+            "the build no longer passes {flag}: {shipped:?}"
+        );
+    }
+    assert_eq!(
+        shipped.len(),
+        BASE_LINK_ARGS.len(),
+        "the build grew a link arg this test does not exercise: {shipped:?}"
+    );
+
+    let link_args = BASE_LINK_ARGS
+        .map(|a| format!("-Clink-arg={a}"))
+        .join(" ");
 
     run(
         Command::new("cargo")

@@ -2250,6 +2250,18 @@ fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
 /// Extracted so the combination is testable: it is three interacting
 /// flags whose wrong pairing is invisible in a build log and shows up
 /// as either a bloated release bundle or a hot patch that cannot link.
+/// The link args a non-splitting hot-patch base build passes, without
+/// the `link-args=` prefix `-C` needs.
+///
+/// Public so the end-to-end test drives a real build with exactly the set
+/// the pipeline uses, rather than a copy of it that drifts.
+pub fn hot_patch_link_args() -> Vec<String> {
+    wasm_link_args(false, true)
+        .into_iter()
+        .map(|a| a.trim_start_matches("link-args=").to_string())
+        .collect()
+}
+
 fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |arg: &str| {
