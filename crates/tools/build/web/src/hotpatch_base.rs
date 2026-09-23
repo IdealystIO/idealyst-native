@@ -114,6 +114,12 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     // A JS shim — what an `extern "C"` block under `#[wasm_bindgen]`
     // becomes — is an IMPORT in the base, not a function, so it has no
     // table slot, and a patch that calls one has nothing to resolve to.
+    // So is a `#[component(lazy)]` loader in a no-split build: an import
+    // from `./__wasm_split.js` that the stub module answers at once. On
+    // CrewForge the first patch that got past the shims stopped on 17 of
+    // those. Every function import gets a trampoline, except wasm-bindgen's
+    // own descriptor and externref-transform machinery, which it rewrites
+    // or deletes and which no user code calls.
     // Give each a local forwarding body under a name wasm-bindgen does
     // not recognise, and root that. The shim's own import stays exactly
     // where wasm-bindgen expects it; the trampoline just calls it.
@@ -125,7 +131,11 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     let shims: Vec<(FunctionId, String)> = module
         .imports
         .iter()
-        .filter(|i| i.module == "__wbindgen_placeholder__" && !is_bindgen_internal(&i.name))
+        .filter(|i| {
+            i.module != "env"
+                && i.module != "__wbindgen_externref_xform__"
+                && !is_bindgen_internal(&i.name)
+        })
         .filter_map(|i| match i.kind {
             ImportKind::Function(f) => Some((f, i.name.clone())),
             _ => None,
@@ -606,6 +616,40 @@ mod tests {
         assert!(
             !module.exports.iter().any(|e| e.name.contains("shim")),
             "the trampoline must not be exported"
+        );
+    }
+
+    /// Regression: on CrewForge, a patch that got past every JS shim
+    /// stopped on 17 imports from `./__wasm_split.js` — the
+    /// `#[component(lazy)]` loaders a no-split build answers from a stub
+    /// module. They are imports in the base exactly like a JS shim, and
+    /// need the same trampoline.
+    #[test]
+    fn regression_a_lazy_loader_import_gets_a_trampoline_too() {
+        let mut module = Module::default();
+        let table = module
+            .tables
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
+        let ty = module.types.add(&[ValType::I32], &[]);
+        module.add_import_func("./__wasm_split.js", "__wasm_split_00_lazy_body", ty);
+        module.add_import_func("__wbindgen_externref_xform__", "__wbindgen_externref_table_grow", ty);
+        module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(vec![]),
+        );
+
+        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let entries = table_entries(&out);
+        assert!(
+            entries.contains(&shim_trampoline_name("__wasm_split_00_lazy_body")),
+            "{entries:?}"
+        );
+        assert_eq!(
+            census.shim_trampolines, 1,
+            "wasm-bindgen's externref transform is its own business: {entries:?}"
         );
     }
 

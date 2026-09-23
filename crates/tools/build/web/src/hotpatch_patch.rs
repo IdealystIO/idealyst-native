@@ -296,9 +296,24 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
                 }
             }
 
-            other => unresolved.push(format!(
-                "{other}.{name} (the runtime only provides an `env` namespace)"
-            )),
+            // Any other namespace is an import the base has too — a
+            // `#[component(lazy)]` loader from `./__wasm_split.js`, say.
+            // The runtime only provides `env`, so it goes through the
+            // forwarding body `hotpatch_base` rooted for the base's copy.
+            other => match (
+                base.ifunc
+                    .get(&crate::hotpatch_base::shim_trampoline_name(&name)),
+                kind,
+            ) {
+                (Some(index), ImportKind::Function(func)) => {
+                    module.imports.delete(id);
+                    call_through_table(&mut module, table, func, *index, &name)?;
+                }
+                _ => unresolved.push(format!(
+                    "{other}.{name} (the runtime only provides an `env` namespace, and the \
+                     base has no forwarding body for this import in its table)"
+                )),
+            },
         }
     }
 
@@ -770,6 +785,24 @@ mod tests {
             .unwrap_or_else(|e| panic!("the alias should resolve: {e:#}"));
         assert!(
             !imports_of(&resolved).iter().any(|i| i.contains(alias)),
+            "{:?}",
+            imports_of(&resolved)
+        );
+    }
+
+    /// Regression (CrewForge): an import from a namespace the runtime
+    /// does not provide — a lazy loader from `./__wasm_split.js` — is
+    /// resolved through the base's forwarding body for it, not refused.
+    #[test]
+    fn an_import_from_another_namespace_resolves_through_its_trampoline() {
+        let name = "__wasm_split_00_lazy_body";
+        let served = served_base_with(&crate::hotpatch_base::shim_trampoline_name(name));
+        let patch = patch_module(&[("./__wasm_split.js", name)]);
+        let base = BaseIndex::of(&served, &Default::default()).unwrap();
+        let resolved = resolve_against_base(&patch, &base)
+            .unwrap_or_else(|e| panic!("should resolve: {e:#}"));
+        assert!(
+            imports_of(&resolved).iter().all(|i| !i.contains("__wasm_split")),
             "{:?}",
             imports_of(&resolved)
         );

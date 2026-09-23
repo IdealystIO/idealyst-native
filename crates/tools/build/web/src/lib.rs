@@ -960,7 +960,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .push(("stage+fingerprint", stage_start.elapsed()));
     timings.report();
 
-    let served_wasm = pkg_dir.join(format!("{}_bg.wasm", manifest.lib_name));
+    let served_wasm = served_wasm_path(&wrapper_pkg, &manifest.lib_name);
     Ok(BuildArtifact {
         wasm_changed: !skip_passes,
         served_wasm,
@@ -2359,6 +2359,19 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
         push("--export=__data_end");
     }
     out
+}
+
+/// The module the page runs, as the hot-patch tier must read it.
+///
+/// The wrapper's own `pkg/`, never the staged bundle's. Staging a
+/// full-stack project's bundle content-addresses every file
+/// (`<lib>_bg.<hash>.wasm`) and may gzip it in place, so the plain name
+/// does not exist there. Reading it from the staged dir is how the first
+/// body edit on CrewForge was refused with "No such file or directory".
+/// The wrapper copy is the same bytes: staging only renames and
+/// compresses, after wasm-bindgen and the neutralize pass have run.
+pub fn served_wasm_path(wrapper_pkg: &Path, lib_name: &str) -> PathBuf {
+    wrapper_pkg.join(format!("{lib_name}_bg.wasm"))
 }
 
 /// Where a hot-patch base build writes its captured rustc invocations.
@@ -4203,6 +4216,37 @@ mod fingerprint_tests {
         fs::create_dir_all(pkg.join("snippets/demo-abc123")).unwrap();
         fs::write(pkg.join("snippets/demo-abc123/inline0.js"), b"export {};").unwrap();
         pkg
+    }
+
+    /// Regression: on a full-stack project (a staged, fingerprinted
+    /// bundle) the hot-patch tier looked for the base module under its
+    /// plain name in the STAGED `pkg/`, where fingerprinting had already
+    /// renamed it — every body edit on CrewForge fell back to a rebuild
+    /// with "No such file or directory". The path the tier reads must
+    /// exist after staging, and hold the bytes the page is served.
+    #[test]
+    fn regression_the_hot_patch_base_is_read_where_staging_leaves_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wrapper_pkg = fake_pkg(tmp.path());
+        let staged_pkg = tmp.path().join("staged/pkg");
+        sync_pkg_dir(&wrapper_pkg, &staged_pkg).unwrap();
+        fingerprint_pkg(&staged_pkg, "demo").unwrap();
+
+        assert!(
+            !staged_pkg.join("demo_bg.wasm").exists(),
+            "fixture no longer exercises the rename — staging left the plain name"
+        );
+        let served = served_wasm_path(&wrapper_pkg, "demo");
+        let bytes = fs::read(&served).expect("the path the tier reads must exist after staging");
+        let staged_wasm = fs::read_dir(&staged_pkg)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                let n = p.file_name().unwrap().to_string_lossy();
+                n.starts_with("demo_bg.") && n.ends_with(".wasm")
+            })
+            .expect("a fingerprinted base module in the staged bundle");
+        assert_eq!(bytes, fs::read(staged_wasm).unwrap());
     }
 
     fn hashed(name: &str, hash: &str) -> String {
