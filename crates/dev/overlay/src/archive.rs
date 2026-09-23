@@ -321,7 +321,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// treats as legal (it is what `ui! {}` produces) — so a reader can tell
 /// "nothing here" from "something here" without a second field, and a
 /// differ against one produces no edits.
-fn empty_descriptor(site: runtime_template::SiteId) -> Descriptor {
+pub(crate) fn empty_descriptor(site: runtime_template::SiteId) -> Descriptor {
     Descriptor {
         site,
         slots: runtime_template::SlotSig { slots: Vec::new().into() },

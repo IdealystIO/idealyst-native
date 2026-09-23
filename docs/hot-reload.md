@@ -189,6 +189,18 @@ A save that carries BOTH a literal edit and a body edit is one hot
 patch, not a patch plus a rebuild: the hot patch re-emits the crate from
 source, so the literal arrives with it.
 
+Some `ui!` edits the overlay refuses: a literal becoming a variable or a
+closure (`text { "Title" }` → `text { title }`, a static slot turning
+dynamic), or a `ui!` nested inside another site's body appearing or
+vanishing (a new site has no compiled tag to address). Those are still
+edits inside a function body, so they fall to the hot-patch tier when the
+file's shape is unchanged, and rebuild only when it moved (or cannot be
+computed). A `ui!` body that no longer parses rebuilds: it would not
+compile as a patch either. After a hot patch the decision re-derives that
+file's sites from the new source, keys included, because the remounted
+tree is built by the patched code and carries the keys of the source it
+was compiled from; the next literal edit is an overlay patch again.
+
 ## The hot-patch pipeline
 
 1. The initial sidecar build is a "fat" build: `RUSTFLAGS` keeps

@@ -8,21 +8,28 @@
 //!
 //! # The decision is conservative on purpose
 //!
-//! A save is patchable only when EVERY one of these holds:
+//! A save is OVERLAY-patchable only when EVERY one of these holds:
 //!
 //! 1. every changed file still parses;
 //! 2. its [skeleton](runtime_macros_parse::file_skeleton) — the file
 //!    with `ui!` bodies blanked — is byte-for-byte unchanged, so nothing
 //!    outside a site moved;
-//! 3. the file's `ui!` sites are the same sites, at the same positions;
-//! 4. every site whose descriptor changed diffs to a valid [`Patch`];
+//! 3. the file's `ui!` sites are the same sites, in the same order;
+//! 4. every site whose descriptor changed diffs to a valid
+//!    [`runtime_template::Patch`];
 //! 5. the archive is the one this build produced.
 //!
-//! Anything else rebuilds. A file with both a patchable `ui!` edit and a
-//! logic edit rebuilds, because (2) fails — and that is the case worth
-//! being careful about: patching the label while skipping the compiler
-//! that would have picked up the logic change is how a dev loop starts
-//! lying about what is running.
+//! When (2), (3) or (4) fails the overlay is out, and the save asks the
+//! hot-patch tier's question instead: is the file's SHAPE (everything
+//! outside function bodies) unchanged? If so the edit is body-only —
+//! a `ui!` literal becoming a variable, a nested `ui!` appearing inside
+//! another's body — and a hot patch carries it, because it re-emits the
+//! whole crate from source. If not, or if that cannot be proven, it
+//! rebuilds. A file with both a patchable `ui!` edit and a logic edit
+//! never takes the overlay, because (2) fails — and that is the case
+//! worth being careful about: patching the label while skipping the
+//! compiler that would have picked up the logic change is how a dev
+//! loop starts lying about what is running.
 //!
 //! The asymmetry is deliberate. A wrong REBUILD costs seconds. A wrong
 //! PATCH means the screen and the source disagree with nothing to say
@@ -32,9 +39,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use runtime_template::{diff, Edit, Rejection};
+use runtime_template::{diff, Edit};
 
-use crate::archive::DescriptorSet;
+use crate::archive::{ArchivedSite, DescriptorSet, FileDigest};
 
 /// What to do with a save.
 ///
@@ -79,11 +86,6 @@ pub enum Reason {
     /// Something outside the `ui!` bodies changed. This is the common
     /// one, and it covers every logic edit.
     CodeChanged { file: String },
-    /// A `ui!` site appeared, vanished or moved. Positions are part of
-    /// site identity, so an inserted line above a site lands here.
-    SitesMoved { file: String },
-    /// A site's edit cannot be expressed as a patch.
-    Refused { file: String, why: Rejection },
     /// The file's SHAPE moved — a signature, a props struct, a
     /// `static`, an attribute, the set of items. A hot patch cannot
     /// express this: the patch dylib is spliced into a process where
@@ -99,8 +101,6 @@ impl std::fmt::Display for Reason {
             Reason::UnknownFile { file } => write!(f, "{file} is not in this build"),
             Reason::DoesNotParse { file } => write!(f, "{file} does not parse"),
             Reason::CodeChanged { file } => write!(f, "{file} changed outside its `ui!` bodies"),
-            Reason::SitesMoved { file } => write!(f, "{file}'s `ui!` sites moved"),
-            Reason::Refused { file, why } => write!(f, "{file}: {why}"),
             Reason::ShapeChanged { file } => {
                 write!(f, "{file} changed outside its function bodies")
             }
@@ -134,7 +134,7 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
 
     // The archive's sites by file, in the ordinal order the producer
     // recorded — the same walk the on-save scan does.
-    let mut by_file: BTreeMap<&str, Vec<&crate::archive::ArchivedSite>> = BTreeMap::new();
+    let mut by_file: BTreeMap<&str, Vec<&ArchivedSite>> = BTreeMap::new();
     for site in &archive.sites {
         by_file.entry(site.descriptor.site.file.as_ref()).or_default().push(site);
     }
@@ -143,101 +143,20 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
     }
 
     let mut patches = Vec::new();
-    // Files whose `ui!` skeleton moved but whose SHAPE did not — the
-    // subsecond tier. Collected rather than returned early because a
-    // save can touch several files and the answer is the most
+    // Files whose edit the overlay cannot carry but whose SHAPE did not
+    // move — the subsecond tier. Collected rather than returned early
+    // because a save can touch several files and the answer is the most
     // expensive one any of them needs.
     let mut body_only: Vec<String> = Vec::new();
     for file in changed {
         let Some(recorded) = archive.files.get(&file.path) else {
             return Decision::Rebuild(Reason::UnknownFile { file: file.path.clone() });
         };
-        if recorded.content == crate::archive::digest(file.text.as_bytes()) {
-            continue;
-        }
-
-        let sites = match runtime_macros_parse::sites_in_file(
-            &archive.package,
-            &file.path,
-            &file.text,
-        ) {
-            Ok(s) => s,
-            Err(_) => {
-                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() })
-            }
-        };
-        let skeleton =
-            crate::archive::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
-        if skeleton != recorded.skeleton {
-            // Something outside the `ui!` bodies moved, so the overlay
-            // is out. Ask the weaker question the hot-patch tier needs:
-            // did anything outside the FUNCTION bodies move?
-            //
-            // This is the safety boundary, not an optimization. Routing
-            // a shape change into a patch would splice code with a new
-            // layout into a process that still holds the old one
-            // everywhere else — silent corruption rather than a stale
-            // screen. So anything this cannot prove is body-only
-            // rebuilds.
-            let Some(shape) = runtime_macros_parse::shape_of(&file.text) else {
-                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
-            };
-            if crate::archive::digest(shape.as_bytes()) != recorded.shape {
-                return Decision::Rebuild(Reason::ShapeChanged { file: file.path.clone() });
-            }
-            body_only.push(file.path.clone());
-            // Its sites are not diffed: a hot patch re-emits the whole
-            // crate from source, so every literal in this file arrives
-            // with it. Diffing would only risk a patch addressed at
-            // keys the patched binary no longer carries.
-            continue;
-        }
-
-        // Match by ORDINAL, not by site key. A body gaining a line moves
-        // every site below it, which re-keys them — but the running
-        // binary still carries the OLD keys, and the file still has the
-        // same sites in the same order. Matching by position lets those
-        // saves patch; keying by position alone made them all rebuild.
-        //
-        // The ordinal set changing means a site was added or removed,
-        // and a new site has no compiled tag to address at all.
-        let archived = by_file.get(file.path.as_str()).cloned().unwrap_or_default();
-        if archived.len() != sites.len() {
-            return Decision::Rebuild(Reason::SitesMoved { file: file.path.clone() });
-        }
-        for (before, mut site) in archived.iter().zip(sites) {
-            // A site this build could not describe, or one this save
-            // cannot parse, has nothing to diff.
-            let Some(ui) = site.ui.as_mut() else {
-                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
-            };
-            if before.descriptor.nodes.is_empty() && before.descriptor.roots.is_empty() {
-                return Decision::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
-            }
-            // Describe under the ARCHIVED site id, so the diff compares
-            // two versions of one site rather than refusing them as two
-            // different sites — and so the patch is addressed to the key
-            // the compiled code carries.
-            let after = match runtime_macros_parse::describe(before.descriptor.site.clone(), ui) {
-                Ok(d) => d,
-                // The two numbering walks disagreed — a bug in this
-                // crate's own pass, not in the author's code. Rebuild:
-                // it is the answer that is always right.
-                Err(_) => {
-                    return Decision::Rebuild(Reason::SitesMoved { file: file.path.clone() })
-                }
-            };
-            match diff(&before.descriptor, &after) {
-                Ok(patch) if patch.edits.is_empty() => {}
-                Ok(patch) => patches.push(SitePatch {
-                    site: before.key,
-                    file: file.path.clone(),
-                    edits: patch.edits.into_owned(),
-                }),
-                Err(why) => {
-                    return Decision::Rebuild(Reason::Refused { file: file.path.clone(), why })
-                }
-            }
+        match decide_file(archive, &by_file, recorded, file) {
+            FileOutcome::Unchanged => {}
+            FileOutcome::Patches(mut site_patches) => patches.append(&mut site_patches),
+            FileOutcome::BodyOnly => body_only.push(file.path.clone()),
+            FileOutcome::Rebuild(why) => return Decision::Rebuild(why),
         }
     }
 
@@ -254,15 +173,159 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
     }
 }
 
-/// Fold a decided patch back into the archive, so the NEXT save diffs
-/// against what is actually running.
+/// What ONE changed file needs, before the save's files are combined.
+enum FileOutcome {
+    /// Same bytes, or a change no descriptor sees.
+    Unchanged,
+    /// Overlay patches for this file's sites.
+    Patches(Vec<SitePatch>),
+    /// Not expressible as an overlay patch, but only function bodies
+    /// moved: the hot-patch tier.
+    BodyOnly,
+    Rebuild(Reason),
+}
+
+fn decide_file(
+    archive: &DescriptorSet,
+    by_file: &BTreeMap<&str, Vec<&ArchivedSite>>,
+    recorded: &FileDigest,
+    file: &ChangedFile,
+) -> FileOutcome {
+    if recorded.content == crate::archive::digest(file.text.as_bytes()) {
+        return FileOutcome::Unchanged;
+    }
+
+    let Ok(sites) = runtime_macros_parse::sites_in_file(&archive.package, &file.path, &file.text)
+    else {
+        return FileOutcome::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
+    };
+    let skeleton =
+        crate::archive::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
+    if skeleton != recorded.skeleton {
+        // Something outside the `ui!` bodies moved, so the overlay is
+        // out. Its sites are not diffed: a hot patch re-emits the whole
+        // crate from source, so every literal in this file arrives with
+        // it, and diffing would only risk a patch addressed at keys the
+        // patched binary no longer carries.
+        return body_only_or_rebuild(recorded, file);
+    }
+
+    // Match by ORDINAL, not by site key. A body gaining a line moves
+    // every site below it, which re-keys them — but the running binary
+    // still carries the OLD keys, and the file still has the same sites
+    // in the same order. Matching by position lets those saves patch;
+    // keying by position alone made them all rebuild.
+    //
+    // The ordinal set changing means a site was added or removed — with
+    // the skeleton unchanged, that is a `ui!` nested inside another
+    // site's body. A new site has no compiled tag for an overlay patch to
+    // address, but it is still an edit inside a function body, so it is
+    // the hot-patch tier's to take if the shape agrees.
+    let archived = by_file.get(file.path.as_str()).cloned().unwrap_or_default();
+    if archived.len() != sites.len() {
+        return body_only_or_rebuild(recorded, file);
+    }
+    let mut patches = Vec::new();
+    for (before, mut site) in archived.iter().zip(sites) {
+        // A site this save cannot parse, or one this build could not
+        // describe, has nothing to diff — and it is not a hot patch
+        // either: a `ui!` body that does not parse is a body that does
+        // not compile, so the patch build would only fail on it.
+        let Some(ui) = site.ui.as_mut() else {
+            return FileOutcome::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
+        };
+        if before.descriptor.nodes.is_empty() && before.descriptor.roots.is_empty() {
+            return FileOutcome::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
+        }
+        // Describe under the ARCHIVED site id, so the diff compares two
+        // versions of one site rather than refusing them as two
+        // different sites — and so the patch is addressed to the key the
+        // compiled code carries.
+        let Ok(after) = runtime_macros_parse::describe(before.descriptor.site.clone(), ui) else {
+            // The two numbering walks disagreed — a bug in this crate's
+            // own pass, not in the author's code. The overlay cannot
+            // address this site; a compiler can.
+            return body_only_or_rebuild(recorded, file);
+        };
+        match diff(&before.descriptor, &after) {
+            Ok(patch) if patch.edits.is_empty() => {}
+            Ok(patch) => patches.push(SitePatch {
+                site: before.key,
+                file: file.path.clone(),
+                edits: patch.edits.into_owned(),
+            }),
+            // The differ refuses what a patch cannot express: a static
+            // slot turning dynamic (`{ "Title" }` → `{ title }`), a
+            // literal becoming a closure. That is new CODE inside a
+            // function body — the hot-patch tier's case, not a rebuild's,
+            // when nothing outside the bodies moved.
+            Err(_) => return body_only_or_rebuild(recorded, file),
+        }
+    }
+    FileOutcome::Patches(patches)
+}
+
+/// The hot-patch tier's question, for a file the overlay cannot carry:
+/// did anything outside its FUNCTION bodies move?
 ///
-/// Without this, a second edit to the same literal would diff against
-/// the original and re-send an edit that is already applied — harmless
-/// once, wrong the moment the two edits are not the same shape. A
-/// rebuild regenerates the archive from source instead, which is also
-/// what drops every staged patch.
+/// This is the safety boundary, not an optimization. Routing a shape
+/// change into a patch would splice code with a new layout into a
+/// process that still holds the old one everywhere else — silent
+/// corruption rather than a stale screen. So anything this cannot prove
+/// is body-only rebuilds: a shape that moved is `ShapeChanged`, and a
+/// file whose shape cannot be computed is `DoesNotParse`.
+fn body_only_or_rebuild(recorded: &FileDigest, file: &ChangedFile) -> FileOutcome {
+    let Some(shape) = runtime_macros_parse::shape_of(&file.text) else {
+        return FileOutcome::Rebuild(Reason::DoesNotParse { file: file.path.clone() });
+    };
+    if crate::archive::digest(shape.as_bytes()) != recorded.shape {
+        return FileOutcome::Rebuild(Reason::ShapeChanged { file: file.path.clone() });
+    }
+    FileOutcome::BodyOnly
+}
+
+/// Fold a decided save back into the archive, so the NEXT save is
+/// decided against what is actually running.
+///
+/// Call it after the save's patch has been APPLIED — an overlay patch
+/// sent, or a hot patch pushed. A rebuild regenerates the archive from
+/// source instead, which is also what drops every staged patch. What
+/// "running" means differs by tier, so this re-derives the save's
+/// decision (it is pure, and the archive has not moved since the caller
+/// decided) and advances accordingly:
+///
+/// - **Overlay patch** (or a save no descriptor sees): the DESCRIPTORS
+///   move forward, the KEYS stay. The binary still carries the keys it
+///   was compiled with, and no overlay patch changes them — a `ui!` body
+///   gaining a line re-keys every site below it in source, but not in
+///   the binary. Without this, a second edit to the same literal would
+///   diff against the original and re-send an edit that is already
+///   applied — harmless once, wrong the moment the two edits are not the
+///   same shape.
+/// - **Hot patch**: every changed file's sites are re-derived from the
+///   new source, KEYS included. The patch re-emitted the crate, and the
+///   remounted tree is built by the patched code, whose tags carry the
+///   keys of the source it was compiled from. Keeping the old keys would
+///   address the next literal edit at a site the running tree no longer
+///   has whenever the hot patch shifted a line (a `let` added above a
+///   `ui!`), and keeping the old SITE LIST would leave a `ui!` the patch
+///   added with no archived site at all.
+///
+/// What this cannot do is re-key a file the save did NOT touch: a hot
+/// patch re-emits those too, and one whose sites moved since the last
+/// full scan (an earlier overlay patch that grew a `ui!` body, say) is
+/// re-keyed in the binary but not here. The exact fix for that is the
+/// one the runtime-server host already uses — re-scan the crate
+/// ([`crate::scan_crate`]) after a hot patch lands, instead of calling
+/// this.
 pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
+    let rekey = match decide(Some(archive), changed) {
+        Decision::HotPatch(_) => true,
+        Decision::Patch(_) | Decision::Unchanged => false,
+        // Nothing was applied, so nothing is running that the archive
+        // does not already describe. The caller rebuilds and re-scans.
+        Decision::Rebuild(_) => return,
+    };
     for file in changed {
         let Ok(sites) =
             runtime_macros_parse::sites_in_file(&archive.package, &file.path, &file.text)
@@ -273,7 +336,7 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
             crate::archive::digest(runtime_macros_parse::skeleton_of(&file.text, &sites).as_bytes());
         archive.files.insert(
             file.path.clone(),
-            crate::archive::FileDigest {
+            FileDigest {
                 content: crate::archive::digest(file.text.as_bytes()),
                 skeleton,
                 shape: crate::archive::digest(
@@ -283,26 +346,70 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                 ),
             },
         );
-        for (ordinal, mut site) in sites.into_iter().enumerate() {
-            let Some(ui) = site.ui.as_mut() else { continue };
-            let Some(slot) = archive
-                .sites
-                .iter_mut()
-                .find(|s| s.descriptor.site.file == file.path && s.ordinal == ordinal as u32)
-            else {
-                continue;
-            };
-            // Describe under the archived site id and keep `key`
-            // untouched. The DESCRIPTOR moves forward so the next save
-            // diffs against what is running; the KEY must not, because
-            // it is what the compiled binary's tags say and no patch
-            // changes that. Only a rebuild does.
-            let Ok(after) = runtime_macros_parse::describe(slot.descriptor.site.clone(), ui) else {
-                continue;
-            };
-            slot.descriptor = after;
+        if rekey {
+            rekey_file(archive, &file.path, sites);
+        } else {
+            advance_descriptors(archive, &file.path, sites);
         }
     }
+}
+
+/// The overlay half of [`advance_archive`]: new descriptors, old keys.
+fn advance_descriptors(
+    archive: &mut DescriptorSet,
+    path: &str,
+    sites: Vec<runtime_macros_parse::Site>,
+) {
+    for (ordinal, mut site) in sites.into_iter().enumerate() {
+        let Some(ui) = site.ui.as_mut() else { continue };
+        let Some(slot) = archive
+            .sites
+            .iter_mut()
+            .find(|s| s.descriptor.site.file == path && s.ordinal == ordinal as u32)
+        else {
+            continue;
+        };
+        // Describe under the archived site id and keep `key` untouched.
+        // The DESCRIPTOR moves forward so the next save diffs against
+        // what is running; the KEY must not, because it is what the
+        // compiled binary's tags say and no overlay patch changes that.
+        let Ok(after) = runtime_macros_parse::describe(slot.descriptor.site.clone(), ui) else {
+            continue;
+        };
+        slot.descriptor = after;
+    }
+}
+
+/// The hot-patch half of [`advance_archive`]: the file's sites exactly
+/// as a fresh scan of the new source would record them.
+///
+/// Replaces the file's whole site list, in place, so the archive keeps
+/// its file-then-document order. A site that cannot be described is
+/// recorded with an empty descriptor, as the producer does — never with
+/// the previous build's, which would describe a site the patched code
+/// no longer builds.
+fn rekey_file(archive: &mut DescriptorSet, path: &str, sites: Vec<runtime_macros_parse::Site>) {
+    let fresh: Vec<ArchivedSite> = sites
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, mut site)| {
+            let key = site.id.key();
+            let descriptor = site
+                .ui
+                .as_mut()
+                .and_then(|ui| runtime_macros_parse::describe(site.id.clone(), ui).ok())
+                .unwrap_or_else(|| crate::archive::empty_descriptor(site.id.clone()));
+            ArchivedSite { key, ordinal: ordinal as u32, descriptor }
+        })
+        .collect();
+    let at = archive
+        .sites
+        .iter()
+        .position(|s| s.descriptor.site.file == path)
+        .unwrap_or(archive.sites.len());
+    archive.sites.retain(|s| s.descriptor.site.file != path);
+    let at = at.min(archive.sites.len());
+    archive.sites.splice(at..at, fresh);
 }
 
 /// The payload the delivery side ships, in both dev shapes.
@@ -530,22 +637,243 @@ fn Screen() -> Element {
     }
 
     /// An edit a patch cannot express — here a literal becoming a
-    /// closure — is refused by the differ and falls to a rebuild, with
-    /// the differ's own reason carried along so the log can say why.
+    /// closure — is refused by the differ. That is new code inside a
+    /// function body, so with the shape unchanged it is the hot-patch
+    /// tier's, not a rebuild's.
     #[test]
-    fn an_edit_the_differ_refuses_rebuilds_with_its_reason() {
+    fn an_edit_the_differ_refuses_is_a_hot_patch_when_the_shape_holds() {
         let (_d, archive) = archive_of(APP);
         let edited = APP.replace(
             r#"text { "hello" }"#,
             r#"text { move || format!("{}", count()) }"#,
         );
-        match decide(Some(&archive), &changed(&edited)) {
-            Decision::Rebuild(Reason::Refused { file, why }) => {
-                assert_eq!(file, "src/app.rs");
-                assert!(!why.to_string().is_empty(), "a refusal must say why");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// The lab-app repro: `text(style = heading) { "Hot reload lab" }`
+    /// → `text(style = heading) { x }`, with `x` already bound in the
+    /// body. The skeleton is unchanged (bodies are blanked in it), so the
+    /// save reached the ordinal-matched diff, the differ refused a static
+    /// slot turning dynamic — and the decision returned `Refused` on the
+    /// spot, rebuilding and reloading the page (state lost) for an edit
+    /// that never left a function body.
+    #[test]
+    fn regression_literal_becoming_dynamic_is_a_hot_patch() {
+        let src = APP.replace(
+            "fn Screen() -> Element {",
+            "fn Screen() -> Element {\n    let x = \"123\".to_string();",
+        );
+        let (_d, archive) = archive_of(&src);
+        let edited = src.replace(r#"text { "hello" }"#, "text { x }");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// A `ui!` invocation appearing inside another site's body leaves the
+    /// skeleton byte-identical (the outer body is blanked in it) and
+    /// changes only the ordinal count. That returned `SitesMoved` and
+    /// rebuilt; it is a body-only edit, and a hot patch compiles the new
+    /// site in with everything else.
+    #[test]
+    fn regression_new_ui_site_inside_a_body_is_a_hot_patch() {
+        let src = r#"
+#[component]
+fn A() -> Element {
+    ui! { view() { presence(visible = f) { text { "inner" } } } }
+}
+"#;
+        let (_d, archive) = archive_of(src);
+        assert_eq!(archive.sites.len(), 1);
+
+        let edited = src.replace(r#"text { "inner" }"#, r#"ui! { text { "inner" } }"#);
+        let before = runtime_macros_parse::sites_in_file(&archive.package, "src/app.rs", src)
+            .expect("parses");
+        let after = runtime_macros_parse::sites_in_file(&archive.package, "src/app.rs", &edited)
+            .expect("parses");
+        assert_eq!(
+            runtime_macros_parse::skeleton_of(src, &before),
+            runtime_macros_parse::skeleton_of(&edited, &after),
+            "the fixture must leave the skeleton alone, or it tests the other branch"
+        );
+        assert_eq!(after.len(), 2, "and it must add a site");
+
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// Falling through to the hot-patch tier asks ITS question, not a
+    /// free pass: a refused `ui!` edit in a save that also moves a
+    /// signature is still a shape change, and still rebuilds.
+    #[test]
+    fn regression_literal_becoming_dynamic_with_a_signature_change_rebuilds() {
+        let src = APP.replace(
+            "fn Screen() -> Element {",
+            "fn Screen() -> Element {\n    let x = \"123\".to_string();",
+        );
+        let (_d, archive) = archive_of(&src);
+        let edited = src
+            .replace(r#"text { "hello" }"#, "text { x }")
+            .replace("fn count() -> i32", "fn count() -> i64");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    /// The save AFTER a literal-to-dynamic hot patch. Here the same save
+    /// also adds the `let` the new slot reads, so the `ui!` moves down a
+    /// line: the patched code the page remounted with tags that site with
+    /// the NEW position's key. A literal edit next must be an overlay
+    /// patch addressed at THAT key, diffed against the patched source's
+    /// descriptor. Advancing the archive the overlay way kept the build's
+    /// key, so the patch went to a site the running tree no longer had and
+    /// the screen silently stayed put.
+    #[test]
+    fn regression_literal_edit_after_a_dynamic_hot_patch_addresses_the_patched_code() {
+        let src = APP.replace(r#"text { "hello" }"#, r#"text { "hello" } text { "there" }"#);
+        let (_d, mut archive) = archive_of(&src);
+        let built_key = archive.sites[0].key;
+
+        let hot = src
+            .replace(
+                "fn Screen() -> Element {",
+                "fn Screen() -> Element {\n    let x = \"123\".to_string();",
+            )
+            .replace(r#"text { "hello" }"#, "text { x }");
+        assert_eq!(
+            decide(Some(&archive), &changed(&hot)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+        advance_archive(&mut archive, &changed(&hot));
+
+        let patched = runtime_macros_parse::sites_in_file(&archive.package, "src/app.rs", &hot)
+            .expect("parses");
+        let running_key = patched[0].id.key();
+        assert_ne!(running_key, built_key, "the fixture must move the site, or this proves nothing");
+        assert_eq!(archive.sites.len(), 1);
+        assert_eq!(archive.sites[0].key, running_key, "the patched code's key, not the build's");
+
+        let next = hot.replace(r#""there""#, r#""everyone""#);
+        match decide(Some(&archive), &changed(&next)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1);
+                assert_eq!(patches[0].site, running_key);
+                // And the edits are the ones a diff against the PATCHED
+                // source gives — the dynamic slot is not re-sent as a
+                // literal, and nothing else is touched.
+                let mut sites = runtime_macros_parse::sites_in_file(
+                    &archive.package,
+                    "src/app.rs",
+                    &hot,
+                )
+                .unwrap();
+                let mut next_sites = runtime_macros_parse::sites_in_file(
+                    &archive.package,
+                    "src/app.rs",
+                    &next,
+                )
+                .unwrap();
+                let id = sites[0].id.clone();
+                let a = runtime_macros_parse::describe(id.clone(), sites[0].ui.as_mut().unwrap())
+                    .unwrap();
+                let b = runtime_macros_parse::describe(id, next_sites[0].ui.as_mut().unwrap())
+                    .unwrap();
+                assert_eq!(patches[0].edits, diff(&a, &b).unwrap().edits.into_owned());
             }
-            other => panic!("expected a refusal, got {other:?}"),
+            other => panic!("expected an overlay patch, got {other:?}"),
         }
+    }
+
+    /// A site the hot patch ADDED is in the patched code, so it is in the
+    /// archive afterwards, and a literal edit inside it patches. Advancing
+    /// the overlay way left it out — the ordinal count then disagreed on
+    /// every later save of that file until a full rebuild.
+    ///
+    /// The new `ui!` is a `let` in a body rather than nested inside the
+    /// existing site: an edit inside a nested site is also an edit to the
+    /// OUTER site's opaque child expression, which the overlay rightly
+    /// refuses.
+    #[test]
+    fn a_site_a_hot_patch_added_is_patchable_on_the_next_save() {
+        let (_d, mut archive) = archive_of(APP);
+        let hot = APP.replace(
+            "fn Screen() -> Element {",
+            "fn Screen() -> Element {\n    let _extra = ui! { text { \"inner\" } };",
+        );
+        assert!(matches!(decide(Some(&archive), &changed(&hot)), Decision::HotPatch(_)));
+        advance_archive(&mut archive, &changed(&hot));
+        assert_eq!(archive.sites.len(), 2);
+        assert_eq!(archive.sites.iter().map(|s| s.ordinal).collect::<Vec<_>>(), vec![0, 1]);
+
+        let next = hot.replace(r#""inner""#, r#""inner!""#);
+        let new_site = runtime_macros_parse::sites_in_file(&archive.package, "src/app.rs", &hot)
+            .unwrap()[0]
+            .id
+            .key();
+        match decide(Some(&archive), &changed(&next)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1);
+                assert_eq!(patches[0].site, new_site);
+            }
+            other => panic!("expected an overlay patch, got {other:?}"),
+        }
+    }
+
+    /// A body edit that shifts a line (the common `let` added above a
+    /// `ui!`) re-keys the site in the patched code. The next literal edit
+    /// must address the new key — the build's is gone from the tree.
+    #[test]
+    fn regression_literal_edit_after_a_line_shifting_hot_patch_uses_the_new_key() {
+        let (_d, mut archive) = archive_of(APP);
+        let built_key = archive.sites[0].key;
+        let hot = APP.replace(
+            "fn Screen() -> Element {",
+            "fn Screen() -> Element {\n    let extra = signal(0i32);",
+        );
+        assert!(matches!(decide(Some(&archive), &changed(&hot)), Decision::HotPatch(_)));
+        advance_archive(&mut archive, &changed(&hot));
+
+        let next = hot.replace(r#""hello""#, r#""goodbye""#);
+        match decide(Some(&archive), &changed(&next)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1);
+                assert_ne!(patches[0].site, built_key, "the build's key is not in the tree");
+                assert_eq!(
+                    patches[0].site,
+                    runtime_macros_parse::sites_in_file(&archive.package, "src/app.rs", &hot)
+                        .unwrap()[0]
+                        .id
+                        .key()
+                );
+            }
+            other => panic!("expected an overlay patch, got {other:?}"),
+        }
+    }
+
+    /// An overlay patch must NOT re-key: the binary was not recompiled,
+    /// so it still carries the build's key even when the patch grew a
+    /// `ui!` body and moved a site below it in source.
+    #[test]
+    fn advancing_after_an_overlay_patch_keeps_the_builds_keys() {
+        let two_sites = format!(
+            "{APP}\n#[component]\nfn Other() -> Element {{\n    ui! {{ text {{ \"two\" }} }}\n}}\n"
+        );
+        let (_d, mut archive) = archive_of(&two_sites);
+        let keys: Vec<u64> = archive.sites.iter().map(|s| s.key).collect();
+        let edited = two_sites.replace(
+            "            text { \"hello\" }\n",
+            "            text { \"hello\" }\n            text { \"extra\" }\n",
+        );
+        assert!(matches!(decide(Some(&archive), &changed(&edited)), Decision::Patch(_)));
+        advance_archive(&mut archive, &changed(&edited));
+        assert_eq!(archive.sites.iter().map(|s| s.key).collect::<Vec<_>>(), keys);
     }
 
     /// A `ui!` body gaining a line moves every site BELOW it in the
@@ -614,9 +942,11 @@ fn Screen() -> Element {
 
     /// The ordinal check on its own, reached by removing a site while
     /// leaving the skeleton byte-identical — only possible from INSIDE
-    /// another site's body, which is where nested sites live.
+    /// another site's body, which is where nested sites live. The
+    /// vanished site had a compiled tag, so the overlay cannot express
+    /// it; the edit is still inside a function body, so a hot patch can.
     #[test]
-    fn removing_a_nested_site_rebuilds_on_the_ordinal_check() {
+    fn removing_a_nested_site_is_a_hot_patch_on_the_ordinal_check() {
         let source = r#"
 #[component]
 fn A() -> Element {
@@ -629,8 +959,8 @@ fn A() -> Element {
         let edited = source.replace(r#"ui! { text { "inner" } }"#, r#"text { "inner" }"#);
         assert_eq!(
             decide(Some(&archive), &changed(&edited)),
-            Decision::Rebuild(Reason::SitesMoved { file: "src/app.rs".into() }),
-            "one site fewer, and the one that vanished had a compiled tag"
+            Decision::HotPatch(vec!["src/app.rs".into()]),
+            "one site fewer: not an overlay patch, but body-only"
         );
     }
 
