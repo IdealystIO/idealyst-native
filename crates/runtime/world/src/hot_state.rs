@@ -94,6 +94,10 @@ struct Recorded {
     world: WorldId,
     slot: u32,
     gen: u32,
+    /// A collector (a component's scope, in a mount) took ownership, so
+    /// the slot is freed when the tree is. `false` is world-root: it
+    /// outlives the tree and only dies with the world.
+    owned: bool,
 }
 
 /// Identity of one `signal()` call inside one build.
@@ -148,6 +152,8 @@ struct Tls {
     /// What the previous run recorded at each key, so a divergence can
     /// be DETECTED (rather than silently reusing whatever is there).
     expected: FxHashMap<SlotKey, TypeId>,
+    /// Depth of `runtime_world::unscoped` regions currently open.
+    world_lifetime: u32,
 }
 
 thread_local! {
@@ -281,7 +287,7 @@ pub(crate) fn take_seed<T: 'static>() -> Option<T> {
 /// mean carrying a `TypeId` through the arena for slots that are never
 /// harvested — every signal in a dev session, for the benefit of the
 /// few that outlive a patch.
-pub(crate) fn record(world: WorldId, slot: u32, gen: u32) {
+pub(crate) fn record(world: WorldId, slot: u32, gen: u32, owned: bool) {
     TLS.with(|t| {
         let mut t = t.borrow_mut();
         let Tls { frames, recording, .. } = &mut *t;
@@ -289,8 +295,34 @@ pub(crate) fn record(world: WorldId, slot: u32, gen: u32) {
         let Some(frame) = frames.last_mut() else { return };
         let key = SlotKey { path: frame.hash, ordinal: frame.ordinal };
         frame.ordinal += 1;
-        recording.push(Recorded { key, world, slot, gen });
+        recording.push(Recorded { key, world, slot, gen, owned });
     });
+}
+
+/// RAII marker for a `runtime_world::unscoped` region: creations inside
+/// it are world-lifetime services, which are cached and may not be
+/// re-created by the next run. They take no seed and consume no ordinal,
+/// so they cannot shift a component's state onto its neighbour's.
+pub(crate) struct WorldLifetimeRegion(());
+
+impl WorldLifetimeRegion {
+    pub(crate) fn enter() -> Self {
+        TLS.with(|t| t.borrow_mut().world_lifetime += 1);
+        WorldLifetimeRegion(())
+    }
+}
+
+impl Drop for WorldLifetimeRegion {
+    fn drop(&mut self) {
+        let _ = TLS.try_with(|t| {
+            let mut t = t.borrow_mut();
+            t.world_lifetime = t.world_lifetime.saturating_sub(1);
+        });
+    }
+}
+
+pub(crate) fn in_world_lifetime_region() -> bool {
+    TLS.with(|t| t.borrow().world_lifetime > 0)
 }
 
 /// Take every recorded signal's value out of its (dying) arena.
@@ -303,10 +335,43 @@ pub(crate) fn record(world: WorldId, slot: u32, gen: u32) {
 /// normal posture for a freed slot, and what makes a stale write panic
 /// instead of corrupting the next occupant.
 pub fn harvest() -> HotState {
+    harvest_where(|_| true)
+}
+
+/// [`harvest`] for a rebuild that KEEPS its world and replaces only the
+/// tree — the web page's hot-patch remount.
+///
+/// Takes only the signals a collector owned, because only those die with
+/// the tree. A world-root signal outlives it, and something may still
+/// hold its handle: an app's `thread_local` cache, a framework service.
+/// Stealing its value would kill that handle. On CrewForge the page
+/// panicked on the first render after a patch with "signal read after its
+/// World was dropped" — the remount had replaced the world such a cache
+/// pointed into — and keeping the world is what fixed it; this is the
+/// half that keeps the world's own signals intact.
+///
+/// The cost: a signal created at the root level with no component around
+/// it is not carried. Such a signal is not under a `#[component]`, and on
+/// the web a root that is not a component cannot be hot-patched anyway.
+pub fn harvest_owned() -> HotState {
+    harvest_where(|r| r.owned)
+}
+
+fn harvest_where(keep: impl Fn(&Recorded) -> bool) -> HotState {
     let recorded = TLS.with(|t| t.borrow_mut().recording.take().unwrap_or_default());
     let mut slots = FxHashMap::default();
     let mut expected = FxHashMap::default();
     for r in recorded {
+        if !keep(&r) {
+            // Not carried, but still part of the layout: record its type
+            // so the next run's creation at this position is recognised
+            // as the same signal (and simply starts fresh) instead of
+            // reading as a divergence that poisons the rest of the frame.
+            if let Some(type_id) = crate::signal_type_id(r.world, r.slot, r.gen) {
+                expected.insert(r.key, type_id);
+            }
+            continue;
+        }
         let Some((type_id, data)) = crate::steal_signal_data(r.world, r.slot, r.gen) else {
             continue;
         };
@@ -356,6 +421,118 @@ mod tests {
         let seen = w2.enter(|| signal(0i32).get());
         disarm();
         assert_eq!(seen, 7, "the second run's signal must start where the first ended");
+    }
+
+    /// Regression: a world-lifetime creation (inside `unscoped`) is a
+    /// cached service, so the second run usually does NOT create it
+    /// again. Counted as an ordinal, it shifted every later signal in
+    /// the frame by one — here handing `b` the cache's value.
+    #[test]
+    fn regression_an_unscoped_creation_does_not_shift_the_frame() {
+        let w1 = World::new();
+        let (_, state) = run_and_harvest(&w1, || {
+            push_frame("Card");
+            let a = signal(1i32);
+            a.set(10);
+            let cache = crate::unscoped(|| signal(0i32));
+            cache.set(99);
+            let b = signal(2i32);
+            b.set(20);
+            pop_frame();
+            w1.flush();
+        });
+        drop(w1);
+
+        let w2 = World::new();
+        seed(state);
+        arm();
+        let (a, b) = w2.enter(|| {
+            push_frame("Card");
+            let a = signal(1i32).get();
+            // The cache already exists this time; nothing is created.
+            let b = signal(2i32).get();
+            pop_frame();
+            (a, b)
+        });
+        disarm();
+        assert_eq!((a, b), (10, 20), "the cache's value leaked into a component's state");
+    }
+
+    /// Regression: the web rebuild keeps its world, and anything that
+    /// outlives the tree — an app's `thread_local` signal cache, a
+    /// framework service — must still be readable after the harvest. On
+    /// CrewForge the first render after a patch panicked with "signal
+    /// read after its World was dropped"; `harvest_owned` takes only what
+    /// the tree's teardown frees.
+    #[test]
+    fn regression_harvest_owned_leaves_world_root_signals_alive() {
+        let w = World::new();
+        arm();
+        let (global, (a, owned)) = w.enter(|| {
+            let global = signal(5i32);
+            let (a, owned) = crate::collect_owned(|| {
+                push_frame("Counter");
+                let a = signal(0i32);
+                pop_frame();
+                a
+            });
+            (global, (a, owned))
+        });
+        a.set(7);
+        global.set(6);
+        w.flush();
+        let state = harvest_owned();
+        disarm();
+        assert_eq!(state.len(), 1, "only the tree-owned signal is carried");
+        drop(owned);
+
+        // The world lives on, and so does its root signal.
+        assert_eq!(global.get(), 6);
+
+        seed(state);
+        arm();
+        let (again, _owned) = w.enter(|| {
+            crate::collect_owned(|| {
+                push_frame("Counter");
+                let v = signal(0i32).get();
+                pop_frame();
+                v
+            })
+        });
+        disarm();
+        assert_eq!(again, 7, "the component's state crosses into the rebuilt tree");
+    }
+
+    /// The root-level signal is not carried by `harvest_owned` but it is
+    /// still part of the layout: the next run's creation at its position
+    /// must start fresh WITHOUT poisoning the frame for the signals after
+    /// it.
+    #[test]
+    fn a_signal_left_behind_does_not_poison_its_frame() {
+        let w = World::new();
+        arm();
+        let (root_sig, (b, owned)) = w.enter(|| {
+            let root_sig = signal(1i32);
+            let b = crate::collect_owned(|| signal(2i32));
+            (root_sig, b)
+        });
+        root_sig.set(100);
+        b.set(200);
+        w.flush();
+        let state = harvest_owned();
+        disarm();
+        drop(owned);
+
+        seed(state);
+        arm();
+        let (r, b) = w.enter(|| {
+            let r = signal(1i32).get();
+            let (b, _o) = crate::collect_owned(|| signal(2i32).get());
+            (r, b)
+        });
+        disarm();
+        assert_eq!(r, 1, "not carried: starts at the author's value");
+        assert_eq!(b, 200, "and the owned signal after it still gets its own");
     }
 
     /// Ordinals are per FRAME, so two components with one signal each

@@ -415,7 +415,7 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     let build: std::rc::Rc<dyn Fn() -> Element> = std::rc::Rc::new(build);
     #[cfg(feature = "hot-reload")]
     let root_for_rebuild = build.clone();
-    let vp_sig = mount_tree(&backend, &registry, &*build);
+    let vp_sig = mount_tree(&backend, &registry, &*build, None);
     // Robot driver env: vocabulary Robot queries enter this world,
     // actions settle via flush_sync (see robot_transport).
     #[cfg(feature = "robot")]
@@ -447,10 +447,15 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
 /// and nothing else a second time: the backend, the scene registry and
 /// every installed host service outlive the tree, and rebuilding them
 /// would detach the mount point and re-register every handler.
+///
+/// `world` is `None` at boot, which creates the page's world. A hot-patch
+/// rebuild passes the world it kept from [`take_tree`]: see there for why
+/// the world must outlive the tree.
 pub(crate) fn mount_tree(
     backend: &Rc<RefCell<WebBackend>>,
     registry: &Rc<Registry<WebBackend>>,
     build: &dyn Fn() -> Element,
+    world: Option<World>,
 ) -> runtime_world::Signal<runtime_shared::ViewportSize> {
     // Open the kernel's build window for the duration of the mount
     // walk. Everything `signal()`-shaped created inside it is recorded
@@ -463,7 +468,7 @@ pub(crate) fn mount_tree(
     // tier exists to avoid.
     #[cfg(feature = "hot-reload")]
     runtime_world::hot_state::arm();
-    let world = World::new();
+    let world = world.unwrap_or_else(World::new);
     let (vp_sig, realized) = world.enter(|| {
         let element = build();
         let realized = realize(backend, registry, element);
@@ -525,17 +530,33 @@ pub(crate) fn live_host() -> Option<(Rc<RefCell<WebBackend>>, Rc<Registry<WebBac
     })
 }
 
-/// Unmount the current tree and drop its world, leaving the backend and
-/// registry installed.
+/// Unmount the current tree and hand back its world, leaving the backend,
+/// the registry and the world itself installed.
 ///
 /// Separate from [`stop`] on purpose: `stop` takes the page back to
 /// having no app at all, listeners and all. This is the first half of a
-/// rebuild, and the flush driver's world slot has to be cleared with it
-/// or a queued flush lands in a dead world.
+/// hot-patch rebuild.
+///
+/// # Why the world is kept
+///
+/// On a page the world lives as long as the page, and apps rely on that:
+/// a `thread_local` cache holding a `Signal`, a framework service
+/// published world-wide, the viewport signal the `resize` listener
+/// writes. A rebuild that dropped the world killed every such handle at
+/// once — on CrewForge the first render after a patch panicked with
+/// "signal read after its World was dropped" — and the app had never
+/// had to survive that, because nothing else ever replaces the world.
+/// So the rebuild replaces the TREE only: its scopes free everything
+/// they own, `hot_state::harvest_owned` carries those values, and the
+/// world (with whatever outlives the tree) carries on.
 #[cfg(feature = "hot-reload")]
-pub(crate) fn tear_down_tree() {
-    FLUSH_WORLD.with(|w| *w.borrow_mut() = None);
-    APP.with(|slot| *slot.borrow_mut() = None);
+pub(crate) fn take_tree() -> Option<World> {
+    let app = APP.with(|slot| slot.borrow_mut().take())?;
+    let App { realized, world, .. } = app;
+    // The tree's scopes free their signals and effects here, into the
+    // world that is still alive.
+    drop(realized);
+    Some(world)
 }
 
 /// True while a new-core app is mounted (`start` ran, `stop` hasn't).

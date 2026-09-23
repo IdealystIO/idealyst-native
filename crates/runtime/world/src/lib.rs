@@ -822,8 +822,20 @@ fn create_signal<T: PartialEq + 'static>(
     // a value of this type, start from it instead of the author's
     // initial value. Off by default and compiled out entirely — see
     // `hot_state`.
+    //
+    // A creation inside `unscoped` is a world-lifetime service, not a
+    // component's state: it is often created once and cached, so the
+    // second run may not create it at all. It must neither take a seed
+    // nor consume an ordinal, or every later signal in the frame would
+    // shift onto its neighbour's value.
     #[cfg(feature = "hot-reload")]
-    let value = hot_state::take_seed::<T>().unwrap_or(value);
+    let world_lifetime = hot_state::in_world_lifetime_region();
+    #[cfg(feature = "hot-reload")]
+    let value = if world_lifetime {
+        value
+    } else {
+        hot_state::take_seed::<T>().unwrap_or(value)
+    };
     let data: Box<dyn AnySignal> = Box::new(SignalData { value, next: None });
     let (slot, gen) = {
         let mut signals = arena.signals.borrow_mut();
@@ -846,10 +858,25 @@ fn create_signal<T: PartialEq + 'static>(
             (slot, 0)
         }
     };
-    register_owned(OwnedItem::Signal { world: arena.id, slot, gen });
+    let _owned = register_owned(OwnedItem::Signal { world: arena.id, slot, gen });
     #[cfg(feature = "hot-reload")]
-    hot_state::record(arena.id, slot, gen);
+    if !world_lifetime {
+        hot_state::record(arena.id, slot, gen, _owned);
+    }
     Signal { world: arena.id, slot, gen, _marker: PhantomData }
+}
+
+/// The value type of a live signal slot, without touching the value.
+/// `None` when the slot is gone or the generation moved on.
+#[cfg(feature = "hot-reload")]
+pub(crate) fn signal_type_id(world: WorldId, slot: u32, gen: u32) -> Option<std::any::TypeId> {
+    let arena = arena_of(world)?;
+    let signals = arena.signals.borrow();
+    let s = signals.get(slot as usize)?;
+    if s.gen != gen {
+        return None;
+    }
+    Some(s.data.as_ref()?.value_type_id())
 }
 
 /// Take a signal's payload box out of its arena, erased, and retire the
@@ -863,10 +890,13 @@ fn create_signal<T: PartialEq + 'static>(
 /// this moment, and stale is the kernel's loud state, not its silent
 /// one.
 ///
-/// The index is NOT recycled onto the free list: harvesting only ever
-/// happens on a world that is about to be dropped, and pushing a slot a
-/// caller might still hold a handle to back into circulation is exactly
-/// the aliasing the generation counter exists to prevent.
+/// The index goes back on the free list, exactly as `free_signal` would
+/// put it: the generation is already bumped, so a handle still pointing
+/// here is stale and fails loudly rather than reading the next occupant.
+/// Recycling matters since the web rebuild KEEPS its world (see
+/// [`hot_state::harvest_owned`]); a slot retired without it would leak
+/// once per signal per patch. The owning scope's later `free_signal`
+/// for the old generation finds the mismatch and does nothing.
 #[cfg(feature = "hot-reload")]
 pub(crate) fn steal_signal_data(
     world: WorldId,
@@ -885,6 +915,7 @@ pub(crate) fn steal_signal_data(
         s.queued = false;
         s.forced = false;
         s.subscribers.clear();
+        arena.free_signals.borrow_mut().push(slot);
         data
     };
     let type_id = data.value_type_id();
@@ -1707,6 +1738,10 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
 /// mirroring [`untrack`]'s global posture: "this creation is
 /// world-lifetime" is a property of the code region, not of one collector.
 pub fn unscoped<R>(f: impl FnOnce() -> R) -> R {
+    // Tell the hot-reload state carrier this region creates
+    // world-lifetime services, not component state. See `create_signal`.
+    #[cfg(feature = "hot-reload")]
+    let _world_lifetime = hot_state::WorldLifetimeRegion::enter();
     let saved = with_tls(|t| std::mem::take(&mut t.collectors));
     struct Guard {
         saved: Vec<Vec<OwnedItem>>,
@@ -2222,12 +2257,17 @@ impl Drop for Owned {
     }
 }
 
-fn register_owned(item: OwnedItem) {
+/// Returns whether a collector took the item. `false` means world-root:
+/// freed only when the world drops.
+fn register_owned(item: OwnedItem) -> bool {
     with_tls(|t| {
         if let Some(top) = t.collectors.last_mut() {
             top.push(item);
+            true
+        } else {
+            // No collector: world-root-owned; freed when the world drops.
+            false
         }
-        // No collector: world-root-owned; freed when the world drops.
     })
 }
 

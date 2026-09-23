@@ -145,14 +145,16 @@ fn remount() -> Result<(), JsValue> {
         return Err(JsValue::from_str("no mounted app to rebuild"));
     };
 
-    // Harvest FIRST. The values are moved out of the dying arena, so
-    // after the drop there is nothing left to take.
-    let carried = runtime_world::hot_state::harvest();
+    // Harvest FIRST: the values move out of the tree's slots, and the
+    // teardown below frees those slots. Only the tree's own signals are
+    // taken — the world is kept (see `take_tree`), and what lives in it
+    // outside the tree has to stay readable.
+    let carried = runtime_world::hot_state::harvest_owned();
     let count = carried.len();
-    crate::newcore::tear_down_tree();
+    let world = crate::newcore::take_tree();
     runtime_world::hot_state::seed(carried);
 
-    crate::newcore::mount_tree(&backend, &registry, &*root);
+    crate::newcore::mount_tree(&backend, &registry, &*root, world);
     web_sys::console::info_1(
         &format!("[idealyst] hot patch: rebuilt, carrying {count} signal value(s)").into(),
     );
