@@ -43,6 +43,7 @@ mod premint;
 pub use premint::PREMINT_CSS_NAME;
 
 pub mod hotpatch_base;
+pub mod hotpatch_patch;
 pub mod hotpatch_wasm;
 use flate2::write::GzEncoder;
 use flate2::Compression;
