@@ -346,11 +346,30 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
     // Anything else in `start` would fire before the jump table is
     // committed, initializing state the base already initialized against
     // a half-applied patch, and is dropped.
-    let keep_start = module
-        .start
-        .is_some_and(|f| module.funcs.get(f).name.as_deref() == Some("__wasm_apply_global_relocs"));
+    //
+    // With any zero-initialized static in the patch, wasm-ld wraps it:
+    // the start is `__wasm_start`, calling `__wasm_apply_global_relocs`
+    // and `__wasm_init_memory` (which zero-fills the patch's own `.bss`
+    // at `__memory_base`). The E2E fixture hit exactly that (a
+    // `thread_local!` gives the patch a `.bss`) and trapped with the same
+    // "null function" as before. Both callees touch only the patch's own
+    // globals and freshly grown memory, so that wrapper is kept too.
+    let keep_start = module.start.is_some_and(|f| is_relocation_only_start(&module, f));
     if !keep_start {
         module.start = None;
+        // Whatever else the start did is dropped, but the relocations
+        // must still run: exported, `subsecond::apply_patch` calls it
+        // after instantiating.
+        if let Some(relocs) = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("__wasm_apply_global_relocs"))
+            .map(|f| f.id())
+        {
+            if !module.exports.iter().any(|e| e.name == "__wasm_apply_global_relocs") {
+                module.exports.add("__wasm_apply_global_relocs", relocs);
+            }
+        }
     }
 
     // wasm-bindgen's descriptor section describes the base's bindings,
@@ -367,6 +386,31 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
     }
 
     Ok(module.emit_wasm())
+}
+
+/// Whether `start` only relocates the patch itself: it IS
+/// `__wasm_apply_global_relocs`, or it is a body made solely of calls to
+/// that and `__wasm_init_memory`.
+fn is_relocation_only_start(module: &Module, start: FunctionId) -> bool {
+    const RELOCATION: [&str; 2] = ["__wasm_apply_global_relocs", "__wasm_init_memory"];
+    let func = module.funcs.get(start);
+    if func.name.as_deref() == Some("__wasm_apply_global_relocs") {
+        return true;
+    }
+    let walrus::FunctionKind::Local(local) = &func.kind else {
+        return false;
+    };
+    let instrs = &local.block(local.entry_block()).instrs;
+    !instrs.is_empty()
+        && instrs.iter().all(|(instr, _)| match instr {
+            ir::Instr::Call(call) => module
+                .funcs
+                .get(call.func)
+                .name
+                .as_deref()
+                .is_some_and(|n| RELOCATION.contains(&n)),
+            _ => false,
+        })
 }
 
 /// The table a `call_indirect` should go through: the one the patch's
@@ -843,6 +887,49 @@ mod tests {
 
         let out = resolve_against_base(&module.emit_wasm(), &base_with(&[], &[], &[])).unwrap();
         assert!(Module::from_buffer(&out).unwrap().start.is_none());
+    }
+
+    fn start_calling(names: &[&str]) -> Vec<u8> {
+        let mut module = Module::from_buffer(&patch_module(&[])).unwrap();
+        let mut callees = Vec::new();
+        for name in names {
+            let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+            b.name((*name).to_string()).func_body();
+            callees.push(module.funcs.add_local(b.local_func(vec![])));
+        }
+        let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+        let mut body = b.name("__wasm_start".to_string()).func_body();
+        for c in &callees {
+            body.call(*c);
+        }
+        module.start = Some(module.funcs.add_local(b.local_func(vec![])));
+        resolve_against_base(&module.emit_wasm(), &base_with(&[], &[], &[])).unwrap()
+    }
+
+    /// Regression (the E2E fixture): a patch with any zero-initialized
+    /// static gets `__wasm_start` = global relocs + `__wasm_init_memory`.
+    /// Dropping it left the internal GOT relative, and the first render
+    /// trapped with "null function" again.
+    #[test]
+    fn regression_a_relocating_wasm_start_wrapper_is_kept() {
+        let out = start_calling(&["__wasm_apply_global_relocs", "__wasm_init_memory"]);
+        let module = Module::from_buffer(&out).unwrap();
+        let start = module.start.expect("the relocating wrapper was dropped");
+        assert_eq!(module.funcs.get(start).name.as_deref(), Some("__wasm_start"));
+    }
+
+    /// A start that does anything else is dropped, but the relocations
+    /// still have to run, so they are exported for the loader.
+    #[test]
+    fn a_start_that_runs_ctors_is_dropped_but_relocations_are_exported() {
+        let out = start_calling(&["__wasm_apply_global_relocs", "__wasm_call_ctors"]);
+        let module = Module::from_buffer(&out).unwrap();
+        assert!(module.start.is_none());
+        assert!(
+            module.exports.iter().any(|e| e.name == "__wasm_apply_global_relocs"),
+            "{:?}",
+            module.exports.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
     }
 
     /// Regression: the first patch to land on the lab trapped with "null
