@@ -6,9 +6,9 @@ the sorting is worth more than any of the individual mechanisms.
 
 | Tier | What changed | What happens | Order of magnitude |
 |---|---|---|---|
-| **Overlay patch** | Only literals inside `ui!` bodies | The sidecar edits its own mounted tree. No compiler at all. | ~1–10 ms |
-| **Hot patch** | Only function BODIES | The user crate is re-emitted, a patch dylib is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s |
-| **Rebuild** | Anything that moves a file's SHAPE | `cargo build` + SIGKILL + respawn. Clients keep their sockets and re-snapshot. | seconds to minutes |
+| **Overlay patch** | Only literals inside `ui!` bodies | The running app (the sidecar, or the page in `--local`) edits its own mounted tree. No compiler at all. | ~1–10 ms |
+| **Hot patch** | Only function BODIES | The user crate is re-emitted, a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
+| **Rebuild** | Anything that moves a file's SHAPE | Wire mode: `cargo build` + SIGKILL + respawn; clients keep their sockets and re-snapshot. `--local`: the bundle is rebuilt and the page reloads, so page state resets. | seconds to minutes |
 
 The last boundary is a safety boundary, not a speed tier. See
 [Why a shape change cannot be patched](#why-a-shape-change-cannot-be-patched).
@@ -211,6 +211,15 @@ A decision table, by example:
 | A `stylesheet!` signature: its name or vocabulary, an axis, an arm name, a `#[default]`, an `override`, a `state`/`breakpoint` key, a `container` threshold, a `compound` condition | Rebuild |
 | Any `stylesheet!` edit in a premint session (`dev --premint`) | Rebuild |
 | Edit a file outside the app crate | Rebuild |
+
+A few rows the table above does not make obvious, each a limitation of
+the overlay tier rather than of hot reload as a whole:
+
+| Edit | Tier |
+|---|---|
+| A `#[component]`'s literal prop (`Typography(content = "Hi")` → `"Hello"`) | Overlay patch — but it shows on that site's NEXT render, not immediately, unless the component's props are `Clone`. `#[component]` does not derive `Clone` on the props it generates (only `#[component(lazy, retryable)]` does), so this is the usual case; the page console says `overlay patch: 0 applied, 1 waiting for the next render` |
+| Insert a sibling that carries a `style` (or any other dynamic prop) into a `ui!` body | Hot patch — the overlay would need to know the new node's expression is the same compiled code as a neighbour's ("slot aliasing"), which is not built |
+| Any edit inside a `jsx!` body | Hot patch — `jsx!` is not on the overlay's split pass: its sites have no descriptor and no tags |
 
 A save that carries BOTH a literal edit and a body edit is one hot
 patch, not a patch plus a rebuild: the hot patch re-emits the crate from
@@ -575,6 +584,16 @@ over a 223 MB module (320 MB linked), about 22 s on CrewForge.
 4096 MB, and a session exceeded it twice. Run a large app with
 `IDEALYST_MEMORY_LIMIT_MB=8192` while the tier is armed.
 
+### One session per project
+
+Run one `idealyst dev --web --local` session per project at a time. The
+staged bundle, and the patches written into it, live in
+`target/idealyst/<package name>/web` — keyed by the package NAME, not by
+the project's path. Two sessions of one project overwrite each other's
+bundle, and so does a copy of a project that kept its package name:
+rename the package in the copy. The web target dir is keyed by the
+project (above), so that part no longer collides.
+
 Commands:
 
 ```sh
@@ -666,7 +685,7 @@ unsplit and is simply not on the fast path: generics, arity above nine
 (subsecond's widest `HotFunction` impl), `impl Trait`, a destructuring
 parameter, `async` / `unsafe` / `extern`.
 
-### The app root
+### The app root (native sidecar)
 
 `fn app() -> Element` is not a `#[component]`, so it has no
 `__*_hot_impl` symbol. The sidecar calls it through a fn pointer and the
@@ -674,7 +693,9 @@ host pairs it by ADDRESS instead: the sidecar reports the root's runtime
 address on its `Hello` frame, the host subtracts the ASLR slide, and
 looks up which symbol sits at that link-time address. Without this, an
 app whose whole tree lives in `app()` would apply a patch that rebound
-nothing.
+nothing. The web tier has no equivalent: there the root has to be a
+component (see [The app root has to be a
+`#[component]`](#the-app-root-has-to-be-a-component)).
 
 ## What survives a patch, and what does not
 
@@ -734,6 +755,16 @@ respawns.
 - `IDEALYST_RUNTIME_SERVER_NO_HOTPATCH=1` forces every save through the
   respawn path. Useful for A/B timing and for isolating a suspected
   patch bug.
+- `--split` on `dev --web --local` stands the web hot-patch tier down;
+  body edits rebuild and reload.
+- `IDEALYST_HOTPATCH_KEEP_NAMES=1` serves the web patch WITH its `name`
+  section, so a stack trace through patched code is readable in the
+  browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
+- `IDEALYST_MEMORY_LIMIT_MB=8192` raises the CLI's memory cap (default
+  4096 MB), which a large app's base prep needs.
+- `[hotpatch] …` lines from the web dev loop name each step of a patch
+  build and, on failure, what it could not resolve; the rebuild it falls
+  back to follows.
 - `[dev] …` lines name the tier a save took and, on a rebuild, why.
 - `[hotpatch] timing: rustc …ms stub …ms link …ms jt …ms` breaks the
   patch build down.
@@ -753,6 +784,9 @@ The whole substrate is behind one cargo feature,
   a `dev-hot` re-export) and, through it, `runtime-world/hot-reload` —
   the kernel's state carry.
 
-Off by default. `idealyst dev`'s generated sidecar is the only thing
-that turns it on; a production build carries none of it, and
-`runtime-macros` emits the author's function verbatim.
+Off by default. Two things turn it on: `idealyst dev`'s generated
+sidecar, and `idealyst dev --web --local` (the `hot-reload` framework
+feature, which the `idealyst` facade forwards to the same crates plus
+`backend-web`'s patch applier) unless `--split` is given. A production
+build — `idealyst build` — carries none of it, and `runtime-macros`
+emits the author's function verbatim.

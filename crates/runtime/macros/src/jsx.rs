@@ -59,7 +59,10 @@
 //! grammar into `UiNode` or generalising the split over both node types.
 //! Neither is hard; it is simply not what the split was added for. Until
 //! then a `jsx!` site produces no descriptor and its nodes carry no
-//! overlay tag, so a static edit inside one needs a rebuild.
+//! overlay tag, so a static edit inside one never takes the overlay tier:
+//! it is an ordinary function-body edit, which the hot-patch tier takes
+//! where it is armed and a rebuild takes everywhere else (see
+//! `docs/hot-reload.md`).
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};

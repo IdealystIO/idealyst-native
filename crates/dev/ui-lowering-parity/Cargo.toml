@@ -1,19 +1,21 @@
-# ui-lowering-parity — the gate that proves `ui!`'s two lowerings are
-# interchangeable.
+# ui-lowering-parity — the gate that proves `ui!`'s emission does not
+# drift, and that the dev-time overlay addresses what the emission built.
 #
-# Every fixture in `src/fixtures.rs` is authored ONCE and instantiated
-# twice, through `ui_lowered!(direct)` and `ui_lowered!(template)`. The
-# suite then asserts three things per fixture, in ONE process:
+# Every fixture in `src/fixtures.rs` is authored ONCE, mounted against
+# the recording `host-mock` Host in both structural modes, and driven
+# through every signal it exposes. The suite asserts three projections
+# per fixture:
 #
-#   1. the same structural-op sequence (the 7-method `runtime_scene::Host`
+#   1. the structural-op sequence (the 7-method `runtime_scene::Host`
 #      seam plus node creation),
-#   2. the same final scene (kinds, text, styles, props),
-#   3. the same op stream after driving every signal the fixture exposes.
+#   2. the final scene (kinds, text, styles, props),
+#   3. the op stream after driving every signal the fixture exposes,
 #
-# Phase 1 additionally pins the DIRECT lowering against goldens captured
-# from the pre-slot-rewrite emitter (`goldens/*.golden`), so the
-# slot-list rewrite is proven to be behavior-preserving and not merely
-# self-consistent.
+# each against goldens captured from the pre-slot-rewrite emitter
+# (`goldens/*.golden`), so the slot-list rewrite is proven
+# behavior-preserving and not merely self-consistent. (The second,
+# descriptor-based `ui!` lowering this crate was first built to compare
+# against was retired; see `docs/ui-layer.md`.)
 #
 # Dev/test utility crate — nothing shipped depends on it.
 [package]
@@ -34,7 +36,7 @@ default = []
 ui-overlay = ["runtime-core/ui-overlay"]
 
 [dependencies]
-# `ui_lowered!` / `#[component]` / `stylesheet!` — the macro set under test.
+# `ui!` / `#[component]` / `stylesheet!` — the macro set under test.
 runtime-macros = { workspace = true }
 # The author surface the emission's `::runtime_core::…` paths retarget
 # onto (`runtime_vocabulary::glue`), plus the builtin handlers the

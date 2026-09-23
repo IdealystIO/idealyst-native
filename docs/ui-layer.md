@@ -274,7 +274,7 @@ counter(&CounterProps { label: "Score".into(), value: score, .. })
 
 Before emitting anything, the macro splits each `ui!` site into a
 **static** part and an ordered list of **dynamic slots**
-(`crates/runtime/macros/src/ui_split.rs`). Static means: primitive and
+(`crates/runtime/macros-parse/src/split.rs`). Static means: primitive and
 component tags, attribute names, child order, string / integer / float /
 bool literals (including `"lit".to_string()` / `"lit".into()`),
 style-token accessors of the shape `t.a.b()` / `theme.x.y()`, enum-like
@@ -541,24 +541,30 @@ Three things follow, and each is better than the old arrangement:
 
 ### What patches, and what rebuilds
 
-A save during `idealyst dev --web` takes one of two paths. This is the
-whole table:
+A save during `idealyst dev --web` takes one of three paths: an overlay
+patch (this section), a hot patch (the edit is compiled code, but only
+inside function bodies — see [`hot-reload.md`](./hot-reload.md)), or a
+rebuild. An edit the overlay refuses is NOT a rebuild by itself: it is
+still an edit inside a function body, so it falls to the hot-patch tier
+when the rest of the file's shape is unchanged and that tier is armed
+(`--local` without `--split`, or wire mode), and rebuilds otherwise.
+"Hot patch" below means exactly that.
 
 | the edit | what happens |
 |---|---|
 | a string, number or bool literal in a `ui!` body | **patched** |
-| a `#[component]`'s literal prop | **patched**; live when its props are `Clone` and its root is a node, otherwise on that site's next render |
+| a `#[component]`'s literal prop | **patched**; live when its props are `Clone` and its root is a node, otherwise on that site's next render. `#[component]` does not derive `Clone` on the props it generates (only `#[component(lazy, retryable)]` does), so in practice a component's literal prop — every idea-ui `Typography(content = "…")` — shows on that site's next render |
 | …of a component whose root is a `switch`, `when` or keyed list | **patched**; live when the seam has a setter for the prop (a text's content, a button's label), otherwise on that site's next render — the region's contents carry the tag, so the node is reached and the refusal names it |
 | a static child added, removed or reordered — where every old child is fully static | **patched** |
-| a changed `if` condition, `for` iterable or `match` scrutinee | rebuild — it is compiled code |
-| a literal becoming a closure, or the reverse | rebuild — the value moved between data and code |
-| a changed style token or enum path (`t.card()`, `tone::Danger`) | rebuild — recorded as source TEXT, and no value can be rebuilt from a string |
-| a structural change where any old child carries a style or other slot | rebuild — its prop bindings are owned by the enclosing scope, not the node |
-| anything outside a `ui!` body, in a file that also has one | rebuild — the whole file's save rebuilds |
+| a changed `if` condition, `for` iterable or `match` scrutinee | hot patch — it is compiled code |
+| a literal becoming a closure, or the reverse | hot patch — the value moved between data and code |
+| a changed style token or enum path (`t.card()`, `tone::Danger`) | hot patch — recorded as source TEXT, and no value can be rebuilt from a string |
+| a structural change where any old child carries a style or other slot | hot patch — its prop bindings are owned by the enclosing scope, not the node |
+| anything outside a `ui!` body, in a file that also has one | hot patch when only function bodies changed, rebuild when the file's shape did — the literal edits in the same save arrive with the patch |
 | a `ui!` body gaining or losing a LINE | **patched** — the sites below it re-key, but the save is matched to the build by ORDINAL and the patch is addressed to the key the binary carries |
 | a `ui!` nested inside another macro's tokens (`vec![ui!{…}]`) | **patched** — every macro's token tree is walked for them |
-| a site ADDED or REMOVED | rebuild — a new site has no compiled tag to address at all |
-| a `jsx!` body | rebuild — `jsx!` has its own grammar, produces no descriptor, and carries no tags |
+| a site ADDED or REMOVED | hot patch — a new site has no compiled tag to address at all |
+| a `jsx!` body | hot patch — `jsx!` has its own grammar and is not on the split pass, so it produces no descriptor and carries no tags; every edit inside one is a body edit |
 
 One practical consequence worth knowing before you reach for this:
 
@@ -585,8 +591,9 @@ actually has. The key is never advanced by a patch — only by a rebuild,
 which is the only thing that changes what the binary's tags say.
 
 The ordinal set changing — a site added or removed — is the one case
-that still rebuilds, and it has to: a new site has no compiled tag
-anywhere to address.
+that still leaves the overlay tier, and it has to: a new site has no
+compiled tag anywhere to address. It is compiled code, so it goes to the
+hot-patch tier (or rebuilds where that tier is not armed).
 
 Nested sites count in that ordering too. `syn` does not descend into a
 macro's tokens, so `pressable(vec![ui! { … }], …)` was invisible to the
@@ -607,8 +614,9 @@ arbitrary type is not reconstructible from a string), a new subtree
 referencing a slot, or any structural change around a control-flow node
 whose position is decided at runtime.
 
-A refusal is not a failure. It is the differ saying "this one needs a
-rebuild", which is the correct and available answer. The applier refuses
+A refusal is not a failure. It is the differ saying "this one needs
+compiled code" — a hot patch, or a rebuild — which is the correct and
+available answer. The applier refuses
 the same class of thing again at runtime — a reactive prop, a child list
 holding a reactive region — checking the LIVE tree rather than trusting
 the patch, and counts what it applied so a dev server can say so rather

@@ -151,8 +151,8 @@ ui! {
 
 **Why.** `ui!` now hoists every dynamic expression into a `let` at the head of
 its scope (a *slot*), leaving the rest of the site as static data. That split
-is what lets a dev-time overlay patch a site's literals, child order and
-styles without recompiling, and it is only sound if the slots have one
+is what lets a dev-time overlay patch a site's literals and static child
+order without recompiling, and it is only sound if the slots have one
 well-defined evaluation order. Source order is the one an author can predict
 from reading the code. See `docs/ui-layer.md` for the split and the overlay.
 

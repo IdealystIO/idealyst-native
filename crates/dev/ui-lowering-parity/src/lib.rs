@@ -2,9 +2,9 @@
 //!
 //! [`record`] mounts one fixture against a [`host_mock::Harness`],
 //! drives every signal the fixture exposes, and returns a
-//! [`Recording`]: the per-step op log plus a final scene snapshot. Two
-//! recordings of the same fixture — one per lowering — must be equal in
-//! all three of the projections the suite asserts on:
+//! [`Recording`]: the per-step op log plus a final scene snapshot. A
+//! recording must equal the fixture's frozen golden in all three of the
+//! projections the suite asserts on:
 //!
 //! | projection                     | what it pins                        |
 //! |--------------------------------|-------------------------------------|
@@ -21,10 +21,11 @@
 //!
 //! ## Why the fixtures live in this crate
 //!
-//! A fixture has to be authored ONCE and expanded TWICE, so the two
-//! expansions provably come from the same tokens. That is a macro-level
-//! constraint, which means the corpus is a `macro_rules!` in
-//! [`fixtures`] rather than a data file.
+//! A fixture is `ui!` tokens plus the signals that drive them, and the
+//! overlay suites also need each fixture's SOURCE text (the build-time
+//! descriptor is produced from source). One `macro_rules!` in
+//! [`fixtures`] gives both from the same tokens, which a data file
+//! could not.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
