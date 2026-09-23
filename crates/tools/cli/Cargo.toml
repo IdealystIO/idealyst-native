@@ -138,3 +138,5 @@ serde_json = { workspace = true }
 # `wasm_hot_patch_e2e`: talks to headless Chrome over the DevTools
 # protocol. Same version the dev crates already lock.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+# `wasm_hot_patch_e2e`: checks the served patch's sections.
+wasmparser = { workspace = true }

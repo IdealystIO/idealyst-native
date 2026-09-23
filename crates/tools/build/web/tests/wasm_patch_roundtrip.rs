@@ -318,6 +318,36 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         table.ifunc_count,
     );
 
+    // The served patch is stripped of its `name` and DWARF sections
+    // AFTER pairing. The table paired above must still describe it: same
+    // element segment in the same order, same slot count, same imports,
+    // and a module that validates.
+    let stripped = build_web::hotpatch_patch::strip_debug_sections(&resolved).unwrap();
+    assert!(
+        stripped.len() < resolved.len(),
+        "stripping removed nothing ({} bytes)",
+        resolved.len()
+    );
+    wasmparser::Validator::new()
+        .validate_all(&stripped)
+        .expect("the stripped patch must still validate");
+    let segment = |wasm: &[u8]| -> Vec<u32> {
+        let m = walrus::Module::from_buffer(wasm).unwrap();
+        m.elements
+            .iter()
+            .flat_map(|e| match &e.items {
+                walrus::ElementItems::Functions(ids) => ids.iter().map(|id| id.index() as u32).collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    assert_eq!(segment(&resolved), segment(&stripped), "the element segment moved");
+    assert_eq!(
+        build_web::hotpatch_wasm::table_slot_count(&stripped).unwrap(),
+        table.ifunc_count,
+        "the stripped patch claims a different number of table slots"
+    );
+
     // Finally, the artifact has to be something the runtime can actually
     // instantiate: one import namespace, `env`, and nothing else.
     let module = walrus::Module::from_buffer(&resolved).unwrap();

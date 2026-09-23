@@ -185,15 +185,14 @@ impl WasmPatchBuilder {
         let raw = std::fs::read(&linked)
             .with_context(|| format!("read the linked patch {}", linked.display()))?;
         let resolved = crate::hotpatch_patch::resolve_against_base(&raw, &self.base)?;
-        let path = self.out_dir.join(format!("patch-{serial}.wasm"));
-        std::fs::write(&path, &resolved)
-            .with_context(|| format!("write the patch {}", path.display()))?;
         // The pre-resolve module is only useful when a patch misbehaves,
-        // and it is the same size as the one we serve. Keeping every one
-        // of them fills a dev session's staging dir.
+        // and it is larger than the one we serve. Keeping every one of
+        // them fills a dev session's staging dir.
         let _ = std::fs::remove_file(&linked);
         timings.push(("resolve", started.elapsed()));
 
+        // Pair while the names are still there: the jump table matches
+        // functions BY NAME, from the `name` section.
         let started = Instant::now();
         let jump_table = build_jump_table_with(&self.base_slots, &resolved, &self.aliases)
             .context("pairing the patch's functions to the base's table slots")?;
@@ -206,6 +205,37 @@ impl WasmPatchBuilder {
             );
         }
         timings.push(("jump-table", started.elapsed()));
+
+        // Then serve it without them. The `name` section is more than half
+        // of a real patch (33 of 60 MB on CrewForge) and nothing at run
+        // time reads it: pairing is done, and subsecond applies by table
+        // index. What it costs is function names in a stack trace through
+        // the patch, so the named module is kept on disk beside the build
+        // (`last-patch.named.wasm`), and `IDEALYST_HOTPATCH_KEEP_NAMES=1`
+        // serves it instead when a trace has to be read in the browser.
+        let started = Instant::now();
+        let path = self.out_dir.join(format!("patch-{serial}.wasm"));
+        let keep_names = std::env::var_os("IDEALYST_HOTPATCH_KEEP_NAMES").is_some();
+        let served = if keep_names {
+            resolved.clone()
+        } else {
+            crate::hotpatch_patch::strip_debug_sections(&resolved)?
+        };
+        std::fs::write(&path, &served)
+            .with_context(|| format!("write the patch {}", path.display()))?;
+        if let Some(debug_dir) = self.captures_dir.parent() {
+            let _ = std::fs::write(debug_dir.join("last-patch.named.wasm"), &resolved);
+        }
+        // Only the newest patch is ever fetched again; the one before it
+        // is kept in case a page is still fetching it. Every older one is
+        // tens of megabytes of staging dir for nothing (228 MB after four
+        // CrewForge saves).
+        if serial > 2 {
+            for old in 1..serial - 1 {
+                let _ = std::fs::remove_file(self.out_dir.join(format!("patch-{old}.wasm")));
+            }
+        }
+        timings.push(("strip+write", started.elapsed()));
 
         Ok(BuiltPatch {
             path,

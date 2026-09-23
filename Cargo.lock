@@ -6315,6 +6315,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tungstenite 0.24.0",
+ "wasmparser 0.224.1",
 ]
 
 [[package]]

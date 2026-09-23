@@ -511,7 +511,7 @@ page that records when the new content appears. "Builder" is the
 | Lab | `stylesheet!` value edit | 1.31 – 1.97 s | 0.36 – 0.83 s | kept, no reload |
 | Lab | shape edit (add a prop) | 6.0 s (rebuild + reload) | – | reset |
 | CrewForge (large) | body edit, first of session | 34 s | 29 s (rustc 26 s, cold replay cache) | kept, no reload |
-| CrewForge | body edit, later | 9.9 – 10.3 s | 9.0 – 9.1 s (rustc 6.9 – 7.2 s, resolve 1.45 s, link 0.5 s, jump table 0.09 s) | kept, no reload |
+| CrewForge | body edit, later | 8.57 – 8.58 s | 7.85 – 7.86 s (rustc 5.9 s, resolve 1.4 s, link 0.4 s, jump table 0.08 s, strip + write 0.02 s) | kept, no reload |
 | CrewForge | rebuild with the tier armed, after patches | 38.6 s (cargo 15 s) | – | reset |
 | CrewForge | rebuild, tier not armed (reference) | ~23 s | – | reset |
 
@@ -530,6 +530,22 @@ changed unit are each under 0.3 s.
 The base is indexed once per base build, right after it is built, and
 the builder keeps the base's slot map rather than re-reading the module
 per patch.
+
+**The served patch has no names.** A patch's `name` section is more than
+half of it (33 of 60 MB on CrewForge; walrus already drops the DWARF on
+emit). The jump table pairs BY NAME, so it is built first, and then the
+`name` and any `.debug_*` sections are cut out of the bytes (3 ms; no
+second walrus pass). The page fetches 26.6 MB instead of 59.7 MB: fetch
+38 ms instead of 111–228 ms, compile 28 ms instead of 36–45 ms, and the
+time from a built patch to the pixels drops from ~0.92 s to ~0.73 s.
+Only the newest two served patches are kept (the older ones filled the
+staging dir: 228 MB after four CrewForge saves).
+
+What that costs is function names in a stack trace through the patch.
+The named module is kept on disk as `last-patch.named.wasm` beside the
+build's `idealyst-hotpatch/captures`, and `IDEALYST_HOTPATCH_KEEP_NAMES=1`
+serves it instead, for a session where a trace has to be read in the
+browser.
 
 **Why the replay is not the whole crate.** rustc forces
 `codegen-units=1` when the emit set contains an object-like output and no

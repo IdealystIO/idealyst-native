@@ -413,6 +413,63 @@ fn is_relocation_only_start(module: &Module, start: FunctionId) -> bool {
         })
 }
 
+/// Drop the `name` section and every DWARF (`.debug_*`) custom section
+/// from a module, leaving every other byte where it was.
+///
+/// Done on the bytes, not through walrus: the sections to drop are
+/// self-contained, so removing them is a copy of the rest, where a second
+/// walrus pass would parse and re-emit the whole module (0.3 + 0.4 s on a
+/// CrewForge patch) to the same result.
+pub fn strip_debug_sections(wasm: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(wasm.len());
+    let mut kept_until = 0usize;
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        let payload = payload.context("scanning the patch's sections")?;
+        let wasmparser::Payload::CustomSection(c) = payload else {
+            continue;
+        };
+        let name = c.name();
+        if name != "name" && !name.starts_with(".debug_") {
+            continue;
+        }
+        // The custom section's full extent: its id byte and size LEB
+        // precede `c.range()`, which covers the name and the data.
+        let body = c.range();
+        let start = section_start(wasm, body.start, body.len())?;
+        out.extend_from_slice(&wasm[kept_until..start]);
+        kept_until = body.end;
+    }
+    out.extend_from_slice(&wasm[kept_until..]);
+    Ok(out)
+}
+
+/// Where the custom section whose contents (`len` bytes) begin at
+/// `contents` starts: its id byte (0) and a size LEB that decodes to
+/// exactly `len` precede them.
+fn section_start(wasm: &[u8], contents: usize, len: usize) -> Result<usize> {
+    for leb_len in 1..=5usize {
+        let Some(id_at) = contents.checked_sub(leb_len + 1) else { break };
+        if wasm[id_at] != 0 {
+            continue;
+        }
+        let leb = &wasm[id_at + 1..contents];
+        let (mut value, mut shift, mut ok) = (0u64, 0u32, true);
+        for (i, b) in leb.iter().enumerate() {
+            value |= u64::from(b & 0x7f) << shift;
+            shift += 7;
+            let last = i == leb.len() - 1;
+            if (b & 0x80 == 0) != last {
+                ok = false;
+                break;
+            }
+        }
+        if ok && value == len as u64 {
+            return Ok(id_at);
+        }
+    }
+    bail!("could not find the start of the custom section at byte {contents}")
+}
+
 /// The table a `call_indirect` should go through: the one the patch's
 /// own element segment writes into, which is the base's table imported
 /// as `env.__indirect_function_table`.
@@ -850,6 +907,43 @@ mod tests {
             "{:?}",
             imports_of(&resolved)
         );
+    }
+
+    /// The served patch drops its `name` and DWARF sections and keeps
+    /// every other byte: the result must still be a valid module with
+    /// the same functions, imports, exports and table segment.
+    #[test]
+    fn stripping_debug_sections_keeps_the_module_intact() {
+        let raw = patch_module(&[("env", "_RNvCs_3app5other")]);
+        let mut with_debug = raw.clone();
+        for (name, len) in [(".debug_info", 300usize), (".debug_str", 2)] {
+            let mut body = vec![name.len() as u8];
+            body.extend_from_slice(name.as_bytes());
+            body.extend(std::iter::repeat_n(7u8, len));
+            with_debug.push(0);
+            let mut size = body.len();
+            loop {
+                let b = (size & 0x7f) as u8;
+                size >>= 7;
+                if size == 0 { with_debug.push(b); break; }
+                with_debug.push(b | 0x80);
+            }
+            with_debug.extend_from_slice(&body);
+        }
+        let stripped = strip_debug_sections(&with_debug).unwrap();
+        let customs: Vec<String> = wasmparser::Parser::new(0)
+            .parse_all(&stripped)
+            .filter_map(|p| match p.unwrap() {
+                wasmparser::Payload::CustomSection(c) => Some(c.name().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(!customs.iter().any(|c| c == "name" || c.starts_with(".debug")), "{customs:?}");
+        wasmparser::Validator::new().validate_all(&stripped).expect("still a valid module");
+        let (a, b) = (Module::from_buffer(&raw).unwrap(), Module::from_buffer(&stripped).unwrap());
+        assert_eq!(a.funcs.iter().count(), b.funcs.iter().count());
+        assert_eq!(imports_of(&raw), imports_of(&stripped));
+        assert_eq!(a.elements.iter().count(), b.elements.iter().count());
     }
 
     /// A name that is some function's OWN name must keep its own slot

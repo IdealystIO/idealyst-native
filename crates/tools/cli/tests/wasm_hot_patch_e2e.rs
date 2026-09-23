@@ -444,6 +444,24 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
         page.text()
     );
 
+    // What the page fetched is the STRIPPED patch: pairing is done
+    // before the `name` and DWARF sections are dropped, and nothing at
+    // run time needs them. More than half of a real patch is its name
+    // section.
+    let served = std::fs::read(project.join("pkg/hotpatch/patch-1.wasm"))
+        .expect("the served patch is in the project's pkg/hotpatch");
+    let customs: Vec<String> = wasmparser::Parser::new(0)
+        .parse_all(&served)
+        .filter_map(|p| match p.expect("the served patch parses") {
+            wasmparser::Payload::CustomSection(c) => Some(c.name().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !customs.iter().any(|c| c == "name" || c.starts_with(".debug")),
+        "the served patch still carries debug sections: {customs:?}"
+    );
+
     // The patched page still works: the next click runs the patch's code.
     page.eval(
         "[...document.querySelectorAll('button,[role=button]')] \
