@@ -126,6 +126,11 @@ pub struct SceneModel {
     /// snapshot so a late-joining client themes its host surface / scrollbar
     /// and sets its document title instead of leaving them at the default.
     host_background: Option<Command>,
+    /// The theme's document-root font. Latest-wins and replayed in the
+    /// snapshot for the same reason the background is: a client that
+    /// joins after the theme was applied must not render in the
+    /// browser's default face.
+    default_text_font: Option<Command>,
     scrollbar_theme: Option<Command>,
     page_metadata: Option<Command>,
     /// Registered raw CSS sheets (`RegisterRawCss`) in registration order,
@@ -596,6 +601,9 @@ impl SceneModel {
             Command::SetAppBackground { .. } => {
                 self.host_background = Some(cmd.clone());
             }
+            Command::SetDefaultTextFont { .. } => {
+                self.default_text_font = Some(cmd.clone());
+            }
             Command::SetScrollbarTheme { .. } => {
                 self.scrollbar_theme = Some(cmd.clone());
             }
@@ -699,6 +707,9 @@ impl SceneModel {
         // emit early. A late-joining client themes its host surface and
         // scrollbar, sets its document metadata, and registers any raw CSS
         // before the tree replays, instead of leaving them at the default.
+        if let Some(font) = &self.default_text_font {
+            out.push(font.clone());
+        }
         if let Some(bg) = &self.host_background {
             out.push(bg.clone());
         }
@@ -1327,5 +1338,66 @@ mod liveness_tests {
             "a released virtualizer must not be reported live, or the recorder \
              will emit an op the client refuses and lose the rest of the frame"
         );
+    }
+}
+
+#[cfg(test)]
+mod default_font_tests {
+    use super::*;
+
+    fn set_font(name: &str) -> Command {
+        Command::SetDefaultTextFont {
+            font: Some(wire::WireFontFamily::System(name.to_string())),
+        }
+    }
+
+    /// The theme's document-root font had no wire command at all: the
+    /// recorder took `StyleOps::apply_default_text_font`'s trait no-op,
+    /// so the family was published inside the sidecar and consumed by
+    /// nothing. Statically-sheeted text still looked right (the font
+    /// folds into that path's own `StyleRules.font_family`) while every
+    /// reactively-styled node fell back to the browser default — so a
+    /// wire-mode page rendered in TWO fonts at once, Times beside the
+    /// theme's.
+    #[test]
+    fn regression_the_default_text_font_is_replayed_to_a_late_joiner() {
+        let mut m = SceneModel::new();
+        m.apply(&set_font("Public Sans"));
+        let snap = m.snapshot_commands();
+        assert!(
+            snap.iter().any(|c| matches!(c, Command::SetDefaultTextFont { font: Some(_) })),
+            "a client joining after the theme applied must not render in the browser default"
+        );
+    }
+
+    /// Latest wins, like every other host-surface command beside it — a
+    /// theme swap must not leave the old face in the snapshot.
+    #[test]
+    fn a_later_font_supersedes_an_earlier_one() {
+        let mut m = SceneModel::new();
+        m.apply(&set_font("First"));
+        m.apply(&set_font("Second"));
+        let fonts: Vec<_> = m
+            .snapshot_commands()
+            .into_iter()
+            .filter(|c| matches!(c, Command::SetDefaultTextFont { .. }))
+            .collect();
+        assert_eq!(fonts.len(), 1, "latest-wins, not accumulate");
+        match &fonts[0] {
+            Command::SetDefaultTextFont { font: Some(wire::WireFontFamily::System(n)) } => {
+                assert_eq!(n, "Second");
+            }
+            other => panic!("wrong font survived: {other:?}"),
+        }
+    }
+
+    /// An app that never sets one adds nothing to the snapshot.
+    #[test]
+    fn no_default_font_adds_nothing_to_the_snapshot() {
+        let m = SceneModel::new();
+        assert!(!m
+            .snapshot_commands()
+            .iter()
+            .any(|c| matches!(c, Command::SetDefaultTextFont { .. })));
     }
 }

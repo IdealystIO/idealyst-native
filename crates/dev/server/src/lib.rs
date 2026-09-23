@@ -1516,6 +1516,15 @@ impl WireRecordingBackend {
         });
     }
 
+    /// See `Command::SetDefaultTextFont` for why this exists and what
+    /// was wrong without it.
+    pub fn apply_default_text_font(&mut self, font: Option<&runtime_shared::FontFamily>) {
+        let font = font.map(crate::convert_out::font_family_to_wire);
+        self.inner
+            .borrow_mut()
+            .emit(Command::SetDefaultTextFont { font });
+    }
+
     pub fn set_scrollbar_theme(
         &mut self,
         thumb: &runtime_shared::Tokenized<Color>,

@@ -1483,6 +1483,17 @@ where
                         color.0,
                     )));
             }
+            Command::SetDefaultTextFont { font } => {
+                // The document-root inheritable family. See the wire
+                // variant's docs: without it a wire-mode page rendered
+                // in two fonts, because only statically-sheeted text
+                // carries the family in its own `StyleRules`.
+                let font = font.map(convert::wire_font_family);
+                caps::StyleOps::apply_default_text_font(
+                    &mut *self.backend.borrow_mut(),
+                    font.as_ref(),
+                );
+            }
             Command::SetScrollbarTheme { thumb, track } => {
                 self.backend.borrow_mut().set_scrollbar_theme(
                     &runtime_shared::Tokenized::Literal(runtime_shared::Color(thumb.0)),

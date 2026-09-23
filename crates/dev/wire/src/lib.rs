@@ -1148,6 +1148,24 @@ pub enum Command {
         color: WireColor,
     },
 
+    /// The document-root default text font (PROTOCOL_VERSION 19).
+    ///
+    /// Mirrors `StyleOps::apply_default_text_font`. Not a style on a
+    /// node: the theme declares ONE inheritable family on the document
+    /// root, and every node that does not name its own inherits it.
+    ///
+    /// `None` clears it. The recorder had no override for this cap, so
+    /// it took the trait's no-op — the theme published its font inside
+    /// the sidecar, a no-op consumed it, and nothing reached the
+    /// browser. Statically-sheeted text still looked right (the font
+    /// folds into `StyleRules.font_family` on that path) while every
+    /// reactively-styled node fell back to the browser default, so a
+    /// wire-mode page rendered in TWO fonts — Times beside the theme's.
+    SetDefaultTextFont {
+        #[serde(default)]
+        font: Option<WireFontFamily>,
+    },
+
     /// Theme the platform scrollbar where the backend supports it.
     /// Mirrors `Backend::set_scrollbar_theme`. Both colors resolved
     /// dev-side.

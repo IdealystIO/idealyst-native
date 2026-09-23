@@ -814,6 +814,18 @@ impl caps::DocumentOps for WireRecordingBackend {
 // ===========================================================================
 
 impl caps::StyleOps for WireRecordingBackend {
+    /// The theme's document-root font, to the browser.
+    ///
+    /// Without this override the cap took its trait no-op: the theme
+    /// published its family inside the sidecar and nothing carried it
+    /// across. Statically-sheeted text still looked right (the font
+    /// folds into `StyleRules.font_family` on that path) while every
+    /// reactively-styled node fell back to the browser default — so a
+    /// wire-mode page rendered in two fonts at once.
+    fn apply_default_text_font(&mut self, font: Option<&runtime_shared::FontFamily>) {
+        WireRecordingBackend::apply_default_text_font(self, font)
+    }
+
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         WireRecordingBackend::apply_style(self, node, style)
     }
