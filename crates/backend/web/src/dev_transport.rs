@@ -455,6 +455,7 @@ fn command_kind(c: &wire::Command) -> &'static str {
         SetAnimatedColor { .. } => "SetAnimatedColor",
         ApplySafeAreaPadding { .. } => "ApplySafeAreaPadding",
         ApplyScrollViewSafeAreaInset { .. } => "ApplyScrollViewSafeAreaInset",
+        SetDefaultTextFont { .. } => "SetDefaultTextFont",
         SetAppBackground { .. } => "SetAppBackground",
         SetScrollbarTheme { .. } => "SetScrollbarTheme",
         SetPageMetadata { .. } => "SetPageMetadata",
