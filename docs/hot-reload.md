@@ -387,7 +387,12 @@ to the patch's own segment. The resolver drops any other start function
 this one too. Then walrus's GC removed the function, those globals stayed
 relative, and the first render against a patch trapped with `null
 function` in `core::fmt::write`, where a `format!` argument's formatter
-pointer was 0. That one start function is kept now.
+pointer was 0. That start function is kept now, and so is the wrapper
+wasm-ld emits instead when the patch has any zero-initialized static:
+`__wasm_start`, calling `__wasm_apply_global_relocs` and
+`__wasm_init_memory` (which zero-fills the patch's own `.bss`). Any other
+start is dropped, and `__wasm_apply_global_relocs` is then exported so the
+loader still runs it.
 
 ### Each app gets its own web target dir while the tier is armed
 
