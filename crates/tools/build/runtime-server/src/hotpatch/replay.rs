@@ -157,7 +157,22 @@ pub fn run_rustc_emit_obj_with(
     if !output.status.success() {
         let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stderr);
         let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stdout);
-        anyhow::bail!("rustc --emit=obj exited with {}", output.status);
+        // Name any `--extern` input that is not on disk right now. A
+        // replay runs against artifacts a concurrent cargo may be
+        // rewriting, and "can't find crate" alone does not say whether
+        // the file was missing, replaced, or never there.
+        let missing: Vec<&str> = extern_paths(&args)
+            .filter(|p| !std::path::Path::new(p).exists())
+            .collect();
+        if missing.is_empty() {
+            anyhow::bail!("rustc --emit=obj exited with {}", output.status);
+        }
+        anyhow::bail!(
+            "rustc --emit=obj exited with {} — {} `--extern` input(s) missing at replay time: {}",
+            output.status,
+            missing.len(),
+            missing.join(", ")
+        );
     }
 
     // Cargo passes `--json=...artifacts...` so rustc emits
@@ -289,5 +304,24 @@ mod tests {
         write(&dir, "solo.bin.json");
         assert!(find_capture(&dir, "solo").is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The file paths named by `--extern name=path` arguments.
+fn extern_paths(args: &[String]) -> impl Iterator<Item = &str> {
+    args.windows(2)
+        .filter(|w| w[0] == "--extern")
+        .filter_map(|w| w[1].split_once('=').map(|(_, p)| p))
+}
+
+#[cfg(test)]
+mod extern_path_tests {
+    #[test]
+    fn extern_paths_reads_name_equals_path_pairs() {
+        let args: Vec<String> = ["--extern", "a=/x/liba.rmeta", "-L", "y", "--extern", "noprelude:b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(super::extern_paths(&args).collect::<Vec<_>>(), vec!["/x/liba.rmeta"]);
     }
 }
