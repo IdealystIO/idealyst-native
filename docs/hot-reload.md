@@ -510,21 +510,32 @@ page that records when the new content appears. "Builder" is the
 | Lab | body edit, warm | 0.84 – 1.17 s | 0.26 – 0.59 s | kept, no reload |
 | Lab | `stylesheet!` value edit | 1.31 – 1.97 s | 0.36 – 0.83 s | kept, no reload |
 | Lab | shape edit (add a prop) | 6.0 s (rebuild + reload) | – | reset |
-| CrewForge (large) | body edit, first of session | 68 s | 61 s (rustc 58 s) | kept, no reload |
-| CrewForge | body edit, later | ~47 – 98 s | 47 – 98 s (rustc 45 – 92 s) | kept, no reload |
-| CrewForge | rebuild with the tier armed | 63 – 150 s | – | reset |
+| CrewForge (large) | body edit, first of session | 34 s | 29 s (rustc 26 s, cold replay cache) | kept, no reload |
+| CrewForge | body edit, later | 11.5 – 11.9 s | 10.3 – 10.5 s (rustc 7.6 s) | kept, no reload |
+| CrewForge | rebuild with the tier armed, after patches | 38.6 s (cargo 15 s) | – | reset |
 | CrewForge | rebuild, tier not armed (reference) | ~23 s | – | reset |
 
 On the page itself a patch applies in about 0.35 s even on CrewForge
-(fetch, instantiate, 21,341 functions redirected, the tree rebuilt). The
-cost is all in the replayed rustc, and it is not proportional to the
-edit: with a warm cache a replay with NO edit takes 7 – 9 s, and a
-one-token edit takes 46 s, of which LLVM codegen is 30 s and IR
-generation 9 s (`-Ztime-passes`). The edit invalidates far more codegen
-units than the one function it touches, and a large app crate pays for
-all of them. The rebuild with the tier armed is slower than an ordinary
-one because base prep, the stranded-import pass and a second walrus
-pass run over a 223 MB module (320 MB linked).
+(fetch, instantiate, 21,341 functions redirected, the tree rebuilt).
+Most of the rest is the replayed rustc, whose floor is a no-edit replay
+(about 7 s on CrewForge: macro expansion and metadata).
+
+**Why the replay is not the whole crate.** rustc forces
+`codegen-units=1` when the emit set contains an object-like output and no
+count is given. Cargo's build (`--emit=link`) gets the incremental
+default of 256, but a replay that just swapped in `--emit=obj` compiled
+the crate as ONE unit, so any edit re-codegened all of it: 40–46 s for a
+one-token edit, 63 s for one that shifts lines. `replay::replay_args`
+passes `-Ccodegen-units=256` (7.4 s and 6.4 s). It also gives replays
+their own incremental dir, `<dir>-hotpatch`: the base build and a replay
+differ in tracked options, and rustc discards a cache whose options
+differ, so a shared directory made each compile cold after the other.
+Replay objects go to a private directory emptied first, because with many
+units their names are hashed and would otherwise accumulate.
+
+The rebuild with the tier armed is still slower than an ordinary one
+because base prep, the stranded-import pass and a second walrus pass run
+over a 223 MB module (320 MB linked), about 22 s on CrewForge.
 
 **Memory.** On CrewForge the CLI's peak RSS during base prep is about
 3.7 GB (one walrus parse of the module). The default memory cap is
