@@ -51,7 +51,7 @@ pub fn find_capture(
 ) -> Result<CapturedInvocation> {
     let primary = format!("{}.", crate_name);
     let normalized = format!("{}.", crate_name.replace('-', "_"));
-    let mut found: Option<PathBuf> = None;
+    let mut candidates: Vec<(usize, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(captures_dir)
         .with_context(|| format!("read captures dir {}", captures_dir.display()))?
     {
@@ -62,10 +62,18 @@ pub fn find_capture(
             continue;
         }
         if name.starts_with(&primary) || name.starts_with(&normalized) {
-            found = Some(entry.path());
-            break;
+            candidates.push((crate_type_rank(&name), entry.path()));
         }
     }
+    // A project with both a library and a binary of the same name — the
+    // standard idealyst shape, where `src/main.rs` is one `entry!` line —
+    // writes two captures. Directory order is not defined, so picking
+    // "the first" picked either, and replaying the BINARY produced a
+    // patch containing an `entry!` expansion and none of the app.
+    //
+    // Rank, then sort: the library is where the components live.
+    candidates.sort();
+    let found = candidates.into_iter().next().map(|(_, path)| path);
     let path = found.ok_or_else(|| {
         anyhow::anyhow!(
             "no capture for crate `{}` in {} — was the fat build run with \
@@ -196,6 +204,22 @@ pub fn run_rustc_emit_obj_with(
     Ok(out)
 }
 
+/// Preference order among several captures for one crate name: lower is
+/// better. The library targets come first because that is where an app's
+/// components are defined; a `bin` of the same name is the entry point
+/// and holds nothing worth patching.
+fn crate_type_rank(file_name: &str) -> usize {
+    let stem = file_name.trim_end_matches(".json");
+    match stem.rsplit('.').next().unwrap_or("") {
+        "rlib" => 0,
+        "lib" => 1,
+        "cdylib" => 2,
+        "staticlib" => 3,
+        "bin" => 4,
+        _ => 5,
+    }
+}
+
 fn arg_value(args: &[String], key: &str) -> Option<String> {
     let mut iter = args.iter();
     while let Some(a) = iter.next() {
@@ -207,4 +231,63 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(dir: &Path, name: &str) {
+        let capture = CapturedInvocation {
+            rustc: format!("/usr/bin/rustc-{name}"),
+            args: vec!["--crate-name".into(), "app".into()],
+            cwd: "/tmp".into(),
+            env: Vec::new(),
+        };
+        std::fs::write(
+            dir.join(name),
+            serde_json::to_string(&capture).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Regression: the standard idealyst shape is a library plus a
+    /// binary of the SAME name, whose `src/main.rs` is one `entry!`
+    /// line. Both get a capture, directory order is undefined, and
+    /// taking "the first" replayed the binary about half the time —
+    /// producing a patch that contained an `entry!` expansion and none
+    /// of the app.
+    #[test]
+    fn regression_a_lib_and_a_bin_of_one_name_resolve_to_the_lib() {
+        let dir = std::env::temp_dir().join(format!(
+            "idealyst-capture-rank-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write(&dir, "my_app.bin.json");
+        write(&dir, "my_app.rlib.json");
+
+        let found = find_capture(&dir, "my-app").unwrap();
+        assert_eq!(
+            found.rustc, "/usr/bin/rustc-my_app.rlib.json",
+            "the library capture is the one with the components in it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A crate with only a binary still resolves — an app whose whole
+    /// source is in `main.rs` is unusual but legal.
+    #[test]
+    fn a_bin_only_crate_still_resolves() {
+        let dir = std::env::temp_dir().join(format!(
+            "idealyst-capture-binonly-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write(&dir, "solo.bin.json");
+        assert!(find_capture(&dir, "solo").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
