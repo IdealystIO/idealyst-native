@@ -45,7 +45,6 @@ pub use premint::PREMINT_CSS_NAME;
 pub mod hotpatch_base;
 pub mod hotpatch_build;
 pub mod hotpatch_patch;
-pub mod hotpatch_tag;
 pub mod hotpatch_wasm;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -733,27 +732,6 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             )
         })
         .with_context(|| "wasm-bindgen")?;
-        // wasm-bindgen adds a speculative `__wbindgen_jstag` import once
-        // the base prep has kept its catch machinery alive, and a tag is
-        // the exceptions proposal — which `walrus`, and therefore the
-        // very next pass, cannot parse. Drop it before anything tries.
-        if opts.hot_patch {
-            timings.time("hotpatch-tag-strip", || {
-                let bindgened_path = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
-                let bindgened = fs::read(&bindgened_path)
-                    .with_context(|| format!("read {}", bindgened_path.display()))?;
-                match hotpatch_tag::strip_imported_tags(&bindgened)
-                    .context("dropping wasm-bindgen's speculative JS-tag import")?
-                {
-                    Some(stripped) => {
-                        eprintln!("[build-web] hot-patch: dropped wasm-bindgen's __wbindgen_jstag import");
-                        fs::write(&bindgened_path, stripped)
-                            .with_context(|| format!("write {}", bindgened_path.display()))
-                    }
-                    None => Ok(()),
-                }
-            })?;
-        }
         timings.time("command-export-neutralize", || {
             neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
         })

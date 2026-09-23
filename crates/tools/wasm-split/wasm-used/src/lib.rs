@@ -134,6 +134,10 @@ impl Used {
                 ExportItem::Table(t) => stack.push_table(t),
                 ExportItem::Memory(m) => stack.push_memory(m),
                 ExportItem::Global(g) => stack.push_global(g),
+                // A tag is not reachable code: nothing in a splittable
+                // module raises through one, and walking it would only
+                // add a root with no function behind it.
+                ExportItem::Tag(_) => &mut stack,
             };
         }
 
@@ -239,7 +243,11 @@ impl Used {
                         stack.push_func(*func, Location::Global { global: t });
                     }
                     GlobalKind::Local(ConstExpr::Value(_))
-                    | GlobalKind::Local(ConstExpr::RefNull(_)) => {}
+                    | GlobalKind::Local(ConstExpr::RefNull(_))
+                    // An extended const expression is arithmetic over
+                    // other constants — it names no function or global
+                    // we would have to keep.
+                    | GlobalKind::Local(ConstExpr::Extended(_)) => {}
                 }
             }
 
@@ -266,7 +274,7 @@ impl Used {
                         stack.push_func(*f, Location::Element { element: e.id() });
                     });
                 }
-                if let ElementItems::Expressions(RefType::Funcref, items) = &e.items {
+                if let ElementItems::Expressions(RefType::FUNCREF, items) = &e.items {
                     for item in items {
                         match item {
                             ConstExpr::Global(g) => {

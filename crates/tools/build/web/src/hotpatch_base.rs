@@ -254,7 +254,7 @@ mod tests {
     /// in an active element segment.
     fn module_with(n: usize, in_table: usize) -> (Module, Vec<FunctionId>) {
         let mut module = Module::default();
-        let table = module.tables.add_local(false, 0, Some(64), walrus::RefType::Funcref);
+        let table = module.tables.add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
 
         let mut ids = Vec::new();
         for i in 0..n {
@@ -348,7 +348,7 @@ mod tests {
         let mut module = Module::default();
         module
             .tables
-            .add_local(false, 0, Some(64), walrus::RefType::Funcref);
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
         let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         builder.name("__wbindgen_throw".to_string()).func_body();
         let id = module.funcs.add_local(builder.local_func(vec![]));
@@ -382,7 +382,7 @@ mod tests {
         let mut module = Module::default();
         let table = module
             .tables
-            .add_local(false, 0, Some(64), walrus::RefType::Funcref);
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
         let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
         builder
             .name("__wbindgen_describe_foo".to_string())

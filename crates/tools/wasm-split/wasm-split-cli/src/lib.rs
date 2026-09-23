@@ -787,7 +787,7 @@ impl<'a> Splitter<'a> {
 
         // Export any tables
         for (idx, table) in out.tables.iter().enumerate() {
-            if table.element_ty != RefType::Funcref {
+            if table.element_ty != RefType::FUNCREF {
                 let table_name = format!("__imported_table_{}", idx);
                 out.exports.add(&table_name, table.id());
             }
@@ -1500,7 +1500,7 @@ impl<'a> Splitter<'a> {
         // Should be as simple as adding a new import and then writing the `.import` field
         for (idx, table) in out.tables.iter_mut().enumerate() {
             let name = table.name.clone().unwrap_or_else(|| {
-                if table.element_ty == RefType::Funcref {
+                if table.element_ty == RefType::FUNCREF {
                     "__indirect_function_table".to_string()
                 } else {
                     format!("__imported_table_{}", idx)
@@ -1548,13 +1548,13 @@ impl<'a> Splitter<'a> {
         let ifunc_table = out
             .tables
             .iter()
-            .find(|t| t.element_ty == RefType::Funcref)
+            .find(|t| t.element_ty == RefType::FUNCREF)
             .map(|t| t.id());
 
         if let Some(table) = ifunc_table {
             table
         } else {
-            out.tables.add_local(false, 0, None, RefType::Funcref)
+            out.tables.add_local(false, 0, None, RefType::FUNCREF)
         }
     }
 
@@ -2633,13 +2633,18 @@ fn rematerialize_unique_data_segments(
         // Take the data out of the vec - zeroing it out unless we patch it in manually
         let contents = data.value.split_off(0);
 
-        let DataKind::Active { memory, offset } = data.kind else {
+        // Borrowed, not moved: walrus 0.26's `ConstExpr` grew a
+        // non-`Copy` `Extended` variant, so destructuring by value out of
+        // `&mut Data` no longer compiles.
+        let DataKind::Active { memory, offset } = &data.kind else {
             continue;
         };
+        let memory = *memory;
 
         let ConstExpr::Value(ir::Value::I32(data_offset)) = offset else {
             continue;
         };
+        let data_offset = *data_offset;
 
         // And then assign chunks of the data to new data entries that will override the individual slots
         for unique in unique_symbols {

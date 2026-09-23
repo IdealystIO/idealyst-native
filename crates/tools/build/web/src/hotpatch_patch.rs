@@ -425,7 +425,7 @@ mod tests {
             false,
             0,
             None,
-            RefType::Funcref,
+            RefType::FUNCREF,
         );
         let table_base = module.add_import_global("env", "__table_base", ValType::I32, false, false);
 
