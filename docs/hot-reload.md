@@ -293,6 +293,21 @@ parser has no `EXCEPTIONS` feature — the next pass could not read the
 module at all. 0.26 parses with `WasmFeatures::default()`, and is the
 version wasm-bindgen itself uses.
 
+### The session pins the `idealyst` binary
+
+A hot-patch build sets `RUSTC_WRAPPER` to the running `idealyst`
+executable so every crate's rustc invocation is captured. Cargo re-runs
+that path for each crate, so rebuilding or deleting the binary while a
+session is live breaks the session's next build with
+
+```text
+could not execute process /…/target/debug/idealyst
+```
+
+Restart the session after rebuilding the CLI. The same applies to
+`cargo clean` on a workspace whose `target/` holds both the binary and
+the session's web target directory.
+
 ### The app root has to be a `#[component]`
 
 A jump table redirects a function by its slot in
