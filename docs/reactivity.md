@@ -143,9 +143,15 @@ src/counter.rs:31:17; world 1, slot 0) has not been flushed yet. …
 **What arms it.** Only a pending staged *value*: `set`, `set_always`,
 `update`. `touch()` stages no value, and `set_untracked` writes the
 committed cell in place, so neither can make a later read stale and
-neither arms the diagnostic. The armed state clears at the flush that
-commits the write — there is no per-turn bookkeeping, the condition
-*is* "the slot still holds a staged value".
+neither arms the diagnostic. A staged value EQUAL to the committed one
+does not arm it either: the read already returns what the flush will
+commit. That is what keeps a fresh `memo` quiet — its derivation runs
+once at creation and stages the value it just computed on top of the
+identical initial one, so an untracked read before the first flush
+(a component body reading a memo passed as a prop) is correct. The armed
+state clears at the flush that commits the write — there is no per-turn
+bookkeeping, the condition *is* "the slot still holds a staged value that
+differs from the committed one".
 
 **What it reports.** `get`, `peek`, `with` and `with_untracked` all
 return the committed value, so all four warn. `peek` is not exempt: it

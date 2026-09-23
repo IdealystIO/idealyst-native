@@ -2433,6 +2433,41 @@ mod staged_read_diagnostic {
         assert!(drain().is_empty(), "neither stages a pending value");
     }
 
+    /// Regression (hot-reload lab boot, `glue.rs` `From<Memo>` read site):
+    /// a memo's derivation effect runs once at creation and stages `f()` on
+    /// top of the `untrack(&f)` initial value, so until the first flush the
+    /// cache carries a `next` EQUAL to its committed value. An untracked
+    /// read in that window — a component build body reading a memo passed
+    /// as a `Reactive` prop — returns exactly what the flush will commit,
+    /// yet it warned. Equal staged values must not arm the diagnostic.
+    #[test]
+    fn a_fresh_memo_read_before_the_flush_does_not_warn() {
+        let _ = drain();
+        let world = World::new();
+        world.enter(|| {
+            let src = signal(3u32);
+            let doubled = memo(move || src.get() * 2);
+            assert_eq!(doubled.peek(), 6);
+            assert!(drain().is_empty(), "a fresh memo's read is not stale");
+        });
+    }
+
+    /// The equality exemption is about VALUES, not about which API staged
+    /// them: a `set` of the committed value is silent, a `set` of a
+    /// different one still warns.
+    #[test]
+    fn an_equal_staged_value_is_silent_and_a_different_one_warns() {
+        let _ = drain();
+        let world = World::new();
+        let sig = world.signal(4u32);
+        sig.set(4);
+        assert_eq!(sig.peek(), 4);
+        assert!(drain().is_empty(), "staged == committed: nothing is stale");
+        sig.set(5);
+        assert_eq!(sig.peek(), 4);
+        assert_eq!(drain().len(), 1, "staged != committed: the read is stale");
+    }
+
     /// A memo's cache signal must report the AUTHOR's `memo(...)` site, not
     /// runtime-world's internals — `#[track_caller]` does not propagate
     /// through the closure `World::memo` needs, so the site is threaded

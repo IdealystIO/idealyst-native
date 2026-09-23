@@ -33,7 +33,8 @@
 //! Dev diagnostics — staged-read warning: staging makes `set(v); get()` in
 //! one turn return the PRE-set value, the one 0.5 → 1.0 break that is
 //! neither a compile error nor a panic. Debug builds warn once per call
-//! site when a read lands on a signal with a pending staged write; see
+//! site when a read lands on a signal with a pending staged write whose
+//! value differs from the committed one; see
 //! [`install_diagnostic_sink`] and the "staged-read diagnostic" section
 //! below. Compiled out entirely in release.
 
@@ -1275,8 +1276,18 @@ fn read_signal<T: PartialEq + 'static, R>(
         // the same storage through `with_signal_data` directly and never
         // passes here, so `update` — the API the migration guide tells
         // people to switch to — is silent by construction.
+        //
+        // A staged value EQUAL to the committed one is not a stale read:
+        // the read already returns what the flush will commit. The case
+        // that matters is every `memo`: its derivation effect's first run
+        // (at creation) stages `f()` on top of the `untrack(&f)` initial
+        // value, so until the next flush the cache carries a `next` equal
+        // to `value`, and any untracked read of a fresh memo (a component
+        // build body reading a memo passed as a `Reactive` prop) warned
+        // about a hazard that cannot exist. Pinned by
+        // `a_fresh_memo_read_before_the_flush_does_not_warn`.
         #[cfg(debug_assertions)]
-        if d.next.is_some() && !subscribed {
+        if !subscribed && d.next.as_ref().is_some_and(|next| *next != d.value) {
             warn_staged_read(&arena, world, slot, site);
         }
         f(&d.value)
