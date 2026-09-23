@@ -511,14 +511,25 @@ page that records when the new content appears. "Builder" is the
 | Lab | `stylesheet!` value edit | 1.31 – 1.97 s | 0.36 – 0.83 s | kept, no reload |
 | Lab | shape edit (add a prop) | 6.0 s (rebuild + reload) | – | reset |
 | CrewForge (large) | body edit, first of session | 34 s | 29 s (rustc 26 s, cold replay cache) | kept, no reload |
-| CrewForge | body edit, later | 11.5 – 11.9 s | 10.3 – 10.5 s (rustc 7.6 s) | kept, no reload |
+| CrewForge | body edit, later | 9.9 – 10.3 s | 9.0 – 9.1 s (rustc 6.9 – 7.2 s, resolve 1.45 s, link 0.5 s, jump table 0.09 s) | kept, no reload |
 | CrewForge | rebuild with the tier armed, after patches | 38.6 s (cargo 15 s) | – | reset |
 | CrewForge | rebuild, tier not armed (reference) | ~23 s | – | reset |
 
 On the page itself a patch applies in about 0.35 s even on CrewForge
 (fetch, instantiate, 21,341 functions redirected, the tree rebuilt).
-Most of the rest is the replayed rustc, whose floor is a no-edit replay
-(about 7 s on CrewForge: macro expansion and metadata).
+Most of the rest is the replayed rustc. Its floor is a no-edit replay,
+about 5.4 s on CrewForge offline (`-Ztime-passes`): macro expansion 1.95 s
+(`ui!` 0.61 s over 2,303 calls, `#[component]` 0.48 s over 213, now about
+half that, `stylesheet!` 0.20 s), encoding this crate's metadata 0.9 –
+1.25 s (an `rlib` always encodes it, and rustc has no switch to skip it;
+a `staticlib` crate type skips it but costs more in codegen), persisting
+the incremental cache 0.6 – 1.1 s, mono collection and partitioning
+about 0.9 s. Type checking, borrow checking and codegen of the one
+changed unit are each under 0.3 s.
+
+The base is indexed once per base build, right after it is built, and
+the builder keeps the base's slot map rather than re-reading the module
+per patch.
 
 **Why the replay is not the whole crate.** rustc forces
 `codegen-units=1` when the emit set contains an object-like output and no
