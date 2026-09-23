@@ -812,9 +812,13 @@ fn watch_loop(
                         Ok(patch) => match base.event_json(&patch) {
                             Ok(json) => {
                                 signal.push_hot_patch(json);
-                                if let Some(set) = archive.as_mut() {
-                                    overlay_decide::advance_archive(set, &changed);
-                                }
+                                // A FULL rescan, not `advance_archive`
+                                // over the saved files: a hot patch
+                                // re-emits every file of the crate, so a
+                                // file outside this save can come back
+                                // with new site keys too, and the next
+                                // save must diff against what is running.
+                                archive = rescan_archive(&dir, &package);
                                 eprintln!(
                                     "[hotpatch] {} · {} function(s) redirected · {}",
                                     files.join(", "),
@@ -901,13 +905,7 @@ fn watch_loop(
         // is also what drops every staged patch: the new binary already
         // has the edits compiled in, so re-sending them would be
         // applying the same change twice.
-        match overlay::write_for(&dir, &dir) {
-            Ok(_) => archive = overlay_decide::load_archive(&dir, &package),
-            Err(e) => {
-                eprintln!("[dev-reload] no descriptor set for this build: {e}");
-                archive = None;
-            }
-        }
+        archive = rescan_archive(&dir, &package);
 
         // Coalesce anything queued during the build — wasm-pack
         // writes to `pkg/` (not watched) and cargo touches
@@ -1152,10 +1150,69 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
     }
 }
 
+/// Re-derive the `ui!` descriptor archive from the crate's source as it
+/// is on disk now.
+///
+/// Used after anything that puts the WHOLE crate's current source into
+/// the running program: a rebuild, and a hot patch, which re-emits every
+/// file of the crate rather than only the ones in the save.
+fn rescan_archive(dir: &Path, package: &str) -> Option<overlay::DescriptorSet> {
+    match overlay::write_for(dir, dir) {
+        Ok(_) => overlay_decide::load_archive(dir, package),
+        Err(e) => {
+            eprintln!("[dev-reload] no descriptor set for this build: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// Regression: after a hot patch the archive was advanced over the
+    /// SAVED files only, but a patch re-emits every file of the crate.
+    /// A file edited outside the save (by a formatter, a second editor,
+    /// a branch switch the watcher folded away) came back running new
+    /// site keys the archive never saw, and the next literal save diffed
+    /// against a stale picture.
+    #[test]
+    fn regression_the_archive_after_a_hot_patch_covers_files_outside_the_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"rescan-probe\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "mod a;\nmod b;\n").unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn a() { ui! { text { \"a\" } } }\n").unwrap();
+        std::fs::write(dir.join("src/b.rs"), "fn b() { ui! { text { \"b\" } } }\n").unwrap();
+
+        let before = rescan_archive(dir, "rescan-probe").expect("an archive");
+        let b_before = before.files.get("src/b.rs").expect("b.rs scanned").content.clone();
+
+        // `b.rs` changes, but the save that produced the patch was a.rs.
+        std::fs::write(
+            dir.join("src/b.rs"),
+            "fn b() { ui! { text { \"b\" } } }\nfn c() { ui! { text { \"c\" } } }\n",
+        )
+        .unwrap();
+        let after = rescan_archive(dir, "rescan-probe").expect("an archive");
+        assert_ne!(
+            after.files.get("src/b.rs").expect("b.rs scanned").content,
+            b_before,
+            "the archive must describe b.rs as it is now, not as it was at the last build"
+        );
+        assert!(
+            after.sites.len() > before.sites.len(),
+            "b.rs's new site is missing: {} -> {}",
+            before.sites.len(),
+            after.sites.len()
+        );
+    }
 
     /// Regression guard for the save-storm that kept the dev bundle
     /// perpetually mid-build: a multi-file edit arrives as a SEQUENCE of
