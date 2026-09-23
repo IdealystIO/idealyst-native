@@ -46,7 +46,7 @@
 //! bundle never sees it.
 
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use walrus::{
     ir, ElementItems, ElementKind, FunctionBuilder, FunctionId, FunctionKind, ImportKind, Module,
 };
@@ -64,7 +64,7 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     // limits to BOTH kinds of root below — a table slot and an export are
     // equally live to wasm-bindgen's dead-code pass, and it only deletes
     // the placeholder import when nothing at all reaches it.
-    let descriptor_side = functions_reaching_the_descriptor_imports(&module);
+    let descriptor_side = functions_calling_the_descriptor_imports(&module);
     let mut promote: Vec<FunctionId> = Vec::new();
     let mut exported: HashSet<String> = HashSet::new();
 
@@ -163,26 +163,32 @@ fn const_offset(expr: &walrus::ConstExpr) -> u64 {
 }
 
 
-/// Every local function that can reach a wasm-bindgen descriptor import,
-/// directly or through other functions.
+/// Every local function that calls a wasm-bindgen descriptor import
+/// directly.
 ///
-/// These must NOT be rooted. wasm-bindgen interprets the descriptor
-/// chain and then expects the whole of it — the import, the `describe`
-/// functions, and their callers — to become unreachable so its own pass
-/// deletes them. Rooting any link keeps `__wbindgen_placeholder__` alive
-/// in the output, and the generated JS has no binding to satisfy it: the
-/// page fails at instantiation with
+/// These must NOT be rooted. wasm-bindgen interprets the descriptor chain
+/// and then expects the import to become unreachable so its own pass
+/// deletes it; one rooted caller keeps `__wbindgen_placeholder__` alive
+/// in the output, the generated JS has no binding for it, and the page
+/// fails at instantiation with
 ///
 /// ```text
 /// WebAssembly.instantiate(): Import #0 "__wbindgen_placeholder__":
 /// module is not an object or function
 /// ```
 ///
-/// Measured on the lab: exactly one survivor was enough to make the base
-/// module refuse to load. Name matching alone did not catch it — the
-/// caller that kept it alive is not itself named like a descriptor — so
-/// the reachability is computed rather than guessed.
-fn functions_reaching_the_descriptor_imports(module: &Module) -> HashSet<FunctionId> {
+/// DIRECT callers only, and the bound matters. Walking the call graph
+/// transitively excluded roughly a third of the module — measured on the
+/// lab, 30,607 functions down to 19,734 rooted — because
+/// `Closure::wrap`, and therefore every event handler that reaches it,
+/// calls a `describe` function. Patches then failed to link against
+/// ordinary things like `<u32 as Display>::fmt`.
+///
+/// One hop is enough because wasm-bindgen rewrites the describe call
+/// sites in ordinary code away as part of its transform: after it runs,
+/// the only things left pointing at the import are the functions
+/// excluded here and the ones [`is_bindgen_internal`] names.
+fn functions_calling_the_descriptor_imports(module: &Module) -> HashSet<FunctionId> {
     let seeds: HashSet<FunctionId> = module
         .imports
         .iter()
@@ -195,40 +201,33 @@ fn functions_reaching_the_descriptor_imports(module: &Module) -> HashSet<Functio
         return HashSet::new();
     }
 
-    // callee → callers, built in one walk so the closure below is a
-    // worklist rather than a repeated scan of every body.
-    let mut callers: HashMap<FunctionId, Vec<FunctionId>> = HashMap::new();
+    let mut callers = HashSet::new();
     for func in module.funcs.iter() {
         let FunctionKind::Local(local) = &func.kind else {
             continue;
         };
-        let mut visitor = CallCollector {
-            caller: func.id(),
-            callers: &mut callers,
+        let mut visitor = CallsSeed {
+            seeds: &seeds,
+            found: false,
         };
         walrus::ir::dfs_in_order(&mut visitor, local, local.entry_block());
-    }
-
-    let mut reached = seeds.clone();
-    let mut queue: Vec<FunctionId> = seeds.into_iter().collect();
-    while let Some(id) = queue.pop() {
-        for caller in callers.get(&id).into_iter().flatten() {
-            if reached.insert(*caller) {
-                queue.push(*caller);
-            }
+        if visitor.found {
+            callers.insert(func.id());
         }
     }
-    reached
+    callers
 }
 
-struct CallCollector<'a> {
-    caller: FunctionId,
-    callers: &'a mut HashMap<FunctionId, Vec<FunctionId>>,
+struct CallsSeed<'a> {
+    seeds: &'a HashSet<FunctionId>,
+    found: bool,
 }
 
-impl<'instr, 'a> walrus::ir::Visitor<'instr> for CallCollector<'a> {
+impl<'instr, 'a> walrus::ir::Visitor<'instr> for CallsSeed<'a> {
     fn visit_call(&mut self, call: &walrus::ir::Call) {
-        self.callers.entry(call.func).or_default().push(self.caller);
+        if self.seeds.contains(&call.func) {
+            self.found = true;
+        }
     }
 }
 
@@ -458,19 +457,25 @@ mod tests {
         );
     }
 
-    /// Regression: a function that CALLS a descriptor import must not be
-    /// rooted either, nor may its callers. wasm-bindgen interprets the
-    /// descriptor chain and expects the whole of it to become
-    /// unreachable so its own pass deletes it; one surviving link leaves
+    /// Regression, both directions at once.
+    ///
+    /// A function that CALLS a descriptor import must not be rooted:
+    /// wasm-bindgen expects the import to become unreachable so its own
+    /// pass deletes it, and one rooted caller leaves
     /// `__wbindgen_placeholder__` in the output, which the generated JS
     /// has no binding for — the page then fails at instantiation with
     /// "Import #0 __wbindgen_placeholder__: module is not an object or
-    /// function". Measured on the lab with exactly one survivor.
+    /// function". Name matching alone did not catch it: the caller is
+    /// not itself named like a descriptor.
     ///
-    /// Name matching alone did not catch it: the caller that kept it
-    /// alive is not itself named like a descriptor.
+    /// But the exclusion must stop at ONE hop. Walking transitively took
+    /// the lab's rooted set from 30,607 functions to 19,734, because
+    /// `Closure::wrap` — and so every event handler reaching it — calls
+    /// a `describe` function; patches then failed to link against
+    /// ordinary things like `<u32 as Display>::fmt`. wasm-bindgen
+    /// rewrites those call sites away itself, so one hop suffices.
     #[test]
-    fn regression_a_caller_of_a_descriptor_import_is_not_rooted() {
+    fn regression_a_direct_caller_of_a_descriptor_import_is_not_rooted() {
         let mut module = Module::default();
         let table = module
             .tables
@@ -519,8 +524,9 @@ mod tests {
             "a direct caller of the descriptor import was rooted: {entries:?}"
         );
         assert!(
-            !entries.iter().any(|e| e.contains("indirect")),
-            "a transitive caller of the descriptor import was rooted: {entries:?}"
+            entries.iter().any(|e| e.contains("indirect")),
+            "an INDIRECT caller must still be rooted — excluding those cost a third of \
+             the module and broke ordinary patches: {entries:?}"
         );
     }
 
