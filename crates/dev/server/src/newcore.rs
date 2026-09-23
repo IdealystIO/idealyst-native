@@ -139,6 +139,19 @@ impl SceneSession {
         app: impl FnOnce() -> SceneElement,
     ) -> Self {
         let backend = Rc::new(RefCell::new(recorder.clone()));
+        // Ambient environment services — platform identity, color
+        // scheme, URL opener, full-screen setter, AX announcer — into
+        // the thread-locals `platform()` / `open_url()` / `announce()`
+        // read. MUST precede the build: a component body may read
+        // `platform()` while constructing, and on this path it was
+        // never installed at all, so every one of those answered its
+        // "no host" default while the same app on web answered
+        // properly. Same call `backend-web`'s boot makes, for the same
+        // reason.
+        //
+        // Thread-local, and the sidecar runs one thread per session, so
+        // two clients on two platforms stay apart.
+        runtime_vocabulary::backend::install_env_services(&backend);
         let mut registry: SceneRegistry = Registry::new();
         runtime_vocabulary::register_builtins(&mut registry);
         register(&mut registry);
@@ -311,6 +324,21 @@ impl Host for WireRecordingBackend {
 impl caps::AppEnvOps for WireRecordingBackend {
     fn color_scheme(&self) -> ColorScheme {
         WireRecordingBackend::color_scheme(self)
+    }
+
+    /// The CLIENT's platform, not the sidecar's.
+    ///
+    /// The app runs natively here but is painting a browser (or a
+    /// phone shell). Left at the trait default — `Custom("")` — every
+    /// `is_apple()` / `is_mobile()` / `is_tv()` predicate answers
+    /// `false`, so an author's platform branch silently takes the
+    /// wrong arm; and `StackRetention::PlatformDefault` resolves to
+    /// `Retain` instead of the `Rebuild` the same app gets on web,
+    /// which changes what a back navigation does.
+    ///
+    /// The value is per session thread, from the client's `Hello`.
+    fn platform(&self) -> runtime_shared::host::Platform {
+        crate::session_platform()
     }
 
 

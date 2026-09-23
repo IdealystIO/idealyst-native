@@ -667,6 +667,10 @@ fn accept_new(
                         // the user is looking at would make every
                         // hot-patch fallback a navigation.
                         t.set_initial_url(&session_id, initial_url.clone());
+                        // Same reason again: a respawn that re-created
+                        // the session as the wrong platform would
+                        // change layout under the user.
+                        t.set_platform(&session_id, identity.platform);
                     }
                     if !single_process_mode {
                         if let Some(slot) = sidecar_slot {
@@ -681,6 +685,7 @@ fn accept_new(
                                         crate::SessionFacts {
                                             viewport,
                                             initial_url: initial_url.clone(),
+                                            platform: identity.platform,
                                         },
                                     );
                                 }

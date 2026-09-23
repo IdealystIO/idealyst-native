@@ -174,6 +174,10 @@ pub enum SidecarIn {
         /// other's.
         #[serde(default)]
         initial_url: Option<String>,
+        /// What the client is (`AppToDev::Hello`'s
+        /// `identity.platform`). See `SessionFacts::platform`.
+        #[serde(default)]
+        platform: wire::WirePlatform,
     },
     /// Tell the sidecar to shut down the named session's thread. The
     /// thread drops its `Owner` (firing teardown effects) and exits.
@@ -622,6 +626,7 @@ impl Sidecar {
             session: session.to_string(),
             viewport: facts.viewport,
             initial_url: facts.initial_url,
+            platform: facts.platform,
         });
     }
 
@@ -735,12 +740,16 @@ pub struct SessionFacts {
     /// session on the screen the user deep-linked to, rather than
     /// dropping it back to the app's configured initial route.
     pub initial_url: Option<String>,
+    /// What the CLIENT is. The app runs natively in the sidecar but is
+    /// drawing this platform's screen, and `platform()` branches have
+    /// to answer for the viewer's machine, not ours.
+    pub platform: wire::WirePlatform,
 }
 
 impl SessionFacts {
     /// Facts for a client that reported only a viewport.
     pub fn viewport_only(viewport: Option<wire::WireViewport>) -> Self {
-        Self { viewport, initial_url: None }
+        Self { viewport, initial_url: None, platform: wire::WirePlatform::default() }
     }
 }
 
@@ -775,6 +784,15 @@ impl SessionTracker {
     pub fn set_initial_url(&self, id: &str, url: Option<String>) {
         if let Ok(mut g) = self.inner.lock() {
             g.entry(id.to_string()).or_default().initial_url = url;
+        }
+    }
+
+    /// Record what the client is. Same replay reasoning as the URL: a
+    /// respawn re-creates the session, and re-creating it as the wrong
+    /// platform changes layout.
+    pub fn set_platform(&self, id: &str, platform: wire::WirePlatform) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.entry(id.to_string()).or_default().platform = platform;
         }
     }
 
@@ -1041,8 +1059,10 @@ mod runtime {
         // `Hello` so the host can pair the symbol. See
         // `SidecarOut::Hello::app_reference`.
         let app_reference = app as *const () as u64;
-        run_loop(app_reference, move |session, rx, out, viewport, initial_url| {
-            run_session_thread_newcore(session, rx, out, app, register, viewport, initial_url)
+        run_loop(app_reference, move |session, rx, out, viewport, initial_url, platform| {
+            run_session_thread_newcore(
+                session, rx, out, app, register, viewport, initial_url, platform,
+            )
         })
     }
 
@@ -1059,6 +1079,7 @@ mod runtime {
                 Arc<Mutex<std::io::Stdout>>,
                 Option<wire::WireViewport>,
                 Option<String>,
+                wire::WirePlatform,
             ) + Send
             + Sync
             + Clone
@@ -1139,7 +1160,7 @@ mod runtime {
             };
 
             match msg {
-                SidecarIn::CreateSession { session, viewport, initial_url } => {
+                SidecarIn::CreateSession { session, viewport, initial_url, platform } => {
                     if sessions.contains_key(&session) {
                         eprintln!(
                             "[runtime-server-app] CreateSession({session}): already exists; ignoring"
@@ -1167,7 +1188,7 @@ mod runtime {
                         .name(format!("aas-session-{session}"))
                         .stack_size(16 * 1024 * 1024)
                         .spawn(move || {
-                            body(session_for_thread, rx, out_clone, viewport, initial_url);
+                            body(session_for_thread, rx, out_clone, viewport, initial_url, platform);
                         })
                         .expect("spawn session thread");
                     sessions.insert(session.clone(), SessionHandle { tx, join });
@@ -1374,11 +1395,15 @@ mod runtime {
         register: fn(&mut crate::newcore::SceneRegistry),
         initial_viewport: Option<wire::WireViewport>,
         initial_url: Option<String>,
+        platform: wire::WirePlatform,
     ) {
         // Same thread-level installs as the old-core body: IPC sink for
         // device-frame round-trips, the Tokio-backed async executor,
         // and the session viewport (read by `RecordingViewOps::frame`).
         set_session_sink(out.clone(), session.clone());
+        // Before ANY mount: this session thread paints for `platform`,
+        // and author code reads that during the first build.
+        crate::set_session_platform(crate::platform_from_wire(platform));
         let recorder = WireRecordingBackend::new();
         crate::async_executor::install();
         if let Some(v) = initial_viewport {
@@ -1750,6 +1775,7 @@ mod session_facts_tests {
             session: "web_00000001".into(),
             viewport: None,
             initial_url: Some("/projects/42".into()),
+            platform: wire::WirePlatform::Web,
         };
         let json = serde_json::to_string(&frame).unwrap();
         let back: SidecarIn = serde_json::from_str(&json).unwrap();
@@ -1802,6 +1828,46 @@ mod session_facts_tests {
         snap.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].1.initial_url.as_deref(), Some("/projects/42"));
+    }
+
+    /// The app runs natively in the sidecar but PAINTS a browser, so
+    /// `platform()` has to answer for the viewer's machine. Left at the
+    /// trait default (`Custom("")`), every `is_apple()` / `is_mobile()`
+    /// / `is_tv()` predicate answers `false` and an author's platform
+    /// branch silently takes the wrong arm — and
+    /// `StackRetention::PlatformDefault` resolves to `Retain` instead
+    /// of the `Rebuild` the same app gets on web, which changes what a
+    /// back navigation does.
+    #[test]
+    fn regression_a_sessions_platform_is_the_clients_not_the_sidecars() {
+        use runtime_shared::host::Platform as P;
+        assert_eq!(crate::platform_from_wire(wire::WirePlatform::Web), P::Web);
+        assert_eq!(crate::platform_from_wire(wire::WirePlatform::Ios), P::Ios);
+        assert_eq!(crate::platform_from_wire(wire::WirePlatform::Android), P::Android);
+        assert_eq!(crate::platform_from_wire(wire::WirePlatform::MacOs), P::MacOs);
+        // A client that predates the field, or one we do not know, is
+        // still drawing something; `Web` is the answer that keeps
+        // layout sane and is what every such client actually was.
+        assert_eq!(crate::platform_from_wire(wire::WirePlatform::Other), P::Web);
+    }
+
+    /// Before any Hello the slot is empty, and the fallback must not be
+    /// `Custom("")` — that is the value whose predicates all answer
+    /// `false`.
+    #[test]
+    fn an_unset_session_platform_falls_back_to_web_not_to_nothing() {
+        assert_eq!(crate::session_platform(), runtime_shared::host::Platform::Web);
+    }
+
+    /// The tracker carries it for the respawn replay, apart per
+    /// session, like the viewport and the URL beside it.
+    #[test]
+    fn the_tracker_keeps_each_sessions_platform() {
+        let tracker = SessionTracker::new();
+        tracker.set_platform("web_1", wire::WirePlatform::Web);
+        tracker.set_platform("ios_1", wire::WirePlatform::Ios);
+        assert_eq!(tracker.facts("web_1").platform, wire::WirePlatform::Web);
+        assert_eq!(tracker.facts("ios_1").platform, wire::WirePlatform::Ios);
     }
 
     /// An untracked session flattens to defaults rather than panicking:

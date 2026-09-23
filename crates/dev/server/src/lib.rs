@@ -1156,6 +1156,61 @@ thread_local! {
     /// flips on for the rest of the session.
     static SESSION_VIEWPORT: std::cell::Cell<Option<(f32, f32)>> =
         const { std::cell::Cell::new(None) };
+
+    /// The platform of the CLIENT this session is painting for.
+    ///
+    /// The app runs natively in the sidecar, but it is drawing a
+    /// BROWSER. Reporting the sidecar's own platform (macOS) makes
+    /// every `platform()` branch answer for the wrong machine: desktop
+    /// affordances an author gated on Apple, `⌘K` where the viewer's
+    /// keyboard says Ctrl, and — the one that changes layout —
+    /// `StackRetention::PlatformDefault`, which resolves to `Rebuild`
+    /// on web and `Retain` everywhere else.
+    ///
+    /// `None` until the client's Hello lands; the session thread sets
+    /// it before the first mount, so author code never observes the
+    /// unset state.
+    static SESSION_PLATFORM: std::cell::Cell<Option<runtime_shared::host::Platform>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Set the calling session-thread's client platform. Must run on the
+/// session thread — the slot is per-thread, which is what keeps two
+/// browser tabs on two platforms from seeing each other's.
+pub fn set_session_platform(platform: runtime_shared::host::Platform) {
+    SESSION_PLATFORM.with(|c| c.set(Some(platform)));
+}
+
+/// The client's platform, or `Platform::Web` before Hello.
+///
+/// `Web` rather than the trait's `Custom("")` default: every client
+/// that can reach this sidecar today is a browser or a native shell
+/// that reports itself, and `Custom("")` silently answers `false` to
+/// every `is_*` predicate — which is how the wrong branch gets taken
+/// without anything looking wrong.
+pub fn session_platform() -> runtime_shared::host::Platform {
+    SESSION_PLATFORM
+        .with(|c| c.get())
+        .unwrap_or(runtime_shared::host::Platform::Web)
+}
+
+/// `wire::WirePlatform` → the framework's `Platform`.
+pub fn platform_from_wire(p: wire::WirePlatform) -> runtime_shared::host::Platform {
+    use runtime_shared::host::Platform as P;
+    match p {
+        wire::WirePlatform::Web => P::Web,
+        wire::WirePlatform::Ios => P::Ios,
+        wire::WirePlatform::Android => P::Android,
+        wire::WirePlatform::MacOs => P::MacOs,
+        // No named variants for these; the self-reported `Custom`
+        // identifier is exactly what it is for.
+        wire::WirePlatform::Linux => P::Custom("linux-desktop"),
+        wire::WirePlatform::Windows => P::Custom("windows-desktop"),
+        // An unknown client is still drawing SOMETHING; `Web` is the
+        // only answer that keeps layout sane, and it is what every
+        // client that predates the field actually was.
+        wire::WirePlatform::Other => P::Web,
+    }
 }
 
 /// Update the calling session-thread's viewport. Called from
