@@ -46,7 +46,7 @@
 //! bundle never sees it.
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use walrus::{
     ir, ElementItems, ElementKind, FunctionBuilder, FunctionId, FunctionKind, ImportKind, Module,
 };
@@ -116,12 +116,14 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     // exist for wasm-bindgen's own descriptor interpreter, which runs
     // over them and then expects them gone. Rooting one keeps it alive
     // into the output where it has no meaning.
+    let descriptor_side = functions_reaching_the_descriptor_imports(&module);
     let candidates: Vec<FunctionId> = module
         .funcs
         .iter()
         .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
         .filter(|f| !already_indirect.contains(&f.id()))
         .filter(|f| !f.name.as_deref().is_some_and(is_bindgen_internal))
+        .filter(|f| !descriptor_side.contains(&f.id()))
         .map(|f| f.id())
         .collect();
     promote.extend(candidates);
@@ -183,6 +185,76 @@ fn const_offset(expr: &walrus::ConstExpr) -> u64 {
         walrus::ConstExpr::Value(ir::Value::I32(v)) => (*v).max(0) as u64,
         walrus::ConstExpr::Value(ir::Value::I64(v)) => (*v).max(0) as u64,
         _ => 0,
+    }
+}
+
+
+/// Every local function that can reach a wasm-bindgen descriptor import,
+/// directly or through other functions.
+///
+/// These must NOT be rooted. wasm-bindgen interprets the descriptor
+/// chain and then expects the whole of it — the import, the `describe`
+/// functions, and their callers — to become unreachable so its own pass
+/// deletes them. Rooting any link keeps `__wbindgen_placeholder__` alive
+/// in the output, and the generated JS has no binding to satisfy it: the
+/// page fails at instantiation with
+///
+/// ```text
+/// WebAssembly.instantiate(): Import #0 "__wbindgen_placeholder__":
+/// module is not an object or function
+/// ```
+///
+/// Measured on the lab: exactly one survivor was enough to make the base
+/// module refuse to load. Name matching alone did not catch it — the
+/// caller that kept it alive is not itself named like a descriptor — so
+/// the reachability is computed rather than guessed.
+fn functions_reaching_the_descriptor_imports(module: &Module) -> HashSet<FunctionId> {
+    let seeds: HashSet<FunctionId> = module
+        .imports
+        .iter()
+        .filter_map(|i| match i.kind {
+            ImportKind::Function(f) if is_bindgen_internal(&i.name) => Some(f),
+            _ => None,
+        })
+        .collect();
+    if seeds.is_empty() {
+        return HashSet::new();
+    }
+
+    // callee → callers, built in one walk so the closure below is a
+    // worklist rather than a repeated scan of every body.
+    let mut callers: HashMap<FunctionId, Vec<FunctionId>> = HashMap::new();
+    for func in module.funcs.iter() {
+        let FunctionKind::Local(local) = &func.kind else {
+            continue;
+        };
+        let mut visitor = CallCollector {
+            caller: func.id(),
+            callers: &mut callers,
+        };
+        walrus::ir::dfs_in_order(&mut visitor, local, local.entry_block());
+    }
+
+    let mut reached = seeds.clone();
+    let mut queue: Vec<FunctionId> = seeds.into_iter().collect();
+    while let Some(id) = queue.pop() {
+        for caller in callers.get(&id).into_iter().flatten() {
+            if reached.insert(*caller) {
+                queue.push(*caller);
+            }
+        }
+    }
+    reached
+}
+
+struct CallCollector<'a> {
+    caller: FunctionId,
+    callers: &'a mut HashMap<FunctionId, Vec<FunctionId>>,
+}
+
+impl<'instr, 'a> walrus::ir::Visitor<'instr> for CallCollector<'a> {
+    fn visit_call(&mut self, call: &walrus::ir::Call) {
+        self.callers.entry(call.func).or_default().push(self.caller);
     }
 }
 
@@ -401,6 +473,72 @@ mod tests {
             table_entries(&out).is_empty(),
             "descriptor fn was rooted: {:?}",
             table_entries(&out)
+        );
+    }
+
+    /// Regression: a function that CALLS a descriptor import must not be
+    /// rooted either, nor may its callers. wasm-bindgen interprets the
+    /// descriptor chain and expects the whole of it to become
+    /// unreachable so its own pass deletes it; one surviving link leaves
+    /// `__wbindgen_placeholder__` in the output, which the generated JS
+    /// has no binding for — the page then fails at instantiation with
+    /// "Import #0 __wbindgen_placeholder__: module is not an object or
+    /// function". Measured on the lab with exactly one survivor.
+    ///
+    /// Name matching alone did not catch it: the caller that kept it
+    /// alive is not itself named like a descriptor.
+    #[test]
+    fn regression_a_caller_of_a_descriptor_import_is_not_rooted() {
+        let mut module = Module::default();
+        let table = module
+            .tables
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
+        let ty = module.types.add(&[], &[]);
+        let (describe_import, _) =
+            module.add_import_func("__wbindgen_placeholder__", "__wbindgen_describe", ty);
+
+        // A function that calls it, with a name nothing would flag…
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder
+            .name("_RNvCs_3app11plain_looking".to_string())
+            .func_body()
+            .call(describe_import);
+        let direct = module.funcs.add_local(builder.local_func(vec![]));
+
+        // …and one that calls THAT, so the exclusion has to be transitive.
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder
+            .name("_RNvCs_3app8indirect".to_string())
+            .func_body()
+            .call(direct);
+        module.funcs.add_local(builder.local_func(vec![]));
+
+        // And one that touches none of it, which MUST still be rooted.
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder.name("__Counter_hot_impl".to_string()).func_body();
+        module.funcs.add_local(builder.local_func(vec![]));
+
+        module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(vec![]),
+        );
+
+        let out = prepare_base_module(&module.emit_wasm()).unwrap();
+        let entries = table_entries(&out);
+        assert!(
+            entries.contains(&"__Counter_hot_impl".to_string()),
+            "an unrelated function must still be rooted: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("plain_looking")),
+            "a direct caller of the descriptor import was rooted: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains("indirect")),
+            "a transitive caller of the descriptor import was rooted: {entries:?}"
         );
     }
 
