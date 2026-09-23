@@ -239,21 +239,26 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     let patch_path = dir.join("patch.linked.wasm");
     run(
         Command::new(&tools.wasm_ld)
-            .args([
-                "--no-entry",
-                "--allow-undefined",
-                "--import-memory",
-                "--import-table",
-                "--growable-table",
-                "--pie",
-                "--experimental-pic",
-                "--no-demangle",
-                "--no-gc-sections",
-            ])
+            .args(build_web::hotpatch_build::PATCH_LINK_ARGS)
             .arg("-o")
             .arg(&patch_path)
             .arg(&object),
         "the patch link",
+    );
+    // The same link WITH DWARF, to show `--strip-debug` changes nothing
+    // the pairing sees.
+    let with_dwarf_path = dir.join("patch.with-dwarf.wasm");
+    run(
+        Command::new(&tools.wasm_ld)
+            .args(
+                build_web::hotpatch_build::PATCH_LINK_ARGS
+                    .iter()
+                    .filter(|a| **a != "--strip-debug"),
+            )
+            .arg("-o")
+            .arg(&with_dwarf_path)
+            .arg(&object),
+        "the patch link, with DWARF",
     );
 
     // ── 4. Resolve and pair ──────────────────────────────────────────
@@ -293,6 +298,16 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     );
 
     let table = build_jump_table(&served, &resolved, &aliases).unwrap();
+    let with_dwarf = resolve_against_base(&std::fs::read(&with_dwarf_path).unwrap(), &base).unwrap();
+    assert_eq!(
+        build_jump_table(&served, &with_dwarf, &aliases).unwrap(),
+        table,
+        "linking the patch --strip-debug changed the jump table"
+    );
+    assert!(
+        std::fs::metadata(&patch_path).unwrap().len() < std::fs::metadata(&with_dwarf_path).unwrap().len(),
+        "--strip-debug removed nothing from the linked patch"
+    );
     assert!(
         !table.is_empty(),
         "the jump table redirects nothing — the patch and the base did not pair"

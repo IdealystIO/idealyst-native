@@ -255,31 +255,7 @@ impl WasmPatchBuilder {
     /// program in the page's memory.
     fn link(&self, objects: &[PathBuf], out: &Path) -> Result<()> {
         let mut cmd = Command::new(&self.wasm_ld);
-        cmd.args([
-            // The patch is a library, not a program.
-            "--no-entry",
-            // Resolve against the page, not against ourselves.
-            "--allow-undefined",
-            "--import-memory",
-            "--import-table",
-            // `apply_patch` grows the table before instantiating; a
-            // fixed-size import would make that throw.
-            "--growable-table",
-            // Position-independent, which is what makes `__memory_base`
-            // and `__table_base` the offsets everything is written
-            // relative to.
-            "--pie",
-            "--experimental-pic",
-            // The jump table pairs symbols by name against a base linked
-            // `--no-demangle`. Demangling one side pairs nothing.
-            "--no-demangle",
-            // Without this the linker strips every function in the
-            // patch: nothing is exported and nothing is an entry point,
-            // so from its point of view the whole module is dead. The
-            // functions we want are precisely the ones only the jump
-            // table will ever reach.
-            "--no-gc-sections",
-        ]);
+        cmd.args(PATCH_LINK_ARGS);
         cmd.arg("-o").arg(out);
         cmd.args(objects);
 
@@ -299,6 +275,42 @@ impl WasmPatchBuilder {
         Ok(())
     }
 }
+
+/// The patch link's flags, in one place so the roundtrip test links
+/// with exactly what ships.
+pub const PATCH_LINK_ARGS: &[&str] = &[
+    // The patch is a library, not a program.
+    "--no-entry",
+    // Resolve against the page, not against ourselves.
+    "--allow-undefined",
+    "--import-memory",
+    "--import-table",
+    // `apply_patch` grows the table before instantiating; a
+    // fixed-size import would make that throw.
+    "--growable-table",
+    // Position-independent, which is what makes `__memory_base`
+    // and `__table_base` the offsets everything is written
+    // relative to.
+    "--pie",
+    "--experimental-pic",
+    // The jump table pairs symbols by name against a base linked
+    // `--no-demangle`. Demangling one side pairs nothing.
+    "--no-demangle",
+    // Without this the linker strips every function in the
+    // patch: nothing is exported and nothing is an entry point,
+    // so from its point of view the whole module is dead. The
+    // functions we want are precisely the ones only the jump
+    // table will ever reach.
+    "--no-gc-sections",
+    // No DWARF in the linked patch. walrus drops it on the
+    // resolve emit anyway, so the served module never carried
+    // any; linking it only cost time. Measured on CrewForge:
+    // link 0.73 -> 0.34 s, linked file 92 -> 63 MB (less for
+    // resolve to read). The `name` section is not debug info
+    // and survives, which is what the jump table pairs on. The
+    // BASE link is untouched.
+    "--strip-debug",
+];
 
 /// Find the `wasm-ld` that ships with the active toolchain.
 ///
