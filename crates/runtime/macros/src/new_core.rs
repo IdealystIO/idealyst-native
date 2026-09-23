@@ -58,15 +58,21 @@ pub(crate) fn retarget(stream: TokenStream2) -> TokenStream2 {
                 // `impl ::runtime_core::T for …`, `use ::runtime_core::…`)
                 // but can never be a path segment, so they do NOT
                 // suppress the rewrite.
-                let prev_is_segment = matches!(
-                    out.last(),
-                    Some(TokenTree::Ident(prev)) if !is_non_segment_keyword(&prev.to_string())
-                );
-                if !prev_is_segment
-                    && p1.as_char() == ':'
+                //
+                // Order matters for cost: `as_char` and `spacing` are
+                // free, while comparing an `Ident` to a string and
+                // `to_string()` on the previous one each allocate —
+                // inside a real proc-macro server they are round trips
+                // to the compiler. They run only once the cheap checks
+                // have established this really is `::runtime_core`.
+                if p1.as_char() == ':'
                     && p1.spacing() == Spacing::Joint
                     && p2.as_char() == ':'
                     && id == "runtime_core"
+                    && !matches!(
+                        out.last(),
+                        Some(TokenTree::Ident(prev)) if !is_non_segment_keyword(&prev.to_string())
+                    )
                 {
                     let span = id.span();
                     out.push(tokens[i].clone());
