@@ -178,7 +178,9 @@ signature; the rule values land only inside `<name>_style()`'s body and in
 string literals in the builder's methods. So `shape_of` blanks the
 contents of every rules block (the brace group right after a
 parenthesized binding: `base(t) { … }`, `small(t) { … }`,
-`state hovered(t) { … }`) and keeps the rest. On the running page the
+`state hovered(t) { … }`) and the whole `transitions { … }` block (its
+entries become `*_transition` values in the base rules, with no item per
+entry), and keeps the rest. On the running page the
 patched `<name>_style()` keys the stylesheet cache by the address of its
 own function-local `static`, which the patch defines anew, so it builds
 the sheet with the new rules instead of reusing the old one.
@@ -204,8 +206,9 @@ A decision table, by example:
 | Add or rename any item | Rebuild |
 | Change a `const` / `static` initializer | Rebuild |
 | Change an attribute or a doc comment | Rebuild |
-| A rule VALUE inside `stylesheet! { … }` (a number, a token, a rule added or removed in a block) | Hot patch |
-| A `stylesheet!` signature: its name or vocabulary, an axis, an arm name, a `#[default]`, an `override`, a `state`/`breakpoint`/`container`/`compound` key, anything in `transitions` | Rebuild |
+| A rule VALUE inside `stylesheet! { … }` (a number, a token, a rule added or removed in any block, including `state`/`breakpoint`/`container`/`compound` blocks) | Hot patch |
+| Anything in a `stylesheet!`'s `transitions { … }` (a duration, an easing, an entry added or removed) | Hot patch |
+| A `stylesheet!` signature: its name or vocabulary, an axis, an arm name, a `#[default]`, an `override`, a `state`/`breakpoint` key, a `container` threshold, a `compound` condition | Rebuild |
 | Any `stylesheet!` edit in a premint session (`dev --premint`) | Rebuild |
 | Edit a file outside the app crate | Rebuild |
 

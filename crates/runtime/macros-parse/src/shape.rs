@@ -65,8 +65,13 @@
 //! [`blank_stylesheet_values`] blanks exactly that: the contents of every
 //! rules block, which is always the brace group right after a
 //! parenthesized binding (`base(t) { … }`, `small(t) { … }`,
-//! `state hovered(t) { … }`). Structural braces follow an identifier or
-//! `>` and are kept. `transitions { … }` is kept whole, conservatively.
+//! `state hovered(t) { … }`), and the `transitions { … }` block, whose
+//! entries become `*_transition` VALUES in the base `StyleRules` literal
+//! (`emit_rules_struct_with_transitions`) with no type, setter or enum per
+//! entry — so a changed duration or easing, or an added or removed entry,
+//! is a body edit too. Other structural braces follow an identifier or `>`
+//! and are kept, as are the keys in parentheses: which state or
+//! breakpoint, a container's threshold, a compound's axis/value pairs.
 //!
 //! A premint session bakes that class-name hash into a stylesheet built
 //! at session start, so there a value edit must still rebuild; see
@@ -121,7 +126,7 @@ fn blank_stylesheet_values(tokens: proc_macro2::TokenStream) -> proc_macro2::Tok
         let after_parens = matches!(
             out.last(),
             Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis
-        );
+        ) || matches!(out.last(), Some(TokenTree::Ident(i)) if i == "transitions");
         match tt {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Brace && after_parens => {
                 out.push(TokenTree::Group(Group::new(
@@ -341,8 +346,10 @@ mod tests {
     "#;
 
     /// The point of the stylesheet blanking: a VALUE edit — a number, a
-    /// token path, an added rule — is body-only, so it can be a hot
-    /// patch instead of a rebuild.
+    /// token path, an added rule, a transition's duration or easing, an
+    /// added or removed transition — is body-only, so it can be a hot
+    /// patch instead of a rebuild. (Regression: transitions were first
+    /// kept as shape, so a transition tweak still rebuilt.)
     #[test]
     fn a_stylesheet_value_edit_is_body_only() {
         let src = format!("{BASE}\n{SHEET}");
@@ -352,6 +359,14 @@ mod tests {
             ("border_width: 2", "border_width: 3, opacity: 0.5"),
             ("breakpoint md(_t) { padding: 16 }", "breakpoint md(_t) { padding: 24 }"),
             ("state hovered(t) { background: t.color.hover() }", "state hovered(t) { }"),
+            // Transitions are values folded into the base rules.
+            ("background: 150ms ease_out", "background: 600ms ease_out"),
+            ("background: 150ms ease_out", "background: 150ms ease_in"),
+            (
+                "transitions { background: 150ms ease_out }",
+                "transitions { background: 150ms ease_out padding: 200ms linear }",
+            ),
+            ("transitions { background: 150ms ease_out }", "transitions { }"),
         ] {
             let edited = src.replace(from, to);
             assert_ne!(src, edited, "fixture did not contain {from}");
@@ -373,7 +388,6 @@ mod tests {
             ("pub Banner<", "pub Ribbon<"),
             ("state hovered(t)", "state pressed(t)"),
             ("breakpoint md(_t)", "breakpoint lg(_t)"),
-            ("background: 150ms", "background: 300ms"),
         ] {
             let edited = src.replace(from, to);
             assert_ne!(src, edited, "fixture did not contain {from}");
