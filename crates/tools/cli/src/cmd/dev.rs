@@ -791,10 +791,21 @@ pub fn run(args: Args) -> Result<()> {
         children.lock().unwrap().push(child);
 
         // Block until the host writes its bound port. Every platform
-        // launcher needs this to bake `IDEALYST_DEV_ENDPOINT`. 10s is
-        // generous — `TcpListener::bind` returns synchronously, so
-        // the port lands as soon as the host's runtime is up.
-        match read_host_port_file(&port_file, std::time::Duration::from_secs(10)) {
+        // launcher needs this to bake `IDEALYST_DEV_ENDPOINT`.
+        //
+        // 10s used to be "generous — `TcpListener::bind` returns
+        // synchronously". That was true when the host bound first and
+        // did nothing else. It now parses the sidecar binary's symbol
+        // table for the hot-patch cache and scans the crate's `ui!`
+        // sites for the overlay tier BEFORE it binds, and both scale
+        // with the app. On CrewForge they exceeded ten seconds, and the
+        // session died claiming the host had crashed — while the host
+        // was busy, and wrote its port a moment later.
+        //
+        // Sixty seconds, because the failure this guards against is a
+        // host that never starts at all, and waiting a minute to say so
+        // costs nothing next to killing a session that was working.
+        match read_host_port_file(&port_file, std::time::Duration::from_secs(60)) {
             Some(port) => {
                 crate::dlog!("dev", "runtime-server bound port = {}", port);
                 Some(port)
@@ -802,7 +813,7 @@ pub fn run(args: Args) -> Result<()> {
             None => {
                 anyhow::bail!(
                     "runtime-server host never wrote its port to {} \
-                     within 10s — the host process likely crashed at startup",
+                     within 60s — the host process likely crashed at startup",
                     port_file.display(),
                 );
             }

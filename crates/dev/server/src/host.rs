@@ -316,7 +316,16 @@ pub fn run(
         }
     }
 
+    // Startup phases are logged with their cost: both scale with the
+    // app, both happen before the listener binds, and when the CLI's
+    // wait for the port file expires this is the only way to tell a
+    // busy host from a hung one.
+    let t_adapter = std::time::Instant::now();
     let hot_patch = hot_patch.map(Arc::new);
+    eprintln!(
+        "[runtime-server-host] hot-patch adapter ready in {}ms",
+        t_adapter.elapsed().as_millis()
+    );
     if hot_patch.is_none() {
         eprintln!(
             "[runtime-server-host] hot-patch adapter unavailable — file changes will trigger \
@@ -355,7 +364,13 @@ pub fn run(
     // stale, no build key to agree on, and nothing another session can
     // overwrite underneath us.
     let mut overlay_archive: Option<dev_overlay::DescriptorSet> = None;
+    let t_scan = std::time::Instant::now();
     rescan_archive(&mut overlay_archive, overlay_crate_dir.as_deref());
+    eprintln!(
+        "[runtime-server-host] scanned {} `ui!` site(s) in {}ms",
+        overlay_archive.as_ref().map(|a| a.sites.len()).unwrap_or(0),
+        t_scan.elapsed().as_millis()
+    );
     if overlay_archive.is_none() {
         eprintln!(
             "[runtime-server-host] could not scan this crate's `ui!` sites — every save \
