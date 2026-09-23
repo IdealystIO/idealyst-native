@@ -68,50 +68,20 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<Vec<u8>> {
     let mut promote: Vec<FunctionId> = Vec::new();
     let mut exported: HashSet<String> = HashSet::new();
 
-    // wasm-bindgen synthesizes an import for every call into JS — that
-    // is what an `extern "wbg"` block is — and then deletes the ones it
-    // thinks are unused. A patch calling one would find nothing, so copy
-    // each into a trampoline under a name the deletion pass does not
-    // match, and export THAT.
-    let wbg_imports: Vec<_> = module
-        .imports
-        .iter()
-        .filter_map(|i| match i.kind {
-            ImportKind::Function(func) if is_wbg_intrinsic(&i.name) => {
-                Some((func, i.name.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-    for (imported, name) in wbg_imports {
-        let saved = format!("__saved_wbg_{name}");
-        if !exported.insert(saved.clone()) {
-            continue;
-        }
-        let trampoline = call_through(&mut module, imported, &saved);
-        module.exports.add(&saved, trampoline);
-        promote.push(trampoline);
-    }
-
-    // Local `__wbindgen*` functions are deleted by the same name-match,
-    // so they get an alias export too. They already exist, so there is
-    // nothing to build — only a second name to reach them by.
-    let wbindgen_locals: Vec<_> = module
-        .funcs
-        .iter()
-        .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
-        .filter_map(|f| {
-            let name = f.name.as_deref()?;
-            (name.starts_with("__wbindgen") && !descriptor_side.contains(&f.id()))
-                .then(|| (f.id(), name.to_string()))
-        })
-        .collect();
-    for (id, name) in wbindgen_locals {
-        let saved = format!("__saved_wbg_{name}");
-        if exported.insert(saved.clone()) {
-            module.exports.add(&saved, id);
-        }
-    }
+    // NOTE: no `__saved_wbg_` alias exports. An earlier version added
+    // one per `__wbindgen*` function so a patch could import it by that
+    // name, and it broke the page: wasm-bindgen deletes the original
+    // `__wbindgen_exn_store` export, then looks up "the export name for
+    // this function" to generate its JS — and found OUR alias, emitting
+    //
+    //     wasm.__saved_wbg___wbindgen_exn_store.command_export(idx)
+    //
+    // which is not a function and threw on the first handled error, mid
+    // boot. The table is the right place for these, exactly as it is for
+    // everything else: `hotpatch_patch` resolves a patch's
+    // `__wbindgen_placeholder__` import through the base's table under
+    // the function's own name, with no second name for wasm-bindgen to
+    // trip over.
 
     // And now the main event: every local function that is not already
     // reachable through the table gets a slot, so wasm-bindgen's GC
@@ -417,20 +387,26 @@ mod tests {
         );
     }
 
-    /// wasm-bindgen deletes `__wbindgen*` by name-match, used or not.
-    /// The alias is how a patch still reaches one.
+    /// Regression: NO alias export. An earlier version added
+    /// `__saved_wbg_<name>` per `__wbindgen*` function so a patch could
+    /// import it by that name. wasm-bindgen deletes the original
+    /// `__wbindgen_exn_store` export, then looks up "the export name for
+    /// this function" to generate its JS — and found the alias, emitting
+    /// `wasm.__saved_wbg___wbindgen_exn_store.command_export(idx)`,
+    /// which is not a function. The page threw on its first handled
+    /// error, mid boot.
+    ///
+    /// The table is where these belong, like everything else.
     #[test]
-    fn a_wbindgen_intrinsic_gets_an_alias_export_bindgen_will_not_delete() {
+    fn regression_a_wbindgen_intrinsic_gets_no_alias_export() {
         let mut module = Module::default();
-        module
+        let table = module
             .tables
             .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
         let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-        builder.name("__wbindgen_throw".to_string()).func_body();
+        builder.name("__wbindgen_exn_store".to_string()).func_body();
         let id = module.funcs.add_local(builder.local_func(vec![]));
-        module.exports.add("__wbindgen_throw", id);
-        // Give it a segment to append to.
-        let table = module.tables.iter().next().unwrap().id();
+        module.exports.add("__wbindgen_exn_store", id);
         module.elements.add(
             ElementKind::Active {
                 table,
@@ -442,12 +418,14 @@ mod tests {
         let out = prepare_base_module(&module.emit_wasm()).unwrap();
         let module = Module::from_buffer(&out).unwrap();
         assert!(
-            module
-                .exports
-                .iter()
-                .any(|e| e.name == "__saved_wbg___wbindgen_throw"),
-            "no alias among {:?}",
+            !module.exports.iter().any(|e| e.name.starts_with("__saved_wbg_")),
+            "an alias export makes wasm-bindgen generate the wrong accessor: {:?}",
             module.exports.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
+        assert!(
+            table_entries(&out).contains(&"__wbindgen_exn_store".to_string()),
+            "it still has to be reachable through the table: {:?}",
+            table_entries(&out)
         );
     }
 

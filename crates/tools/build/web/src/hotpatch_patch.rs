@@ -180,7 +180,6 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
             // provide. `hotpatch_base` kept each intrinsic alive under
             // `__saved_wbg_<name>`; point at that instead.
             "__wbindgen_placeholder__" | "__wbindgen_externref_xform__" => {
-                let saved = format!("__saved_wbg_{name}");
                 if crate::hotpatch_base::is_bindgen_internal(&name) {
                     // A descriptor symbol. wasm-bindgen interprets these
                     // at bindgen time and deletes them, so the base has
@@ -201,18 +200,18 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
                             "{namespace}.{name} (a descriptor symbol that is not a function)"
                         ));
                     }
-                } else if base.exports.contains(&saved) {
-                    let import = module.imports.get_mut(id);
-                    import.module = "env".to_string();
-                    import.name = saved;
                 } else if let (Some(index), ImportKind::Function(func)) =
-                    (base.ifunc.get(&saved), kind)
+                    (base.ifunc.get(&name), kind)
                 {
+                    // The base has the function itself, reachable through
+                    // its table because `hotpatch_base` rooted it there.
                     module.imports.delete(id);
-                    call_through_table(&mut module, table, func, *index, &saved)?;
+                    call_through_table(&mut module, table, func, *index, &name)?;
                 } else {
                     unresolved.push(format!(
-                        "{namespace}.{name} (the base kept no __saved_wbg_ alias for it)"
+                        "{namespace}.{name} (the base has no function of that name in its \
+                         table — if it is a raw JS shim it exists only as an import there, \
+                         and a patch cannot reach it)"
                     ));
                 }
             }
@@ -554,20 +553,31 @@ mod tests {
     }
 
     /// wasm-bindgen never runs on a patch, so its namespace has no
-    /// provider at instantiation. The base kept each intrinsic alive
-    /// under `__saved_wbg_<name>` precisely so this can point at it.
+    /// provider at instantiation. The base has the function itself in
+    /// its table — `hotpatch_base` rooted it there — so the import
+    /// becomes a call through that slot.
     #[test]
-    fn a_wasm_bindgen_placeholder_is_repointed_at_the_saved_alias() {
-        let patch = patch_module(&[("__wbindgen_placeholder__", "__wbg_log_51db52")]);
-        let base = base_with(&[], &["__saved_wbg___wbg_log_51db52"], &[]);
+    fn a_wasm_bindgen_placeholder_is_called_through_the_base_table() {
+        let patch = patch_module(&[("__wbindgen_placeholder__", "__wbindgen_exn_store")]);
+        let base = base_with(&[("__wbindgen_exn_store", 91)], &[], &[]);
         let out = resolve_against_base(&patch, &base).unwrap();
-        assert_eq!(
+        assert!(
+            !imports_of(&out).iter().any(|i| i.contains("placeholder")),
+            "{:?}",
             imports_of(&out)
-                .iter()
-                .filter(|i| i.contains("wbg_log"))
-                .collect::<Vec<_>>(),
-            vec!["env.__saved_wbg___wbg_log_51db52"],
         );
+    }
+
+    /// A raw JS shim exists only as an IMPORT in the base, so there is no
+    /// slot to call through and no honest way to fake one. Say which
+    /// symbol forced the rebuild.
+    #[test]
+    fn a_js_shim_the_base_only_imports_is_an_error_naming_it() {
+        let patch = patch_module(&[("__wbindgen_placeholder__", "__wbg_log_51db52")]);
+        let err = resolve_against_base(&patch, &base_with(&[], &[], &[])).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("__wbg_log_51db52"), "{message}");
+        assert!(message.contains("raw JS shim"), "{message}");
     }
 
     /// wasm-ld takes a function's address through a GOT global under
