@@ -54,8 +54,9 @@ pub trait ThemeTokens: Any {
 /// Cloneable, identity-comparable wrapper for the stashed theme.
 /// World signals require `PartialEq` (the kernel's equality cut), which
 /// `Rc<dyn Any>` lacks; pointer identity is the honest comparison for
-/// "same theme object". Swaps go through `set_always`, so the eq impl
-/// never suppresses a re-install notification.
+/// "same theme object". Swaps write in place and `touch` (see
+/// `store_active_theme`), so the eq impl never suppresses a re-install
+/// notification.
 #[derive(Clone)]
 pub(crate) struct ThemeSlot(pub(crate) Rc<dyn Any>);
 
@@ -165,10 +166,25 @@ pub fn install_theme<T: ThemeTokens + 'static>(theme: T) {
 /// per-install leak across repeated installs).
 fn store_active_theme(rc: Rc<dyn Any>) {
     if let Some(sig) = active_slot::current() {
-        // `set_always`: a theme re-install must notify even if the same
-        // Rc is re-stored (and `ThemeSlot`'s ptr-eq must never suppress
-        // a swap).
-        sig.set_always(ThemeSlot(rc));
+        // Written in place, then `touch`ed — NOT staged with `set_always`.
+        //
+        // A staged write stays invisible until the owning world flushes,
+        // and the theme is read right after it is (re)installed: a hot
+        // patch's rebuild re-runs the app entry, which re-installs the
+        // theme and then builds every component body against it in the
+        // same turn; an embedded sub-app installs its theme while building
+        // inside its screen. Those bodies read `active_theme()` untracked
+        // (`component_scope` runs untracked), so with a staged write they
+        // got the PREVIOUS theme for good — nothing re-delivers a value to
+        // an untracked read — and the kernel's staged-read diagnostic said
+        // so on every hot patch. `set_untracked` makes the new theme the
+        // committed value now; `touch` still wakes every subscriber at the
+        // next flush, even when the same `Rc` is re-stored (`ThemeSlot`'s
+        // ptr-eq must never suppress a swap). This fn is the slot's only
+        // writer, so no older staged value can overwrite it at commit.
+        // Pinned by `regression_reinstall_is_visible_to_a_read_in_the_same_turn`.
+        sig.set_untracked(ThemeSlot(rc));
+        sig.touch();
         return;
     }
     let sig = runtime_core::unscope(|| runtime_core::signal(ThemeSlot(rc)));
@@ -438,7 +454,7 @@ mod tests {
     }
 
     /// The docs-shell dark-theme-button crash: the whole swap surface —
-    /// `set_theme` → slot `set_always` + token/host-surface forwarding —
+    /// `set_theme` → slot write + token/host-surface forwarding —
     /// used to be ambient-only (`inject` from the world context), and
     /// platform event handlers run OUTSIDE `World::enter`, so the first
     /// theme swap aborted "signal()/effect() called outside
@@ -464,6 +480,42 @@ mod tests {
                 .name
         });
         assert_eq!(name, "dark", "handler swap committed on flush");
+    }
+
+    /// Regression (hot-patch rebuild, staged-read warning at
+    /// `active_theme`): a re-install used to STAGE the new theme, so a read
+    /// in the same turn — the rebuilt component bodies, which run untracked
+    /// — got the previous theme and kept it. The re-installed theme must be
+    /// what the very next read returns, and a subscriber must still be
+    /// woken at the flush.
+    #[test]
+    fn regression_reinstall_is_visible_to_a_read_in_the_same_turn() {
+        use std::cell::Cell;
+        let world = runtime_core::__World::new();
+        world.enter(|| install_theme(TestTheme { name: "old" }));
+        world.flush();
+
+        let runs = Rc::new(Cell::new(0u32));
+        let runs_in = runs.clone();
+        let _sub = world.enter(|| {
+            runtime_core::watch(move || {
+                let _ = active_theme();
+                runs_in.set(runs_in.get() + 1);
+            })
+        });
+        let before = runs.get();
+
+        let name = world.enter(|| {
+            install_theme(TestTheme { name: "new" });
+            active_theme()
+                .downcast_ref::<TestTheme>()
+                .expect("stashed theme keeps its concrete type")
+                .name
+        });
+        assert_eq!(name, "new", "a read right after the re-install sees it");
+
+        world.flush();
+        assert_eq!(runs.get(), before + 1, "the flush still wakes subscribers");
     }
 
     /// Regression test for the `INSTALL_THEMES_KEEPALIVE` Vec growth audit
