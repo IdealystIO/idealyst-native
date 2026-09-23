@@ -260,6 +260,61 @@ enough to trigger it. The consequence is that a patch referencing a
 function rustc never codegened fails to link — which is loud, and falls
 back to a rebuild.
 
+### What the base module has to survive
+
+Rooting every function in the element table is what makes the tier work,
+and it drags three wasm-bindgen behaviours along with it. Each cost a
+non-booting page before it was understood, so each is worth naming.
+
+**wasm-bindgen's descriptor imports.** Keeping every function alive keeps
+the descriptor machinery alive, and wasm-bindgen emits no JS binding for
+the `__wbindgen_placeholder__.__wbindgen_describe` it calls — the page
+dies with "Import #0 __wbindgen_placeholder__: module is not an object or
+function". Leaving the functions that reach it unrooted does not work:
+transitively that is a third of the module (`Closure::wrap` calls a
+`describe` function, so every event handler goes with it) and patches
+then fail to link against `<u32 as Display>::fmt`; one hop misses the
+survivors. So everything is rooted and the leftover import is given a
+local `unreachable` body afterwards. A descriptor function is never
+called at run time — wasm-bindgen has already read what it describes — so
+the trap is unreachable, and loud if it ever is not.
+
+**No alias exports.** An earlier design exported each `__wbindgen*`
+function a second time as `__saved_wbg_<name>` so a patch could import it.
+wasm-bindgen deletes the ORIGINAL export and then looks up "the export
+name for this function" to generate its JS, found the alias, and emitted
+`wasm.__saved_wbg___wbindgen_exn_store.command_export(idx)` — not a
+function. Every handled error threw, during boot. The table is the single
+mechanism; a patch reaches these through their slot.
+
+**walrus 0.26.** wasm-bindgen's catch-wrapper transform emits real
+exception handling once its machinery is kept alive, and walrus 0.23's
+parser has no `EXCEPTIONS` feature — the next pass could not read the
+module at all. 0.26 parses with `WasmFeatures::default()`, and is the
+version wasm-bindgen itself uses.
+
+### The app root has to be a `#[component]`
+
+A jump table redirects a function by its slot in
+`__indirect_function_table`, and only a function whose address something
+took has one. `#[component]` takes it — that is what the
+`__<Name>_hot_impl` split is for.
+
+A root written as a plain `pub fn app()` has no slot, so it cannot be
+redirected, and nothing below it is reached through the patch either: the
+patch holds a fresh copy of the whole crate, but only a redirected
+function is ever entered. Keep `app()` thin and put the tree in a
+component:
+
+```rust
+#[component]
+fn Root() -> Element { /* … */ }
+
+pub fn app() -> Element {
+    ui! { Root() }
+}
+```
+
 ### The jump table is indices, not addresses
 
 A native entry pairs two addresses. A wasm entry pairs two
