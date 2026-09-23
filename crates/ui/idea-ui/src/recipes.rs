@@ -286,6 +286,12 @@ recipe!(
     }
 );
 
+// `Table` is behind the `table` feature (it pulls the table SDK), and
+// `recipe!` only self-gates on `catalog`. Without this gate a build with
+// `catalog` on and `table` off — `default-features = false` in a consumer
+// that runs `idealyst dev`, which enables the catalog — failed to compile
+// idea-ui at all (`unresolved imports crate::Table`).
+#[cfg(feature = "table")]
 recipe!(
     Table,
     /// A themed data table: a header row (cells with `header = true`)
