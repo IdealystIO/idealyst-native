@@ -38,9 +38,8 @@
 //!
 //! **A `__wbindgen_placeholder__` import.** That namespace is
 //! wasm-bindgen's, and wasm-bindgen never runs on a patch — wasm-ld
-//! links it directly. `hotpatch_base` preserved each intrinsic as
-//! `__saved_wbg_<name>`, so the import is re-pointed at `env` under that
-//! name.
+//! links it directly. The function itself is in the base's table like
+//! every other, so the import becomes a call through its slot.
 //!
 //! **`GOT.func.<sym>`.** wasm-ld's PIC output takes a function's address
 //! through a GOT global rather than a relocation. The value it wants is
@@ -177,8 +176,8 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
             },
 
             // wasm-bindgen's namespace, which the runtime does not
-            // provide. `hotpatch_base` kept each intrinsic alive under
-            // `__saved_wbg_<name>`; point at that instead.
+            // provide. The function is in the base's table like every
+            // other, so the import becomes a call through its slot.
             "__wbindgen_placeholder__" | "__wbindgen_externref_xform__" => {
                 if crate::hotpatch_base::is_bindgen_internal(&name) {
                     // A descriptor symbol. wasm-bindgen interprets these

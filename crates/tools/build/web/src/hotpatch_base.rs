@@ -32,11 +32,10 @@
 //! dioxus's `dx` uses, and it sidesteps wasm-bindgen's export-count
 //! ceiling at the same time (emscripten#22863).
 //!
-//! The second job is wasm-bindgen's intrinsics. wasm-bindgen deletes
-//! anything named `__wbindgen*` by name-match, whether or not it is
-//! used, so a patch that calls one finds nothing to import. We copy each
-//! into a trampoline named `__saved_wbg_<name>` — a name the deletion
-//! pass does not match — and promote that.
+//! The table is also how a patch reaches wasm-bindgen's own intrinsics.
+//! Giving them a second export name to import by was tried and broke the
+//! page — see [`prepare_base_module`]'s note — so there is one mechanism
+//! here, not two.
 //!
 //! # Cost, and why it is dev-only
 //!
