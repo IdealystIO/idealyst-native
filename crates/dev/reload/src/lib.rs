@@ -127,10 +127,34 @@ pub struct ReloadSignal {
     /// The session's full event stream, served at `dev_http`'s
     /// `/__idealyst/events` by whichever server holds this signal.
     events: Mutex<Option<Arc<dev_events::broadcast::Broadcast>>>,
-    /// Serializes generation bumps ([`Self::bump_after`]). Separate from
-    /// `notify`: the callback emits events, and a page sink's push takes
-    /// `notify` itself.
+    /// Serializes generation bumps ([`Self::bump_after`]) and the release
+    /// of the last reload hold. Separate from `notify`: the callback emits
+    /// events, and a page sink's push takes `notify` itself.
     bumping: Mutex<()>,
+    /// Outstanding reload holds ([`Self::hold_reloads`]), and the
+    /// generation a bump made while one was outstanding — published when
+    /// the last hold is released.
+    held: Mutex<Held>,
+}
+
+#[derive(Default)]
+struct Held {
+    count: usize,
+    pending: Option<u64>,
+}
+
+/// Keeps a [`ReloadSignal`]'s generation where it is until dropped: a
+/// rebuild that finishes meanwhile is reported, but pages are told to
+/// reload only when the last hold goes. See [`ReloadSignal::hold_reloads`].
+#[must_use = "the hold is released when this is dropped"]
+pub struct ReloadHold {
+    signal: Arc<ReloadSignal>,
+}
+
+impl Drop for ReloadHold {
+    fn drop(&mut self) {
+        self.signal.release_hold();
+    }
 }
 
 /// What reaches the watch loop: a batch of file events, or a request to
@@ -248,14 +272,71 @@ impl ReloadSignal {
     /// the moment it sees the generation move) can never precede the
     /// report of the build that moved it. Bumpers are serialized, so the
     /// generation `before` is told is the one that is published.
+    ///
+    /// While a reload hold is outstanding ([`Self::hold_reloads`]) the new
+    /// generation is reported to `before` but not published: it is
+    /// published when the last hold is released, and bumps made meanwhile
+    /// fold into that one.
     pub fn bump_after(&self, before: impl FnOnce(u64)) -> u64 {
         let _serial = self.bumping.lock().unwrap();
-        let new = self.gen.load(Ordering::Acquire) + 1;
+        let new = {
+            let held = self.held.lock().unwrap();
+            held.pending.unwrap_or_else(|| self.gen.load(Ordering::Acquire)) + 1
+        };
+        // Not under `held`: `before` emits events, and a sink may be slow.
+        // A hold taken meanwhile is still honoured below; a release waits
+        // on `bumping`, which this holds.
         before(new);
-        self.gen.store(new, Ordering::Release);
+        let mut held = self.held.lock().unwrap();
+        if held.count > 0 {
+            held.pending = Some(new);
+            return new;
+        }
+        drop(held);
+        self.publish(new);
+        new
+    }
+
+    fn publish(&self, gen: u64) {
+        self.gen.store(gen, Ordering::Release);
         let _g = self.notify.0.lock().unwrap();
         self.notify.1.notify_all();
-        new
+    }
+
+    /// Hold pages' reloads until the returned guard is dropped.
+    ///
+    /// The full-stack dev loop's reason to exist: its page is served by
+    /// the project's own server. When one save rebuilds both the bundle
+    /// and the server (an edit to a crate both depend on), the bundle is
+    /// usually done first, and a page told to reload right then reloads
+    /// onto the OLD server — which the loop kills moments later to start
+    /// the new one, so the page either loads against a server that no
+    /// longer matches it or hits a closed port mid-restart. The server's
+    /// build takes a hold when it starts and the loop drops it once the
+    /// restarted server accepts connections: the page reloads once, after
+    /// both halves are ready. A rebuild that finished meanwhile is still
+    /// reported (its row says so); only the reload waits.
+    pub fn hold_reloads(self: &Arc<Self>) -> ReloadHold {
+        self.held.lock().unwrap().count += 1;
+        ReloadHold { signal: self.clone() }
+    }
+
+    /// Whether a reload hold is outstanding.
+    pub fn reloads_held(&self) -> bool {
+        self.held.lock().unwrap().count > 0
+    }
+
+    fn release_hold(&self) {
+        let _serial = self.bumping.lock().unwrap();
+        let mut held = self.held.lock().unwrap();
+        held.count = held.count.saturating_sub(1);
+        if held.count > 0 {
+            return;
+        }
+        if let Some(gen) = held.pending.take() {
+            drop(held);
+            self.publish(gen);
+        }
     }
 
     /// The patch sequence a listener has caught up to.
@@ -1637,13 +1718,24 @@ where
             });
 
             while let Ok(events) = rx.recv() {
-                drain(&rx);
-                if events.is_err() {
+                let mut batches = vec![events];
+                batches.extend(drain(&rx));
+                if batches.iter().all(|b| b.is_err()) {
                     continue;
                 }
-                // This watcher re-runs one whole-directory sync, so which
-                // files the folded batches named does not matter.
-                let folded = settle(&rx).len();
+                let settled = settle(&rx);
+                let folded = settled.len();
+                batches.extend(settled);
+                // The callback re-runs one whole build, so the paths do not
+                // steer it; they are what a status view shows as the save
+                // (the full-stack server's row, the page's badge).
+                let paths: Vec<PathBuf> = batches.iter().flat_map(event_paths).collect();
+                reporter.emit(dev_events::DevEvent::ChangeDetected {
+                    target: label.into(),
+                    paths: display_all(&saved_paths(&paths)),
+                    crates: Vec::new(),
+                    folded,
+                });
                 reporter.emit(dev_events::DevEvent::BuildStarted {
                     target: label.into(),
                     cause: dev_events::BuildCause::Save { folded },
@@ -2159,6 +2251,113 @@ mod tests {
         assert_eq!(seen_during.get(), Some((1, 0)));
         assert_eq!((gen, signal.current()), (1, 1));
         assert_eq!(signal.bump(), 2);
+    }
+
+    /// Regression (full-stack reload race): a save that rebuilt both the
+    /// bundle and the project's server told the page to reload the moment
+    /// the bundle was done — onto the OLD server, which the loop then
+    /// killed to start the new one, so the page loaded against a server
+    /// that no longer matched it or hit a closed port mid-restart. With a
+    /// hold outstanding the rebuild is still reported, but the generation
+    /// pages see moves once, when the hold goes.
+    #[test]
+    fn regression_a_reload_waits_for_the_server_hold_and_happens_once() {
+        let signal = ReloadSignal::new();
+        signal.set(1);
+        let hold = signal.hold_reloads();
+        assert!(signal.reloads_held());
+        let reported = std::cell::RefCell::new(Vec::new());
+        // Two bundle rebuilds land while the server is still building.
+        signal.bump_after(|gen| reported.borrow_mut().push(gen));
+        signal.bump_after(|gen| reported.borrow_mut().push(gen));
+        assert_eq!(*reported.borrow(), vec![2, 3], "each rebuild is reported as it finishes");
+        assert_eq!(signal.current(), 1, "no page is told to reload while the server is held");
+        assert_eq!(signal.wait_past(1, Duration::from_millis(20)), 1);
+        drop(hold);
+        assert!(!signal.reloads_held());
+        assert_eq!(signal.current(), 3, "one reload, to the newest bundle, once the hold goes");
+        // Unheld, a bump publishes at once again.
+        assert_eq!(signal.bump(), 4);
+        assert_eq!(signal.current(), 4);
+    }
+
+    /// Two holds (a server rebuild started while the previous restart
+    /// was still waiting for its port): the reload waits for both.
+    #[test]
+    fn nested_reload_holds_release_on_the_last() {
+        let signal = ReloadSignal::new();
+        let a = signal.hold_reloads();
+        let b = signal.hold_reloads();
+        signal.bump();
+        drop(a);
+        assert_eq!(signal.current(), 0);
+        drop(b);
+        assert_eq!(signal.current(), 1);
+        // A hold with nothing pending publishes nothing.
+        drop(signal.hold_reloads());
+        assert_eq!(signal.current(), 1);
+    }
+
+    /// A release on another thread wakes a page's stream that is waiting
+    /// on the generation — the SSE writer blocks in `wait_past_either`.
+    #[test]
+    fn releasing_a_hold_wakes_waiters() {
+        let signal = ReloadSignal::new();
+        let hold = signal.hold_reloads();
+        signal.bump();
+        let waiter = {
+            let signal = signal.clone();
+            std::thread::spawn(move || signal.wait_past(0, Duration::from_secs(10)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        drop(hold);
+        assert_eq!(waiter.join().unwrap(), 1);
+    }
+
+    /// The full-stack server's watcher reports each save it sees as a
+    /// `change_detected` (the saved files, without editor scratch files)
+    /// before the build it runs, so the server's row and the page's badge
+    /// can say what changed — it used to report only `build_started`.
+    #[test]
+    fn a_labelled_watcher_reports_the_change_before_its_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let _watch = start_watch(vec![src.clone()], ReloadSignal::new(), "server", reporter, move || {
+            let _ = built_tx.send(());
+            Ok(Rebuilt::Unchanged)
+        })
+        .unwrap();
+        // The watch is registered once `watching` is out.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while !seen.iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            seen.extend(events(&q));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(src.join(".main.rs.swp"), "x").unwrap();
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("the save ran the build");
+        std::thread::sleep(Duration::from_millis(100));
+        let evs = events(&q);
+        let change = evs
+            .iter()
+            .position(|e| matches!(e, dev_events::DevEvent::ChangeDetected { .. }))
+            .expect("a change_detected");
+        let started = evs
+            .iter()
+            .position(|e| matches!(e, dev_events::DevEvent::BuildStarted { .. }))
+            .expect("a build_started");
+        assert!(change < started, "{evs:?}");
+        let dev_events::DevEvent::ChangeDetected { target, paths, .. } = &evs[change] else {
+            unreachable!()
+        };
+        assert_eq!(target, "server");
+        assert!(paths.iter().any(|p| p.ends_with("main.rs")), "{paths:?}");
+        assert!(!paths.iter().any(|p| p.ends_with(".main.rs.swp")), "{paths:?}");
     }
 
     /// A save is reported by the files it saved, once each — not by the
