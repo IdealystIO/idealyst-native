@@ -222,13 +222,27 @@ fn install_overlay_patch_entry() {
     use wasm_bindgen::JsCast;
 
     let Some(window) = web_sys::window() else { return };
-    let apply = Closure::<dyn Fn(String)>::new(|json: String| {
-        if let Err(e) = overlay_patch(&json) {
-            web_sys::console::error_2(
-                &wasm_bindgen::JsValue::from_str("[idealyst] overlay patch failed"),
-                &e,
-            );
+    // Returns `{applied, refused}` — or `{error}` — so the page's reload
+    // script can report the outcome to the dev session (see
+    // `dev_http::ACK_URL`). A failure is still logged and swallowed, not
+    // thrown: the next rebuild carries the edit, and throwing would make
+    // the script reload a page that is otherwise fine.
+    let apply = Closure::<dyn Fn(String) -> wasm_bindgen::JsValue>::new(|json: String| {
+        let report = js_sys::Object::new();
+        match overlay_patch_counts(&json) {
+            Ok((applied, refused)) => {
+                let _ = js_sys::Reflect::set(&report, &"applied".into(), &(applied as f64).into());
+                let _ = js_sys::Reflect::set(&report, &"refused".into(), &(refused as f64).into());
+            }
+            Err(e) => {
+                web_sys::console::error_2(
+                    &wasm_bindgen::JsValue::from_str("[idealyst] overlay patch failed"),
+                    &e,
+                );
+                let _ = js_sys::Reflect::set(&report, &"error".into(), &e);
+            }
         }
+        report.into()
     });
     let _ = js_sys::Reflect::set(
         &window,
@@ -241,6 +255,13 @@ fn install_overlay_patch_entry() {
 #[cfg(feature = "ui-overlay")]
 #[wasm_bindgen::prelude::wasm_bindgen(js_name = __idealyst_overlay_patch)]
 pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
+    overlay_patch_counts(json).map(|_| ())
+}
+
+/// [`overlay_patch`], returning how many nodes the patch updated in place
+/// and how many wait for their site's next render.
+#[cfg(feature = "ui-overlay")]
+fn overlay_patch_counts(json: &str) -> Result<(usize, usize), wasm_bindgen::JsValue> {
     let patch: wire::WireOverlayPatch = serde_json::from_str(json)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("bad overlay patch: {e}")))?;
     let edits = patch.to_edits();
@@ -267,7 +288,7 @@ pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
                 "[idealyst] overlay patch: {} applied, {} waiting for the next render",
                 outcome.applied, outcome.refused
             )));
-            Ok(())
+            Ok((outcome.applied, outcome.refused))
         }
         None => Err(wasm_bindgen::JsValue::from_str(
             "no mounted app to patch",

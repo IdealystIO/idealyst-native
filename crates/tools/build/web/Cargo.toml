@@ -10,6 +10,11 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+# Every line the build prints is a dev-loop event: the cargo run is
+# captured and parsed into progress and diagnostics, and the stage
+# timings are typed. Callers that never pass a reporter get plain stderr,
+# which is what this crate printed before.
+dev-events = { workspace = true }
 build-ios = { workspace = true }
 # `--gzip` support for `idealyst build --web`. Writes the bundle's
 # files as gzipped bytes under their original filenames so a static

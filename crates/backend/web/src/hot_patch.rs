@@ -52,6 +52,26 @@ thread_local! {
     /// to run again. Dev-only storage — a release bundle never compiles
     /// this module.
     static ROOT: RefCell<Option<Rc<dyn Fn() -> Element>>> = const { RefCell::new(None) };
+    /// How many functions the last applied table redirected, for the ack
+    /// the rebuild sends once the tree is back.
+    static REDIRECTED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Report an outcome to the dev session through the page's reload script
+/// (`window.__idealyst_dev_ack`, published by `dev_http`'s script; see
+/// `dev_http::ACK_URL`). Absent — a page served some other way — the
+/// outcome stays in the console, as it always did.
+fn ack(fields: &[(&str, JsValue)]) {
+    let Some(window) = web_sys::window() else { return };
+    let Ok(f) = js_sys::Reflect::get(&window, &JsValue::from_str("__idealyst_dev_ack")) else {
+        return;
+    };
+    let Some(f) = f.dyn_ref::<js_sys::Function>() else { return };
+    let o = js_sys::Object::new();
+    for (k, v) in fields {
+        let _ = js_sys::Reflect::set(&o, &JsValue::from_str(k), v);
+    }
+    let _ = f.call1(&JsValue::NULL, &o);
 }
 
 /// Remember the app root and publish the page's entry point.
@@ -63,9 +83,24 @@ pub(crate) fn install(root: Rc<dyn Fn() -> Element>) {
 
     // Re-render after every successful patch, including ones applied by
     // something other than our own entry point.
-    dev_hot::register_handler(|| {
-        if let Err(e) = remount() {
+    dev_hot::register_handler(|| match remount() {
+        Ok(carried) => {
+            let mut fields = vec![
+                ("kind", JsValue::from_str("hot_patch")),
+                ("carried", JsValue::from_f64(carried as f64)),
+            ];
+            if let Some(n) = REDIRECTED.with(|r| r.take()) {
+                fields.push(("redirected", JsValue::from_f64(n as f64)));
+            }
+            ack(&fields);
+        }
+        Err(e) => {
             web_sys::console::error_2(&"[idealyst] hot patch: rebuild failed".into(), &e);
+            ack(&[
+                ("kind", JsValue::from_str("failed")),
+                ("what", JsValue::from_str("hot_patch")),
+                ("error", e),
+            ]);
         }
     });
 
@@ -100,9 +135,13 @@ pub fn apply_patch(url: &str, table_json: &str) {
     let mut table: subsecond_types::JumpTable = match serde_json::from_str(table_json) {
         Ok(t) => t,
         Err(e) => {
-            web_sys::console::error_1(
-                &format!("[idealyst] hot patch: unreadable jump table: {e}").into(),
-            );
+            let msg = format!("[idealyst] hot patch: unreadable jump table: {e}");
+            web_sys::console::error_1(&msg.as_str().into());
+            ack(&[
+                ("kind", JsValue::from_str("failed")),
+                ("what", JsValue::from_str("hot_patch")),
+                ("error", JsValue::from_str(&msg)),
+            ]);
             return;
         }
     };
@@ -118,8 +157,15 @@ pub fn apply_patch(url: &str, table_json: &str) {
     // SAFETY: the table's entries pair functions matched by identical
     // mangled name between the base and the patch, so their signatures
     // agree by construction. See `build_web::hotpatch_wasm`.
+    REDIRECTED.with(|r| r.set(Some(entries)));
     if let Err(e) = unsafe { dev_hot::apply_patch(table) } {
-        web_sys::console::error_1(&format!("[idealyst] hot patch: apply failed: {e}").into());
+        let msg = format!("[idealyst] hot patch: apply failed: {e}");
+        web_sys::console::error_1(&msg.as_str().into());
+        ack(&[
+            ("kind", JsValue::from_str("failed")),
+            ("what", JsValue::from_str("hot_patch")),
+            ("error", JsValue::from_str(&msg)),
+        ]);
         return;
     }
     web_sys::console::info_1(
@@ -133,7 +179,8 @@ pub fn apply_patch(url: &str, table_json: &str) {
 }
 
 /// Rebuild the tree against the patched code, carrying signal values.
-fn remount() -> Result<(), JsValue> {
+/// Returns how many values were carried.
+fn remount() -> Result<usize, JsValue> {
     let root = ROOT
         .with(|slot| slot.borrow().clone())
         .ok_or_else(|| JsValue::from_str("no app root stored — was the app mounted?"))?;
@@ -164,5 +211,5 @@ fn remount() -> Result<(), JsValue> {
     web_sys::console::info_1(
         &format!("[idealyst] hot patch: rebuilt, carrying {count} signal value(s)").into(),
     );
-    Ok(())
+    Ok(count)
 }

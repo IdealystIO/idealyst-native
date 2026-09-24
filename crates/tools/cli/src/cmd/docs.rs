@@ -149,6 +149,8 @@ pub fn run(args: Args) -> Result<()> {
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
             premint: false,
+            // Plain lines on stderr, as this command always printed.
+            reporter: dev_events::Reporter::default(),
         },
     )
     .context("build the docs web bundle")?;

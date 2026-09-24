@@ -30,7 +30,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use dev_reload::ReloadSignal;
+use dev_reload::{PatchKind, ReloadSignal};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 /// Wires the static server to a rebuild loop. When this is `Some`,
@@ -54,6 +54,32 @@ pub struct ReloadContext {
 /// thread can exit promptly.
 pub const RELOAD_SSE_URL: &str = "/__idealyst/reload";
 
+/// Where a page reports what it did with a pushed event: a `POST` whose
+/// body is one JSON `dev_events::PageAck` (`{"kind":"hot_patch",
+/// "redirected":3,"carried":12}`). Served beside [`RELOAD_SSE_URL`] on
+/// both servers, handed to [`ReloadSignal::page_ack`].
+///
+/// This is how the terminal learns a save LANDED rather than merely that
+/// it was sent: the facts used to exist only in the browser's console.
+/// The page posts with `navigator.sendBeacon` — a CORS "simple" request,
+/// so the cross-origin full-stack stream needs no preflight, and a
+/// beacon sent from a page that is about to reload still goes out.
+pub const ACK_URL: &str = "/__idealyst/ack";
+
+/// The session's whole event stream, as Server-Sent Events: one
+/// versioned JSON object per `data:` line — the same objects
+/// `idealyst dev --events-file` writes (schema: `idealyst dev
+/// --events-schema`). A subscriber first gets a snapshot of the session
+/// as it is now (see `dev_events::snapshot`), then every event live.
+/// Served with `Access-Control-Allow-Origin: *` on every dev server that
+/// has the stream, and on its own port by [`serve_events`] — the URL is
+/// in `<project>/.idealyst/events.url` — so an editor, a script, or
+/// another tab can subscribe with nothing but the port.
+pub const EVENTS_URL: &str = "/__idealyst/events";
+
+/// Largest ack body accepted. An ack is a few dozen bytes; anything near
+/// this is not an ack.
+const MAX_ACK_BYTES: u64 = 16 * 1024;
 /// Idle interval between SSE keepalive comments. The browser's
 /// `EventSource` will reconnect on its own if the TCP connection
 /// dies, so this only needs to be short enough to detect dead clients
@@ -147,6 +173,12 @@ pub struct HeadInjectionContext {
 /// whose bundle was built without the overlay has no entry point, so
 /// the patch is ignored and the next real rebuild carries the edit.
 ///
+/// And `dev-state` events — the session's build state (building, with
+/// progress; patched; failed, with the rustc errors), which the status
+/// overlay ([`STATUS_OVERLAY_JS`]) renders over the page. A page that
+/// connects gets the current state first, so one that loads after a
+/// failed build still shows the error.
+///
 /// And `hot-patch` events — a body edit, which needs new code rather
 /// than new data. The payload is `{url, table}`: where the patch module
 /// is served from, and a `subsecond_types::JumpTable` pairing the base's
@@ -158,14 +190,32 @@ pub struct HeadInjectionContext {
 /// the edit anyway. A hot patch that cannot be applied means the dev loop
 /// has ALREADY decided not to rebuild — so the page would sit there
 /// running code the source no longer describes. It reloads instead.
+///
+/// Every outcome is also reported back to [`ACK_URL`] (see there): the
+/// connect, a reload, an applied overlay patch with the applier's counts,
+/// and any failure. A hot patch applies asynchronously, so its ack comes
+/// from the bundle itself once the rebuilt tree is mounted — through
+/// `window.__idealyst_dev_ack`, which this script publishes.
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
   var baseline = null;
+  var ACK = "__ACK_URL__";
+  function ack(o) {
+    try {
+      var body = JSON.stringify(o);
+      if (!(navigator.sendBeacon && navigator.sendBeacon(ACK, body))) {
+        fetch(ACK, { method: "POST", body: body, keepalive: true }).catch(function () {});
+      }
+    } catch (_) {}
+  }
+  window.__idealyst_dev_ack = ack;
   var es = new EventSource("__SSE_URL__");
   es.onmessage = function (e) {
     if (baseline === null) {
       baseline = e.data;
+      ack({ kind: "connected", gen: Number(e.data) });
     } else if (e.data !== baseline) {
+      ack({ kind: "reloading", gen: Number(e.data) });
       location.reload();
     }
   };
@@ -173,12 +223,17 @@ const RELOAD_SCRIPT: &str = r#"<script>
     var apply = window.__idealyst_overlay_patch;
     if (typeof apply !== "function") {
       console.info("[idealyst] overlay patch ignored: this bundle has no overlay");
+      ack({ kind: "failed", what: "overlay", error: "this bundle has no overlay" });
       return;
     }
     try {
-      apply(e.data);
+      var r = apply(e.data);
+      ack(r && typeof r === "object"
+        ? { kind: "overlay", applied: r.applied, refused: r.refused }
+        : { kind: "overlay" });
     } catch (err) {
       console.error("[idealyst] overlay patch failed, reloading", err);
+      ack({ kind: "failed", what: "overlay", error: String(err) });
       location.reload();
     }
   });
@@ -186,6 +241,7 @@ const RELOAD_SCRIPT: &str = r#"<script>
     var apply = window.__idealyst_hot_patch;
     if (typeof apply !== "function") {
       console.info("[idealyst] hot patch ignored: this bundle has no patch applier");
+      ack({ kind: "failed", what: "hot_patch", error: "this bundle has no patch applier" });
       location.reload();
       return;
     }
@@ -194,6 +250,7 @@ const RELOAD_SCRIPT: &str = r#"<script>
       payload = JSON.parse(e.data);
     } catch (err) {
       console.error("[idealyst] hot patch: unreadable event, reloading", err);
+      ack({ kind: "failed", what: "hot_patch", error: "unreadable event" });
       location.reload();
       return;
     }
@@ -201,11 +258,25 @@ const RELOAD_SCRIPT: &str = r#"<script>
       apply(payload.url, JSON.stringify(payload.table));
     } catch (err) {
       console.error("[idealyst] hot patch failed, reloading", err);
+      ack({ kind: "failed", what: "hot_patch", error: String(err) });
       location.reload();
+    }
+  });
+__STATUS_OVERLAY__
+  var status = idealystStatusOverlay(document);
+  es.addEventListener("dev-state", function (e) {
+    try {
+      status.apply(JSON.parse(e.data));
+    } catch (err) {
+      console.warn("[idealyst] dev-state event not shown", err);
     }
   });
 })();
 </script>"#;
+
+/// The in-page build-state overlay, spliced into [`RELOAD_SCRIPT`]. See
+/// the file's header for what it shows and why it is plain JS.
+pub const STATUS_OVERLAY_JS: &str = include_str!("status_overlay.js");
 
 /// The livereload + overlay `<script>`, pointed at `sse_url`.
 ///
@@ -220,7 +291,103 @@ const RELOAD_SCRIPT: &str = r#"<script>
 /// port number today, but a `"` reaching it would close the string
 /// literal and leave the rest of the page's `<head>` executable.
 pub fn reload_script_tag(sse_url: &str) -> String {
-    RELOAD_SCRIPT.replace("__SSE_URL__", &sse_url.replace('\\', "\\\\").replace('"', "\\\""))
+    let escape = |u: &str| u.replace('\\', "\\\\").replace('"', "\\\"");
+    // The ack endpoint lives beside the stream, on whichever origin
+    // serves it — so it is derived from the stream's URL, absolute or not.
+    let ack = match sse_url.strip_suffix(RELOAD_SSE_URL) {
+        Some(origin) => format!("{origin}{ACK_URL}"),
+        None => ACK_URL.to_string(),
+    };
+    RELOAD_SCRIPT
+        .replace("__SSE_URL__", &escape(sse_url))
+        .replace("__ACK_URL__", &escape(&ack))
+        .replace("__STATUS_OVERLAY__", STATUS_OVERLAY_JS)
+}
+
+/// Serve ONLY the session's event stream ([`EVENTS_URL`]) on `port`.
+///
+/// Every `idealyst dev` session runs one, so a session with no web
+/// target — an iOS-only one — is subscribable too.
+pub fn serve_events(
+    host: &str,
+    port: u16,
+    events: Arc<dev_events::broadcast::Broadcast>,
+) -> Result<()> {
+    let addr = format!("{host}:{port}");
+    let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
+    for request in server.incoming_requests() {
+        let url_path = request.url().split('?').next().unwrap_or("/").to_string();
+        if url_path != EVENTS_URL {
+            let _ = request.respond(cors(Response::empty(404)));
+            continue;
+        }
+        stream_events(request, events.clone());
+    }
+    Ok(())
+}
+
+/// Hand `request` a stream of `events` on its own thread.
+fn stream_events(request: Request, events: Arc<dev_events::broadcast::Broadcast>) {
+    if let Err(e) = thread::Builder::new()
+        .name("dev-http-events".into())
+        .spawn(move || serve_event_stream(request, &events))
+    {
+        dev_events::global().error("dev-http", format!("cannot spawn events thread: {e}"));
+    }
+}
+
+/// The body of [`EVENTS_URL`]: the snapshot, then live events, then a
+/// keepalive comment whenever the session is quiet.
+fn serve_event_stream(request: Request, events: &dev_events::broadcast::Broadcast) {
+    let mut writer = request.into_writer();
+    let head = b"HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/event-stream\r\n\
+                 Cache-Control: no-store\r\n\
+                 Connection: close\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 X-Accel-Buffering: no\r\n\
+                 \r\n";
+    if writer.write_all(head).is_err() || writer.flush().is_err() {
+        return;
+    }
+    let sub = events.subscribe();
+    for json in &sub.snapshot {
+        if write_data(&mut writer, json).is_err() {
+            return;
+        }
+    }
+    loop {
+        match sub.events.recv_timeout(SSE_KEEPALIVE) {
+            Ok(json) => {
+                if write_data(&mut writer, &json).is_err() {
+                    return;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if write_ping(&mut writer).is_err() {
+                    return;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+fn write_data(w: &mut Box<dyn Write + Send + 'static>, json: &str) -> std::io::Result<()> {
+    w.write_all(format!("data: {json}\n\n").as_bytes())?;
+    w.flush()
+}
+
+/// Take a page's ack off `request` and hand it to `signal`. Always
+/// answers 204: the page fires and forgets, and has nothing to do with a
+/// refusal.
+fn receive_ack(mut request: Request, signal: Option<&ReloadSignal>) -> std::io::Result<()> {
+    let mut body = String::new();
+    let _ = request.as_reader().take(MAX_ACK_BYTES).read_to_string(&mut body);
+    if let Some(signal) = signal {
+        signal.page_ack(&body);
+    }
+    request.respond(cors(Response::empty(204)))
 }
 
 /// Serve ONLY the livereload/overlay SSE stream, on `port`.
@@ -238,10 +405,27 @@ pub fn serve_signal_only(host: &str, port: u16, signal: Arc<ReloadSignal>) -> Re
     let addr = format!("{host}:{port}");
     let server = Server::http(&addr)
         .map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
-    eprintln!("[dev-http] reload/overlay stream on http://{addr}{RELOAD_SSE_URL}");
+    dev_events::global().emit(dev_events::DevEvent::ServerReady {
+        target: "web".into(),
+        kind: dev_events::ServerKind::ReloadStream,
+        url: format!("http://{addr}{RELOAD_SSE_URL}"),
+    });
 
     for request in server.incoming_requests() {
         let url_path = request.url().split('?').next().unwrap_or("/").to_string();
+        if url_path == ACK_URL && *request.method() == Method::Post {
+            let _ = receive_ack(request, Some(&signal));
+            continue;
+        }
+        if url_path == EVENTS_URL {
+            match signal.events() {
+                Some(events) => stream_events(request, events),
+                None => {
+                    let _ = request.respond(cors(Response::empty(404)));
+                }
+            }
+            continue;
+        }
         if url_path != RELOAD_SSE_URL {
             let _ = request.respond(cors(Response::empty(404)));
             continue;
@@ -251,7 +435,7 @@ pub fn serve_signal_only(host: &str, port: u16, signal: Arc<ReloadSignal>) -> Re
             .name("dev-http-sse".into())
             .spawn(move || serve_sse(request, signal))
         {
-            eprintln!("[dev-http] cannot spawn SSE thread: {e}");
+            dev_events::global().error("dev-http", format!("cannot spawn SSE thread: {e}"));
         }
     }
     Ok(())
@@ -298,10 +482,8 @@ pub fn serve_static(
         .filter_map(|p| match fs::canonicalize(&p) {
             Ok(canonical) => Some(canonical),
             Err(e) => {
-                eprintln!(
-                    "[dev-http] overlay root {} skipped: {e}",
-                    p.display()
-                );
+                dev_events::global()
+                    .warn("dev-http", format!("overlay root {} skipped: {e}", p.display()));
                 None
             }
         })
@@ -330,15 +512,18 @@ pub fn serve_static(
     if precompressed {
         extras.push("precompressed".to_string());
     }
-    eprintln!(
-        "[dev-http] serving {} on http://{}{}",
-        root.display(),
-        addr,
-        if extras.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", extras.join(", "))
-        },
+    dev_events::global().log(
+        "dev-http",
+        format!(
+            "serving {} on http://{}{}",
+            root.display(),
+            addr,
+            if extras.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", extras.join(", "))
+            },
+        ),
     );
 
     for request in server.incoming_requests() {
@@ -353,7 +538,7 @@ pub fn serve_static(
             precompressed,
             request,
         ) {
-            eprintln!("[dev-http] request error: {e}");
+            dev_events::global().warn("dev-http", format!("request error: {e}"));
         }
     }
 
@@ -372,7 +557,14 @@ fn handle(
     precompressed: bool,
     request: Request,
 ) -> Result<()> {
-    // GET / HEAD only. Anything else (POST, PUT, …) isn't meaningful
+    // A page's ack: the one POST this server takes.
+    if *request.method() == Method::Post
+        && request.url().split('?').next() == Some(ACK_URL)
+    {
+        return receive_ack(request, reload.map(|r| &*r.signal)).map_err(Into::into);
+    }
+
+    // GET / HEAD only. Anything else (PUT, DELETE, …) isn't meaningful
     // for a static-file dev server.
     if !matches!(request.method(), Method::Get | Method::Head) {
         return request
@@ -388,6 +580,14 @@ fn handle(
     // event-stream that emits `data: 0\n\n` and ends; the client's
     // `EventSource` will sit on it without ever firing a reload, and
     // the connection costs nothing.
+    if url_path == EVENTS_URL {
+        if let Some(events) = reload.and_then(|r| r.signal.events()) {
+            stream_events(request, events);
+            return Ok(());
+        }
+        return request.respond(cors(Response::empty(404))).map_err(Into::into);
+    }
+
     if url_path == RELOAD_SSE_URL {
         let signal = reload.map(|r| r.signal.clone());
         thread::Builder::new()
@@ -516,9 +716,22 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
     // Patches already decided are NOT replayed to a page connecting
     // now: it just loaded the bundle, which was built from the current
     // source. Replaying would re-apply edits that are already in it.
-    let mut last_patch = signal.as_ref().map(|s| s.patch_seq()).unwrap_or(0);
+    //
+    // The build STATE is: a page that loads mid-build, or after a build
+    // failed, must show that without having seen it happen. Snapshot and
+    // sequence come from one lock, so the live events that follow start
+    // exactly where the snapshot ends.
+    let (state, mut last_patch) = match signal.as_ref() {
+        Some(s) => s.dev_state_snapshot(),
+        None => (Vec::new(), 0),
+    };
     if write_event(&mut writer, last_seen).is_err() {
         return;
+    }
+    for json in &state {
+        if write_patch(&mut writer, PatchKind::DevState.sse_event(), json).is_err() {
+            return;
+        }
     }
 
     loop {

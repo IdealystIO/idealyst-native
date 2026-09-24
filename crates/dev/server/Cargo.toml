@@ -95,6 +95,10 @@ screenshot = ["dep:headless-screenshot", "dep:base64", "runtime-server", "robot"
 # there is no size argument for gating this.
 runtime-shared = { workspace = true, features = ["robot"] }
 wire = { workspace = true }
+# The host's and sidecar's save-path facts go to the `idealyst dev`
+# session as typed events: marked lines on stderr when the CLI asked for
+# them (`dev_events::child`), plain lines when run by hand.
+dev-events = { workspace = true }
 
 # The runtime substrate the recorder realizes against: the scene seam +
 # realized-tree drivers, the caps traits + built-in vocabulary, and the

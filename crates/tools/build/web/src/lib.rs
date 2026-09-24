@@ -267,6 +267,11 @@ pub struct BuildOptions {
     /// no-split — relocations still emitted, exports still pinned — served
     /// 113.7 MB, which is why it used to read as a bad trade.
     pub wasm_split: bool,
+    /// Where the build reports: each stage as it starts and ends, cargo's
+    /// progress and diagnostics, and the lines this crate used to print.
+    /// `Reporter::default()` prints them to stderr as plain lines, which
+    /// is exactly what the build printed before it took a reporter.
+    pub reporter: dev_events::Reporter,
 }
 
 /// How much debug information the wasm carries.
@@ -611,10 +616,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         .source
         .cargo_target_dir(&project_dir)
         .join(format!("idealyst-web-{key}"));
-    eprintln!(
-        "[build-web] target dir: {} ({})",
-        target_dir.display(),
-        config_summary(&opts),
+    let reporter = opts.reporter.clone();
+    reporter.log(
+        "build-web",
+        format!("target dir: {} ({})", target_dir.display(), config_summary(&opts)),
     );
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
@@ -653,9 +658,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     // cargo actually produced a new module — see [`passes_skippable`].
     let stamp_file = build_dir.join(format!(".wasm-stamp-{key}"));
     let before = WasmStamp::of(&original_wasm);
-    let mut timings = BuildTimings::default();
+    let mut timings = BuildTimings::new(&reporter);
     timings.time("cargo", || {
         cargo_build_wasm(
+            &reporter,
             &project_dir,
             &bin_name,
             &target_dir,
@@ -689,14 +695,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     );
     if skip_passes {
         let bytes = after.as_ref().map(|s| s.len).unwrap_or(0);
-        eprintln!(
-            "[build-web] {}.wasm unchanged since the last build ({bytes} bytes, same mtime) — \
-             wasm-bindgen / wasm-split skipped, restaging the existing pkg/",
-            bin_name,
+        reporter.log(
+            "build-web",
+            format!(
+                "{}.wasm unchanged since the last build ({bytes} bytes, same mtime) — \
+                 wasm-bindgen / wasm-split skipped, restaging the existing pkg/",
+                bin_name,
+            ),
         );
-        timings
-            .phases
-            .push(("passes-skipped", std::time::Duration::ZERO));
+        timings.record("passes-skipped", std::time::Duration::ZERO);
     } else {
         // Root every function in the element table BEFORE wasm-bindgen
         // runs. wasm-bindgen's dead-code pass keeps only what the
@@ -727,12 +734,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                 hotpatch_aliases::write(&alias_path, &aliases)?;
                 let (prepared, census) = hotpatch_base::prepare_base_module(&linked)
                     .context("preparing the base module for hot patching")?;
-                eprintln!(
-                    "[build-web] hot-patch base: {} → {} bytes; {}; {} symbol aliases",
-                    linked.len(),
-                    prepared.len(),
-                    census.summary(),
-                    aliases.len(),
+                reporter.log(
+                    "build-web",
+                    format!(
+                        "hot-patch base: {} → {} bytes; {}; {} symbol aliases",
+                        linked.len(),
+                        prepared.len(),
+                        census.summary(),
+                        aliases.len(),
+                    ),
                 );
                 fs::write(&prepared_path, prepared)
                     .with_context(|| format!("write {}", prepared_path.display()))
@@ -741,6 +751,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         }
         timings.time("wasm-bindgen", || {
             wasm_bindgen_build(
+                &reporter,
                 &bindgen_input,
                 &wrapper_pkg,
                 &manifest.lib_name,
@@ -762,9 +773,9 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                     .context("neutralizing the imports wasm-bindgen did not supply")?
                 {
                     Some(fixed) => {
-                        eprintln!(
-                            "[build-web] hot-patch: gave wasm-bindgen's unsupplied imports a \
-                             trapping body"
+                        reporter.log(
+                            "build-web",
+                            "hot-patch: gave wasm-bindgen's unsupplied imports a trapping body",
                         );
                         fs::write(&path, fixed)
                             .with_context(|| format!("write {}", path.display()))
@@ -774,12 +785,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             })?;
         }
         timings.time("command-export-neutralize", || {
-            neutralize_command_export_wrappers(&wrapper_pkg, &manifest.lib_name)
+            neutralize_command_export_wrappers(&reporter, &wrapper_pkg, &manifest.lib_name)
         })
         .with_context(|| "wasm-bindgen command_export neutralize")?;
         if opts.wasm_split {
             timings.time("wasm-split", || {
                 run_wasm_split(
+                    &reporter,
                     &original_wasm,
                     &wrapper_pkg,
                     &manifest.lib_name,
@@ -805,30 +817,36 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             clear_wasm_split_artifacts(&wrapper_pkg)
                 .with_context(|| "wasm-split: clear stale chunk artifacts")?;
             if imports.is_empty() {
-                eprintln!(
-                    "[build-web] wasm-split: skipped (--no-split); no lazy boundaries, \
-                     {}_bg.wasm is what wasm-bindgen's own gc left",
-                    manifest.lib_name,
+                reporter.log(
+                    "build-web",
+                    format!(
+                        "wasm-split: skipped (--no-split); no lazy boundaries, \
+                         {}_bg.wasm is what wasm-bindgen's own gc left",
+                        manifest.lib_name,
+                    ),
                 );
             } else {
                 let inlined =
                     write_inline_split_loader(&wrapper_pkg, &manifest.lib_name, &imports)?;
-                eprintln!(
-                    "[build-web] wasm-split: skipped (--no-split); {inlined} lazy \
-                     boundary(ies) stay in {}_bg.wasm and resolve immediately",
-                    manifest.lib_name,
+                reporter.log(
+                    "build-web",
+                    format!(
+                        "wasm-split: skipped (--no-split); {inlined} lazy \
+                         boundary(ies) stay in {}_bg.wasm and resolve immediately",
+                        manifest.lib_name,
+                    ),
                 );
             }
         }
         if opts.release {
             timings
-                .time("wasm-opt", || wasm_opt_pkg(&wrapper_pkg))
+                .time("wasm-opt", || wasm_opt_pkg(&reporter, &wrapper_pkg))
                 .with_context(|| "wasm-opt post-split")?;
         }
         // Recorded only after every pass succeeded, so a build that died
         // mid-bindgen can never be mistaken for a finished one.
         if let Some(after) = &after {
-            after.write(&stamp_file);
+            after.write(&stamp_file, &reporter);
         }
     }
 
@@ -840,6 +858,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         let css = timings
             .time("premint-dump", || {
                 premint::generate_and_run_dump(
+                    &reporter,
                     &build_dir,
                     &project_dir,
                     &opts.source,
@@ -850,10 +869,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         fs::write(wrapper_pkg.join(premint::PREMINT_CSS_NAME), &css).with_context(|| {
             format!("write {}", wrapper_pkg.join(premint::PREMINT_CSS_NAME).display())
         })?;
-        eprintln!(
-            "[build-web] premint: {} bytes of preminted CSS → pkg/{}",
-            css.len(),
-            premint::PREMINT_CSS_NAME,
+        reporter.log(
+            "build-web",
+            format!(
+                "premint: {} bytes of preminted CSS → pkg/{}",
+                css.len(),
+                premint::PREMINT_CSS_NAME,
+            ),
         );
     }
 
@@ -880,7 +902,33 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // bytes in place under the final names).
         let fp = fingerprint_pkg(&staged_pkg, &manifest.lib_name)
             .with_context(|| format!("fingerprint {}", staged_pkg.display()))?;
-        rewrite_index_bundle_ref(&staged.join("index.html"), &manifest.lib_name, &fp.entry_js)?;
+        reporter.log(
+            "build-web",
+            format!(
+                "fingerprint {}: {} pkg file(s) content-addressed (entry {}{})",
+                fp.hash,
+                fp.renamed,
+                fp.entry_js,
+                fp.premint_css
+                    .as_deref()
+                    .map(|c| format!(", stylesheet {c} — hashed on its own bytes"))
+                    .unwrap_or_default(),
+            ),
+        );
+        let index = staged.join("index.html");
+        if !rewrite_index_bundle_ref(&index, &manifest.lib_name, &fp.entry_js)? {
+            reporter.warn(
+                "build-web",
+                format!(
+                    "⚠ {} doesn't reference pkg/{lib}.js; the fingerprinted entry is /pkg/{entry} — \
+                     point your script tag at it (or at pkg/{lib}.js, which the build rewrites) or \
+                     browsers may cache a stale bundle",
+                    index.display(),
+                    lib = manifest.lib_name,
+                    entry = fp.entry_js,
+                ),
+            );
+        }
         // Link the preminted stylesheet (content-addressed by the
         // fingerprint pass above). A plain <link> — the browser needs
         // the rules before first paint anyway, and pkg/ is immutable
@@ -946,18 +994,19 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         if opts.premint {
             // No staging → no index rewriting; the project's own
             // index.html must link the sheet itself.
-            eprintln!(
-                "[build-web] premint: add <link rel=\"stylesheet\" \
-                 href=\"pkg/{}\"> to your index.html <head>",
-                premint::PREMINT_CSS_NAME,
+            reporter.log(
+                "build-web",
+                format!(
+                    "premint: add <link rel=\"stylesheet\" \
+                     href=\"pkg/{}\"> to your index.html <head>",
+                    premint::PREMINT_CSS_NAME,
+                ),
             );
         }
         (project_pkg, None, None)
     };
 
-        timings
-        .phases
-        .push(("stage+fingerprint", stage_start.elapsed()));
+    timings.record("stage+fingerprint", stage_start.elapsed());
     timings.report();
 
     let served_wasm = served_wasm_path(&wrapper_pkg, &manifest.lib_name);
@@ -1424,6 +1473,8 @@ pub struct PkgFingerprint {
     /// `premint.3f9a12bc44d0e1a7.css`. `None` when no premint sheet
     /// was in the pkg.
     pub premint_css: Option<String>,
+    /// How many pkg files were renamed to carry a hash.
+    pub renamed: usize,
 }
 
 /// Content-address a staged `pkg/`: rename every top-level `.js` /
@@ -1581,15 +1632,7 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
         .iter()
         .find(|(o, _)| *o == premint::PREMINT_CSS_NAME)
         .map(|(_, n)| n.clone());
-    eprintln!(
-        "[build-web] fingerprint {hash}: {} pkg file(s) content-addressed (entry {entry_js}{})",
-        renames.len(),
-        premint_css
-            .as_deref()
-            .map(|c| format!(", stylesheet {c} — hashed on its own bytes"))
-            .unwrap_or_default(),
-    );
-    Ok(PkgFingerprint { hash, entry_js, premint_css })
+    Ok(PkgFingerprint { hash, entry_js, premint_css, renamed: renames.len() })
 }
 
 /// Point the staged `index.html` at the fingerprinted entry shim:
@@ -1598,23 +1641,20 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
 /// substring). A user-authored index.html that doesn't reference the
 /// bundle by the conventional name gets a loud warning instead of a
 /// silent stale-cache footgun.
-fn rewrite_index_bundle_ref(index_path: &Path, lib_name: &str, entry_js: &str) -> Result<()> {
+///
+/// Returns `false` when the page does not reference the bundle by that
+/// name — the caller warns, since nothing was rewritten.
+fn rewrite_index_bundle_ref(index_path: &Path, lib_name: &str, entry_js: &str) -> Result<bool> {
     let html = fs::read_to_string(index_path)
         .with_context(|| format!("read {}", index_path.display()))?;
     let old = format!("pkg/{lib_name}.js");
     let new = format!("pkg/{entry_js}");
     if !html.contains(&old) {
-        eprintln!(
-            "[build-web] ⚠ {} doesn't reference {old}; the fingerprinted entry is /{new} — \
-             point your script tag at it (or at {old}, which the build rewrites) or browsers \
-             may cache a stale bundle",
-            index_path.display(),
-        );
-        return Ok(());
+        return Ok(false);
     }
     fs::write(index_path, html.replace(&old, &new))
         .with_context(|| format!("write {}", index_path.display()))?;
-    Ok(())
+    Ok(true)
 }
 
 /// Locate the fingerprinted entry shim (`<lib>.<16 hex>.js`) in a
@@ -1955,37 +1995,56 @@ fn feature_spec(name: &str) -> String {
 #[derive(Default)]
 struct BuildTimings {
     phases: Vec<(&'static str, std::time::Duration)>,
+    reporter: dev_events::Reporter,
 }
 
+/// The row a build's events are filed under.
+const TARGET: &str = "web";
+
 impl BuildTimings {
+    fn new(reporter: &dev_events::Reporter) -> Self {
+        Self { phases: Vec::new(), reporter: reporter.clone() }
+    }
+
     /// Run `f`, record how long it took under `phase`, return its value.
     /// Generic over the return type so it wraps fallible passes without
-    /// forcing a `?` inside the closure.
+    /// forcing a `?` inside the closure. Each phase is reported as it
+    /// starts and ends, so a status view can say what the build is doing
+    /// now rather than only what it did.
     fn time<T>(&mut self, phase: &'static str, f: impl FnOnce() -> T) -> T {
+        self.reporter.emit(dev_events::DevEvent::StageStarted {
+            target: TARGET.into(),
+            stage: phase.into(),
+        });
         let start = std::time::Instant::now();
         let out = f();
-        self.phases.push((phase, start.elapsed()));
+        self.record(phase, start.elapsed());
         out
     }
 
-    /// One summary line, longest phase first, plus the total. Printed at
-    /// the end of every build.
+    /// Record a phase timed elsewhere.
+    fn record(&mut self, phase: &'static str, took: std::time::Duration) {
+        self.phases.push((phase, took));
+        self.reporter.emit(dev_events::DevEvent::StageFinished {
+            target: TARGET.into(),
+            stage: phase.into(),
+            ms: took.as_millis() as u64,
+        });
+    }
+
+    /// The per-stage summary, longest phase first, plus the total.
+    /// Reported at the end of every build.
     fn report(&self) {
-        if self.phases.is_empty() {
-            return;
-        }
         let total: std::time::Duration = self.phases.iter().map(|(_, d)| *d).sum();
-        let mut sorted: Vec<_> = self.phases.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        let body = sorted
-            .iter()
-            .map(|(name, d)| format!("{name} {:.2}s", d.as_secs_f64()))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        eprintln!(
-            "[build-web] timing: total {:.2}s — {body}",
-            total.as_secs_f64(),
-        );
+        self.reporter.emit(dev_events::DevEvent::BuildTimed {
+            target: TARGET.into(),
+            stages: self
+                .phases
+                .iter()
+                .map(|(name, d)| dev_events::Timing::new(*name, *d))
+                .collect(),
+            total_ms: total.as_millis() as u64,
+        });
     }
 }
 
@@ -2057,11 +2116,11 @@ impl WasmStamp {
 
     /// Best effort: a stamp that fails to write costs one redundant set
     /// of passes next time, which is exactly today's behaviour.
-    fn write(&self, path: &Path) {
+    fn write(&self, path: &Path, reporter: &dev_events::Reporter) {
         if let Err(e) = fs::write(path, self.encode()) {
-            eprintln!(
-                "[build-web] could not record the wasm stamp at {}: {e}",
-                path.display()
+            reporter.warn(
+                "build-web",
+                format!("could not record the wasm stamp at {}: {e}", path.display()),
             );
         }
     }
@@ -2420,6 +2479,7 @@ pub fn patch_url_path(file_name: &str) -> String {
 }
 
 fn cargo_build_wasm(
+    reporter: &dev_events::Reporter,
     project_dir: &Path,
     bin_name: &str,
     target_dir: &Path,
@@ -2487,6 +2547,13 @@ fn cargo_build_wasm(
     if !features.is_empty() {
         cmd.arg("--features").arg(features.join(","));
     }
+    // The progress bar's total: this build's dependency closure, resolved
+    // beside the build with the same features and platform.
+    let closure = dev_events::process::Closure {
+        manifest_dir: project_dir.to_path_buf(),
+        platform: Some("wasm32-unknown-unknown".into()),
+        features: features.clone(),
+    };
     // Flags are assembled as a LIST and handed to cargo via
     // `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated) rather than the
     // space-separated `RUSTFLAGS`. The remap flags below embed filesystem
@@ -2572,9 +2639,9 @@ fn cargo_build_wasm(
             Ok(idealyst) => {
                 let dir = captures_dir(target_dir);
                 if let Err(e) = fs::create_dir_all(&dir) {
-                    eprintln!(
-                        "[build-web] hot patch disabled: cannot create {}: {e}",
-                        dir.display()
+                    reporter.warn(
+                        "build-web",
+                        format!("hot patch disabled: cannot create {}: {e}", dir.display()),
                     );
                 } else {
                     for (key, value) in hotpatch_build::capture_env(&idealyst, &dir) {
@@ -2585,21 +2652,32 @@ fn cargo_build_wasm(
             // Without our own path there is nothing to point RUSTC_WRAPPER
             // at. The build still succeeds; the first save falls back to a
             // rebuild with "no capture" as the stated reason.
-            Err(e) => eprintln!("[build-web] hot patch disabled: cannot find this binary: {e}"),
+            Err(e) => reporter.warn(
+                "build-web",
+                format!("hot patch disabled: cannot find this binary: {e}"),
+            ),
         }
     }
 
-    eprintln!(
-        "[build-web] cargo build --target wasm32-unknown-unknown{}{} (in {})",
-        if release { " --release" } else { "" },
-        if strip_panics {
-            " -Z build-std (panic_immediate_abort)"
-        } else {
-            ""
-        },
-        project_dir.display(),
+    reporter.log(
+        "build-web",
+        format!(
+            "cargo build --target wasm32-unknown-unknown{}{} (in {})",
+            if release { " --release" } else { "" },
+            if strip_panics {
+                " -Z build-std (panic_immediate_abort)"
+            } else {
+                ""
+            },
+            project_dir.display(),
+        ),
     );
-    let status = cmd.status().with_context(|| "exec cargo")?;
+    // Captured, not inherited: every line cargo writes becomes an event
+    // (the plain sink prints it exactly as cargo would have), and its
+    // JSON messages become progress and structured diagnostics.
+    let (status, _summary) =
+        dev_events::process::run_cargo(&mut cmd, reporter, TARGET, Some(closure))
+            .with_context(|| "exec cargo")?;
     if !status.success() {
         if strip_panics {
             anyhow::bail!(
@@ -2670,6 +2748,7 @@ fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
 /// the JS-callable wasm-bindgen output. The flags are
 /// [`wasm_bindgen_flags`]'s decision.
 fn wasm_bindgen_build(
+    reporter: &dev_events::Reporter,
     original_wasm: &Path,
     out_dir: &Path,
     lib_name: &str,
@@ -2681,20 +2760,22 @@ fn wasm_bindgen_build(
     }
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     let split_flags = wasm_bindgen_flags(split, hot_patch);
-    eprintln!(
-        "[build-web] wasm-bindgen --target web {} → {}",
-        split_flags.join(" "),
-        out_dir.display(),
+    reporter.log(
+        "build-web",
+        format!("wasm-bindgen --target web {} → {}", split_flags.join(" "), out_dir.display()),
     );
-    let status = Command::new("wasm-bindgen")
-        .args(["--target", "web"])
-        .args(split_flags)
-        .args(["--out-name", lib_name])
-        .args(["--out-dir"])
-        .arg(out_dir)
-        .arg(original_wasm)
-        .status()
-        .with_context(|| {
+    let status = dev_events::process::run_lines(
+        Command::new("wasm-bindgen")
+            .args(["--target", "web"])
+            .args(split_flags)
+            .args(["--out-name", lib_name])
+            .args(["--out-dir"])
+            .arg(out_dir)
+            .arg(original_wasm),
+        reporter,
+        "wasm-bindgen",
+    )
+    .with_context(|| {
             "exec wasm-bindgen — is it on PATH? (cargo install wasm-bindgen-cli --version <matching>)"
         })?;
     if !status.success() {
@@ -2707,7 +2788,7 @@ fn wasm_bindgen_build(
 /// chunk). Runs LAST in the pipeline — after wasm-split — so the
 /// optimizer doesn't strip the symbols / reloc info wasm-split
 /// needed. Per-chunk optimization keeps chunks lean independently.
-fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
+fn wasm_opt_pkg(reporter: &dev_events::Reporter, pkg_dir: &Path) -> Result<()> {
     for entry in fs::read_dir(pkg_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -2715,24 +2796,27 @@ fn wasm_opt_pkg(pkg_dir: &Path) -> Result<()> {
             continue;
         }
         let tmp = path.with_extension("wasm.opt");
-        let status = Command::new("wasm-opt")
-            .arg("-Oz")
-            .arg("--strip-debug")
-            .arg("--strip-producers")
-            .arg("--enable-bulk-memory")
-            .arg("--enable-nontrapping-float-to-int")
-            .arg("-o")
-            .arg(&tmp)
-            .arg(&path)
-            .status()
-            .with_context(|| {
+        let status = dev_events::process::run_lines(
+            Command::new("wasm-opt")
+                .arg("-Oz")
+                .arg("--strip-debug")
+                .arg("--strip-producers")
+                .arg("--enable-bulk-memory")
+                .arg("--enable-nontrapping-float-to-int")
+                .arg("-o")
+                .arg(&tmp)
+                .arg(&path),
+            reporter,
+            "wasm-opt",
+        )
+        .with_context(|| {
                 "exec wasm-opt — is binaryen installed? (`brew install binaryen` / apt etc.)"
             })?;
         if !status.success() {
             anyhow::bail!("wasm-opt failed on {}: {status}", path.display());
         }
         fs::rename(&tmp, &path)?;
-        eprintln!("[build-web] wasm-opt → {}", path.display());
+        reporter.log("build-web", format!("wasm-opt → {}", path.display()));
     }
     Ok(())
 }
@@ -2899,7 +2983,11 @@ fn clear_wasm_split_artifacts(pkg_dir: &Path) -> Result<()> {
 /// for the underlying patch (and regression tests). Runs between
 /// `wasm-bindgen` and `wasm-split`; `wasm-split`'s reachability walker
 /// drops the now-orphaned wrapper functions for free.
-fn neutralize_command_export_wrappers(pkg_dir: &Path, lib_name: &str) -> Result<()> {
+fn neutralize_command_export_wrappers(
+    reporter: &dev_events::Reporter,
+    pkg_dir: &Path,
+    lib_name: &str,
+) -> Result<()> {
     let bindgened_path = pkg_dir.join(format!("{lib_name}_bg.wasm"));
     let bindgened = fs::read(&bindgened_path)
         .with_context(|| format!("read {}", bindgened_path.display()))?;
@@ -2908,16 +2996,20 @@ fn neutralize_command_export_wrappers(pkg_dir: &Path, lib_name: &str) -> Result<
         .with_context(|| "walrus: rewrite *.command_export exports → bare helpers")?;
     fs::write(&bindgened_path, &patched)
         .with_context(|| format!("write {}", bindgened_path.display()))?;
-    eprintln!(
-        "[build-web] command_export neutralized ({} → {} bytes) in {}",
-        before_len,
-        patched.len(),
-        bindgened_path.display(),
+    reporter.log(
+        "build-web",
+        format!(
+            "command_export neutralized ({} → {} bytes) in {}",
+            before_len,
+            patched.len(),
+            bindgened_path.display(),
+        ),
     );
     Ok(())
 }
 
 fn run_wasm_split(
+    reporter: &dev_events::Reporter,
     original_wasm: &Path,
     pkg_dir: &Path,
     lib_name: &str,
@@ -3022,9 +3114,9 @@ fn run_wasm_split(
     );
     fs::write(pkg_dir.join("__wasm_split.js"), shim)?;
 
-    eprintln!(
-        "[build-web] wasm-split: {} chunk wasm(s) emitted alongside {}_bg.wasm",
-        chunk_count, lib_name,
+    reporter.log(
+        "build-web",
+        format!("wasm-split: {chunk_count} chunk wasm(s) emitted alongside {lib_name}_bg.wasm"),
     );
     Ok(())
 }
@@ -3183,6 +3275,7 @@ mod regression_tests {
             runtime_server_url: None,
             bundle_out_dir: None,
             prune_dead_data_min: None,
+            reporter: dev_events::Reporter::new(),
         }
     }
 
@@ -4476,7 +4569,7 @@ mod fingerprint_tests {
              <link rel=\"modulepreload\" href=\"./pkg/demo.js\" />",
         )
         .unwrap();
-        rewrite_index_bundle_ref(&index, "demo", "demo.0123456789abcdef.js").unwrap();
+        assert!(rewrite_index_bundle_ref(&index, "demo", "demo.0123456789abcdef.js").unwrap());
         let html = fs::read_to_string(&index).unwrap();
         assert!(html.contains("/pkg/demo.0123456789abcdef.js"), "{html}");
         assert!(html.contains("./pkg/demo.0123456789abcdef.js"), "{html}");
@@ -4489,7 +4582,8 @@ mod fingerprint_tests {
         let index = tmp.path().join("index.html");
         let original = "<script src=\"/custom/boot.js\"></script>";
         fs::write(&index, original).unwrap();
-        rewrite_index_bundle_ref(&index, "demo", "demo.0123456789abcdef.js").unwrap();
+        // Reported as not rewritten, so the build warns.
+        assert!(!rewrite_index_bundle_ref(&index, "demo", "demo.0123456789abcdef.js").unwrap());
         assert_eq!(fs::read_to_string(&index).unwrap(), original);
     }
 

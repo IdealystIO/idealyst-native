@@ -508,6 +508,12 @@ so the ordinary session has it.
    event carrying `{url, table}`.
 5. The page's livereload script calls `window.__idealyst_hot_patch`, which
    applies the patch and rebuilds the tree against it.
+6. Once the rebuilt tree is mounted, the page reports back — a `POST` to
+   `/__idealyst/ack` with how many functions were redirected and how many
+   signal values were carried — and the session records it as a
+   `page_ack` event. An overlay patch, a reload and a failure are acked
+   the same way, so the terminal knows a save LANDED, not only that it was
+   sent. See [Watching a session](#watching-a-session).
 
 Every step reports a failure that names what it could not do, and every
 failure falls back to the rebuild-and-reload the save would otherwise have
@@ -913,6 +919,133 @@ sources as they were read just before that compile started (the scan
 itself runs alongside the compile), so a save made while it compiled is
 decided afterwards as the change it is; a failed rebuild leaves them
 alone, so the next save is still decided against the build on screen.
+
+## Watching a session
+
+Everything the dev loop does — the change it saw, the tier it chose, each
+build stage with cargo's progress, the rustc errors, the patch and its
+timings, and the page's report that the save landed — is one typed event
+(`dev_events::DevEvent`, crate `crates/dev/events`). The terminal, the
+page, the session log and any tool are consumers of that one stream.
+
+- **The terminal** prints plain lines, exactly the ones `idealyst dev`
+  always printed: every event that replaced an `eprintln!` renders as that
+  line (golden-tested in `crates/dev/events/tests/plain_goldens.rs`), and
+  events that never had a line print nothing, so scripts and the MCP
+  dev-runner see no change. Cargo's output is captured rather than
+  inherited, then printed verbatim (in colour when stderr is a terminal).
+- **The session log**, `target/idealyst/<package>/dev.log` (under the
+  framework source's staging root: the framework checkout's `target/` for a
+  path-patched app, the project's own otherwise), gets every event in every
+  mode, prefixed with its session time — including the ones a terminal
+  never showed: page acks, stage boundaries, change detection. Nothing is
+  lost when a UI hides it.
+- **The page** shows the build state over the running app: a small badge
+  in the corner (what the loop is doing, with cargo's progress and the
+  current stage, or what it last did: the tier and the time), and, when a
+  build fails, a panel with each rustc error — `file:line`, the message,
+  the rendered diagnostic. Esc or a click outside dismisses it; the next
+  successful build or patch clears it. The events reach the page as
+  `dev-state` events on the reload stream, in order with the patches, and
+  a page that connects mid-build (or loads after a failed build) is sent
+  the current state first. The overlay is plain JS injected by `dev-http`
+  (`crates/dev/http/src/status_overlay.js`) because the page's wasm may be
+  the thing that failed to compile; a richer overlay can be an idealyst
+  component once the bundle is live. In runtime-server mode the web page
+  gets the same overlay for the sidecar's saves.
+
+### Hooking into a dev session
+
+The stream is an open hook. Four ways in, all carrying the same objects:
+
+1. **In process** — implement `dev_events::Sink` and subscribe it
+   (`Reporter::subscribe`; under `idealyst dev` the session reporter is
+   `dev_events::global()`). The built-in outputs — terminal lines, session
+   log, `--events-file`, the page, the HTTP stream, the panel — are all
+   ordinary sinks. The crate docs of `dev-events` have a worked example.
+2. **Over HTTP** — `GET /__idealyst/events` streams Server-Sent Events, one
+   JSON object per `data:` line. Every session runs it on its own loopback
+   port (the URL is written to `<project>/.idealyst/events.url`, so a
+   session with no web target is subscribable too), and every dev server
+   that serves pages serves it as well, same-origin, with
+   `Access-Control-Allow-Origin: *`. A subscriber first receives a
+   snapshot of the session as it is now — the session line, each server,
+   each watch set, and per target the latest episode (the change, the
+   decision, the build or patch with its latest progress and its errors,
+   and the page's acks) — then every event live. It never needs history to
+   render.
+3. **A file or a pipe** — `idealyst dev --events-file <path>` (any UI
+   mode) or `--events json` (stdout; not with the panel, which paints
+   there): one object per line.
+4. **A command** — `[hooks]` in `dev.toml` maps an event kind to a shell
+   command, run in the project directory with the event's JSON on stdin
+   and its kind in `IDEALYST_EVENT_KIND`. A kind is an event's `type`, or
+   one of the derived `build_failed` and `patched` (any tier). Hooks run in
+   the background; a failing one is reported as a warning event.
+
+   ```toml
+   [hooks]
+   build_failed = "osascript -e 'display notification \"build failed\"'"
+   patched = "jq -c '{type, ms}' >> .idealyst/patches.log"
+   ```
+
+**The schema is a contract.** `idealyst dev --events-schema` prints the
+JSON Schema of the objects (derived from the Rust types, so it cannot
+drift). Every object carries `v`, the schema's major version (currently
+`1`); within a major version changes are additive only — new event types,
+new optional fields, new enum values — so a consumer should ignore types
+and fields it does not know. `crates/dev/events/tests/schema.rs` validates
+every event type and a recorded session against it.
+
+An object looks like:
+
+```json
+{"v":1,"seq":42,"at_ms":18233,"type":"patch_built","target":"web","files":["src/app.rs"],
+ "crates":[{"name":"hotreload_lab","ms":402}],"redirected":3,
+ "steps":[{"name":"cargo","ms":402},{"name":"link","ms":31}],"skipped":[],"bytes":18433,"ms":446}
+```
+
+`seq` is gap-free per session and `at_ms` is milliseconds since the
+session started, from a monotonic clock. `target` names the row an event
+belongs to: `web` for the browser bundle, `server` for a full-stack
+server's watcher, `runtime-server` for the sidecar's saves, `session` for
+the session's own servers.
+
+The event types, by what they say:
+
+| Type | When |
+|---|---|
+| `session_started` | once: app, targets, mode, whether the hot tier is armed (and why not) |
+| `server_ready` | a server is listening (`livereload`, `runtime_server_bridged`, `full_stack`, `reload_stream`, `events`) |
+| `watching` | the watch set, and again when a save changes the dependency graph |
+| `change_detected` | files changed (after the quiet window), with their crates |
+| `decided` | the tier: `overlay`, `hot_patch`, `rebuild` (with the reason), `unchanged` |
+| `overlay_pushed` / `patch_built` / `patch_failed` | a patch was sent (with timings, functions redirected, bytes), or could not be built |
+| `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome |
+| `cargo_progress` | packages compiled so far, of the build's total; the crate in flight |
+| `diagnostic` | a rustc diagnostic: level, message, code, primary `file:line:column`, rendered text |
+| `page_ack` | the page (or, in runtime-server mode, the sidecar) applied something: `connected`, `reloading`, `overlay` (updated / waiting), `hot_patch` (redirected / carried), `failed` |
+| `sidecar_applied` | runtime-server mode: the host hot-patched or respawned the sidecar |
+| `warning` / `error` | something went wrong, with its source |
+| `log` / `output` | a CLI line not typed yet, and a subprocess line verbatim — so nothing is lost |
+
+**Where the progress total comes from.** Cargo has no unit total on
+stable (`--unit-graph` is unstable), so `cargo_progress.total` is the size
+of the build's dependency closure from `cargo metadata --filter-platform
+wasm32-unknown-unknown` with the build's features, resolved beside the
+build and cached until `Cargo.toml` or `Cargo.lock` changes; `compiled`
+counts distinct packages in cargo's `compiler-artifact` messages (fresh
+ones included), clamped to the total. A package enabled only through a
+feature deeper in the graph can make the closure a little short; the
+clamp keeps the bar from overflowing.
+
+**What is typed today.** The `--local` web loop (watcher, bundler, patch
+builder, page), the dev servers, the CLI's own lines, and the
+runtime-server host's save path (decision, overlay push, hot patch or
+respawn, and the sidecar's report of applying them). The native targets'
+build crates still print plain lines; they arrive as `log`/`output`
+events, and under the interactive panel any output they write straight to
+the terminal is redirected to the session log.
 
 ## Escape hatches and diagnostics
 

@@ -40,6 +40,11 @@ use wire::{
     WirePageMetadata, WireScreenOptions, WireStateBit,
 };
 
+/// The row the runtime-server host's and sidecar's dev-loop events are
+/// filed under (`dev_events`): every target of a runtime-server session
+/// is served by the one sidecar, so its saves are one row.
+pub const EVENTS_TARGET: &str = "runtime-server";
+
 pub mod convert_out;
 // `runtime_scene::Host` + the 30 `runtime_vocabulary::caps` traits on
 // `WireRecordingBackend`, delegating to the inherent op surface below,

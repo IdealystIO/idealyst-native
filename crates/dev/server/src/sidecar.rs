@@ -1002,10 +1002,22 @@ mod runtime {
             return;
         };
         let outcome = session.apply_overlay_patch(patch.site, &edits);
-        eprintln!(
-            "[runtime-server-app] overlay patch: {} applied, {} waiting for the next render",
-            outcome.applied, outcome.refused
+        let reporter = dev_events::global();
+        reporter.log(
+            "runtime-server-app",
+            format!(
+                "overlay patch: {} applied, {} waiting for the next render",
+                outcome.applied, outcome.refused
+            ),
         );
+        // The same fact a page acks in `--local` mode: the save landed.
+        reporter.emit(dev_events::DevEvent::PageAck {
+            target: crate::EVENTS_TARGET.into(),
+            ack: dev_events::PageAck::Overlay {
+                applied: Some(outcome.applied as u64),
+                refused: Some(outcome.refused as u64),
+            },
+        });
     }
 
     /// Without the feature there is no applier compiled in, and no tags
@@ -1085,6 +1097,10 @@ mod runtime {
             + Clone
             + 'static,
     {
+        // Save-path facts (a patch applied, and how much) are events for
+        // the `idealyst dev` session two processes up; stderr is inherited
+        // through the host, whose pipe the CLI reads.
+        dev_events::install_global(dev_events::child::reporter_from_env());
         // Install a SIGSEGV/SIGBUS handler so silent dylib-call
         // crashes (from a hot-patched function jumping to a bad
         // address) print the faulting address before the process
@@ -1250,9 +1266,9 @@ mod runtime {
                 SidecarIn::ApplyPatch { table_json } => {
                     match serde_json::from_str::<subsecond_types::JumpTable>(&table_json) {
                         Ok(table) => {
+                            let entries = table.map.len();
                             eprintln!(
-                                "[runtime-server-app] applying patch ({} jump-table entries)",
-                                table.map.len(),
+                                "[runtime-server-app] applying patch ({entries} jump-table entries)",
                             );
                             match unsafe { dev_hot::apply_patch(table) } {
                                 Ok(()) => {
@@ -1279,6 +1295,13 @@ mod runtime {
                                             sessions.len(),
                                         );
                                     }
+                                    dev_events::global().emit(dev_events::DevEvent::PageAck {
+                                        target: crate::EVENTS_TARGET.into(),
+                                        ack: dev_events::PageAck::HotPatch {
+                                            redirected: Some(entries as u64),
+                                            carried: None,
+                                        },
+                                    });
                                     for (id, handle) in &sessions {
                                         if handle.tx.send(SessionMsg::Rerender).is_err() {
                                             eprintln!(

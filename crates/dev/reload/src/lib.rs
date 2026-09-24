@@ -86,7 +86,11 @@ const MAX_COALESCE_MS: u64 = 3_000;
 /// How many decided patches the signal keeps for listeners that
 /// reconnect. A page that fell further behind than this has missed
 /// enough that reloading is the honest answer.
-const MAX_BUFFERED_PATCHES: usize = 64;
+///
+/// Sized for the build-state events that share the channel (see
+/// [`PageSink`]): cargo progress is throttled to ten a second, so a
+/// listener would have to stall for most of a minute to lose a patch.
+const MAX_BUFFERED_PATCHES: usize = 512;
 
 /// type is intentionally lock-light on the read side (atomic load),
 /// with the mutex/condvar pair carrying only the wake notification.
@@ -108,6 +112,33 @@ pub struct ReloadSignal {
     /// listener that should reload anyway.
     patches: Mutex<Vec<PushedPatch>>,
     patch_seq: AtomicU64,
+    /// Where a page's acks are reported ([`Self::page_ack`]). Unset, an
+    /// ack is parsed and dropped: the page's behaviour does not depend on
+    /// anyone listening.
+    acks: Mutex<Option<dev_events::Reporter>>,
+    /// The watcher's inbox, once a watch loop is running on this signal:
+    /// how [`Self::request_rebuild`] reaches it.
+    rebuild: Mutex<Option<mpsc::Sender<WatchMsg>>>,
+    /// The page's view of the session, for a page that connects mid-way
+    /// (see [`Self::dev_state_snapshot`]). Updated under the `patches`
+    /// lock, together with the sequence, so a snapshot and the patches
+    /// after it never overlap or leave a gap.
+    dev_state: Mutex<dev_events::snapshot::SessionState>,
+    /// The session's full event stream, served at `dev_http`'s
+    /// `/__idealyst/events` by whichever server holds this signal.
+    events: Mutex<Option<Arc<dev_events::broadcast::Broadcast>>>,
+}
+
+/// What reaches the watch loop: a batch of file events, or a request to
+/// rebuild regardless of what changed.
+enum WatchMsg {
+    Fs(
+        std::result::Result<
+            Vec<notify_debouncer_mini::DebouncedEvent>,
+            notify_debouncer_mini::notify::Error,
+        >,
+    ),
+    Rebuild,
 }
 
 /// What a page should do with a pushed patch.
@@ -122,6 +153,10 @@ pub struct ReloadSignal {
 pub enum PatchKind {
     Overlay,
     Hot,
+    /// Not a patch: a build-state event for the page's status overlay
+    /// ([`PageSink`]). It rides the same ordered channel so the page sees
+    /// "patched" after the patch itself, never before.
+    DevState,
 }
 
 impl PatchKind {
@@ -131,6 +166,7 @@ impl PatchKind {
         match self {
             PatchKind::Overlay => "patch",
             PatchKind::Hot => "hot-patch",
+            PatchKind::DevState => "dev-state",
         }
     }
 }
@@ -146,6 +182,36 @@ pub struct PushedPatch {
 impl ReloadSignal {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Report pages' acks ([`Self::page_ack`]) through `reporter`.
+    pub fn report_acks_to(&self, reporter: dev_events::Reporter) {
+        *self.acks.lock().unwrap() = Some(reporter);
+    }
+
+    /// A page reported what it did with something this signal pushed —
+    /// the body of a POST to `dev_http::ACK_URL`, a JSON
+    /// [`dev_events::PageAck`]. Returns whether the body parsed; one that
+    /// did not is dropped (a page built by another version of the
+    /// framework may say things this one does not know).
+    pub fn page_ack(&self, body: &str) -> bool {
+        let Ok(ack) = serde_json::from_str::<dev_events::PageAck>(body) else {
+            return false;
+        };
+        if let Some(r) = self.acks.lock().unwrap().as_ref() {
+            r.emit(dev_events::DevEvent::PageAck { target: "web".into(), ack });
+        }
+        true
+    }
+
+    /// Ask the watch loop running on this signal to rebuild now, as if a
+    /// save had needed it. Returns `false` when no watch loop is running
+    /// (a `--no-build` session, or before the initial build finished).
+    pub fn request_rebuild(&self) -> bool {
+        match self.rebuild.lock().unwrap().as_ref() {
+            Some(tx) => tx.send(WatchMsg::Rebuild).is_ok(),
+            None => false,
+        }
     }
 
     /// Current generation. `0` until the first successful build, then
@@ -203,17 +269,68 @@ impl ReloadSignal {
         self.push(PatchKind::Hot, json)
     }
 
+    /// Record a build-state event for the page ([`PageSink`]) and wake
+    /// listeners.
+    pub fn push_dev_state(&self, envelope: &dev_events::Envelope) -> u64 {
+        let Ok(json) = serde_json::to_string(envelope) else { return self.patch_seq() };
+        self.push_with(PatchKind::DevState, json, Some(envelope))
+    }
+
+    /// The page's view of the session as build-state events (JSON), and
+    /// the patch sequence they bring a listener up to. Taken under one
+    /// lock with [`Self::push`], so a listener that starts from this
+    /// sequence sees every later event exactly once.
+    pub fn dev_state_snapshot(&self) -> (Vec<String>, u64) {
+        let _patches = self.patches.lock().unwrap();
+        let events = self
+            .dev_state
+            .lock()
+            .unwrap()
+            .snapshot()
+            .iter()
+            .filter_map(|e| serde_json::to_string(e).ok())
+            .collect();
+        (events, self.patch_seq.load(Ordering::Acquire))
+    }
+
+    /// Serve `events` — the session's whole event stream — from the
+    /// servers holding this signal (`dev_http`'s `/__idealyst/events`).
+    pub fn serve_events(&self, events: Arc<dev_events::broadcast::Broadcast>) {
+        *self.events.lock().unwrap() = Some(events);
+    }
+
+    /// The event stream set by [`Self::serve_events`], if any.
+    pub fn events(&self) -> Option<Arc<dev_events::broadcast::Broadcast>> {
+        self.events.lock().unwrap().clone()
+    }
+
     fn push(&self, kind: PatchKind, json: String) -> u64 {
-        let seq = self.patch_seq.fetch_add(1, Ordering::AcqRel) + 1;
-        {
+        self.push_with(kind, json, None)
+    }
+
+    fn push_with(
+        &self,
+        kind: PatchKind,
+        json: String,
+        state: Option<&dev_events::Envelope>,
+    ) -> u64 {
+        let seq = {
             let mut patches = self.patches.lock().unwrap();
+            // Numbered under the lock, so the order of the sequence is the
+            // order of the buffer — and a snapshot taken under the same
+            // lock sees a sequence that matches its state.
+            let seq = self.patch_seq.load(Ordering::Acquire) + 1;
             patches.push(PushedPatch { seq, kind, json });
             let len = patches.len();
             if len > MAX_BUFFERED_PATCHES {
                 patches.drain(..len - MAX_BUFFERED_PATCHES);
             }
-        }
-        self.patch_seq.store(seq, Ordering::Release);
+            if let Some(envelope) = state {
+                self.dev_state.lock().unwrap().apply(envelope);
+            }
+            self.patch_seq.store(seq, Ordering::Release);
+            seq
+        };
         let _g = self.notify.0.lock().unwrap();
         self.notify.1.notify_all();
         seq
@@ -272,6 +389,47 @@ impl ReloadSignal {
                 );
             }
         }
+    }
+}
+
+/// Delivers the session's build state to connected pages, as `dev-state`
+/// events on the reload channel: the feed for the in-page status overlay
+/// `dev_http` injects.
+///
+/// A [`dev_events::Sink`] like any other. It forwards the page projection
+/// ([`dev_events::page::wants`]) of what the reporter emits, with cargo
+/// progress throttled to [`PAGE_PROGRESS_INTERVAL`] — a cold build
+/// compiles hundreds of crates, and a page needs a moving bar, not every
+/// step of it.
+pub struct PageSink {
+    signal: Arc<ReloadSignal>,
+    last_progress: Mutex<Option<std::time::Instant>>,
+}
+
+/// The fastest a page's progress bar is updated.
+pub const PAGE_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+impl PageSink {
+    pub fn new(signal: Arc<ReloadSignal>) -> Self {
+        Self { signal, last_progress: Mutex::new(None) }
+    }
+}
+
+impl dev_events::Sink for PageSink {
+    fn emit(&self, envelope: &dev_events::Envelope) {
+        if !dev_events::page::wants(&envelope.event) {
+            return;
+        }
+        if let dev_events::DevEvent::CargoProgress { compiled, total, .. } = &envelope.event {
+            let done = total.is_some_and(|t| *compiled >= t);
+            let mut last = self.last_progress.lock().unwrap();
+            let now = std::time::Instant::now();
+            if !done && last.is_some_and(|t| now.duration_since(t) < PAGE_PROGRESS_INTERVAL) {
+                return;
+            }
+            *last = Some(now);
+        }
+        self.signal.push_dev_state(envelope);
     }
 }
 
@@ -370,6 +528,8 @@ pub struct BuildOptions {
     /// framework-crate edit invalidating every workspace member
     /// downstream — over the leaf-only edit.
     pub dev_opt: build_web::DevOpt,
+    /// Where the watcher and each build report. See [`dev_events`].
+    pub reporter: dev_events::Reporter,
 }
 
 /// Run a single rebuild. Useful for callers that want one build
@@ -411,6 +571,7 @@ pub fn start(
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
+            reporter: dev_events::Reporter::default(),
         },
     )
 }
@@ -422,18 +583,47 @@ pub fn start_with(
     signal: Arc<ReloadSignal>,
     opts: BuildOptions,
 ) -> Result<JoinHandle<()>> {
-    eprintln!("[dev-reload] initial build…");
+    let reporter = opts.reporter.clone();
+    reporter.emit(dev_events::DevEvent::BuildStarted {
+        target: TARGET.into(),
+        cause: dev_events::BuildCause::Initial,
+    });
+    let started = std::time::Instant::now();
     // The initial build's result is irrelevant: gen 1 is the browsers'
     // first bundle whether the passes ran or were skipped.
-    let initial = build_wasm(dir, &opts).context("initial web build failed")?;
+    let initial = match build_wasm(dir, &opts) {
+        Ok(a) => a,
+        Err(e) => {
+            // Said as an event too, so a status view shows the failure
+            // before the error ends the session.
+            reporter.emit(dev_events::DevEvent::BuildFinished {
+                target: TARGET.into(),
+                outcome: dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+                ms: started.elapsed().as_millis() as u64,
+            });
+            return Err(e).context("initial web build failed");
+        }
+    };
     signal.set(1);
+    reporter.emit(dev_events::DevEvent::BuildFinished {
+        target: TARGET.into(),
+        outcome: dev_events::BuildOutcome::Ready { gen: 1 },
+        ms: started.elapsed().as_millis() as u64,
+    });
+    // Registered before the thread starts, so a rebuild requested the
+    // moment this returns is not lost.
+    let (tx, rx) = mpsc::channel();
+    *signal.rebuild.lock().unwrap() = Some(tx.clone());
 
     let dir_owned = dir.to_path_buf();
     thread::Builder::new()
         .name("idealyst-watch".into())
-        .spawn(move || watch_loop(dir_owned, signal, opts, initial))
+        .spawn(move || watch_loop(dir_owned, signal, opts, initial, tx, rx))
         .context("spawn watch thread")
 }
+
+/// The row the web watcher's events are filed under.
+const TARGET: &str = "web";
 
 /// Every LOCAL source root in `manifest_path`'s cargo dependency
 /// closure: `src/` plus `Cargo.toml` for the crate itself and for each
@@ -463,18 +653,26 @@ pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
     let dirs = match package_dirs(manifest_path) {
         Ok(d) if !d.is_empty() => d,
         Ok(_) => {
-            eprintln!(
-                "[dev-reload] cargo metadata listed no local packages for {}; \
-                 watching the project crate only",
-                manifest_path.display(),
+            // No reporter reaches this pub helper; the process-wide one
+            // is the session's under `idealyst dev`.
+            dev_events::global().warn(
+                "dev-reload",
+                format!(
+                    "cargo metadata listed no local packages for {}; \
+                     watching the project crate only",
+                    manifest_path.display(),
+                ),
             );
             vec![dir.to_path_buf()]
         }
         Err(e) => {
-            eprintln!(
-                "[dev-reload] could not resolve the dependency closure ({e:#}); \
-                 watching the project crate only — edits to sibling crates will \
-                 NOT rebuild",
+            dev_events::global().warn(
+                "dev-reload",
+                format!(
+                    "could not resolve the dependency closure ({e:#}); \
+                     watching the project crate only — edits to sibling crates will \
+                     NOT rebuild",
+                ),
             );
             vec![dir.to_path_buf()]
         }
@@ -539,9 +737,12 @@ fn unscanned_workspace(dir: &Path) -> dev_overlay::Workspace {
     match cargo_metadata(&dir.join("Cargo.toml")) {
         Ok(meta) => dev_overlay::Workspace::from_metadata(&meta, dir),
         Err(e) => {
-            eprintln!(
-                "[dev-reload] could not read the workspace ({e:#}); only saves in {package} \
-                 can be patched"
+            dev_events::global().warn(
+                "dev-reload",
+                format!(
+                    "could not read the workspace ({e:#}); only saves in {package} \
+                     can be patched"
+                ),
             );
             None
         }
@@ -641,6 +842,7 @@ struct HotPatchBase {
     /// capture wrapper, say. One message, then the tier stays quiet and
     /// every body edit rebuilds.
     retired: Option<String>,
+    reporter: dev_events::Reporter,
 }
 
 impl HotPatchBase {
@@ -656,6 +858,7 @@ impl HotPatchBase {
             artifact,
             builder: None,
             retired: None,
+            reporter: opts.reporter.clone(),
         }
     }
 
@@ -690,13 +893,16 @@ impl HotPatchBase {
                 build_web::patches_dir(&self.serve_root),
             ) {
                 Ok(builder) => {
-                    eprintln!(
-                        "[hotpatch] base indexed: {} functions reachable through the table \
-                         ({} of them a second name for one of the others)",
-                        builder.base_table_size(),
-                        builder.alias_count(),
+                    self.reporter.log(
+                        "hotpatch",
+                        format!(
+                            "base indexed: {} functions reachable through the table \
+                             ({} of them a second name for one of the others)",
+                            builder.base_table_size(),
+                            builder.alias_count(),
+                        ),
                     );
-                    self.builder = Some(builder);
+                    self.builder = Some(builder.reporting_to(self.reporter.clone()));
                 }
                 // Not retired: a base that could not be indexed once may
                 // index fine after the next rebuild, and retiring here
@@ -719,9 +925,12 @@ impl HotPatchBase {
         }
         let started = std::time::Instant::now();
         if self.ensure_builder().is_ok() {
-            eprintln!(
-                "[hotpatch] base indexed ahead of the first save in {} ms",
-                started.elapsed().as_millis()
+            self.reporter.log(
+                "hotpatch",
+                format!(
+                    "base indexed ahead of the first save in {} ms",
+                    started.elapsed().as_millis()
+                ),
             );
             // `IDEALYST_HOTPATCH_NO_SEED=1` skips it, for A/B timing of
             // the first save.
@@ -782,18 +991,24 @@ fn watch_loop(
     signal: Arc<ReloadSignal>,
     opts: BuildOptions,
     initial: build_web::BuildArtifact,
+    tx: mpsc::Sender<WatchMsg>,
+    rx: mpsc::Receiver<WatchMsg>,
 ) {
+    let reporter = opts.reporter.clone();
     // The hot-patch tier's builder, valid for the life of ONE base
     // build: it holds an index of the served module's function table,
     // which every rebuild invalidates. Rebuilt lazily on the first body
     // edit after each rebuild, so a session that never makes one never
     // pays to parse the module.
     let mut base = HotPatchBase::new(&dir, &opts, initial);
-    let (tx, rx) = mpsc::channel();
-    let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
+    // File events and rebuild requests share one inbox, so a request
+    // wakes the loop exactly as a save does.
+    let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
+        let _ = tx.send(WatchMsg::Fs(r));
+    }) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[dev-reload] could not start file watcher: {e}");
+            reporter.error("dev-reload", format!("could not start file watcher: {e}"));
             return;
         }
     };
@@ -804,14 +1019,15 @@ fn watch_loop(
             .watcher()
             .watch(path, RecursiveMode::Recursive)
         {
-            eprintln!("[dev-reload] cannot watch {}: {e}", path.display());
+            reporter.warn("dev-reload", format!("cannot watch {}: {e}", path.display()));
         }
     }
 
-    eprintln!(
-        "[dev-reload] watching {} for changes",
-        describe(&watch_paths),
-    );
+    reporter.emit(dev_events::DevEvent::Watching {
+        target: TARGET.into(),
+        roots: display_all(&watch_paths),
+        rewatch: false,
+    });
 
     // The descriptor sets describing the build now running, one per
     // crate of the app's workspace. Written HERE, before the first save,
@@ -828,89 +1044,116 @@ fn watch_loop(
     if ws.crates.len() > 1 {
         let libs: Vec<&str> =
             ws.crates.keys().filter(|p| **p != ws.tip).map(String::as_str).collect();
-        eprintln!("[dev-reload] workspace crates patchable with {}: {}", ws.tip, libs.join(", "));
+        reporter.log(
+            "dev-reload",
+            format!("workspace crates patchable with {}: {}", ws.tip, libs.join(", ")),
+        );
     }
 
-    while let Ok(events) = rx.recv() {
+    while let Ok(first) = rx.recv() {
         // Every batch's paths, not only the first's: a multi-file save
         // arrives as several batches, and a file only a later batch named
         // used to be left out of the decision (its crate's other edits
         // then went out as an overlay patch alone, or not at all).
-        let mut changed_paths = event_paths(&events);
-        for more in drain(&rx) {
-            changed_paths.extend(event_paths(&more));
-        }
+        let mut batch = vec![first];
+        batch.extend(drain(&rx));
         // Absorb the rest of the burst before starting the build —
         // otherwise a multi-file edit queues one full rebuild per file.
-        let settled = settle(&rx);
+        // A rebuild request skips the wait: someone asked for it now.
+        let forced = batch.iter().any(|m| matches!(m, WatchMsg::Rebuild));
+        let settled = if forced { Vec::new() } else { settle(&rx) };
         let folded = settled.len();
-        for more in &settled {
-            changed_paths.extend(event_paths(more));
+        batch.extend(settled);
+        let mut changed_paths = Vec::new();
+        let mut any_ok = false;
+        for msg in &batch {
+            if let WatchMsg::Fs(events) = msg {
+                any_ok |= events.is_ok();
+                changed_paths.extend(event_paths(events));
+            }
         }
-        if changed_paths.is_empty() && events.is_err() {
+        if !forced && changed_paths.is_empty() && !any_ok {
             continue;
         }
 
-        // Can this save skip the compiler? Decided BEFORE anything
-        // expensive starts, from the archives plus the new source. See
-        // `overlay_decide` for why the answer is conservative.
         let saved = read_saved(&ws, &changed_paths);
-        // A premint session baked its class names from every
-        // `stylesheet!` at start; a sheet edit there must rebuild even
-        // when the shape says body-only.
-        let premint = opts.premint || opts.premint_only;
-        let mut build_patch = |crates: &[build_web::hotpatch_build::PatchCrate]| {
-            let patch = base.patch(crates)?;
-            let json = base
-                .event_json(&patch)
-                .map_err(|e| format!("cannot encode the patch event ({e:#})"))?;
-            Ok(PatchEvent {
-                json,
-                redirected: patch.jump_table.map.len(),
-                timing: patch.timing_line(),
-            })
-        };
-        // No `drain` after a handled save: anything that arrived while it
-        // was handled is a save of its own, and the next iteration decides
-        // it against the archive installed here.
-        if let Handled::Done = handle_save(&mut ws, &dir, &saved, premint, &signal, &mut build_patch) {
-            continue;
+        if !changed_paths.is_empty() {
+            let mut crates: Vec<String> = saved.iter().map(|f| f.package.clone()).collect();
+            crates.dedup();
+            reporter.emit(dev_events::DevEvent::ChangeDetected {
+                target: TARGET.into(),
+                paths: display_all(&changed_paths),
+                crates,
+                folded,
+            });
         }
 
-        if folded > 0 {
-            eprintln!("[dev-reload] change detected (+{folded} more), rebuilding…");
+        let cause = if forced {
+            dev_events::BuildCause::Forced
         } else {
-            eprintln!("[dev-reload] change detected, rebuilding…");
-        }
+            // Can this save skip the compiler? Decided BEFORE anything
+            // expensive starts, from the archives plus the new source.
+            // See `overlay_decide` for why the answer is conservative.
+            //
+            // A premint session baked its class names from every
+            // `stylesheet!` at start; a sheet edit there must rebuild
+            // even when the shape says body-only.
+            let premint = opts.premint || opts.premint_only;
+            let mut build_patch = |crates: &[build_web::hotpatch_build::PatchCrate]| {
+                let patch = base.patch(crates)?;
+                let json = base
+                    .event_json(&patch)
+                    .map_err(|e| format!("cannot encode the patch event ({e:#})"))?;
+                Ok(PatchEvent {
+                    json,
+                    redirected: patch.jump_table.map.len(),
+                    steps: patch.steps(),
+                    crates: patch.crate_timings(),
+                    skipped: patch.skipped.clone(),
+                    bytes: patch.bytes(),
+                })
+            };
+            // No `drain` after a handled save: anything that arrived while
+            // it was handled is a save of its own, and the next iteration
+            // decides it against the archive installed here.
+            if let Handled::Done =
+                handle_save(&mut ws, &dir, &saved, premint, &signal, &reporter, &mut build_patch)
+            {
+                continue;
+            }
+            dev_events::BuildCause::Save { folded }
+        };
+
+        reporter.emit(dev_events::DevEvent::BuildStarted { target: TARGET.into(), cause });
+        let started = std::time::Instant::now();
         let built = rebuild_with_snapshot(&mut ws, &dir, || build_wasm(&dir, &opts));
-        match built.map(|a| {
+        let outcome = match built.map(|a| {
             let changed = a.wasm_changed;
             base.rebuilt(a);
             changed
         }) {
-            Ok(true) => {
-                let new_gen = signal.bump();
-                eprintln!("[dev-reload] rebuilt — gen={new_gen}");
-                // After the reload is signalled: the page reloads while
-                // the base is indexed, rather than the next save waiting
-                // on it.
-                base.warm(tip_seed(&ws));
-            }
+            Ok(true) => dev_events::BuildOutcome::Reloaded { gen: signal.bump() },
             // Cargo produced nothing new and the packaging passes were
             // skipped, so the served bundle is the one the browser
             // already has. A premint session is the exception: its
             // `pkg/premint.css` is regenerated from a native dump on
             // every rebuild and can move without the wasm moving.
             Ok(false) if !(opts.premint || opts.premint_only || opts.premint_report) => {
-                eprintln!("[dev-reload] wasm unchanged — packaging skipped, nothing to reload");
-                base.warm(tip_seed(&ws));
+                dev_events::BuildOutcome::Unchanged
             }
-            Ok(false) => {
-                let new_gen = signal.bump();
-                eprintln!("[dev-reload] wasm unchanged, premint refreshed — gen={new_gen}");
-                base.warm(tip_seed(&ws));
-            }
-            Err(e) => eprintln!("[dev-reload] rebuild failed: {e}"),
+            Ok(false) => dev_events::BuildOutcome::PremintRefreshed { gen: signal.bump() },
+            Err(e) => dev_events::BuildOutcome::Failed { error: e.to_string() },
+        };
+        let failed = matches!(outcome, dev_events::BuildOutcome::Failed { .. });
+        reporter.emit(dev_events::DevEvent::BuildFinished {
+            target: TARGET.into(),
+            outcome,
+            ms: started.elapsed().as_millis() as u64,
+        });
+        if !failed {
+            // After the reload is signalled: the page reloads while the
+            // base is indexed, rather than the next save waiting on it.
+            base.warm(tip_seed(&ws));
         }
 
         // The save may have edited a `Cargo.toml` and ADDED a path
@@ -930,14 +1173,15 @@ fn watch_loop(
                     .watcher()
                     .watch(path, RecursiveMode::Recursive)
                 {
-                    eprintln!("[dev-reload] cannot watch {}: {e}", path.display());
+                    reporter.warn("dev-reload", format!("cannot watch {}: {e}", path.display()));
                 }
             }
             watch_paths = fresh;
-            eprintln!(
-                "[dev-reload] dependencies changed — now watching {}",
-                describe(&watch_paths),
-            );
+            reporter.emit(dev_events::DevEvent::Watching {
+                target: TARGET.into(),
+                roots: display_all(&watch_paths),
+                rewatch: true,
+            });
         }
 
         // No `drain` here either: cargo writes under `target/` and
@@ -975,11 +1219,14 @@ enum Handled {
     Rebuild,
 }
 
-/// A built hot patch, as the loop pushes and logs it.
+/// A built hot patch, as the loop pushes and reports it.
 struct PatchEvent {
     json: String,
     redirected: usize,
-    timing: String,
+    steps: Vec<dev_events::Timing>,
+    crates: Vec<dev_events::CrateTiming>,
+    skipped: Vec<String>,
+    bytes: u64,
 }
 
 /// Decide a save and apply it if it can be patched: an overlay patch, or
@@ -998,34 +1245,45 @@ fn handle_save(
     saved: &[dev_overlay::SavedFile],
     premint: bool,
     signal: &ReloadSignal,
+    reporter: &dev_events::Reporter,
     build_patch: &mut dyn FnMut(
         &[build_web::hotpatch_build::PatchCrate],
     ) -> std::result::Result<PatchEvent, String>,
 ) -> Handled {
     let started = std::time::Instant::now();
+    let decided = |decision| {
+        reporter.emit(dev_events::DevEvent::Decided { target: TARGET.into(), decision })
+    };
     match ws.decide(saved, premint) {
         dev_overlay::WorkspaceDecision::Patch(patches) => {
             let count = patches.len();
+            decided(dev_events::Decision::Overlay { sites: count });
             for patch in &patches {
                 match serde_json::to_string(&overlay_decide::wire_payload(patch)) {
                     Ok(json) => {
                         signal.push_patch(json);
                     }
-                    Err(e) => eprintln!("[dev-reload] cannot encode patch: {e}"),
+                    Err(e) => reporter.error("dev-reload", format!("cannot encode patch: {e}")),
                 }
             }
             ws.advance(saved);
-            eprintln!(
-                "[dev] patched {count} site(s) in {} ms, no rebuild",
-                started.elapsed().as_millis()
-            );
+            reporter.emit(dev_events::DevEvent::OverlayPushed {
+                target: TARGET.into(),
+                sites: count,
+                ms: started.elapsed().as_millis() as u64,
+            });
             Handled::Done
         }
         dev_overlay::WorkspaceDecision::Unchanged if !saved.is_empty() => {
-            eprintln!("[dev] no UI or code change in this save, no rebuild");
+            decided(dev_events::Decision::Unchanged);
             Handled::Done
         }
-        dev_overlay::WorkspaceDecision::Unchanged => Handled::Rebuild,
+        dev_overlay::WorkspaceDecision::Unchanged => {
+            // Nothing the archives describe was saved (a deleted file, a
+            // path under no crate): rebuilding is the only honest answer.
+            decided(dev_events::Decision::Rebuild { reason: None });
+            Handled::Rebuild
+        }
         dev_overlay::WorkspaceDecision::HotPatch(plan) => {
             // A body edit: new CODE, which the overlay cannot carry.
             // Build a wasm patch and send it, so the page swaps the
@@ -1037,6 +1295,10 @@ fn handle_save(
             // running code the source no longer describes, with nothing
             // to say so.
             let crates = patch_crates(ws, &plan);
+            decided(dev_events::Decision::HotPatch {
+                crates: crates.iter().map(|c| c.crate_name.clone()).collect(),
+                files: plan.files.clone(),
+            });
             let read = ws.read_sources(plan.edited.iter().map(String::as_str));
             let tip = ws.tip.clone();
             let (built, scanned) = std::thread::scope(|scope| {
@@ -1049,26 +1311,30 @@ fn handle_save(
                     signal.push_hot_patch(event.json);
                     ws.install(scanned);
                     ws.note_patched(&plan);
-                    eprintln!(
-                        "[hotpatch] {} · {} function(s) redirected · {}",
-                        plan.files.join(", "),
-                        event.redirected,
-                        event.timing,
-                    );
+                    reporter.emit(dev_events::DevEvent::PatchBuilt {
+                        target: TARGET.into(),
+                        files: plan.files.clone(),
+                        crates: event.crates,
+                        redirected: event.redirected,
+                        steps: event.steps,
+                        skipped: event.skipped,
+                        bytes: event.bytes,
+                        ms: started.elapsed().as_millis() as u64,
+                    });
                     Handled::Done
                 }
                 Err(why) => {
-                    eprintln!(
-                        "[hotpatch] {} changed inside function bodies, but no patch: {why}; \
-                         rebuilding",
-                        plan.files.join(", "),
-                    );
+                    reporter.emit(dev_events::DevEvent::PatchFailed {
+                        target: TARGET.into(),
+                        files: plan.files.clone(),
+                        reason: why,
+                    });
                     Handled::Rebuild
                 }
             }
         }
         dev_overlay::WorkspaceDecision::Rebuild(why) => {
-            eprintln!("[dev] rebuilding: {why}");
+            decided(dev_events::Decision::Rebuild { reason: Some(why.to_string()) });
             Handled::Rebuild
         }
     }
@@ -1189,15 +1455,11 @@ fn patch_crates(
         .collect()
 }
 
-/// The watch set as one log-friendly line. Printed at startup and
-/// whenever it changes: a watcher that follows a dependency graph is
-/// only trustworthy if you can see what it decided to follow.
-fn describe(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+/// Paths as event data. The watch set is reported at startup and
+/// whenever it changes: a watcher that follows a dependency graph is only
+/// trustworthy if you can see what it decided to follow.
+fn display_all(paths: &[PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.display().to_string()).collect()
 }
 
 fn drain<T>(rx: &mpsc::Receiver<T>) -> Vec<T> {
@@ -1258,6 +1520,7 @@ pub fn start_watch<F>(
     paths: Vec<PathBuf>,
     signal: Arc<ReloadSignal>,
     label: &'static str,
+    reporter: dev_events::Reporter,
     mut on_change: F,
 ) -> Result<JoinHandle<()>>
 where
@@ -1270,7 +1533,7 @@ where
             let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("[dev-reload {label}] watcher init failed: {e}");
+                    reporter.error(format!("dev-reload {label}"), format!("watcher init failed: {e}"));
                     return;
                 }
             };
@@ -1286,20 +1549,17 @@ where
                     RecursiveMode::NonRecursive
                 };
                 if let Err(e) = debouncer.watcher().watch(path, mode) {
-                    eprintln!(
-                        "[dev-reload {label}] cannot watch {}: {e}",
-                        path.display()
+                    reporter.warn(
+                        format!("dev-reload {label}"),
+                        format!("cannot watch {}: {e}", path.display()),
                     );
                 }
             }
-            eprintln!(
-                "[dev-reload {label}] watching {}",
-                paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
+            reporter.emit(dev_events::DevEvent::Watching {
+                target: label.into(),
+                roots: display_all(&paths),
+                rewatch: false,
+            });
 
             while let Ok(events) = rx.recv() {
                 drain(&rx);
@@ -1309,21 +1569,21 @@ where
                 // This watcher re-runs one whole-directory sync, so which
                 // files the folded batches named does not matter.
                 let folded = settle(&rx).len();
-                if folded > 0 {
-                    eprintln!("[dev-reload {label}] change detected (+{folded} more)");
-                } else {
-                    eprintln!("[dev-reload {label}] change detected");
-                }
-                match on_change() {
-                    Ok(Rebuilt::Changed) => {
-                        let new_gen = signal.bump();
-                        eprintln!("[dev-reload {label}] regen complete — gen={new_gen}");
-                    }
-                    Ok(Rebuilt::Unchanged) => eprintln!(
-                        "[dev-reload {label}] rebuilt, artifact unchanged — nothing to do"
-                    ),
-                    Err(e) => eprintln!("[dev-reload {label}] regen failed: {e}"),
-                }
+                reporter.emit(dev_events::DevEvent::BuildStarted {
+                    target: label.into(),
+                    cause: dev_events::BuildCause::Save { folded },
+                });
+                let started = std::time::Instant::now();
+                let outcome = match on_change() {
+                    Ok(Rebuilt::Changed) => dev_events::BuildOutcome::Reloaded { gen: signal.bump() },
+                    Ok(Rebuilt::Unchanged) => dev_events::BuildOutcome::Unchanged,
+                    Err(e) => dev_events::BuildOutcome::Failed { error: e.to_string() },
+                };
+                reporter.emit(dev_events::DevEvent::BuildFinished {
+                    target: label.into(),
+                    outcome,
+                    ms: started.elapsed().as_millis() as u64,
+                });
                 drain(&rx);
             }
         })
@@ -1392,6 +1652,7 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // rebuild.
         prune_dead_data_min: None,
         premint,
+        reporter: opts.reporter.clone(),
     }
 }
 
@@ -1439,6 +1700,7 @@ mod tests {
             },
             builder: None,
             retired: None,
+            reporter: dev_events::Reporter::new(),
         }
     }
 
@@ -1594,7 +1856,26 @@ mod tests {
     }
 
     fn patched_ok() -> std::result::Result<PatchEvent, String> {
-        Ok(PatchEvent { json: "{}".into(), redirected: 1, timing: String::new() })
+        Ok(PatchEvent {
+            json: "{}".into(),
+            redirected: 1,
+            steps: vec![dev_events::Timing { name: "cargo".into(), ms: 5 }],
+            crates: Vec::new(),
+            skipped: Vec::new(),
+            bytes: 10,
+        })
+    }
+
+    /// A reporter whose events a test can read back.
+    fn capture() -> (dev_events::Reporter, dev_events::Queue) {
+        let r = dev_events::Reporter::new();
+        let q = dev_events::Queue::new();
+        r.add_sink(Arc::new(q.clone()));
+        (r, q)
+    }
+
+    fn events(q: &dev_events::Queue) -> Vec<dev_events::DevEvent> {
+        q.drain().into_iter().map(|e| e.event).collect()
     }
 
     /// Regression: after a hot patch the loop rescanned the crates from
@@ -1617,7 +1898,11 @@ mod tests {
             std::fs::write(&file, "pub fn v() -> u32 { 3 }\n").unwrap();
             patched_ok()
         };
-        assert!(matches!(handle_save(&mut ws, &root, &saved, false, &signal, &mut build), Handled::Done));
+        let (reporter, _) = capture();
+        assert!(matches!(
+            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build),
+            Handled::Done
+        ));
         assert_eq!(signal.patches_since(0).len(), 1);
 
         let next = read_saved(&ws, &[file.clone()]);
@@ -1625,6 +1910,130 @@ mod tests {
             matches!(ws.decide(&next, false), dev_overlay::WorkspaceDecision::HotPatch(_)),
             "the save made during the patch must be decided as a change of its own"
         );
+    }
+
+    /// A body edit that patches reports its decision, then the patch
+    /// with the plan's files and the builder's timings — what the panel
+    /// and the JSON sink read to say "patched in N ms".
+    #[test]
+    fn a_patched_save_reports_its_decision_and_the_patch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let file = root.join("lab-shared/src/lib.rs");
+        std::fs::write(&file, "pub fn v() -> u32 { 2 }\n").unwrap();
+        let saved = read_saved(&ws, &[file]);
+        let signal = ReloadSignal::new();
+        let (reporter, q) = capture();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build);
+        let got = events(&q);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            got[0],
+            dev_events::DevEvent::Decided {
+                target: "web".into(),
+                decision: dev_events::Decision::HotPatch {
+                    crates: vec!["lab_shared".into(), "app".into()],
+                    files: vec!["lab-shared/src/lib.rs".into()],
+                },
+            }
+        );
+        let dev_events::DevEvent::PatchBuilt { files, redirected, steps, bytes, .. } = &got[1] else {
+            panic!("expected the built patch, got {:?}", got[1]);
+        };
+        assert_eq!(files, &vec!["lab-shared/src/lib.rs".to_string()]);
+        assert_eq!((*redirected, *bytes), (1, 10));
+        assert_eq!(steps[0].name, "cargo");
+    }
+
+    /// A patch that cannot be built says why and hands the save to the
+    /// rebuild — the event the plain sink prints as `[hotpatch] … but no
+    /// patch: …; rebuilding`.
+    #[test]
+    fn a_failed_patch_reports_the_reason_and_rebuilds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let file = root.join("lab-shared/src/lib.rs");
+        std::fs::write(&file, "pub fn v() -> u32 { 2 }\n").unwrap();
+        let saved = read_saved(&ws, &[file]);
+        let signal = ReloadSignal::new();
+        let (reporter, q) = capture();
+        let mut build =
+            |_: &[build_web::hotpatch_build::PatchCrate]| Err("no capture".to_string());
+        assert!(matches!(
+            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build),
+            Handled::Rebuild
+        ));
+        assert!(signal.patches_since(0).is_empty());
+        assert_eq!(
+            events(&q).last(),
+            Some(&dev_events::DevEvent::PatchFailed {
+                target: "web".into(),
+                files: vec!["lab-shared/src/lib.rs".into()],
+                reason: "no capture".into(),
+            })
+        );
+    }
+
+    /// A shape edit is decided as a rebuild, with the decision's reason.
+    #[test]
+    fn a_shape_edit_reports_a_rebuild_with_its_reason() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let file = root.join("lab-shared/src/lib.rs");
+        std::fs::write(&file, "pub fn v(n: u32) -> u32 { n }\n").unwrap();
+        let saved = read_saved(&ws, &[file]);
+        let signal = ReloadSignal::new();
+        let (reporter, q) = capture();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        assert!(matches!(
+            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build),
+            Handled::Rebuild
+        ));
+        let got = events(&q);
+        let [dev_events::DevEvent::Decided {
+            decision: dev_events::Decision::Rebuild { reason: Some(why) },
+            ..
+        }] = got.as_slice()
+        else {
+            panic!("expected one rebuild decision, got {got:?}");
+        };
+        assert!(why.contains("lab-shared/src/lib.rs"), "{why}");
+    }
+
+    /// A page's ack reaches the session as a typed event; a body this
+    /// version does not understand is refused, not guessed at.
+    #[test]
+    fn a_page_ack_is_reported_as_an_event() {
+        let signal = ReloadSignal::new();
+        // Nobody listening: parsed and dropped.
+        assert!(signal.page_ack(r#"{"kind":"connected","gen":1}"#));
+        let (reporter, q) = capture();
+        signal.report_acks_to(reporter);
+        assert!(signal.page_ack(r#"{"kind":"hot_patch","redirected":3,"carried":2}"#));
+        assert!(!signal.page_ack(r#"{"kind":"teleported"}"#));
+        assert!(!signal.page_ack("not json"));
+        assert_eq!(
+            events(&q),
+            vec![dev_events::DevEvent::PageAck {
+                target: "web".into(),
+                ack: dev_events::PageAck::HotPatch { redirected: Some(3), carried: Some(2) },
+            }]
+        );
+    }
+
+    /// A rebuild request needs a running watch loop to go to.
+    #[test]
+    fn a_rebuild_request_reaches_the_watch_loop_inbox() {
+        let signal = ReloadSignal::new();
+        assert!(!signal.request_rebuild(), "no loop yet: the request must say it went nowhere");
+        let (tx, rx) = mpsc::channel();
+        *signal.rebuild.lock().unwrap() = Some(tx);
+        assert!(signal.request_rebuild());
+        assert!(matches!(rx.try_recv(), Ok(WatchMsg::Rebuild)));
     }
 
     /// Regression: a FAILED rebuild still rescanned, so the archives
@@ -1770,6 +2179,7 @@ mod tests {
             wasm_split: true,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
+            reporter: dev_events::Reporter::new(),
         }
     }
 
@@ -2011,6 +2421,94 @@ mod tests {
         );
         let seqs: Vec<_> = signal.patches_since(0).iter().map(|p| p.seq).collect();
         assert_eq!(seqs, vec![1, 2, 3], "one sequence, not one per tier");
+    }
+
+    fn dev_state(seq: u64, event: dev_events::DevEvent) -> dev_events::Envelope {
+        dev_events::Envelope { v: dev_events::SCHEMA_VERSION, seq, at_ms: seq, event }
+    }
+
+    /// Build state rides the patches' channel: the page sees "patched"
+    /// after the patch itself, never before, whatever the kinds.
+    #[test]
+    fn dev_state_is_ordered_with_the_patches() {
+        let signal = ReloadSignal::new();
+        let web = || "web".to_string();
+        signal.push_dev_state(&dev_state(
+            1,
+            dev_events::DevEvent::Decided {
+                target: web(),
+                decision: dev_events::Decision::Overlay { sites: 1 },
+            },
+        ));
+        signal.push_patch("{\"a\":1}".into());
+        signal.push_dev_state(&dev_state(
+            2,
+            dev_events::DevEvent::OverlayPushed { target: web(), sites: 1, ms: 3 },
+        ));
+        signal.push_hot_patch("{\"b\":2}".into());
+        let kinds: Vec<_> = signal.patches_since(0).iter().map(|p| p.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![PatchKind::DevState, PatchKind::Overlay, PatchKind::DevState, PatchKind::Hot]
+        );
+        assert_eq!(PatchKind::DevState.sse_event(), "dev-state");
+    }
+
+    /// A page connecting mid-way gets the state as a snapshot, with the
+    /// sequence to continue from — so nothing is both in the snapshot and
+    /// sent again, and nothing after it is missed.
+    #[test]
+    fn a_connecting_page_gets_the_state_then_only_what_follows() {
+        let signal = ReloadSignal::new();
+        let web = || "web".to_string();
+        signal.push_dev_state(&dev_state(
+            1,
+            dev_events::DevEvent::BuildStarted {
+                target: web(),
+                cause: dev_events::BuildCause::Save { folded: 0 },
+            },
+        ));
+        signal.push_patch("{}".into());
+        let (snapshot, seq) = signal.dev_state_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot[0].contains("\"type\":\"build_started\""), "{snapshot:?}");
+        assert_eq!(seq, 2);
+        signal.push_dev_state(&dev_state(
+            3,
+            dev_events::DevEvent::BuildFinished {
+                target: web(),
+                outcome: dev_events::BuildOutcome::Failed { error: "E0308".into() },
+                ms: 5,
+            },
+        ));
+        let after: Vec<_> = signal.patches_since(seq).iter().map(|p| p.kind).collect();
+        assert_eq!(after, vec![PatchKind::DevState]);
+    }
+
+    /// The page sink forwards the page's projection only, and throttles
+    /// cargo progress — but never drops the final count.
+    #[test]
+    fn the_page_sink_projects_and_throttles() {
+        use dev_events::Sink;
+        let signal = ReloadSignal::new();
+        let sink = PageSink::new(signal.clone());
+        let web = || "web".to_string();
+        sink.emit(&dev_state(1, dev_events::DevEvent::Log { source: "dev".into(), line: "x".into() }));
+        for (i, compiled) in [1u32, 2, 3, 4, 10].into_iter().enumerate() {
+            sink.emit(&dev_state(
+                2 + i as u64,
+                dev_events::DevEvent::CargoProgress {
+                    target: web(),
+                    compiled,
+                    total: Some(10),
+                    current: None,
+                },
+            ));
+        }
+        let sent: Vec<String> = signal.patches_since(0).into_iter().map(|p| p.json).collect();
+        assert!(sent.iter().all(|j| !j.contains("\"type\":\"log\"")), "{sent:?}");
+        assert_eq!(sent.len(), 2, "the first count and the final one: {sent:?}");
+        assert!(sent[1].contains("\"compiled\":10"));
     }
 
     /// A listener catches up by sequence regardless of kind, so a page

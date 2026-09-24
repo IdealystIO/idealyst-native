@@ -50,6 +50,10 @@ runtime-template = { workspace = true }
 sha2 = { workspace = true }
 dev-http = { workspace = true }
 dev-reload = { workspace = true }
+# The session's reporting: every dev-loop line is a typed event, fanned
+# out to the terminal (plain lines or the panel), the session log, and
+# `--events`/`--events-file` JSON.
+dev-events = { workspace = true, features = ["schema"] }
 # Robot bridge relay for `dev --web --local --robot`: the dev process hosts a
 # relay the browser app dials, exposing its Robot bridge to the MCP server.
 robot-relay = { workspace = true }

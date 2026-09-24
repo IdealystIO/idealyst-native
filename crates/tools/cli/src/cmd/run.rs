@@ -582,6 +582,8 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 hot_patch: false,
                 debuginfo: build_web::DebugInfo::default(),
                 dev_opt: build_web::DevOpt::default(),
+                // Plain lines on stderr, as this command always printed.
+                reporter: dev_events::Reporter::default(),
             },
         )
         .context("web bundle build for `run server` failed")?;

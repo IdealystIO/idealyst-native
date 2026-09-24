@@ -627,6 +627,8 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // otherwise the bundle has neither build-time classes nor a
             // runtime to mint them, and every styled node panics.
             premint: args.premint || args.premint_only || args.premint_report,
+            // Plain lines on stderr, as this command always printed.
+            reporter: dev_events::Reporter::default(),
         },
     )?;
     let bundle = artifact

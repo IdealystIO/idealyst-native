@@ -37,6 +37,7 @@ pub const PREMINT_CSS_NAME: &str = "premint.css";
 /// dir (the parent of the wasm `wrapper/`); the dump crate lands in a
 /// `premint-dump/` sibling.
 pub(crate) fn generate_and_run_dump(
+    reporter: &dev_events::Reporter,
     wrapper_root: &Path,
     project_dir: &Path,
     source: &FrameworkSource,
@@ -58,23 +59,23 @@ pub(crate) fn generate_and_run_dump(
     } else {
         format!("{existing} --cfg idealyst_premint_dump")
     };
-    eprintln!("[build-web] premint dump: cargo build (in {})", dump_dir.display());
-    let status = Command::new("cargo")
-        .arg("build")
-        .current_dir(&dump_dir)
-        .env("RUSTFLAGS", rustflags)
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
+    reporter.log("build-web", format!("premint dump: cargo build (in {})", dump_dir.display()));
+    let (status, _) = dev_events::process::run_cargo(
+        Command::new("cargo").arg("build").current_dir(&dump_dir).env("RUSTFLAGS", rustflags),
+        reporter,
+        "web",
+        None,
+    )
+    .with_context(|| "spawn `cargo` — is it on your PATH?")?;
     if !status.success() {
         anyhow::bail!("cargo build failed for the premint dump wrapper at {}", dump_dir.display());
     }
 
     let out_css = dump_dir.join("premint-out.css");
     let binary = dump_dir.join("target/debug/premint-dump");
-    let status = Command::new(&binary)
-        .arg(&out_css)
-        .status()
-        .with_context(|| format!("run premint dump binary {}", binary.display()))?;
+    let status =
+        dev_events::process::run_lines(Command::new(&binary).arg(&out_css), reporter, "premint-dump")
+            .with_context(|| format!("run premint dump binary {}", binary.display()))?;
     if !status.success() {
         anyhow::bail!("premint dump binary failed ({})", binary.display());
     }

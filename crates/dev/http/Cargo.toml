@@ -22,5 +22,9 @@ dev-reload = { workspace = true }
 # of preload tags from the same TOML list.
 build-ios = { workspace = true }
 
+# The server's own lines are dev-loop events (see `dev_events::global`).
+dev-events = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
+serde_json = { workspace = true }

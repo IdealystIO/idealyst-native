@@ -1,121 +1,49 @@
 //! Interactive panel for `idealyst dev --interactive`.
 //!
 //! Boots the framework's terminal backend ([`host_terminal::run`]) and
-//! mounts a tiny idealyst app that surfaces per-target build/run state
-//! plus the live `[dev …]` log stream the CLI is otherwise printing to
-//! stderr. Worker threads in `cmd/dev.rs` push events through a
-//! [`DevBus`]; a per-frame drain on the panel side hands them to the
-//! reactive system.
+//! mounts a tiny idealyst app that shows the session's event stream. The
+//! CLI's session reporter feeds a [`dev_events::Queue`]; a per-frame
+//! drain on the panel side hands the events to the reactive system.
 //!
-//! Scope of this scaffold:
-//!   - Render a header strip, a static target list, and a scrolling
-//!     log view fed by [`DevBus::log`].
-//!   - Quit on `q` / `Esc` / `Ctrl-C` (handled by host-terminal).
-//!
-//! Out of scope until follow-up:
-//!   - Reactive per-target state machine (queued / building / running).
-//!   - Rebuild keybindings, log filter cycling, expand-error overlay.
-//!
-//! Cross-thread shape: workers run off-main; the framework's reactive
-//! arena is TLS-bound and single-threaded. Workers push into a
-//! `Mutex<Vec<…>>` inside [`DevBus`], and a `raf_loop` callback on the
-//! main thread drains it into the panel's `Signal<Vec<…>>`. Mirrors
-//! the pattern `RuntimeServerShell` uses to bridge wire events into
-//! the reactive tree.
+//! Cross-thread shape: the dev loop emits from worker threads; the
+//! framework's reactive arena is TLS-bound and single-threaded. Events
+//! land in the queue, and a `raf_loop` callback on the main thread drains
+//! it into the panel's signals. Mirrors the pattern `RuntimeServerShell`
+//! uses to bridge wire events into the reactive tree.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use dev_events::Queue;
 
 use runtime_core::{raf_loop, signal, text, view, Element, Signal};
 
-/// One line of log output, scoped to the target that produced it.
+/// One line of log output, scoped to the source that produced it.
 ///
 /// `PartialEq` because the panel keeps the ring buffer in a `Signal`, and
 /// the world kernel's signals are equality-guarded (`T: PartialEq`) —
 /// a drain that produced no change must not re-render the log view.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogLine {
-    /// Target tag — `"dev"`, `"dev web"`, `"host"`, etc. Mirrors the
-    /// existing `[dev …]` prefix the CLI prints today so the user sees
-    /// the same shape they're used to.
-    pub tag: String,
-    /// The line itself, sans trailing newline.
+    /// The line as the plain sink renders it.
     pub message: String,
 }
 
-/// Targets the panel knows how to display. The CLI passes these in at
-/// startup so the target list reflects what's actually running this
-/// session.
-#[derive(Clone, Debug)]
-pub struct TargetInfo {
-    /// Human-readable name — `"web"`, `"ios"`, `"android"`, etc.
-    pub name: String,
-}
-
-/// Cross-thread event bus shared between the CLI's worker threads and
-/// the panel app running on the main thread. Push side is `Send`;
-/// drain side is called only from the panel's `raf_loop`.
-#[derive(Clone, Default)]
-pub struct DevBus {
-    inner: Arc<Inner>,
-}
-
-#[derive(Default)]
-struct Inner {
-    /// Worker threads append here; the panel drains on each frame.
-    log_queue: Mutex<Vec<LogLine>>,
-}
-
-impl DevBus {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Push a log line. Safe to call from any thread.
-    pub fn log(&self, tag: impl Into<String>, message: impl Into<String>) {
-        let line = LogLine {
-            tag: tag.into(),
-            message: message.into(),
-        };
-        if let Ok(mut q) = self.inner.log_queue.lock() {
-            q.push(line);
-        }
-    }
-
-    fn drain(&self) -> Vec<LogLine> {
-        match self.inner.log_queue.lock() {
-            Ok(mut q) => std::mem::take(&mut *q),
-            Err(_) => Vec::new(),
-        }
-    }
-}
-
 /// Options for [`run`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RunOptions {
-    /// Project name shown in the header bar.
-    pub project_name: String,
-    /// Active targets to surface in the target list.
-    pub targets: Vec<TargetInfo>,
-    /// `true` when `--runtime-server` is on; the header reflects it.
-    pub runtime_server: bool,
+    /// The session's targets.
+    pub targets: Vec<String>,
+    /// Called when the user asks for a rebuild.
+    pub on_rebuild: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Boot the panel. Blocks until the user quits (q / Esc / Ctrl-C).
 ///
 /// The framework's terminal host owns stdio for the lifetime of this
 /// call — raw mode + alternate screen come up before mount and tear
-/// down on return. The `DevBus` is the only conduit for log/state
-/// data; CLI workers must publish through it (direct `eprintln!`
-/// during this window would corrupt the cell grid; the host installs
-/// an `StderrRedirect` to `.idealyst/terminal.log` so stray prints
-/// land in a file instead).
-pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError> {
-    // Capture for the app closure. `host_terminal::run` requires
-    // `Fn() -> Element + 'static`; the bus + opts get cloned in
-    // once and the closure is re-invokable.
-    let bus_for_app = bus.clone();
-    let opts_for_app = opts.clone();
-
+/// down on return. `events` is the session's event queue; the panel
+/// drains it once per frame.
+pub fn run(events: Queue, opts: RunOptions) -> Result<(), host_terminal::RunError> {
     let host_opts = host_terminal::RunOptions {
         // ASCII redraw is cheap and the log stream's perceived
         // smoothness is what matters here. 30 fps matches the
@@ -128,7 +56,7 @@ pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError>
     };
 
     host_terminal::run(
-        move || build_panel(bus_for_app.clone(), opts_for_app.clone()),
+        move || build_panel(events.clone(), opts.clone()),
         host_opts,
         // dev-tui's panel is built from plain primitives — no SDK scene
         // handlers to install, so the boot seam's `register` argument is
@@ -140,7 +68,7 @@ pub fn run(bus: DevBus, opts: RunOptions) -> Result<(), host_terminal::RunError>
 
 /// Construct the panel's primitive tree. Called once per mount; the
 /// framework's reactive system handles re-renders via signals.
-fn build_panel(bus: DevBus, opts: RunOptions) -> Element {
+fn build_panel(bus: Queue, opts: RunOptions) -> Element {
     install_theme_once();
 
     // Backing store for the log view. Workers push into `bus`; the
@@ -159,7 +87,12 @@ fn build_panel(bus: DevBus, opts: RunOptions) -> Element {
         let bus = bus.clone();
         let log_lines = log_lines;
         let _loop = raf_loop(move || {
-            let pending = bus.drain();
+            let pending: Vec<LogLine> = bus
+                .drain()
+                .iter()
+                .filter_map(|e| dev_events::plain::render(&e.event))
+                .map(|m| LogLine { message: dev_events::plain::strip_ansi(&m) })
+                .collect();
             if pending.is_empty() {
                 return;
             }
@@ -181,19 +114,12 @@ fn build_panel(bus: DevBus, opts: RunOptions) -> Element {
         std::mem::forget(_loop);
     }
 
-    let header_line = format!(
-        "idealyst dev · {} · {}",
-        opts.project_name,
-        if opts.runtime_server { "runtime-server" } else { "local" },
-    );
+    let header_line = "idealyst dev".to_string();
+    let _ = &opts.on_rebuild;
     let target_names = if opts.targets.is_empty() {
         "(no targets)".to_string()
     } else {
-        opts.targets
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect::<Vec<_>>()
-            .join("  ")
+        opts.targets.join("  ")
     };
 
     let footer_line = "q quit · ↑/↓ scroll · ? help";
@@ -220,9 +146,6 @@ fn render_log(lines: &[LogLine]) -> String {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push('[');
-        out.push_str(&line.tag);
-        out.push_str("] ");
         out.push_str(&line.message);
     }
     out

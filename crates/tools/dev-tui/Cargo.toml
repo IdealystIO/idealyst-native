@@ -12,6 +12,8 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
+# The session's events: the panel drains the dev loop's queue each frame.
+dev-events = { workspace = true }
 # The author surface. `runtime-core` is the crate this panel aliases to
 # `runtime_core` at its root (see src/lib.rs) — one core, no feature
 # switch. The panel builds its tree from the plain `view()` / `text()`

@@ -2002,6 +2002,7 @@ dependencies = [
  "brotli 7.0.0",
  "build-ios",
  "build-runtime-server",
+ "dev-events",
  "flate2",
  "icon-gen",
  "serde_json",
@@ -3375,6 +3376,8 @@ dependencies = [
 name = "dev-events"
 version = "1.5.2"
 dependencies = [
+ "dev-events",
+ "schemars",
  "serde",
  "serde_json",
 ]
@@ -3395,7 +3398,9 @@ version = "1.5.2"
 dependencies = [
  "anyhow",
  "build-ios",
+ "dev-events",
  "dev-reload",
+ "serde_json",
  "tempfile",
  "tiny_http",
 ]
@@ -3422,6 +3427,7 @@ dependencies = [
  "anyhow",
  "build-ios",
  "build-web",
+ "dev-events",
  "dev-overlay",
  "notify-debouncer-mini",
  "serde_json",
@@ -3438,6 +3444,7 @@ dependencies = [
  "anyhow",
  "base64",
  "ctrlc",
+ "dev-events",
  "dev-hot",
  "dev-overlay",
  "headless-screenshot",
@@ -3465,6 +3472,7 @@ name = "dev-tui"
 version = "1.5.2"
 dependencies = [
  "backend-terminal",
+ "dev-events",
  "host-terminal",
  "idea-ui",
  "runtime-core",
@@ -6291,6 +6299,7 @@ dependencies = [
  "clap",
  "configure",
  "ctrlc",
+ "dev-events",
  "dev-http",
  "dev-reload",
  "dev-tui",

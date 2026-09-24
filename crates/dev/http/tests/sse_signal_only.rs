@@ -119,13 +119,16 @@ fn the_script_calls_the_hot_patch_name_and_reloads_when_it_is_missing() {
         .split(r#"addEventListener("hot-patch""#)
         .nth(1)
         .expect("the hot-patch handler");
+    // The branch taken when the page has no applier, up to its `return`.
+    // (It also acks the failure to the dev session first.)
     let missing = handler
-        .split("this bundle has no patch applier")
+        .split(r#"typeof apply !== "function""#)
         .nth(1)
         .expect("the no-applier branch");
+    let branch = &missing[..missing.find("return;").expect("the branch returns")];
     assert!(
-        missing[..60.min(missing.len())].contains("location.reload()"),
-        "a bundle with no applier must reload, not carry on: {missing}"
+        branch.contains("location.reload()"),
+        "a bundle with no applier must reload, not carry on: {branch}"
     );
 }
 

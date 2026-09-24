@@ -116,8 +116,15 @@ pub fn spawn_change_loop(
         for evt in rx {
             match evt {
                 Ok(ref ev) if !ev.is_empty() => {
-                    eprintln!("[dev-server] change detected ({} event(s))", ev.len());
+                    let reporter = dev_events::global();
+                    reporter.log("dev-server", format!("change detected ({} event(s))", ev.len()));
                     let paths: Vec<PathBuf> = ev.iter().map(|e| e.path.clone()).collect();
+                    reporter.emit(dev_events::DevEvent::ChangeDetected {
+                        target: crate::EVENTS_TARGET.into(),
+                        paths: paths.iter().map(|p| p.display().to_string()).collect(),
+                        crates: Vec::new(),
+                        folded: 0,
+                    });
                     on_change(&paths);
                 }
                 Ok(_) => {}

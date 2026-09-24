@@ -9,6 +9,9 @@ description = "Watch + wasm-pack rebuild loop for `idealyst dev` reload mode"
 publish = false
 
 [dependencies]
+# Everything the watcher reports is a typed dev-loop event: the change,
+# the decision, the patch or the rebuild, and the page's ack of it.
+dev-events = { workspace = true }
 # The patch-or-rebuild decision, and the descriptor archive it reads.
 # Its own crate because the runtime-server host needs the same decision
 # and must not pull this crate's bundler in to get it.

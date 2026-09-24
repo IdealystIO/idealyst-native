@@ -61,6 +61,24 @@ pub struct DevConfig {
     /// ```
     #[serde(default)]
     pub cache: Option<CacheConfig>,
+
+    /// Shell commands run on dev-session events: the simplest way to hook
+    /// into a session from outside. Each key is an event kind — an event's
+    /// `type` (`patch_built`, `build_finished`, …) or one of the derived
+    /// kinds `build_failed` and `patched` (any tier: overlay, hot patch,
+    /// sidecar) — and each value a command, run with `sh -c` in the
+    /// project directory with the event's JSON object (the same one
+    /// `--events-file` writes) on stdin and its kind in
+    /// `IDEALYST_EVENT_KIND`. Hooks run in the background; one that fails
+    /// is reported as a warning and the session carries on.
+    ///
+    /// ```toml
+    /// [hooks]
+    /// build_failed = "osascript -e 'display notification \"build failed\"'"
+    /// patched = "jq -r .type >> .idealyst/patches.log"
+    /// ```
+    #[serde(default)]
+    pub hooks: std::collections::BTreeMap<String, String>,
 }
 
 /// The `[cache]` block in `dev.toml`.

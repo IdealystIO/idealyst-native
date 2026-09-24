@@ -167,6 +167,10 @@ pub fn run(
     cfg: HostConfig,
     hot_patch: Option<Box<dyn HotPatchAdapter>>,
 ) -> std::io::Result<()> {
+    // The save path's facts are events: marked lines on stderr for the
+    // `idealyst dev` that spawned this host (it reads the pipe and turns
+    // them back into events), plain lines when run by hand.
+    dev_events::install_global(dev_events::child::reporter_from_env());
     let HostConfig {
         bind_addr,
         sidecar_path,
@@ -405,6 +409,13 @@ pub fn run(
             // unreadable archive means "cannot tell", and cannot-tell
             // respawns.
             let mut hot_patch_allowed = false;
+            let reporter = dev_events::global();
+            let decided = |decision| {
+                reporter.emit(dev_events::DevEvent::Decided {
+                    target: crate::EVENTS_TARGET.into(),
+                    decision,
+                })
+            };
             if let (Some(dir), Some(archive)) =
                 (overlay_crate_dir.as_ref(), overlay_archive.as_ref())
             {
@@ -413,27 +424,35 @@ pub fn run(
                 match dev_overlay::decide(Some(archive), &files) {
                     dev_overlay::Decision::Patch(patches) => {
                         let count = patches.len();
+                        decided(dev_events::Decision::Overlay { sites: count });
                         send_overlay_patches(&overlay_sidecar, &patches);
                         if let Some(archive) = overlay_archive.as_mut() {
                             dev_overlay::advance_archive(archive, &files);
                         }
-                        eprintln!(
-                            "[dev] patched {count} site(s) in {} ms, no rebuild",
-                            started.elapsed().as_millis()
-                        );
+                        reporter.emit(dev_events::DevEvent::OverlayPushed {
+                            target: crate::EVENTS_TARGET.into(),
+                            sites: count,
+                            ms: started.elapsed().as_millis() as u64,
+                        });
                         return;
                     }
                     dev_overlay::Decision::HotPatch(files) => {
-                        eprintln!("[dev] hot-patching bodies in: {}", files.join(", "));
+                        reporter.log("dev", format!("hot-patching bodies in: {}", files.join(", ")));
+                        decided(dev_events::Decision::HotPatch {
+                            crates: vec![user_crate_for_rebuild.clone()],
+                            files: files.clone(),
+                        });
                         hot_patch_allowed = true;
                     }
                     dev_overlay::Decision::Unchanged if !files.is_empty() => {
-                        eprintln!("[dev] no UI or code change in this save, no rebuild");
+                        decided(dev_events::Decision::Unchanged);
                         return;
                     }
-                    dev_overlay::Decision::Unchanged => {}
+                    dev_overlay::Decision::Unchanged => {
+                        decided(dev_events::Decision::Rebuild { reason: None });
+                    }
                     dev_overlay::Decision::Rebuild(why) => {
-                        eprintln!("[dev] rebuilding: {why}");
+                        decided(dev_events::Decision::Rebuild { reason: Some(why.to_string()) });
                     }
                 }
             }
@@ -472,10 +491,12 @@ pub fn run(
                 if !note_respawn(respawn_adapter, &sidecar_path_for_rebuild) {
                     retired.set(true);
                 }
-                eprintln!(
-                    "[runtime-server-host] respawn applied in {}ms ({why})",
-                    t_total.elapsed().as_millis()
-                );
+                reporter.emit(dev_events::DevEvent::SidecarApplied {
+                    target: crate::EVENTS_TARGET.into(),
+                    how: dev_events::SidecarUpdate::Respawn,
+                    ms: t_total.elapsed().as_millis() as u64,
+                    reason: Some(why.to_string()),
+                });
             };
             if force_respawn {
                 respawn("force_respawn");
@@ -484,14 +505,19 @@ pub fn run(
             }
             if let Err(e) = try_hotpatch(adapter, &sidecar_for_rebuild, &user_crate_for_rebuild) {
                 if adapter.is_some() {
-                    eprintln!("[runtime-server-host] hot-patch failed: {e:#} — respawning sidecar");
+                    reporter.warn(
+                        "runtime-server-host",
+                        format!("hot-patch failed: {e:#} — respawning sidecar"),
+                    );
                 }
                 respawn("rebuild");
             } else {
-                eprintln!(
-                    "[runtime-server-host] hot-patch applied in {}ms",
-                    t_total.elapsed().as_millis()
-                );
+                reporter.emit(dev_events::DevEvent::SidecarApplied {
+                    target: crate::EVENTS_TARGET.into(),
+                    how: dev_events::SidecarUpdate::HotPatch,
+                    ms: t_total.elapsed().as_millis() as u64,
+                    reason: None,
+                });
             }
             // Either way the running binary is not the one the archive
             // describes any more: a rebuild relinks it, and a hot patch

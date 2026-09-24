@@ -121,32 +121,34 @@ impl BuiltPatch {
         self.timings.iter().map(|(_, d)| *d).sum()
     }
 
-    pub fn timing_line(&self) -> String {
-        let parts: Vec<String> = self
-            .timings
+    /// Each step's wall time, as event data.
+    pub fn steps(&self) -> Vec<dev_events::Timing> {
+        self.timings.iter().map(|(name, d)| dev_events::Timing::new(*name, *d)).collect()
+    }
+
+    /// Each carried crate's replay time (`None`: objects reused).
+    pub fn crate_timings(&self) -> Vec<dev_events::CrateTiming> {
+        self.crates
             .iter()
-            .map(|(name, d)| format!("{name} {}ms", d.as_millis()))
-            .collect();
-        let line = format!("{} (total {}ms)", parts.join(" · "), self.total().as_millis());
-        let line = if self.skipped.is_empty() {
-            line
-        } else {
-            format!("{line} (not in the wasm build: {})", self.skipped.join(", "))
-        };
-        if self.crates.len() < 2 {
-            return line;
-        }
-        // Several crates replay concurrently, so `cargo` above is the
-        // slowest of them; this says which.
-        let crates: Vec<String> = self
-            .crates
-            .iter()
-            .map(|(name, d)| match d {
-                Some(d) => format!("{name} {}ms", d.as_millis()),
-                None => format!("{name} reused"),
+            .map(|(name, d)| dev_events::CrateTiming {
+                name: name.clone(),
+                ms: d.map(|d| d.as_millis() as u64),
             })
-            .collect();
-        format!("{line} [{}]", crates.join(", "))
+            .collect()
+    }
+
+    /// Bytes of the module the page fetches.
+    pub fn bytes(&self) -> u64 {
+        std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// The `[hotpatch]` line's timing summary. Several crates replay
+    /// concurrently, so `cargo` is the slowest of them, and the per-crate
+    /// list says which. Formatted by `dev_events::plain`, which renders
+    /// the same summary from a `PatchBuilt` event — one formatter, so the
+    /// two cannot drift.
+    pub fn timing_line(&self) -> String {
+        dev_events::plain::patch_timing_line(&self.steps(), &self.crate_timings(), &self.skipped)
     }
 }
 
@@ -168,8 +170,15 @@ impl SeedSlot {
     /// Start replaying `krate` in the background. A seed already running
     /// is waited for first: two replays of one crate would share its
     /// incremental session and its object dir.
-    fn start(&self, captures_dir: &Path, krate: PatchCrate, objects: &std::cell::RefCell<ObjectCache>) {
-        self.finish(objects);
+    fn start(
+        &self,
+        captures_dir: &Path,
+        krate: PatchCrate,
+        objects: &std::cell::RefCell<ObjectCache>,
+        reporter: &dev_events::Reporter,
+    ) {
+        self.finish(objects, reporter);
+        let reporter = reporter.clone();
         let captures = captures_dir.to_path_buf();
         let name = krate.crate_name.clone();
         let handle = std::thread::spawn(move || {
@@ -177,13 +186,16 @@ impl SeedSlot {
             // Said here, when it happens, not when a save joins it: the
             // session log is how anyone knows the first save will be warm.
             match &result {
-                Ok((_, took)) => eprintln!(
-                    "[hotpatch] replay cache for `{name}` seeded in {} ms",
-                    took.as_millis()
+                Ok((_, took)) => reporter.log(
+                    "hotpatch",
+                    format!("replay cache for `{name}` seeded in {} ms", took.as_millis()),
                 ),
                 // Not fatal: the first real save replays cold, as it did
                 // before seeding existed, and says why if it fails too.
-                Err(e) => eprintln!("[hotpatch] seeding the replay cache for `{name}` failed: {e:#}"),
+                Err(e) => reporter.warn(
+                    "hotpatch",
+                    format!("seeding the replay cache for `{name}` failed: {e:#}"),
+                ),
             }
             result
         });
@@ -192,7 +204,7 @@ impl SeedSlot {
 
     /// Wait for the running seed, if any, and file its objects under its
     /// source key: a patch that carries the crate unchanged reuses them.
-    fn finish(&self, objects: &std::cell::RefCell<ObjectCache>) {
+    fn finish(&self, objects: &std::cell::RefCell<ObjectCache>, reporter: &dev_events::Reporter) {
         let Some(seed) = self.0.borrow_mut().take() else { return };
         let name = seed.krate.crate_name.clone();
         match seed.handle.join() {
@@ -212,7 +224,7 @@ impl SeedSlot {
                 objects.borrow_mut().remove(&name);
             }
             Err(_) => {
-                eprintln!("[hotpatch] the replay-cache seed for `{name}` panicked");
+                reporter.error("hotpatch", format!("the replay-cache seed for `{name}` panicked"));
                 objects.borrow_mut().remove(&name);
             }
         }
@@ -244,6 +256,7 @@ pub struct WasmPatchBuilder {
     /// drops the builder and with it every entry.
     objects: std::cell::RefCell<ObjectCache>,
     seed: SeedSlot,
+    reporter: dev_events::Reporter,
 }
 
 impl Drop for WasmPatchBuilder {
@@ -251,7 +264,7 @@ impl Drop for WasmPatchBuilder {
     /// the next builder can seed or replay the same crate: both would run
     /// in one incremental session and one object dir.
     fn drop(&mut self) {
-        self.seed.finish(&self.objects);
+        self.seed.finish(&self.objects, &self.reporter);
     }
 }
 
@@ -292,7 +305,14 @@ impl WasmPatchBuilder {
             serial: std::cell::Cell::new(0),
             objects: Default::default(),
             seed: SeedSlot::default(),
+            reporter: dev_events::Reporter::default(),
         })
+    }
+
+    /// Report through `reporter` instead of plain stderr.
+    pub fn reporting_to(mut self, reporter: dev_events::Reporter) -> Self {
+        self.reporter = reporter;
+        self
     }
 
     /// How many functions the base left reachable through its table.
@@ -326,7 +346,7 @@ impl WasmPatchBuilder {
     /// leave its incremental session half-written, and running a second
     /// one beside it would share the session and the object dir.
     pub fn seed(&self, krate: PatchCrate) {
-        self.seed.start(&self.captures_dir, krate, &self.objects);
+        self.seed.start(&self.captures_dir, krate, &self.objects, &self.reporter);
     }
 
     /// A patch of the app crate alone — [`Self::build_crates`] over the
@@ -346,7 +366,7 @@ impl WasmPatchBuilder {
 
         // A seed still running goes first; its wait is part of this save.
         let started = Instant::now();
-        self.seed.finish(&self.objects);
+        self.seed.finish(&self.objects, &self.reporter);
         let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
         let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build)?;
         let mut objects = Vec::new();
@@ -898,8 +918,8 @@ mod tests {
         let caps = FakeCaptures::new(&["app", "lib"]);
         let cache = Default::default();
         let slot = SeedSlot::default();
-        slot.start(&caps.dir, PatchCrate::carried("app", Some("k".into())), &cache);
-        slot.finish(&cache);
+        slot.start(&caps.dir, PatchCrate::carried("app", Some("k".into())), &cache, &dev_events::Reporter::new());
+        slot.finish(&cache, &dev_events::Reporter::new());
         assert_eq!(caps.calls(), vec!["app"]);
         let got = collect_objects(
             &caps.dir,
@@ -920,9 +940,9 @@ mod tests {
         let caps = FakeCaptures::slow(&["app"]);
         let cache = Default::default();
         let slot = SeedSlot::default();
-        slot.start(&caps.dir, PatchCrate::carried("app", Some("k1".into())), &cache);
-        slot.start(&caps.dir, PatchCrate::carried("app", Some("k2".into())), &cache);
-        slot.finish(&cache);
+        slot.start(&caps.dir, PatchCrate::carried("app", Some("k1".into())), &cache, &dev_events::Reporter::new());
+        slot.start(&caps.dir, PatchCrate::carried("app", Some("k2".into())), &cache, &dev_events::Reporter::new());
+        slot.finish(&cache, &dev_events::Reporter::new());
         collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)]).unwrap();
         let trace = std::fs::read_to_string(&caps.trace).unwrap();
         assert_eq!(

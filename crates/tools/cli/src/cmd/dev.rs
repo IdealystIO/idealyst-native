@@ -488,17 +488,41 @@ pub struct Args {
     #[arg(long)]
     pub no_build: bool,
 
-    /// Boot the interactive panel (dev-tui) on the current terminal.
-    /// Renders per-target state + a live log stream using the
-    /// framework's own terminal backend, dogfooding `host-terminal`.
+    /// Show the session as a live status panel instead of scrolling
+    /// lines: one row per target (watching, deciding, building with a
+    /// cargo progress bar, patched, reloaded, error), the last saves
+    /// with their tier and time, and the full log a key away. Keys:
+    /// `r` rebuild, `l` log pane, `e` expand the last error, `c` clear,
+    /// `q` quit. The panel is an idealyst app on the framework's own
+    /// terminal backend.
     ///
-    /// Disabled in CI: if stderr isn't a TTY, the flag is ignored
-    /// and the CLI falls back to today's line-oriented output, so
-    /// scripted invocations stay untouched.
-    ///
-    /// Incompatible with `--terminal` (both want the foreground TTY).
+    /// `IDEALYST_DEV_UI=panel|plain` overrides this flag either way.
+    /// Ignored (with one line saying why) when stderr is not a TTY —
+    /// CI and piped runs keep plain lines — or with `--terminal`, which
+    /// needs the terminal itself. Everything the panel hides is in the
+    /// session log, `target/idealyst/<app>/dev.log`.
     #[arg(long)]
     pub interactive: bool,
+
+    /// Also write every session event as one JSON object per line to
+    /// stdout (`--events json`). The hook for editors and tools; see
+    /// `docs/hot-reload.md#watching-a-session` for the vocabulary. Not
+    /// with the interactive panel, which paints on stdout — use
+    /// `--events-file` there.
+    #[arg(long, value_name = "FORMAT", value_parser = ["json"])]
+    pub events: Option<String>,
+
+    /// Write every session event as JSON lines to this file (created
+    /// fresh each session), in any UI mode.
+    #[arg(long, value_name = "PATH")]
+    pub events_file: Option<PathBuf>,
+
+    /// Print the JSON Schema of the event objects (`--events`,
+    /// `--events-file`, `/__idealyst/events`, the page's `dev-state`,
+    /// hook stdin) and exit. The schema is versioned: within one major
+    /// version, changes are additive only.
+    #[arg(long)]
+    pub events_schema: bool,
 }
 
 /// Run the source linter over the project and print human findings to
@@ -511,15 +535,23 @@ fn ambient_lint_pass(dir: &Path) {
     }
     let mut out = Vec::new();
     if lint::report::human(&run, &mut out, false).is_ok() {
-        eprintln!(
-            "[dev] lint found {} issue(s) (advisory — `idealyst lint` for details):",
+        crate::dlog!(
+            "dev",
+            "lint found {} issue(s) (advisory — `idealyst lint` for details):",
             run.diagnostics.len()
         );
-        eprint!("{}", String::from_utf8_lossy(&out));
+        let reporter = dev_events::global();
+        for line in String::from_utf8_lossy(&out).lines() {
+            reporter.output("lint", line);
+        }
     }
 }
 
 pub fn run(args: Args) -> Result<()> {
+    if args.events_schema {
+        println!("{}", serde_json::to_string_pretty(&dev_events::json_schema())?);
+        return Ok(());
+    }
     let dir = crate::framework_source::abs_project_dir(&args.dir)?;
 
     // One core: `--new-core` is a no-op, `--old-core` is a hard error.
@@ -544,6 +576,31 @@ pub fn run(args: Args) -> Result<()> {
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
 
+    // The session's reporting, before anything reports. Every line from
+    // here on is an event (see `crate::dev_log`); the terminal shows it
+    // as plain lines or as the panel.
+    let (ui, refused) = crate::dev_log::resolve_ui(
+        args.interactive,
+        std::env::var(crate::dev_log::UI_ENV).ok().as_deref(),
+        crate::dev_log::stderr_is_tty(),
+        active_targets.contains(&Target::Terminal),
+    );
+    let log_path = session_log_path(&dir, &manifest);
+    let session = crate::dev_log::start(
+        ui,
+        &log_path,
+        &crate::dev_log::EventsOut {
+            stdout: args.events.is_some(),
+            file: args.events_file.clone(),
+        },
+    )?;
+    let interactive = ui == crate::dev_log::Ui::Panel;
+    // `[hooks]` in dev.toml: shell commands on session events.
+    let hooks = crate::dev_config::DevConfig::load(&dir).map(|c| c.hooks).unwrap_or_default();
+    if let Some(sink) = crate::dev_hooks::HookSink::new(hooks, dir.clone()) {
+        session.reporter.subscribe(Box::new(sink));
+    }
+
     // Ambient lint pass: idiom-drift findings (including the
     // hoisted-snapshot trap, `snapshot-condition`) surface on every dev
     // start without the user ever opting into `idealyst lint`. Advisory
@@ -551,7 +608,23 @@ pub fn run(args: Args) -> Result<()> {
     // --deny-warnings` remains the enforcing form (CI). Failures in the
     // pass itself (bad config, unreadable file) are swallowed: linting
     // must never block a dev loop.
+    // Before the session line, where it has always printed.
     ambient_lint_pass(&dir);
+
+    if let Some(why) = refused {
+        // Said so the user does not think the panel silently failed.
+        crate::dlog!("dev", "--interactive ignored ({why})");
+    }
+    session.reporter.emit(dev_events::DevEvent::SessionStarted {
+        app: manifest.app.name.clone(),
+        targets: active_targets.iter().map(|t| t.as_str().to_string()).collect(),
+        mode: if args.local { dev_events::Mode::Local } else { dev_events::Mode::RuntimeServer },
+        hot_tier: hot_tier(&args, &active_targets),
+        log_file: Some(log_path.display().to_string()),
+    });
+    // After the session line: a late subscriber's snapshot starts at it.
+    crate::dev_log::serve_events(&dir);
+
 
     // Full-stack projects declare a server (`server_bin` / `server_manifest`).
     let backend_declared =
@@ -566,56 +639,18 @@ pub fn run(args: Args) -> Result<()> {
     // holds the reactive tree beside it (`launch_web_with_backend`).
     let _ = backend_declared;
 
-    // Decide if the interactive panel should actually boot. The flag
-    // is the user's request; we still gate on a real TTY (so piped
-    // invocations and CI keep getting line-oriented output) and on
-    // not colliding with the `--terminal` build target — both would
-    // fight for the foreground TTY and corrupt each other.
-    let interactive = args.interactive
-        && {
-            use std::io::IsTerminal;
-            std::io::stderr().is_terminal()
-        }
-        && !active_targets.contains(&Target::Terminal);
-    if args.interactive && !interactive {
-        // Tell the user *why* the flag was ignored so they don't think
-        // it silently failed. Goes through `eprintln!` because the
-        // panel isn't up yet.
-        eprintln!(
-            "[dev] --interactive ignored (stderr is not a TTY, or --terminal target is active)"
-        );
-    }
-
-    crate::dlog!(
-        "dev",
-        "{} mode, targets: {}",
-        if args.local { "local" } else { "runtime-server" },
-        active_targets
-            .iter()
-            .map(|t| t.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-
-    // Interactive mode: redirect stderr to a log file BEFORE we
-    // spawn any worker thread. Workers immediately kick off cargo
-    // builds via the platform `build-*` / `run-*` crates, which
-    // inherit our stdio — cargo's `Compiling …` chatter goes to
-    // stderr, which without this redirect lands on the TTY for the
-    // ~30s before host-terminal's own redirect installs inside
-    // `dev_tui::run`. The bytes look indistinguishable from a panic
-    // backtrace once they interleave with the eventual crossterm
-    // alternate-screen escapes. Held alive until the end of `run()`
-    // so the file stays the active stderr for the whole session.
-    //
-    // We keep fd 1 (stdout) on the TTY because crossterm writes its
-    // ANSI paint stream through `io::stdout()`. Subprocesses can
-    // still write to fd 1 (most don't — cargo / xcrun / simctl talk
-    // on stderr) but those bursts are rare and short. Real fix is
-    // plumbing a `Stdio` arg through the build crates; tracked as
-    // a follow-up.
-    let _stderr_guard = if interactive {
-        Some(EarlyStderrRedirect::install(&dir.join(".idealyst").join("dev.log")))
+    // The panel's fallback for output nothing captures. The web path's
+    // subprocesses no longer write to the terminal: cargo, wasm-bindgen,
+    // wasm-opt and the runtime-server host are all piped and their lines
+    // arrive as events. The NATIVE targets' build crates (xcodebuild,
+    // gradle, the app processes they launch) and a full-stack project's
+    // `cargo run` server still inherit stdio, and a byte from any of
+    // them on the TTY shreds the panel's cell grid. So under the panel
+    // fd 2 points at the session log (append, so it interleaves with the
+    // log's own sink line by line) until the panel exits. stdout stays
+    // on the TTY: crossterm paints through it.
+    let mut stderr_guard = if interactive {
+        Some(StderrToLog::install(&log_path))
     } else {
         None
     };
@@ -690,15 +725,6 @@ pub fn run(args: Args) -> Result<()> {
         install_ctrlc_handler(children.clone())?;
     }
 
-    // Bus published to by `dlog(...)` once installed; the dev-tui
-    // app drains it every frame on the main thread.
-    let dev_bus = if interactive {
-        let bus = dev_tui::DevBus::new();
-        crate::dev_log::install(bus.clone());
-        Some(bus)
-    } else {
-        None
-    };
 
     // In runtime-server mode (the default), start the dev-server once
     // before launching any platform — all clients connect to the same
@@ -737,43 +763,18 @@ pub fn run(args: Args) -> Result<()> {
         for (k, v) in dev_env_vars(&dir, &args, "", None, None) {
             cmd.env(k, v);
         }
-        // When the terminal target is in the active set, redirect the
-        // dev-host's stdio to a log file — its `[runtime-server-host]
-        // hot-patch applied …` chatter (every save!) would otherwise
-        // splatter ANSI-escape-unaware bytes onto the same TTY where
-        // crossterm is diff-painting the user's app, shredding the
-        // cell grid. Same reasoning applies to `--interactive`: the
-        // dev-tui panel paints over the same TTY, and inherited
-        // dev-host stdout looks like a panic backtrace once it
-        // interleaves with crossterm's ANSI sequences. Other targets
-        // keep inherited stdio so dev-host logs stay visible in the
-        // orchestrator's terminal.
-        if active_targets.contains(&Target::Terminal) || interactive {
-            let log_dir = dir.join(".idealyst");
-            let _ = std::fs::create_dir_all(&log_dir);
-            let log_path = log_dir.join("dev-host.log");
-            match std::fs::File::create(&log_path) {
-                Ok(file) => {
-                    let stderr = file.try_clone().unwrap_or_else(|_| {
-                        std::fs::File::create("/dev/null").expect("open /dev/null")
-                    });
-                    cmd.stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::from(file))
-                        .stderr(std::process::Stdio::from(stderr));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[dev] could not open {} for dev-host log; falling back to /dev/null: {}",
-                        log_path.display(),
-                        e
-                    );
-                    cmd.stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null());
-                }
-            }
-        }
-        let child = cmd
+        // The host's output is the session's: both pipes are read here
+        // and every line becomes an event, and the host (and the sidecar
+        // it runs) emit their save-path facts as marked event lines
+        // (`dev_events::child`) instead of plain text. Nothing it prints
+        // reaches the terminal directly — which is what used to force a
+        // separate `dev-host.log` whenever the panel or a `--terminal`
+        // app owned the TTY; its lines are in the session log now.
+        cmd.env(dev_events::child::ENV, dev_events::child::ENV_STDERR)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd
             .spawn()
             .with_context(|| {
                 format!(
@@ -781,6 +782,7 @@ pub fn run(args: Args) -> Result<()> {
                     host_binary.display(),
                 )
             })?;
+        forward_child_output(&mut child, "runtime-server-host");
         crate::dlog!(
             "dev",
             "runtime-server host running ({}); port file {}",
@@ -836,13 +838,13 @@ pub fn run(args: Args) -> Result<()> {
         match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir, args.shared_target), backend_port) {
             Ok(child) => {
                 let pid = child.id();
-                eprintln!(
-                    "[dev backend] server running (pid {pid}) on port {backend_port} for native clients",
+                crate::dlog!(
+                    "dev backend", "server running (pid {pid}) on port {backend_port} for native clients",
                 );
                 children.lock().unwrap().push(child);
                 backend_pid = Some(pid);
             }
-            Err(e) => eprintln!("[dev backend] failed to start server: {e:#}"),
+            Err(e) => crate::dlog!("dev backend", "failed to start server: {e:#}"),
         }
     }
 
@@ -863,16 +865,16 @@ pub fn run(args: Args) -> Result<()> {
             Some(jobs) if jobs.is_shared() => match spawn_worker(&dir, &manifest, jobs, backend_port) {
                 Ok(child) => {
                     let pid = child.id();
-                    eprintln!(
-                        "[dev worker] jobs worker running (pid {pid}) draining `{}`",
+                    crate::dlog!(
+                        "dev worker", "jobs worker running (pid {pid}) draining `{}`",
                         jobs.backend.as_deref().unwrap_or("?"),
                     );
                     children.lock().unwrap().push(child);
                 }
-                Err(e) => eprintln!("[dev worker] failed to start worker: {e:#}"),
+                Err(e) => crate::dlog!("dev worker", "failed to start worker: {e:#}"),
             },
-            _ => eprintln!(
-                "[dev worker] worker declared but no shared queue backend in dev.toml \
+            _ => crate::dlog!(
+                "dev worker", "worker declared but no shared queue backend in dev.toml \
                  ([jobs] backend = \"redis\"|\"postgres\"|\"sqs\"); the server is expected \
                  to run workers in-process on the in-memory queue instead."
             ),
@@ -973,25 +975,23 @@ pub fn run(args: Args) -> Result<()> {
     // host-terminal). On return we tear down spawned children and
     // drop the worker handles — they'll exit on broken pipes /
     // killed subprocesses.
-    if let Some(bus) = dev_bus {
-        let project_name = project_app_name(&dir);
-        let targets: Vec<dev_tui::TargetInfo> = active_targets
-            .iter()
-            .map(|t| dev_tui::TargetInfo {
-                name: t.as_str().to_string(),
-            })
-            .collect();
+    if let Some(queue) = session.panel.clone() {
         let opts = dev_tui::RunOptions {
-            project_name,
-            targets,
-            runtime_server: !args.local,
+            targets: active_targets.iter().map(|t| t.as_str().to_string()).collect(),
+            on_rebuild: Some(std::sync::Arc::new(|| {
+                crate::dev_log::request_rebuild();
+            })),
         };
-        // Blocks. host-terminal handles raw mode + alternate screen +
-        // stderr redirect for the duration; on quit it restores
-        // everything before returning.
-        match dev_tui::run(bus, opts) {
-            Ok(()) => eprintln!("[dev] interactive panel exited cleanly"),
-            Err(e) => eprintln!("[dev] interactive panel errored: {:?}", e),
+        // Blocks. host-terminal handles raw mode + alternate screen for
+        // the duration; on quit it restores everything before returning.
+        let result = dev_tui::run(queue, opts);
+        // The terminal is ours again: fd 2 back on the TTY, plain lines
+        // for the teardown.
+        drop(stderr_guard.take());
+        session.panel_closed();
+        match result {
+            Ok(()) => crate::dlog!("dev", "interactive panel exited cleanly"),
+            Err(e) => crate::dlog!("dev", "interactive panel errored: {:?}", e),
         }
 
         // Clean up spawned subprocesses. Mirrors the terminal-target
@@ -1060,13 +1060,58 @@ pub fn run(args: Args) -> Result<()> {
         // launch so the sim/emulator app can dial in and stay introspectable.
         // Park until Ctrl-C (the handler drains children + exits, dropping the
         // relay and its registration).
-        eprintln!("[dev] robot relay active — holding the session; Ctrl-C to quit");
+        crate::dlog!("dev", "robot relay active — holding the session; Ctrl-C to quit");
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3600));
         }
     }
 
     Ok(())
+}
+
+/// The session log: `target/idealyst/<package>/dev.log` under the
+/// framework source's staging root — beside the build's other per-app
+/// state (`pkg/`, the overlay archives), and never inside `src/`, so the
+/// watcher cannot see it change.
+fn session_log_path(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
+    let root = crate::framework_source::resolve(dir)
+        .map(|source| source.wrapper_root(dir))
+        .unwrap_or_else(|_| dir.join("target").join("idealyst"));
+    root.join(&manifest.name).join("dev.log")
+}
+
+/// Whether this session can hot-patch a body edit, and why not.
+fn hot_tier(args: &Args, targets: &[Target]) -> dev_events::HotTier {
+    let off = |reason: &str| dev_events::HotTier::Off { reason: reason.to_string() };
+    if !targets.contains(&Target::Web) {
+        off("no web target")
+    } else if !args.local {
+        // The sidecar patches natively; the browser is a wire client.
+        off("runtime-server mode patches in the sidecar")
+    } else if !hot_patch_armed(args) {
+        off("--split builds cannot be patched")
+    } else {
+        dev_events::HotTier::Armed
+    }
+}
+
+/// Read a child's stdout and stderr on their own threads, each line
+/// forwarded to the session: a marked event line (`dev_events::child`)
+/// as the event it carries, anything else verbatim as output from
+/// `source`.
+fn forward_child_output(child: &mut Child, source: &'static str) {
+    use std::io::{BufRead, BufReader, Read};
+    fn pump(pipe: Option<impl Read + Send + 'static>, source: &'static str) {
+        let Some(pipe) = pipe else { return };
+        std::thread::spawn(move || {
+            let reporter = dev_events::global();
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                dev_events::child::forward(&reporter, source, &line);
+            }
+        });
+    }
+    pump(child.stdout.take(), source);
+    pump(child.stderr.take(), source);
 }
 
 /// Block until ANY of `watch_pids` is no longer running, then return.
@@ -1096,7 +1141,7 @@ fn wait_for_any_child_exit(children: &Arc<Mutex<Vec<Child>>>, watch_pids: &[u32]
                 // Still tracked — check whether it has exited.
                 Some(child) => match child.try_wait() {
                     Ok(Some(_status)) => {
-                        eprintln!("[dev] watched process {pid} exited; stopping.");
+                        crate::dlog!("dev", "watched process {pid} exited; stopping.");
                         return;
                     }
                     Ok(None) => { /* still running */ }
@@ -1634,6 +1679,7 @@ fn launch_web(
                     hot_patch: false,
                     debuginfo: build_web::DebugInfo::default(),
                     dev_opt: build_web::DevOpt::default(),
+                    reporter: dev_events::global(),
                 },
             )
             .context("web build failed (runtime-server)")?;
@@ -1647,21 +1693,27 @@ fn launch_web(
         let aas_url = Arc::new(Mutex::new(url));
 
         let ctx = AasContext { aas_url };
-        crate::dlog!(
-            "dev web",
-            "runtime-server-bridged HTTP at http://{}:{}",
-            args.host, web_port
-        );
+        crate::dev_log::emit(dev_events::DevEvent::ServerReady {
+            target: "web".into(),
+            kind: dev_events::ServerKind::RuntimeServerBridged,
+            url: format!("http://{}:{}", args.host, web_port),
+        });
         // Fire-and-forget browser open — matches the iOS sim
         // `open -a Simulator` UX. Spawned before `serve_static`
         // (which blocks forever) and TCP-polls until the bind lands
         // so we don't beat the server to the punch.
         spawn_browser_opener(&args.host, web_port);
+        // No livereload here — the sidecar applies every save and the
+        // page is a wire client — but the page still gets the session's
+        // build state for its status overlay, and the event stream, over
+        // a signal whose generation never moves.
+        let state_signal = dev_reload::ReloadSignal::new();
+        crate::dev_log::attach_signal(&state_signal);
         serve_static(
             &args.host,
             web_port,
             dir,
-            None,
+            Some(ReloadContext { signal: state_signal }),
             Some(ctx),
             preload_ctx,
             overlay_ctx.clone(),
@@ -1676,6 +1728,10 @@ fn launch_web(
         // attach to it; reuse it for the wasm rebuild watcher and the
         // SSE stream so all change sources fan into one reload event.
         let signal = local_signal.expect("local_signal allocated for local mode");
+        // The page's acks (patch applied, reloading, …), its build-state
+        // overlay, the event stream and the panel's rebuild key all go
+        // through this signal.
+        crate::dev_log::attach_signal(&signal);
         if !args.no_build {
             // The overlay's build-time half — the descriptor set for
             // this crate's `ui!` sites — is written by the watcher
@@ -1725,6 +1781,7 @@ fn launch_web(
                     hot_patch: hot_patch_armed(args),
                     debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+                reporter: dev_events::global(),
                 },
             )?;
             std::mem::forget(handle);
@@ -1795,11 +1852,11 @@ fn launch_web(
             crate::dlog!("dev web", "robot relay URL injected ({url})");
         }
 
-        crate::dlog!(
-            "dev web",
-            "livereload HTTP at http://{}:{}",
-            args.host, web_port
-        );
+        crate::dev_log::emit(dev_events::DevEvent::ServerReady {
+            target: "web".into(),
+            kind: dev_events::ServerKind::Livereload,
+            url: format!("http://{}:{}", args.host, web_port),
+        });
         spawn_browser_opener(&args.host, web_port);
         // Headless web client: with no display, nothing would ever load the
         // served page, so the app never dials the relay and the robot bridge
@@ -1885,7 +1942,12 @@ fn sync_dev_web_overlay(
                 watch_paths.push(project_dir.join("Cargo.toml"));
                 let project_owned = project_dir.to_path_buf();
                 let overlay_owned = overlay_dir.clone();
-                let handle = dev_reload::start_watch(watch_paths, signal, "icon", move || {
+                let handle = dev_reload::start_watch(
+                    watch_paths,
+                    signal,
+                    "icon",
+                    dev_events::global(),
+                    move || {
                     let cfg = icon_gen::load_config_from_manifest(&project_owned)?;
                     let Some(cfg) = cfg else {
                         // No icon config — nothing regenerated, so nothing
@@ -1895,7 +1957,8 @@ fn sync_dev_web_overlay(
                     let block = cfg.resolved_for(icon_gen::Target::Web);
                     icon_gen::sync_web_icons(Some(&block), &overlay_owned)?;
                     Ok(dev_reload::Rebuilt::Changed)
-                })?;
+                    },
+                )?;
                 std::mem::forget(handle);
             }
         }
@@ -2028,6 +2091,7 @@ fn launch_ssr(
                 // Follows the session's resolved core (runtime-v2
                 // defaults flip) so the served SSR HTML and the
                 // hydrating bundle agree on a core.
+                reporter: dev_events::global(),
                 },
         )
         .with_context(|| "wasm build for SSR mode failed")?;
@@ -2325,6 +2389,7 @@ fn full_stack_bundle_options(
         hot_patch: !wire && hot_patch_armed(args),
         debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
         dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
+        reporter: dev_events::global(),
     })
 }
 
@@ -2376,6 +2441,7 @@ fn launch_web_with_backend(
     // runs the build before returning, so by the time we move on the
     // bundle is populated and the watcher thread is live.
     let signal = dev_reload::ReloadSignal::new();
+    crate::dev_log::attach_signal(&signal);
 
     // The reload/overlay stream, on its own port beside the app server.
     // Bound BEFORE the build so the staged `index.html` can advertise a
@@ -2397,7 +2463,7 @@ fn launch_web_with_backend(
                     if let Err(e) =
                         dev_http::serve_signal_only("127.0.0.1", port, signal_for_sse)
                     {
-                        eprintln!("[dev web] reload/overlay stream stopped: {e}");
+                        crate::dlog!("dev web", "reload/overlay stream stopped: {e}");
                     }
                 });
                 Some(port)
@@ -2408,7 +2474,7 @@ fn launch_web_with_backend(
         // Livereload and overlay patches are an enhancement to the loop,
         // not a precondition for it.
         Err(e) => {
-            eprintln!("[dev web] no reload/overlay stream: {e}");
+            crate::dlog!("dev web", "no reload/overlay stream: {e}");
             None
         }
         }
@@ -2481,7 +2547,13 @@ fn launch_web_with_backend(
                     roots.len(),
                 );
                 let handle =
-                    dev_reload::start_watch(roots, server_signal.clone(), "server", build)?;
+                    dev_reload::start_watch(
+                        roots,
+                        server_signal.clone(),
+                        "server",
+                        dev_events::global(),
+                        build,
+                    )?;
                 // Detached for the session's lifetime, same as the
                 // bundle watcher above.
                 std::mem::forget(handle);
@@ -2490,8 +2562,8 @@ fn launch_web_with_backend(
             // reason to refuse the dev session — it still runs, it just
             // needs a manual restart, which is where every project was
             // before this watcher existed.
-            Err(e) => eprintln!(
-                "[dev web] server sources will NOT be watched ({e:#}); \
+            Err(e) => crate::dlog!(
+                "dev web", "server sources will NOT be watched ({e:#}); \
                  restart the dev session by hand after a server change",
             ),
         }
@@ -2527,6 +2599,11 @@ fn launch_web_with_backend(
         "full-stack: server running (pid {}) on port {port}",
         child.id(),
     );
+    crate::dev_log::emit(dev_events::DevEvent::ServerReady {
+        target: "web".into(),
+        kind: dev_events::ServerKind::FullStack,
+        url: format!("http://127.0.0.1:{port}"),
+    });
     let mut last_gen = signal.current();
     let mut last_server_gen = server_signal.current();
 
@@ -2552,14 +2629,14 @@ fn launch_web_with_backend(
             // serves the new files on the next request. Restarting here
             // would take the port down to publish files the running
             // server had picked up anyway.
-            eprintln!("[dev web] bundle rebuilt → refresh the browser");
+            crate::dlog!("dev web", "bundle rebuilt → refresh the browser");
         }
 
         if action.restart_server() {
             // The watcher already BUILT this successfully and only bumps
             // when the binary actually relinked, so the downtime here is
             // a kill plus a rebind — not a compile.
-            eprintln!("[dev web] server rebuilt → restarting on port {port}");
+            crate::dlog!("dev web", "server rebuilt → restarting on port {port}");
             // The tree, not the handle: `child` is `cargo run`, and the
             // server is ITS child. Killing only cargo leaves the server
             // holding the port this restart is about to rebind, and
@@ -2572,7 +2649,7 @@ fn launch_web_with_backend(
             child = match spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[dev web] server respawn failed: {e:#}");
+                    crate::dlog!("dev web", "server respawn failed: {e:#}");
                     // Try again on the next gen bump rather than
                     // tearing down the whole dev session.
                     continue;
@@ -3021,13 +3098,13 @@ fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<
             if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
                 match crate::headless_client::launch(&url, &profile) {
                     Ok(child) => children.lock().unwrap().push(child),
-                    Err(e) => eprintln!("[dev] headless web client failed: {e:#}"),
+                    Err(e) => crate::dlog!("dev", "headless web client failed: {e:#}"),
                 }
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
-        eprintln!("[dev] headless web client: server never came up on port {port}");
+        crate::dlog!("dev", "headless web client: server never came up on port {port}");
     });
 }
 
@@ -3311,7 +3388,7 @@ fn write_catalog_path(project_dir: &Path, binary: &Path) {
     let target = project_dir.join(".idealyst").join("catalog.path");
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("[dev] could not create {}: {}", parent.display(), e);
+            crate::dlog!("dev", "could not create {}: {}", parent.display(), e);
             return;
         }
     }
@@ -3319,7 +3396,7 @@ fn write_catalog_path(project_dir: &Path, binary: &Path) {
     // resolve relative paths from a different cwd.
     let canon = std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
     if let Err(e) = std::fs::write(&target, canon.to_string_lossy().as_bytes()) {
-        eprintln!("[dev] could not write {}: {}", target.display(), e);
+        crate::dlog!("dev", "could not write {}: {}", target.display(), e);
     }
 }
 
@@ -3373,19 +3450,19 @@ fn runtime_server_port_file(project_dir: &Path) -> PathBuf {
 /// there's no fallback discovery path.
 fn read_host_port_file(path: &Path, timeout: std::time::Duration) -> Option<u16> {
     use std::time::Instant;
-    eprintln!("[dev] reading host port from {}", path.display());
+    crate::dlog!("dev", "reading host port from {}", path.display());
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Ok(s) = std::fs::read_to_string(path) {
             if let Ok(p) = s.trim().parse::<u16>() {
-                eprintln!("[dev] host bound port = {p}");
+                crate::dlog!("dev", "host bound port = {p}");
                 return Some(p);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    eprintln!(
-        "[dev] no port written to {} within {:?}",
+    crate::dlog!(
+        "dev", "no port written to {} within {:?}",
         path.display(),
         timeout
     );
@@ -3398,7 +3475,9 @@ fn read_host_port_file(path: &Path, timeout: std::time::Duration) -> Option<u16>
 /// extra teardown pass needed here.
 fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     ctrlc::set_handler(move || {
-        eprintln!("\n[dev] received Ctrl-C — stopping…");
+        // The empty line ends the terminal's `^C` echo, as it always did.
+        dev_events::global().output("dev", "");
+        crate::dlog!("dev", "received Ctrl-C — stopping…");
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -3456,6 +3535,9 @@ impl Args {
             no_build: self.no_build,
             bridge_port: self.bridge_port,
             interactive: self.interactive,
+            events: self.events.clone(),
+            events_file: self.events_file.clone(),
+            events_schema: self.events_schema,
             // Compatibility flags only — `run` validates them once up
             // front (`core_mode::validate_flags`) and no worker reads
             // them, but they are part of the clap struct so the clone
@@ -3466,22 +3548,27 @@ impl Args {
     }
 }
 
-/// Dup2-based stderr redirect for the duration of an interactive
-/// dev session, installed before any worker thread spawns so cargo
-/// subprocess stderr lands in a file instead of corrupting the TTY
-/// host-terminal is about to paint into.
+/// Dup2-based fd-2 redirect onto the session log for the life of the
+/// interactive panel: the fallback for subprocesses that still inherit
+/// the CLI's stdio (see its install site in [`run`]). Installed before
+/// any worker thread spawns, because a native build starts writing the
+/// moment its worker does.
+///
+/// Opened for APPEND: the session log's own sink holds a second handle
+/// on the same file, and append is what keeps the two writers from
+/// overwriting each other's lines.
 ///
 /// Mirrors `host_terminal::stderr_redirect::StderrRedirect`. Kept here
 /// (rather than reusing that one) so the CLI doesn't need a public
 /// dependency on host-terminal's internals. On drop, restores the
 /// saved original fd 2 — leaving the inner host-terminal redirect's
 /// own save/restore chain intact when the TUI exits.
-struct EarlyStderrRedirect {
+struct StderrToLog {
     #[cfg(unix)]
     saved_fd: std::os::raw::c_int,
 }
 
-impl EarlyStderrRedirect {
+impl StderrToLog {
     fn install(log_path: &Path) -> Self {
         #[cfg(unix)]
         unsafe {
@@ -3499,7 +3586,7 @@ impl EarlyStderrRedirect {
                     return Self { saved_fd: -1 };
                 }
             };
-            let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC;
+            let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND;
             let mode: libc::mode_t = 0o644;
             let log_fd = libc::open(c_path.as_ptr(), flags, mode as std::os::raw::c_int);
             if log_fd < 0 {
@@ -3522,7 +3609,7 @@ impl EarlyStderrRedirect {
     }
 }
 
-impl Drop for EarlyStderrRedirect {
+impl Drop for StderrToLog {
     fn drop(&mut self) {
         #[cfg(unix)]
         unsafe {
