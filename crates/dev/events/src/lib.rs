@@ -27,10 +27,71 @@
 //! [`DevEvent::Output`] carry any line nobody has typed yet, tagged by
 //! its source, so nothing is dropped while more of the loop learns to
 //! speak in typed events.
+//!
+//! # Hooking in
+//!
+//! The stream is an open hook, not a closed set of outputs. Four ways in,
+//! all carrying the same versioned objects ([`Envelope`], schema from
+//! [`json_schema`] / `idealyst dev --events-schema`):
+//!
+//! 1. **In process**: implement [`Sink`] and [`Reporter::subscribe`] it —
+//!    under `idealyst dev`, the session's reporter is [`global`]. Every
+//!    built-in output (the plain terminal lines, `--events-file`, the
+//!    panel, the page overlay, the HTTP stream) is an ordinary sink, so
+//!    the trait is provably enough.
+//! 2. **Over HTTP**: `GET /__idealyst/events` on any dev server, or on the
+//!    session's own events port (its URL is in `.idealyst/events.url`):
+//!    Server-Sent Events, a snapshot of the session first
+//!    ([`snapshot`]), then every event live ([`broadcast`]).
+//! 3. **From a file or a pipe**: `idealyst dev --events-file <path>` or
+//!    `--events json` (stdout), one object per line.
+//! 4. **As a command**: `[hooks]` in `dev.toml` maps an event kind to a
+//!    shell command that receives the event's JSON on stdin.
+//!
+//! A sink that counts failed builds:
+//!
+//! ```
+//! use std::sync::{Arc, Mutex};
+//! use dev_events::{BuildOutcome, DevEvent, Envelope, Reporter, Sink};
+//!
+//! #[derive(Default)]
+//! struct Failures(Mutex<Vec<String>>);
+//!
+//! impl Sink for Failures {
+//!     fn emit(&self, envelope: &Envelope) {
+//!         if let DevEvent::BuildFinished { outcome: BuildOutcome::Failed { error }, .. } =
+//!             &envelope.event
+//!         {
+//!             self.0.lock().unwrap().push(error.clone());
+//!         }
+//!     }
+//! }
+//!
+//! // Under `idealyst dev` this is `dev_events::global()`.
+//! let session = Reporter::new();
+//! let failures = Arc::new(Failures::default());
+//! session.add_sink(failures.clone()); // or `subscribe(Box::new(..))`
+//!
+//! session.emit(DevEvent::BuildFinished {
+//!     target: "web".into(),
+//!     outcome: BuildOutcome::Failed { error: "cargo exited with 101".into() },
+//!     ms: 3100,
+//! });
+//! assert_eq!(*failures.0.lock().unwrap(), vec!["cargo exited with 101".to_string()]);
+//! ```
+//!
+//! A sink runs on the emitting thread with the reporter's fan-out lock
+//! held (that is what keeps every sink in sequence order), so it must be
+//! quick and must not emit itself — hand slow work to a thread, as the
+//! `[hooks]` sink does.
 
+pub mod broadcast;
 pub mod cargo;
 pub mod child;
 pub mod plain;
+pub mod page;
+pub mod process;
+pub mod snapshot;
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -42,6 +103,7 @@ use serde::{Deserialize, Serialize};
 
 /// Where the app's code runs during the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// `--local`: each target runs the app itself.
@@ -62,6 +124,7 @@ impl Mode {
 
 /// Whether a body edit can be applied as a wasm hot patch this session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HotTier {
     Armed,
@@ -72,6 +135,7 @@ pub enum HotTier {
 /// its own legacy line, and a consumer may care which (the livereload
 /// server is the one a browser should open).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ServerKind {
     /// `dev --web --local`: static files plus the livereload stream.
@@ -84,10 +148,13 @@ pub enum ServerKind {
     /// The reload/overlay stream on its own port, beside a full-stack
     /// server.
     ReloadStream,
+    /// The session's event stream (`/__idealyst/events`) on its own port.
+    Events,
 }
 
 /// What the watcher decided a save needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "tier", rename_all = "snake_case")]
 pub enum Decision {
     /// Literal/data edits to `ui!` sites: pushed as overlay patches.
@@ -117,6 +184,7 @@ impl Decision {
 
 /// Why a build started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "cause", rename_all = "snake_case")]
 pub enum BuildCause {
     /// The session's first build.
@@ -130,6 +198,7 @@ pub enum BuildCause {
 
 /// How a build ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum BuildOutcome {
     /// The initial build finished; browsers get generation `gen`.
@@ -144,8 +213,21 @@ pub enum BuildOutcome {
     Failed { error: String },
 }
 
+/// How the runtime-server host applied a save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SidecarUpdate {
+    /// Re-emitted the user crate and rebound the sidecar's jump table,
+    /// in place: clients stay attached.
+    HotPatch,
+    /// Rebuilt and restarted the sidecar; sessions are replayed onto it.
+    Respawn,
+}
+
 /// One timed step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Timing {
     pub name: String,
     pub ms: u64,
@@ -160,6 +242,7 @@ impl Timing {
 /// One crate a hot patch re-emitted, and how long its replay took —
 /// `None` when its objects were reused from an earlier replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CrateTiming {
     pub name: String,
     pub ms: Option<u64>,
@@ -167,6 +250,7 @@ pub struct CrateTiming {
 
 /// A rustc diagnostic, from cargo's JSON message stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Diagnostic {
     /// `error`, `warning`, `note`, `help`, `failure-note`, …
     pub level: String,
@@ -217,6 +301,7 @@ impl Diagnostic {
 /// back over the reload stream's ack endpoint so the terminal knows the
 /// save actually landed — not just that it was sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PageAck {
     /// A page connected to the reload stream, running generation `gen`.
@@ -250,6 +335,7 @@ pub enum PageAck {
 /// for the browser bundle, `server` for a full-stack server's watcher,
 /// the platform name for native targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DevEvent {
     /// The session is configured and about to start its targets.
@@ -296,8 +382,13 @@ pub enum DevEvent {
     },
     /// A body edit could not be patched; the watcher rebuilds instead.
     PatchFailed { target: String, files: Vec<String>, reason: String },
-    /// A build started.
-    BuildStarted { target: String, cause: BuildCause },
+    /// A build started. The cause is inlined: `"cause": "save",
+    /// "folded": 0`.
+    BuildStarted {
+        target: String,
+        #[serde(flatten)]
+        cause: BuildCause,
+    },
     /// A build stage started (`cargo`, `wasm-bindgen`, `wasm-split`, …).
     StageStarted { target: String, stage: String },
     /// A build stage finished.
@@ -318,10 +409,27 @@ pub enum DevEvent {
     Diagnostic { target: String, diagnostic: Diagnostic },
     /// The bundler's per-stage summary for one build.
     BuildTimed { target: String, stages: Vec<Timing>, total_ms: u64 },
-    /// A build ended.
-    BuildFinished { target: String, outcome: BuildOutcome, ms: u64 },
-    /// A page reported back.
+    /// A build ended. The outcome is inlined: `"outcome": "failed",
+    /// "error": "…"`.
+    BuildFinished {
+        target: String,
+        #[serde(flatten)]
+        outcome: BuildOutcome,
+        ms: u64,
+    },
+    /// A page reported back — or, in runtime-server mode, the sidecar,
+    /// which applies overlay and hot patches to its own mounted tree and
+    /// reports the same facts a page would.
     PageAck { target: String, ack: PageAck },
+    /// Runtime-server mode: the host applied a save to the sidecar.
+    SidecarApplied {
+        target: String,
+        how: SidecarUpdate,
+        ms: u64,
+        /// Why a respawn was needed (`rebuild`, `force_respawn`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// Something went wrong that the loop survives.
     Warning { source: String, message: String },
     /// Something failed.
@@ -334,9 +442,22 @@ pub enum DevEvent {
     Output { source: String, line: String },
 }
 
+/// The event schema's major version, carried in every envelope as `v`.
+///
+/// The schema is a contract: within one major version changes are
+/// ADDITIVE only — a new event type, a new optional field, a new enum
+/// value a consumer can ignore. Renaming or removing a field, changing a
+/// type, or giving an existing field a new meaning bumps this number.
+/// Consumers should ignore event types and fields they do not know.
+/// `idealyst dev --events-schema` prints the JSON Schema ([`json_schema`]).
+pub const SCHEMA_VERSION: u32 = 1;
+
 /// An event with its place in the session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Envelope {
+    /// The schema's major version ([`SCHEMA_VERSION`]).
+    pub v: u32,
     /// Session-relative sequence number, from 1, gap-free per reporter.
     pub seq: u64,
     /// Milliseconds since the reporter was created, from a monotonic
@@ -413,6 +534,13 @@ impl Reporter {
         }
     }
 
+    /// Subscribe `sink` to every event emitted from now on — the hook
+    /// for anything in-process that wants the session's events. The
+    /// built-in sinks are ordinary subscribers too.
+    pub fn subscribe(&self, sink: Box<dyn Sink>) {
+        self.add_sink(Arc::from(sink));
+    }
+
     /// Replace every sink. The CLI uses this when the interactive panel
     /// takes over the terminal: the plain stderr sink comes out, the
     /// panel's queue goes in, and every clone already handed out follows.
@@ -431,6 +559,7 @@ impl Reporter {
             Err(p) => p.into_inner(),
         };
         let envelope = Envelope {
+            v: SCHEMA_VERSION,
             seq: self.hub.seq.fetch_add(1, Ordering::SeqCst) + 1,
             at_ms: self.hub.origin.elapsed().as_millis() as u64,
             event,
@@ -457,6 +586,32 @@ impl Reporter {
     pub fn error(&self, source: impl Into<String>, message: impl Into<String>) {
         self.emit(DevEvent::Error { source: source.into(), message: message.into() });
     }
+}
+
+/// The JSON Schema every emitted object ([`Envelope`]) validates
+/// against, with the schema version in `$id` and `x-schema-version`.
+#[cfg(feature = "schema")]
+pub fn json_schema() -> serde_json::Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(Envelope))
+        .expect("a derived schema serializes");
+    if let Some(obj) = schema.as_object_mut() {
+        obj.insert(
+            "$id".into(),
+            format!("https://idealyst.dev/schemas/dev-events/v{SCHEMA_VERSION}.json").into(),
+        );
+        obj.insert("title".into(), "idealyst dev event".into());
+        obj.insert("x-schema-version".into(), SCHEMA_VERSION.into());
+    }
+    // `v` is not any integer: it is THIS major version. A consumer that
+    // validates rejects a stream from an incompatible `idealyst dev`.
+    if let Some(v) = schema.pointer_mut("/properties/v") {
+        *v = serde_json::json!({
+            "description": "The schema's major version.",
+            "const": SCHEMA_VERSION,
+            "type": "integer",
+        });
+    }
+    schema
 }
 
 static GLOBAL: OnceLock<Reporter> = OnceLock::new();

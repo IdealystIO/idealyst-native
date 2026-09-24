@@ -18,6 +18,19 @@ edition.workspace = true
 license.workspace = true
 description = "Idealyst dev loop lifecycle events: the typed vocabulary, the reporter, and its sinks (plain lines, JSON lines, a drainable queue)."
 
+[features]
+# The JSON Schema of the event objects (`json_schema()`), derived from the
+# types so it cannot drift from them. Off by default: only the CLI's
+# `--events-schema` needs it, and the producers (the sidecar, the bundler)
+# should not compile a schema generator.
+schema = ["dep:schemars"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+# Itself, with the schema: `cargo test -p dev-events` then covers the
+# schema test without anyone remembering a `--features` flag.
+dev-events = { path = ".", features = ["schema"] }

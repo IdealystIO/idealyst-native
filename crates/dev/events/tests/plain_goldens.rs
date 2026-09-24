@@ -365,3 +365,33 @@ fn the_session_log_keeps_the_facts_a_terminal_never_showed() {
     assert!(lines[1].ends_with("[web] wasm-bindgen 5500 ms"), "{text}");
     assert!(lines[0].trim_start().starts_with("0."), "a session-time prefix: {text}");
 }
+
+#[test]
+fn the_runtime_server_host_lines() {
+    use dev_events::SidecarUpdate;
+    let rs = || "runtime-server".to_string();
+    assert_eq!(
+        line(DevEvent::SidecarApplied { target: rs(), how: SidecarUpdate::HotPatch, ms: 412, reason: None })
+            .as_deref(),
+        Some("[runtime-server-host] hot-patch applied in 412ms")
+    );
+    assert_eq!(
+        line(DevEvent::SidecarApplied {
+            target: rs(),
+            how: SidecarUpdate::Respawn,
+            ms: 5210,
+            reason: Some("force_respawn".into()),
+        })
+        .as_deref(),
+        Some("[runtime-server-host] respawn applied in 5210ms (force_respawn)")
+    );
+    // The sidecar applying an overlay patch keeps its own legacy line
+    // (a `Log`); the typed ack beside it adds nothing to a terminal.
+    assert_eq!(
+        line(DevEvent::PageAck {
+            target: rs(),
+            ack: PageAck::Overlay { applied: Some(2), refused: Some(0) },
+        }),
+        None
+    );
+}

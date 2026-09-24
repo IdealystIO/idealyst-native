@@ -3,91 +3,16 @@
 
 use std::sync::Arc;
 
-use dev_events::cargo::{closure_size, CargoStream};
-use dev_events::{
-    BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, Envelope, HotTier,
-    JsonLines, Mode, PageAck, Reporter, ServerKind, Timing,
-};
+mod common;
+use common::every_event;
 
-/// One of every variant, so a variant added without serde support (or
-/// with a tag that collides) fails here.
-fn every_event() -> Vec<DevEvent> {
-    let web = || "web".to_string();
-    vec![
-        DevEvent::SessionStarted {
-            app: "Lab".into(),
-            targets: vec!["web".into(), "ios".into()],
-            mode: Mode::RuntimeServer,
-            hot_tier: HotTier::Off { reason: "runtime-server mode".into() },
-            log_file: Some("/t/dev.log".into()),
-        },
-        DevEvent::ServerReady { target: web(), kind: ServerKind::ReloadStream, url: "http://x".into() },
-        DevEvent::Watching { target: web(), roots: vec!["/a".into()], rewatch: true },
-        DevEvent::ChangeDetected {
-            target: web(),
-            paths: vec!["/a/src/app.rs".into()],
-            crates: vec!["a".into()],
-            folded: 1,
-        },
-        DevEvent::Decided { target: web(), decision: Decision::Overlay { sites: 2 } },
-        DevEvent::Decided {
-            target: web(),
-            decision: Decision::HotPatch { crates: vec!["a".into()], files: vec!["src/app.rs".into()] },
-        },
-        DevEvent::Decided { target: web(), decision: Decision::Rebuild { reason: None } },
-        DevEvent::Decided { target: web(), decision: Decision::Unchanged },
-        DevEvent::OverlayPushed { target: web(), sites: 2, ms: 3 },
-        DevEvent::PatchBuilt {
-            target: web(),
-            files: vec!["src/app.rs".into()],
-            crates: vec![CrateTiming { name: "a".into(), ms: None }],
-            redirected: 4,
-            steps: vec![Timing { name: "cargo".into(), ms: 300 }],
-            skipped: vec![],
-            bytes: 1024,
-            ms: 310,
-        },
-        DevEvent::PatchFailed { target: web(), files: vec![], reason: "r".into() },
-        DevEvent::BuildStarted { target: web(), cause: BuildCause::Forced },
-        DevEvent::StageStarted { target: web(), stage: "cargo".into() },
-        DevEvent::StageFinished { target: web(), stage: "cargo".into(), ms: 1 },
-        DevEvent::CargoProgress { target: web(), compiled: 1, total: None, current: Some("a".into()) },
-        DevEvent::Diagnostic {
-            target: web(),
-            diagnostic: Diagnostic {
-                level: "warning".into(),
-                message: "unused".into(),
-                code: None,
-                file: None,
-                line: None,
-                column: None,
-                package: None,
-                rendered: "warning: unused".into(),
-                ansi: None,
-            },
-        },
-        DevEvent::BuildTimed { target: web(), stages: vec![], total_ms: 0 },
-        DevEvent::BuildFinished {
-            target: web(),
-            outcome: BuildOutcome::Failed { error: "e".into() },
-            ms: 9,
-        },
-        DevEvent::PageAck { target: web(), ack: PageAck::Overlay { applied: None, refused: None } },
-        DevEvent::PageAck {
-            target: web(),
-            ack: PageAck::Failed { what: "hot_patch".into(), error: "x".into() },
-        },
-        DevEvent::Warning { source: "s".into(), message: "m".into() },
-        DevEvent::Error { source: "s".into(), message: "m".into() },
-        DevEvent::Log { source: "dev".into(), line: "l".into() },
-        DevEvent::Output { source: "cargo".into(), line: "   Compiling a".into() },
-    ]
-}
+use dev_events::cargo::{closure_size, CargoStream};
+use dev_events::{Decision, DevEvent, Diagnostic, Envelope, JsonLines, Reporter};
 
 #[test]
 fn every_event_round_trips_through_json() {
     for (i, event) in every_event().into_iter().enumerate() {
-        let envelope = Envelope { seq: i as u64 + 1, at_ms: 40 * i as u64, event };
+        let envelope = Envelope { v: 1, seq: i as u64 + 1, at_ms: 40 * i as u64, event };
         let json = serde_json::to_string(&envelope).unwrap();
         assert!(!json.contains('\n'));
         let back: Envelope = serde_json::from_str(&json).unwrap();
@@ -100,6 +25,7 @@ fn the_wire_form_is_flat_and_tagged() {
     // What an editor extension reads: the envelope fields and the event's
     // `type` side by side, snake_case throughout.
     let envelope = Envelope {
+        v: 1,
         seq: 7,
         at_ms: 1234,
         event: DevEvent::Decided { target: "web".into(), decision: Decision::Overlay { sites: 1 } },
@@ -108,11 +34,38 @@ fn the_wire_form_is_flat_and_tagged() {
     assert_eq!(
         v,
         serde_json::json!({
+            "v": 1,
             "seq": 7,
             "at_ms": 1234,
             "type": "decided",
             "target": "web",
             "decision": { "tier": "overlay", "sites": 1 }
+        })
+    );
+}
+
+#[test]
+fn a_builds_cause_and_outcome_are_inline() {
+    use dev_events::{BuildCause, BuildOutcome};
+    let started = serde_json::to_value(DevEvent::BuildStarted {
+        target: "web".into(),
+        cause: BuildCause::Save { folded: 2 },
+    })
+    .unwrap();
+    assert_eq!(
+        started,
+        serde_json::json!({"type": "build_started", "target": "web", "cause": "save", "folded": 2})
+    );
+    let finished = serde_json::to_value(DevEvent::BuildFinished {
+        target: "web".into(),
+        outcome: BuildOutcome::Failed { error: "E0308".into() },
+        ms: 12,
+    })
+    .unwrap();
+    assert_eq!(
+        finished,
+        serde_json::json!({
+            "type": "build_finished", "target": "web", "outcome": "failed", "error": "E0308", "ms": 12
         })
     );
 }
@@ -239,4 +192,29 @@ fn progress_is_clamped_to_the_total() {
         stream.stdout_line(&format!(r#"{{"reason":"compiler-artifact","package_id":"{id}"}}"#));
     }
     assert_eq!(stream.compiled(), 1);
+}
+
+/// The in-process hook: a sink implemented outside this crate, subscribed
+/// through the public API, sees the session's events in order — the same
+/// way every built-in sink does.
+#[test]
+fn a_custom_sink_receives_the_sequence() {
+    use std::sync::Mutex;
+    struct Recorder(Arc<Mutex<Vec<(u64, String)>>>);
+    impl dev_events::Sink for Recorder {
+        fn emit(&self, e: &Envelope) {
+            let kind = serde_json::to_value(&e.event).unwrap()["type"].as_str().unwrap().to_string();
+            self.0.lock().unwrap().push((e.seq, kind));
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let r = Reporter::new();
+    r.subscribe(Box::new(Recorder(seen.clone())));
+    for event in every_event() {
+        r.emit(event);
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), every_event().len());
+    assert!(seen.windows(2).all(|w| w[1].0 == w[0].0 + 1));
+    assert_eq!(seen[0].1, "session_started");
 }

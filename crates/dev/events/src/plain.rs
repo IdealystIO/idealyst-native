@@ -14,7 +14,7 @@
 
 use crate::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Envelope, PageAck, ServerKind,
-    Timing,
+    SidecarUpdate, Timing,
 };
 
 /// The target whose lines carry the watcher's bare `[dev-reload]` prefix.
@@ -35,6 +35,9 @@ pub fn render(event: &DevEvent) -> Option<String> {
             ServerKind::ReloadStream => format!("[dev-http] reload/overlay stream on {url}"),
             // Announced by its own line, which carries the pid.
             ServerKind::FullStack => return None,
+            // New with the event stream: a plain terminal stays as it was.
+            // The URL is in the session log and `.idealyst/events.url`.
+            ServerKind::Events => return None,
         },
         DevEvent::Watching { target, roots, rewatch } => {
             let list = roots.join(", ");
@@ -118,6 +121,13 @@ pub fn render(event: &DevEvent) -> Option<String> {
             }
         },
         DevEvent::PageAck { .. } => return None,
+        DevEvent::SidecarApplied { how, ms, reason, .. } => match how {
+            SidecarUpdate::HotPatch => format!("[runtime-server-host] hot-patch applied in {ms}ms"),
+            SidecarUpdate::Respawn => format!(
+                "[runtime-server-host] respawn applied in {ms}ms ({})",
+                reason.as_deref().unwrap_or("rebuild")
+            ),
+        },
         DevEvent::Warning { source, message }
         | DevEvent::Error { source, message }
         | DevEvent::Log { source, line: message } => format!("[{source}] {message}"),
