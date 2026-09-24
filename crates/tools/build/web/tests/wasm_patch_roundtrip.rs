@@ -400,15 +400,27 @@ const SHARED_CARGO_TOML: &str = r#"
 name = "rt_shared"
 version = "0.0.0"
 edition = "2021"
+
+[dependencies]
+wasm-bindgen = "0.2.128"
 "#;
 
 /// The library. `shared_value` is a plain function the APP calls
 /// directly — the call a patch of this crate alone could never reach —
 /// and `__SharedCard_hot_impl` is reached through a `fn` pointer, the way
-/// a `#[component]` body is.
+/// a `#[component]` body is. `shared_handler` builds a `Closure` in the
+/// library itself, which puts a `wbg_cast::breaks_if_inlined<…>` call in
+/// the library's objects: the intrinsic wasm-bindgen renames at bindgen
+/// time (CrewForge's ui-shared, whose first patch was refused over six).
 const SHARED_RS: &str = r#"
+use wasm_bindgen::prelude::*;
+
 pub fn shared_value(n: u32) -> u32 {
     n + 11
+}
+
+pub fn shared_handler() -> JsValue {
+    Closure::<dyn FnMut(JsValue)>::new(|_v: JsValue| {}).into_js_value()
 }
 
 #[doc(hidden)]
@@ -443,6 +455,7 @@ use wasm_bindgen::prelude::*;
 #[doc(hidden)]
 #[inline(never)]
 fn __Root_hot_impl(n: u32) -> u32 {
+    let _handler = rt_shared::shared_handler();
     rt_shared::shared_value(n) + rt_shared::shared_card(n)
 }
 
@@ -641,6 +654,31 @@ fn a_library_crates_patch_carries_its_dependents() {
     assert!(
         !module.imports.iter().any(|i| i.name.contains("12shared_value")),
         "the patch imports shared_value from the base, i.e. the OLD body"
+    );
+
+    // The library instantiates wasm-bindgen's cast intrinsic itself (its
+    // `Closure`). The base kept a forwarder under the mangled name, and
+    // the patch's raw copy calls through it instead of running the
+    // descriptor path wasm-bindgen had replaced.
+    let cast = base
+        .ifunc
+        .keys()
+        .find(|k| k.contains("breaks_if_inlined") && k.contains("rt_shared") && !k.starts_with("__idealyst"))
+        .unwrap_or_else(|| panic!("the base resolves no cast intrinsic of rt_shared's by its mangled name"))
+        .clone();
+    let patched_cast = module
+        .funcs
+        .iter()
+        .find(|f| f.name.as_deref() == Some(cast.as_str()))
+        .expect("the patch carries rt_shared's cast");
+    let walrus::FunctionKind::Local(local) = &patched_cast.kind else { panic!("not local") };
+    assert!(
+        local
+            .block(local.entry_block())
+            .instrs
+            .iter()
+            .any(|(i, _)| matches!(i, walrus::ir::Instr::CallIndirect(_))),
+        "the patch's cast still runs its raw, un-bindgen'd body"
     );
 }
 

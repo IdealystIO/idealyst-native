@@ -134,6 +134,20 @@ impl BaseIndex {
             }
         }
 
+        // A cast intrinsic is an import after bindgen, under a sequence
+        // name; its forwarding body carries the mangled name the patch
+        // calls it by (`hotpatch_base::cast_trampoline_name`).
+        let casts: Vec<(String, u32)> = ifunc
+            .iter()
+            .filter_map(|(name, slot)| {
+                name.strip_prefix(crate::hotpatch_base::CAST_TRAMPOLINE_PREFIX)
+                    .map(|symbol| (symbol.to_string(), *slot))
+            })
+            .collect();
+        for (symbol, slot) in casts {
+            ifunc.entry(symbol).or_insert(slot);
+        }
+
         let exports = module.exports.iter().map(|e| e.name.clone()).collect();
         let data = data_symbol_addresses(wasm).context("reading the base's data symbols")?;
         let mut all_funcs: HashSet<String> =
@@ -194,6 +208,37 @@ pub fn resolve_against_base(patch: &[u8], base: &BaseIndex) -> Result<Vec<u8>> {
     let table = patch_table(&module);
 
     let mut unresolved: Vec<String> = Vec::new();
+
+    // A wasm-bindgen cast intrinsic the patch DEFINES — the replayed
+    // crate instantiated `wbg_cast::breaks_if_inlined<F, T>` itself, as a
+    // crate building its own `Closure` does. The copy is raw: wasm-bindgen
+    // never ran over the patch, so its body is the descriptor call the
+    // base had replaced with a generated import, pointed at the null slot
+    // below. The first patched code to create that closure would trap.
+    // It becomes a call through the base's forwarder for the same
+    // instantiation (`hotpatch_base::cast_trampoline_name`), which calls
+    // the import wasm-bindgen generated. A cast the base never had — a
+    // closure type new in this edit — has no import to reach: only
+    // wasm-bindgen can generate one, so the patch is refused (rebuild).
+    let local_casts: Vec<(FunctionId, String)> = module
+        .funcs
+        .iter()
+        .filter(|f| matches!(f.kind, walrus::FunctionKind::Local(_)))
+        .filter_map(|f| {
+            let name = f.name.as_deref()?;
+            crate::hotpatch_base::is_bindgen_cast(name).then(|| (f.id(), name.to_string()))
+        })
+        .collect();
+    for (func, name) in local_casts {
+        match base.ifunc.get(&name) {
+            Some(index) => call_through_table(&mut module, table, func, *index, &name)?,
+            None => unresolved.push(format!(
+                "{name} — a wasm-bindgen cast (a `Closure` or value type crossing into JS) \
+                 the base never had; only wasm-bindgen can generate its import"
+            )),
+        }
+    }
+
     let imports: Vec<_> = module
         .imports
         .iter()
@@ -609,6 +654,60 @@ fn data_symbol_addresses(wasm: &[u8]) -> Result<HashMap<String, u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A patch whose own crate instantiated a cast intrinsic (a
+    /// library building its own `Closure`) carries a RAW copy, unprocessed
+    /// by wasm-bindgen. Regression: kept as is, the first patched code to
+    /// create that closure would call the descriptor path and trap. The
+    /// copy becomes a call through the base's forwarder; a cast the base
+    /// never had is refused.
+    #[test]
+    fn regression_a_cast_the_patch_defines_calls_the_bases_forwarder() {
+        let symbol = "_RINvNvNtCs8e_12wasm_bindgen4___rt8wbg_cast17breaks_if_inlinedReNtB6_7JsValueEB6_";
+        let patch = {
+            let mut module = Module::from_buffer(&patch_module(&[])).unwrap();
+            let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+            b.name(symbol.to_string()).func_body().unreachable();
+            let cast = module.funcs.add_local(b.local_func(vec![]));
+            // Rooted in the patch's segment, so walrus keeps it on emit.
+            let seg = module.elements.iter().next().unwrap().id();
+            if let ElementItems::Functions(ids) = &mut module.elements.get_mut(seg).items {
+                ids.push(cast);
+            }
+            module.emit_wasm()
+        };
+        let forwarder = crate::hotpatch_base::cast_trampoline_name(symbol);
+        let mut base = base_with(&[(forwarder.as_str(), 41)], &[], &[]);
+        base.ifunc.insert(symbol.to_string(), 41);
+
+        let resolved = Module::from_buffer(&resolve_against_base(&patch, &base).unwrap()).unwrap();
+        let cast = resolved.funcs.iter().find(|f| f.name.as_deref() == Some(symbol)).unwrap();
+        let walrus::FunctionKind::Local(local) = &cast.kind else { panic!("not local") };
+        let instrs = &local.block(local.entry_block()).instrs;
+        assert!(
+            instrs.iter().any(|(i, _)| matches!(i, ir::Instr::Const(ir::Const { value: ir::Value::I32(41) })))
+                && instrs.iter().any(|(i, _)| matches!(i, ir::Instr::CallIndirect(_))),
+            "the raw cast body was not replaced by a call through slot 41: {instrs:?}"
+        );
+
+        // The base never had this instantiation: refused, named.
+        let err = resolve_against_base(&patch, &base_with(&[], &[], &[])).unwrap_err();
+        assert!(format!("{err:#}").contains("wasm-bindgen cast"), "{err:#}");
+    }
+
+    /// Regression (CrewForge ui-shared): a patch calls a cast intrinsic by
+    /// its mangled name; after bindgen only the forwarder carries that
+    /// name, prefixed. The index resolves the bare name to the
+    /// forwarder's slot.
+    #[test]
+    fn regression_a_cast_intrinsic_resolves_to_its_forwarders_slot() {
+        let symbol = "_RINvNvNtCs8e_12wasm_bindgen4___rt8wbg_cast17breaks_if_inlinedReNtB6_7JsValueEB6_";
+        let served = served_base_with(&crate::hotpatch_base::cast_trampoline_name(symbol));
+        let base = BaseIndex::of(&served, &Default::default()).unwrap();
+        let slot = base.ifunc[&crate::hotpatch_base::cast_trampoline_name(symbol)];
+        assert_eq!(base.ifunc.get(symbol), Some(&slot));
+    }
+
     use walrus::{ElementItems, RefType, ValType};
 
     /// A patch-shaped module: a PIC element segment offset by an

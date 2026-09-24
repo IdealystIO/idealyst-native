@@ -73,6 +73,10 @@ pub struct BasePrep {
     /// Forwarding bodies added for wasm-bindgen JS-shim imports (and
     /// rooted on top of `promoted`), so a patch can call a shim.
     pub shim_trampolines: usize,
+    /// Forwarding bodies added for wasm-bindgen's cast intrinsics
+    /// (`wbg_cast::breaks_if_inlined<…>`), rooted on top of `promoted`.
+    /// See [`cast_trampoline_name`].
+    pub cast_trampolines: usize,
     /// Slots in the emitted module's element segments. Lower than
     /// `already_indirect + promoted` means walrus's emit-time GC
     /// dropped something we rooted.
@@ -87,12 +91,13 @@ impl BasePrep {
     pub fn summary(&self) -> String {
         format!(
             "{} local fns = {} already in the table + {} bindgen-internal + {} promoted, \
-             + {} JS-shim trampolines → emitted {} slots over {} local fns",
+             + {} JS-shim + {} cast trampolines → emitted {} slots over {} local fns",
             self.locals,
             self.already_indirect,
             self.bindgen_internal,
             self.promoted,
             self.shim_trampolines,
+            self.cast_trampolines,
             self.slots_emitted,
             self.locals_emitted,
         )
@@ -147,6 +152,34 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
         promote.push(trampoline);
         trampolines.insert(trampoline);
         report.shim_trampolines += 1;
+    }
+
+    // wasm-bindgen's CAST intrinsics — `wbg_cast::breaks_if_inlined<F, T>`,
+    // one instantiation per closure or value type crossing into JS — are
+    // local functions here, and gone by name after bindgen: wasm-bindgen
+    // reads each one's descriptor and replaces the function with an
+    // import named after its sequence number (`__wbindgen_cast_000…8`),
+    // whose name-section entry is the descriptor's debug text. A patch
+    // compiled from a crate that builds a `Closure` itself (CrewForge's
+    // ui-shared: WebSocket and audio handlers) still calls the
+    // instantiation by its MANGLED name, and nothing in the served module
+    // answers to it — the first ui-shared patch was refused over six of
+    // them. So each gets a forwarding body under a name that keeps the
+    // mangled one, rooted like every other. wasm-bindgen repoints the
+    // body's call at the import it generates (it replaces the callee,
+    // not the call sites), and `BaseIndex` resolves the mangled name to
+    // the forwarder's slot.
+    let casts: Vec<(FunctionId, String)> = module
+        .funcs
+        .iter()
+        .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
+        .filter_map(|f| f.name.as_deref().filter(|n| is_bindgen_cast(n)).map(|n| (f.id(), n.to_string())))
+        .collect();
+    for (cast, name) in casts {
+        let trampoline = call_through(&mut module, cast, &cast_trampoline_name(&name));
+        promote.push(trampoline);
+        trampolines.insert(trampoline);
+        report.cast_trampolines += 1;
     }
 
     // NOTE: no `__saved_wbg_` alias exports. An earlier version added
@@ -395,6 +428,23 @@ pub fn shim_trampoline_name(import: &str) -> String {
     format!("__idealyst_shim_{import}")
 }
 
+/// The prefix of a cast intrinsic's forwarding body. See the note on
+/// casts in [`prepare_base_module`].
+pub const CAST_TRAMPOLINE_PREFIX: &str = "__idealyst_cast_";
+
+/// The name the base's forwarding body for cast intrinsic `symbol` (its
+/// mangled name) goes by. `BaseIndex` strips the prefix to resolve a
+/// patch's call to `symbol` through this body's slot.
+pub fn cast_trampoline_name(symbol: &str) -> String {
+    format!("{CAST_TRAMPOLINE_PREFIX}{symbol}")
+}
+
+/// wasm-bindgen's cast intrinsic, `wasm_bindgen::__rt::wbg_cast::
+/// breaks_if_inlined<From, To>`, in either mangling.
+pub(crate) fn is_bindgen_cast(name: &str) -> bool {
+    name.contains("wbg_cast") && name.contains("breaks_if_inlined")
+}
+
 /// Build a local function with the same type as `target` that forwards
 /// its arguments and calls it.
 fn call_through(module: &mut Module, target: FunctionId, name: &str) -> FunctionId {
@@ -633,6 +683,49 @@ mod tests {
             !module.exports.iter().any(|e| e.name.contains("shim")),
             "the trampoline must not be exported"
         );
+    }
+
+    /// Regression: the first patch of CrewForge's ui-shared was refused
+    /// over six `wbg_cast::breaks_if_inlined<…>` instantiations — "the
+    /// base does not contain this function at all" — because wasm-bindgen
+    /// replaces each with an import under a SEQUENCE name. Each gets a
+    /// rooted, unexported forwarder that keeps the mangled name.
+    #[test]
+    fn regression_a_cast_intrinsic_gets_a_rooted_forwarder_under_its_mangled_name() {
+        let cast_name = "_RINvNvNtCs8e_12wasm_bindgen4___rt8wbg_cast17breaks_if_inlinedReNtB6_7JsValueEB6_";
+        let mut module = Module::default();
+        let table = module.tables.add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
+        let mut b = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+        let arg = module.locals.add(ValType::I32);
+        b.name(cast_name.to_string()).func_body().local_get(arg);
+        let cast = module.funcs.add_local(b.local_func(vec![arg]));
+        let mut b = FunctionBuilder::new(&mut module.types, &[], &[ValType::I32]);
+        b.name("caller".to_string()).func_body().i32_const(7).call(cast);
+        let caller = module.funcs.add_local(b.local_func(vec![]));
+        module.exports.add("caller", caller);
+        module.elements.add(
+            ElementKind::Active { table, offset: ConstExpr::Value(ir::Value::I32(1)) },
+            ElementItems::Functions(vec![]),
+        );
+
+        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        assert_eq!(census.cast_trampolines, 1, "{census:?}");
+        let entries = table_entries(&out);
+        assert!(entries.contains(&cast_trampoline_name(cast_name)), "{entries:?}");
+        let module = Module::from_buffer(&out).unwrap();
+        assert!(!module.exports.iter().any(|e| e.name.contains(CAST_TRAMPOLINE_PREFIX)));
+        // The forwarder calls the cast itself — the call wasm-bindgen
+        // repoints at the import it generates.
+        let fwd = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some(cast_trampoline_name(cast_name).as_str()))
+            .unwrap();
+        let walrus::FunctionKind::Local(local) = &fwd.kind else { panic!("not local") };
+        let calls_cast = local.block(local.entry_block()).instrs.iter().any(|(i, _)| {
+            matches!(i, ir::Instr::Call(c) if module.funcs.get(c.func).name.as_deref() == Some(cast_name))
+        });
+        assert!(calls_cast, "the forwarder must call the cast intrinsic");
     }
 
     /// Regression: on CrewForge, a patch that got past every JS shim
