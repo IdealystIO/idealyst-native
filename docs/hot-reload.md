@@ -938,6 +938,17 @@ page, the session log and any tool are consumers of that one stream.
   every event in every mode, prefixed with its session time — including
   the ones a terminal never showed: page acks, stage boundaries, change
   detection. Nothing is lost when a UI hides it.
+- **A full-stack server's own output** — its request logs, tracing,
+  panics, and the `cargo run` lines that start it — is captured, never
+  inherited: each line is an `output` event with `source: "server"`,
+  printed on a plain terminal tagged `[server] …`, kept out of the panel's
+  default log view, and written to its own file,
+  `<project>/target/idealyst/<package>/server.log` (truncated when the
+  session starts; the panel's footer names it). Its BUILD is the dev
+  loop's: cargo's lines and rustc's diagnostics stay with the session's. A
+  panic line, or the process exiting, is an `error` event on the server's
+  row naming `server.log`; the session keeps running, and the next good
+  build of its sources starts it again.
 - **The page** shows the build state over the running app: a small badge
   in the corner (what the loop is doing, with cargo's progress and the
   current stage, or what it last did: the tier and the time), and, when a
@@ -950,7 +961,41 @@ page, the session log and any tool are consumers of that one stream.
   (`crates/dev/http/src/status_overlay.js`) because the page's wasm may be
   the thing that failed to compile; a richer overlay can be an idealyst
   component once the bundle is live. In runtime-server mode the web page
-  gets the same overlay for the sidecar's saves.
+  gets the same overlay for the sidecar's saves. In a full-stack session
+  the badge follows the project's server too: `building server… 301/512`
+  while it builds, `restarting server` until it answers again, then
+  `server restarted`.
+
+**How the page reaches the stream.** The reload stream
+(`/__idealyst/reload`, with `/__idealyst/ack` for the page's reports and
+`/__idealyst/events`) is served by `idealyst dev` itself:
+
+- *`dev --web --local`, static*: `dev-http` serves the page and the stream
+  on one port; the page uses relative URLs.
+- *Full-stack* (the project's own server serves the page): the stream is
+  on a port of the session's own, and the injected script tries the
+  page's OWN origin first. A server built on the framework's
+  `server::router()` proxies `/__idealyst/*` to the session
+  (`crates/api/server/src/dev_stream.rs`): the session names the stream in
+  `IDEALYST_DEV_STREAM` when it starts the server, and without that
+  variable — production — there is no such route. The proxy passes each
+  chunk on as it arrives, so the page sees the same snapshot-then-live
+  stream. The page's origin is the one address that is reachable wherever
+  the page is: a devcontainer forwards the app's port and nothing else,
+  and a page pointed only at the session's loopback port retried it
+  forever, with no overlay and no patches. When the relative URL answers
+  with something that is not the stream (a 404, or the app's `index.html`
+  from a catch-all), the script falls back to the session's port. The
+  session asks the server once it first answers (`GET
+  /__idealyst/stream`) and reports the route as a `stream_route` event
+  (`[dev web] page dev stream: same-origin through the app server (…)`).
+  For a server that does not proxy, pin the stream's port with
+  `stream_port` in `dev.toml` (or `--stream-port`): inside a container it
+  binds on every interface, `idealyst configure devcontainer` forwards it
+  (labelled), and the session warns `forward port N to reach the page's
+  dev stream`. With neither, it is a random loopback port, with a warning
+  that a devcontainer will not forward it.
+- *Runtime-server mode*: the sidecar's WebSocket is the push channel.
 
 ### The panel
 
@@ -973,6 +1018,74 @@ idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · hot patch armed
 r rebuild · l log · e error · c clear · q quit
 ```
 
+A full-stack session (the project's own server serves the bundle and the
+API — CrewForge's shape) has a row for the server from the first frame,
+titled with its binary's name:
+
+```text
+idealyst dev · CrewForge · local · hot patch armed
+
+  web               ⠙ building · cargo 212/480 ━━━━━━━━──────────── idea-ui · 22.0s
+  crewforge-server  ⠙ building · cargo 301/512 ━━━━━━━━━━━───────── sqlx-postgres · 22.0s
+
+  saves
+  no saves yet
+
+r rebuild · l log: dev → server → all · e error · c clear · q quit · …lyst/crewforge-main/server.log
+```
+
+```text
+  web               ✓ hot patched · 38 fn · 9.3s
+  crewforge-server  ⠼ rebuilding · cargo 509/512 ━━━━━━━━━━━━━━━━━━━─ crewforge-api-server · 7.8s
+
+  saves
+  02:00  crewforge-server  routes.rs             rebuild            …
+  01:30  web               mod.rs                hot patch       9.3s  38 fn redirected  ✓ page
+```
+
+- The server's row: `queued` → `building` (its own cargo progress, the
+  crate in flight, the elapsed time) → `starting` → `running on <url>`
+  (from `server_ready`, once its port accepts connections). A save in its
+  own sources: `rebuilding` → `restarting` → `✓ running … · restarted`; a
+  rebuild whose binary did not change keeps it running; a save only the
+  web bundle sees leaves the row as it was; a failed build or a crash
+  shows its error (the old server keeps running through a failed build).
+- **The two builds run at once.** The bundle compiles in its own keyed
+  target dir (`target/idealyst-web-<key>`) and the server in
+  `target/idealyst-dev-server` (or, with `--shared-target`, the
+  workspace's `target/`), so they take different cargo locks and nothing
+  is gained by waiting; the server used to be built by `cargo run` only
+  after the bundle was done, with nothing on screen to say it existed. The
+  session builds them in turn only when both would compile into one
+  target dir (whose lock would serialize them anyway), and says which it
+  chose, and starts the server as soon as its build is done (when a
+  bundle from an earlier session is staged for it to serve; on a first
+  run it waits for the bundle). Measured on CrewForge: see the table
+  below.
+- **A reload never races the server.** The page is served by the server,
+  so a server build holds the page's reloads until the restarted server
+  answers: a save in a crate both depend on (CrewForge's `crates/core`)
+  shows both rows rebuilding, and the page reloads once, after both are
+  ready — onto the new server, not the old one about to be killed.
+
+Measured on CrewForge (`crates/app-main`, M-series laptop under a
+busy devcontainer VM, load average 7–10), seconds from launch; "server
+answering" is the first HTTP response on its port, and the page is
+usable at the later of the two columns:
+
+| CrewForge, launch → | web bundle ready | server built | server answering |
+|---|---|---|---|
+| nothing changed, server after the bundle (before) | 3.3–3.6 | — | 9.9–10.5 |
+| nothing changed, both at once | 4.3–4.6 | 3.3–3.6 | 10.0–10.9 |
+| `crates/core` touched, server after the bundle (before) | 37.3–42.6 | — | 64.4–72.8 |
+| `crates/core` touched, both at once | 40.4–41.9 | 22.1–22.5 | 30.2–30.4 |
+
+With both building at once the server answers ~40 s sooner after a
+change both sides see, and before the bundle is done; the bundle's own
+build is unchanged within noise. A session start with nothing to build
+is dominated by the server process's own startup (~6 s for CrewForge),
+which no build order changes.
+
 - The header: the app, the mode, where it is served, and whether the hot
   tier is armed (and if not, why).
 - A row per target, with its state: watching, a change being decided,
@@ -986,7 +1099,12 @@ r rebuild · l log · e error · c clear · q quit
 - `e` expands the last build error to rustc's full rendering, `l` opens
   the log pane (the raw lines a plain terminal would have shown, cargo's
   included), `r` asks every watcher to rebuild now, `c` clears the saves,
-  the log and the error, `q` (or Esc, Ctrl-C) quits the session.
+  the log and the error, `q` (or Esc, Ctrl-C) quits the session. In a
+  session with a server, the log pane shows the dev loop's lines by
+  default — builds, decisions, patches, errors, the server's build — and
+  `l` steps it on to the server's own output, then both, then closes it;
+  server chatter never appears unless asked for. The footer names
+  `server.log`.
 
 It stays minimal on purpose: nothing moves but a busy row's spinner glyph
 and elapsed time. The panel needs stderr to be a terminal (piped runs, CI
@@ -1050,15 +1168,25 @@ An object looks like:
 `seq` is gap-free per session and `at_ms` is milliseconds since the
 session started, from a monotonic clock. `target` names the row an event
 belongs to: `web` for the browser bundle, `server` for a full-stack
-server's watcher, `runtime-server` for the sidecar's saves, `session` for
-the session's own servers.
+server's build and watcher (`session_started.server` names it — `{"target":
+"server", "name": "crewforge-server", "log_file": ".../server.log"}` — so a
+view has its row from the first event), `runtime-server` for the sidecar's
+saves, `session` for the session's own servers.
+
+`output` lines carry a `source` saying what printed them: `cargo` (a
+build's, with `target` saying whose), `server` (the full-stack server
+process: request logs, tracing, panics — not the dev loop's; also in
+`server.log`), `wasm-bindgen` / `wasm-opt` / `premint-dump` / `hotpatch`
+(the bundler's steps), `runtime-server-host`, `lint`, `dev`. Treat an
+unknown source as the dev loop's.
 
 The event types, by what they say:
 
 | Type | When |
 |---|---|
 | `session_started` | once: app, targets, mode, whether the hot tier is armed (and why not) |
-| `server_ready` | a server is listening (`livereload`, `runtime_server_bridged`, `full_stack`, `reload_stream`, `events`) |
+| `server_ready` | a server is listening (`livereload`, `runtime_server_bridged`, `full_stack` — once the project's server accepts connections, again after each restart —, `reload_stream`, `events`) |
+| `stream_route` | how a full-stack page reaches the stream: `same_origin` (the app server proxies it) or `port` |
 | `watching` | the watch set, and again when a save changes the dependency graph |
 | `change_detected` | files changed (after the quiet window), with their crates |
 | `decided` | the tier: `overlay`, `hot_patch`, `rebuild` (with the reason), `unchanged` |
@@ -1082,9 +1210,11 @@ feature deeper in the graph can make the closure a little short; the
 clamp keeps the bar from overflowing.
 
 **What is typed today.** The `--local` web loop (watcher, bundler, patch
-builder, page), the dev servers, the CLI's own lines, the runtime-server
-host and sidecar builds (with cargo progress and diagnostics), and the
-host's save path (decision, overlay push, hot patch, or the respawn
+builder, page), a full-stack project's server (its build with cargo
+progress and diagnostics, each save its watcher sees, its restarts, and
+its process output as `server` lines), the dev servers, the CLI's own
+lines, the runtime-server host and sidecar builds (with cargo progress and
+diagnostics), and the host's save path (decision, overlay push, hot patch, or the respawn
 rebuild with its outcome, and the sidecar's report of applying them). The
 native targets' build crates still print plain lines; they arrive as
 `log`/`output` events when they go through the CLI, and anything they

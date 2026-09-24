@@ -2623,40 +2623,101 @@ fn launch_web_with_backend(
         server_build = start_server_build(pending_setup.take());
     }
 
-    if !args.no_build {
-        if wire {
-            // Built once, not watched. The thin client does not change
-            // when the app's source does — that is the entire point of
-            // wire mode, and a watcher here would rebuild a 20-second
-            // wasm bundle to publish a page that is already correct.
-            crate::dlog!(
-                "dev web",
-                "full-stack + wire: building the thin client once (the sidecar owns saves)",
-            );
-            dev_reload::build_once(dir, &bundle_opts)
-                .context("web bundle initial build failed (wire mode)")?;
-        } else {
-            crate::dlog!(
-                "dev web",
-                "full-stack: starting watcher for {} (standalone = {})",
-                dir.display(),
-                standalone,
-            );
-            let handle = dev_reload::start_with(dir, signal.clone(), bundle_opts)
-                .context("web bundle initial build + watcher start failed")?;
-            // The watcher thread lives as long as the session; dropping
-            // the handle detaches it.
-            drop(handle);
+    let launch = ServerLaunch {
+        dir,
+        manifest,
+        dist_web: &dist_web,
+        target_dir: &server_target,
+        port,
+        dev_stream: dev_stream_env.as_deref(),
+        log: &server_log,
+    };
+    let mut child: Option<Child> = None;
+    let mut route_reported = false;
+    let start_server = |child: &mut Option<Child>, route_reported: &mut bool| -> Result<()> {
+        *child = launch.start(&shared)?;
+        if child.is_some() && !*route_reported {
+            if let Some(stream) = &stream {
+                report_stream_route(port, stream);
+            }
+            *route_reported = true;
+        }
+        Ok(())
+    };
+
+    // The bundle's first build, on its own thread: the server starts as
+    // soon as ITS build is done (below), not when the bundle's is.
+    let web_build = (!args.no_build).then(|| {
+        let dir = dir.to_path_buf();
+        let signal = signal.clone();
+        let opts = bundle_opts.clone();
+        std::thread::Builder::new()
+            .name("idealyst-web-build".into())
+            .spawn(move || -> Result<()> {
+                if wire {
+                    // Built once, not watched. The thin client does not
+                    // change when the app's source does — that is the
+                    // entire point of wire mode, and a watcher here would
+                    // rebuild a 20-second wasm bundle to publish a page
+                    // that is already correct.
+                    crate::dlog!(
+                        "dev web",
+                        "full-stack + wire: building the thin client once (the sidecar owns saves)",
+                    );
+                    dev_reload::build_once(&dir, &opts)
+                        .context("web bundle initial build failed (wire mode)")
+                } else {
+                    crate::dlog!(
+                        "dev web",
+                        "full-stack: starting watcher for {} (standalone = {})",
+                        dir.display(),
+                        standalone,
+                    );
+                    // The watcher thread lives as long as the session;
+                    // dropping its handle detaches it.
+                    dev_reload::start_with(&dir, signal, opts)
+                        .map(drop)
+                        .context("web bundle initial build + watcher start failed")
+                }
+            })
+            .expect("spawn the web build thread")
+    });
+
+    // `true` when the server's first build succeeded (or there was none
+    // to run).
+    let mut built = true;
+    if concurrent {
+        if let Some(handle) = server_build.take() {
+            built = handle.join().unwrap_or(false);
+        }
+        // Up before the bundle is done when a bundle staged by an earlier
+        // session is there to serve: servers decide at startup whether
+        // they serve a bundle at all (CrewForge looks for `index.html` and
+        // comes up API-only without one), and a page that loads the old
+        // bundle reloads onto the new one the moment it is staged. On a
+        // first-ever run the server waits for the bundle instead.
+        let web_done = web_build.as_ref().map_or(true, |h| h.is_finished());
+        if built && (web_done || dist_web.join("index.html").is_file()) && watched {
+            start_server(&mut child, &mut route_reported)?;
+        }
+    }
+    if let Some(handle) = web_build {
+        let result = handle
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("the web build thread panicked")));
+        if let Err(e) = result {
+            // The session ends; the server must not outlive it.
+            if let Some(c) = child.take() {
+                stop_server(c);
+            }
+            return Err(e);
         }
     }
     if !concurrent {
-        server_build = start_server_build(pending_setup.take());
+        if let Some(handle) = start_server_build(pending_setup.take()) {
+            built = handle.join().unwrap_or(false);
+        }
     }
-    // `true` when the first build succeeded (or there was none to run).
-    let built = match server_build {
-        Some(handle) => handle.join().unwrap_or(false),
-        None => true,
-    };
 
     // The server serves the UI same-origin, so its port is the only URL
     // the user needs. Open the browser once it's accepting connections.
@@ -2675,31 +2736,18 @@ fn launch_web_with_backend(
         spawn_headless_client("127.0.0.1", port, dir, Arc::clone(&children));
     }
 
-    let launch = ServerLaunch {
-        dir,
-        manifest,
-        dist_web: &dist_web,
-        target_dir: &server_target,
-        port,
-        dev_stream: dev_stream_env.as_deref(),
-        log: &server_log,
-    };
-    let mut child: Option<Child> = None;
-    if built {
-        child = launch.start(&shared)?;
-        if child.is_some() {
-            if let Some(stream) = &stream {
-                report_stream_route(port, stream);
-            }
+    if child.is_none() {
+        if built {
+            start_server(&mut child, &mut route_reported)?;
+        } else {
+            crate::dlog!(
+                "dev web",
+                "full-stack: the server's first build failed, so it is not running — \
+                 fix it and save: the next good build starts it",
+            );
         }
-    } else {
-        crate::dlog!(
-            "dev web",
-            "full-stack: the server's first build failed, so it is not running — \
-             fix it and save: the next good build starts it",
-        );
     }
-    let mut route_reported = child.is_some();
+
 
     let mut last_gen = signal.current();
     let mut last_server_gen = server_signal.current();
@@ -2738,13 +2786,7 @@ fn launch_web_with_backend(
             if let Some(old) = child.take() {
                 stop_server(old);
             }
-            child = launch.start(&shared)?;
-            if !route_reported && child.is_some() {
-                if let Some(stream) = &stream {
-                    report_stream_route(port, stream);
-                }
-                route_reported = true;
-            }
+            start_server(&mut child, &mut route_reported)?;
             continue;
         }
 

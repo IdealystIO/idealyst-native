@@ -138,6 +138,36 @@ alone and stays yours; a pre-existing bare-string `postCreateCommand` is
 converted to a keyed object entry (`main`) so ours can sit beside it —
 semantics unchanged, and it's never removed.
 
+## Full-stack apps: the page's dev stream
+
+A full-stack page (one served by the project's own server) gets
+livereload, overlay and hot patches and its build badge from `idealyst
+dev`'s stream at `/__idealyst/reload`. In a container the browser can only
+reach ports that are forwarded, so where that stream lives matters:
+
+- **Servers built on the framework's `server::router()`** proxy
+  `/__idealyst/*` to the dev session (it names the stream in
+  `IDEALYST_DEV_STREAM` when it starts the server). The page reaches it on
+  its own origin — the app's port, which is forwarded anyway. Nothing to
+  configure; the session logs `page dev stream: same-origin through the app
+  server`.
+- **Any other server** cannot proxy it, and the stream is on a port of its
+  own. Pin it in `dev.toml`:
+
+  ```toml
+  stream_port = 4777
+  ```
+
+  (or `idealyst dev --stream-port 4777`). Inside a container it binds on
+  every interface, and `idealyst configure devcontainer` adds it to
+  `forwardPorts` with a `portsAttributes` label (`idealyst dev stream`,
+  silent auto-forward); change or remove the setting and re-run configure
+  to move or drop that entry — only the labelled entry is ever touched.
+  The session warns `forward port 4777 to reach the page's dev stream`.
+
+With neither, the stream is on a random loopback port and the session
+warns that a devcontainer will not forward it.
+
 ## Interactive mode (default)
 
 Running with no flags (and a real terminal) opens a wizard:

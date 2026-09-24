@@ -183,7 +183,7 @@ The dev loop runs two independent watchers and they do different things:
 |---|---|---|
 | client bundle only | bundle restaged into the dev staging dir, "refresh the browser" | no |
 | server sources | server rebuilt, **then** the process is restarted | only for the rebind |
-| a crate they share | both — rebuild, restage, restart | only for the rebind |
+| a crate they share | both — rebuild, restage, restart; the page reloads once, after the restarted server answers | only for the rebind |
 
 Two properties are load-bearing:
 
@@ -202,6 +202,21 @@ Two properties are load-bearing:
   doesn't compile leaves the running server up and costs a log line. The
   restart itself only happens once a build has succeeded *and* actually
   relinked the binary, so the downtime is a rebind rather than a compile.
+
+- **The server is a target of the session.** Its first build runs beside
+  the bundle's (they compile into different target directories), its
+  progress and errors are events (`target: "server"`) the panel shows as
+  its own row, and it starts as soon as its build is done. Its process
+  output is captured into `target/idealyst/<package>/server.log` and
+  tagged `[server]` on a plain terminal. A crash is reported on its row
+  and the next good build starts it again. See `docs/hot-reload.md`, "The
+  panel".
+- **`server::router()` proxies the page's dev stream** (`/__idealyst/*`)
+  when `idealyst dev` starts the server with `IDEALYST_DEV_STREAM` set, so
+  the page gets livereload and patches on its own origin — the one a
+  devcontainer forwards. Without the variable there is no such route. A
+  server not built on the router can pin the stream to a port instead
+  (`stream_port` in `dev.toml`).
 
 The dev server also builds into its own target directory rather than the
 workspace's `target/`. Cargo locks a build directory exclusively for the
