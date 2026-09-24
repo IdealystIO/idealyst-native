@@ -2697,7 +2697,7 @@ fn launch_web_with_backend(
         // bundle reloads onto the new one the moment it is staged. On a
         // first-ever run the server waits for the bundle instead.
         let web_done = web_build.as_ref().map_or(true, |h| h.is_finished());
-        if built && (web_done || dist_web.join("index.html").is_file()) && watched {
+        if start_before_bundle(built && watched, web_done, dist_web.join("index.html").is_file()) {
             start_server(&mut child, &mut route_reported)?;
         }
     }
@@ -2820,6 +2820,16 @@ fn launch_web_with_backend(
             );
         }
     }
+}
+
+/// Whether the server starts the moment its first build is done, before
+/// the bundle's has finished: when it built (and this session builds it),
+/// and there is a bundle for it to serve — the bundle is done, or one
+/// staged by an earlier session is there. Servers decide at startup
+/// whether they serve a bundle at all (CrewForge comes up API-only with no
+/// `index.html`), so on a first-ever run it waits for the bundle.
+fn start_before_bundle(built: bool, bundle_done: bool, staged_index: bool) -> bool {
+    built && (bundle_done || staged_index)
 }
 
 /// The page's dev stream, as bound for this session.
@@ -4672,6 +4682,16 @@ mod tests {
         );
         assert_eq!(server_panic("GET /docs/why-it-panicked at-scale 200", "/l"), None);
         assert_eq!(server_panic("listening on http://127.0.0.1:3100", "/l"), None);
+    }
+
+    /// The server starts before the bundle is done only with a bundle to
+    /// serve: on a first run it would come up API-only and stay that way.
+    #[test]
+    fn the_server_starts_early_only_with_a_bundle_to_serve() {
+        assert!(start_before_bundle(true, false, true), "an earlier session's bundle is staged");
+        assert!(start_before_bundle(true, true, false), "the bundle is done");
+        assert!(!start_before_bundle(true, false, false), "first run: wait for the bundle");
+        assert!(!start_before_bundle(false, true, true), "its build failed");
     }
 
     /// The bundle and the server build at once unless they would share a

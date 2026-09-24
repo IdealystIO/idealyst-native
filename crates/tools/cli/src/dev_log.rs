@@ -224,12 +224,30 @@ pub fn serve_events(project_dir: &Path) -> Option<String> {
 /// key reaches its watcher.
 pub fn attach_signal(signal: &Arc<dev_reload::ReloadSignal>) {
     let reporter = dev_events::global();
+    // What the session already said that a page shows — its
+    // `session_started` above all, which names a full-stack session's
+    // server — is emitted before any signal exists. Seeded first, then
+    // live: a page connecting later is sent it in its snapshot.
+    if let Some(events) = session_events() {
+        seed_page_state(signal, &events.subscribe().snapshot);
+    }
     reporter.subscribe(Box::new(dev_reload::PageSink::new(signal.clone())));
     signal.report_acks_to(reporter);
     if let Some(events) = session_events() {
         signal.serve_events(events);
     }
     register_rebuild(signal.clone());
+}
+
+/// Push the page's projection ([`dev_events::page::wants`]) of a session
+/// snapshot's events into `signal`, in order.
+fn seed_page_state(signal: &dev_reload::ReloadSignal, snapshot: &[Arc<str>]) {
+    for line in snapshot {
+        let Ok(envelope) = serde_json::from_str::<dev_events::Envelope>(line) else { continue };
+        if dev_events::page::wants(&envelope.event) {
+            signal.push_dev_state(&envelope);
+        }
+    }
 }
 
 /// The session log, opened for append so the fd-2 fallback (see
@@ -326,6 +344,35 @@ mod tests {
         let events = EventsOut { stdout: true, file: None };
         let err = start(Ui::Panel, &dir.path().join("dev.log"), &events).err().unwrap();
         assert!(err.to_string().contains("--events-file"), "{err}");
+    }
+
+    /// Regression (the full-stack E2E caught it): the page's snapshot never
+    /// had `session_started` — it is emitted before the page-facing signal
+    /// exists — so a page could not learn the session's server from it.
+    /// The signal is seeded with what the session already said.
+    #[test]
+    fn regression_a_page_snapshot_starts_with_the_session_line() {
+        let r = Reporter::new();
+        let broadcast = dev_events::broadcast::Broadcast::new();
+        r.add_sink(broadcast.clone());
+        r.emit(DevEvent::SessionStarted {
+            app: "CrewForge".into(),
+            targets: vec!["web".into()],
+            mode: dev_events::Mode::Local,
+            hot_tier: dev_events::HotTier::Armed,
+            log_file: None,
+            server: Some(dev_events::SessionServer::named("crewforge-server")),
+        });
+        r.emit(DevEvent::ServerReady {
+            target: "session".into(),
+            kind: dev_events::ServerKind::Events,
+            url: "http://127.0.0.1:1/__idealyst/events".into(),
+        });
+        let signal = dev_reload::ReloadSignal::new();
+        seed_page_state(&signal, &broadcast.subscribe().snapshot);
+        let (states, _) = signal.dev_state_snapshot();
+        assert_eq!(states.len(), 1, "{states:?}");
+        assert!(states[0].contains(r#""type":"session_started""#) && states[0].contains("crewforge-server"));
     }
 
     /// The server process's output goes to server.log and nothing else
