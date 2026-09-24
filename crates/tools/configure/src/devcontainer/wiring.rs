@@ -293,6 +293,83 @@ pub fn sync_tooling(
     Ok((Vec::new(), now))
 }
 
+/// The `portsAttributes` label marking the forwarded port as the dev
+/// session's page stream — and as ours to update or remove.
+pub const STREAM_PORT_LABEL: &str = "idealyst dev stream";
+
+/// Forward `port` (the dev session's page stream, `dev.toml`
+/// `stream_port`) with a label, replacing a stream port forwarded
+/// before; with `None`, remove the one we forwarded. Ports the user
+/// forwarded themselves are never touched: ours carry
+/// [`STREAM_PORT_LABEL`]. Returns files written.
+pub fn sync_stream_port(dir: &Path, config: Option<&str>, port: Option<u16>) -> Result<Vec<PathBuf>> {
+    let Some(mut value) = read_json(dir, config)? else {
+        return Ok(Vec::new());
+    };
+    let original = value.clone();
+    let obj = value
+        .as_object_mut()
+        .context("devcontainer.json is not a JSON object")?;
+
+    // Ours: the ports whose attributes carry the label.
+    let ours: Vec<String> = obj
+        .get("portsAttributes")
+        .and_then(Value::as_object)
+        .map(|attrs| {
+            attrs
+                .iter()
+                .filter(|(_, a)| a.get("label").and_then(Value::as_str) == Some(STREAM_PORT_LABEL))
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let keep = port.map(|p| p.to_string());
+    let stale: Vec<&String> = ours.iter().filter(|k| Some(*k) != keep.as_ref()).collect();
+
+    if let Some(Value::Array(ports)) = obj.get_mut("forwardPorts") {
+        ports.retain(|p| {
+            let key = match p {
+                Value::Number(n) => n.to_string(),
+                Value::String(s) => s.clone(),
+                _ => return true,
+            };
+            !stale.contains(&&key)
+        });
+    }
+    if let Some(Value::Object(attrs)) = obj.get_mut("portsAttributes") {
+        for k in &stale {
+            attrs.remove(k.as_str());
+        }
+        if attrs.is_empty() {
+            obj.remove("portsAttributes");
+        }
+    }
+    if matches!(obj.get("forwardPorts"), Some(Value::Array(a)) if a.is_empty()) {
+        obj.remove("forwardPorts");
+    }
+
+    if let Some(p) = port {
+        let ports = obj.entry("forwardPorts").or_insert_with(|| json!([]));
+        let ports = ports.as_array_mut().context("devcontainer.json `forwardPorts` is not an array")?;
+        let present = ports.iter().any(|v| v.as_u64() == Some(p as u64) || v.as_str() == Some(&p.to_string()));
+        if !present {
+            ports.push(json!(p));
+        }
+        let attrs = obj.entry("portsAttributes").or_insert_with(|| json!({}));
+        let attrs =
+            attrs.as_object_mut().context("devcontainer.json `portsAttributes` is not an object")?;
+        // Silent: the page opens it, not the author, so a "port forwarded"
+        // notification would be noise.
+        attrs.insert(p.to_string(), json!({ "label": STREAM_PORT_LABEL, "onAutoForward": "silent" }));
+    }
+
+    if value != original {
+        write_json(dir, config, &value)?;
+        return Ok(vec![devcontainer_json_path(dir, config)]);
+    }
+    Ok(Vec::new())
+}
+
 /// Write the targeted `devcontainer.json` pretty-printed with a trailing newline.
 fn write_json(dir: &Path, config: Option<&str>, value: &Value) -> Result<()> {
     let path = devcontainer_json_path(dir, config);

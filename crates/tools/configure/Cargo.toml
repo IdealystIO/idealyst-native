@@ -25,6 +25,8 @@ serde_json = { workspace = true }
 # tested; we only emit files we own, never round-trip user YAML.
 serde_yaml = "0.9"
 anyhow = "1"
+# Reads the project's `dev.toml` (`stream_port`) to forward it.
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

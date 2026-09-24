@@ -525,3 +525,39 @@ fn unknown_service_and_bad_variant_error() {
     assert!(devcontainer::apply(dir, &req(vec![enable("postgres")])).is_err()); // it's "database"
     assert!(devcontainer::apply(dir, &req(vec![enable_variant("database", "sqlite")])).is_err());
 }
+
+/// `stream_port` in `dev.toml` pins the dev session's page stream to a
+/// port, and a container only exposes it forwarded: configure forwards it,
+/// labelled, moves it when the port changes, and removes only its own
+/// entry when the setting goes — never a port the user forwarded.
+#[test]
+fn the_dev_stream_port_is_forwarded_with_a_label() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    // The user's own forward, which must survive everything below.
+    let mut json = devcontainer_json(dir);
+    json["forwardPorts"] = serde_json::json!([3100]);
+    std::fs::write(dir.join(".devcontainer/devcontainer.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    std::fs::write(dir.join("dev.toml"), "stream_port = 4777\n").unwrap();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    let json = devcontainer_json(dir);
+    assert_eq!(json["forwardPorts"], serde_json::json!([3100, 4777]));
+    assert_eq!(json["portsAttributes"]["4777"]["label"], "idealyst dev stream");
+    // Idempotent.
+    let report = devcontainer::apply(dir, &req(vec![])).unwrap();
+    assert!(report.wrote.is_empty(), "{:?}", report.wrote);
+
+    std::fs::write(dir.join("dev.toml"), "stream_port = 4888\n").unwrap();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    let json = devcontainer_json(dir);
+    assert_eq!(json["forwardPorts"], serde_json::json!([3100, 4888]));
+    assert!(json["portsAttributes"].get("4777").is_none());
+
+    std::fs::write(dir.join("dev.toml"), "# no stream port\n").unwrap();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    let json = devcontainer_json(dir);
+    assert_eq!(json["forwardPorts"], serde_json::json!([3100]));
+    assert!(json.get("portsAttributes").is_none());
+}

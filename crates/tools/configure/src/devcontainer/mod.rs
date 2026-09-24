@@ -157,6 +157,12 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
     )?;
     report.wrote.extend(wrote);
 
+    // The dev session's page stream, when `dev.toml` pins its port: a
+    // full-stack page whose server does not proxy the stream same-origin
+    // reaches it on that port, which a container only exposes if it is
+    // forwarded.
+    report.wrote.extend(wiring::sync_stream_port(dir, config, read_stream_port(dir)?)?);
+
     if after.is_empty() {
         // Tear down: drop the managed file + its reference, keep the base.
         let managed = compose::managed_path(dir);
@@ -176,6 +182,28 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
 
     dedup(&mut report.wrote);
     Ok(report)
+}
+
+/// `stream_port` from the project's `dev.toml`, if it sets one.
+///
+/// The dev session binds its page stream there (see `idealyst dev
+/// --stream-port`) instead of a random loopback port, so that a
+/// devcontainer can forward it.
+pub fn read_stream_port(dir: &Path) -> Result<Option<u16>> {
+    let path = dir.join("dev.toml");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    match value.get("stream_port") {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) => u16::try_from(*n)
+            .map(Some)
+            .with_context(|| format!("{}: stream_port {n} is not a port", path.display())),
+        Some(other) => anyhow::bail!("{}: stream_port must be a port number, not {other}", path.display()),
+    }
 }
 
 /// Fold the requests onto the current set, producing the resulting enabled
