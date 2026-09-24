@@ -3476,7 +3476,11 @@ dependencies = [
  "dev-events",
  "host-terminal",
  "idea-ui",
+ "parity-goldens",
  "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]

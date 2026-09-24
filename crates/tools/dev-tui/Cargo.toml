@@ -3,7 +3,7 @@ name = "dev-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Interactive terminal panel for `idealyst dev --interactive` — dogfoods the framework's terminal backend to show per-target state + a live log stream."
+description = "The interactive panel for `idealyst dev`: a live view of the session (per-target state, cargo progress, recent saves, build errors, the log), built as an idealyst app on the framework's terminal backend."
 # Not published to the idealyst registry: this crate is workspace-internal
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
@@ -14,15 +14,25 @@ crate-type = ["rlib"]
 [dependencies]
 # The session's events: the panel drains the dev loop's queue each frame.
 dev-events = { workspace = true }
-# The author surface. `runtime-core` is the crate this panel aliases to
-# `runtime_core` at its root (see src/lib.rs) — one core, no feature
-# switch. The panel builds its tree from the plain `view()` / `text()`
-# constructors (no `ui!`), so it needs nothing beyond the facade root.
+# The author surface. The panel is `#[component]`s rendered with `ui!`
+# and styled with `stylesheet!`: `runtime-core` is the facade, and the
+# macros' emission spells absolute `::runtime_vocabulary::glue::…` and
+# `::runtime_scene::…` paths, so both are direct dependencies.
 runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
 backend-terminal = { workspace = true }
 host-terminal = { workspace = true }
 # Pulled in for `install_theme` + the default light palette. The
 # framework panics on first render without an installed theme, even
-# though this scaffold doesn't drive any tokens itself (see
+# though the panel drives no tokens itself (see
 # [[project_install_theme_required]]).
 idea-ui = { workspace = true }
+
+[dev-dependencies]
+# The panel's grids are frozen goldens (`tests/goldens/`), rendered
+# through the terminal backend at a fixed size.
+parity-goldens = { workspace = true }
+# The tests' queue-only scheduler (host-terminal's microtask semantics
+# without its clock), as the backend's own parity tests use.
+runtime-shared = { workspace = true }

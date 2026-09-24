@@ -1,0 +1,30 @@
+idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · hot patch armed
+
+  web             ✗ build failed · src/app.rs:118:25 mismatched types
+
+  saves
+  02:30  app.rs                    rebuild        15.4s  build failed
+  02:00  app.rs                    hot patch     446 ms  64 fn redirected  ✓ page
+  01:30  app.rs                    overlay        12 ms  1 site  ✓ page
+  ✗ src/app.rs:118:25  mismatched types  e: expand
+
+
+  log
+  [build-web] cargo build --target wasm32-unknown-unknown
+  [dev web] livereload HTTP at http://0.0.0.0:8080
+  [dev-reload] watching /work/src for changes
+  [dev] patched 1 site(s) in 12 ms, no rebuild
+  [hotpatch] src/app.rs · 64 function(s) redirected ·  (total 0ms)
+  [dev] rebuilding: src/app.rs changed outside its function bodies
+  [dev-reload] change detected, rebuilding…
+  error[E0308]: mismatched types
+    --> src/app.rs:118:25
+     |
+  118 |     let broken: u32 = "not a number";
+     |                 ---   ^^^^^^^^^^^^^^ expected `u32`, found `&str`
+     |                 |
+     |                 expected due to this
+  error: could not compile `hotreload-lab` (lib) due to 1 previous error
+  [dev-reload] rebuild failed: cargo exited with exit status: 101
+
+r rebuild · l log · e error · c clear · q quit

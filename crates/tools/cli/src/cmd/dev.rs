@@ -80,6 +80,15 @@
 //! decision table is `dev_reload::overlay_decide`; which edits fall on
 //! which side is in `docs/ui-layer.md`.
 //!
+//! ## Reporting
+//!
+//! Every line the session prints is a typed `dev_events` event, fanned
+//! out by `crate::dev_log` to the terminal (plain lines, or the panel
+//! with `--interactive` / `IDEALYST_DEV_UI=panel`), the session log
+//! (`target/idealyst/<package>/dev.log`), `--events json` /
+//! `--events-file`, the page's status overlay, `/__idealyst/events`, and
+//! `[hooks]` in `dev.toml`. `docs/hot-reload.md#watching-a-session`.
+//!
 //! Delivery reaches the page on the shape `dev-http` serves. A
 //! FULL-STACK project's own server hands out `index.html` and never runs
 //! `dev-http`, so it gets the decision and the log but no in-page

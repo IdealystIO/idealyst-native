@@ -1,0 +1,30 @@
+idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · hot patch armed
+
+  web             ✓ overlay applied · 1 site · 12 ms
+
+  saves
+  01:30  app.rs                    overlay        12 ms  1 site  ✓ page
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+r rebuild · l log · e error · c clear · q quit

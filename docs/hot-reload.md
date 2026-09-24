@@ -954,6 +954,50 @@ page, the session log and any tool are consumers of that one stream.
   component once the bundle is live. In runtime-server mode the web page
   gets the same overlay for the sidecar's saves.
 
+### The panel
+
+`idealyst dev --interactive` (or `IDEALYST_DEV_UI=panel`, which also turns
+it off with `=plain` whatever the flag says) shows the session as a live
+status view instead of scrolling lines. It is an idealyst app — `#[component]`s,
+`ui!` and `stylesheet!` — on the framework's own terminal backend
+(`crates/tools/dev-tui`), fed by the same event stream:
+
+```text
+idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · hot patch armed
+
+  web             ⠸ rebuilding · cargo 212/480 ━━━━━━━━──────────── idea-ui · 12.3s
+
+  saves
+  02:30  app.rs                    rebuild            …  src/app.rs changed outside its function bo…
+  02:00  app.rs                    hot patch     446 ms  64 fn redirected  ✓ page
+  01:30  app.rs                    overlay        12 ms  1 site  ✓ page
+
+r rebuild · l log · e error · c clear · q quit
+```
+
+- The header: the app, the mode, where it is served, and whether the hot
+  tier is armed (and if not, why).
+- A row per target, with its state: watching, a change being decided,
+  applying an overlay patch, building a hot patch, building (with the
+  stage, cargo's packages compiled of the total, the crate in flight, and
+  the elapsed time), then what happened — applied, hot patched (functions
+  redirected), rebuilt and reloaded — each with its time, or the first
+  rustc error of a failed build.
+- The last saves: when (session time), the files, the tier, how long it
+  took, what it did, and `✓ page` once the page acked it.
+- `e` expands the last build error to rustc's full rendering, `l` opens
+  the log pane (the raw lines a plain terminal would have shown, cargo's
+  included), `r` asks every watcher to rebuild now, `c` clears the saves,
+  the log and the error, `q` (or Esc, Ctrl-C) quits the session.
+
+It stays minimal on purpose: nothing moves but a busy row's spinner glyph
+and elapsed time. The panel needs stderr to be a terminal (piped runs, CI
+and the MCP dev-runner keep plain lines, and say why when they asked for
+the panel) and does not run beside a `--terminal` app, which needs the
+terminal itself. Everything it hides is in the session log.
+
+The default stays plain lines; the panel is opt-in.
+
 ### Hooking into a dev session
 
 The stream is an open hook. Four ways in, all carrying the same objects:

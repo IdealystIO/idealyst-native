@@ -1094,12 +1094,13 @@ fn watch_loop(
         }
 
         let saved = read_saved(&ws, &changed_paths);
-        if !changed_paths.is_empty() {
+        let shown = saved_paths(&changed_paths);
+        if !shown.is_empty() {
             let mut crates: Vec<String> = saved.iter().map(|f| f.package.clone()).collect();
             crates.dedup();
             reporter.emit(dev_events::DevEvent::ChangeDetected {
                 target: TARGET.into(),
-                paths: display_all(&changed_paths),
+                paths: display_all(&shown),
                 crates,
                 folded,
             });
@@ -1490,6 +1491,26 @@ fn patch_crates(
             }
         })
         .collect()
+}
+
+/// The paths a save is reported as: each once, without an editor's
+/// scratch files. Editors and tools write beside the file they save — a
+/// `.name.swp`, an `.!12345!name.rs` from `sed -i`, a `name.rs~` backup —
+/// and the watcher sees those too; naming them in "what changed" says
+/// nothing about the save. The decision still reads every path (it skips
+/// what it cannot route); this only shapes the report.
+fn saved_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
+        if name.starts_with('.') || name.ends_with('~') || name.starts_with("#") {
+            continue;
+        }
+        if !out.contains(p) {
+            out.push(p.clone());
+        }
+    }
+    out
 }
 
 /// Paths as event data. The watch set is reported at startup and
@@ -2121,6 +2142,25 @@ mod tests {
         assert_eq!(seen_during.get(), Some((1, 0)));
         assert_eq!((gen, signal.current()), (1, 1));
         assert_eq!(signal.bump(), 2);
+    }
+
+    /// A save is reported by the files it saved, once each — not by the
+    /// scratch files the editor (or `sed -i`) wrote beside them, which the
+    /// live panel showed as `.!21378!app.rs, app.rs`.
+    #[test]
+    fn regression_a_save_is_reported_without_editor_scratch_files() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(
+            saved_paths(&[
+                p("/w/src/.!21378!app.rs"),
+                p("/w/src/app.rs"),
+                p("/w/src/.app.rs.swp"),
+                p("/w/src/app.rs~"),
+                p("/w/src/#app.rs#"),
+                p("/w/src/app.rs"),
+            ]),
+            vec![p("/w/src/app.rs")]
+        );
     }
 
     /// A rebuild request needs a running watch loop to go to.

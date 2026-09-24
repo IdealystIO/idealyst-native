@@ -1,165 +1,283 @@
-//! Interactive panel for `idealyst dev --interactive`.
+//! The interactive panel for `idealyst dev` (`--interactive`, or
+//! `IDEALYST_DEV_UI=panel`): a Metro-style live view of the session,
+//! built as an idealyst app on the framework's own terminal backend.
 //!
-//! Boots the framework's terminal backend ([`host_terminal::run`]) and
-//! mounts a tiny idealyst app that shows the session's event stream. The
-//! CLI's session reporter feeds a [`dev_events::Queue`]; a per-frame
-//! drain on the panel side hands the events to the reactive system.
+//! ```text
+//! idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · hot patch armed
 //!
-//! Cross-thread shape: the dev loop emits from worker threads; the
-//! framework's reactive arena is TLS-bound and single-threaded. Events
-//! land in the queue, and a `raf_loop` callback on the main thread drains
-//! it into the panel's signals. Mirrors the pattern `RuntimeServerShell`
-//! uses to bridge wire events into the reactive tree.
+//!   web             ⠹ rebuilding · cargo 212/480 ━━━━━━━━──────────── idea-ui · 12.3s
+//!
+//!   saves
+//!   00:42  app.rs                    hot patch     446 ms  3 fn redirected  ✓ page
+//!   00:31  app.rs                    overlay        12 ms  1 site  ✓ page
+//!
+//! r rebuild · l log · e error · c clear · q quit
+//! ```
+//!
+//! Three layers, each tested on its own:
+//!
+//! - [`model`]: a pure fold of the session's [`dev_events`] stream — one
+//!   state machine per target, a ring of recent saves, the log, the last
+//!   build error;
+//! - [`view`]: the model laid out as lines for a given size, time and
+//!   spinner frame;
+//! - [`panel`]: `#[component]`s rendering those lines with `ui!` and
+//!   `stylesheet!`.
+//!
+//! [`Controller`] ties them to the live session: once per frame it drains
+//! the event [`Queue`] (fed from the dev loop's worker threads), applies
+//! the keys pressed since the last frame, and writes the lines into the
+//! panel's signals. The reactive arena is single-threaded, which is why
+//! the workers hand events over through a queue instead of touching the
+//! signals themselves.
+//!
+//! Minimal by intent (see the terminal backend's conventions): no
+//! animation, no chrome beyond what carries information. The only thing
+//! that changes without an event is a busy row's spinner glyph and its
+//! elapsed time.
 
+pub mod model;
+pub mod panel;
+pub mod view;
+
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use dev_events::Queue;
+use runtime_core::{signal, ui, Element, Signal};
 
-use runtime_core::{raf_loop, signal, text, view, Element, Signal};
-
-/// One line of log output, scoped to the source that produced it.
-///
-/// `PartialEq` because the panel keeps the ring buffer in a `Signal`, and
-/// the world kernel's signals are equality-guarded (`T: PartialEq`) —
-/// a drain that produced no change must not re-render the log view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LogLine {
-    /// The line as the plain sink renders it.
-    pub message: String,
-}
+use crate::model::Model;
+use crate::panel::Panel;
+use crate::view::{Line, Row, Toggles};
 
 /// Options for [`run`].
 #[derive(Clone)]
 pub struct RunOptions {
-    /// The session's targets.
+    /// The session's targets: a row each from the start.
     pub targets: Vec<String>,
-    /// Called when the user asks for a rebuild.
+    /// What `r` does: ask the session's watchers to rebuild.
     pub on_rebuild: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-/// Boot the panel. Blocks until the user quits (q / Esc / Ctrl-C).
+/// A key the panel acts on. `q`, Esc and Ctrl-C are the terminal host's:
+/// they quit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKey {
+    /// `r`: rebuild now.
+    Rebuild,
+    /// `l`: open or close the log pane.
+    ToggleLog,
+    /// `e`: expand or collapse the last build error.
+    ToggleError,
+    /// `c`: clear the history, the log and the error.
+    Clear,
+}
+
+impl PanelKey {
+    /// The panel's meaning of a key press, if it has one.
+    pub fn of(key: &host_terminal::KeyEvent) -> Option<PanelKey> {
+        use host_terminal::{KeyCode, KeyModifiers};
+        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('r') | KeyCode::Char('R') => Some(PanelKey::Rebuild),
+            KeyCode::Char('l') | KeyCode::Char('L') => Some(PanelKey::ToggleLog),
+            KeyCode::Char('e') | KeyCode::Char('E') => Some(PanelKey::ToggleError),
+            KeyCode::Char('c') | KeyCode::Char('C') => Some(PanelKey::Clear),
+            _ => None,
+        }
+    }
+}
+
+/// The panel's signals: one per block of the screen.
+#[derive(Clone, Copy)]
+struct Signals {
+    header: Signal<Line>,
+    rows: Signal<Vec<Row>>,
+    history: Signal<Vec<Line>>,
+    error: Signal<Vec<Line>>,
+    log: Signal<Vec<Line>>,
+    footer: Signal<Line>,
+}
+
+/// Drives the panel from the session: see the crate docs.
+pub struct Controller {
+    events: Queue,
+    on_rebuild: Option<Arc<dyn Fn() + Send + Sync>>,
+    model: RefCell<Model>,
+    toggles: Cell<Toggles>,
+    keys: RefCell<VecDeque<PanelKey>>,
+    frame: Cell<u64>,
+    /// The latest event's session time, and when it was drained: the
+    /// session clock between events, for elapsed times.
+    clock: Cell<(u64, Instant)>,
+    signals: Signals,
+}
+
+impl Controller {
+    /// Must run inside the panel's world: it creates the signals.
+    pub fn new(events: Queue, opts: RunOptions) -> Rc<Self> {
+        Rc::new(Self {
+            events,
+            on_rebuild: opts.on_rebuild,
+            model: RefCell::new(Model::new(&opts.targets)),
+            toggles: Cell::new(Toggles::default()),
+            keys: RefCell::new(VecDeque::new()),
+            frame: Cell::new(0),
+            clock: Cell::new((0, Instant::now())),
+            signals: Signals {
+                header: signal(Line::default()),
+                rows: signal(Vec::new()),
+                history: signal(Vec::new()),
+                error: signal(Vec::new()),
+                log: signal(Vec::new()),
+                footer: signal(Line::default()),
+            },
+        })
+    }
+
+    /// Queue a key for the next frame.
+    pub fn key(&self, key: PanelKey) {
+        self.keys.borrow_mut().push_back(key);
+    }
+
+    /// The terminal host's key hook for this controller: the panel's keys
+    /// are queued and consumed (`true`); anything else — the quit keys —
+    /// goes on to the host (`false`).
+    pub fn key_handler(self: &Rc<Self>) -> Rc<dyn Fn(&host_terminal::KeyEvent) -> bool> {
+        let this = self.clone();
+        Rc::new(move |key| match PanelKey::of(key) {
+            Some(k) => {
+                this.key(k);
+                true
+            }
+            None => false,
+        })
+    }
+
+    /// One live frame: the session clock and the terminal's size.
+    pub fn pump(&self) {
+        let (at, drained) = self.clock.get();
+        let now = at + drained.elapsed().as_millis() as u64;
+        let size = runtime_core::viewport_size().peek();
+        self.pump_at(now, size.width.max(1.0) as usize, size.height.max(1.0) as usize);
+    }
+
+    /// One frame at session time `now_ms` for a `width` x `height`
+    /// terminal: drain events, apply keys, publish the screen. Tests call
+    /// this directly, with a fixed clock.
+    pub fn pump_at(&self, now_ms: u64, width: usize, height: usize) {
+        let events = self.events.drain();
+        {
+            let mut model = self.model.borrow_mut();
+            for e in &events {
+                model.apply(e);
+            }
+        }
+        if let Some(last) = events.last() {
+            self.clock.set((last.at_ms, Instant::now()));
+        }
+        let keys: Vec<PanelKey> = self.keys.borrow_mut().drain(..).collect();
+        for key in keys {
+            let mut t = self.toggles.get();
+            match key {
+                PanelKey::Rebuild => {
+                    if let Some(rebuild) = &self.on_rebuild {
+                        rebuild();
+                    }
+                }
+                PanelKey::ToggleLog => t.log = !t.log,
+                PanelKey::ToggleError => t.expanded = !t.expanded,
+                PanelKey::Clear => {
+                    self.model.borrow_mut().clear();
+                    t.expanded = false;
+                }
+            }
+            self.toggles.set(t);
+        }
+        let frame = self.frame.get();
+        self.frame.set(frame + 1);
+        let model = self.model.borrow();
+        let now_ms = now_ms.max(model.now_ms);
+        let screen = view::screen(&model, self.toggles.get(), now_ms, frame, width, height);
+        // Equality-guarded: an idle frame writes nothing and re-renders
+        // nothing.
+        let s = &self.signals;
+        s.header.set(screen.header);
+        s.rows.set(screen.rows);
+        s.history.set(screen.history);
+        s.error.set(screen.error);
+        s.log.set(screen.log);
+        s.footer.set(screen.footer);
+    }
+
+    /// The panel element. `live` runs [`Self::pump`] every frame; without
+    /// it the caller pumps (tests).
+    pub fn element(self: &Rc<Self>, live: bool) -> Element {
+        let s = self.signals;
+        let on_frame: Option<Rc<dyn Fn()>> = live.then(|| {
+            let this = self.clone();
+            Rc::new(move || this.pump()) as Rc<dyn Fn()>
+        });
+        ui! {
+            Panel(
+                header = s.header.read_only(),
+                rows = s.rows.read_only(),
+                history = s.history.read_only(),
+                error = s.error.read_only(),
+                log = s.log.read_only(),
+                footer = s.footer.read_only(),
+                on_frame = on_frame,
+            )
+        }
+    }
+}
+
+/// Boot the panel on this terminal. Blocks until the user quits (q, Esc,
+/// Ctrl-C).
 ///
-/// The framework's terminal host owns stdio for the lifetime of this
-/// call — raw mode + alternate screen come up before mount and tear
-/// down on return. `events` is the session's event queue; the panel
-/// drains it once per frame.
+/// The framework's terminal host owns stdio for the call: raw mode and
+/// the alternate screen come up before mount and go down on return.
+/// `events` is the session's event queue.
 pub fn run(events: Queue, opts: RunOptions) -> Result<(), host_terminal::RunError> {
+    // The controller is made inside the mount (its signals need the
+    // world), but the host takes its key hook before it mounts; the hook
+    // reaches the controller through this slot.
+    let slot: Rc<RefCell<Option<Rc<Controller>>>> = Rc::new(RefCell::new(None));
+    let for_keys = slot.clone();
+    let on_key: Rc<dyn Fn(&host_terminal::KeyEvent) -> bool> =
+        Rc::new(move |key| match for_keys.borrow().as_ref() {
+            Some(c) => (c.key_handler())(key),
+            None => false,
+        });
     let host_opts = host_terminal::RunOptions {
-        // ASCII redraw is cheap and the log stream's perceived
-        // smoothness is what matters here. 30 fps matches the
-        // host-terminal default.
         target_fps: 30,
-        on_key: None,
-        // 1 cell = 1 layout px keeps text + framing predictable for a
-        // panel authored at terminal scale.
+        on_key: Some(on_key),
+        // One layout pixel per cell: the panel is authored in cells.
         cell_size: None,
     };
-
     host_terminal::run(
-        move || build_panel(events.clone(), opts.clone()),
+        move || {
+            install_theme();
+            let controller = Controller::new(events, opts);
+            *slot.borrow_mut() = Some(controller.clone());
+            controller.element(true)
+        },
         host_opts,
-        // dev-tui's panel is built from plain primitives — no SDK scene
-        // handlers to install, so the boot seam's `register` argument is
-        // a no-op. (An unregistered payload panics at realize, so this is
-        // only safe because the tree is builtins-only.)
+        // Builtins only: no SDK payloads to register.
         |_| {},
     )
 }
 
-/// Construct the panel's primitive tree. Called once per mount; the
-/// framework's reactive system handles re-renders via signals.
-fn build_panel(bus: Queue, opts: RunOptions) -> Element {
-    install_theme_once();
-
-    // Backing store for the log view. Workers push into `bus`; the
-    // raf_loop below drains and writes here. Capped to a ring of the
-    // most-recent N lines so we don't grow unbounded over a long dev
-    // session.
-    // Created in the build closure, which the terminal boot runs inside
-    // `World::enter` — signal creation outside the world panics.
-    let log_lines: Signal<Vec<LogLine>> = signal(Vec::new());
-    const LOG_RING_CAP: usize = 2_000;
-
-    // Per-frame drain. Returns immediately when the queue is empty so
-    // idle CPU stays near zero (host-terminal blocks on event::poll
-    // between frames when no animation is pending).
-    {
-        let bus = bus.clone();
-        let log_lines = log_lines;
-        let _loop = raf_loop(move || {
-            let pending: Vec<LogLine> = bus
-                .drain()
-                .iter()
-                .filter_map(|e| dev_events::plain::render(&e.event))
-                .map(|m| LogLine { message: dev_events::plain::strip_ansi(&m) })
-                .collect();
-            if pending.is_empty() {
-                return;
-            }
-            // `update` takes `&T` and RETURNS the next value (it composes
-            // on the staged value, so two drains in one turn never lose
-            // lines).
-            log_lines.update(move |cur| {
-                let mut next = cur.clone();
-                next.extend(pending);
-                if next.len() > LOG_RING_CAP {
-                    let drop_n = next.len() - LOG_RING_CAP;
-                    next.drain(0..drop_n);
-                }
-                next
-            });
-        });
-        // RafLoop's Drop cancels the subscription; the panel needs it
-        // alive for the whole session, so leak it deliberately.
-        std::mem::forget(_loop);
-    }
-
-    let header_line = "idealyst dev".to_string();
-    let _ = &opts.on_rebuild;
-    let target_names = if opts.targets.is_empty() {
-        "(no targets)".to_string()
-    } else {
-        opts.targets.join("  ")
-    };
-
-    let footer_line = "q quit · ↑/↓ scroll · ? help";
-
-    view(vec![
-        text(header_line).into(),
-        text(format!("targets: {}", target_names)).into(),
-        text("─".repeat(60)).into(),
-        // Log view. Reactive — re-renders when `log_lines` changes.
-        view(vec![text(move || render_log(&log_lines.get())).into()]).into(),
-        text("─".repeat(60)).into(),
-        text(footer_line).into(),
-    ])
-    .into()
-}
-
-/// Flatten the ring buffer to a single string. v1 just joins by
-/// newline; the host-terminal renderer breaks text on `\n` into
-/// separate cells. Follow-up will replace this with a scrollable
-/// view-per-line so we can apply per-target colors.
-fn render_log(lines: &[LogLine]) -> String {
-    let mut out = String::new();
-    for line in lines {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&line.message);
-    }
-    out
-}
-
-/// Idempotent theme install. The framework panics on first render
-/// without a theme installed (see [[project_install_theme_required]]).
-/// Multiple `install_theme` calls are safe — later calls replace the
-/// active theme, which is fine because this scaffold doesn't drive
-/// any theme tokens itself.
-fn install_theme_once() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        idea_ui::install_idea_theme(idea_ui::light_theme());
-    });
+/// The framework panics on first render without an installed theme (see
+/// [[project_install_theme_required]]); the panel uses none of its
+/// tokens, so the default light palette is as good as any. Public for
+/// tests that mount the panel without [`run`].
+pub fn install_theme() {
+    // Idempotent: a later install replaces the active theme.
+    idea_ui::install_idea_theme(idea_ui::light_theme());
 }

@@ -540,6 +540,8 @@ fn start(project: &Path, scratch: &Path) -> (Session, Page) {
     let port = free_port();
     let mut dev = Command::new(env!("CARGO_BIN_EXE_idealyst"))
         .current_dir(project)
+        // This test drives its own headless Chrome; never open the user's.
+        .env("IDEALYST_TEST_DRIVER", "1")
         .args(["dev", "--web", "--local", "--no-robot", "--no-headless-client"])
         .args(["--port", &port.to_string()])
         .arg("--events-file")
@@ -757,6 +759,13 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
         page_states_before_reload.iter().filter_map(|s| s["seq"].as_u64()).collect();
     assert!(page_seqs.windows(2).all(|w| w[0] < w[1]), "page order: {page_seqs:?}");
     assert!(page_seqs.iter().all(|s| file_seqs.contains(s)), "the page saw events the file did not");
+
+    // `IDEALYST_E2E_EVENTS_OUT=<path>` keeps the session's events — the
+    // recording `crates/dev/events/tests/fixtures` validates the schema
+    // against comes from here.
+    if let Some(out) = std::env::var_os("IDEALYST_E2E_EVENTS_OUT") {
+        std::fs::copy(&session.events, out).expect("copy the events file");
+    }
 
     // The plain lines a terminal (and this test's older sibling) reads
     // are still there.
