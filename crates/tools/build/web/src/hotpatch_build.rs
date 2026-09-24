@@ -77,11 +77,23 @@ pub struct PatchCrate {
     /// the same key, against the same base, are the objects a replay
     /// would write now, and are reused. `None` always replays.
     pub source_key: Option<String>,
+    /// Whether the save edited this crate. A crate with no capture in
+    /// this base was never compiled into the wasm program — a host-only
+    /// crate the workspace's closure reaches through a feature the web
+    /// build does not turn on (CrewForge's `crewforge-api-server`). One
+    /// carried only as a dependent is skipped; an EDITED one fails the
+    /// patch, and the rebuild decides whether the edit matters.
+    pub edited: bool,
 }
 
 impl PatchCrate {
     pub fn new(crate_name: impl Into<String>, source_key: Option<String>) -> Self {
-        Self { crate_name: crate_name.into(), source_key }
+        Self { crate_name: crate_name.into(), source_key, edited: true }
+    }
+
+    /// A crate re-emitted only to carry another's edit.
+    pub fn carried(crate_name: impl Into<String>, source_key: Option<String>) -> Self {
+        Self { crate_name: crate_name.into(), source_key, edited: false }
     }
 }
 
@@ -99,6 +111,9 @@ pub struct BuiltPatch {
     /// Each crate the patch carries, in link order, with its replay's
     /// wall time — or `None` when its objects were reused.
     pub crates: Vec<(String, Option<Duration>)>,
+    /// Crates of the plan left out because this base never compiled
+    /// them (see [`PatchCrate::edited`]).
+    pub skipped: Vec<String>,
 }
 
 impl BuiltPatch {
@@ -113,6 +128,11 @@ impl BuiltPatch {
             .map(|(name, d)| format!("{name} {}ms", d.as_millis()))
             .collect();
         let line = format!("{} (total {}ms)", parts.join(" · "), self.total().as_millis());
+        let line = if self.skipped.is_empty() {
+            line
+        } else {
+            format!("{line} (not in the wasm build: {})", self.skipped.join(", "))
+        };
         if self.crates.len() < 2 {
             return line;
         }
@@ -229,10 +249,11 @@ impl WasmPatchBuilder {
         let mut timings = Vec::new();
 
         let started = Instant::now();
-        let replayed = collect_objects(&self.captures_dir, &self.objects, crates)?;
+        let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
+        let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build)?;
         let mut objects = Vec::new();
-        let mut carried = Vec::with_capacity(crates.len());
-        for (krate, (objs, took)) in crates.iter().zip(replayed) {
+        let mut carried = Vec::with_capacity(in_build.len());
+        for (krate, (objs, took)) in in_build.iter().zip(replayed) {
             objects.extend(objs);
             carried.push((krate.crate_name.clone(), took));
         }
@@ -309,6 +330,7 @@ impl WasmPatchBuilder {
             jump_table,
             timings,
             crates: carried,
+            skipped,
         })
     }
 
@@ -457,6 +479,27 @@ crates: &[PatchCrate],
     Ok(out.into_iter().map(|o| o.expect("every crate reused or replayed")).collect())
 }
 
+/// Split a plan's crates into those this base compiled (a capture
+/// exists) and those it did not; see [`PatchCrate::edited`].
+fn in_this_build(captures_dir: &Path, crates: &[PatchCrate]) -> Result<(Vec<PatchCrate>, Vec<String>)> {
+    let mut in_build = Vec::with_capacity(crates.len());
+    let mut skipped = Vec::new();
+    for krate in crates {
+        if replay::find_capture(captures_dir, &krate.crate_name).is_ok() {
+            in_build.push(krate.clone());
+        } else if krate.edited {
+            bail!(
+                "no capture for `{}` in this base build: the crate is not compiled into the \
+                 wasm program, so there is nothing to patch",
+                krate.crate_name
+            );
+        } else {
+            skipped.push(krate.crate_name.clone());
+        }
+    }
+    Ok((in_build, skipped))
+}
+
 /// Replay one crate's captured invocation as a PIC object compile.
 fn replay_crate(captures_dir: &Path, crate_name: &str) -> Result<(Vec<PathBuf>, Duration)> {
     let started = Instant::now();
@@ -593,6 +636,7 @@ mod tests {
                 ("jump-table", Duration::from_millis(12)),
             ],
             crates: vec![("app".into(), Some(Duration::from_millis(410)))],
+            skipped: Vec::new(),
         };
         let line = patch.timing_line();
         for step in ["cargo", "link", "resolve", "jump-table"] {
@@ -614,9 +658,11 @@ mod tests {
                 ("ui_shared".into(), Some(Duration::from_millis(900))),
                 ("app".into(), None),
             ],
+            skipped: vec!["api_server".into()],
         };
         let line = patch.timing_line();
         assert!(line.contains("[ui_shared 900ms, app reused]"), "{line}");
+        assert!(line.contains("(not in the wasm build: api_server)"), "{line}");
     }
 
     // --- object collection, against a stand-in rustc ------------------
@@ -729,6 +775,27 @@ mod tests {
         collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)]).unwrap();
         collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)]).unwrap();
         assert_eq!(caps.calls().iter().filter(|c| *c == "app").count(), 4);
+    }
+
+    /// Regression (CrewForge): the workspace closure reaches host-only
+    /// crates (`crewforge-api-server`, through a feature the web build
+    /// never enables), so a save in `crewforge-core` planned a replay of
+    /// one with no capture and every such patch failed. A dependent the
+    /// base never compiled is skipped; an EDITED one still refuses.
+    #[test]
+    fn regression_a_dependent_outside_the_wasm_build_is_skipped() {
+        let caps = FakeCaptures::new(&["core", "app"]);
+        let plan = [
+            PatchCrate::new("core", None),
+            PatchCrate::carried("api_server", None),
+            PatchCrate::carried("app", None),
+        ];
+        let (in_build, skipped) = in_this_build(&caps.dir, &plan).unwrap();
+        assert_eq!(in_build.iter().map(|c| c.crate_name.as_str()).collect::<Vec<_>>(), vec!["core", "app"]);
+        assert_eq!(skipped, vec!["api_server"]);
+
+        let err = in_this_build(&caps.dir, &[PatchCrate::new("api_server", None)]).unwrap_err();
+        assert!(format!("{err:#}").contains("not compiled into the wasm program"), "{err:#}");
     }
 
     /// A replay that fails fails the patch (the caller rebuilds), and

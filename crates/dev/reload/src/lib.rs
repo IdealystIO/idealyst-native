@@ -1044,10 +1044,13 @@ fn patch_crates(
     plan.replay
         .iter()
         .map(|package| {
-            build_web::hotpatch_build::PatchCrate::new(
-                ws.crate_name(package).unwrap_or(package.as_str()).to_string(),
-                plan.source_keys.get(package).cloned(),
-            )
+            let name = ws.crate_name(package).unwrap_or(package.as_str()).to_string();
+            let key = plan.source_keys.get(package).cloned();
+            if plan.edited.contains(package) {
+                build_web::hotpatch_build::PatchCrate::new(name, key)
+            } else {
+                build_web::hotpatch_build::PatchCrate::carried(name, key)
+            }
         })
         .collect()
 }
@@ -1435,6 +1438,11 @@ mod tests {
             "keyed by rustc crate name, dependencies first"
         );
         assert!(crates.iter().all(|c| c.source_key.is_some()));
+        assert_eq!(
+            crates.iter().map(|c| c.edited).collect::<Vec<_>>(),
+            vec![true, false],
+            "only the saved crate is required to be in the wasm build"
+        );
     }
 
     /// Regression guard for the save-storm that kept the dev bundle
