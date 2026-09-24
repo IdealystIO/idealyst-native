@@ -1,0 +1,23 @@
+# dev-events — the dev loop's lifecycle vocabulary.
+#
+# Everything `idealyst dev` does between "session started" and "the page
+# applied your save" is one typed `DevEvent`, emitted through a
+# `Reporter` and fanned out to sinks: the plain lines the CLI has always
+# printed, a JSON-lines file for editors and the MCP server, and the
+# queue the interactive panel drains.
+#
+# Its own crate, and deliberately tiny (serde only), because every
+# producer on the dev path needs it — the CLI, the watcher, the web
+# bundler, the dev HTTP server, the runtime-server sidecar — and they
+# share nothing else. Putting the vocabulary in any one of them would
+# drag that crate's dependencies into all the others.
+[package]
+name = "dev-events"
+version = "1.5.2"
+edition.workspace = true
+license.workspace = true
+description = "Idealyst dev loop lifecycle events: the typed vocabulary, the reporter, and its sinks (plain lines, JSON lines, a drainable queue)."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

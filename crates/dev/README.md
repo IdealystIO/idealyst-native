@@ -25,6 +25,7 @@ Two flavors of remote execution use the same machinery:
 | `dev-reload` | [`reload/`](./reload) | The reload loop logic — what changes survive a patch, what forces a full rebuild. |
 | `dev-http` | [`http/`](./http) | HTTP transport for the dev server (bundles, source maps, browser refresh signals). |
 | `web-dev-host` | [`web-host/`](./web-host) | Browser-side host that bootstraps a web app under `idealyst dev`. |
+| `dev-events` | [`events/`](./events) | The dev loop's lifecycle as typed events (`DevEvent`): a `Reporter` every producer on the dev path emits through, and its sinks — the plain lines the CLI always printed, a JSON-lines file for editors and tools (`idealyst dev --events-file`), and the queue the interactive panel drains. See [docs/hot-reload.md](../../docs/hot-reload.md#watching-a-session). |
 | `dev-overlay` | [`overlay/`](./overlay) | A build's descriptor set, and the patch-or-rebuild decision for a save. Its own crate because BOTH dev shapes need the decision and they share nothing else — the web watcher pulls the bundler, the runtime-server host pulls the wire protocol. |
 | `runtime-server-shell-native` | [`runtime-server-shell/`](./runtime-server-shell) | The device-side shell that runs when an app is launched in runtime-server mode — it boots the Backend, opens the connection, and feeds incoming wire commands into `dev-client`. |
 

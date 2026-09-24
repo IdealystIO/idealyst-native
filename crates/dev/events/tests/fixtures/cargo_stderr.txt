@@ -1,0 +1,4 @@
+[1m[92m     Locking[0m 2 packages to latest compatible versions
+[1m[92m   Compiling[0m fixture-app v0.1.0 (/work/app)
+[1m[92m   Compiling[0m fixture-helper v0.1.0 (/work/helper)
+[1m[91merror[0m: could not compile `fixture-app` (bin "fixture-app") due to 1 previous error

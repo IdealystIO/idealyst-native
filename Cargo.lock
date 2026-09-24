@@ -3372,6 +3372,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dev-events"
+version = "1.5.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dev-hot"
 version = "1.5.2"
 dependencies = [
