@@ -1762,6 +1762,12 @@ where
         .context("spawn watch thread")
 }
 
+/// The cargo target dir a bundle build of `dir` with `opts` compiles into
+/// ([`build_web::web_target_dir`]).
+pub fn web_target_dir(dir: &Path, opts: &BuildOptions) -> PathBuf {
+    build_web::web_target_dir(dir, &to_build_web_options(opts))
+}
+
 /// Run one bundle build.
 ///
 /// Returns the whole artifact rather than just "did the wasm move":

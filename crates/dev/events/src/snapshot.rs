@@ -69,6 +69,10 @@ impl SessionState {
             DevEvent::Watching { target, .. } => {
                 self.watching.insert(target.clone(), e);
             }
+            // How the page reaches the stream: state, like an address.
+            DevEvent::StreamRoute { target, .. } => {
+                self.servers.insert((target.clone(), "stream_route".into()), e);
+            }
             DevEvent::ChangeDetected { target, .. } => {
                 self.targets.insert(target.clone(), Episode { events: vec![e], closed: false });
             }

@@ -14,7 +14,7 @@
 
 use crate::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Envelope, PageAck, ServerKind,
-    SidecarUpdate, Timing, SERVER_OUTPUT_SOURCE, SERVER_TARGET,
+    SidecarUpdate, StreamRoute, Timing, SERVER_OUTPUT_SOURCE, SERVER_TARGET,
 };
 
 /// The target whose lines carry the watcher's bare `[dev-reload]` prefix.
@@ -38,6 +38,16 @@ pub fn render(event: &DevEvent) -> Option<String> {
             // New with the event stream: a plain terminal stays as it was.
             // The URL is in the session log and `.idealyst/events.url`.
             ServerKind::Events => return None,
+        },
+        // New: which way a full-stack page reaches the stream decides
+        // whether it gets livereload at all in a container.
+        DevEvent::StreamRoute { target, route, url } => match route {
+            StreamRoute::SameOrigin => {
+                format!("[dev {target}] page dev stream: same-origin through the app server ({url})")
+            }
+            StreamRoute::Port => format!(
+                "[dev {target}] page dev stream: {url} (the app server does not proxy /__idealyst/*)"
+            ),
         },
         DevEvent::Watching { target, roots, rewatch } => {
             let list = roots.join(", ");

@@ -564,6 +564,21 @@ pub fn resolve_primitive_set(spec: Option<&[String]>) -> Result<Option<Vec<Strin
 /// `wasm-bindgen` (plus `wasm-split` + `wasm-opt` on release) over the
 /// result, and stages the `pkg/` bundle into `project_dir/pkg/` and
 /// `dist/web`. No wrapper crate is involved — see the module docs.
+/// The cargo target dir a web build of `project_dir` with `opts` compiles
+/// into: `<framework target dir>/idealyst-web-<config key>` (see
+/// [`config_key`] for what the key separates).
+///
+/// Public so a caller running another build beside this one — the
+/// full-stack dev loop builds the project's server concurrently — can
+/// tell whether the two would contend for one target dir's lock. The dir
+/// is keyed, so in practice they never do; the check keeps that true if
+/// the layout changes.
+pub fn web_target_dir(project_dir: &Path, opts: &BuildOptions) -> PathBuf {
+    let project_dir = fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let key = config_key(opts, &project_dir);
+    opts.source.cargo_target_dir(&project_dir).join(format!("idealyst-web-{key}"))
+}
+
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
@@ -612,10 +627,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     // The config key is what stops the far nastier version of the same
     // problem — see [`config_key`].
     let key = config_key(&opts, &project_dir);
-    let target_dir = opts
-        .source
-        .cargo_target_dir(&project_dir)
-        .join(format!("idealyst-web-{key}"));
+    let target_dir = web_target_dir(&project_dir, &opts);
     let reporter = opts.reporter.clone();
     reporter.log(
         "build-web",

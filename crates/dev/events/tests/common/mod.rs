@@ -2,7 +2,7 @@
 
 use dev_events::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, HotTier, Mode, PageAck,
-    ServerKind, SessionServer, SidecarUpdate, Timing, SERVER_TARGET,
+    ServerKind, SessionServer, SidecarUpdate, StreamRoute, Timing, SERVER_TARGET,
 };
 
 /// One of every variant, so a variant added without serde support (or
@@ -36,6 +36,11 @@ pub fn every_event() -> Vec<DevEvent> {
             ms: 41_000,
         },
         DevEvent::ServerReady { target: web(), kind: ServerKind::ReloadStream, url: "http://x".into() },
+        DevEvent::StreamRoute {
+            target: web(),
+            route: StreamRoute::SameOrigin,
+            url: "http://127.0.0.1:3100/__idealyst/reload".into(),
+        },
         DevEvent::ServerReady { target: "session".into(), kind: ServerKind::Events, url: "http://127.0.0.1:1/__idealyst/events".into() },
         DevEvent::Watching { target: web(), roots: vec!["/a".into()], rewatch: true },
         DevEvent::ChangeDetected {

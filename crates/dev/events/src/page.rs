@@ -37,6 +37,7 @@ pub fn wants(event: &DevEvent) -> bool {
         // The other servers are addresses the page already knows.
         DevEvent::ServerReady { kind, .. } => *kind == ServerKind::FullStack,
         DevEvent::Watching { .. }
+        | DevEvent::StreamRoute { .. }
         | DevEvent::StageFinished { .. }
         | DevEvent::BuildTimed { .. }
         | DevEvent::PageAck { .. }

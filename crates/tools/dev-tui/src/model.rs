@@ -566,6 +566,7 @@ impl Model {
                 });
             }
             DevEvent::Error { .. }
+            | DevEvent::StreamRoute { .. }
             | DevEvent::Output { .. }
             | DevEvent::StageFinished { .. }
             | DevEvent::BuildTimed { .. } => {}

@@ -332,6 +332,25 @@ fn the_full_stack_server_lines() {
         }),
         None
     );
+    // How the page reaches the dev stream.
+    assert_eq!(
+        line(DevEvent::StreamRoute {
+            target: web(),
+            route: dev_events::StreamRoute::SameOrigin,
+            url: "http://127.0.0.1:3100/__idealyst/reload".into(),
+        })
+        .as_deref(),
+        Some("[dev web] page dev stream: same-origin through the app server (http://127.0.0.1:3100/__idealyst/reload)")
+    );
+    assert_eq!(
+        line(DevEvent::StreamRoute {
+            target: web(),
+            route: dev_events::StreamRoute::Port,
+            url: "http://127.0.0.1:4777/__idealyst/reload".into(),
+        })
+        .as_deref(),
+        Some("[dev web] page dev stream: http://127.0.0.1:4777/__idealyst/reload (the app server does not proxy /__idealyst/*)")
+    );
     // Other targets' first builds keep having no line.
     assert_eq!(
         line(DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 9 }),

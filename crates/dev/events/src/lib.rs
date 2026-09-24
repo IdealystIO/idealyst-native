@@ -156,6 +156,22 @@ pub enum ServerKind {
     Events,
 }
 
+/// How a full-stack page reaches the dev session's stream (livereload,
+/// patches, the build badge), as [`DevEvent::StreamRoute`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum StreamRoute {
+    /// Through the app server itself (`/__idealyst/*`, proxied by the
+    /// framework's server router): the page's own origin, reachable
+    /// wherever the page is.
+    SameOrigin,
+    /// On the dev session's own port: the app server does not proxy the
+    /// stream, so the page must reach that port directly — forwarded,
+    /// in a container.
+    Port,
+}
+
 /// What the watcher decided a save needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -414,6 +430,10 @@ pub enum DevEvent {
     },
     /// A server is accepting connections at `url`.
     ServerReady { target: String, kind: ServerKind, url: String },
+    /// A full-stack page reaches the dev stream at `url`, by `route`.
+    /// Decided once the project's server first answers (it is asked
+    /// whether it proxies the stream).
+    StreamRoute { target: String, route: StreamRoute, url: String },
     /// The watcher is watching `roots`. `rewatch` is true when a save
     /// changed the dependency graph and the set was re-resolved.
     Watching { target: String, roots: Vec<String>, rewatch: bool },
