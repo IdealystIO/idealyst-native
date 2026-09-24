@@ -149,6 +149,13 @@ command checks them over your source:
   `Element::View { … }` literal.
 - `component-pascal-case` — flags a `#[component]` fn that isn't
   PascalCase.
+- `prefer-component` — flags a free fn that composes a tree and returns
+  `Element` but has no `#[component]` (`fn user_row(name: String) ->
+  Element`). Called positionally, it bypasses `ui!` dispatch and
+  `Reactive<T>` props, and grows a positional signature with every option.
+  Annotate it and call `UserRow(name = …)` inside `ui!`. Not flagged: a fn
+  used as a value (the `app` entry fn, a screen, a render callback), a
+  zero-arg helper called from one place, methods, and tests.
 - `snapshot-condition` — flags the hoisted-snapshot trap: a `let` whose
   initializer does a bare `.get()` used later as a `ui!` `if` condition
   (the branch silently never updates). Fix with `memo(move || …)`, inline

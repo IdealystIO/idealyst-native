@@ -14,7 +14,9 @@
 //!    `view(…)` the file imports from the framework), `BuildElement::build`,
 //!    `Element::Variant { … }` (`prefer-ui-macro`),
 //!    and hand-built child lists (`prefer-keyed-list`).
-//! 3. Non-PascalCase `#[component]` functions (`component-pascal-case`).
+//! 3. Non-PascalCase `#[component]` functions (`component-pascal-case`),
+//!    and free fns that compose an `Element` tree without `#[component]`
+//!    at all (`prefer-component`).
 //! 4. Frozen-snapshot reactivity traps — a hoisted `.get()` used as a
 //!    `ui!` condition or loop source (`snapshot-condition`,
 //!    `snapshot-loop`).

@@ -103,7 +103,7 @@ const FRAMEWORK_ROOTS: &[&str] = &[
 ];
 
 /// The canonical constructor `name` spells, if it is one.
-fn constructor(name: &str) -> Option<&'static str> {
+pub(crate) fn constructor(name: &str) -> Option<&'static str> {
     PRIMITIVE_CONSTRUCTORS.iter().copied().find(|c| *c == name)
 }
 

@@ -37,7 +37,7 @@ pub(crate) fn check_fn(item: &syn::ItemFn, out: &mut Vec<RawDiag>) {
 
 /// True when the function carries a `#[component]` / `#[component(…)]`
 /// attribute, including a path-qualified `#[runtime_macros::component]`.
-fn has_component_attr(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn has_component_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path()
             .segments
@@ -59,7 +59,7 @@ pub(crate) fn is_pascal_case(name: &str) -> bool {
 }
 
 /// Best-effort `snake_case` / `lowerCamel` → `PascalCase` for the fix hint.
-fn to_pascal_case(name: &str) -> String {
+pub(crate) fn to_pascal_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut capitalize_next = true;
     for ch in name.chars() {

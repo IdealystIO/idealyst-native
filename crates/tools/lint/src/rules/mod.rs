@@ -26,6 +26,7 @@ use crate::diagnostic::RawDiag;
 
 mod component_case;
 mod keyed_list;
+mod prefer_component;
 mod prefer_macros;
 mod prefer_ui;
 mod premint_crawl;
@@ -79,6 +80,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             summary: "`#[component]` functions must be PascalCase",
         },
         RuleInfo {
+            id: prefer_component::RULE,
+            default_level: Level::Warn,
+            summary: "a free fn returning `Element` without `#[component]` — likely a component outside the paradigm; annotate it so call sites use `ui!` dispatch",
+        },
+        RuleInfo {
             id: snapshot_condition::RULE,
             default_level: Level::Warn,
             summary: "a hoisted `.get()` snapshot used as a `ui!` condition — the branch silently never updates",
@@ -121,6 +127,9 @@ pub(crate) fn collect(file: &syn::File) -> Vec<RawDiag> {
     let file_cx = prefer_ui::FileContext::scan(file);
     let mut linter = Linter { diags: Vec::new(), file_cx };
     linter.visit_file(file);
+    // Whole-file rule: needs call counts / value uses / imports across
+    // the file before it can judge any one fn, so it runs its own walk.
+    prefer_component::check_file(file, &mut linter.diags);
     linter.diags
 }
 

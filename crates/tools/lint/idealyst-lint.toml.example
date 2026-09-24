@@ -19,6 +19,10 @@ prefer-memo-fn      = "warn"
 snapshot-condition = "warn"
 snapshot-loop      = "warn"
 
+# A free fn returning Element without #[component] — a component outside
+# the paradigm (positional call sites, no ui! dispatch, no Reactive props).
+prefer-component = "warn"
+
 # Element construction. Set "off" for a crate that intentionally builds
 # elements by hand (e.g. a low-level backend test harness).
 prefer-ui-macro = "warn"
