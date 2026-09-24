@@ -342,6 +342,16 @@ fn idealyst_cli_installs_from_git_with_cached_volume() {
     let post = dc.get("postCreateCommand").unwrap().as_object().unwrap();
     let install = post.get("idealyst-cli-install").unwrap().as_str().unwrap();
     assert!(install.contains("cargo install --git"), "{install}");
+    // Regression: without the registry in cargo's environment the install
+    // fails with "could not find `idealyst-cli` … with version `*`",
+    // because the checkout's manifests reference `registry = "idealyst"`
+    // and `cargo install` does not read the project's .cargo/config.toml.
+    assert!(
+        install.contains(
+            "CARGO_REGISTRIES_IDEALYST_INDEX=sparse+https://crates.idealyst.io/index/ cargo install --git"
+        ),
+        "registry env for cargo install: {install}"
+    );
     assert!(install.contains("test -x /idealyst/cli/bin/idealyst ||"), "cache guard: {install}");
     assert!(install.contains("/usr/local/bin/idealyst"), "PATH symlink: {install}");
 

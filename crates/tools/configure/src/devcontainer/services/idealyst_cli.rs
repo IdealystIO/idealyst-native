@@ -25,6 +25,19 @@ const VOLUME: &str = "idealyst-cli-cache";
 
 const REPO: &str = "https://github.com/IdealystIO/idealyst-native";
 
+/// The framework's own registry, handed to `cargo install` as an
+/// environment variable.
+///
+/// `cargo install --git` parses the fetched checkout's manifests WITHOUT
+/// the project's `.cargo/config.toml`, so the `registry = "idealyst"`
+/// dependencies every framework crate carries fail to resolve, and cargo
+/// reports the package itself as missing ("could not find `idealyst-cli`
+/// in … with version `*`") rather than the registry. Reproduced with
+/// cargo 1.97.1 in every form of the command (plain, `--rev`, `--branch`,
+/// from a cwd whose config defines the registry) and fixed only by the
+/// variable. The same index the CLI's `framework_source` defaults to.
+const REGISTRY_INDEX: &str = "sparse+https://crates.idealyst.io/index/";
+
 pub struct IdealystCli;
 
 impl DevService for IdealystCli {
@@ -41,6 +54,7 @@ impl DevService for IdealystCli {
     fn fragment(&self, _variant: Option<&str>, _ctx: &Ctx) -> ServiceFragment {
         let install = format!(
             "{chown}; test -x {ROOT}/bin/idealyst || \
+             CARGO_REGISTRIES_IDEALYST_INDEX={REGISTRY_INDEX} \
              cargo install --git {REPO} idealyst-cli --root {ROOT}; \
              sudo -n ln -sf {ROOT}/bin/idealyst /usr/local/bin/idealyst 2>/dev/null || \
              ln -sf {ROOT}/bin/idealyst /usr/local/bin/idealyst 2>/dev/null || true",

@@ -71,12 +71,19 @@ what each enabled target is missing.
 ### Install
 
 ```bash
+export CARGO_REGISTRIES_IDEALYST_INDEX=sparse+https://crates.idealyst.io/index/
 cargo install --git https://github.com/IdealystIO/idealyst-native idealyst-cli
 ```
 
 That fetches the latest commit on `master`, compiles in release mode, and drops
 the `idealyst` binary into `~/.cargo/bin/` (which is on your `PATH` if you set
 Rust up through `rustup`).
+
+The environment variable is required, not a convenience: the framework's crates
+depend on each other through the `idealyst` registry, and `cargo install --git`
+parses the fetched checkout without any project's `.cargo/config.toml`. Without
+it, cargo reports the CLI as missing (`could not find \`idealyst-cli\` in … with
+version \`*\``) rather than naming the registry.
 
 To pin to a specific commit / tag / branch:
 
