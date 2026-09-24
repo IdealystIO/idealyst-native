@@ -709,9 +709,11 @@ impl HotPatchBase {
     }
 
     /// Index a freshly built base now, while the page is reloading,
-    /// instead of at the first save. Failures are not reported here:
-    /// the first save retries and says why.
-    fn warm(&mut self) {
+    /// instead of at the first save, and start `seed` — the app crate —
+    /// replaying in the background so the first save's replay finds its
+    /// incremental cache warm (`WasmPatchBuilder::seed`). Failures are
+    /// not reported here: the first save retries and says why.
+    fn warm(&mut self, seed: Option<build_web::hotpatch_build::PatchCrate>) {
         if !self.armed || self.retired.is_some() || self.builder.is_some() {
             return;
         }
@@ -721,6 +723,12 @@ impl HotPatchBase {
                 "[hotpatch] base indexed ahead of the first save in {} ms",
                 started.elapsed().as_millis()
             );
+            // `IDEALYST_HOTPATCH_NO_SEED=1` skips it, for A/B timing of
+            // the first save.
+            let seeding = seeding_enabled(std::env::var_os("IDEALYST_HOTPATCH_NO_SEED"));
+            if let (Some(seed), Some(builder), true) = (seed, self.builder.as_ref(), seeding) {
+                builder.seed(seed);
+            }
         }
     }
 
@@ -781,7 +789,6 @@ fn watch_loop(
     // edit after each rebuild, so a session that never makes one never
     // pays to parse the module.
     let mut base = HotPatchBase::new(&dir, &opts, initial);
-    base.warm();
     let (tx, rx) = mpsc::channel();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), tx) {
         Ok(d) => d,
@@ -817,6 +824,7 @@ fn watch_loop(
     // NEXT save diffs against what is actually running rather than
     // against the source the last compiler saw.
     let mut ws = load_workspace(&dir);
+    base.warm(tip_seed(&ws));
     if ws.crates.len() > 1 {
         let libs: Vec<&str> =
             ws.crates.keys().filter(|p| **p != ws.tip).map(String::as_str).collect();
@@ -886,7 +894,7 @@ fn watch_loop(
                 // After the reload is signalled: the page reloads while
                 // the base is indexed, rather than the next save waiting
                 // on it.
-                base.warm();
+                base.warm(tip_seed(&ws));
             }
             // Cargo produced nothing new and the packaging passes were
             // skipped, so the served bundle is the one the browser
@@ -895,12 +903,12 @@ fn watch_loop(
             // every rebuild and can move without the wasm moving.
             Ok(false) if !(opts.premint || opts.premint_only || opts.premint_report) => {
                 eprintln!("[dev-reload] wasm unchanged — packaging skipped, nothing to reload");
-                base.warm();
+                base.warm(tip_seed(&ws));
             }
             Ok(false) => {
                 let new_gen = signal.bump();
                 eprintln!("[dev-reload] wasm unchanged, premint refreshed — gen={new_gen}");
-                base.warm();
+                base.warm(tip_seed(&ws));
             }
             Err(e) => eprintln!("[dev-reload] rebuild failed: {e}"),
         }
@@ -938,6 +946,25 @@ fn watch_loop(
         // `rebuild_with_snapshot` installed from the sources the build
         // started from.
     }
+}
+
+/// Whether `IDEALYST_HOTPATCH_NO_SEED` (its value, if set) leaves the
+/// background seed on. Only a non-empty value other than `0` turns it
+/// off: a wrapper script that exports the variable EMPTY meant "not
+/// set", and reading that as "off" silently cost the first save its warm
+/// cache.
+fn seeding_enabled(no_seed: Option<std::ffi::OsString>) -> bool {
+    !no_seed.is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The app crate, as the background replay seed after a base build: keyed
+/// by its sources as scanned, so a library save that carries it unchanged
+/// reuses the seed's objects.
+fn tip_seed(ws: &dev_overlay::Workspace) -> Option<build_web::hotpatch_build::PatchCrate> {
+    Some(build_web::hotpatch_build::PatchCrate::carried(
+        ws.crate_name(&ws.tip)?.to_string(),
+        ws.source_key(&ws.tip),
+    ))
 }
 
 /// What the loop does next with a save [`handle_save`] looked at.
@@ -1423,13 +1450,13 @@ mod tests {
     fn regression_the_base_is_indexed_before_the_first_save() {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
-        base.warm();
+        base.warm(None);
         assert!(base.builder.is_some(), "warm did not index the base");
 
         let artifact = armed_base(&tmp.path().join("next")).artifact;
         base.rebuilt(artifact);
         assert!(base.builder.is_none(), "a rebuild must drop the old index");
-        base.warm();
+        base.warm(None);
         assert!(base.builder.is_some(), "and warm must index the new base");
     }
 
@@ -1439,7 +1466,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
         base.armed = false;
-        base.warm();
+        base.warm(None);
         assert!(base.builder.is_none());
     }
 
@@ -1629,6 +1656,16 @@ mod tests {
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 3 }\n").unwrap();
         let saved = read_saved(&ws, &[file]);
         assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::HotPatch(_)));
+    }
+
+    /// Regression: `IDEALYST_HOTPATCH_NO_SEED=` (exported empty) turned
+    /// the seed off, and the first save of that session compiled cold.
+    #[test]
+    fn regression_an_empty_no_seed_value_leaves_seeding_on() {
+        assert!(seeding_enabled(None));
+        assert!(seeding_enabled(Some("".into())));
+        assert!(seeding_enabled(Some("0".into())));
+        assert!(!seeding_enabled(Some("1".into())));
     }
 
     /// Regression guard for the save-storm that kept the dev bundle

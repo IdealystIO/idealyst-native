@@ -569,6 +569,25 @@ The base is indexed once per base build, right after it is built, and
 the builder keeps the base's slot map rather than re-reading the module
 per patch.
 
+**The replay cache is seeded after every base build.** A replay has its
+own incremental directory, which the base build never fills, so the
+first patch of a session used to compile the app crate cold (45.7 s of
+a 49.4 s first save in a fresh devcontainer). Right after the base is
+indexed, the app crate is replayed once in the background with no edit,
+while the page loads:
+
+```text
+[hotpatch] replay cache for `crewforge_main` seeded in 42752 ms
+```
+
+A save that arrives mid-seed waits for it rather than starting a second
+replay in the same incremental session. Its objects are kept under the
+app crate's source digest, so a library save that only carries the app
+reuses them. Measured on CrewForge with the replay cache cold (loaded
+machine, as in the workspace table): first save 39.1 s save to screen
+(rustc 34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.
+`IDEALYST_HOTPATCH_NO_SEED=1` turns it off, for A/B timing.
+
 **Before the replay starts** about 0.5 s passes: the file watcher's
 50 ms debounce, then `settle`'s 400 ms quiet window, which coalesces a
 multi-file save into one build, then reading and deciding. Measured save
@@ -900,6 +919,9 @@ alone, so the next save is still decided against the build on screen.
   patch bug.
 - `--split` on `dev --web --local` stands the web hot-patch tier down;
   body edits rebuild and reload.
+- `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replay that warms
+  the replay cache after each base build (see
+  [What a save costs on the web](#what-a-save-costs-on-the-web)).
 - `IDEALYST_HOTPATCH_KEEP_NAMES=1` serves the web patch WITH its `name`
   section, so a stack trace through patched code is readable in the
   browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
