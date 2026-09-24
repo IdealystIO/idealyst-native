@@ -132,9 +132,23 @@ impl CargoStream {
     }
 }
 
+/// One line of a bare `rustc --error-format=json` stream (what a replayed
+/// rustc invocation writes, with no cargo around it) as a [`Diagnostic`],
+/// or `None` for anything else.
+pub fn rustc_diagnostic(line: &str) -> Option<Diagnostic> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v["$message_type"] != "diagnostic" {
+        return None;
+    }
+    diagnostic_of(&v, None)
+}
+
 /// A `compiler-message` as a [`Diagnostic`].
 fn diagnostic(msg: &Value) -> Option<Diagnostic> {
-    let m = &msg["message"];
+    diagnostic_of(&msg["message"], msg["package_id"].as_str())
+}
+
+fn diagnostic_of(m: &Value, package: Option<&str>) -> Option<Diagnostic> {
     let level = m["level"].as_str()?.to_string();
     let message = m["message"].as_str().unwrap_or_default().to_string();
     let raw = m["rendered"].as_str().unwrap_or_default();
@@ -150,7 +164,7 @@ fn diagnostic(msg: &Value) -> Option<Diagnostic> {
         file: primary.and_then(|s| s["file_name"].as_str()).map(str::to_string),
         line: primary.and_then(|s| s["line_start"].as_u64()).map(|n| n as u32),
         column: primary.and_then(|s| s["column_start"].as_u64()).map(|n| n as u32),
-        package: msg["package_id"].as_str().map(str::to_string),
+        package: package.map(str::to_string),
         rendered,
         ansi,
     })
@@ -191,4 +205,20 @@ pub fn closure_size(metadata: &Value) -> Option<u32> {
         stack.extend(edges.get(id).into_iter().flatten().copied());
     }
     Some(seen.len() as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_rustc_diagnostic_line_parses_and_anything_else_does_not() {
+        let line = r#"{"$message_type":"diagnostic","message":"mismatched types","code":{"code":"E0308"},"level":"error","spans":[{"file_name":"src/app.rs","line_start":12,"column_start":9,"is_primary":true}],"rendered":"\u001b[1merror[E0308]\u001b[0m: mismatched types\n"}"#;
+        let d = rustc_diagnostic(line).expect("a diagnostic");
+        assert_eq!(d.location().as_deref(), Some("src/app.rs:12:9"));
+        assert_eq!(d.rendered, "error[E0308]: mismatched types\n");
+        assert!(d.ansi.is_some());
+        assert!(rustc_diagnostic(r#"{"$message_type":"artifact","artifact":"x.o"}"#).is_none());
+        assert!(rustc_diagnostic("error: plain text").is_none());
+    }
 }

@@ -97,21 +97,27 @@ pub fn build(
         Some((name, link_addr)) => match patch_syms.get(&name) {
             Some(&patch_addr) => {
                 map.insert(link_addr, patch_addr);
-                eprintln!("[hotpatch] app root paired: {name}");
+                dev_events::global().log("hotpatch", format!("app root paired: {name}"));
             }
-            None => eprintln!(
-                "[hotpatch] app root `{name}` is not in the patch dylib — edits to the \
-                 root fn itself will not apply (components below it still will)"
+            None => dev_events::global().log(
+                "hotpatch",
+                format!(
+                    "app root `{name}` is not in the patch dylib — edits to the \
+                     root fn itself will not apply (components below it still will)"
+                ),
             ),
         },
-        None => eprintln!(
-            "[hotpatch] no app-root entry (runtime_main=0x{runtime_main:x} \
-             app_runtime=0x{app_runtime:x} cache_main=0x{:x}) — edits to the root fn \
-             itself will not apply",
-            host_cache.main_addr,
+        None => dev_events::global().log(
+            "hotpatch",
+            format!(
+                "no app-root entry (runtime_main=0x{runtime_main:x} \
+                 app_runtime=0x{app_runtime:x} cache_main=0x{:x}) — edits to the root fn \
+                 itself will not apply",
+                host_cache.main_addr,
+            ),
         ),
     }
-    eprintln!("[hotpatch] jump table: {} entries", map.len());
+    dev_events::global().log("hotpatch", format!("jump table: {} entries", map.len()));
 
     Ok(JumpTable {
         lib: patch_dylib.to_path_buf(),

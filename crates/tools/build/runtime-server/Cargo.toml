@@ -9,6 +9,10 @@ description = "Generates and builds the runtime-server dev-host wrapper for a us
 publish = false
 
 [dependencies]
+# Its lines — cargo's output, the patch builder's steps, a failed
+# replay's rustc errors — are dev-loop events (`dev_events::global()`:
+# the session's reporter in the CLI, marked stderr lines in the host).
+dev-events = { workspace = true }
 anyhow = "1"
 # Reuses manifest parsing + workspace-root discovery so we don't
 # reimplement them. The Manifest schema is the shared contract.

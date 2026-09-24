@@ -157,15 +157,18 @@ pub fn synthesize(
                 },
             );
         }
-        eprintln!(
-            "[hotpatch] {} undefined refs deferred to dyld (system / dynamic): {}{}",
-            deferred.len(),
-            deferred.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
-            if deferred.len() > 8 {
-                format!(", … +{} more", deferred.len() - 8)
-            } else {
-                String::new()
-            },
+        dev_events::global().log(
+            "hotpatch",
+            format!(
+                "{} undefined refs deferred to dyld (system / dynamic): {}{}",
+                deferred.len(),
+                deferred.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
+                if deferred.len() > 8 {
+                    format!(", … +{} more", deferred.len() - 8)
+                } else {
+                    String::new()
+                },
+            ),
         );
     }
 

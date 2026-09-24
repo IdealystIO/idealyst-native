@@ -479,8 +479,8 @@ pub fn run(
             } else {
                 hotpatch_for_rebuild.as_deref().map(|b| &**b)
             };
-            let mut respawn = |why: &str| {
-                respawn_sidecar(
+            let respawn = |why: &str| {
+                let rebuilt = respawn_sidecar(
                     &sidecar_for_rebuild,
                     &tracker_for_rebuild,
                     &sidecar_path_for_rebuild,
@@ -488,6 +488,11 @@ pub fn run(
                     &cargo_target_for_rebuild,
                     respawn_adapter,
                 );
+                if !rebuilt {
+                    // Nothing was applied: the sidecar still runs the last
+                    // good build, and the failure is already reported.
+                    return;
+                }
                 if !note_respawn(respawn_adapter, &sidecar_path_for_rebuild) {
                     retired.set(true);
                 }
@@ -650,19 +655,40 @@ fn respawn_sidecar(
     sidecar_manifest: &std::path::Path,
     cargo_target: &std::path::Path,
     hot_patch: Option<&dyn HotPatchAdapter>,
-) {
-    let status = respawn_cargo_command(sidecar_manifest, cargo_target, hot_patch).status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!(
-                "[runtime-server-host] respawn cargo build exited with {s} — sidecar unchanged"
+) -> bool {
+    // The rebuild is reported like any other: cargo's progress and rustc's
+    // diagnostics as events (marked lines for the `idealyst dev` that
+    // reads this host's stderr), and the outcome — so a save that does not
+    // compile shows its error in the panel and on the page, not only in a
+    // scrolling log.
+    let reporter = dev_events::global();
+    let started = std::time::Instant::now();
+    reporter.emit(dev_events::DevEvent::BuildStarted {
+        target: crate::EVENTS_TARGET.into(),
+        cause: dev_events::BuildCause::Save { folded: 0 },
+    });
+    let failed = |error: String| {
+        reporter.emit(dev_events::DevEvent::BuildFinished {
+            target: crate::EVENTS_TARGET.into(),
+            outcome: dev_events::BuildOutcome::Failed { error },
+            ms: started.elapsed().as_millis() as u64,
+        });
+    };
+    let mut cmd = respawn_cargo_command(sidecar_manifest, cargo_target, hot_patch);
+    match dev_events::process::run_cargo(&mut cmd, &reporter, crate::EVENTS_TARGET, None) {
+        Ok((s, _)) if s.success() => {}
+        Ok((s, _)) => {
+            reporter.log(
+                "runtime-server-host",
+                format!("respawn cargo build exited with {s} — sidecar unchanged"),
             );
-            return;
+            failed(format!("cargo exited with {s}"));
+            return false;
         }
         Err(e) => {
-            eprintln!("[runtime-server-host] respawn cargo build spawn failed: {e}");
-            return;
+            reporter.log("runtime-server-host", format!("respawn cargo build spawn failed: {e}"));
+            failed(format!("cannot run cargo: {e}"));
+            return false;
         }
     }
     if let Ok(mut g) = sidecar_slot.lock() {
@@ -678,6 +704,7 @@ fn respawn_sidecar(
         }
     }
     replay_sessions_to_sidecar(sidecar_slot, tracker);
+    true
 }
 
 /// Re-read the crate's `ui!` sites into the archive after the running

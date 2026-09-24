@@ -131,8 +131,23 @@ pub fn run_rustc_emit_obj_with(
         .output()
         .context("spawn rustc")?;
     if !output.status.success() {
-        let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stderr);
-        let _ = std::io::Write::write_all(&mut std::io::stderr(), &output.stdout);
+        // The captured invocation carries cargo's `--error-format=json`, so
+        // rustc wrote JSON. Report each diagnostic as the text rustc would
+        // have printed, not as raw JSON; the rebuild this failure falls back
+        // to reports the same errors as structured diagnostics.
+        let reporter = dev_events::global();
+        for stream in [&output.stderr, &output.stdout] {
+            for line in String::from_utf8_lossy(stream).lines() {
+                match dev_events::cargo::rustc_diagnostic(line) {
+                    Some(d) => {
+                        for l in d.ansi.as_deref().unwrap_or(&d.rendered).lines() {
+                            reporter.output("hotpatch", l);
+                        }
+                    }
+                    None => reporter.output("hotpatch", line),
+                }
+            }
+        }
         // Name any `--extern` input that is not on disk right now. A
         // replay runs against artifacts a concurrent cargo may be
         // rewriting, and "can't find crate" alone does not say whether

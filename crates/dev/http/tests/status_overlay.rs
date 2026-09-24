@@ -155,3 +155,14 @@ fn the_overlay_is_part_of_the_served_reload_script() {
     assert!(script.contains(r#"es.addEventListener("dev-state""#));
     assert!(!script.contains("__STATUS_OVERLAY__"));
 }
+
+/// Undoing the edit that broke the build returns the source to what is
+/// running; the error no longer describes it, so it goes.
+#[test]
+fn saving_back_to_the_running_source_clears_the_error() {
+    const UNCHANGED: &str = r#"{"v":1,"seq":9,"at_ms":9,"type":"decided","target":"web","decision":{"tier":"unchanged"}}"#;
+    let Some(frames) = run(&[BUILD, DIAG, FAILED, "#", UNCHANGED, "#"]) else { return skip() };
+    assert_eq!(frames[0]["panel"], true);
+    assert_eq!(frames[1]["panel"], false, "{}", frames[1]);
+    assert_eq!(frames[1]["badge"], "○ no change");
+}

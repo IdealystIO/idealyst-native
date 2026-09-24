@@ -222,13 +222,16 @@ impl HotPatchBuilder {
                 .context("building jump table")?;
         let jt_ms = t_jt.elapsed().as_millis();
 
-        eprintln!(
-            "[hotpatch] timing: rustc {}ms stub {}ms link {}ms jt {}ms (total {}ms)",
-            replay_ms,
-            stub_ms,
-            link_ms,
-            jt_ms,
-            t_total.elapsed().as_millis(),
+        dev_events::global().log(
+            "hotpatch",
+            format!(
+                "timing: rustc {}ms stub {}ms link {}ms jt {}ms (total {}ms)",
+                replay_ms,
+                stub_ms,
+                link_ms,
+                jt_ms,
+                t_total.elapsed().as_millis(),
+            ),
         );
 
         Ok(HotPatchArtifact {

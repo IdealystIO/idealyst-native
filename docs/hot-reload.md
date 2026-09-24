@@ -1040,12 +1040,15 @@ feature deeper in the graph can make the closure a little short; the
 clamp keeps the bar from overflowing.
 
 **What is typed today.** The `--local` web loop (watcher, bundler, patch
-builder, page), the dev servers, the CLI's own lines, and the
-runtime-server host's save path (decision, overlay push, hot patch or
-respawn, and the sidecar's report of applying them). The native targets'
-build crates still print plain lines; they arrive as `log`/`output`
-events, and under the interactive panel any output they write straight to
-the terminal is redirected to the session log.
+builder, page), the dev servers, the CLI's own lines, the runtime-server
+host and sidecar builds (with cargo progress and diagnostics), and the
+host's save path (decision, overlay push, hot patch, or the respawn
+rebuild with its outcome, and the sidecar's report of applying them). The
+native targets' build crates still print plain lines; they arrive as
+`log`/`output` events when they go through the CLI, and anything they
+write straight to the terminal while the interactive panel is up lands in
+a log file instead — the session log until the panel starts, then the
+terminal host's own `.idealyst/terminal.log`.
 
 ## Escape hatches and diagnostics
 

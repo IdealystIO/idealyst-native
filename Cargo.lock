@@ -1948,6 +1948,7 @@ version = "1.5.2"
 dependencies = [
  "anyhow",
  "build-ios",
+ "dev-events",
  "object 0.39.1",
  "serde",
  "serde_json",

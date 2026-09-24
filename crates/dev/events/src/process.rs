@@ -89,6 +89,13 @@ pub struct Closure {
 /// `closure` is given, the total is resolved from `cargo metadata` on a
 /// second thread while the build runs, and arrives as a progress event
 /// whenever it is ready.
+///
+/// The metadata call starts at cargo's FIRST message, not at spawn: by
+/// then cargo has resolved the graph and written any lock-file update the
+/// build needed, so the `--frozen` metadata call (which must never race
+/// the build to write the lock) sees a lock it can use. Started at spawn,
+/// a build that had to update its lock — a renamed package, a new
+/// dependency — got no total at all.
 pub fn run_cargo(
     cmd: &mut Command,
     reporter: &Reporter,
@@ -105,24 +112,42 @@ pub fn run_cargo(
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let stream = Arc::new(Mutex::new(CargoStream::new(target)));
 
-    let total = closure.map(|c| {
+    // Taken by whichever pipe sees cargo's first message.
+    let pending_total = Arc::new(Mutex::new(closure));
+    let start_total = {
         let stream = stream.clone();
         let reporter = reporter.clone();
-        std::thread::spawn(move || {
-            let total = closure_total(&c);
-            let event = stream.lock().map(|mut s| s.set_total(total));
-            if let Ok(event) = event {
-                reporter.emit(event);
-            }
-        })
-    });
+        let pending_total = pending_total.clone();
+        move || {
+            let Some(c) = pending_total.lock().ok().and_then(|mut p| p.take()) else { return };
+            let stream = stream.clone();
+            let reporter = reporter.clone();
+            // Not joined: metadata still resolving after the build has
+            // finished has nothing left to say, and waiting on it would
+            // make the build look slower than it was.
+            std::thread::spawn(move || {
+                let total = closure_total(&c);
+                let event = stream.lock().map(|mut s| s.set_total(total));
+                if let Ok(event) = event {
+                    reporter.emit(event);
+                }
+            });
+        }
+    };
 
     let lines = |pipe: Option<Box<dyn Read + Send>>, stdout: bool| {
         let stream = stream.clone();
         let reporter = reporter.clone();
+        let start_total = start_total.clone();
         std::thread::spawn(move || {
             let Some(pipe) = pipe else { return };
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                // Any JSON message on stdout, or a `Compiling` line: the
+                // graph is resolved. (`Blocking`/`Updating` lines precede
+                // resolution and do not count.)
+                if stdout || crate::plain::strip_ansi(&line).trim_start().starts_with("Compiling ") {
+                    start_total();
+                }
                 // The lock covers parse AND emit, so progress events leave
                 // in the order the parser produced them.
                 let Ok(mut s) = stream.lock() else { return };
@@ -139,10 +164,6 @@ pub fn run_cargo(
     let status = child.wait()?;
     let _ = out.join();
     let _ = err.join();
-    // Not joined: metadata that is still resolving after the build has
-    // finished has nothing left to say, and waiting on it would make the
-    // build look slower than it was.
-    drop(total);
     let summary = stream
         .lock()
         .map(|s| CargoSummary { errors: s.errors(), compiled: s.compiled() })
@@ -262,5 +283,54 @@ mod tests {
             DevEvent::CargoProgress { compiled: 1, .. })));
         assert!(events.iter().any(|e| matches!(e,
             DevEvent::Output { line, .. } if line == "error: could not compile `app`")));
+    }
+
+    /// Regression: the closure lookup started when cargo was spawned, so
+    /// a build that had to write its lock file first (a renamed package, a
+    /// new dependency) raced it, `cargo metadata --frozen` refused the
+    /// stale lock, and the build ran with no total — the E2E caught a
+    /// renamed copy of the lab reporting progress with no bar. The lookup
+    /// now waits for cargo's first message.
+    #[test]
+    fn regression_the_total_survives_a_build_that_writes_its_lock() {
+        let dir = std::env::temp_dir().join(format!("dev-events-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"lockless\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+        // A stand-in for cargo that resolves (writes the lock) a moment
+        // after it starts, then reports one compiled package.
+        let script = r#"
+            sleep 1
+            cargo generate-lockfile --offline -q
+            echo '   Compiling lockless v0.1.0' 1>&2
+            echo '{"reason":"compiler-artifact","package_id":"lockless"}'
+            sleep 3
+        "#;
+        let r = Reporter::new();
+        let q = crate::Queue::new();
+        r.add_sink(Arc::new(q.clone()));
+        let closure = Closure { manifest_dir: dir.clone(), platform: None, features: vec![] };
+        run_cargo(
+            Command::new("sh").current_dir(&dir).args(["-c", script, "sh"]),
+            &r,
+            "web",
+            Some(closure),
+        )
+        .unwrap();
+        let totals: Vec<Option<u32>> = q
+            .drain()
+            .into_iter()
+            .filter_map(|e| match e.event {
+                DevEvent::CargoProgress { total, .. } => Some(total),
+                _ => None,
+            })
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(totals.contains(&Some(1)), "the total never arrived: {totals:?}");
     }
 }

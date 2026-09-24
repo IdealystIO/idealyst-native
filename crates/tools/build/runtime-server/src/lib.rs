@@ -622,6 +622,20 @@ fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
 // Cargo invocation
 // ---------------------------------------------------------------------------
 
+/// The row this crate's builds are filed under: the host and the sidecar
+/// it runs are the runtime-server session's engine.
+const EVENTS_TARGET: &str = "runtime-server";
+
+/// The wrapper's dependency closure, for the progress total. Host
+/// platform: the wrapper builds natively.
+fn closure(wrapper_dir: &Path) -> dev_events::process::Closure {
+    dev_events::process::Closure {
+        manifest_dir: wrapper_dir.to_path_buf(),
+        platform: None,
+        features: Vec::new(),
+    }
+}
+
 fn cargo_build(wrapper_dir: &Path, release: bool, label: &str) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build"]).current_dir(wrapper_dir);
@@ -629,14 +643,18 @@ fn cargo_build(wrapper_dir: &Path, release: bool, label: &str) -> Result<()> {
         cmd.arg("--release");
     }
 
-    eprintln!(
-        "[build-runtime-server:{label}] cargo build{} (in {})",
-        if release { " --release" } else { "" },
-        wrapper_dir.display(),
+    let reporter = dev_events::global();
+    reporter.log(
+        format!("build-runtime-server:{label}"),
+        format!("cargo build{} (in {})", if release { " --release" } else { "" }, wrapper_dir.display()),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
+    let (status, _) = dev_events::process::run_cargo(
+        &mut cmd,
+        &reporter,
+        EVENTS_TARGET,
+        Some(closure(wrapper_dir)),
+    )
+    .with_context(|| "spawn `cargo` — is it on your PATH?")?;
     if !status.success() {
         anyhow::bail!("[build-runtime-server:{label}] cargo build exited with {status}");
     }
@@ -670,15 +688,23 @@ fn cargo_build_fat(
         cmd.env(k, v);
     }
 
-    eprintln!(
-        "[build-runtime-server:{label}] cargo build (fat){} (in {}; captures → {})",
-        if release { " --release" } else { "" },
-        wrapper_dir.display(),
-        captures_dir.display(),
+    let reporter = dev_events::global();
+    reporter.log(
+        format!("build-runtime-server:{label}"),
+        format!(
+            "cargo build (fat){} (in {}; captures → {})",
+            if release { " --release" } else { "" },
+            wrapper_dir.display(),
+            captures_dir.display(),
+        ),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
+    let (status, _) = dev_events::process::run_cargo(
+        &mut cmd,
+        &reporter,
+        EVENTS_TARGET,
+        Some(closure(wrapper_dir)),
+    )
+    .with_context(|| "spawn `cargo` — is it on your PATH?")?;
     if !status.success() {
         anyhow::bail!("[build-runtime-server:{label}] cargo build exited with {status}");
     }

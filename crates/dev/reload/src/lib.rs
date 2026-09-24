@@ -127,6 +127,10 @@ pub struct ReloadSignal {
     /// The session's full event stream, served at `dev_http`'s
     /// `/__idealyst/events` by whichever server holds this signal.
     events: Mutex<Option<Arc<dev_events::broadcast::Broadcast>>>,
+    /// Serializes generation bumps ([`Self::bump_after`]). Separate from
+    /// `notify`: the callback emits events, and a page sink's push takes
+    /// `notify` itself.
+    bumping: Mutex<()>,
 }
 
 /// What reaches the watch loop: a batch of file events, or a request to
@@ -235,7 +239,20 @@ impl ReloadSignal {
     /// can drive the signal; the watcher loop is just the most
     /// common caller, not the only one.
     pub fn bump(&self) -> u64 {
-        let new = self.gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.bump_after(|_| {})
+    }
+
+    /// [`Self::bump`], calling `before(new_gen)` first — before any
+    /// listener can see the new generation. The watcher reports the
+    /// rebuild through it, so a page's `reloading` ack (which it sends
+    /// the moment it sees the generation move) can never precede the
+    /// report of the build that moved it. Bumpers are serialized, so the
+    /// generation `before` is told is the one that is published.
+    pub fn bump_after(&self, before: impl FnOnce(u64)) -> u64 {
+        let _serial = self.bumping.lock().unwrap();
+        let new = self.gen.load(Ordering::Acquire) + 1;
+        before(new);
+        self.gen.store(new, Ordering::Release);
         let _g = self.notify.0.lock().unwrap();
         self.notify.1.notify_all();
         new
@@ -1127,29 +1144,43 @@ fn watch_loop(
         reporter.emit(dev_events::DevEvent::BuildStarted { target: TARGET.into(), cause });
         let started = std::time::Instant::now();
         let built = rebuild_with_snapshot(&mut ws, &dir, || build_wasm(&dir, &opts));
-        let outcome = match built.map(|a| {
+        let finished = |outcome| {
+            reporter.emit(dev_events::DevEvent::BuildFinished {
+                target: TARGET.into(),
+                outcome,
+                ms: started.elapsed().as_millis() as u64,
+            })
+        };
+        let failed = match built.map(|a| {
             let changed = a.wasm_changed;
             base.rebuilt(a);
             changed
         }) {
-            Ok(true) => dev_events::BuildOutcome::Reloaded { gen: signal.bump() },
+            // Reported before the generation moves: see `bump_after`.
+            Ok(true) => {
+                signal.bump_after(|gen| finished(dev_events::BuildOutcome::Reloaded { gen }));
+                false
+            }
             // Cargo produced nothing new and the packaging passes were
             // skipped, so the served bundle is the one the browser
             // already has. A premint session is the exception: its
             // `pkg/premint.css` is regenerated from a native dump on
             // every rebuild and can move without the wasm moving.
             Ok(false) if !(opts.premint || opts.premint_only || opts.premint_report) => {
-                dev_events::BuildOutcome::Unchanged
+                finished(dev_events::BuildOutcome::Unchanged);
+                false
             }
-            Ok(false) => dev_events::BuildOutcome::PremintRefreshed { gen: signal.bump() },
-            Err(e) => dev_events::BuildOutcome::Failed { error: e.to_string() },
+            Ok(false) => {
+                signal.bump_after(|gen| {
+                    finished(dev_events::BuildOutcome::PremintRefreshed { gen })
+                });
+                false
+            }
+            Err(e) => {
+                finished(dev_events::BuildOutcome::Failed { error: e.to_string() });
+                true
+            }
         };
-        let failed = matches!(outcome, dev_events::BuildOutcome::Failed { .. });
-        reporter.emit(dev_events::DevEvent::BuildFinished {
-            target: TARGET.into(),
-            outcome,
-            ms: started.elapsed().as_millis() as u64,
-        });
         if !failed {
             // After the reload is signalled: the page reloads while the
             // base is indexed, rather than the next save waiting on it.
@@ -1258,20 +1289,25 @@ fn handle_save(
         dev_overlay::WorkspaceDecision::Patch(patches) => {
             let count = patches.len();
             decided(dev_events::Decision::Overlay { sites: count });
+            let mut payloads = Vec::with_capacity(count);
             for patch in &patches {
                 match serde_json::to_string(&overlay_decide::wire_payload(patch)) {
-                    Ok(json) => {
-                        signal.push_patch(json);
-                    }
+                    Ok(json) => payloads.push(json),
                     Err(e) => reporter.error("dev-reload", format!("cannot encode patch: {e}")),
                 }
             }
             ws.advance(saved);
+            // Reported BEFORE the push: the page acks as soon as the patch
+            // reaches it, and an ack must never precede the push it acks
+            // in the session's order.
             reporter.emit(dev_events::DevEvent::OverlayPushed {
                 target: TARGET.into(),
                 sites: count,
                 ms: started.elapsed().as_millis() as u64,
             });
+            for json in payloads {
+                signal.push_patch(json);
+            }
             Handled::Done
         }
         dev_overlay::WorkspaceDecision::Unchanged if !saved.is_empty() => {
@@ -1308,9 +1344,9 @@ fn handle_save(
             });
             match built {
                 Ok(event) => {
-                    signal.push_hot_patch(event.json);
                     ws.install(scanned);
                     ws.note_patched(&plan);
+                    // Before the push, for the reason the overlay arm gives.
                     reporter.emit(dev_events::DevEvent::PatchBuilt {
                         target: TARGET.into(),
                         files: plan.files.clone(),
@@ -1321,6 +1357,7 @@ fn handle_save(
                         bytes: event.bytes,
                         ms: started.elapsed().as_millis() as u64,
                     });
+                    signal.push_hot_patch(event.json);
                     Handled::Done
                 }
                 Err(why) => {
@@ -1574,16 +1611,21 @@ where
                     cause: dev_events::BuildCause::Save { folded },
                 });
                 let started = std::time::Instant::now();
-                let outcome = match on_change() {
-                    Ok(Rebuilt::Changed) => dev_events::BuildOutcome::Reloaded { gen: signal.bump() },
-                    Ok(Rebuilt::Unchanged) => dev_events::BuildOutcome::Unchanged,
-                    Err(e) => dev_events::BuildOutcome::Failed { error: e.to_string() },
+                let finished = |outcome| {
+                    reporter.emit(dev_events::DevEvent::BuildFinished {
+                        target: label.into(),
+                        outcome,
+                        ms: started.elapsed().as_millis() as u64,
+                    })
                 };
-                reporter.emit(dev_events::DevEvent::BuildFinished {
-                    target: label.into(),
-                    outcome,
-                    ms: started.elapsed().as_millis() as u64,
-                });
+                match on_change() {
+                    // Reported before the generation moves: see `bump_after`.
+                    Ok(Rebuilt::Changed) => {
+                        signal.bump_after(|gen| finished(dev_events::BuildOutcome::Reloaded { gen }));
+                    }
+                    Ok(Rebuilt::Unchanged) => finished(dev_events::BuildOutcome::Unchanged),
+                    Err(e) => finished(dev_events::BuildOutcome::Failed { error: e.to_string() }),
+                }
                 drain(&rx);
             }
         })
@@ -2023,6 +2065,62 @@ mod tests {
                 ack: dev_events::PageAck::HotPatch { redirected: Some(3), carried: Some(2) },
             }]
         );
+    }
+
+    /// Regression: the overlay push reached the page before the session
+    /// reported it, so the page's ack could precede `overlay_pushed` (the
+    /// events E2E saw `decided, page_ack, overlay_pushed`). The report now
+    /// goes out first; at the moment it is emitted, nothing is pushed yet.
+    #[test]
+    fn regression_an_overlay_push_is_reported_before_the_page_can_see_it() {
+        struct PushedAtReport(Arc<ReloadSignal>, Arc<Mutex<Option<usize>>>);
+        impl dev_events::Sink for PushedAtReport {
+            fn emit(&self, e: &dev_events::Envelope) {
+                if matches!(e.event, dev_events::DevEvent::OverlayPushed { .. }) {
+                    *self.1.lock().unwrap() = Some(self.0.patches_since(0).len());
+                }
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"probe\"\nversion = \"0.0.0\"\n")
+            .unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "fn a() { ui! { text { \"a\" } } }\n").unwrap();
+        let mut ws = dev_overlay::Workspace::single("probe", &dir, "probe");
+        ws.rescan(&dir, ["probe"]);
+        std::fs::write(dir.join("src/lib.rs"), "fn a() { ui! { text { \"b\" } } }\n").unwrap();
+        let saved = read_saved(&ws, &[dir.join("src/lib.rs")]);
+
+        let signal = ReloadSignal::new();
+        let reporter = dev_events::Reporter::new();
+        let at_report = Arc::new(Mutex::new(None));
+        reporter.add_sink(Arc::new(PushedAtReport(signal.clone(), at_report.clone())));
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
+        assert!(matches!(
+            handle_save(&mut ws, &dir, &saved, false, &signal, &reporter, &mut build),
+            Handled::Done
+        ));
+        assert_eq!(*at_report.lock().unwrap(), Some(0), "reported before anything was pushed");
+        assert_eq!(signal.patches_since(0).len(), 1, "and pushed after");
+    }
+
+    /// Regression: the generation moved BEFORE the rebuild was reported,
+    /// so a fast page's `reloading` ack reached the session ahead of the
+    /// `build_finished` it answered (the events E2E caught it). The report
+    /// now runs inside the bump, before any listener can see the new
+    /// generation.
+    #[test]
+    fn regression_a_rebuild_is_reported_before_pages_see_its_generation() {
+        let signal = ReloadSignal::new();
+        let seen_during = std::cell::Cell::new(None);
+        let gen = signal.bump_after(|gen| {
+            // A listener polling now still sees the old generation.
+            seen_during.set(Some((gen, signal.current())));
+        });
+        assert_eq!(seen_during.get(), Some((1, 0)));
+        assert_eq!((gen, signal.current()), (1, 1));
+        assert_eq!(signal.bump(), 2);
     }
 
     /// A rebuild request needs a running watch loop to go to.

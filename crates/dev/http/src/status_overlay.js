@@ -117,7 +117,12 @@ function idealystStatusOverlay(doc) {
         if (d.tier === "overlay") { st.phase = "patching"; st.text = "overlay patch"; }
         else if (d.tier === "hot_patch") { st.phase = "patching"; st.text = "hot patch: " + (d.crates || []).join(", "); }
         else if (d.tier === "rebuild") { st.phase = "building"; st.text = "rebuild"; }
-        else if (d.tier === "unchanged") { st.phase = "idle"; st.text = "no change"; }
+        else if (d.tier === "unchanged") {
+          // The source is back to what is running: an error from a build
+          // of some other source no longer describes it.
+          succeeded("no change");
+          st.phase = "idle";
+        }
         break;
       }
       case "build_started":
