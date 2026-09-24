@@ -126,7 +126,11 @@ pub fn router() -> Router {
         app = (entry.register)(app);
     }
 
-    app.route("/_srv/*path", post(dispatch))
+    let app = app.route("/_srv/*path", post(dispatch));
+    // Under `idealyst dev`, the page's dev stream same-origin (livereload,
+    // overlay and hot patches, the build badge). Only when the dev loop
+    // started this server and named the stream; otherwise no route.
+    crate::dev_stream::from_env(app)
     // Intentionally no `.fallback(...)`: composing this router with
     // a static-file `ServeDir` (the demo's typical setup) needs the
     // caller to install their own fallback. Unknown server-fn paths

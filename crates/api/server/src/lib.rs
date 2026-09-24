@@ -115,6 +115,8 @@ pub use client::{
 // =============================================================================
 
 #[cfg(feature = "server")]
+pub mod dev_stream;
+#[cfg(feature = "server")]
 mod cookie;
 #[cfg(feature = "server")]
 mod extractors;
