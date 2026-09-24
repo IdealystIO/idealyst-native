@@ -58,3 +58,6 @@ icon-gen = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 toml = "0.8"
+# The two-crate roundtrip writes rustc captures in the replay's real
+# on-disk format (`replay::CapturedInvocation`, JSON).
+serde_json = { workspace = true }

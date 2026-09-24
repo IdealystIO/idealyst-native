@@ -85,6 +85,15 @@ pub struct Workspace {
     /// Local packages in the tip's closure that are NOT workspace
     /// members, with their directories. Watched, never patched.
     pub outside: BTreeMap<String, PathBuf>,
+    /// Every crate a hot patch has re-emitted since the base build.
+    ///
+    /// A patch REPLACES the page's jump table rather than adding to it,
+    /// so a later patch that left one of these out would send its
+    /// functions back to the base — undoing an earlier save's edit with
+    /// nothing to say so. Each plan therefore re-emits these as well as
+    /// what its own save touched. Cleared by a rebuild
+    /// ([`Self::forget_patches`]).
+    pub patched: BTreeSet<String>,
 }
 
 /// Where a saved path belongs.
@@ -126,6 +135,11 @@ pub struct HotPatchPlan {
     pub replay: Vec<String>,
     /// The saved files, for the log (`<package>/<path>` outside the tip).
     pub files: Vec<String>,
+    /// Per package in `replay`, a digest of the sources the patch must
+    /// compile ([`DescriptorSet::build_key`], with the save's files
+    /// applied for an edited crate). A crate whose key matches its last
+    /// replay against the same base need not be replayed again.
+    pub source_keys: BTreeMap<String, String>,
 }
 
 impl Workspace {
@@ -253,7 +267,12 @@ impl Workspace {
                 },
             );
         }
-        Some(Workspace { tip: pkgs[tip_id].name.clone(), crates, outside })
+        Some(Workspace {
+            tip: pkgs[tip_id].name.clone(),
+            crates,
+            outside,
+            patched: BTreeSet::new(),
+        })
     }
 
     /// A workspace of the tip alone — what a session gets when `cargo
@@ -272,7 +291,12 @@ impl Workspace {
                 archive: None,
             },
         );
-        Workspace { tip: package.to_string(), crates, outside: BTreeMap::new() }
+        Workspace {
+            tip: package.to_string(),
+            crates,
+            outside: BTreeMap::new(),
+            patched: BTreeSet::new(),
+        }
     }
 
     /// Which crate a saved path belongs to.
@@ -396,9 +420,44 @@ impl Workspace {
             }
         }
 
-        let replay = self.replay_set(&touched);
+        // What this save touched, plus everything an earlier patch of
+        // this base re-emitted (see `patched`), plus their dependents.
+        let carried: BTreeSet<String> = touched.union(&self.patched).cloned().collect();
+        let replay = self.replay_set(&carried);
+        let mut source_keys = BTreeMap::new();
+        for package in &replay {
+            let Some(archive) = self.crates[package].archive.as_ref() else {
+                // A dependent with no archive cannot be keyed; it is
+                // replayed every time rather than trusted.
+                continue;
+            };
+            let saved_here: BTreeMap<String, String> = by_package
+                .get(package.as_str())
+                .into_iter()
+                .flatten()
+                .map(|s| (s.file.path.clone(), s.file.text.clone()))
+                .collect();
+            source_keys.insert(package.clone(), archive.build_key_with(&saved_here));
+        }
         files.sort();
-        WorkspaceDecision::HotPatch(HotPatchPlan { edited: touched.into_iter().collect(), replay, files })
+        WorkspaceDecision::HotPatch(HotPatchPlan {
+            edited: touched.into_iter().collect(),
+            replay,
+            files,
+            source_keys,
+        })
+    }
+
+    /// Record a hot patch that reached the page: every crate it
+    /// re-emitted rides along in each later patch of this base.
+    pub fn note_patched(&mut self, plan: &HotPatchPlan) {
+        self.patched.extend(plan.replay.iter().cloned());
+    }
+
+    /// A rebuild compiled every edit into a new base; nothing needs
+    /// carrying any more.
+    pub fn forget_patches(&mut self) {
+        self.patched.clear();
     }
 
     /// The edited crates plus every workspace crate that depends on one
@@ -840,6 +899,73 @@ pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
         assert!(dir.starts_with(crate::archive::overlay_dir(&f.root, "app")), "{}", dir.display());
         assert!(crate::decide::load_archive_from(&dir).is_some());
         assert!(!crate::archive::overlay_dir(&f.root, "lab-shared").exists());
+    }
+
+    /// Regression (found designing the multi-crate patch): a patch
+    /// REPLACES the page's jump table. A tip-only save after a library
+    /// save would have re-emitted the tip alone, and the library's
+    /// functions — paired only in the earlier table — would have gone back
+    /// to the base, silently undoing the library edit. Every crate patched
+    /// since the base rides along until a rebuild.
+    #[test]
+    fn regression_a_later_patch_still_carries_an_earlier_patchs_crates() {
+        let mut f = fixture();
+        let shared_edit = SHARED.replace("v1 {}", "v2 {}");
+        let WorkspaceDecision::HotPatch(first) =
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", shared_edit.clone()), false)
+        else {
+            panic!("expected a hot patch");
+        };
+        f.ws.note_patched(&first);
+        // The dev loop rescans what the patch re-emitted.
+        std::fs::write(f.root.join("lab-shared/src/lib.rs"), &shared_edit).unwrap();
+        let root = f.root.clone();
+        f.ws.rescan(&root, ["lab-shared", "app"]);
+
+        let tip_edit = APP.replace("vec![t]", "vec![t.clone(), t]");
+        match f.ws.decide(&saved(&f, "src/lib.rs", tip_edit.clone()), false) {
+            WorkspaceDecision::HotPatch(plan) => {
+                assert_eq!(plan.edited, vec!["app"]);
+                assert_eq!(plan.replay, vec!["lab-shared", "app"], "lab-shared is carried");
+            }
+            other => panic!("expected a hot patch, got {other:?}"),
+        }
+
+        // A rebuild folds every edit into the base: nothing to carry.
+        f.ws.forget_patches();
+        match f.ws.decide(&saved(&f, "src/lib.rs", tip_edit), false) {
+            WorkspaceDecision::HotPatch(plan) => assert_eq!(plan.replay, vec!["app"]),
+            other => panic!("expected a hot patch, got {other:?}"),
+        }
+    }
+
+    /// The plan keys each crate by the sources the patch compiles: an
+    /// edited crate by its archive WITH the save applied (which is what
+    /// the rescan after the patch will record), a carried one by its
+    /// archive as is.
+    #[test]
+    fn the_plan_keys_each_crate_by_the_sources_it_compiles() {
+        let mut f = fixture();
+        let edit = SHARED.replace("v1 {}", "v2 {}");
+        let WorkspaceDecision::HotPatch(plan) =
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit.clone()), false)
+        else {
+            panic!("expected a hot patch");
+        };
+        assert_eq!(plan.source_keys.get("app"), f.ws.source_key("app").as_ref(), "app is as scanned");
+        assert_ne!(
+            plan.source_keys.get("lab-shared"),
+            f.ws.source_key("lab-shared").as_ref(),
+            "lab-shared's key must reflect the save, not the old archive"
+        );
+        std::fs::write(f.root.join("lab-shared/src/lib.rs"), &edit).unwrap();
+        let root = f.root.clone();
+        f.ws.rescan(&root, ["lab-shared"]);
+        assert_eq!(
+            plan.source_keys.get("lab-shared"),
+            f.ws.source_key("lab-shared").as_ref(),
+            "after the rescan the archive agrees with what the patch compiled"
+        );
     }
 
     /// A three-level chain replays in dependency order and includes every

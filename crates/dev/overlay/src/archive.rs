@@ -181,12 +181,25 @@ impl DescriptorSet {
     /// builds, and a key that could not tell them apart would let a
     /// stale descriptor set be mistaken for the current one.
     pub fn build_key(&self) -> String {
+        self.build_key_with(&BTreeMap::new())
+    }
+
+    /// [`Self::build_key`] of the crate as it would scan with some files'
+    /// contents replaced: `changed` maps a package-relative path to the
+    /// file's new TEXT. What a save turns the crate into, before any
+    /// rescan — so a patch built from the save can be keyed by the
+    /// sources it compiled.
+    pub fn build_key_with(&self, changed: &BTreeMap<String, String>) -> String {
         let mut h = Sha256::new();
         h.update(self.split_version.to_le_bytes());
         for (path, digest) in &self.files {
+            let content = match changed.get(path) {
+                Some(text) => self::digest(text.as_bytes()),
+                None => digest.content.clone(),
+            };
             h.update(path.as_bytes());
             h.update([0u8]);
-            h.update(digest.content.as_bytes());
+            h.update(content.as_bytes());
             h.update([0u8]);
         }
         hex(&h.finalize())

@@ -156,14 +156,61 @@ pub fn run_rustc_emit_obj_with(
     // own — with several codegen units rustc reports the objects it
     // wrote, but a unit reused from the incremental cache is copied in
     // without one.
-    let mut out: Vec<PathBuf> = std::fs::read_dir(&out_dir)
+    let listed: Vec<PathBuf> = std::fs::read_dir(&out_dir)
         .with_context(|| format!("read {}", out_dir.display()))?
         .flatten()
         .map(|e| e.path())
+        .collect();
+    Ok(replay_objects(listed, &args))
+}
+
+/// The objects a replay's out-dir holds, minus rustc's single-unit copy.
+///
+/// With exactly ONE codegen unit, rustc copies that unit's
+/// `<crate><extra>.<cgu>.rcgu.o` to `<crate><extra>.o` AND keeps the
+/// numbered file (`produce_final_output_artifacts`: `copy_if_one_unit(
+/// Object, keep_numbered = true)`). Linking both defines every symbol
+/// twice and the patch link fails with `duplicate symbol` — which a small
+/// library crate of the workspace hits, since it can partition into a
+/// single unit where the app crate never does. So the copy is dropped
+/// whenever a numbered unit is present.
+pub fn replay_objects(listed: Vec<PathBuf>, args: &[String]) -> Vec<PathBuf> {
+    let mut objects: Vec<PathBuf> = listed
+        .into_iter()
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("o"))
         .collect();
-    out.sort();
-    Ok(out)
+    let has_units = objects.iter().any(|p| is_codegen_unit(p));
+    if has_units {
+        let crate_name = arg_value(args, "--crate-name").unwrap_or_default();
+        let extra = codegen_value(args, "extra-filename").unwrap_or_default();
+        let single_copy = format!("{crate_name}{extra}.o");
+        objects.retain(|p| p.file_name().and_then(|f| f.to_str()) != Some(single_copy.as_str()));
+    }
+    objects.sort();
+    objects
+}
+
+fn is_codegen_unit(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f.ends_with(".rcgu.o"))
+}
+
+/// The value of a `-C <key>=<value>` / `-C<key>=<value>` flag.
+fn codegen_value(args: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let mut iter = args.iter();
+    while let Some(a) = iter.next() {
+        let flag = if a == "-C" {
+            iter.next().map(String::as_str)
+        } else {
+            a.strip_prefix("-C")
+        };
+        if let Some(v) = flag.and_then(|f| f.strip_prefix(&prefix)) {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 /// Preference order among several captures for one crate name: lower is
@@ -353,6 +400,45 @@ mod tests {
         assert_eq!(
             replay_out_dir(&cargo_argv()).unwrap(),
             PathBuf::from("/t/debug/idealyst-hotpatch-obj/app")
+        );
+    }
+
+    /// Regression: a crate that partitions into ONE codegen unit gets its
+    /// unit copied to `<crate><extra>.o` while the numbered file is kept,
+    /// and linking both failed every patch of a small workspace library
+    /// with `duplicate symbol` (found by the two-crate roundtrip).
+    #[test]
+    fn regression_a_single_unit_crates_copy_is_not_linked_twice() {
+        let args: Vec<String> = ["--crate-name", "rt_shared", "-C", "extra-filename=-cc4a", "--out-dir", "/o"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let listed = vec![
+            PathBuf::from("/o/rt_shared-cc4a.o"),
+            PathBuf::from("/o/rt_shared-cc4a.9y8q.rcgu.o"),
+            PathBuf::from("/o/rt_shared-cc4a.d"),
+        ];
+        assert_eq!(
+            replay_objects(listed, &args),
+            vec![PathBuf::from("/o/rt_shared-cc4a.9y8q.rcgu.o")]
+        );
+    }
+
+    /// Many units: rustc makes no copy, and every unit is kept. An object
+    /// with no numbered sibling (a non-incremental single-object compile)
+    /// is the only object, and kept too.
+    #[test]
+    fn every_numbered_unit_is_kept_and_a_lone_object_is_not_dropped() {
+        let args: Vec<String> =
+            ["--crate-name", "app", "-Cextra-filename=-ab"].iter().map(|s| s.to_string()).collect();
+        let many = vec![PathBuf::from("/o/app-ab.b.rcgu.o"), PathBuf::from("/o/app-ab.a.rcgu.o")];
+        assert_eq!(
+            replay_objects(many, &args),
+            vec![PathBuf::from("/o/app-ab.a.rcgu.o"), PathBuf::from("/o/app-ab.b.rcgu.o")]
+        );
+        assert_eq!(
+            replay_objects(vec![PathBuf::from("/o/app-ab.o")], &args),
+            vec![PathBuf::from("/o/app-ab.o")]
         );
     }
 

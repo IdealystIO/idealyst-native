@@ -28,6 +28,11 @@
 //! ```text
 //! cargo test -p build-web --test wasm_patch_roundtrip -- --ignored --nocapture
 //! ```
+//!
+//! A second test, [`a_library_crates_patch_carries_its_dependents`],
+//! does the same for a TWO-crate workspace through the builder the dev
+//! loop uses (`WasmPatchBuilder::build_crates`), replaying the captured
+//! invocations of a library crate and the app that depends on it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -376,6 +381,266 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         foreign.is_empty(),
         "subsecond::apply_patch provides only an `env` namespace, so instantiation would \
          throw on: {foreign:?}"
+    );
+}
+
+// ── Two crates: a library of the workspace and the app using it ──────
+
+const WS_CARGO_TOML: &str = r#"
+[workspace]
+members = ["shared", "app"]
+resolver = "2"
+
+[profile.dev]
+opt-level = 0
+"#;
+
+const SHARED_CARGO_TOML: &str = r#"
+[package]
+name = "rt_shared"
+version = "0.0.0"
+edition = "2021"
+"#;
+
+/// The library. `shared_value` is a plain function the APP calls
+/// directly — the call a patch of this crate alone could never reach —
+/// and `__SharedCard_hot_impl` is reached through a `fn` pointer, the way
+/// a `#[component]` body is.
+const SHARED_RS: &str = r#"
+pub fn shared_value(n: u32) -> u32 {
+    n + 11
+}
+
+#[doc(hidden)]
+#[inline(never)]
+fn __SharedCard_hot_impl(n: u32) -> u32 {
+    shared_value(n) * 2
+}
+
+pub fn shared_card(n: u32) -> u32 {
+    let f: fn(u32) -> u32 = __SharedCard_hot_impl;
+    f(n)
+}
+"#;
+
+const APP_CARGO_TOML: &str = r#"
+[package]
+name = "rt_app"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.128"
+rt_shared = { path = "../shared" }
+"#;
+
+const APP_RS: &str = r#"
+use wasm_bindgen::prelude::*;
+
+#[doc(hidden)]
+#[inline(never)]
+fn __Root_hot_impl(n: u32) -> u32 {
+    rt_shared::shared_value(n) + rt_shared::shared_card(n)
+}
+
+#[wasm_bindgen]
+pub fn start() -> u32 {
+    let f: fn(u32) -> u32 = __Root_hot_impl;
+    f(1)
+}
+"#;
+
+/// A `RUSTC_WRAPPER` that records each invocation — argv NUL-separated,
+/// cwd, env NUL-separated — into its own directory under `$CAPTURE_RAW`,
+/// then runs rustc. The `idealyst` binary does this for real; the test
+/// cannot depend on the CLI, so it records the same three things and
+/// writes them in the replay's format itself.
+const WRAPPER_SH: &str = r#"#!/bin/sh
+d="$CAPTURE_RAW/$$"
+mkdir -p "$d"
+printf '%s\0' "$@" > "$d/args"
+pwd > "$d/cwd"
+env -0 > "$d/env"
+exec "$@"
+"#;
+
+#[test]
+#[ignore = "compiles a two-crate workspace for wasm32 and shells out to wasm-bindgen; run with --ignored"]
+fn a_library_crates_patch_carries_its_dependents() {
+    use build_runtime_server::hotpatch::replay::CapturedInvocation;
+    use build_web::hotpatch_build::{PatchCrate, WasmPatchBuilder};
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(tools) = Tools::find() else {
+        panic!("this test needs the wasm32-unknown-unknown target and `wasm-bindgen` on PATH");
+    };
+
+    let dir = scratch_dir("wasm_patch_roundtrip_ws");
+    for sub in ["shared/src", "app/src"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(dir.join("Cargo.toml"), WS_CARGO_TOML).unwrap();
+    std::fs::write(dir.join("shared/Cargo.toml"), SHARED_CARGO_TOML).unwrap();
+    std::fs::write(dir.join("shared/src/lib.rs"), SHARED_RS).unwrap();
+    std::fs::write(dir.join("app/Cargo.toml"), APP_CARGO_TOML).unwrap();
+    std::fs::write(dir.join("app/src/lib.rs"), APP_RS).unwrap();
+    let wrapper = dir.join("capture.sh");
+    std::fs::write(&wrapper, WRAPPER_SH).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let raw = dir.join("raw-captures");
+    let _ = std::fs::remove_dir_all(&raw);
+    std::fs::create_dir_all(&raw).unwrap();
+
+    // ── 1. The base build, every rustc invocation recorded ───────────
+    //
+    // `touch` both sources so cargo compiles both crates (and the wrapper
+    // records both) even when the scratch dir is warm from a last run.
+    for f in ["shared/src/lib.rs", "app/src/lib.rs"] {
+        let p = dir.join(f);
+        let text = std::fs::read(&p).unwrap();
+        std::fs::write(&p, text).unwrap();
+    }
+    let link_args = build_web::hot_patch_link_args()
+        .iter()
+        .map(|a| format!("-Clink-arg={a}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    run(
+        Command::new("cargo")
+            .current_dir(&dir)
+            .args(["build", "-p", "rt_app", "--target", "wasm32-unknown-unknown"])
+            .env("RUSTFLAGS", &link_args)
+            .env("RUSTC_WRAPPER", &wrapper)
+            .env("CAPTURE_RAW", &raw),
+        "the two-crate base build",
+    );
+    let captures = dir.join("idealyst-hotpatch/captures");
+    let _ = std::fs::remove_dir_all(&captures);
+    std::fs::create_dir_all(&captures).unwrap();
+    for entry in std::fs::read_dir(&raw).unwrap().flatten() {
+        let split0 = |p: PathBuf| -> Vec<String> {
+            std::fs::read(p)
+                .unwrap()
+                .split(|b| *b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| String::from_utf8_lossy(s).into_owned())
+                .collect()
+        };
+        let argv = split0(entry.path().join("args"));
+        let Some(at) = argv.iter().position(|a| a == "--crate-name") else { continue };
+        let name = argv[at + 1].clone();
+        if !["rt_shared", "rt_app"].contains(&name.as_str())
+            || !argv.iter().any(|a| a.starts_with("--emit=") && a.contains("link"))
+        {
+            continue;
+        }
+        let kind = argv
+            .iter()
+            .position(|a| a == "--crate-type")
+            .map(|i| argv[i + 1].clone())
+            .unwrap_or_else(|| "lib".into());
+        let capture = CapturedInvocation {
+            rustc: argv[0].clone(),
+            args: argv[1..].to_vec(),
+            cwd: std::fs::read_to_string(entry.path().join("cwd")).unwrap().trim().to_string(),
+            env: split0(entry.path().join("env"))
+                .into_iter()
+                .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+                .collect(),
+        };
+        std::fs::write(
+            captures.join(format!("{name}.{kind}.json")),
+            serde_json::to_string(&capture).unwrap(),
+        )
+        .unwrap();
+    }
+    for want in ["rt_shared.lib.json", "rt_app.cdylib.json"] {
+        assert!(captures.join(want).is_file(), "no capture {want} recorded by the base build");
+    }
+
+    // ── 2. Prepare, bindgen, index ───────────────────────────────────
+    let linked = dir.join("target/wasm32-unknown-unknown/debug/rt_app.wasm");
+    let linked_bytes = std::fs::read(&linked).unwrap();
+    let aliases = hotpatch_aliases::read_from_linked(&linked_bytes).unwrap();
+    let alias_path = dir.join("rt_app.aliases.tsv");
+    hotpatch_aliases::write(&alias_path, &aliases).unwrap();
+    let (prepared, _) = prepare_base_module(&linked_bytes).unwrap();
+    let prepared_path = dir.join("base.prepared.wasm");
+    std::fs::write(&prepared_path, &prepared).unwrap();
+    run(
+        Command::new(&tools.wasm_bindgen)
+            .args(["--target", "web", "--keep-lld-exports", "--keep-debug", "--no-demangle"])
+            .args(["--out-name", "app"])
+            .arg("--out-dir")
+            .arg(dir.join("pkg"))
+            .arg(&prepared_path),
+        "wasm-bindgen over the prepared two-crate base",
+    );
+    let served_path = dir.join("pkg/app_bg.wasm");
+    let served = std::fs::read(&served_path).unwrap();
+    let base = BaseIndex::of(&served, &aliases).unwrap();
+    let slot = |needle: &str| -> u64 {
+        *base
+            .ifunc
+            .iter()
+            .find(|(k, _)| k.contains(needle))
+            .unwrap_or_else(|| panic!("the base has no table slot for {needle}"))
+            .1 as u64
+    };
+    let root_slot = slot("__Root_hot_impl");
+    let card_slot = slot("__SharedCard_hot_impl");
+
+    // ── 3. A body edit in the LIBRARY ────────────────────────────────
+    std::fs::write(dir.join("shared/src/lib.rs"), SHARED_RS.replace("n + 11", "n + 13")).unwrap();
+    let builder = WasmPatchBuilder::new(
+        &served_path,
+        Some(&alias_path),
+        &captures,
+        "rt_app",
+        dir.join("patches"),
+    )
+    .unwrap();
+
+    // The library alone: its own component slot pairs, but nothing the
+    // app defines is in the patch — so the app's base code, which calls
+    // `shared_value` DIRECTLY, would keep calling the old body.
+    let alone = builder.build_crates(&[PatchCrate::new("rt_shared", None)]).unwrap();
+    assert!(alone.jump_table.map.contains_key(&card_slot), "{:?}", alone.jump_table.map);
+    assert!(
+        !alone.jump_table.map.contains_key(&root_slot),
+        "a patch of the library alone cannot redirect the app's code"
+    );
+
+    // The library and its dependent, one module: both crates' slots pair,
+    // and the app's copy of its caller is in the patch too.
+    let both = builder
+        .build_crates(&[PatchCrate::new("rt_shared", None), PatchCrate::new("rt_app", None)])
+        .unwrap_or_else(|e| panic!("the two-crate patch did not build:\n{e:#}"));
+    assert!(both.jump_table.map.contains_key(&card_slot), "{:?}", both.jump_table.map);
+    assert!(both.jump_table.map.contains_key(&root_slot), "{:?}", both.jump_table.map);
+    assert_eq!(
+        both.crates.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        vec!["rt_shared", "rt_app"]
+    );
+
+    // The patched app's call to `shared_value` resolves INSIDE the patch,
+    // to the new body, rather than being imported from the base.
+    let named = std::fs::read(captures.parent().unwrap().join("last-patch.named.wasm")).unwrap();
+    let module = walrus::Module::from_buffer(&named).unwrap();
+    let defines = |needle: &str| {
+        module.funcs.iter().any(|f| {
+            matches!(f.kind, walrus::FunctionKind::Local(_))
+                && f.name.as_deref().is_some_and(|n| n.contains(needle))
+        })
+    };
+    assert!(defines("12shared_value"), "the patch does not define the library's new shared_value");
+    assert!(defines("__Root_hot_impl"), "the patch does not carry the app's caller");
+    assert!(
+        !module.imports.iter().any(|i| i.name.contains("12shared_value")),
+        "the patch imports shared_value from the base, i.e. the OLD body"
     );
 }
 
