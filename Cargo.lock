@@ -3376,7 +3376,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -7355,7 +7355,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10814,7 +10814,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "axum",
  "futures-channel",

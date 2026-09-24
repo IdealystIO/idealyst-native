@@ -446,7 +446,7 @@ linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.6.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.9.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.8.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.9.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.10.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
@@ -465,7 +465,7 @@ robot-test-macros = { path = "crates/dev/robot-test-macros" }
 native-parity = { path = "crates/dev/native-parity" }
 dev-http = { path = "crates/dev/http" }
 dev-overlay = { path = "crates/dev/overlay", version = "1.5.3", registry = "idealyst" }
-dev-events = { path = "crates/dev/events", version = "1.5.2", registry = "idealyst" }
+dev-events = { path = "crates/dev/events", version = "1.6.0", registry = "idealyst" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }
 build-ios = { path = "crates/tools/build/ios" }
@@ -602,7 +602,7 @@ deep-link = { path = "crates/sdk/client/deep-link", version = "1.5.2", registry 
 connectivity = { path = "crates/sdk/client/connectivity", version = "1.5.2", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "1.5.2", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "1.5.2", registry = "idealyst" }
-server = { path = "crates/api/server", version = "1.6.0", registry = "idealyst" }
+server = { path = "crates/api/server", version = "1.7.0", registry = "idealyst" }
 server-macros = { path = "crates/api/server-macros", version = "1.5.2", registry = "idealyst" }
 server-kit = { path = "crates/api/server-kit", version = "1.5.2", registry = "idealyst" }
 server-aws = { path = "crates/api/server-aws", version = "1.5.2", registry = "idealyst" }

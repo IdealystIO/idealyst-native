@@ -13,7 +13,7 @@
 # drag that crate's dependencies into all the others.
 [package]
 name = "dev-events"
-version = "1.5.2"
+version = "1.6.0"
 edition.workspace = true
 license.workspace = true
 description = "Idealyst dev loop lifecycle events: the typed vocabulary, the reporter, and its sinks (plain lines, JSON lines, a drainable queue)."
