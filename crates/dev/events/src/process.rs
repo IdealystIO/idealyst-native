@@ -67,6 +67,9 @@ pub struct CargoSummary {
     pub errors: u32,
     /// Distinct packages compiled or found fresh.
     pub compiled: u32,
+    /// The last executable the build produced (or found fresh) — the
+    /// binary of a `--bin` build. See [`CargoStream::executable`].
+    pub executable: Option<PathBuf>,
 }
 
 /// How to learn the progress bar's total for a build (see
@@ -166,7 +169,11 @@ pub fn run_cargo(
     let _ = err.join();
     let summary = stream
         .lock()
-        .map(|s| CargoSummary { errors: s.errors(), compiled: s.compiled() })
+        .map(|s| CargoSummary {
+            errors: s.errors(),
+            compiled: s.compiled(),
+            executable: s.executable().map(PathBuf::from),
+        })
         .unwrap_or_default();
     Ok((status, summary))
 }
@@ -246,7 +253,7 @@ mod tests {
             .drain()
             .into_iter()
             .map(|e| match e.event {
-                DevEvent::Output { source, line } => {
+                DevEvent::Output { source, line, .. } => {
                     assert_eq!(source, "sh");
                     line
                 }

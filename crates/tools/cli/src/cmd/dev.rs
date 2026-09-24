@@ -630,6 +630,7 @@ pub fn run(args: Args) -> Result<()> {
         mode: if args.local { dev_events::Mode::Local } else { dev_events::Mode::RuntimeServer },
         hot_tier: hot_tier(&args, &active_targets),
         log_file: Some(log_path.display().to_string()),
+        server: None,
     });
     // After the session line: a late subscriber's snapshot starts at it.
     crate::dev_log::serve_events(&dir);

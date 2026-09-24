@@ -104,7 +104,10 @@ mod tests {
         let got: Vec<DevEvent> = q.drain().into_iter().map(|e| e.event).collect();
         assert_eq!(
             got,
-            vec![event, DevEvent::Output { source: "sidecar".into(), line: "plain text".into() }]
+            vec![
+                event,
+                DevEvent::Output { source: "sidecar".into(), line: "plain text".into(), target: None }
+            ]
         );
     }
 

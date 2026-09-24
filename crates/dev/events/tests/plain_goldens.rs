@@ -34,6 +34,7 @@ fn the_initial_build_lines() {
             mode: Mode::Local,
             hot_tier: HotTier::Armed,
             log_file: None,
+            server: None,
         })
         .as_deref(),
         Some("[dev] local mode, targets: web")
@@ -266,6 +267,82 @@ fn the_rebuild_lines() {
     );
 }
 
+/// The full-stack server's build is typed now (`target: "server"`). Its
+/// watcher's lines are the ones above, unchanged; these are the lines its
+/// first build gained, and the session line is the same whether or not a
+/// server is declared.
+#[test]
+fn the_full_stack_server_lines() {
+    let server = || dev_events::SERVER_TARGET.to_string();
+    assert_eq!(
+        line(DevEvent::SessionStarted {
+            app: "CrewForge".into(),
+            targets: vec!["web".into()],
+            mode: Mode::Local,
+            hot_tier: HotTier::Armed,
+            log_file: None,
+            server: Some(dev_events::SessionServer::named("crewforge-server")),
+        })
+        .as_deref(),
+        Some("[dev] local mode, targets: web")
+    );
+    assert_eq!(
+        line(DevEvent::BuildStarted { target: server(), cause: BuildCause::Initial }).as_deref(),
+        Some("[dev-reload server] initial build…")
+    );
+    assert_eq!(
+        line(DevEvent::BuildFinished {
+            target: server(),
+            outcome: BuildOutcome::Ready { gen: 1 },
+            ms: 41_230,
+        })
+        .as_deref(),
+        Some("[dev-reload server] initial build done in 41.23s")
+    );
+    assert_eq!(
+        line(DevEvent::BuildFinished {
+            target: server(),
+            outcome: BuildOutcome::Failed { error: "server build failed".into() },
+            ms: 900,
+        })
+        .as_deref(),
+        Some("[dev-reload server] regen failed: server build failed")
+    );
+    // Its progress, a save it saw and the address it serves on have no
+    // line: cargo's own `Compiling` lines, the watcher's `change detected`
+    // and the CLI's `server running (pid …)` line already say so.
+    assert_eq!(
+        line(DevEvent::CargoProgress { target: server(), compiled: 3, total: Some(9), current: None }),
+        None
+    );
+    assert_eq!(
+        line(DevEvent::ChangeDetected {
+            target: server(),
+            paths: vec!["/cf/crates/api-server/src/lib.rs".into()],
+            crates: vec![],
+            folded: 0,
+        }),
+        None
+    );
+    assert_eq!(
+        line(DevEvent::ServerReady {
+            target: web(),
+            kind: ServerKind::FullStack,
+            url: "http://127.0.0.1:3100".into(),
+        }),
+        None
+    );
+    // Other targets' first builds keep having no line.
+    assert_eq!(
+        line(DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 9 }),
+        None
+    );
+    assert_eq!(
+        line(DevEvent::BuildStarted { target: "runtime-server".into(), cause: BuildCause::Initial }),
+        None
+    );
+}
+
 #[test]
 fn the_error_lines() {
     assert_eq!(
@@ -314,11 +391,39 @@ fn the_error_lines() {
         line(DevEvent::Output {
             source: "cargo".into(),
             line: "error: could not compile `app` due to 1 previous error".into(),
+            target: Some("server".into()),
         })
         .as_deref(),
         Some("error: could not compile `app` due to 1 previous error"),
         "subprocess output is passed through verbatim"
     );
+}
+
+/// The full-stack server PROCESS's own output (request logs, tracing,
+/// panics, `cargo run`'s lines) used to reach the terminal straight from
+/// an inherited pipe. It is captured now, and a plain terminal still sees
+/// every line — tagged, so a CI log or the MCP dev-runner can tell it
+/// from the dev loop's.
+#[test]
+fn the_server_process_lines_are_tagged() {
+    let out = |line: &str| DevEvent::Output {
+        source: dev_events::SERVER_OUTPUT_SOURCE.into(),
+        line: line.into(),
+        target: Some(dev_events::SERVER_TARGET.into()),
+    };
+    assert_eq!(
+        line(out("crewforge-server listening on http://127.0.0.1:3100")).as_deref(),
+        Some("[server] crewforge-server listening on http://127.0.0.1:3100")
+    );
+    assert_eq!(
+        line(out("thread 'tokio-runtime-worker' panicked at src/routes.rs:12:5:")).as_deref(),
+        Some("[server] thread 'tokio-runtime-worker' panicked at src/routes.rs:12:5:")
+    );
+    // Already tagged: not twice.
+    assert_eq!(line(out("[server] GET / 200")).as_deref(), Some("[server] GET / 200"));
+    // An empty line stays a (tagged) line: a server's blank separators
+    // are part of its output.
+    assert_eq!(line(out("")).as_deref(), Some("[server] "));
 }
 
 #[test]

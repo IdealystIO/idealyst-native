@@ -45,6 +45,7 @@ pub struct CargoStream {
     seen: HashSet<String>,
     current: Option<String>,
     errors: u32,
+    executable: Option<String>,
 }
 
 impl CargoStream {
@@ -74,6 +75,22 @@ impl CargoStream {
         self.errors
     }
 
+    /// The last executable cargo reported building (a `compiler-artifact`
+    /// with a non-null `executable`) — for a `--bin` build, that binary.
+    /// Fresh artifacts count: cargo reports them too, with the path.
+    pub fn executable(&self) -> Option<&str> {
+        self.executable.as_deref()
+    }
+
+    /// A verbatim line, filed under this build's target.
+    fn output(&self, line: &str) -> DevEvent {
+        DevEvent::Output {
+            source: SOURCE.into(),
+            line: line.to_string(),
+            target: Some(self.target.clone()),
+        }
+    }
+
     fn progress(&self) -> DevEvent {
         DevEvent::CargoProgress {
             target: self.target.clone(),
@@ -87,10 +104,15 @@ impl CargoStream {
     /// text from something cargo ran.
     pub fn stdout_line(&mut self, line: &str) -> Vec<DevEvent> {
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
-            return vec![DevEvent::Output { source: SOURCE.into(), line: line.to_string() }];
+            return vec![self.output(line)];
         };
         match msg["reason"].as_str() {
             Some("compiler-artifact") => {
+                // Before the package check: a bin's artifact arrives after
+                // its package's lib artifact was already counted.
+                if let Some(exe) = msg["executable"].as_str() {
+                    self.executable = Some(exe.to_string());
+                }
                 let id = msg["package_id"].as_str().unwrap_or_default().to_string();
                 if !self.seen.insert(id) {
                     // A second artifact of a package already counted (its
@@ -118,7 +140,7 @@ impl CargoStream {
 
     /// One line of cargo's stderr, passed through verbatim.
     pub fn stderr_line(&mut self, line: &str) -> Vec<DevEvent> {
-        let mut out = vec![DevEvent::Output { source: SOURCE.into(), line: line.to_string() }];
+        let mut out = vec![self.output(line)];
         // `   Compiling foo v0.1.0 (/path)` — the crate now in flight.
         // Matched on the plain text: cargo colours the verb when asked to.
         let plain = crate::plain::strip_ansi(line);
@@ -210,6 +232,24 @@ pub fn closure_size(metadata: &Value) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The full-stack server's build finds the binary it restarts from
+    /// cargo's messages. The bin's artifact comes after its package's lib
+    /// artifact already counted the package, so the path must be taken
+    /// before the "already seen" early return — the first version of this
+    /// took it after and found nothing for any server with a lib.
+    #[test]
+    fn the_executable_is_the_last_bin_artifact_even_when_its_package_was_counted() {
+        let mut s = CargoStream::new("server");
+        s.stdout_line(r#"{"reason":"compiler-artifact","package_id":"srv","executable":null}"#);
+        assert_eq!(s.executable(), None);
+        let events = s.stdout_line(
+            r#"{"reason":"compiler-artifact","package_id":"srv","executable":"/t/debug/srv"}"#,
+        );
+        assert!(events.is_empty(), "the package was already counted: {events:?}");
+        assert_eq!(s.executable(), Some("/t/debug/srv"));
+        assert_eq!(s.compiled(), 1);
+    }
 
     #[test]
     fn a_bare_rustc_diagnostic_line_parses_and_anything_else_does_not() {

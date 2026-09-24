@@ -177,6 +177,7 @@ mod tests {
                 mode: Mode::Local,
                 hot_tier: HotTier::Armed,
                 log_file: None,
+                server: None,
             },
             DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial },
             DevEvent::CargoProgress { target: web(), compiled: 1, total: Some(3), current: None },

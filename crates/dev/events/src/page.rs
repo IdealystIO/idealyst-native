@@ -7,13 +7,14 @@
 //! are the same versioned [`crate::Envelope`]s every other consumer gets —
 //! one schema — filtered to what describes the build's state.
 
-use crate::DevEvent;
+use crate::{DevEvent, ServerKind};
 
 /// Whether a page is sent `event`.
 ///
 /// Left out: history (log and subprocess lines, warnings), bookkeeping a
-/// page has no use for (watch sets, per-stage timings, server addresses),
-/// and the page's own acks, which it already knows.
+/// page has no use for (watch sets, per-stage timings, the addresses of
+/// servers other than the one serving a full-stack page), and the page's
+/// own acks, which it already knows.
 pub fn wants(event: &DevEvent) -> bool {
     match event {
         DevEvent::SessionStarted { .. }
@@ -31,8 +32,11 @@ pub fn wants(event: &DevEvent) -> bool {
         // Errors only: a page shows what stopped the build, and a crate's
         // warnings would bury it.
         DevEvent::Diagnostic { diagnostic, .. } => diagnostic.is_error(),
-        DevEvent::ServerReady { .. }
-        | DevEvent::Watching { .. }
+        // A full-stack page is served BY this server: the badge says
+        // "restarting server" through a restart, and this is what ends it.
+        // The other servers are addresses the page already knows.
+        DevEvent::ServerReady { kind, .. } => *kind == ServerKind::FullStack,
+        DevEvent::Watching { .. }
         | DevEvent::StageFinished { .. }
         | DevEvent::BuildTimed { .. }
         | DevEvent::PageAck { .. }

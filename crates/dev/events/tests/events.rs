@@ -180,7 +180,12 @@ fn a_non_json_stdout_line_is_passed_through() {
     let mut stream = CargoStream::new("web");
     assert_eq!(
         stream.stdout_line("hello from a build script"),
-        vec![DevEvent::Output { source: "cargo".into(), line: "hello from a build script".into() }]
+        vec![DevEvent::Output {
+            source: "cargo".into(),
+            line: "hello from a build script".into(),
+            // Filed under the build it came from.
+            target: Some("web".into()),
+        }]
     );
 }
 

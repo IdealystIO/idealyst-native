@@ -143,7 +143,11 @@ pub enum ServerKind {
     /// `dev --web` in runtime-server mode: static files plus the
     /// sidecar's URL.
     RuntimeServerBridged,
-    /// A full-stack project's own server (bundle and API).
+    /// A full-stack project's own server (bundle and API). Announced
+    /// under target `web` — the address is where the page is served —
+    /// once the port accepts connections: after the first start, and
+    /// again after every restart. The server's own row
+    /// ([`SessionServer`]) goes to "running" on it.
     FullStack,
     /// The reload/overlay stream on its own port, beside a full-stack
     /// server.
@@ -332,11 +336,62 @@ pub enum PageAck {
     Failed { what: String, error: String },
 }
 
+/// The `target` a full-stack project's server files its events under:
+/// its build (`build_started`, `stage_*`, `cargo_progress`,
+/// `diagnostic`, `build_finished`) and each save its watcher sees
+/// (`change_detected`). The plain lines have always labelled that watcher
+/// `[dev-reload server]`, so the target stays `server` whatever the
+/// server is called; [`SessionServer::name`] is the row's title.
+pub const SERVER_TARGET: &str = "server";
+
+/// The `source` of the full-stack server process's own output lines
+/// ([`DevEvent::Output`]) — as opposed to `cargo`, its build's.
+pub const SERVER_OUTPUT_SOURCE: &str = "server";
+
+/// A full-stack session's server, as [`DevEvent::SessionStarted`]
+/// declares it.
+///
+/// Its lifecycle, in events: `build_started{target: server, cause:
+/// initial}` → cargo progress and diagnostics → `build_finished` (`ready`,
+/// or `failed` with the running server left alone) → `server_ready{kind:
+/// full_stack}` once the port accepts connections. A later save its
+/// watcher sees is `change_detected` → `build_started{cause: save}` →
+/// `build_finished` — `reloaded` when the binary relinked (the server is
+/// then restarted, and `server_ready` follows again), `unchanged` when it
+/// did not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SessionServer {
+    /// The target its events carry: [`SERVER_TARGET`].
+    pub target: String,
+    /// What to call it: the server binary's name (`crewforge-server`),
+    /// or its package's when the app names no binary.
+    pub name: String,
+    /// Where the server process's own output goes (every
+    /// `output{source: server}` line), truncated when the session starts:
+    /// `<project>/target/idealyst/<package>/server.log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_file: Option<String>,
+}
+
+impl SessionServer {
+    /// A server named `name`, filed under [`SERVER_TARGET`].
+    pub fn named(name: impl Into<String>) -> Self {
+        Self { target: SERVER_TARGET.into(), name: name.into(), log_file: None }
+    }
+
+    /// With its output written to `path`.
+    pub fn with_log_file(mut self, path: impl Into<String>) -> Self {
+        self.log_file = Some(path.into());
+        self
+    }
+}
+
 /// Everything the dev loop reports.
 ///
 /// `target` names the row a status view files the event under: `web`
-/// for the browser bundle, `server` for a full-stack server's watcher,
-/// the platform name for native targets.
+/// for the browser bundle, [`SERVER_TARGET`] for a full-stack server's
+/// build and watcher, the platform name for native targets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -350,6 +405,12 @@ pub enum DevEvent {
         /// The verbose session log every event is also written to.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         log_file: Option<String>,
+        /// The project's own server, when the session builds and runs one
+        /// (a full-stack web session). Declared here so a status view has
+        /// its row from the first frame, before its build reports
+        /// anything. Absent in every other session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<SessionServer>,
     },
     /// A server is accepting connections at `url`.
     ServerReady { target: String, kind: ServerKind, url: String },
@@ -440,9 +501,33 @@ pub enum DevEvent {
     /// A dev-loop line with no typed event yet, printed as
     /// `[source] line`.
     Log { source: String, line: String },
-    /// A line of subprocess output (cargo, wasm-bindgen, a sidecar),
-    /// printed verbatim.
-    Output { source: String, line: String },
+    /// A line of subprocess output, printed verbatim (the full-stack
+    /// server's with a `[server]` tag; see [`plain::render`]).
+    ///
+    /// `source` says what printed it:
+    ///
+    /// - `cargo` — a build's cargo (its `Compiling …` / `Finished …`
+    ///   lines); `target` says whose build;
+    /// - `server` ([`SERVER_OUTPUT_SOURCE`]) — the full-stack project's
+    ///   own server PROCESS while it runs: its request logs, tracing,
+    ///   panics, and the `cargo run` lines that start it. Not the dev
+    ///   loop's: a view showing the loop's progress leaves these out
+    ///   unless asked, and they are also written to the session's
+    ///   `server.log` ([`SessionServer::log_file`]);
+    /// - `wasm-bindgen`, `wasm-opt`, `premint-dump`, `hotpatch` — the web
+    ///   bundler's steps;
+    /// - `runtime-server-host` — runtime-server mode's host and sidecar;
+    /// - `lint`, `dev` — the CLI's own advisory output.
+    ///
+    /// Consumers should treat an unknown source as the dev loop's.
+    Output {
+        source: String,
+        line: String,
+        /// The row the line belongs to, when it belongs to one: the
+        /// build's target for `cargo`, [`SERVER_TARGET`] for `server`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
 }
 
 /// The event schema's major version, carried in every envelope as `v`.
@@ -579,7 +664,22 @@ impl Reporter {
 
     /// A verbatim line of subprocess output.
     pub fn output(&self, source: impl Into<String>, line: impl Into<String>) {
-        self.emit(DevEvent::Output { source: source.into(), line: line.into() });
+        self.emit(DevEvent::Output { source: source.into(), line: line.into(), target: None });
+    }
+
+    /// A verbatim line of subprocess output that belongs to `target`'s
+    /// row (see [`DevEvent::Output`]).
+    pub fn target_output(
+        &self,
+        target: impl Into<String>,
+        source: impl Into<String>,
+        line: impl Into<String>,
+    ) {
+        self.emit(DevEvent::Output {
+            source: source.into(),
+            line: line.into(),
+            target: Some(target.into()),
+        });
     }
 
     pub fn warn(&self, source: impl Into<String>, message: impl Into<String>) {

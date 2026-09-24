@@ -2,7 +2,7 @@
 
 use dev_events::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, HotTier, Mode, PageAck,
-    ServerKind, SidecarUpdate, Timing,
+    ServerKind, SessionServer, SidecarUpdate, Timing, SERVER_TARGET,
 };
 
 /// One of every variant, so a variant added without serde support (or
@@ -16,6 +16,24 @@ pub fn every_event() -> Vec<DevEvent> {
             mode: Mode::RuntimeServer,
             hot_tier: HotTier::Off { reason: "runtime-server mode".into() },
             log_file: Some("/t/dev.log".into()),
+            server: None,
+        },
+        // A full-stack session declares its server's row.
+        DevEvent::SessionStarted {
+            app: "CrewForge".into(),
+            targets: vec!["web".into()],
+            mode: Mode::Local,
+            hot_tier: HotTier::Armed,
+            log_file: None,
+            server: Some(SessionServer::named("crewforge-server")),
+        },
+        DevEvent::ServerReady { target: web(), kind: ServerKind::FullStack, url: "http://127.0.0.1:3100".into() },
+        DevEvent::BuildStarted { target: SERVER_TARGET.into(), cause: BuildCause::Initial },
+        DevEvent::CargoProgress { target: SERVER_TARGET.into(), compiled: 3, total: Some(9), current: None },
+        DevEvent::BuildFinished {
+            target: SERVER_TARGET.into(),
+            outcome: BuildOutcome::Ready { gen: 1 },
+            ms: 41_000,
         },
         DevEvent::ServerReady { target: web(), kind: ServerKind::ReloadStream, url: "http://x".into() },
         DevEvent::ServerReady { target: "session".into(), kind: ServerKind::Events, url: "http://127.0.0.1:1/__idealyst/events".into() },
@@ -83,7 +101,23 @@ pub fn every_event() -> Vec<DevEvent> {
         DevEvent::Warning { source: "s".into(), message: "m".into() },
         DevEvent::Error { source: "s".into(), message: "m".into() },
         DevEvent::Log { source: "dev".into(), line: "l".into() },
-        DevEvent::Output { source: "cargo".into(), line: "   Compiling a".into() },
+        DevEvent::Output { source: "cargo".into(), line: "   Compiling a".into(), target: None },
+        DevEvent::Output {
+            source: dev_events::SERVER_OUTPUT_SOURCE.into(),
+            line: "GET /api/health 200".into(),
+            target: Some(SERVER_TARGET.into()),
+        },
+        DevEvent::SessionStarted {
+            app: "CrewForge".into(),
+            targets: vec!["web".into()],
+            mode: Mode::Local,
+            hot_tier: HotTier::Armed,
+            log_file: None,
+            server: Some(
+                SessionServer::named("crewforge-server")
+                    .with_log_file("/cf/target/idealyst/crewforge-main/server.log"),
+            ),
+        },
     ]
 }
 

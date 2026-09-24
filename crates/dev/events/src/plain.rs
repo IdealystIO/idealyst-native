@@ -14,7 +14,7 @@
 
 use crate::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Envelope, PageAck, ServerKind,
-    SidecarUpdate, Timing,
+    SidecarUpdate, Timing, SERVER_OUTPUT_SOURCE, SERVER_TARGET,
 };
 
 /// The target whose lines carry the watcher's bare `[dev-reload]` prefix.
@@ -83,6 +83,10 @@ pub fn render(event: &DevEvent) -> Option<String> {
                 format!("[dev-reload {label}] change detected (+{folded} more)")
             }
             (label, BuildCause::Forced) => format!("[dev-reload {label}] rebuild requested"),
+            // New with the server's typed build. Its first build used to be
+            // `cargo run`'s own output and nothing else, so a plain
+            // terminal could not tell a server was being built at all.
+            (SERVER_TARGET, BuildCause::Initial) => "[dev-reload server] initial build…".into(),
             // Never had a line: the caller announces what it builds.
             (_, BuildCause::Initial | BuildCause::OneShot) => return None,
         },
@@ -101,7 +105,12 @@ pub fn render(event: &DevEvent) -> Option<String> {
             }
             format!("[build-web] timing: total {} — {}", secs(*total_ms), stage_list(stages))
         }
-        DevEvent::BuildFinished { target, outcome, .. } => match (target.as_str(), outcome) {
+        DevEvent::BuildFinished { target, outcome, ms } => match (target.as_str(), outcome) {
+            // The web bundle's has its `[build-web] timing` line; the
+            // server's build has nothing else that says it finished.
+            (SERVER_TARGET, BuildOutcome::Ready { .. }) => {
+                format!("[dev-reload server] initial build done in {}", secs(*ms))
+            }
             (_, BuildOutcome::Ready { .. }) => return None,
             (WEB, BuildOutcome::Reloaded { gen }) => format!("[dev-reload] rebuilt — gen={gen}"),
             (WEB, BuildOutcome::Unchanged) => {
@@ -132,6 +141,16 @@ pub fn render(event: &DevEvent) -> Option<String> {
         DevEvent::Warning { source, message }
         | DevEvent::Error { source, message }
         | DevEvent::Log { source, line: message } => format!("[{source}] {message}"),
+        // The full-stack server's own output is not the dev loop's: tagged,
+        // so a log reader can tell a request line from a build line. It
+        // used to reach the terminal straight from the inherited pipe.
+        DevEvent::Output { source, line, .. } if source == SERVER_OUTPUT_SOURCE => {
+            if line.starts_with("[server]") {
+                line.clone()
+            } else {
+                format!("[server] {line}")
+            }
+        }
         DevEvent::Output { line, .. } => line.clone(),
     })
 }
