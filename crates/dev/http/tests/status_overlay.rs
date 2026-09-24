@@ -166,3 +166,51 @@ fn saving_back_to_the_running_source_clears_the_error() {
     assert_eq!(frames[1]["panel"], false, "{}", frames[1]);
     assert_eq!(frames[1]["badge"], "○ no change");
 }
+
+// A full-stack session: the project's own server has a target of its own.
+const FS_SESSION: &str = r#"{"v":1,"seq":20,"at_ms":0,"type":"session_started","app":"CrewForge","targets":["web"],"mode":"local","hot_tier":{"state":"armed"},"server":{"target":"server","name":"crewforge-server"}}"#;
+const SRV_CHANGE: &str = r#"{"v":1,"seq":21,"at_ms":1,"type":"change_detected","target":"server","paths":["/cf/crates/core/src/lib.rs"],"crates":[],"folded":0}"#;
+const SRV_BUILD: &str = r#"{"v":1,"seq":22,"at_ms":2,"type":"build_started","target":"server","cause":"save","folded":0}"#;
+const SRV_PROGRESS: &str = r#"{"v":1,"seq":23,"at_ms":3,"type":"cargo_progress","target":"server","compiled":509,"total":512,"current":"crewforge-api-server"}"#;
+const WEB_RELOADED: &str = r#"{"v":1,"seq":24,"at_ms":4,"type":"build_finished","target":"web","outcome":"reloaded","gen":2,"ms":3100}"#;
+const SRV_RELOADED: &str = r#"{"v":1,"seq":25,"at_ms":5,"type":"build_finished","target":"server","outcome":"reloaded","gen":2,"ms":9000}"#;
+const SRV_READY: &str = r#"{"v":1,"seq":26,"at_ms":6,"type":"server_ready","target":"web","kind":"full_stack","url":"http://127.0.0.1:3100"}"#;
+const SRV_DIAG: &str = r#"{"v":1,"seq":27,"at_ms":7,"type":"diagnostic","target":"server","diagnostic":{"level":"error","message":"cannot find value `x`","file":"crates/api-server/src/routes.rs","line":4,"column":5,"rendered":"error[E0425]: cannot find value `x`\n"}}"#;
+const SRV_FAILED: &str = r#"{"v":1,"seq":28,"at_ms":8,"type":"build_finished","target":"server","outcome":"failed","error":"server build failed","ms":900}"#;
+
+/// The badge says "building server…" through a server rebuild — the
+/// page is served by that server, and a save that rebuilt the bundle too
+/// reloads only once the server is back — then "server restarted".
+#[test]
+fn the_badge_follows_the_full_stack_server_through_a_restart() {
+    let Some(frames) = run(&[
+        FS_SESSION, SRV_CHANGE, SRV_BUILD, SRV_PROGRESS, "#",
+        BUILD, "#",
+        WEB_RELOADED, "#",
+        SRV_RELOADED, "#",
+        SRV_READY, "#",
+    ]) else {
+        return skip();
+    };
+    assert_eq!(frames[0]["badge"], "⚙ rebuilding server… 509/512 crewforge-api-server", "{}", frames[0]);
+    // Both building: the server leads, the bundle follows.
+    assert_eq!(frames[1]["badge"], "⚙ rebuilding server… 509/512 crewforge-api-server · ⚙ rebuilding", "{}", frames[1]);
+    // The bundle is done; the page still waits on the server.
+    assert_eq!(frames[2]["badge"], "⚙ rebuilding server… 509/512 crewforge-api-server", "{}", frames[2]);
+    assert_eq!(frames[3]["badge"], "⚙ restarting server", "{}", frames[3]);
+    assert_eq!(frames[4]["badge"], "✓ server restarted", "{}", frames[4]);
+}
+
+/// A server that fails to build shows its error like any build's, named
+/// as the server's.
+#[test]
+fn a_server_build_failure_shows_the_panel() {
+    let Some(frames) = run(&[FS_SESSION, SRV_BUILD, SRV_DIAG, SRV_FAILED, "#"]) else {
+        return skip();
+    };
+    assert_eq!(frames[0]["panel"], true, "{}", frames[0]);
+    let text = frames[0]["panelText"].as_str().unwrap();
+    assert!(text.contains("Build failed (server)"), "{text}");
+    assert!(text.contains("crates/api-server/src/routes.rs:4:5"), "{text}");
+    assert_eq!(frames[0]["badge"], "✗ server build failed");
+}

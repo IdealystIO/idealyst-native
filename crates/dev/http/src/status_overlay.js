@@ -13,7 +13,10 @@
 // It shows two things:
 // - a small badge in the corner: what the dev loop is doing (building,
 //   with cargo's progress and the current stage) or last did (the tier
-//   that applied the save, and how long it took);
+//   that applied the save, and how long it took). In a full-stack session
+//   the project's own server is tracked on its own: "building server…"
+//   (with its progress) while it builds, "restarting server" until it
+//   answers again — this page is served by it, and a reload waits for it;
 // - a panel over the page when a build fails: each rustc error with its
 //   file:line and rendered message. Esc or a click outside the message
 //   dismisses it; the next successful build or patch clears it.
@@ -35,6 +38,73 @@ function idealystStatusOverlay(doc) {
     failure: null,      // {target, error, diagnostics} of the last failed build
     dismissed: false
   };
+  // The full-stack server, whose events carry its own target: kept apart
+  // so its build and the bundle's can both be shown at once.
+  var serverTarget = "server";
+  var srv = { phase: "idle", initial: false, stage: null, progress: null, pending: [] };
+
+  function applyServer(ev) {
+    switch (ev.type) {
+      case "change_detected":
+        srv.phase = "change";
+        break;
+      case "build_started":
+        srv.phase = "building";
+        srv.initial = ev.cause === "initial";
+        srv.stage = null;
+        srv.progress = null;
+        srv.pending = [];
+        break;
+      case "stage_started":
+        srv.stage = ev.stage;
+        break;
+      case "cargo_progress":
+        srv.progress = { compiled: ev.compiled, total: ev.total, current: ev.current };
+        break;
+      case "diagnostic":
+        if (ev.diagnostic && srv.pending.length < 64) srv.pending.push(ev.diagnostic);
+        break;
+      case "build_finished":
+        if (ev.outcome === "failed") {
+          // The old server keeps running; the error is shown like any build's.
+          srv.phase = "idle";
+          st.phase = "error";
+          st.text = "server build failed";
+          st.failure = { target: serverTarget, error: ev.error, diagnostics: srv.pending };
+          st.dismissed = false;
+        } else if (ev.outcome === "ready") {
+          srv.phase = "starting";
+        } else if (ev.outcome === "unchanged") {
+          srv.phase = "idle";
+        } else {
+          srv.phase = "restarting";
+        }
+        srv.pending = [];
+        srv.stage = null;
+        srv.progress = null;
+        break;
+    }
+  }
+
+  function serverBusy() {
+    return srv.phase !== "idle";
+  }
+
+  function serverText() {
+    var t;
+    if (srv.phase === "change") t = "… server change";
+    else if (srv.phase === "starting") t = "⚙ starting server";
+    else if (srv.phase === "restarting") t = "⚙ restarting server";
+    else {
+      t = "⚙ " + (srv.initial ? "building" : "rebuilding") + " server…";
+      if (srv.progress) {
+        t += " " + srv.progress.compiled + (srv.progress.total ? "/" + srv.progress.total : "");
+        if (srv.progress.current) t += " " + srv.progress.current;
+      }
+      if (srv.stage) t += " · " + srv.stage;
+    }
+    return t;
+  }
 
   function el(tag, css) {
     var e = doc.createElement(tag);
@@ -105,6 +175,25 @@ function idealystStatusOverlay(doc) {
   }
 
   function apply(ev) {
+    if (ev.type === "session_started" && ev.server && ev.server.target) {
+      serverTarget = ev.server.target;
+    }
+    if (ev.target === serverTarget) {
+      applyServer(ev);
+      render();
+      return;
+    }
+    if (ev.type === "server_ready" && ev.kind === "full_stack") {
+      // The server answers again. The page's own reload (if one was
+      // waiting on it) follows on the reload stream.
+      var restarted = srv.phase === "restarting";
+      srv.phase = "idle";
+      if (restarted && st.phase !== "building" && st.phase !== "patching" && st.phase !== "change") {
+        succeeded("server restarted");
+      }
+      render();
+      return;
+    }
     switch (ev.type) {
       case "change_detected": {
         var n = (ev.paths || []).length;
@@ -191,8 +280,14 @@ function idealystStatusOverlay(doc) {
       }
       if (st.stage) t += " · " + st.stage;
     }
+    if (serverBusy()) {
+      // The server's state leads: while it builds or restarts, it is what
+      // the page is waiting on.
+      t = st.phase === "idle" || st.phase === "done" ? serverText() : serverText() + " · " + t;
+    }
     badge.textContent = t;
-    badge.style.color = st.phase === "error" ? "#ff8b8b" : st.phase === "done" ? "#8be28b" : "#eee";
+    badge.style.color = serverBusy() ? "#eee"
+      : st.phase === "error" ? "#ff8b8b" : st.phase === "done" ? "#8be28b" : "#eee";
 
     var show = !!st.failure && !st.dismissed;
     panel.style.display = show ? "block" : "none";
