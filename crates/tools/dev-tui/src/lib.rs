@@ -68,7 +68,9 @@ pub struct RunOptions {
 pub enum PanelKey {
     /// `r`: rebuild now.
     Rebuild,
-    /// `l`: open or close the log pane.
+    /// `l`: open the log pane, then (in a session with a server) step it
+    /// from the dev loop's lines to the server's output to both, then
+    /// close it.
     ToggleLog,
     /// `e`: expand or collapse the last build error.
     ToggleError,
@@ -190,7 +192,9 @@ impl Controller {
                         rebuild();
                     }
                 }
-                PanelKey::ToggleLog => t.log = !t.log,
+                PanelKey::ToggleLog => {
+                    t.log = t.log.next(self.model.borrow().server.is_some())
+                }
                 PanelKey::ToggleError => t.expanded = !t.expanded,
                 PanelKey::Clear => {
                     self.model.borrow_mut().clear();

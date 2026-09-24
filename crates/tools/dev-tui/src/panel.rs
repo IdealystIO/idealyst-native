@@ -42,13 +42,13 @@ stylesheet! {
     }
 }
 
-// A target's name column: wide enough for any target name, so the
-// statuses line up.
+// A target's name. Its column's width is the view's padding, carried as
+// the status's leading gap (see `TargetRow`), so a full-stack session's
+// long server name widens every row's column alike.
 stylesheet! {
     pub NameColumn<()> {
         base(_t) {
             flex_direction: FlexDirection::Row,
-            width: 18.0,
             flex_shrink: 0.0,
         }
     }
@@ -164,8 +164,14 @@ pub fn Panel(
 #[component]
 pub fn TargetRow(row: Row) -> Element {
     let row = row.get();
-    let name = Line { text: format!("  {}", row.name.trim_end()), tone: Tone::Muted, key: String::new() };
-    let status = Line { text: row.status, tone: row.tone, key: String::new() };
+    // The name as the view padded it: its trailing spaces become the
+    // status's leading gap (`Words` carries spacing as margins), so the
+    // statuses line up at whatever width the view chose.
+    let trimmed = row.name.trim_end();
+    let gap = row.name.chars().count() - trimmed.chars().count();
+    let name = Line { text: format!("  {trimmed}"), tone: Tone::Muted, key: String::new() };
+    let status =
+        Line { text: format!("{}{}", " ".repeat(gap), row.status), tone: row.tone, key: String::new() };
     ui! {
         view(style = RowLayout()) {
             view(style = NameColumn()) {

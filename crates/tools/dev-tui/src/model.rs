@@ -20,6 +20,21 @@
 //!          applied             patched            reloaded │ error
 //! ```
 //!
+//! A full-stack session's server (declared by `session_started.server`)
+//! is a row from the first frame, with its own machine:
+//!
+//! ```text
+//! queued ─► building (initial) ─► starting ─► running on <url>
+//!                                                 │ its own sources saved
+//!                                                 ▼
+//!        running ◄── starting ◄── rebuilding ◄── changed
+//!        (restarted)   (restarting)    │
+//!                                      ├─ unchanged ─► running (untouched)
+//!                                      └─ failed ─► error (old server still up)
+//! ```
+//!
+//! A save only the web bundle sees leaves it as it was.
+//!
 //! Every save is also a line in the history ring: the files, the tier it
 //! took, how long it took, what it did, and whether the page acked it.
 
@@ -72,6 +87,17 @@ pub enum State {
     /// A target with no typed events yet (a native launcher): its latest
     /// `[dev <target>]` line.
     Note { line: String },
+    /// A declared server whose first build has not started — waiting its
+    /// turn behind the web bundle, or about to start beside it.
+    Queued,
+    /// A server that built and is being (re)started: `starting` or
+    /// `restarting`, until it accepts connections. `note` is what its
+    /// build did, carried into [`State::Running`].
+    Launching { label: &'static str, note: String },
+    /// A server accepting connections at `url`. `note` says what its last
+    /// build did; `fresh` when that was a save's rebuild (a restart, or a
+    /// rebuild that changed nothing) rather than the session's start.
+    Running { url: String, note: String, fresh: bool },
 }
 
 impl State {
@@ -83,6 +109,7 @@ impl State {
                 | State::ApplyingOverlay { .. }
                 | State::BuildingPatch { .. }
                 | State::Building { .. }
+                | State::Launching { .. }
         )
     }
 }
@@ -90,7 +117,11 @@ impl State {
 /// One target's row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
+    /// The `target` its events carry.
     pub name: String,
+    /// What the row is called: the name, or a declared server's own
+    /// (`crewforge-server` for events filed under `server`).
+    pub title: String,
     pub state: State,
     /// Session time the current state began (elapsed time is measured
     /// from here).
@@ -132,6 +163,25 @@ pub struct ErrorInfo {
     pub count: usize,
 }
 
+/// One line of the log pane, and whose it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLine {
+    pub text: String,
+    /// The full-stack server process's own output (`output{source:
+    /// server}`), as opposed to the dev loop's lines. The pane shows the
+    /// loop's by default; the server's only when asked (`l`).
+    pub server: bool,
+}
+
+impl LogLine {
+    pub fn dev(text: impl Into<String>) -> Self {
+        Self { text: text.into(), server: false }
+    }
+}
+
+/// Server lines the error pane quotes when the server crashed.
+const CRASH_TAIL: usize = 20;
+
 /// See the module docs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
@@ -147,10 +197,16 @@ pub struct Model {
     /// Newest first.
     pub history: VecDeque<Save>,
     /// Oldest first.
-    pub log: VecDeque<String>,
+    pub log: VecDeque<LogLine>,
     pub error: Option<ErrorInfo>,
     /// The latest session time seen.
     pub now_ms: u64,
+    /// The declared full-stack server's target, and where it last
+    /// answered.
+    pub server: Option<String>,
+    server_url: Option<String>,
+    /// Where the server process's output is written (`server.log`).
+    pub server_log: Option<String>,
 }
 
 impl Model {
@@ -168,6 +224,7 @@ impl Model {
         }
         self.targets.push(Target {
             name: name.to_string(),
+            title: name.to_string(),
             state: State::Starting,
             since_ms: self.now_ms,
             pending: Vec::new(),
@@ -206,8 +263,12 @@ impl Model {
     }
 
     fn log_line(&mut self, line: String) {
+        self.push_log(line, false);
+    }
+
+    fn push_log(&mut self, line: String, server: bool) {
         for l in dev_events::plain::strip_ansi(&line).lines() {
-            self.log.push_back(l.to_string());
+            self.log.push_back(LogLine { text: l.to_string(), server });
         }
         while self.log.len() > LOG_CAP {
             self.log.pop_front();
@@ -226,18 +287,31 @@ impl Model {
     pub fn apply(&mut self, e: &Envelope) {
         self.now_ms = self.now_ms.max(e.at_ms);
         // The log pane is the raw stream: every line the plain terminal
-        // would have shown.
+        // would have shown, each marked with whose it is.
         if let Some(line) = dev_events::plain::render(&e.event) {
-            self.log_line(line);
+            let server = matches!(&e.event, DevEvent::Output { source, .. }
+                if source == dev_events::SERVER_OUTPUT_SOURCE);
+            self.push_log(line, server);
         }
         match &e.event {
-            DevEvent::SessionStarted { app, targets, mode, hot_tier, log_file } => {
+            DevEvent::SessionStarted { app, targets, mode, hot_tier, log_file, server } => {
                 self.app = app.clone();
                 self.mode = mode.as_str().to_string();
                 self.hot_tier = Some(hot_tier.clone());
                 self.log_file = log_file.clone();
                 for t in targets {
                     self.target(t);
+                }
+                // The server's row exists before its build says anything:
+                // a session that is compiling a server shows one.
+                if let Some(server) = server {
+                    let t = self.target(&server.target);
+                    t.title = server.name.clone();
+                    if t.state == State::Starting {
+                        t.state = State::Queued;
+                    }
+                    self.server = Some(server.target.clone());
+                    self.server_log = server.log_file.clone();
                 }
             }
             DevEvent::ServerReady { kind, url, .. } => match kind {
@@ -248,6 +322,22 @@ impl Model {
                 _ => {
                     if !self.urls.contains(url) {
                         self.urls.push(url.clone());
+                    }
+                    if *kind == ServerKind::FullStack {
+                        self.server_url = Some(url.clone());
+                        if let Some(server) = self.server.clone() {
+                            let (note, fresh) = match &self.target(&server).state {
+                                State::Launching { label, note } => {
+                                    (note.clone(), *label == "restarting")
+                                }
+                                // Started with no build of ours (`--no-build`).
+                                _ => (String::new(), false),
+                            };
+                            self.set(&server, State::Running { url: url.clone(), note, fresh });
+                            // A server that answers again has left its
+                            // crash (or failed build) behind.
+                            self.clear_error(&server);
+                        }
                     }
                 }
             },
@@ -360,6 +450,35 @@ impl Model {
                     self.target(target).pending.push(diagnostic.clone());
                 }
             }
+            DevEvent::BuildFinished { target, outcome, ms } if self.is_server(target) => {
+                let built = secs_text(*ms);
+                match outcome {
+                    BuildOutcome::Ready { .. } => {
+                        self.set(
+                            target,
+                            State::Launching { label: "starting", note: format!("built in {built}") },
+                        );
+                        self.clear_error(target);
+                    }
+                    BuildOutcome::Reloaded { .. } | BuildOutcome::PremintRefreshed { .. } => {
+                        self.set(
+                            target,
+                            State::Launching {
+                                label: "restarting",
+                                note: format!("restarted · rebuilt in {built}"),
+                            },
+                        );
+                        self.finish_save(target, "rebuild", "restarted".into(), false);
+                        self.clear_error(target);
+                    }
+                    BuildOutcome::Unchanged => {
+                        self.server_untouched(target, format!("rebuilt, nothing changed · {built}"));
+                        self.finish_save(target, "rebuild", "no change".into(), false);
+                        self.clear_error(target);
+                    }
+                    BuildOutcome::Failed { error } => self.failed(target, error),
+                }
+            }
             DevEvent::BuildFinished { target, outcome, ms } => match outcome {
                 BuildOutcome::Ready { .. } => {
                     self.set(target, State::Ready { ms: *ms });
@@ -375,32 +494,7 @@ impl Model {
                     self.finish_save(target, "rebuild", "no change".into(), false);
                     self.clear_error(target);
                 }
-                BuildOutcome::Failed { error } => {
-                    let pending = std::mem::take(&mut self.target(target).pending);
-                    let info = match pending.first() {
-                        Some(d) => ErrorInfo {
-                            target: target.clone(),
-                            location: d.location(),
-                            message: d.message.clone(),
-                            rendered: d.rendered.trim_end().to_string(),
-                            count: pending.len(),
-                        },
-                        None => ErrorInfo {
-                            target: target.clone(),
-                            location: None,
-                            message: error.clone(),
-                            rendered: error.clone(),
-                            count: 0,
-                        },
-                    };
-                    let summary = match &info.location {
-                        Some(loc) => format!("{loc} {}", info.message),
-                        None => info.message.clone(),
-                    };
-                    self.set(target, State::Failed { summary });
-                    self.finish_save(target, "rebuild", "build failed".into(), true);
-                    self.error = Some(info);
-                }
+                BuildOutcome::Failed { error } => self.failed(target, error),
             },
             DevEvent::SidecarApplied { target, how, ms, .. } => {
                 match how {
@@ -441,6 +535,36 @@ impl Model {
                     }
                 }
             }
+            // The server process crashed or panicked (the CLI reads its
+            // output): its row says so, and the error pane quotes the end
+            // of its output — the rest is in server.log.
+            DevEvent::Error { source, message } if self.is_server(source) => {
+                let target = source.clone();
+                let tail: Vec<String> = self
+                    .log
+                    .iter()
+                    .filter(|l| l.server)
+                    .rev()
+                    .take(CRASH_TAIL)
+                    .map(|l| l.text.clone())
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let mut rendered = message.clone();
+                if !tail.is_empty() {
+                    rendered.push_str("\n\n");
+                    rendered.push_str(&tail.join("\n"));
+                }
+                self.set(&target, State::Failed { summary: message.clone() });
+                self.error = Some(ErrorInfo {
+                    target,
+                    location: None,
+                    message: message.clone(),
+                    rendered,
+                    count: 0,
+                });
+            }
             DevEvent::Error { .. }
             | DevEvent::Output { .. }
             | DevEvent::StageFinished { .. }
@@ -448,11 +572,60 @@ impl Model {
         }
     }
 
+    /// A build of `target` failed: the row says where, the error pane
+    /// shows the first rustc error (or the build's own error).
+    fn failed(&mut self, target: &str, error: &str) {
+        let pending = std::mem::take(&mut self.target(target).pending);
+        let info = match pending.first() {
+            Some(d) => ErrorInfo {
+                target: target.to_string(),
+                location: d.location(),
+                message: d.message.clone(),
+                rendered: d.rendered.trim_end().to_string(),
+                count: pending.len(),
+            },
+            None => ErrorInfo {
+                target: target.to_string(),
+                location: None,
+                message: error.to_string(),
+                rendered: error.to_string(),
+                count: 0,
+            },
+        };
+        let summary = match &info.location {
+            Some(loc) => format!("{loc} {}", info.message),
+            None => info.message.clone(),
+        };
+        self.set(target, State::Failed { summary });
+        self.finish_save(target, "rebuild", "build failed".into(), true);
+        self.error = Some(info);
+    }
+
+    fn is_server(&self, target: &str) -> bool {
+        self.server.as_deref() == Some(target)
+    }
+
+    /// Back to running on the address it last answered on, after a
+    /// rebuild that did not restart it. Without one yet (its first build
+    /// failed, so it never started) it waits for the next build.
+    fn server_untouched(&mut self, target: &str, note: String) {
+        let state = match self.server_url.clone() {
+            Some(url) => State::Running { url, note, fresh: true },
+            None => State::Queued,
+        };
+        self.set(target, state);
+    }
+
     fn clear_error(&mut self, target: &str) {
         if self.error.as_ref().is_some_and(|e| e.target == target) {
             self.error = None;
         }
     }
+}
+
+/// `41.2s`, as the rows print build times.
+fn secs_text(ms: u64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
 }
 
 fn file_name(path: &str) -> String {
@@ -496,6 +669,7 @@ mod tests {
                         mode: Mode::Local,
                         hot_tier: HotTier::Armed,
                         log_file: None,
+                        server: None,
                     },
                 ),
                 (5, DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial }),
@@ -705,6 +879,261 @@ mod tests {
         assert!(matches!(m.targets[0].state, State::Building { .. }), "a typed state is not overwritten");
     }
 
+    fn server() -> String {
+        dev_events::SERVER_TARGET.into()
+    }
+
+    /// A full-stack session: web and a declared server.
+    fn full_stack() -> Model {
+        let mut m = Model::new(&[web()]);
+        run(
+            &mut m,
+            vec![(0, DevEvent::SessionStarted {
+                app: "CrewForge".into(),
+                targets: vec![web()],
+                mode: Mode::Local,
+                hot_tier: HotTier::Armed,
+                log_file: None,
+                server: Some(
+                    dev_events::SessionServer::named("crewforge-server")
+                        .with_log_file("/cf/target/idealyst/crewforge-main/server.log"),
+                ),
+            })],
+        );
+        m
+    }
+
+    fn row<'a>(m: &'a Model, name: &str) -> &'a Target {
+        m.targets.iter().find(|t| t.name == name).unwrap()
+    }
+
+    /// The bug: the server's build "just sits there with no indication
+    /// that a server even exists". A declared server is a row from the
+    /// session's first event, before its build says anything.
+    #[test]
+    fn regression_the_server_is_a_row_from_the_first_frame() {
+        let m = full_stack();
+        let rows: Vec<(&str, &str)> =
+            m.targets.iter().map(|t| (t.name.as_str(), t.title.as_str())).collect();
+        assert_eq!(rows, vec![("web", "web"), ("server", "crewforge-server")]);
+        assert_eq!(row(&m, "server").state, State::Queued);
+        assert_eq!(m.server.as_deref(), Some("server"));
+        assert_eq!(m.server_log.as_deref(), Some("/cf/target/idealyst/crewforge-main/server.log"));
+    }
+
+    #[test]
+    fn the_server_builds_starts_and_runs_on_its_url() {
+        let mut m = full_stack();
+        run(
+            &mut m,
+            vec![
+                (10, DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial }),
+                (12, DevEvent::BuildStarted { target: server(), cause: BuildCause::Initial }),
+                (900, DevEvent::CargoProgress {
+                    target: server(),
+                    compiled: 120,
+                    total: Some(480),
+                    current: Some("sqlx".into()),
+                }),
+            ],
+        );
+        // Both building at once, each with its own progress.
+        assert!(matches!(row(&m, "web").state, State::Building { .. }));
+        assert_eq!(
+            row(&m, "server").state,
+            State::Building {
+                label: "building",
+                stage: None,
+                compiled: 120,
+                total: Some(480),
+                current: Some("sqlx".into()),
+            }
+        );
+        run(&mut m, vec![(41_012, DevEvent::BuildFinished {
+            target: server(),
+            outcome: BuildOutcome::Ready { gen: 1 },
+            ms: 41_000,
+        })]);
+        assert_eq!(
+            row(&m, "server").state,
+            State::Launching { label: "starting", note: "built in 41.0s".into() }
+        );
+        assert!(row(&m, "server").state.busy(), "starting spins until the port answers");
+        run(&mut m, vec![(41_900, DevEvent::ServerReady {
+            target: web(),
+            kind: ServerKind::FullStack,
+            url: "http://127.0.0.1:3100".into(),
+        })]);
+        assert_eq!(
+            row(&m, "server").state,
+            State::Running {
+                url: "http://127.0.0.1:3100".into(),
+                note: "built in 41.0s".into(),
+                fresh: false,
+            }
+        );
+        assert!(m.history.is_empty(), "starting up is not a save");
+    }
+
+    fn running() -> Model {
+        let mut m = full_stack();
+        run(
+            &mut m,
+            vec![
+                (1, DevEvent::BuildStarted { target: server(), cause: BuildCause::Initial }),
+                (2, DevEvent::BuildFinished { target: server(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 1 }),
+                (3, DevEvent::ServerReady {
+                    target: web(),
+                    kind: ServerKind::FullStack,
+                    url: "http://127.0.0.1:3100".into(),
+                }),
+                (4, DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 4 }),
+            ],
+        );
+        m
+    }
+
+    /// A save only the web bundle sees leaves the server's row exactly as
+    /// it was.
+    #[test]
+    fn a_web_only_save_leaves_the_server_untouched() {
+        let mut m = running();
+        let before = row(&m, "server").clone();
+        run(
+            &mut m,
+            vec![
+                (100, DevEvent::ChangeDetected { target: web(), paths: vec!["/cf/app-main/src/a.rs".into()], crates: vec![], folded: 0 }),
+                (101, DevEvent::Decided {
+                    target: web(),
+                    decision: Decision::HotPatch { crates: vec!["app".into()], files: vec![] },
+                }),
+                (500, DevEvent::PatchBuilt {
+                    target: web(),
+                    files: vec![],
+                    crates: vec![],
+                    redirected: 2,
+                    steps: vec![],
+                    skipped: vec![],
+                    bytes: 1,
+                    ms: 400,
+                }),
+            ],
+        );
+        assert_eq!(*row(&m, "server"), before);
+        assert_eq!(row(&m, "web").state, State::Patched { redirected: Some(2), ms: 400 });
+    }
+
+    #[test]
+    fn a_server_save_rebuilds_restarts_and_runs_again() {
+        let mut m = running();
+        run(
+            &mut m,
+            vec![
+                (1000, DevEvent::ChangeDetected {
+                    target: server(),
+                    paths: vec!["/cf/crates/api-server/src/routes.rs".into()],
+                    crates: vec![],
+                    folded: 0,
+                }),
+                (1450, DevEvent::BuildStarted { target: server(), cause: BuildCause::Save { folded: 0 } }),
+            ],
+        );
+        assert!(matches!(row(&m, "server").state, State::Building { label: "rebuilding", .. }));
+        assert_eq!(m.history[0].target, "server");
+        assert_eq!(m.history[0].files, vec!["routes.rs".to_string()]);
+        run(&mut m, vec![(13_450, DevEvent::BuildFinished {
+            target: server(),
+            outcome: BuildOutcome::Reloaded { gen: 2 },
+            ms: 12_000,
+        })]);
+        assert_eq!(
+            row(&m, "server").state,
+            State::Launching { label: "restarting", note: "restarted · rebuilt in 12.0s".into() }
+        );
+        run(&mut m, vec![(14_000, DevEvent::ServerReady {
+            target: web(),
+            kind: ServerKind::FullStack,
+            url: "http://127.0.0.1:3100".into(),
+        })]);
+        assert_eq!(
+            row(&m, "server").state,
+            State::Running {
+                url: "http://127.0.0.1:3100".into(),
+                note: "restarted · rebuilt in 12.0s".into(),
+                fresh: true,
+            }
+        );
+        let save = &m.history[0];
+        assert_eq!((save.tier.as_str(), save.ms, save.detail.as_str()), ("rebuild", Some(12_450), "restarted"));
+    }
+
+    #[test]
+    fn a_server_rebuild_that_changed_nothing_keeps_it_running() {
+        let mut m = running();
+        run(
+            &mut m,
+            vec![
+                (10, DevEvent::BuildStarted { target: server(), cause: BuildCause::Save { folded: 0 } }),
+                (3_110, DevEvent::BuildFinished { target: server(), outcome: BuildOutcome::Unchanged, ms: 3_100 }),
+            ],
+        );
+        assert_eq!(
+            row(&m, "server").state,
+            State::Running {
+                url: "http://127.0.0.1:3100".into(),
+                note: "rebuilt, nothing changed · 3.1s".into(),
+                fresh: true,
+            }
+        );
+    }
+
+    /// The server process's own output is marked, so the log pane can
+    /// leave it out; a crash is an error on the server's row, and the
+    /// error pane quotes the end of its output.
+    #[test]
+    fn server_output_is_marked_and_a_crash_lands_on_its_row() {
+        let mut m = running();
+        let out = |line: &str| DevEvent::Output {
+            source: dev_events::SERVER_OUTPUT_SOURCE.into(),
+            line: line.into(),
+            target: Some(server()),
+        };
+        run(
+            &mut m,
+            vec![
+                (20, out("GET / 200")),
+                (21, DevEvent::Output { source: "cargo".into(), line: "   Compiling app".into(), target: Some(web()) }),
+                (22, out("thread 'main' panicked at src/main.rs:9:5:")),
+                (23, out("boom")),
+                (24, DevEvent::Error {
+                    source: server(),
+                    message: "exited with exit status: 101 — its output is in /cf/server.log".into(),
+                }),
+            ],
+        );
+        let server_lines: Vec<&str> =
+            m.log.iter().filter(|l| l.server).map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            server_lines,
+            vec!["[server] GET / 200", "[server] thread 'main' panicked at src/main.rs:9:5:", "[server] boom"]
+        );
+        assert!(m.log.iter().any(|l| !l.server && l.text == "   Compiling app"));
+        assert_eq!(
+            row(&m, "server").state,
+            State::Failed { summary: "exited with exit status: 101 — its output is in /cf/server.log".into() }
+        );
+        let err = m.error.as_ref().unwrap();
+        assert_eq!(err.target, "server");
+        assert!(err.rendered.ends_with("[server] thread 'main' panicked at src/main.rs:9:5:\n[server] boom"), "{}", err.rendered);
+        // A restart clears the row.
+        run(&mut m, vec![(30, DevEvent::ServerReady {
+            target: web(),
+            kind: ServerKind::FullStack,
+            url: "http://127.0.0.1:3100".into(),
+        })]);
+        assert!(matches!(row(&m, "server").state, State::Running { .. }));
+    }
+
     #[test]
     fn the_log_pane_gets_the_plain_lines_without_colour() {
         let mut m = started();
@@ -713,8 +1142,9 @@ mod tests {
             vec![(10, DevEvent::Output {
                 source: "cargo".into(),
                 line: "\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m app v0.1.0".into(),
+                target: Some(web()),
             })],
         );
-        assert_eq!(m.log.back().unwrap(), "   Compiling app v0.1.0");
+        assert_eq!(m.log.back().unwrap().text, "   Compiling app v0.1.0");
     }
 }

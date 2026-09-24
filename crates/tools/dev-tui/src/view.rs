@@ -71,11 +71,51 @@ fn keyed(lines: Vec<Line>) -> Vec<Line> {
         .collect()
 }
 
+/// What the log pane shows, if it is open. `l` steps through them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogView {
+    #[default]
+    Off,
+    /// The dev loop's lines: builds, decisions, patches, errors — and
+    /// the server's BUILD (its cargo lines and rustc diagnostics).
+    Dev,
+    /// Only the full-stack server process's own output.
+    Server,
+    /// Both, interleaved as they arrived.
+    All,
+}
+
+impl LogView {
+    /// The next view `l` opens. A session with no server has nothing to
+    /// filter: `l` just opens and closes the dev loop's lines.
+    pub fn next(self, has_server: bool) -> LogView {
+        match (self, has_server) {
+            (LogView::Off, _) => LogView::Dev,
+            (LogView::Dev, true) => LogView::Server,
+            (LogView::Server, true) => LogView::All,
+            _ => LogView::Off,
+        }
+    }
+
+    pub fn is_open(self) -> bool {
+        self != LogView::Off
+    }
+
+    fn shows(self, line: &crate::model::LogLine) -> bool {
+        match self {
+            LogView::Off => false,
+            LogView::Dev => !line.server,
+            LogView::Server => line.server,
+            LogView::All => true,
+        }
+    }
+}
+
 /// Panel toggles the keys flip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Toggles {
-    /// `l`: the log pane is open.
-    pub log: bool,
+    /// `l`: the log pane, and whose lines it shows.
+    pub log: LogView,
     /// `e`: the error shows its full rendering.
     pub expanded: bool,
 }
@@ -94,11 +134,17 @@ pub struct Screen {
 /// The keys, as the footer lists them.
 pub const FOOTER: &str = "r rebuild · l log · e error · c clear · q quit";
 
+/// The keys in a session with a server, whose log pane `l` steps
+/// through the dev loop's lines, the server's output, and both.
+pub const FOOTER_SERVER: &str = "r rebuild · l log: dev → server → all · e error · c clear · q quit";
+
 /// Braille spinner: one glyph per frame, no motion beyond that.
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Width of a target's name column.
 const NAME_COL: usize = 16;
+/// The widest it grows for a long title.
+const NAME_COL_MAX: usize = 24;
 /// Width of the cargo progress bar.
 const BAR: usize = 20;
 /// History lines shown when nothing else competes for the height.
@@ -111,13 +157,23 @@ const HISTORY_MIN: usize = 3;
 pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: usize, height: usize) -> Screen {
     let fit = |s: String| truncate(&s, width);
     let header = Line::new(fit(header(model)), Tone::Normal);
+    // Wide enough for the longest title (a server's own name,
+    // `crewforge-server`) with a space after it, never narrower than the
+    // column every single-target session has always had.
+    let name_col = model
+        .targets
+        .iter()
+        .map(|t| t.title.chars().count() + 2)
+        .max()
+        .unwrap_or(0)
+        .clamp(NAME_COL, NAME_COL_MAX);
     let rows: Vec<Row> = model
         .targets
         .iter()
         .map(|t| {
             let (status, tone) = status(t, now_ms, frame);
-            let name = pad(&t.name, NAME_COL);
-            let status = truncate(&status, width.saturating_sub(NAME_COL + 2));
+            let name = pad(&truncate(&t.title, name_col - 1), name_col);
+            let status = truncate(&status, width.saturating_sub(name_col + 2));
             let key = format!("{}\u{1f}{tone:?}\u{1f}{status}", t.name);
             Row { name, status, tone, key }
         })
@@ -138,7 +194,7 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
         error.push(Line::new(fit(format!("{head}{more}{hint}")), Tone::Error));
         if toggles.expanded {
             // Keep room for a few saves and, if open, a few log lines.
-            let reserve = HISTORY_MIN + if toggles.log { 4 } else { 0 };
+            let reserve = HISTORY_MIN + if toggles.log.is_open() { 4 } else { 0 };
             let room = budget.saturating_sub(1 + reserve + 1);
             for l in e.rendered.lines().take(room) {
                 error.push(Line::new(fit(format!("    {l}")), Tone::Normal));
@@ -148,12 +204,22 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
     }
     budget = budget.saturating_sub(error.len());
 
-    let history_room = if toggles.log || toggles.expanded { HISTORY_MIN } else { HISTORY_MAX };
+    let history_room =
+        if toggles.log.is_open() || toggles.expanded { HISTORY_MIN } else { HISTORY_MAX };
+    // With more than one row (a full-stack session's web + server), one
+    // save can be a line per row: say whose it is.
+    let title_of = |target: &str| -> Option<String> {
+        if model.targets.len() < 2 {
+            return None;
+        }
+        let t = model.targets.iter().find(|t| t.name == target);
+        Some(t.map_or(target.to_string(), |t| t.title.clone()))
+    };
     let mut history: Vec<Line> = model
         .history
         .iter()
         .take(history_room.min(budget))
-        .map(|s| save_line(s, width))
+        .map(|s| save_line(s, title_of(&s.target).as_deref(), width))
         .collect();
     if history.is_empty() && budget > 0 {
         history.push(Line::new("  no saves yet", Tone::Muted));
@@ -161,16 +227,25 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
     budget = budget.saturating_sub(history.len());
 
     let mut log = Vec::new();
-    if toggles.log && budget > 2 {
+    if toggles.log.is_open() && budget > 2 {
         // A blank line and a title, then the newest lines that fit.
         log.push(Line::default());
-        log.push(Line::new("  log", Tone::Muted));
+        log.push(Line::new(fit(log_title(model, toggles.log)), Tone::Muted));
         let room = budget - 2;
-        let skip = model.log.len().saturating_sub(room);
-        for l in model.log.iter().skip(skip) {
-            log.push(Line::new(fit(format!("  {l}")), Tone::Muted));
+        let shown: Vec<&crate::model::LogLine> =
+            model.log.iter().filter(|l| toggles.log.shows(l)).collect();
+        let skip = shown.len().saturating_sub(room);
+        for l in shown.into_iter().skip(skip) {
+            log.push(Line::new(fit(format!("  {}", l.text)), Tone::Muted));
         }
     }
+    let footer = match &model.server {
+        None => FOOTER.to_string(),
+        Some(_) => match &model.server_log {
+            Some(path) => format!("{FOOTER_SERVER} · server log: {path}"),
+            None => FOOTER_SERVER.to_string(),
+        },
+    };
 
     Screen {
         header,
@@ -178,8 +253,45 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
         history: keyed(history),
         error: keyed(error),
         log: keyed(log),
-        footer: Line::new(fit(FOOTER.to_string()), Tone::Muted),
+        footer: Line::new(fit_tail(&footer, width), Tone::Muted),
     }
+}
+
+/// The log pane's title: in a session with a server, whose lines it
+/// shows and what `l` shows next.
+fn log_title(model: &Model, view: LogView) -> String {
+    if model.server.is_none() {
+        return "  log".into();
+    }
+    match view {
+        LogView::Server => match &model.server_log {
+            Some(path) => format!("  log · server output ({path}) · l: all"),
+            None => "  log · server output · l: all".into(),
+        },
+        LogView::All => "  log · dev loop + server output · l: close".into(),
+        LogView::Dev | LogView::Off => "  log · dev loop · l: server output".into(),
+    }
+}
+
+/// `s` in `w` characters, cut from the MIDDLE of its last ` · ` part when
+/// too long: the footer's server-log path keeps its file name and the
+/// keys stay whole.
+fn fit_tail(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    let Some(at) = s.rfind(" · ") else { return truncate(s, w) };
+    let (head, tail) = s.split_at(at);
+    let room = w.saturating_sub(head.chars().count());
+    let tail_len = tail.chars().count();
+    // Room for the separator, an ellipsis and a few characters of the
+    // path; otherwise drop the part.
+    if room < " · …".chars().count() + 8 {
+        return truncate(head, w);
+    }
+    let keep = room - 1 - " · ".chars().count();
+    let rest: String = tail.chars().skip(tail_len - keep).collect();
+    format!("{head} · …{rest}")
 }
 
 fn header(m: &Model) -> String {
@@ -242,17 +354,36 @@ fn status(t: &Target, now_ms: u64, frame: u64) -> (String, Tone) {
         State::Unchanged { ms } => (format!("✓ rebuilt, nothing changed · {}", secs(*ms)), Tone::Ok),
         State::Failed { summary } => (format!("✗ build failed · {summary}"), Tone::Error),
         State::Note { line } => (format!("● {line}"), Tone::Muted),
+        State::Queued => ("○ queued".into(), Tone::Muted),
+        State::Launching { label, .. } => (format!("{spin} {label} · {elapsed}"), Tone::Busy),
+        State::Running { url, note, fresh } => {
+            let note = if note.is_empty() { String::new() } else { format!(" · {note}") };
+            if *fresh {
+                (format!("✓ running on {url}{note}"), Tone::Ok)
+            } else {
+                (format!("● running on {url}{note}"), Tone::Muted)
+            }
+        }
     }
 }
 
-fn save_line(s: &Save, width: usize) -> Line {
+/// Width of a save's target column, when there is one.
+const SAVE_TARGET_COL: usize = 16;
+
+fn save_line(s: &Save, title: Option<&str>, width: usize) -> Line {
     let files = if s.files.is_empty() { "—".to_string() } else { s.files.join(", ") };
     let ms = s.ms.map(ms_text).unwrap_or_else(|| "…".into());
     let ack = if s.acked { "  ✓ page" } else { "" };
+    // The target column takes its room from the files column, so the
+    // tier and the time stay where a single-target session has them.
+    let (who, files_col) = match title {
+        Some(t) => (format!("{}  ", pad(&truncate(t, SAVE_TARGET_COL), SAVE_TARGET_COL)), 20),
+        None => (String::new(), 24),
+    };
     let text = format!(
-        "  {}  {}  {}  {:>8}  {}{ack}",
+        "  {}  {who}{}  {}  {:>8}  {}{ack}",
         clock(s.at_ms),
-        pad(&truncate(&files, 24), 24),
+        pad(&truncate(&files, files_col), files_col),
         pad(&s.tier, 10),
         ms,
         s.detail,
@@ -321,6 +452,29 @@ mod tests {
     }
 
     #[test]
+    fn l_steps_through_the_log_views_and_only_filters_with_a_server() {
+        let mut v = LogView::Off;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            v = v.next(true);
+            seen.push(v);
+        }
+        assert_eq!(seen, vec![LogView::Dev, LogView::Server, LogView::All, LogView::Off]);
+        assert_eq!(LogView::Off.next(false), LogView::Dev);
+        assert_eq!(LogView::Dev.next(false), LogView::Off, "nothing to filter without a server");
+    }
+
+    #[test]
+    fn the_footer_keeps_the_keys_and_the_log_file_name_when_cut() {
+        let s = "r rebuild · l log · q quit · server log: /very/long/project/path/target/idealyst/app/server.log";
+        let cut = fit_tail(s, 60);
+        assert_eq!(cut.chars().count(), 60, "{cut}");
+        assert!(cut.starts_with("r rebuild · l log · q quit · …"), "{cut}");
+        assert!(cut.ends_with("app/server.log"), "{cut}");
+        assert_eq!(fit_tail("short", 60), "short");
+    }
+
+    #[test]
     fn the_bar_fills_in_proportion_and_never_overflows() {
         assert_eq!(bar(0, 10), "─".repeat(BAR));
         assert_eq!(bar(5, 10), format!("{}{}", "━".repeat(BAR / 2), "─".repeat(BAR / 2)));
@@ -331,9 +485,9 @@ mod tests {
     fn everything_fits_the_height_with_the_log_open() {
         let mut m = Model::new(&["web".to_string()]);
         for i in 0..50 {
-            m.log.push_back(format!("line {i}"));
+            m.log.push_back(crate::model::LogLine::dev(format!("line {i}")));
         }
-        let s = screen(&m, Toggles { log: true, expanded: false }, 0, 0, 100, 30);
+        let s = screen(&m, Toggles { log: LogView::Dev, expanded: false }, 0, 0, 100, 30);
         let total = 1 + 1 + s.rows.len() + 1 + 1 + s.history.len() + s.error.len() + s.log.len() + 1 + 1;
         assert!(total <= 30, "{total} lines for 30 rows");
         assert_eq!(s.log.last().unwrap().text, "  line 49", "the newest lines show");

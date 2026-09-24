@@ -1,0 +1,30 @@
+idealyst dev · CrewForge · local · hot patch armed
+
+  web               ⠙ building · cargo 212/480 ━━━━━━━━──────────── idea-ui · 22.0s
+  crewforge-server  ⠙ building · cargo 301/512 ━━━━━━━━━━━───────── sqlx-postgres · 22.0s
+
+  saves
+  no saves yet
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+r rebuild · l log: dev → server → all · e error · c clear · q quit · …lyst/crewforge-main/server.log

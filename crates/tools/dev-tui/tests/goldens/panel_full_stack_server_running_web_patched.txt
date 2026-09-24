@@ -1,0 +1,30 @@
+idealyst dev · CrewForge · local · http://127.0.0.1:3100 · hot patch armed
+
+  web               ✓ hot patched · 38 fn · 9.3s
+  crewforge-server  ● running on http://127.0.0.1:3100 · built in 61.0s
+
+  saves
+  01:30  web               mod.rs                hot patch       9.3s  38 fn redirected  ✓ page
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+r rebuild · l log: dev → server → all · e error · c clear · q quit · …lyst/crewforge-main/server.log

@@ -213,6 +213,7 @@ fn the_panel_through_a_session() {
         mode: Mode::Local,
         hot_tier: HotTier::Armed,
         log_file: Some("/work/target/idealyst/hotreload-lab/dev.log".into()),
+        server: None,
     })
     .at(30, DevEvent::ServerReady {
         target: "session".into(),
@@ -286,7 +287,11 @@ fn the_panel_through_a_session() {
 
     // It fails: the first error, collapsed, then expanded with `e`.
     h.at(165_000, diag(118))
-        .at(165_300, DevEvent::Output { source: "cargo".into(), line: "error: could not compile `hotreload-lab` (lib) due to 1 previous error".into() })
+        .at(165_300, DevEvent::Output {
+            source: "cargo".into(),
+            line: "error: could not compile `hotreload-lab` (lib) due to 1 previous error".into(),
+            target: Some(web()),
+        })
         .at(165_400, DevEvent::BuildFinished {
             target: web(),
             outcome: BuildOutcome::Failed { error: "cargo exited with exit status: 101".into() },
@@ -331,6 +336,7 @@ fn only_a_busy_row_changes_between_frames() {
         mode: Mode::Local,
         hot_tier: HotTier::Armed,
         log_file: None,
+        server: None,
     })
     .at(10, DevEvent::Watching { target: web(), roots: vec![], rewatch: false });
     let a = h.frame(1_000);
@@ -347,4 +353,102 @@ fn only_a_busy_row_changes_between_frames() {
         d.iter().filter(|r| !r.contains("rebuilding")).collect::<Vec<_>>(),
         "and nothing else moves"
     );
+}
+
+fn server() -> String {
+    dev_events::SERVER_TARGET.into()
+}
+
+fn server_out(line: &str) -> DevEvent {
+    DevEvent::Output {
+        source: dev_events::SERVER_OUTPUT_SOURCE.into(),
+        line: line.into(),
+        target: Some(server()),
+    }
+}
+
+/// A full-stack session (CrewForge's shape): the web bundle and the
+/// project's own server as two rows, built at once, then a web-only hot
+/// patch, then a save in the server's sources — and the log pane's `l`
+/// stepping from the dev loop's lines to the server's output.
+#[test]
+fn a_full_stack_session_shows_the_server_as_its_own_row() {
+    let mut h = Harness::new(Arc::new(AtomicUsize::new(0)));
+    h.at(0, DevEvent::SessionStarted {
+        app: "CrewForge".into(),
+        targets: vec![web()],
+        mode: Mode::Local,
+        hot_tier: HotTier::Armed,
+        log_file: None,
+        server: Some(
+            dev_events::SessionServer::named("crewforge-server")
+                .with_log_file("/cf/crates/app-main/target/idealyst/crewforge-main/server.log"),
+        ),
+    });
+    // The first frame, before either build has said a word: both rows.
+    let first = h.frame(0);
+    assert!(first.iter().any(|r| r.trim_start().starts_with("crewforge-server") && r.contains("○ queued")), "{first:#?}");
+
+    // Both building at once, each with its own progress.
+    h.at(20, DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial })
+        .at(25, DevEvent::BuildStarted { target: server(), cause: BuildCause::Initial })
+        .at(30, DevEvent::StageStarted { target: web(), stage: "cargo".into() })
+        .at(31, DevEvent::StageStarted { target: server(), stage: "cargo".into() })
+        .at(21_000, DevEvent::CargoProgress { target: web(), compiled: 212, total: Some(480), current: Some("idea-ui".into()) })
+        .at(21_500, DevEvent::CargoProgress { target: server(), compiled: 301, total: Some(512), current: Some("sqlx-postgres".into()) });
+    golden("panel_full_stack_both_building.txt", &h.frame(22_000));
+
+    // Both done: the server runs on its URL, the web bundle is ready.
+    h.at(46_200, DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 46_180 })
+        .at(61_000, DevEvent::BuildFinished { target: server(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 60_975 })
+        .at(61_300, server_out("crewforge-server listening on http://127.0.0.1:3100"))
+        .at(61_400, DevEvent::ServerReady { target: web(), kind: ServerKind::FullStack, url: "http://127.0.0.1:3100".into() })
+        .at(61_500, DevEvent::Watching { target: web(), roots: vec!["/cf/crates".into()], rewatch: false })
+        .at(61_600, DevEvent::Watching { target: server(), roots: vec!["/cf/crates/api-server/src".into()], rewatch: false });
+    golden("panel_full_stack_idle.txt", &h.frame(62_000));
+
+    // A web-only hot patch: the server's row does not move.
+    h.at(90_000, DevEvent::ChangeDetected { target: web(), paths: vec!["/cf/crates/app-main/src/screens/landing/mod.rs".into()], crates: vec![], folded: 0 })
+        .at(90_004, DevEvent::Decided {
+            target: web(),
+            decision: Decision::HotPatch { crates: vec!["crewforge_main".into()], files: vec![] },
+        })
+        .at(99_300, DevEvent::PatchBuilt {
+            target: web(),
+            files: vec![],
+            crates: vec![],
+            redirected: 38,
+            steps: vec![],
+            skipped: vec![],
+            bytes: 1,
+            ms: 9_300,
+        })
+        .at(99_700, DevEvent::PageAck { target: web(), ack: PageAck::HotPatch { redirected: Some(38), carried: Some(4) } })
+        .at(99_800, server_out("GET / 200 1.2ms"));
+    golden("panel_full_stack_server_running_web_patched.txt", &h.frame(100_000));
+
+    // A save in the server's own sources: the server rebuilds while the
+    // web row stays as it was.
+    h.at(120_000, DevEvent::ChangeDetected { target: server(), paths: vec!["/cf/crates/api-server/src/routes.rs".into()], crates: vec![], folded: 0 })
+        .at(120_450, DevEvent::BuildStarted { target: server(), cause: BuildCause::Save { folded: 0 } })
+        .at(120_451, DevEvent::StageStarted { target: server(), stage: "cargo".into() })
+        .at(126_000, DevEvent::CargoProgress { target: server(), compiled: 509, total: Some(512), current: Some("crewforge-api-server".into()) })
+        .at(126_100, DevEvent::Output { source: "cargo".into(), line: "   Compiling crewforge-api-server v0.1.0".into(), target: Some(server()) })
+        .at(126_200, server_out("GET /api/me 200 3.4ms"));
+    golden("panel_full_stack_server_rebuilding.txt", &h.frame(128_300));
+
+    // `l` opens the dev loop's lines — no request lines — then the
+    // server's output, then both.
+    assert!(h.press('l'));
+    let dev = h.frame(128_400);
+    assert!(dev.iter().any(|r| r.contains("Compiling crewforge-api-server")), "{dev:#?}");
+    assert!(!dev.iter().any(|r| r.contains("GET /")), "server chatter in the dev view: {dev:#?}");
+    assert!(h.press('l'));
+    golden("panel_full_stack_server_log.txt", &h.frame(128_500));
+    assert!(h.press('l'));
+    let all = h.frame(128_600);
+    assert!(all.iter().any(|r| r.contains("GET /api/me")) && all.iter().any(|r| r.contains("Compiling crewforge-api-server")), "{all:#?}");
+    assert!(h.press('l'));
+    let closed = h.frame(128_700);
+    assert!(!closed.iter().any(|r| r.contains("  log")), "{closed:#?}");
 }
