@@ -74,8 +74,8 @@ inventory::submit! {
         invocation: "ui! { … }",
         kind: MacroKind::Markup,
         module_path: "runtime_macros",
-        docs: "The primary DSL for composing an element tree. Primitives are lowercase (`view`, `text`, `button`, …); components are PascalCase and dispatch through `BuildElement` (`Card(...)`, `Field(...)`). Supports `if` / `if let` / `match` branches and reactive keyed iteration — `for item in items, key = item.id { … }` where `items` is the `Signal<Vec<T>>` ITSELF (writing `for item in items.get()` freezes a build-time snapshot that never re-renders; see [[reactivity]] pitfalls and the `keyed_list_add_remove` recipe). Bare-identifier child splats supported — write children where they render, not in an out-of-macro `Vec::push` loop. NOTE: unknown props on primitives are silently dropped, and some primitive hooks (`.on_key_down`) are builder methods chained after the call, not inline props. The canonical component-body form; see [[component-hygiene]] and [[components]].",
-        expansion: "",
+        docs: "The primary DSL for composing an element tree. Primitives are lowercase (`view`, `text`, `button`, …); components are PascalCase and dispatch through `BuildElement` (`Card(...)`, `Field(...)`). Supports `if` / `if let` / `match` branches and reactive keyed iteration — `for item in items, key = item.id { … }` where `items` is the `Signal<Vec<T>>` ITSELF (writing `for item in items.get()` freezes a build-time snapshot that never re-renders; see [[reactivity]] pitfalls and the `keyed_list_add_remove` recipe). Bare-identifier child splats supported — write children where they render, not in an out-of-macro `Vec::push` loop. NOTE: unknown props on primitives are silently dropped, and some primitive hooks (`.on_key_down`) are builder methods chained after the call, not inline props. The whole invocation evaluates to an `Element` (the body is coerced through `IntoElement`), so never append `.into_element()` to it — that is the identity. The canonical component-body form; see [[component-hygiene]] and [[components]].",
+        expansion: "IntoElement::into_element(<the tree>) — an `Element`",
         snippet: "ui! {\n\t$0\n}",
         _seal: (),
     }
@@ -87,8 +87,8 @@ inventory::submit! {
         invocation: "jsx! { <Foo prop=\"x\" expr={e}>…</Foo> }",
         kind: MacroKind::Markup,
         module_path: "runtime_macros",
-        docs: "Angle-bracket peer of `ui!` — same dispatch, same `BuildElement` semantics, JSX-familiar syntax. Pick `ui!` or `jsx!` per file and stay in it; don't mix the two (or hand-built `Element`) in one component without a reason. See [[component-hygiene]].",
-        expansion: "",
+        docs: "Angle-bracket peer of `ui!` — same dispatch, same `BuildElement` semantics, JSX-familiar syntax. Pick `ui!` or `jsx!` per file and stay in it; don't mix the two (or hand-built `Element`) in one component without a reason. Like `ui!`, it evaluates to an `Element` — no `.into_element()` after it. See [[component-hygiene]].",
+        expansion: "IntoElement::into_element(<the tree>) — an `Element`",
         snippet: "jsx! {\n\t$0\n}",
         _seal: (),
     }

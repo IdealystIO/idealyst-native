@@ -39,6 +39,16 @@ is what lets a library define a component named `Image` / `Link` /
 `Toggle` without the primitive shadowing it. Mirrors React's `<div>` vs
 `<MyButton>`.
 
+**`ui!` is already an `Element`.** The macro coerces its output through
+`IntoElement`, so `ui! { … }` can be returned, matched on, or handed to a
+`switch` arm directly. Don't write `ui! { … }.into_element()` — `impl
+IntoElement for Element` is the identity, so the call does nothing but
+teach the next reader that it is needed. (One app measured 811 of them —
+three quarters of its `.into_element()` calls — every one a no-op.)
+`.into_element()` is only real on a primitive builder chained outside the
+macro, and most of those are the hand-built trees the next section is
+about.
+
 ## Build children inside the macro
 
 Don't assemble a `Vec<Element>` outside the macro and splat it in to

@@ -244,6 +244,12 @@ can't express only two shapes, and those sites keep the call with a reasoned
   changes (`pagination.rs` on `(page, total)`, `button.rs`). The `ui!`
   spelling would be a single-arm `match`, the same thing in disguise.
 
+`ui!` already evaluates to an `Element` — the macro coerces its own output
+through `IntoElement` — so an arm, a `return`, or a closure body hands it
+back as-is. Never append `.into_element()` to a `ui!` block: it converts an
+`Element` into itself. `.into_element()` belongs only on a primitive
+*builder* chained outside the macro (`view(…).on_key_down(…)`).
+
 > Depth note: the reactive **fast-path split** (static vs live, per-node
 > foreground re-resolution, layered `with_computed` style, slot overrides) is
 > where the hard components earn their length. When you need it, read
