@@ -234,7 +234,7 @@ pub const SPLIT_VERSION: u32 = 1;
 /// so a patch's slot list can be checked for shape drift against the
 /// compiled code that will supply the values — a descriptor whose slot 3
 /// was a `closure` cannot be replaced by one expecting a `path` there.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlotInfo {
     /// The prop name this slot feeds, when it has one.
     ///
@@ -247,10 +247,46 @@ pub struct SlotInfo {
     /// `"key"` — see `runtime_macros`' `SlotRole`.
     pub role: Text,
     pub kind: Text,
+    /// The slot's expression as source text, whitespace-squashed, with
+    /// every `ui!` body nested in it blanked (those are sites of their
+    /// own, diffed on their own).
+    ///
+    /// Build-time only, like the whole descriptor: nothing in the binary
+    /// carries it. Without it a slot's CODE could change with nothing in
+    /// the descriptor moving — `hint = x.clone()` becoming
+    /// `hint = y.clone()` diffed as "no edit", and the save was dropped
+    /// as "no UI or code change". A differ that sees it move refuses
+    /// ([`crate::Rejection::SlotCodeChanged`]), which sends the save to
+    /// the compiler. Defaulted: a document from before this field
+    /// compares unequal to any real slot, which refuses — the safe
+    /// reading.
+    #[serde(default)]
+    pub code: Text,
+    /// When the slot's expression is a string literal in a conversion
+    /// wrapper — `Some("…".to_string())`, `String::from("…")`,
+    /// `Some("…".into())` — the literal and the wrapper, so an edit to
+    /// the literal alone is an overlay edit rather than a code change.
+    /// The wrapper is part of the slot's signature: two versions with
+    /// different wrappers are different code.
+    #[serde(default)]
+    pub literal: Option<WrappedLiteral>,
+}
+
+/// A literal wearing a conversion wrapper, as a slot records it (see
+/// [`SlotInfo::literal`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WrappedLiteral {
+    /// The wrapper, spelled canonically: `"String::from"`,
+    /// `"Some(to_string)"`, `"Some(\"\")"` for a bare literal in `Some`,
+    /// and so on. Only compared for equality.
+    pub wrapper: Text,
+    /// The literal inside it. Always a [`LiteralValue::Str`] today: the
+    /// wrappers recognised are the string conversions.
+    pub value: LiteralValue,
 }
 
 /// The ordered slot list a descriptor expects.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlotSig {
     pub slots: List<SlotInfo>,
 }
@@ -592,9 +628,13 @@ pub fn check_well_formed(descriptor: &Descriptor) -> Result<(), Malformed> {
 pub enum Edit {
     /// Give a node's prop a new literal value.
     ///
-    /// The prop must be one the node carries as DATA. A prop whose value
-    /// is a slot is compiled code; changing it is a rebuild, and a
-    /// differ never emits this edit for one.
+    /// The prop must be one the node carries as DATA — a literal, or a
+    /// slot holding a wrapped literal ([`SlotInfo::literal`]) whose
+    /// wrapper did not move, in which case `value` is the literal inside
+    /// the wrapper and the applier writes it the way the wrapper would
+    /// have (into an `Option<String>` field, `Some(value)`). Any other
+    /// slot is compiled code; changing it is a rebuild, and a differ
+    /// never emits this edit for one.
     SetProp { node: u32, name: Text, value: LiteralValue },
     /// Replace a node's children with these subtrees.
     ///
@@ -708,6 +748,8 @@ mod tests {
                         name: None,
                         role: Cow::Borrowed(role),
                         kind: Cow::Borrowed(kind),
+                        code: Cow::Borrowed(""),
+                        literal: None,
                     })
                     .collect(),
             ),

@@ -168,6 +168,16 @@ fn Counter(
     }
 }
 
+/// An optional-string prop: the shape of idea-ui's
+/// `Field(placeholder = Some("…".to_string()))`, whose literal edits the
+/// overlay carries through a wrapped-literal slot.
+#[component]
+pub fn Hinted(hint: Option<String>) -> Element {
+    ui! {
+        text { move || hint.get().unwrap_or_else(|| "(none)".to_string()) }
+    }
+}
+
 /// A plain enum for the `match` fixtures. (Named `Phase`, not `Mode`:
 /// `crate::Mode` is the harness's anchored/spliced switch.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -353,6 +363,39 @@ fixture! {
     drive { }
     body {
         Badge(label = "alpha", count = 5, loud = true)
+    }
+}
+
+// A string literal in each conversion wrapper the overlay reads as data
+// (see `runtime_macros_parse::wrapped_literal`). Frozen so the emission of
+// each form is pinned, and their descriptors are exercised by the
+// descriptor suite like every other fixture.
+fixture! {
+    name = wrapped_literal_some_to_string;
+    state { }
+    locals { }
+    drive { }
+    body {
+        view {
+            Hinted(hint = Some("tip".to_string()))
+            Hinted(hint = Some("tip".into()))
+            Hinted(hint = Some("tip".to_owned()))
+            Hinted(hint = Some(String::from("tip")))
+        }
+    }
+}
+
+fixture! {
+    name = wrapped_literal_string_from;
+    state { }
+    locals { }
+    drive { }
+    body {
+        view {
+            button(label = String::from("Go"), on_click = || {})
+            Badge(label = String::from("from"))
+            Hinted(hint = "bare into an Option")
+        }
     }
 }
 
@@ -1062,6 +1105,8 @@ pub fn all() -> Vec<Fixture> {
         static_nested_views::fixture(),
         multi_root_nodes::fixture(),
         literal_props_and_identity::fixture(),
+        wrapped_literal_some_to_string::fixture(),
+        wrapped_literal_string_from::fixture(),
         a11y_attrs::fixture(),
         static_style_sheet::fixture(),
         style_sheet_variant::fixture(),

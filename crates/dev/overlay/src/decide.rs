@@ -558,6 +558,102 @@ fn Screen() -> Element {
 
     // --- the decision table ------------------------------------------
 
+    /// The user's site, verbatim in shape: CrewForge's search dialog, a
+    /// `Field` whose placeholder is `Some("….".to_string())`, inside a
+    /// `ui!` nested in the dialog's `content = move || { … }` prop.
+    fn search_dialog(placeholder: &str) -> String {
+        format!(
+            r#"
+use runtime_core::*;
+
+#[component]
+fn SearchDialog() -> Element {{
+    ui! {{
+        Dialog(
+            open = open,
+            width = 560.0,
+            content = move || {{
+                let on_change = on_change.clone();
+                ui! {{
+                    view {{
+                        Field(
+                            value = text,
+                            on_change = on_change.clone(),
+                            placeholder = {placeholder},
+                            size = FieldSize::Lg,
+                        )
+                        Divider()
+                    }}
+                }}
+            }},
+        )
+    }}
+}}
+"#
+        )
+    }
+
+    /// Regression: the user's edit — the placeholder's literal, inside
+    /// `Some(….to_string())`, in a `ui!` nested in a closure prop — was a
+    /// 49 s hot patch. Two causes: the outer site recorded the closure's
+    /// whole text, nested `ui!` included, so the inner edit read as the
+    /// outer's code changing; and the wrapped literal was a slot with no
+    /// literal recorded. It is an overlay patch now, addressed to the
+    /// INNER site, carrying the string inside the wrapper.
+    #[test]
+    fn regression_the_users_wrapped_placeholder_edit_is_an_overlay_patch() {
+        let before = search_dialog(r#"Some(
+                                "Search projects, headings, people...".to_string(),
+                            )"#);
+        let after = search_dialog(r#"Some(
+                                "Search everything...".to_string(),
+                            )"#);
+        let (_d, archive) = archive_of(&before);
+        match decide(Some(&archive), &changed(&after)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1, "{patches:?}");
+                let inner = archive.sites.iter().find(|s| s.ordinal == 1).expect("nested site");
+                assert_eq!(patches[0].site, inner.key, "addressed to the nested site");
+                assert_eq!(
+                    patches[0].edits,
+                    vec![runtime_template::Edit::SetProp {
+                        node: 1,
+                        name: "placeholder".into(),
+                        value: runtime_template::LiteralValue::Str("Search everything...".into()),
+                    }]
+                );
+            }
+            other => panic!("expected an overlay patch, got {other:?}"),
+        }
+    }
+
+    /// The same site with the WRAPPER changed is code: it goes to the
+    /// compiler. And a real code change in the nested closure (outside
+    /// the nested `ui!`) still counts against the outer site.
+    #[test]
+    fn a_changed_wrapper_or_closure_code_is_still_a_hot_patch() {
+        let before = search_dialog(r#"Some("a".to_string())"#);
+        let (_d, archive) = archive_of(&before);
+        let rewrapped = search_dialog(r#"Some(String::from("a"))"#);
+        assert!(matches!(decide(Some(&archive), &changed(&rewrapped)), Decision::HotPatch(_)));
+        let closure_code = before.replace("on_change.clone();\n", "on_change.clone(); log();\n");
+        assert_ne!(closure_code, before);
+        assert!(matches!(decide(Some(&archive), &changed(&closure_code)), Decision::HotPatch(_)));
+    }
+
+    /// Regression: a slot whose CODE changed (`x.clone()` → `y.clone()`)
+    /// moved nothing in the descriptor, and the save was decided
+    /// `Unchanged` — dropped, with the page still showing the old value.
+    #[test]
+    fn regression_a_slots_code_change_is_not_dropped_as_unchanged() {
+        let before = search_dialog("Some(x.clone())");
+        let (_d, archive) = archive_of(&before);
+        assert!(matches!(
+            decide(Some(&archive), &changed(&search_dialog("Some(y.clone())"))),
+            Decision::HotPatch(_)
+        ));
+    }
+
     const SHEETED: &str = r#"
 use runtime_core::*;
 

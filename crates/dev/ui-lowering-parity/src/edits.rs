@@ -21,6 +21,7 @@
 use runtime_macros::ui;
 use runtime_vocabulary::glue::{signal, Element, Signal};
 
+use crate::fixtures::Hinted;
 use crate::{record, Mode, Recording};
 
 /// One site, before and after an edit.
@@ -203,9 +204,72 @@ pair! {
     }
 }
 
+// A string literal in a conversion wrapper, edited under the SAME
+// wrapper: the slot's literal is data, and the patch writes it the way
+// the wrapper would have (`Some(…)` into an `Option<String>` field).
+
+pair! {
+    name = wrapped_some_to_string;
+    patchable = true;
+    state { }
+    original { view() { Hinted(hint = Some("Search projects, headings, people...".to_string())) } }
+    edited { view() { Hinted(hint = Some("Search everything...".to_string())) } }
+}
+
+pair! {
+    name = wrapped_some_into;
+    patchable = true;
+    state { }
+    original { view() { Hinted(hint = Some("before".into())) } }
+    edited { view() { Hinted(hint = Some("after".into())) } }
+}
+
+pair! {
+    name = wrapped_some_to_owned;
+    patchable = true;
+    state { }
+    original { view() { Hinted(hint = Some("before".to_owned())) } }
+    edited { view() { Hinted(hint = Some("after".to_owned())) } }
+}
+
+pair! {
+    name = wrapped_some_string_from;
+    patchable = true;
+    state { }
+    original { view() { Hinted(hint = Some(String::from("before"))) } }
+    edited { view() { Hinted(hint = Some(String::from("after"))) } }
+}
+
+pair! {
+    name = wrapped_string_from_on_a_primitive;
+    patchable = true;
+    state { }
+    original { view() { button(label = String::from("Go"), on_click = || {}) } }
+    edited { view() { button(label = String::from("Stop"), on_click = || {}) } }
+}
+
 // ===========================================================================
 // Edits the overlay must REFUSE
 // ===========================================================================
+
+pair! {
+    name = refused_wrapper_changed;
+    patchable = false;
+    state { }
+    original { view() { Hinted(hint = Some("same".to_string())) } }
+    edited { view() { Hinted(hint = Some("same".into())) } }
+}
+
+// Regression: a slot's code could change with nothing in the descriptor
+// moving, and the diff produced NO edits — the save was dropped as "no
+// UI or code change" and the page kept the old value.
+pair! {
+    name = refused_slot_code_changed;
+    patchable = false;
+    state { }
+    original { view() { Hinted(hint = Some(["a", "b"].concat())) } }
+    edited { view() { Hinted(hint = Some(["a", "c"].concat())) } }
+}
 
 pair! {
     name = refused_condition_changed;
@@ -282,6 +346,13 @@ pub fn all() -> Vec<Pair> {
         child_removed::pair(),
         children_reordered::pair(),
         literal_beside_a_reactive_sibling::pair(),
+        wrapped_some_to_string::pair(),
+        wrapped_some_into::pair(),
+        wrapped_some_to_owned::pair(),
+        wrapped_some_string_from::pair(),
+        wrapped_string_from_on_a_primitive::pair(),
+        refused_wrapper_changed::pair(),
+        refused_slot_code_changed::pair(),
         refused_condition_changed::pair(),
         refused_reactive_content_changed::pair(),
         refused_prop_became_code::pair(),

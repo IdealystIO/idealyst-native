@@ -317,6 +317,74 @@ pub fn classify_static(expr: &Expr) -> Option<StaticValue> {
     }
 }
 
+/// A string literal in a conversion wrapper, as `(wrapper, value)`:
+///
+/// | expression | wrapper |
+/// |---|---|
+/// | `"lit".to_string()` / `.into()` / `.to_owned()` | `to_string` / `into` / `to_owned` |
+/// | `String::from("lit")` | `String::from` |
+/// | `Some(<any of the above>)` | `Some(<its wrapper>)` |
+///
+/// Not `Some("lit")`: an `Option<&str>` converts into neither
+/// `Option<String>` nor `Reactive<Option<String>>`, so it only compiles
+/// against an `Option<&'static str>` target, and no applier can give a
+/// string that arrived at run time a `'static` lifetime. Recognising it
+/// would accept patches that are then silently not applied.
+///
+/// This is what lets an edit to `placeholder = Some("…".to_string())`
+/// be an overlay patch: the split pass hoists such a value into a slot
+/// (it is a call, not a literal), and the descriptor records the slot's
+/// literal and wrapper beside its code. The wrapper is the slot's
+/// SIGNATURE — a change of wrapper is a change of code — so it is
+/// spelled out rather than normalized away. Only string literals: the
+/// appliers write these into `String` and `Option<String>` fields, and a
+/// wrapper they could not honour would be a patch accepted and then
+/// silently not applied.
+pub fn wrapped_literal(expr: &Expr) -> Option<(String, String)> {
+    match expr {
+        Expr::Group(g) => wrapped_literal(&g.expr),
+        Expr::Paren(p) => wrapped_literal(&p.expr),
+        Expr::MethodCall(mc) if mc.args.is_empty() && mc.turbofish.is_none() => {
+            let method = mc.method.to_string();
+            if !matches!(method.as_str(), "to_string" | "into" | "to_owned") {
+                return None;
+            }
+            Some((method, str_lit(&mc.receiver)?))
+        }
+        Expr::Call(call) if call.args.len() == 1 => {
+            let Expr::Path(callee) = &*call.func else { return None };
+            if callee.qself.is_some() {
+                return None;
+            }
+            let segs: Vec<String> =
+                callee.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if callee.path.segments.iter().any(|s| !s.arguments.is_empty()) {
+                return None;
+            }
+            let arg = &call.args[0];
+            match segs.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+                ["String", "from"] => Some(("String::from".to_string(), str_lit(arg)?)),
+                ["Some"] => {
+                    let (inner, value) = wrapped_literal(arg)?;
+                    Some((format!("Some({inner})"), value))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// A bare string literal's value.
+fn str_lit(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => Some(s.value()),
+        Expr::Group(g) => str_lit(&g.expr),
+        Expr::Paren(p) => str_lit(&p.expr),
+        _ => None,
+    }
+}
+
 fn lit_value(lit: &syn::Lit, negate: bool) -> Option<StaticValue> {
     match lit {
         syn::Lit::Str(s) if !negate => Some(StaticValue::Str(s.value())),
@@ -703,6 +771,28 @@ mod tests {
 
     #[test]
     fn literal_conversions_are_the_same_static_value() {
+        // The wrapped forms, and their spelled-out wrappers.
+        let w = |t: TokenStream2| wrapped_literal(&syn::parse2(t).unwrap());
+        assert_eq!(w(quote! { "x".to_string() }), Some(("to_string".into(), "x".into())));
+        assert_eq!(w(quote! { "x".into() }), Some(("into".into(), "x".into())));
+        assert_eq!(w(quote! { "x".to_owned() }), Some(("to_owned".into(), "x".into())));
+        assert_eq!(w(quote! { String::from("x") }), Some(("String::from".into(), "x".into())));
+        // An `Option<&'static str>` target: nothing can apply it.
+        assert_eq!(w(quote! { Some("x") }), None);
+        assert_eq!(
+            w(quote! { Some("x".to_string()) }),
+            Some(("Some(to_string)".into(), "x".into()))
+        );
+        assert_eq!(
+            w(quote! { Some(String::from("x")) }),
+            Some(("Some(String::from)".into(), "x".into()))
+        );
+        // Not a string literal inside, or not a conversion: code.
+        assert_eq!(w(quote! { Some(x.to_string()) }), None);
+        assert_eq!(w(quote! { Some(3) }), None);
+        assert_eq!(w(quote! { format!("x") }), None);
+        assert_eq!(w(quote! { Ok("x".to_string()) }), None);
+        assert_eq!(w(quote! { String::from(x) }), None);
         // `"x".to_string()` / `"x".into()` is the same descriptor datum
         // as `"x"` — only the target type differs.
         assert_eq!(st(quote! { "x".to_string() }), Some(StaticValue::Str("x".into())));

@@ -37,7 +37,7 @@
 //! A refusal is not a failure. It is the differ saying "this one needs a
 //! rebuild", which is the correct and available answer.
 
-use crate::{Descriptor, Edit, LiteralValue, NewNode, Node, Patch, PropEntry, PropValue, SiteId};
+use crate::{Descriptor, Edit, LiteralValue, NewNode, Node, Patch, PropEntry, PropValue, SiteId, SlotSig};
 use std::fmt;
 
 /// Why two descriptors cannot be bridged by a patch.
@@ -60,6 +60,11 @@ pub enum Rejection {
     /// A construct's defining expression changed — an `if` condition, a
     /// `for` iterable, a `match` scrutinee, a bare expression child.
     CodeChanged { node: u32 },
+    /// A slot's expression changed — the compiled code that supplies a
+    /// value, not the value. Only a compiler can carry it. (A wrapped
+    /// literal whose wrapper stayed put is the exception: see
+    /// [`crate::SlotInfo::literal`].)
+    SlotCodeChanged { index: usize },
     /// A subtree the patch would have to CONSTRUCT references something
     /// that is not data.
     NotConstructible { node: u32, why: &'static str },
@@ -87,6 +92,9 @@ impl fmt::Display for Rejection {
             }
             Rejection::CodeChanged { node } => {
                 write!(f, "node {node}'s defining expression changed")
+            }
+            Rejection::SlotCodeChanged { index } => {
+                write!(f, "slot {index}'s expression changed")
             }
             Rejection::NotConstructible { node, why } => {
                 write!(f, "node {node} of the new tree cannot be built from data: {why}")
@@ -117,6 +125,15 @@ pub fn diff(old: &Descriptor, new: &Descriptor) -> Result<Patch, Rejection> {
         // would reject a harmless prop rename.
         if a.role != b.role || a.kind != b.kind {
             return Err(Rejection::SlotShapeChanged { index });
+        }
+        if a.code != b.code {
+            // The one code change a patch can carry: the literal inside
+            // an unchanged wrapper. `diff_props` turns it into an edit
+            // on the prop the slot feeds.
+            match (&a.literal, &b.literal) {
+                (Some(x), Some(y)) if x.wrapper == y.wrapper => {}
+                _ => return Err(Rejection::SlotCodeChanged { index }),
+            }
         }
     }
 
@@ -152,7 +169,7 @@ fn diff_node(
             Node::Component { props: op, children: oc, .. },
             Node::Component { props: np, children: nc, .. },
         ) => {
-            diff_props(oi, op, np, edits)?;
+            diff_props(oi, op, np, (&old.slots, &new.slots), edits)?;
             diff_children(old, new, oi, oc, nc, edits)
         }
         (Node::Opaque { expr: oe, children: oc }, Node::Opaque { expr: ne, children: nc }) => {
@@ -172,14 +189,34 @@ fn diff_props(
     node: u32,
     old: &[PropEntry],
     new: &[PropEntry],
+    (old_slots, new_slots): (&SlotSig, &SlotSig),
     edits: &mut Vec<Edit>,
 ) -> Result<(), Rejection> {
     for n in new {
         let o = old.iter().find(|o| o.name == n.name);
         match (o.map(|o| &o.value), &n.value) {
-            // Same slot, same meaning: the value is compiled code and
-            // the code did not move.
-            (Some(PropValue::Slot(a)), PropValue::Slot(b)) if a == b => {}
+            // Same slot. Its code either did not move — the value is
+            // compiled code and nothing changed — or it is a wrapped
+            // literal whose wrapper did not move (`diff` refused every
+            // other code change before getting here), and the literal
+            // inside is the edit.
+            (Some(PropValue::Slot(a)), PropValue::Slot(b)) if a == b => {
+                let literal = |sig: &SlotSig| {
+                    sig.slots.get(*a as usize).and_then(|s| s.literal.clone())
+                };
+                if let (Some(x), Some(y)) = (literal(old_slots), literal(new_slots)) {
+                    if x.value != y.value {
+                        match patchable(&y.value) {
+                            Some(value) => {
+                                edits.push(Edit::SetProp { node, name: n.name.clone(), value })
+                            }
+                            None => {
+                                return Err(Rejection::SlotCodeChanged { index: *a as usize })
+                            }
+                        }
+                    }
+                }
+            }
             // Data to data: a patchable change, or no change.
             (Some(PropValue::Lit(a)), PropValue::Lit(b)) => {
                 if a != b {
@@ -411,7 +448,86 @@ mod tests {
     }
 
     fn slot(role: &'static str, kind: &'static str) -> SlotInfo {
-        SlotInfo { name: None, role: Cow::Borrowed(role), kind: Cow::Borrowed(kind) }
+        SlotInfo {
+            name: None,
+            role: Cow::Borrowed(role),
+            kind: Cow::Borrowed(kind),
+            code: Cow::Borrowed(""),
+            literal: None,
+        }
+    }
+
+    /// A component node whose one prop, `hint`, is slot 0 with this
+    /// code and (optionally) this wrapped literal.
+    fn slotted(code: &'static str, literal: Option<(&'static str, &'static str)>) -> Descriptor {
+        Descriptor {
+            site: site(),
+            slots: SlotSig {
+                slots: Cow::Owned(vec![SlotInfo {
+                    name: Some(Cow::Borrowed("hint")),
+                    role: Cow::Borrowed("prop"),
+                    kind: Cow::Borrowed("call"),
+                    code: Cow::Borrowed(code),
+                    literal: literal.map(|(wrapper, value)| crate::WrappedLiteral {
+                        wrapper: Cow::Borrowed(wrapper),
+                        value: LiteralValue::Str(Cow::Borrowed(value)),
+                    }),
+                }]),
+            },
+            nodes: Cow::Owned(vec![Node::Component {
+                path: Cow::Borrowed("Field"),
+                props: Cow::Owned(vec![PropEntry {
+                    name: Cow::Borrowed("hint"),
+                    value: PropValue::Slot(0),
+                }]),
+                children: Cow::Borrowed(&[]),
+                dynamic: Cow::Owned(vec![Cow::Borrowed("hint")]),
+            }]),
+            roots: Cow::Owned(vec![0]),
+        }
+    }
+
+    /// Regression: a slot's code could change with nothing in the
+    /// descriptor moving (`x.clone()` → `y.clone()`), and the save was
+    /// dropped as "no change". It is refused now, which sends it to the
+    /// compiler.
+    #[test]
+    fn regression_a_slots_changed_code_is_refused_not_ignored() {
+        assert_eq!(
+            diff(&slotted("Some(x.clone())", None), &slotted("Some(y.clone())", None)),
+            Err(Rejection::SlotCodeChanged { index: 0 })
+        );
+        assert!(diff(&slotted("Some(x.clone())", None), &slotted("Some(x.clone())", None))
+            .unwrap()
+            .edits
+            .is_empty());
+    }
+
+    /// A literal inside an unchanged wrapper is an edit on the prop the
+    /// slot feeds, carrying the literal alone.
+    #[test]
+    fn a_wrapped_literal_under_the_same_wrapper_becomes_a_set_prop() {
+        let old = slotted(r#"Some("a".to_string())"#, Some(("Some(to_string)", "a")));
+        let new = slotted(r#"Some("b".to_string())"#, Some(("Some(to_string)", "b")));
+        assert_eq!(
+            diff(&old, &new).unwrap().edits.as_ref(),
+            &[Edit::SetProp {
+                node: 0,
+                name: Cow::Borrowed("hint"),
+                value: LiteralValue::Str(Cow::Borrowed("b")),
+            }]
+        );
+    }
+
+    /// The wrapper is the slot's signature: `Some("a".to_string())` →
+    /// `Some("a".into())` or `String::from("a")` is different code.
+    #[test]
+    fn a_changed_wrapper_is_refused() {
+        let old = slotted(r#"Some("a".to_string())"#, Some(("Some(to_string)", "a")));
+        let new = slotted(r#"Some("b".into())"#, Some(("Some(into)", "b")));
+        assert_eq!(diff(&old, &new), Err(Rejection::SlotCodeChanged { index: 0 }));
+        let unwrapped = slotted("Some(b)", None);
+        assert_eq!(diff(&old, &unwrapped), Err(Rejection::SlotCodeChanged { index: 0 }));
     }
 
     #[test]

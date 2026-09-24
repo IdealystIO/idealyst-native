@@ -32,14 +32,15 @@ use std::collections::BTreeMap;
 use quote::ToTokens;
 use runtime_template::{
     Descriptor, LiteralValue, Node, PropEntry, PropValue, SiteId, SlotInfo, SlotSig,
+    WrappedLiteral,
 };
 
 use crate::ast::{MatchArm, Prop, Ui, UiNode};
 use crate::number::{check_stamp, number_elements, StampMismatch};
 use crate::primitives::canonical_primitive;
 use crate::split::{
-    children_kind, classify_static, reset_slot_counter, slot_index_of, split, ChildrenKind, Scope,
-    StaticValue,
+    children_kind, classify_static, reset_slot_counter, slot_index_of, split, wrapped_literal,
+    ChildrenKind, Scope, StaticValue,
 };
 
 /// Describe one `ui!` site.
@@ -65,6 +66,8 @@ pub fn describe(site: SiteId, ui: &mut Ui) -> Result<Descriptor, StampMismatch> 
                 name: None,
                 role: "unused".into(),
                 kind: "unused".into(),
+                code: "".into(),
+                literal: None,
             })
         })
         .collect();
@@ -104,12 +107,24 @@ impl Builder {
     fn scope(&mut self, nodes: &[UiNode]) -> Result<Vec<u32>, StampMismatch> {
         let scope: Scope = split(nodes);
         for slot in &scope.slots {
+            // The code, so a differ can see it move; and, for a string
+            // literal in a conversion wrapper, the literal and the
+            // wrapper, so an edit to the literal alone is still data.
+            let literal = syn::parse2::<syn::Expr>(slot.expr.clone())
+                .ok()
+                .and_then(|e| wrapped_literal(&e))
+                .map(|(wrapper, value)| WrappedLiteral {
+                    wrapper: wrapper.into(),
+                    value: LiteralValue::Str(value.into()),
+                });
             self.slots.insert(
                 slot.index,
                 SlotInfo {
                     name: slot.name.map(Into::into),
                     role: slot.role.as_str().into(),
                     kind: slot.kind.into(),
+                    code: squash(&slot.expr).into(),
+                    literal,
                 },
             );
         }
@@ -279,8 +294,54 @@ fn lit(value: StaticValue) -> LiteralValue {
     }
 }
 
-/// Whitespace-squashed source text of an expression. Squashed so that
-/// reformatting alone never reads as a change.
+/// Whitespace-squashed source text of an expression, with every `ui!`
+/// body inside it blanked. Squashed so that reformatting alone never
+/// reads as a change.
+///
+/// Blanked because a nested `ui!` is a site of its own, scanned and
+/// diffed on its own. Recording it again inside the enclosing site's
+/// text made a literal edit in a `content = move || { ui! { … } }`
+/// dialog body — the commonest place for one in a real app — a change of
+/// the OUTER site's code, which refused the overlay and cost a hot patch
+/// (49 s on CrewForge) for what the inner site's own diff would have
+/// patched in milliseconds. Everything outside the nested bodies still
+/// counts: a changed `let` in the closure is still code.
 fn squash(expr: &impl ToTokens) -> String {
-    expr.to_token_stream().to_string().chars().filter(|c| !c.is_whitespace()).collect()
+    blank_nested_sites(expr.to_token_stream())
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// `tokens` with the body of every `ui ! { … }` in it emptied, at any
+/// depth.
+fn blank_nested_sites(tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    use proc_macro2::{Group, TokenTree};
+    let mut out: Vec<TokenTree> = Vec::new();
+    let mut iter = tokens.into_iter().peekable();
+    while let Some(tt) = iter.next() {
+        match tt {
+            TokenTree::Group(g) => {
+                let mut blanked = Group::new(g.delimiter(), blank_nested_sites(g.stream()));
+                blanked.set_span(g.span());
+                out.push(TokenTree::Group(blanked));
+            }
+            TokenTree::Ident(ref id) if id == "ui" => {
+                out.push(tt.clone());
+                let bang = matches!(iter.peek(), Some(TokenTree::Punct(p)) if p.as_char() == '!');
+                if !bang {
+                    continue;
+                }
+                out.push(iter.next().expect("peeked"));
+                if let Some(TokenTree::Group(g)) = iter.peek() {
+                    let empty = Group::new(g.delimiter(), proc_macro2::TokenStream::new());
+                    let _ = iter.next();
+                    out.push(TokenTree::Group(empty));
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out.into_iter().collect()
 }

@@ -1,0 +1,38 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 button "Go"
+insert n0 <- n1
+create n2 view
+create n3 text ""
+insert n2 <- n3
+insert n0 <- n2
+create n4 text ""
+insert n0 <- n4
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 button "Go"
+insert n0 <- n1
+create n2 view
+create n3 text ""
+update_text n3 "from:3"
+insert n2 <- n3
+insert n0 <- n2
+create n4 text ""
+update_text n4 "bare into an Option"
+insert n0 <- n4
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 button "Go"
+  n2 view
+    n3 text ""
+  n4 text ""

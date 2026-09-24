@@ -120,6 +120,8 @@ fn collect_fields(input: &DeriveInput) -> Vec<(syn::Ident, Type)> {
 enum LitTarget {
     /// A string literal, via `Into` from `&str`.
     Str,
+    /// A string literal into an `Option<String>` field, as `Some(…)`.
+    OptStr,
     /// An integer literal, cast to this type then `Into`.
     Int(Type),
     /// A float literal, same shape.
@@ -141,6 +143,17 @@ fn literal_target(ty: &Type) -> LitTarget {
     let inner = reactive_inner(ty).unwrap_or(ty);
     let Type::Path(tp) = inner else { return LitTarget::None };
     let Some(seg) = tp.path.segments.last() else { return LitTarget::None };
+    // `Option<String>`: what a wrapped literal slot (`Some("…".to_string())`,
+    // `Some(String::from("…"))`) feeds. The descriptor carries the string
+    // inside the wrapper, and this arm puts the `Some` back.
+    if seg.ident == "Option" {
+        let PathArguments::AngleBracketed(args) = &seg.arguments else { return LitTarget::None };
+        let is_string = args.args.iter().any(|a| {
+            matches!(a, GenericArgument::Type(Type::Path(t))
+                if t.path.segments.last().is_some_and(|s| s.ident == "String" && s.arguments.is_empty()))
+        });
+        return if is_string && args.args.len() == 1 { LitTarget::OptStr } else { LitTarget::None };
+    }
     if !seg.arguments.is_empty() {
         return LitTarget::None;
     }
@@ -224,6 +237,15 @@ pub(crate) fn apply_literal_impl(
             LitTarget::Str => Some(quote! {
                 (#key, ::runtime_core::__template::TemplateLiteral::Str(__v)) => {
                     self.#name = (&**__v).into();
+                    true
+                }
+            }),
+            LitTarget::OptStr => Some(quote! {
+                (#key, ::runtime_core::__template::TemplateLiteral::Str(__v)) => {
+                    self.#name = ::core::option::Option::Some(
+                        ::std::string::String::from(&**__v),
+                    )
+                    .into();
                     true
                 }
             }),
@@ -672,12 +694,29 @@ mod tests {
                 #[prop(static)] tone: ToneRef,
                 children: Vec<Element>,
                 on_press: Rc<dyn Fn()>,
-                maybe: Option<String>,
+                // An `Option` of anything but `String`: no wrapped-literal
+                // slot feeds one.
+                maybe: Option<i32>,
             }
         });
         assert!(out.contains("match(name,value){_=>false,}"), "{out}");
         // No `Path` arm is ever generated.
         assert!(!out.contains("TemplateLiteral::Path"), "{out}");
+    }
+
+    /// An `Option<String>` field takes a string literal as `Some(…)`: it
+    /// is what a wrapped-literal slot (`placeholder = Some("…".to_string())`)
+    /// feeds, and the descriptor carries only the string inside the
+    /// wrapper. Plain and reactive-wrapped fields alike.
+    #[test]
+    fn apply_literal_puts_the_some_back_on_an_optional_string() {
+        let out = rendered(quote! { struct P { placeholder: Option<String> } });
+        assert!(
+            out.contains(
+                "(\"placeholder\",::runtime_core::__template::TemplateLiteral::Str(__v))=>{self.placeholder=::core::option::Option::Some(::std::string::String::from(&**__v),).into();true}"
+            ),
+            "{out}"
+        );
     }
 
     /// It must be an INHERENT method: the builder calls it as

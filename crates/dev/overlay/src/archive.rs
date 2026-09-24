@@ -148,7 +148,12 @@ pub struct DescriptorSet {
 ///
 /// `4` added [`FileDigest::downstream`], which a hot patch of a library
 /// crate in the app's workspace needs (see [`crate::workspace`]).
-pub const OVERLAY_VERSION: u32 = 4;
+///
+/// `5`: descriptors record each slot's source and wrapped literal
+/// (`runtime_template::SlotInfo::{code, literal}`), and blank nested
+/// `ui!` bodies out of the text they record. A `4` document diffed
+/// against a `5` scan would read every slot as changed code.
+pub const OVERLAY_VERSION: u32 = 5;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

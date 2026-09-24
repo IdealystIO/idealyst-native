@@ -197,6 +197,8 @@ A decision table, by example:
 |---|---|
 | `text { "hello" }` → `text { "goodbye" }` | Overlay patch |
 | Add / remove / reorder `text` lines in a `ui!` body | Overlay patch |
+| `placeholder = Some("Search…".to_string())` → `Some("Find…".to_string())` (also `.into()`, `.to_owned()`, `String::from(…)`), including inside a `ui!` nested in a closure prop | Overlay patch ([details](./ui-layer.md#what-patches-and-what-rebuilds)) |
+| Any other change to a prop's expression inside a `ui!` body | Hot patch |
 | `count.get() * 2` → `count.get() * 3` | Hot patch |
 | Add a statement, a `let`, a closure | Hot patch |
 | Add a `signal()` call | Hot patch (that component's state resets — see below) |

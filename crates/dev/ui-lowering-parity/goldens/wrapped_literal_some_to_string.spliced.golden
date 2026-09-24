@@ -1,0 +1,40 @@
+=== structural ===
+-- mount --
+create n0 view
+create n1 text ""
+insert n0 <- n1
+create n2 text ""
+insert n0 <- n2
+create n3 text ""
+insert n0 <- n3
+create n4 text ""
+insert n0 <- n4
+
+-- unmount --
+(none)
+
+=== full ===
+-- mount --
+create n0 view
+create n1 text ""
+update_text n1 "tip"
+insert n0 <- n1
+create n2 text ""
+update_text n2 "tip"
+insert n0 <- n2
+create n3 text ""
+update_text n3 "tip"
+insert n0 <- n3
+create n4 text ""
+update_text n4 "tip"
+insert n0 <- n4
+
+-- unmount --
+(none)
+
+=== scene ===
+n0 view
+  n1 text ""
+  n2 text ""
+  n3 text ""
+  n4 text ""
