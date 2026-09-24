@@ -23,6 +23,14 @@
 //! 5. Add a prop to the component. Poll until the page shows it, and
 //!    assert the marker is GONE: a shape change must rebuild and reload.
 //!
+//! A second test, `a_workspace_library_edit_patches_the_running_page`,
+//! does the same for a TWO-crate workspace: the app plus a library crate
+//! of its workspace holding a component and a function the app calls
+//! directly. A body edit in the library lands as a patch (the app's
+//! direct call and the component's click handler both run the new code),
+//! a later edit of the app alone still carries the library's edit, and a
+//! shape edit in the library rebuilds and reloads.
+//!
 //! `#[ignore]`d: it compiles the framework for wasm32 and needs Chrome
 //! (or `IDEALYST_BROWSER`) and `wasm-bindgen` on `PATH`. Run it
 //! deliberately:
@@ -330,27 +338,17 @@ impl Page {
     }
 }
 
-#[test]
-#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
-fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
-    let repo = repo_root();
-    let Some(chrome) = browser() else {
-        panic!("this test needs Chrome/Chromium, or IDEALYST_BROWSER pointing at one");
-    };
-    // A stable directory, not a fresh temp one: an armed hot-patch session
-    // keys its web target dir by the project path, so a new path every run
-    // is a cold framework build every run. The sources are rewritten below,
-    // so a previous run's edits never leak in.
-    let tmp = tempfile::tempdir().unwrap();
-    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_e2e");
-    materialize(&project, &repo);
-
+/// Spawn `idealyst dev --web --local` in `project` and a headless Chrome
+/// on it, and attach to the page.
+fn start(project: &Path, scratch: &Path) -> (Session, Page) {
+    let chrome = browser()
+        .expect("this test needs Chrome/Chromium, or IDEALYST_BROWSER pointing at one");
     let log = Arc::new(Mutex::new(String::new()));
     let mut session = Session { children: Vec::new(), log: log.clone() };
 
     let port = free_port();
     let mut dev = Command::new(env!("CARGO_BIN_EXE_idealyst"))
-        .current_dir(&project)
+        .current_dir(project)
         .args(["dev", "--web", "--local", "--port", &port.to_string()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -367,7 +365,7 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
     );
 
     let debug_port = free_port();
-    let profile = tmp.path().join("chrome-profile");
+    let profile = scratch.join("chrome-profile");
     session.children.push(
         Command::new(&chrome)
             .args([
@@ -386,8 +384,24 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
             .spawn()
             .expect("spawn Chrome"),
     );
+    let page = Page::attach(debug_port);
+    (session, page)
+}
 
-    let mut page = Page::attach(debug_port);
+#[test]
+#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
+fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
+    let repo = repo_root();
+    // A stable directory, not a fresh temp one: an armed hot-patch session
+    // keys its web target dir by the project path, so a new path every run
+    // is a cold framework build every run. The sources are rewritten below,
+    // so a previous run's edits never leak in.
+    let tmp = tempfile::tempdir().unwrap();
+    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_e2e");
+    materialize(&project, &repo);
+
+    let (session, mut page) = start(&project, tmp.path());
+
     assert!(
         page.wait_for_text("logic v1 -> 0", Duration::from_secs(60)),
         "the app never rendered: {:?}",
@@ -501,6 +515,259 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
         page.eval("window.__e2e_marker ?? null"),
         Value::Null,
         "a shape edit has to reload the page; the marker survived, so it was patched instead"
+    );
+}
+
+// ── the two-crate workspace ──────────────────────────────────────────
+
+const WS_SHARED_RS: &str = r#"
+use runtime_core::{component, signal, ui, Element};
+
+// How far one click moves the shared counter. Called from the
+// component's click handler, so a new body shows on the NEXT click.
+fn shared_step() -> i32 {
+    1
+}
+
+#[component]
+pub fn SharedCounter(title: String) -> Element {
+    let clicks = signal(0i32);
+    let press = move || clicks.set(clicks.get() + shared_step());
+    ui! {
+        view {
+            text { "{title}" }
+            text { move || format!("shared clicks = {}", clicks.get()) }
+            button(label = "shared +".to_string(), on_click = press)
+        }
+    }
+}
+
+// Called DIRECTLY by the app's `Root`: only a patch that re-emits the
+// app too can make that call reach this body's new version.
+pub fn shared_line(n: i32) -> String {
+    format!("shared line v1 -> {}", n)
+}
+"#;
+
+const WS_APP_RS: &str = r#"
+use e2e_shared::{shared_line, SharedCounter};
+use runtime_core::{component, signal, ui, Element};
+
+fn logic_line(n: i32) -> String {
+    format!("logic v1 -> {}", n * 2)
+}
+
+#[component]
+fn Root() -> Element {
+    let count = signal(0i32);
+    let bump = move || count.set(count.get() + 1);
+    ui! {
+        view {
+            text { move || format!("count = {}", count.get()) }
+            button(label = "+1".to_string(), on_click = bump)
+            text { move || logic_line(count.get()) }
+            text { move || shared_line(count.get()) }
+            SharedCounter(title = "the shared card".to_string())
+        }
+    }
+}
+
+pub fn app() -> Element {
+    ui! { Root() }
+}
+"#;
+
+fn materialize_workspace(dir: &Path, repo: &Path) {
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("shared/src")).unwrap();
+    let dep = |p: &str| repo.join(p).display().to_string();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "hotpatch-e2e-ws"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = {{ path = "{idealyst}" }}
+runtime-core = {{ path = "{core}" }}
+runtime-vocabulary = {{ path = "{vocab}" }}
+runtime-scene = {{ path = "{scene}" }}
+e2e-shared = {{ path = "shared" }}
+
+[package.metadata.idealyst.app]
+name = "Hot Patch E2E WS"
+bundle_id = "com.example.hotpatch_e2e_ws"
+version = "0.0.1"
+targets = ["web"]
+
+# A path dependency under the root is a member of this workspace.
+[workspace]
+"#,
+            idealyst = dep("crates/idealyst"),
+            core = dep("crates/runtime/core"),
+            vocab = dep("crates/runtime/vocabulary"),
+            scene = dep("crates/runtime/scene"),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("shared/Cargo.toml"),
+        format!(
+            r#"[package]
+name = "e2e-shared"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[dependencies]
+runtime-core = {{ path = "{core}" }}
+runtime-vocabulary = {{ path = "{vocab}" }}
+"#,
+            core = dep("crates/runtime/core"),
+            vocab = dep("crates/runtime/vocabulary"),
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("shared/src/lib.rs"), WS_SHARED_RS).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), LIB_RS).unwrap();
+    std::fs::write(dir.join("src/app.rs"), WS_APP_RS).unwrap();
+    std::fs::write(dir.join("src/main.rs"), "idealyst::entry!(hotpatch_e2e_ws);\n").unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        INDEX_HTML.replace("/pkg/hotpatch_e2e.js", "/pkg/hotpatch_e2e_ws.js"),
+    )
+    .unwrap();
+}
+
+fn click(page: &mut Page, label: &str, times: usize) {
+    page.eval(&format!(
+        "(async () => {{ \
+            const b = [...document.querySelectorAll('button,[role=button]')] \
+                .find(e => e.textContent.trim() === '{label}'); \
+            for (let i = 0; i < {times}; i++) {{ b.click(); await new Promise(r => setTimeout(r, 50)); }} \
+        }})()"
+    ));
+}
+
+#[test]
+#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
+fn a_workspace_library_edit_patches_the_running_page() {
+    let repo = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_e2e_ws");
+    materialize_workspace(&project, &repo);
+
+    let (session, mut page) = start(&project, tmp.path());
+    assert!(
+        page.wait_for_text("shared line v1 -> 0", Duration::from_secs(60)),
+        "the app never rendered: {:?}",
+        page.text()
+    );
+    assert!(
+        session.log().contains("workspace crates patchable with hotpatch-e2e-ws: e2e-shared"),
+        "the session did not pick up the library crate:\n{}",
+        tail(&session.log())
+    );
+
+    // State in BOTH crates, and a marker only a reload clears.
+    click(&mut page, "+1", 2);
+    click(&mut page, "shared +", 3);
+    page.eval("window.__e2e_marker = 'still-here'");
+    assert!(page.wait_for_text("shared clicks = 3", Duration::from_secs(5)), "{:?}", page.text());
+    assert!(page.text().contains("count = 2"), "{:?}", page.text());
+
+    // ── a body edit in the LIBRARY ────────────────────────────────────
+    let shared_rs = project.join("shared/src/lib.rs");
+    let source = std::fs::read_to_string(&shared_rs).unwrap();
+    std::fs::write(
+        &shared_rs,
+        source
+            .replace("fn shared_step() -> i32 {\n    1\n}", "fn shared_step() -> i32 {\n    10\n}")
+            .replace("shared line v1 ->", "shared line v2 ->"),
+    )
+    .unwrap();
+
+    // The app's DIRECT call reaches the new body: the patch re-emitted
+    // the app as well as the library.
+    assert!(
+        page.wait_for_text("shared line v2 -> 2", Duration::from_secs(180)),
+        "the library edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert!(
+        session.log().contains("[hotpatch] e2e-shared/src/lib.rs ·"),
+        "the new text arrived, but not through a hot patch:\n{}",
+        tail(&session.log())
+    );
+    assert_eq!(page.eval("window.__e2e_marker"), json!("still-here"), "the page reloaded");
+    let text = page.text();
+    assert!(text.contains("count = 2"), "the app's state was lost: {text:?}");
+    assert!(text.contains("shared clicks = 3"), "the library component's state was lost: {text:?}");
+
+    // The shared component's click handler runs the patched code.
+    click(&mut page, "shared +", 1);
+    assert!(
+        page.wait_for_text("shared clicks = 13", Duration::from_secs(5)),
+        "the shared component's next click did not run the new shared_step: {:?}",
+        page.text()
+    );
+
+    // ── then an edit of the APP alone ─────────────────────────────────
+    // A patch replaces the page's jump table; this one must still carry
+    // the library's edit, or its functions would go back to the base.
+    let app_rs = project.join("src/app.rs");
+    let source = std::fs::read_to_string(&app_rs).unwrap();
+    std::fs::write(&app_rs, source.replace("logic v1 ->", "logic v2 ->")).unwrap();
+    assert!(
+        page.wait_for_text("logic v2 -> 4", Duration::from_secs(120)),
+        "the app edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert!(session.log().contains("[hotpatch] src/app.rs ·"), "{}", tail(&session.log()));
+    click(&mut page, "shared +", 1);
+    assert!(
+        page.wait_for_text("shared clicks = 23", Duration::from_secs(5)),
+        "the app-only patch dropped the library's earlier edit: {:?}",
+        page.text()
+    );
+    assert!(page.text().contains("shared line v2 -> 2"), "{:?}", page.text());
+    assert_eq!(page.eval("window.__e2e_marker"), json!("still-here"), "the page reloaded");
+
+    // ── a SHAPE edit in the library ───────────────────────────────────
+    let source = std::fs::read_to_string(&shared_rs).unwrap();
+    std::fs::write(
+        &shared_rs,
+        source
+            .replace(
+                "pub fn SharedCounter(title: String) -> Element {",
+                "pub fn SharedCounter(title: String, #[prop(default = 5)] n: i32) -> Element {",
+            )
+            .replace("text { \"{title}\" }", "text { \"{title} {n}\" }"),
+    )
+    .unwrap();
+    assert!(
+        page.wait_for_text("the shared card 5", Duration::from_secs(300)),
+        "the library shape edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert!(
+        session.log().contains("e2e-shared/src/lib.rs changed outside its function bodies"),
+        "a library shape edit has to be routed to a rebuild:\n{}",
+        tail(&session.log())
+    );
+    assert_eq!(
+        page.eval("window.__e2e_marker ?? null"),
+        Value::Null,
+        "a library shape edit has to reload the page; the marker survived"
     );
 }
 

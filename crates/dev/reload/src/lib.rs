@@ -501,6 +501,11 @@ pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
 /// Run `cargo metadata` for `manifest_path` and hand its document to
 /// [`local_package_dirs`].
 fn package_dirs(manifest_path: &Path) -> Result<Vec<PathBuf>> {
+    Ok(local_package_dirs(&cargo_metadata(manifest_path)?))
+}
+
+/// `cargo metadata --format-version 1` for `manifest_path`.
+fn cargo_metadata(manifest_path: &Path) -> Result<serde_json::Value> {
     let out = Command::new("cargo")
         .args(["metadata", "--format-version", "1"])
         .arg("--manifest-path")
@@ -512,9 +517,31 @@ fn package_dirs(manifest_path: &Path) -> Result<Vec<PathBuf>> {
         "cargo metadata failed: {}",
         String::from_utf8_lossy(&out.stderr).trim(),
     );
-    let meta: serde_json::Value =
-        serde_json::from_slice(&out.stdout).context("parse `cargo metadata` output")?;
-    Ok(local_package_dirs(&meta))
+    serde_json::from_slice(&out.stdout).context("parse `cargo metadata` output")
+}
+
+/// The crates a save can be decided against: the app crate plus every
+/// library crate of its cargo workspace it depends on
+/// ([`dev_overlay::Workspace`]), each with a fresh descriptor set.
+///
+/// Falls back to the app crate alone when `cargo metadata` cannot be
+/// read — exactly the single-crate behavior, where a save in any other
+/// crate rebuilds.
+fn load_workspace(dir: &Path) -> dev_overlay::Workspace {
+    let package = dir_package_name(dir);
+    let mut ws = match cargo_metadata(&dir.join("Cargo.toml")) {
+        Ok(meta) => dev_overlay::Workspace::from_metadata(&meta, dir),
+        Err(e) => {
+            eprintln!(
+                "[dev-reload] could not read the workspace ({e:#}); only saves in {package} \
+                 can be patched"
+            );
+            None
+        }
+    }
+    .unwrap_or_else(|| dev_overlay::Workspace::single(&package, dir, &package.replace('-', "_")));
+    ws.rescan_all(dir);
+    ws
 }
 
 /// The pure core of [`watch_roots`]: given a `cargo metadata` document,
@@ -692,8 +719,11 @@ impl HotPatchBase {
         }
     }
 
-    /// Build a patch for this save, or say why it cannot.
-    fn patch(&mut self) -> std::result::Result<build_web::hotpatch_build::BuiltPatch, String> {
+    /// Build a patch re-emitting `crates`, or say why it cannot.
+    fn patch(
+        &mut self,
+        crates: &[build_web::hotpatch_build::PatchCrate],
+    ) -> std::result::Result<build_web::hotpatch_build::BuiltPatch, String> {
         if !self.armed {
             return Err(
                 "the hot-patch tier is off for this session (`idealyst dev --web --local` \
@@ -708,7 +738,7 @@ impl HotPatchBase {
         self.builder
             .as_ref()
             .expect("just built")
-            .build()
+            .build_crates(crates)
             .map_err(|e| format!("{e:#}"))
     }
 
@@ -771,20 +801,22 @@ fn watch_loop(
         describe(&watch_paths),
     );
 
-    // The descriptor set describing the build now running. Written
-    // HERE, before the first save, rather than only after a rebuild:
-    // the initial build already happened by the time this loop starts,
-    // and without an archive from it the very first save of every
-    // session would have nothing to diff against and would rebuild.
+    // The descriptor sets describing the build now running, one per
+    // crate of the app's workspace. Written HERE, before the first save,
+    // rather than only after a rebuild: the initial build already
+    // happened by the time this loop starts, and without an archive from
+    // it the very first save of every session would have nothing to diff
+    // against and would rebuild.
     //
     // Kept across saves and advanced after each decided patch, so the
     // NEXT save diffs against what is actually running rather than
     // against the source the last compiler saw.
-    let package = dir_package_name(&dir);
-    if let Err(e) = overlay::write_for(&dir, &dir) {
-        eprintln!("[dev-reload] no descriptor set for this build: {e}");
+    let mut ws = load_workspace(&dir);
+    if ws.crates.len() > 1 {
+        let libs: Vec<&str> =
+            ws.crates.keys().filter(|p| **p != ws.tip).map(String::as_str).collect();
+        eprintln!("[dev-reload] workspace crates patchable with {}: {}", ws.tip, libs.join(", "));
     }
-    let mut archive = overlay_decide::load_archive(&dir, &package);
 
     while let Ok(events) = rx.recv() {
         let changed_paths: Vec<PathBuf> = match &events {
@@ -800,17 +832,17 @@ fn watch_loop(
         let folded = settle(&rx);
 
         // Can this save skip the compiler? Decided BEFORE anything
-        // expensive starts, from the archive plus the new source. See
+        // expensive starts, from the archives plus the new source. See
         // `overlay_decide` for why the answer is conservative.
-        if let Some(set) = archive.as_ref() {
+        {
             let started = std::time::Instant::now();
-            let changed = read_changed(&dir, &changed_paths);
+            let saved = read_saved(&ws, &changed_paths);
             // A premint session baked its class names from every
             // `stylesheet!` at start; a sheet edit there must rebuild even
             // when the shape says body-only.
             let premint = opts.premint || opts.premint_only;
-            match overlay_decide::decide_with(Some(set), &changed, premint) {
-                overlay_decide::Decision::Patch(patches) => {
+            match ws.decide(&saved, premint) {
+                dev_overlay::WorkspaceDecision::Patch(patches) => {
                     let count = patches.len();
                     for patch in &patches {
                         match serde_json::to_string(&overlay_decide::wire_payload(patch)) {
@@ -820,9 +852,7 @@ fn watch_loop(
                             Err(e) => eprintln!("[dev-reload] cannot encode patch: {e}"),
                         }
                     }
-                    if let Some(set) = archive.as_mut() {
-                        overlay_decide::advance_archive(set, &changed);
-                    }
+                    ws.advance(&saved);
                     eprintln!(
                         "[dev] patched {count} site(s) in {} ms, no rebuild",
                         started.elapsed().as_millis()
@@ -830,13 +860,13 @@ fn watch_loop(
                     drain(&rx);
                     continue;
                 }
-                overlay_decide::Decision::Unchanged if !changed.is_empty() => {
+                dev_overlay::WorkspaceDecision::Unchanged if !saved.is_empty() => {
                     eprintln!("[dev] no UI or code change in this save, no rebuild");
                     drain(&rx);
                     continue;
                 }
-                overlay_decide::Decision::Unchanged => {}
-                overlay_decide::Decision::HotPatch(files) => {
+                dev_overlay::WorkspaceDecision::Unchanged => {}
+                dev_overlay::WorkspaceDecision::HotPatch(plan) => {
                     // A body edit: new CODE, which the overlay cannot
                     // carry. Build a wasm patch and send it, so the page
                     // swaps the function bodies and rebuilds its tree
@@ -846,20 +876,23 @@ fn watch_loop(
                     // always correct. A patch that half-applies would
                     // leave the page running code the source no longer
                     // describes, with nothing to say so.
-                    match base.patch() {
+                    let crates = patch_crates(&ws, &plan);
+                    match base.patch(&crates) {
                         Ok(patch) => match base.event_json(&patch) {
                             Ok(json) => {
                                 signal.push_hot_patch(json);
-                                // A FULL rescan, not `advance_archive`
-                                // over the saved files: a hot patch
-                                // re-emits every file of the crate, so a
-                                // file outside this save can come back
-                                // with new site keys too, and the next
-                                // save must diff against what is running.
-                                archive = rescan_archive(&dir, &package);
+                                ws.note_patched(&plan);
+                                // A FULL rescan of every crate the patch
+                                // re-emitted, not `advance` over the saved
+                                // files: a patch re-emits every file of
+                                // each crate, so a file outside this save
+                                // can come back with new site keys too,
+                                // and the next save must diff against
+                                // what is running.
+                                ws.rescan(&dir, plan.replay.iter().map(String::as_str));
                                 eprintln!(
                                     "[hotpatch] {} · {} function(s) redirected · {}",
-                                    files.join(", "),
+                                    plan.files.join(", "),
                                     patch.jump_table.map.len(),
                                     patch.timing_line(),
                                 );
@@ -873,11 +906,11 @@ fn watch_loop(
                         Err(why) => eprintln!(
                             "[hotpatch] {} changed inside function bodies, but no patch: \
                              {why}; rebuilding",
-                            files.join(", "),
+                            plan.files.join(", "),
                         ),
                     }
                 }
-                overlay_decide::Decision::Rebuild(why) => {
+                dev_overlay::WorkspaceDecision::Rebuild(why) => {
                     eprintln!("[dev] rebuilding: {why}");
                 }
             }
@@ -945,11 +978,13 @@ fn watch_loop(
             );
         }
 
-        // A rebuild regenerates the descriptor set from source, which
+        // A rebuild regenerates every descriptor set from source, which
         // is also what drops every staged patch: the new binary already
         // has the edits compiled in, so re-sending them would be
-        // applying the same change twice.
-        archive = rescan_archive(&dir, &package);
+        // applying the same change twice. Re-read from `cargo metadata`,
+        // since the save may have moved the workspace itself; that also
+        // forgets every crate an earlier patch carried.
+        ws = load_workspace(&dir);
 
         // Coalesce anything queued during the build — wasm-pack
         // writes to `pkg/` (not watched) and cargo touches
@@ -970,29 +1005,51 @@ fn dir_package_name(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Read the changed files the decision needs, as package-relative
-/// paths.
+/// Read the changed files the decision needs, each routed to the crate
+/// of the workspace that owns it, with its package-relative path.
 ///
-/// A path outside the crate — a watched path dependency — is skipped
-/// here, which means the decision never sees it and the save falls to a
-/// rebuild. That is the right answer: the archive describes THIS crate,
-/// and a dependency's sites are compiled into a different artifact.
-fn read_changed(dir: &Path, paths: &[PathBuf]) -> Vec<overlay_decide::ChangedFile> {
+/// Only `.rs` files are read. A path under no known crate is skipped, as
+/// is one that no longer reads (a deleted file): with nothing left the
+/// decision is `Unchanged` on an empty save, and the caller rebuilds —
+/// the right answer for a save the archives cannot describe. A file of a
+/// local package OUTSIDE the workspace is kept, so the decision can name
+/// it when it rebuilds.
+fn read_saved(ws: &dev_overlay::Workspace, paths: &[PathBuf]) -> Vec<dev_overlay::SavedFile> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for path in paths {
-        if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
-        let Ok(relative) = path.strip_prefix(dir) else { continue };
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        if !seen.insert(relative.clone()) {
+        let (package, relative) = match ws.route(path) {
+            dev_overlay::Route::Crate { package, relative }
+            | dev_overlay::Route::Outside { package, relative } => (package, relative),
+            dev_overlay::Route::Unknown => continue,
+        };
+        if !seen.insert((package.clone(), relative.clone())) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(path) else { continue };
-        out.push(overlay_decide::ChangedFile { path: relative, text });
+        out.push(dev_overlay::SavedFile {
+            package,
+            file: overlay_decide::ChangedFile { path: relative, text },
+        });
     }
     out
+}
+
+/// The builder's view of a plan: each crate to re-emit by rustc crate
+/// name, with the source key its objects must match to be reused.
+fn patch_crates(
+    ws: &dev_overlay::Workspace,
+    plan: &dev_overlay::HotPatchPlan,
+) -> Vec<build_web::hotpatch_build::PatchCrate> {
+    plan.replay
+        .iter()
+        .map(|package| {
+            build_web::hotpatch_build::PatchCrate::new(
+                ws.crate_name(package).unwrap_or(package.as_str()).to_string(),
+                plan.source_keys.get(package).cloned(),
+            )
+        })
+        .collect()
 }
 
 /// The watch set as one log-friendly line. Printed at startup and
@@ -1194,22 +1251,6 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
     }
 }
 
-/// Re-derive the `ui!` descriptor archive from the crate's source as it
-/// is on disk now.
-///
-/// Used after anything that puts the WHOLE crate's current source into
-/// the running program: a rebuild, and a hot patch, which re-emits every
-/// file of the crate rather than only the ones in the save.
-fn rescan_archive(dir: &Path, package: &str) -> Option<overlay::DescriptorSet> {
-    match overlay::write_for(dir, dir) {
-        Ok(_) => overlay_decide::load_archive(dir, package),
-        Err(e) => {
-            eprintln!("[dev-reload] no descriptor set for this build: {e}");
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1305,7 +1346,12 @@ mod tests {
         std::fs::write(dir.join("src/a.rs"), "fn a() { ui! { text { \"a\" } } }\n").unwrap();
         std::fs::write(dir.join("src/b.rs"), "fn b() { ui! { text { \"b\" } } }\n").unwrap();
 
-        let before = rescan_archive(dir, "rescan-probe").expect("an archive");
+        let rescan = || {
+            let mut ws = dev_overlay::Workspace::single("rescan-probe", dir, "rescan_probe");
+            ws.rescan(dir, ["rescan-probe"]);
+            ws.crates["rescan-probe"].archive.clone()
+        };
+        let before = rescan().expect("an archive");
         let b_before = before.files.get("src/b.rs").expect("b.rs scanned").content.clone();
 
         // `b.rs` changes, but the save that produced the patch was a.rs.
@@ -1314,7 +1360,7 @@ mod tests {
             "fn b() { ui! { text { \"b\" } } }\nfn c() { ui! { text { \"c\" } } }\n",
         )
         .unwrap();
-        let after = rescan_archive(dir, "rescan-probe").expect("an archive");
+        let after = rescan().expect("an archive");
         assert_ne!(
             after.files.get("src/b.rs").expect("b.rs scanned").content,
             b_before,
@@ -1326,6 +1372,69 @@ mod tests {
             before.sites.len(),
             after.sites.len()
         );
+    }
+
+    /// A two-crate workspace on disk, the lab's layout: the app at the
+    /// root, `lab-shared` in a subdirectory, as `cargo metadata` would
+    /// describe it.
+    fn two_crate_workspace(root: &Path) -> dev_overlay::Workspace {
+        for (dir, name) in [(root.to_path_buf(), "app"), (root.join("lab-shared"), "lab-shared")] {
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("src/lib.rs"), "pub fn app() -> u32 { lab_shared::v() }\n").unwrap();
+        std::fs::write(root.join("lab-shared/src/lib.rs"), "pub fn v() -> u32 { 1 }\n").unwrap();
+        let m = |p: &Path| p.join("Cargo.toml").display().to_string();
+        let meta = serde_json::json!({
+            "packages": [
+                {"id": "app", "name": "app", "manifest_path": m(root), "source": null,
+                 "targets": [{"kind": ["rlib"], "name": "app"}]},
+                {"id": "s", "name": "lab-shared", "manifest_path": m(&root.join("lab-shared")),
+                 "source": null, "targets": [{"kind": ["lib"], "name": "lab_shared"}]}
+            ],
+            "workspace_members": ["app", "s"],
+            "resolve": {"root": "app", "nodes": [
+                {"id": "app", "deps": [{"pkg": "s", "dep_kinds": [{"kind": null}]}]},
+                {"id": "s", "deps": []}
+            ]}
+        });
+        let mut ws = dev_overlay::Workspace::from_metadata(&meta, root).expect("tip found");
+        ws.rescan_all(root);
+        ws
+    }
+
+    /// Regression: the dev loop read a save through ONE crate's eyes, so
+    /// a file of a sibling crate was dropped before the decision ever
+    /// saw it and every save there rebuilt. It is routed to its own crate
+    /// now, and a body edit there is a hot patch that re-emits the
+    /// library and the app, with a key for each.
+    #[test]
+    fn regression_a_sibling_crate_save_reaches_the_decision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let ws = two_crate_workspace(&root);
+        std::fs::write(root.join("lab-shared/src/lib.rs"), "pub fn v() -> u32 { 2 }\n").unwrap();
+        let saved = read_saved(
+            &ws,
+            &[root.join("lab-shared/src/lib.rs"), root.join("lab-shared/Cargo.toml")],
+        );
+        assert_eq!(saved.len(), 1, "only the .rs file is read");
+        assert_eq!(saved[0].package, "lab-shared");
+        assert_eq!(saved[0].file.path, "src/lib.rs");
+        let dev_overlay::WorkspaceDecision::HotPatch(plan) = ws.decide(&saved, false) else {
+            panic!("a body edit in a workspace library is a hot patch");
+        };
+        let crates = patch_crates(&ws, &plan);
+        assert_eq!(
+            crates.iter().map(|c| c.crate_name.as_str()).collect::<Vec<_>>(),
+            vec!["lab_shared", "app"],
+            "keyed by rustc crate name, dependencies first"
+        );
+        assert!(crates.iter().all(|c| c.source_key.is_some()));
     }
 
     /// Regression guard for the save-storm that kept the dev bundle
