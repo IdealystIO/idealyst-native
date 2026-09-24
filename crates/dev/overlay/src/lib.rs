@@ -7,6 +7,11 @@
 //! - [`decide`] reads it back on the next save and answers the only
 //!   question that matters — patch this, or rebuild it?
 //!
+//! [`workspace`] asks the same question across every crate of the app's
+//! cargo workspace: one archive per crate, and the extra rules a library
+//! crate's hot patch needs (its dependents re-emitted with it, and no
+//! edit to a body a dependent compiles from its metadata).
+//!
 //! Neither needs a compiler, a watcher or a transport, which is why
 //! this is its own crate: both dev shapes need the decision and they
 //! have nothing else in common. The web watcher (`dev-reload`) pulls the
@@ -16,10 +21,14 @@
 
 pub mod archive;
 pub mod decide;
+pub mod workspace;
 
 pub use archive::{
-    overlay_dir, scan_crate, write_for, ArchivedSite, DescriptorSet, FileDigest, OVERLAY_VERSION,
+    crate_overlay_dir, overlay_dir, scan_crate, write_for, write_into, ArchivedSite,
+    DescriptorSet, FileDigest, OVERLAY_VERSION,
 };
 pub use decide::{
-    advance_archive, decide, load_archive, wire_payload, ChangedFile, Decision, Reason, SitePatch,
+    advance_archive, decide, load_archive, load_archive_from, wire_payload, ChangedFile,
+    Decision, Reason, SitePatch,
 };
+pub use workspace::{HotPatchPlan, Route, SavedFile, Workspace, WorkspaceCrate, WorkspaceDecision};

@@ -97,6 +97,21 @@ pub enum Reason {
     /// the page's class names from the whole invocation at session start,
     /// so only a rebuild regenerates them.
     PremintStylesheet { file: String },
+    /// A LIBRARY crate of the app's workspace changed the body of a
+    /// function its dependents compile themselves, from its metadata:
+    /// a generic, `#[inline]`, `const`, `async` or `impl Trait` function,
+    /// or a trait's default method
+    /// (`runtime_macros_parse::downstream_bodies`). A patch re-emits the
+    /// dependents against the BASE build's metadata, which still carries
+    /// the old body, so their copies would stay old with nothing to say
+    /// so. `item` names the function.
+    DownstreamBody { file: String, item: String },
+    /// A local package that is not a member of the app's cargo workspace
+    /// — a `[patch]` pointing a dependency at a checkout. It is watched,
+    /// so a save there rebuilds, but it is never patched: cargo builds it
+    /// with the registry-dependency profile (`opt-level = 3` under
+    /// `--dev-opt optimized`), where dependents inline its bodies.
+    OutsideWorkspace { file: String },
 }
 
 impl std::fmt::Display for Reason {
@@ -112,6 +127,15 @@ impl std::fmt::Display for Reason {
             Reason::PremintStylesheet { file } => write!(
                 f,
                 "{file} changed a `stylesheet!`, and this session preminted its class names"
+            ),
+            Reason::DownstreamBody { file, item } => write!(
+                f,
+                "{file} changed the body of `{item}`, which the crates depending on it compile \
+                 themselves (generic, `#[inline]`, `const`, `async` or `impl Trait`)"
+            ),
+            Reason::OutsideWorkspace { file } => write!(
+                f,
+                "{file} is in a local package outside the app's cargo workspace"
             ),
         }
     }
@@ -376,6 +400,7 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                         .as_bytes(),
                 ),
                 sheets: crate::archive::sheets_digest(&file.text),
+                downstream: crate::archive::downstream_digests(&file.text),
             },
         );
         if rekey {
@@ -464,9 +489,15 @@ pub fn wire_payload(patch: &SitePatch) -> serde_json::Value {
 /// hash, so several can accumulate over a session and the most recent is
 /// the one the running binary was built from.
 pub fn load_archive(project_root: &Path, app: &str) -> Option<DescriptorSet> {
-    let dir = crate::archive::overlay_dir(project_root, app);
+    load_archive_from(&crate::archive::overlay_dir(project_root, app))
+}
+
+/// [`load_archive`], from a directory — a workspace library crate's
+/// archives live in a directory of their own inside the app's (see
+/// [`crate::archive::crate_overlay_dir`]).
+pub fn load_archive_from(dir: &Path) -> Option<DescriptorSet> {
     let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "json") {
             continue;

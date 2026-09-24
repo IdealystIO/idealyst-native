@@ -48,6 +48,7 @@
 
 pub mod ast;
 pub mod describe;
+pub mod downstream;
 pub mod number;
 pub mod primitives;
 pub mod reactive_shape;
@@ -58,6 +59,7 @@ pub mod split;
 
 pub use ast::{is_a11y_attr, MatchArm, Prop, Ui, UiNode};
 pub use describe::describe;
+pub use downstream::downstream_bodies;
 pub use number::{number_elements, NodeNumbering, StampMismatch};
 pub use reactive_shape::is_reactive_call_shape;
 pub use scan::{file_skeleton, sites_in_file, skeleton_of, Site};

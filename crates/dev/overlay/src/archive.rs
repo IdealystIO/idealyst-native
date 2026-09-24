@@ -101,6 +101,21 @@ pub struct FileDigest {
     /// older document matches no file, which rebuilds — the safe reading.
     #[serde(default)]
     pub sheets: String,
+    /// One digest per function whose body a DEPENDENT crate compiles
+    /// from this crate's metadata — generic, `#[inline]`, `const`,
+    /// `async`, `impl Trait`, trait default bodies
+    /// (`runtime_macros_parse::downstream_bodies`), keyed by a label that
+    /// names the function.
+    ///
+    /// Only consulted for a library crate of the app's workspace, never
+    /// for the app crate itself (nothing depends on it). A hot patch of a
+    /// library re-emits it and its dependents, but a dependent's replay
+    /// reads the library's metadata from the BASE build, so its copy of
+    /// such a body is the old one; an edit that moves one of these has to
+    /// rebuild. Defaulted: an older document records none, which a file
+    /// that has any never matches — it rebuilds, the safe reading.
+    #[serde(default)]
+    pub downstream: BTreeMap<String, String>,
 }
 
 /// One build's descriptor set.
@@ -130,7 +145,10 @@ pub struct DescriptorSet {
 /// on. A `2` document cannot answer "did only function bodies change",
 /// and guessing would route a shape change into a patch — so a reader
 /// that meets one rebuilds.
-pub const OVERLAY_VERSION: u32 = 3;
+///
+/// `4` added [`FileDigest::downstream`], which a hot patch of a library
+/// crate in the app's workspace needs (see [`crate::workspace`]).
+pub const OVERLAY_VERSION: u32 = 4;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -226,6 +244,7 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                         skeleton: content.clone(),
                         shape: content.clone(),
                         sheets: content,
+                        downstream: BTreeMap::new(),
                     },
                 );
                 continue;
@@ -244,7 +263,11 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
                 .as_bytes(),
         ));
         let sheets = sheets_digest(&text);
-        set.files.insert(relative.clone(), FileDigest { content, skeleton, shape, sheets });
+        let downstream = downstream_digests(&text);
+        set.files.insert(
+            relative.clone(),
+            FileDigest { content, skeleton, shape, sheets, downstream },
+        );
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();
             let Some(ui) = site.ui.as_mut() else {
@@ -301,15 +324,65 @@ pub fn sheets_digest(text: &str) -> String {
     ))
 }
 
+/// [`FileDigest::downstream`] for a file's text.
+///
+/// A file whose downstream bodies cannot be computed (it does not parse)
+/// records one entry holding its content digest: no later save matches
+/// it, so a change to that file in a library crate rebuilds. The shape
+/// digest already forces that for an unparseable file; this keeps the
+/// two digests telling the same story.
+pub fn downstream_digests(text: &str) -> BTreeMap<String, String> {
+    match runtime_macros_parse::downstream_bodies(text) {
+        Some(bodies) => bodies
+            .into_iter()
+            .map(|(label, tokens)| (label, hex(&Sha256::digest(tokens.as_bytes()))))
+            .collect(),
+        None => BTreeMap::from([(
+            "<file does not parse>".to_string(),
+            hex(&Sha256::digest(text.as_bytes())),
+        )]),
+    }
+}
+
 pub fn write_for(project_root: &Path, crate_dir: &Path) -> Result<PathBuf> {
     let set = scan_crate(crate_dir)?;
     let dir = overlay_dir(project_root, &set.package);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("create {}", dir.display()))?;
+    write_set(&dir, &set)
+}
+
+/// Scan `crate_dir` and write its descriptor set into `dir`, returning
+/// the set as well — the workspace path keeps it in memory rather than
+/// reading back the file it just wrote.
+pub fn write_into(dir: &Path, crate_dir: &Path) -> Result<DescriptorSet> {
+    let set = scan_crate(crate_dir)?;
+    write_set(dir, &set)?;
+    Ok(set)
+}
+
+fn write_set(dir: &Path, set: &DescriptorSet) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(format!("{}.json", set.build_key()));
-    let json = serde_json::to_string(&set)?;
+    let json = serde_json::to_string(set)?;
     std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
     Ok(path)
+}
+
+/// Where one crate of the app's workspace keeps its descriptor sets.
+///
+/// The app crate's go where they always have, [`overlay_dir`] — the
+/// runtime-server host reads them from there. A LIBRARY crate's go in
+/// `crates/<package>/` INSIDE the app's directory rather than in an
+/// `overlay_dir` of its own: `target/idealyst/<name>/` is a per-APP
+/// staging tree, and a library named like some app would otherwise
+/// share one. Two apps of one workspace that both depend on the library
+/// each keep their own copy, under their own project root.
+pub fn crate_overlay_dir(project_root: &Path, app: &str, package: &str) -> PathBuf {
+    let dir = overlay_dir(project_root, app);
+    if package == app {
+        dir
+    } else {
+        dir.join("crates").join(package)
+    }
 }
 
 /// `target/idealyst/<app>/overlay` — alongside the other per-app CLI
