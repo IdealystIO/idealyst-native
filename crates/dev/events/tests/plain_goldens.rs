@@ -235,6 +235,9 @@ fn the_rebuild_lines() {
         .as_deref(),
         Some("[dev-reload] dependencies changed — now watching /lab/src")
     );
+    // A one-shot build (runtime-server mode's thin client) never had a
+    // line; its caller announces it.
+    assert_eq!(line(DevEvent::BuildStarted { target: web(), cause: BuildCause::OneShot }), None);
     // A labelled watcher (the full-stack server's) keeps its own lines.
     let server = "server".to_string();
     assert_eq!(

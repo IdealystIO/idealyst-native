@@ -194,6 +194,9 @@ pub enum BuildCause {
     Save { folded: usize },
     /// Someone asked (the panel's `r`).
     Forced,
+    /// A build with no watcher behind it: runtime-server mode's thin web
+    /// client, a full-stack wire-mode bundle.
+    OneShot,
 }
 
 /// How a build ended.
@@ -614,6 +617,15 @@ pub fn json_schema() -> serde_json::Value {
     schema
 }
 
+/// Whether a file name is an editor's or a tool's scratch file rather
+/// than a file someone saved: a `.name.swp`, an `.!12345!name.rs` from
+/// `sed -i`, a `name.rs~` backup, an emacs `#name#`. Watchers see those
+/// beside every save; a [`DevEvent::ChangeDetected`] names the saved files
+/// without them.
+pub fn is_scratch_file(name: &str) -> bool {
+    name.starts_with('.') || name.starts_with('#') || name.ends_with('~')
+}
+
 static GLOBAL: OnceLock<Reporter> = OnceLock::new();
 
 /// Install the process-wide reporter. The first call wins; later calls
@@ -809,6 +821,16 @@ mod tests {
         let seqs: Vec<u64> = q.drain().iter().map(|e| e.seq).collect();
         assert_eq!(seqs.len(), 1600);
         assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "a sink saw events out of order");
+    }
+
+    #[test]
+    fn scratch_files_are_told_from_saved_ones() {
+        for scratch in [".app.rs.swp", ".!21378!app.rs", "app.rs~", "#app.rs#"] {
+            assert!(is_scratch_file(scratch), "{scratch}");
+        }
+        for saved in ["app.rs", "Cargo.toml", "lib.rs"] {
+            assert!(!is_scratch_file(saved), "{saved}");
+        }
     }
 
     #[test]

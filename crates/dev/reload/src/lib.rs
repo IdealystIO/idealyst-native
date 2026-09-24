@@ -552,9 +552,26 @@ pub struct BuildOptions {
 /// Run a single rebuild. Useful for callers that want one build
 /// with specific features but don't need the watch loop.
 pub fn build_once(dir: &Path, opts: &BuildOptions) -> Result<()> {
+    // Reported like any build, so the web row of a runtime-server session
+    // shows its one build rather than sitting at "starting".
+    let reporter = &opts.reporter;
+    reporter.emit(dev_events::DevEvent::BuildStarted {
+        target: TARGET.into(),
+        cause: dev_events::BuildCause::OneShot,
+    });
+    let started = std::time::Instant::now();
     // A one-shot build has no browser to spare a reload; whether the
     // passes ran is the dev loop's concern.
-    build_wasm(dir, opts).map(|_| ())
+    let built = build_wasm(dir, opts).map(|_| ());
+    reporter.emit(dev_events::DevEvent::BuildFinished {
+        target: TARGET.into(),
+        outcome: match &built {
+            Ok(()) => dev_events::BuildOutcome::Ready { gen: 1 },
+            Err(e) => dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+        },
+        ms: started.elapsed().as_millis() as u64,
+    });
+    built
 }
 
 /// Run an initial build, then spawn a background thread that
@@ -1503,7 +1520,7 @@ fn saved_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for p in paths {
         let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
-        if name.starts_with('.') || name.ends_with('~') || name.starts_with("#") {
+        if dev_events::is_scratch_file(name) {
             continue;
         }
         if !out.contains(p) {

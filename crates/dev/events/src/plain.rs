@@ -83,7 +83,8 @@ pub fn render(event: &DevEvent) -> Option<String> {
                 format!("[dev-reload {label}] change detected (+{folded} more)")
             }
             (label, BuildCause::Forced) => format!("[dev-reload {label}] rebuild requested"),
-            (_, BuildCause::Initial) => return None,
+            // Never had a line: the caller announces what it builds.
+            (_, BuildCause::Initial | BuildCause::OneShot) => return None,
         },
         DevEvent::StageStarted { .. }
         | DevEvent::StageFinished { .. }
@@ -166,8 +167,8 @@ fn describe(event: &DevEvent) -> Option<String> {
         },
         DevEvent::StageStarted { .. } => return None,
         DevEvent::StageFinished { target, stage, ms } => format!("[{target}] {stage} {ms} ms"),
-        DevEvent::BuildStarted { target, cause: BuildCause::Initial } => {
-            format!("[{target}] initial build")
+        DevEvent::BuildStarted { target, cause: BuildCause::Initial | BuildCause::OneShot } => {
+            format!("[{target}] build")
         }
         DevEvent::BuildFinished { target, outcome: BuildOutcome::Ready { gen }, ms } => {
             format!("[{target}] ready (gen {gen}) in {ms} ms")

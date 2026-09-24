@@ -241,6 +241,7 @@ fn status(t: &Target, now_ms: u64, frame: u64) -> (String, Tone) {
         State::Reloaded { ms } => (format!("✓ rebuilt · {} · reloaded", secs(*ms)), Tone::Ok),
         State::Unchanged { ms } => (format!("✓ rebuilt, nothing changed · {}", secs(*ms)), Tone::Ok),
         State::Failed { summary } => (format!("✗ build failed · {summary}"), Tone::Error),
+        State::Note { line } => (format!("● {line}"), Tone::Muted),
     }
 }
 

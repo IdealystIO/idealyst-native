@@ -69,6 +69,9 @@ pub enum State {
     Unchanged { ms: u64 },
     /// A build failed.
     Failed { summary: String },
+    /// A target with no typed events yet (a native launcher): its latest
+    /// `[dev <target>]` line.
+    Note { line: String },
 }
 
 impl State {
@@ -308,7 +311,10 @@ impl Model {
                 }
             }
             DevEvent::BuildStarted { target, cause } => {
-                let label = if matches!(cause, BuildCause::Initial) { "building" } else { "rebuilding" };
+                let label = match cause {
+                    BuildCause::Initial | BuildCause::OneShot => "building",
+                    BuildCause::Save { .. } | BuildCause::Forced => "rebuilding",
+                };
                 if matches!(cause, BuildCause::Forced) {
                     let at_ms = self.now_ms;
                     self.push_save(Save {
@@ -420,9 +426,22 @@ impl Model {
                 }
                 PageAck::Connected { .. } => {}
             },
+            // The native launchers speak in `[dev ios] …` lines, not typed
+            // events yet: their latest line is their row's status until
+            // something typed arrives.
+            DevEvent::Log { source, line } | DevEvent::Warning { source, message: line } => {
+                if let Some(name) = source.strip_prefix("dev ") {
+                    let quiet = self
+                        .targets
+                        .iter()
+                        .find(|t| t.name == name)
+                        .is_some_and(|t| matches!(t.state, State::Starting | State::Note { .. }));
+                    if quiet {
+                        self.set(name, State::Note { line: line.clone() });
+                    }
+                }
+            }
             DevEvent::Error { .. }
-            | DevEvent::Warning { .. }
-            | DevEvent::Log { .. }
             | DevEvent::Output { .. }
             | DevEvent::StageFinished { .. }
             | DevEvent::BuildTimed { .. } => {}
@@ -667,6 +686,23 @@ mod tests {
             vec![(10, DevEvent::BuildStarted { target: "server".into(), cause: BuildCause::Save { folded: 0 } })],
         );
         assert_eq!(m.targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["web", "server"]);
+    }
+
+    #[test]
+    fn a_native_target_shows_its_latest_launcher_line_until_it_has_typed_events() {
+        let mut m = Model::new(&["ios".to_string()]);
+        run(
+            &mut m,
+            vec![
+                (1, DevEvent::Log { source: "dev ios".into(), line: "building + launching simulator…".into() }),
+                (2, DevEvent::Log { source: "dev web".into(), line: "not a row".into() }),
+            ],
+        );
+        assert_eq!(m.targets[0].state, State::Note { line: "building + launching simulator…".into() });
+        assert_eq!(m.targets.len(), 1, "a launcher line for another target makes no row");
+        run(&mut m, vec![(3, DevEvent::BuildStarted { target: "ios".into(), cause: BuildCause::Initial })]);
+        run(&mut m, vec![(4, DevEvent::Log { source: "dev ios".into(), line: "later".into() })]);
+        assert!(matches!(m.targets[0].state, State::Building { .. }), "a typed state is not overwritten");
     }
 
     #[test]

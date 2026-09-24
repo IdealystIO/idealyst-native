@@ -119,9 +119,19 @@ pub fn spawn_change_loop(
                     let reporter = dev_events::global();
                     reporter.log("dev-server", format!("change detected ({} event(s))", ev.len()));
                     let paths: Vec<PathBuf> = ev.iter().map(|e| e.path.clone()).collect();
+                    let mut saved: Vec<String> = paths
+                        .iter()
+                        .filter(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| !dev_events::is_scratch_file(n))
+                        })
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    saved.dedup();
                     reporter.emit(dev_events::DevEvent::ChangeDetected {
                         target: crate::EVENTS_TARGET.into(),
-                        paths: paths.iter().map(|p| p.display().to_string()).collect(),
+                        paths: saved,
                         crates: Vec::new(),
                         folded: 0,
                     });
