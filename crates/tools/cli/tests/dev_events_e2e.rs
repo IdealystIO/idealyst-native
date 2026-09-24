@@ -202,8 +202,13 @@ targets = ["web"]
 
 /// Copy the lab at `src` to `dir`, renamed and patched at this checkout.
 fn copy_lab(src: &Path, dir: &Path, repo: &Path) -> Script {
+    // `-rlI`, not `-a`: every file is rewritten (`-I`) and gets a fresh
+    // modification time (no `-t`). Restoring the source's older mtime over
+    // a file the previous run edited makes cargo's freshness check call the
+    // previous build current, and the session serves the previous run's
+    // edits — which is exactly what the first version of this copy did.
     let status = Command::new("rsync")
-        .args(["-a", "--delete", "--exclude", "target", "--exclude", "pkg", "--exclude", ".idealyst"])
+        .args(["-rlI", "--delete", "--exclude", "target", "--exclude", "pkg", "--exclude", ".idealyst"])
         .arg(format!("{}/", src.display()))
         .arg(format!("{}/", dir.display()))
         .status()
