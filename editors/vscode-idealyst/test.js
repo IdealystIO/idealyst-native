@@ -627,6 +627,21 @@ esac
 `
 );
 fs.chmodSync(stub, 0o755);
+// --- cliPath: a committed laptop path must not break another machine ---
+{
+    const { cliPath } = __test;
+    mock.__cli = "idealyst";
+    check("cliPath: a PATH-style name is used as is", cliPath() === "idealyst");
+    mock.__cli = process.execPath;
+    check("cliPath: an existing path is used", cliPath() === process.execPath);
+    mock.__cli = "/Users/someone/Desktop/idealyst-native/target/debug/idealyst";
+    check(
+        "regression cliPath: a configured path missing here falls back to PATH",
+        cliPath() === "idealyst"
+    );
+    mock.__cli = "";
+    check("cliPath: an empty setting means PATH", cliPath() === "idealyst");
+}
 mock.__cli = stub;
 loadCatalog(stubDir);
 scanCrate(stubDir);

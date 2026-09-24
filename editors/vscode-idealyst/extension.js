@@ -54,8 +54,31 @@ function log(line) {
     if (output) output.appendLine(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
 }
 
+/** configured CLI paths already reported as missing, so the log says it once */
+const missingCli = new Set();
+
+/**
+ * The CLI to spawn: the `idealyst.cli` setting, or `idealyst` on PATH.
+ *
+ * A setting that is a PATH-style name is handed to the OS as is. A setting
+ * that is a path is used only if it exists HERE: a workspace setting is
+ * committed and travels with the repo, so a checkout path from the author's
+ * laptop reaches every other machine that opens the project — a dev
+ * container above all, where `idealyst` is on PATH and the laptop path is
+ * not. Spawning the missing path made every catalog load fail with a bare
+ * ENOENT and no hint that the setting was the cause. Falling back to PATH
+ * keeps the laptop's override where it works and the container working
+ * where it does not, and the Output channel says which one was used.
+ */
 function cliPath() {
-    return vscode.workspace.getConfiguration("idealyst").get("cli") || "idealyst";
+    const configured = vscode.workspace.getConfiguration("idealyst").get("cli") || "idealyst";
+    if (!configured.includes("/") && !configured.includes("\\")) return configured;
+    if (fs.existsSync(configured)) return configured;
+    if (!missingCli.has(configured)) {
+        missingCli.add(configured);
+        log(`idealyst.cli is set to ${configured}, which does not exist on this machine; using \`idealyst\` from PATH`);
+    }
+    return "idealyst";
 }
 
 /** Read a Cargo.toml; `null` when there is none. */
@@ -1296,6 +1319,7 @@ module.exports = {
     deactivate,
     // Pure helpers exposed for the node-side test harness (test.js).
     __test: {
+        cliPath,
         digest,
         projectFor,
         loadCatalog,

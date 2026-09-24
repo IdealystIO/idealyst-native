@@ -157,3 +157,8 @@ project's `.vscode/settings.json`:
 ```json
 { "idealyst.cli": "/path/to/idealyst-native/target/debug/idealyst" }
 ```
+
+That setting is committed with the project, so it reaches every machine
+that opens it. Where the path does not exist (a dev container, another
+laptop) the extension falls back to `idealyst` on PATH and says so once in
+the Output channel, so a laptop override never breaks the container.
