@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.6.4"
+version = "1.7.0"
 dependencies = [
  "css",
  "dev-client",
@@ -3362,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "dev-hot"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "memmap2 0.9.10",
  "object 0.39.1",
@@ -3440,7 +3440,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -5611,7 +5611,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.5.6"
+version = "1.6.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6150,7 +6150,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.6.2"
+version = "1.6.3"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6170,7 +6170,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.11.2"
+version = "1.12.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6268,7 +6268,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "backend-web",
  "console_error_panic_hook",
@@ -7354,7 +7354,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10103,7 +10103,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10120,7 +10120,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10143,7 +10143,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "runtime-world",
  "rustc-hash 2.1.2",
@@ -10151,7 +10151,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-server-shell-native"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "dev-client",
  "runtime-shared",
@@ -10190,7 +10190,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.12.1"
+version = "1.13.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -10205,7 +10205,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "rustc-hash 2.1.2",
 ]
@@ -11864,7 +11864,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "1.5.4"
+version = "1.6.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
@@ -13427,7 +13427,7 @@ dependencies = [
 
 [[package]]
 name = "wasm-split-macro"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "base16",
  "digest 0.10.7",
@@ -14625,7 +14625,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "dev-client",
  "dev-server",

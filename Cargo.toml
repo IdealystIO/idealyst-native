@@ -416,12 +416,12 @@ license = "MIT OR Apache-2.0"
 # The app-facing facade. An app depends on this, writes
 # `idealyst::entry!(<lib>)` in `src/main.rs`, and builds with plain
 # cargo — there is no CLI-generated web wrapper crate any more.
-idealyst = { path = "crates/idealyst", version = "1.5.3", registry = "idealyst" }
-runtime-core = { path = "crates/runtime/core", version = "1.5.3", registry = "idealyst" }
+idealyst = { path = "crates/idealyst", version = "1.6.0", registry = "idealyst" }
+runtime-core = { path = "crates/runtime/core", version = "1.6.0", registry = "idealyst" }
 runtime-shared = { path = "crates/runtime/shared", version = "1.10.2", registry = "idealyst" }
-runtime-world = { path = "crates/runtime/world", version = "1.5.2", registry = "idealyst" }
-runtime-scene = { path = "crates/runtime/scene", version = "1.5.3", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.12.1", registry = "idealyst" }
+runtime-world = { path = "crates/runtime/world", version = "1.6.0", registry = "idealyst" }
+runtime-scene = { path = "crates/runtime/scene", version = "1.6.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.13.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.0", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -443,18 +443,18 @@ premint-dump = { path = "crates/tools/premint-dump" }
 # see EVERY `stylesheet!` in the binary, including sheets on screens
 # the dump run never renders.
 linkme = "0.3"
-dev-hot = { path = "crates/dev/hot", version = "1.5.2", registry = "idealyst" }
-runtime-macros = { path = "crates/runtime/macros", version = "1.8.0", registry = "idealyst" }
+dev-hot = { path = "crates/dev/hot", version = "1.6.0", registry = "idealyst" }
+runtime-macros = { path = "crates/runtime/macros", version = "1.9.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.8.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.8.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.9.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
-wire = { path = "crates/dev/wire", version = "1.5.2", registry = "idealyst" }
-dev-client = { path = "crates/dev/client", version = "1.5.2", registry = "idealyst" }
-dev-server = { path = "crates/dev/server", version = "1.5.3", registry = "idealyst" }
+wire = { path = "crates/dev/wire", version = "1.6.0", registry = "idealyst" }
+dev-client = { path = "crates/dev/client", version = "1.6.0", registry = "idealyst" }
+dev-server = { path = "crates/dev/server", version = "1.6.0", registry = "idealyst" }
 mock-backend = { path = "crates/dev/mock-backend" }
-host-mock = { path = "crates/dev/host-mock", version = "1.5.6", registry = "idealyst" }
+host-mock = { path = "crates/dev/host-mock", version = "1.6.0", registry = "idealyst" }
 parity-goldens = { path = "crates/dev/parity-goldens" }
 ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
 headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.2", registry = "idealyst" }
@@ -505,7 +505,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.5.3", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.5.3", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "1.6.4", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "1.7.0", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.2", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.2", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.5.3", registry = "idealyst" }
@@ -532,13 +532,13 @@ host-wgpu-accesskit = { path = "crates/gpu-backend/host/wgpu-accesskit", version
 variant-phone = { path = "crates/gpu-backend/variant/phone" }
 variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
-runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", version = "1.5.2", registry = "idealyst" }
+runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", version = "1.6.0", registry = "idealyst" }
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
-idea-theme = { path = "crates/ui/idea-theme", version = "1.6.2", registry = "idealyst" }
+idea-theme = { path = "crates/ui/idea-theme", version = "1.6.3", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.2", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "1.11.2", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "1.12.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.3", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
@@ -565,7 +565,7 @@ canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.5.3", reg
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.2", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "1.5.2", registry = "idealyst" }
-table = { path = "crates/sdk/client/table", version = "1.5.4", registry = "idealyst" }
+table = { path = "crates/sdk/client/table", version = "1.6.0", registry = "idealyst" }
 virtualized = { path = "crates/sdk/client/virtualized", version = "1.5.2", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "1.5.3", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "1.5.2", registry = "idealyst" }
@@ -633,7 +633,7 @@ flate2 = "1"
 # `package =` so the `#[wasm_split]` macro's emitted `wasm_split::…`
 # paths resolve to our vendored copy.
 wasm-split = { path = "crates/tools/wasm-split/wasm-split", package = "wasm-splitter", version = "1.5.2", registry = "idealyst" }
-wasm-split-macro = { path = "crates/tools/wasm-split/wasm-split-macro", version = "1.5.2", registry = "idealyst" }
+wasm-split-macro = { path = "crates/tools/wasm-split/wasm-split-macro", version = "1.5.3", registry = "idealyst" }
 wasm-split-cli = { path = "crates/tools/wasm-split/wasm-split-cli" }
 wasm-used = { path = "crates/tools/wasm-split/wasm-used" }
 

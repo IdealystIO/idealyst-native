@@ -12,7 +12,7 @@
 # `Element`").
 [package]
 name = "idealyst"
-version = "1.5.3"
+version = "1.6.0"
 edition.workspace = true
 license.workspace = true
 description = "Build and run idealyst apps with plain `cargo build` — no generated wrapper crate"
@@ -95,9 +95,9 @@ hydrate = ["backend-web/hydrate"]
 idealyst-macros = { path = "../idealyst-macros", version = "1.5.2", registry = "idealyst" }
 # `async-driver` here is the other half: it forwards to the
 # vocabulary so `driver::spawn_async` / `render_loop` resolve.
-runtime-core = { path = "../runtime/core", features = ["async-driver"], version = "1.5.2", registry = "idealyst" }
-runtime-vocabulary = { path = "../runtime/vocabulary", version = "1.7.2", registry = "idealyst" }
-runtime-scene = { path = "../runtime/scene", version = "1.5.3", registry = "idealyst" }
+runtime-core = { path = "../runtime/core", features = ["async-driver"], version = "1.6.0", registry = "idealyst" }
+runtime-vocabulary = { path = "../runtime/vocabulary", version = "1.13.0", registry = "idealyst" }
+runtime-scene = { path = "../runtime/scene", version = "1.6.0", registry = "idealyst" }
 
 # --- Web --------------------------------------------------------------
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -106,7 +106,7 @@ runtime-scene = { path = "../runtime/scene", version = "1.5.3", registry = "idea
 # `install_render_loop()` / `install_async_executor()` exist at all.
 # Without it the app renders and then panics at the first `spawn_async`
 # — i.e. the first server-fn call or resource fetch.
-backend-web = { path = "../backend/web", features = ["async-driver"], version = "1.6.2", registry = "idealyst" }
+backend-web = { path = "../backend/web", features = ["async-driver"], version = "1.7.0", registry = "idealyst" }
 console_error_panic_hook = "0.1"
 # Backs `alloc::Small`, the opt-in small-bundle allocator. NOT optional
 # and NOT the default: the type is only instantiated by the
@@ -119,7 +119,7 @@ console_error_panic_hook = "0.1"
 lol_alloc = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Navigator", "console"] }
-dev-client = { path = "../dev/client", optional = true, version = "1.5.2", registry = "idealyst" }
+dev-client = { path = "../dev/client", optional = true, version = "1.6.0", registry = "idealyst" }
 
 # --- Native -----------------------------------------------------------
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
