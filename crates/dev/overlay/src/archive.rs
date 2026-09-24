@@ -210,16 +210,47 @@ impl DescriptorSet {
 ///
 /// `dir` is the directory holding `Cargo.toml` and `src/`.
 pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
+    Ok(scan_sources(&read_crate(dir)?))
+}
+
+/// A crate's `.rs` sources as read at one moment: the package name and
+/// every file under `src/`, package-relative. Reading is milliseconds;
+/// scanning ([`scan_sources`]) is the slow half (3.4 s for CrewForge's
+/// app crate), so a caller that needs an archive describing EXACTLY the
+/// moment a compile started reads first and scans alongside the compile.
+#[derive(Debug, Clone)]
+pub struct CrateSources {
+    pub package: String,
+    /// `(package-relative path, text)`, sorted by path. A file that could
+    /// not be read is left out, as the scan always did.
+    pub files: Vec<(String, String)>,
+}
+
+/// Read `dir`'s sources (see [`CrateSources`]).
+pub fn read_crate(dir: &Path) -> Result<CrateSources> {
     let package = package_name(dir)?;
     let src = dir.join("src");
-    let mut files = Vec::new();
-    collect_rs_files(&src, &mut files);
+    let mut paths = Vec::new();
+    collect_rs_files(&src, &mut paths);
     // Also scan `tests/` and `examples/`? No: only what the app's
     // binary is built from can carry tags, and a descriptor for a site
     // that is never compiled into the running program is noise a differ
     // would have to filter.
-    files.sort();
+    paths.sort();
+    let mut files = Vec::with_capacity(paths.len());
+    for file in &paths {
+        let Some(relative) = relative_to(dir, file) else { continue };
+        match std::fs::read_to_string(file) {
+            Ok(text) => files.push((relative, text)),
+            Err(e) => eprintln!("[overlay] skipping {}: {e}", file.display()),
+        }
+    }
+    Ok(CrateSources { package, files })
+}
 
+/// Scan sources already read into a [`DescriptorSet`].
+pub fn scan_sources(sources: &CrateSources) -> DescriptorSet {
+    let package = sources.package.clone();
     let mut set = DescriptorSet {
         overlay_version: OVERLAY_VERSION,
         split_version: SPLIT_VERSION,
@@ -228,23 +259,16 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
         sites: Vec::new(),
     };
 
-    for file in &files {
-        let Some(relative) = relative_to(dir, file) else { continue };
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("[overlay] skipping {}: {e}", file.display());
-                continue;
-            }
-        };
+    for (relative, text) in &sources.files {
+        let relative = relative.clone();
         let content = hex(&Sha256::digest(text.as_bytes()));
 
         let sites = match runtime_macros_parse::sites_in_file(&package, &relative, &text) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!(
-                    "[overlay] skipping {} (does not parse: {e}); other files still scanned",
-                    file.display()
+                    "[overlay] skipping {package}/{relative} (does not parse: {e}); other files \
+                     still scanned"
                 );
                 // Still hashed, with the skeleton standing in as the
                 // whole file: a file this scan could not read is a file
@@ -271,12 +295,12 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
         // change to it rebuilds. Same posture as the unparseable branch
         // above, for the same reason.
         let shape = hex(&Sha256::digest(
-            runtime_macros_parse::shape_of(&text)
+            runtime_macros_parse::shape_of(text)
                 .unwrap_or_else(|| text.to_string())
                 .as_bytes(),
         ));
-        let sheets = sheets_digest(&text);
-        let downstream = downstream_digests(&text);
+        let sheets = sheets_digest(text);
+        let downstream = downstream_digests(text);
         set.files.insert(
             relative.clone(),
             FileDigest { content, skeleton, shape, sheets, downstream },
@@ -317,7 +341,7 @@ pub fn scan_crate(dir: &Path) -> Result<DescriptorSet> {
         }
     }
 
-    Ok(set)
+    set
 }
 
 /// Scan `crate_dir` and write its descriptor set under
@@ -368,6 +392,13 @@ pub fn write_for(project_root: &Path, crate_dir: &Path) -> Result<PathBuf> {
 /// reading back the file it just wrote.
 pub fn write_into(dir: &Path, crate_dir: &Path) -> Result<DescriptorSet> {
     let set = scan_crate(crate_dir)?;
+    write_set(dir, &set)?;
+    Ok(set)
+}
+
+/// [`write_into`], from sources already read.
+pub fn write_scanned(dir: &Path, sources: &CrateSources) -> Result<DescriptorSet> {
+    let set = scan_sources(sources);
     write_set(dir, &set)?;
     Ok(set)
 }

@@ -528,8 +528,15 @@ fn cargo_metadata(manifest_path: &Path) -> Result<serde_json::Value> {
 /// read — exactly the single-crate behavior, where a save in any other
 /// crate rebuilds.
 fn load_workspace(dir: &Path) -> dev_overlay::Workspace {
+    let mut ws = unscanned_workspace(dir);
+    ws.rescan_all(dir);
+    ws
+}
+
+/// [`load_workspace`] without the scan: the crates and their graph only.
+fn unscanned_workspace(dir: &Path) -> dev_overlay::Workspace {
     let package = dir_package_name(dir);
-    let mut ws = match cargo_metadata(&dir.join("Cargo.toml")) {
+    match cargo_metadata(&dir.join("Cargo.toml")) {
         Ok(meta) => dev_overlay::Workspace::from_metadata(&meta, dir),
         Err(e) => {
             eprintln!(
@@ -539,9 +546,7 @@ fn load_workspace(dir: &Path) -> dev_overlay::Workspace {
             None
         }
     }
-    .unwrap_or_else(|| dev_overlay::Workspace::single(&package, dir, &package.replace('-', "_")));
-    ws.rescan_all(dir);
-    ws
+    .unwrap_or_else(|| dev_overlay::Workspace::single(&package, dir, &package.replace('-', "_")))
 }
 
 /// The pure core of [`watch_roots`]: given a `cargo metadata` document,
@@ -819,101 +824,49 @@ fn watch_loop(
     }
 
     while let Ok(events) = rx.recv() {
-        let changed_paths: Vec<PathBuf> = match &events {
-            Ok(evs) => evs.iter().map(|e| e.path.clone()).collect(),
-            Err(_) => Vec::new(),
-        };
-        drain(&rx);
-        if events.is_err() {
-            continue;
+        // Every batch's paths, not only the first's: a multi-file save
+        // arrives as several batches, and a file only a later batch named
+        // used to be left out of the decision (its crate's other edits
+        // then went out as an overlay patch alone, or not at all).
+        let mut changed_paths = event_paths(&events);
+        for more in drain(&rx) {
+            changed_paths.extend(event_paths(&more));
         }
         // Absorb the rest of the burst before starting the build —
         // otherwise a multi-file edit queues one full rebuild per file.
-        let folded = settle(&rx);
+        let settled = settle(&rx);
+        let folded = settled.len();
+        for more in &settled {
+            changed_paths.extend(event_paths(more));
+        }
+        if changed_paths.is_empty() && events.is_err() {
+            continue;
+        }
 
         // Can this save skip the compiler? Decided BEFORE anything
         // expensive starts, from the archives plus the new source. See
         // `overlay_decide` for why the answer is conservative.
-        {
-            let started = std::time::Instant::now();
-            let saved = read_saved(&ws, &changed_paths);
-            // A premint session baked its class names from every
-            // `stylesheet!` at start; a sheet edit there must rebuild even
-            // when the shape says body-only.
-            let premint = opts.premint || opts.premint_only;
-            match ws.decide(&saved, premint) {
-                dev_overlay::WorkspaceDecision::Patch(patches) => {
-                    let count = patches.len();
-                    for patch in &patches {
-                        match serde_json::to_string(&overlay_decide::wire_payload(patch)) {
-                            Ok(json) => {
-                                signal.push_patch(json);
-                            }
-                            Err(e) => eprintln!("[dev-reload] cannot encode patch: {e}"),
-                        }
-                    }
-                    ws.advance(&saved);
-                    eprintln!(
-                        "[dev] patched {count} site(s) in {} ms, no rebuild",
-                        started.elapsed().as_millis()
-                    );
-                    drain(&rx);
-                    continue;
-                }
-                dev_overlay::WorkspaceDecision::Unchanged if !saved.is_empty() => {
-                    eprintln!("[dev] no UI or code change in this save, no rebuild");
-                    drain(&rx);
-                    continue;
-                }
-                dev_overlay::WorkspaceDecision::Unchanged => {}
-                dev_overlay::WorkspaceDecision::HotPatch(plan) => {
-                    // A body edit: new CODE, which the overlay cannot
-                    // carry. Build a wasm patch and send it, so the page
-                    // swaps the function bodies and rebuilds its tree
-                    // without losing what is on screen.
-                    //
-                    // Any failure falls through to a rebuild, which is
-                    // always correct. A patch that half-applies would
-                    // leave the page running code the source no longer
-                    // describes, with nothing to say so.
-                    let crates = patch_crates(&ws, &plan);
-                    match base.patch(&crates) {
-                        Ok(patch) => match base.event_json(&patch) {
-                            Ok(json) => {
-                                signal.push_hot_patch(json);
-                                ws.note_patched(&plan);
-                                // A FULL rescan of every crate the patch
-                                // re-emitted, not `advance` over the saved
-                                // files: a patch re-emits every file of
-                                // each crate, so a file outside this save
-                                // can come back with new site keys too,
-                                // and the next save must diff against
-                                // what is running.
-                                ws.rescan(&dir, plan.replay.iter().map(String::as_str));
-                                eprintln!(
-                                    "[hotpatch] {} · {} function(s) redirected · {}",
-                                    plan.files.join(", "),
-                                    patch.jump_table.map.len(),
-                                    patch.timing_line(),
-                                );
-                                drain(&rx);
-                                continue;
-                            }
-                            Err(e) => eprintln!(
-                                "[hotpatch] cannot encode the patch event ({e:#}); rebuilding"
-                            ),
-                        },
-                        Err(why) => eprintln!(
-                            "[hotpatch] {} changed inside function bodies, but no patch: \
-                             {why}; rebuilding",
-                            plan.files.join(", "),
-                        ),
-                    }
-                }
-                dev_overlay::WorkspaceDecision::Rebuild(why) => {
-                    eprintln!("[dev] rebuilding: {why}");
-                }
-            }
+        let saved = read_saved(&ws, &changed_paths);
+        // A premint session baked its class names from every
+        // `stylesheet!` at start; a sheet edit there must rebuild even
+        // when the shape says body-only.
+        let premint = opts.premint || opts.premint_only;
+        let mut build_patch = |crates: &[build_web::hotpatch_build::PatchCrate]| {
+            let patch = base.patch(crates)?;
+            let json = base
+                .event_json(&patch)
+                .map_err(|e| format!("cannot encode the patch event ({e:#})"))?;
+            Ok(PatchEvent {
+                json,
+                redirected: patch.jump_table.map.len(),
+                timing: patch.timing_line(),
+            })
+        };
+        // No `drain` after a handled save: anything that arrived while it
+        // was handled is a save of its own, and the next iteration decides
+        // it against the archive installed here.
+        if let Handled::Done = handle_save(&mut ws, &dir, &saved, premint, &signal, &mut build_patch) {
+            continue;
         }
 
         if folded > 0 {
@@ -921,7 +874,8 @@ fn watch_loop(
         } else {
             eprintln!("[dev-reload] change detected, rebuilding…");
         }
-        match build_wasm(&dir, &opts).map(|a| {
+        let built = rebuild_with_snapshot(&mut ws, &dir, || build_wasm(&dir, &opts));
+        match built.map(|a| {
             let changed = a.wasm_changed;
             base.rebuilt(a);
             changed
@@ -978,19 +932,172 @@ fn watch_loop(
             );
         }
 
-        // A rebuild regenerates every descriptor set from source, which
-        // is also what drops every staged patch: the new binary already
-        // has the edits compiled in, so re-sending them would be
-        // applying the same change twice. Re-read from `cargo metadata`,
-        // since the save may have moved the workspace itself; that also
-        // forgets every crate an earlier patch carried.
-        ws = load_workspace(&dir);
+        // No `drain` here either: cargo writes under `target/` and
+        // wasm-bindgen under `pkg/`, neither watched, so whatever queued
+        // during the build is a save — decided next, against the archive
+        // `rebuild_with_snapshot` installed from the sources the build
+        // started from.
+    }
+}
 
-        // Coalesce anything queued during the build — wasm-pack
-        // writes to `pkg/` (not watched) and cargo touches
-        // `target/` (not watched), but defensively draining keeps
-        // editor save-bursts from triggering N consecutive builds.
-        drain(&rx);
+/// What the loop does next with a save [`handle_save`] looked at.
+enum Handled {
+    /// Patched, or nothing to do.
+    Done,
+    /// Rebuild; the reason is already logged.
+    Rebuild,
+}
+
+/// A built hot patch, as the loop pushes and logs it.
+struct PatchEvent {
+    json: String,
+    redirected: usize,
+    timing: String,
+}
+
+/// Decide a save and apply it if it can be patched: an overlay patch, or
+/// a hot patch built by `build_patch`. Anything else is `Rebuild`.
+///
+/// After a hot patch the archives of the crates the save EDITED are
+/// replaced with a scan of their sources as read just before the patch
+/// started (a carried crate's sources did not move, and its archive
+/// already says so). Read before, scanned alongside the compile: a scan
+/// of CrewForge's app crate is 3.4 s, and one taken after the patch
+/// described any save made meanwhile as already applied, so that save
+/// was decided "unchanged" and never reached the page.
+fn handle_save(
+    ws: &mut dev_overlay::Workspace,
+    dir: &Path,
+    saved: &[dev_overlay::SavedFile],
+    premint: bool,
+    signal: &ReloadSignal,
+    build_patch: &mut dyn FnMut(
+        &[build_web::hotpatch_build::PatchCrate],
+    ) -> std::result::Result<PatchEvent, String>,
+) -> Handled {
+    let started = std::time::Instant::now();
+    match ws.decide(saved, premint) {
+        dev_overlay::WorkspaceDecision::Patch(patches) => {
+            let count = patches.len();
+            for patch in &patches {
+                match serde_json::to_string(&overlay_decide::wire_payload(patch)) {
+                    Ok(json) => {
+                        signal.push_patch(json);
+                    }
+                    Err(e) => eprintln!("[dev-reload] cannot encode patch: {e}"),
+                }
+            }
+            ws.advance(saved);
+            eprintln!(
+                "[dev] patched {count} site(s) in {} ms, no rebuild",
+                started.elapsed().as_millis()
+            );
+            Handled::Done
+        }
+        dev_overlay::WorkspaceDecision::Unchanged if !saved.is_empty() => {
+            eprintln!("[dev] no UI or code change in this save, no rebuild");
+            Handled::Done
+        }
+        dev_overlay::WorkspaceDecision::Unchanged => Handled::Rebuild,
+        dev_overlay::WorkspaceDecision::HotPatch(plan) => {
+            // A body edit: new CODE, which the overlay cannot carry.
+            // Build a wasm patch and send it, so the page swaps the
+            // function bodies and rebuilds its tree without losing what
+            // is on screen.
+            //
+            // Any failure falls through to a rebuild, which is always
+            // correct. A patch that half-applies would leave the page
+            // running code the source no longer describes, with nothing
+            // to say so.
+            let crates = patch_crates(ws, &plan);
+            let read = ws.read_sources(plan.edited.iter().map(String::as_str));
+            let tip = ws.tip.clone();
+            let (built, scanned) = std::thread::scope(|scope| {
+                let scan = scope.spawn(|| dev_overlay::Workspace::scan_read(dir, &tip, read));
+                let built = build_patch(&crates);
+                (built, scan.join().expect("the archive scan panicked"))
+            });
+            match built {
+                Ok(event) => {
+                    signal.push_hot_patch(event.json);
+                    ws.install(scanned);
+                    ws.note_patched(&plan);
+                    eprintln!(
+                        "[hotpatch] {} · {} function(s) redirected · {}",
+                        plan.files.join(", "),
+                        event.redirected,
+                        event.timing,
+                    );
+                    Handled::Done
+                }
+                Err(why) => {
+                    eprintln!(
+                        "[hotpatch] {} changed inside function bodies, but no patch: {why}; \
+                         rebuilding",
+                        plan.files.join(", "),
+                    );
+                    Handled::Rebuild
+                }
+            }
+        }
+        dev_overlay::WorkspaceDecision::Rebuild(why) => {
+            eprintln!("[dev] rebuilding: {why}");
+            Handled::Rebuild
+        }
+    }
+}
+
+/// Run a rebuild and, if it succeeds, install the workspace it compiled:
+/// re-read from `cargo metadata` (the save may have moved the workspace
+/// itself), which also forgets every crate an earlier patch carried, and
+/// scanned from the sources as read just before the build started — for
+/// the reason [`handle_save`] gives.
+///
+/// A FAILED rebuild leaves the archives alone. The page still runs the
+/// old build (and any patches on it), and an archive advanced to the
+/// failed source would decide the next save against code that never ran:
+/// a shape edit that failed to compile, then a body-only fix to it, was
+/// a "body-only" hot patch over a base that never had the new shape.
+fn rebuild_with_snapshot<T>(
+    ws: &mut dev_overlay::Workspace,
+    dir: &Path,
+    build: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let packages: Vec<String> = ws.crates.keys().cloned().collect();
+    let read: BTreeMap<String, Option<dev_overlay::archive::CrateSources>> =
+        ws.read_sources(packages.iter().map(String::as_str)).into_iter().collect();
+    let (built, fresh) = std::thread::scope(|scope| {
+        let scan = scope.spawn(move || {
+            let mut fresh = unscanned_workspace(dir);
+            // A crate the save just added has not been read yet; it is
+            // read now.
+            let missing: Vec<String> =
+                fresh.crates.keys().filter(|p| !read.contains_key(*p)).cloned().collect();
+            let mut all: Vec<_> = read.into_iter().filter(|(p, _)| fresh.crates.contains_key(p)).collect();
+            all.extend(fresh.read_sources(missing.iter().map(String::as_str)));
+            let scanned = dev_overlay::Workspace::scan_read(dir, &fresh.tip.clone(), all);
+            fresh.install(scanned);
+            fresh
+        });
+        let built = build();
+        (built, scan.join().expect("the archive scan panicked"))
+    });
+    if built.is_ok() {
+        *ws = fresh;
+    }
+    built
+}
+
+/// The paths one watcher batch names.
+fn event_paths(
+    events: &std::result::Result<
+        Vec<notify_debouncer_mini::DebouncedEvent>,
+        notify_debouncer_mini::notify::Error,
+    >,
+) -> Vec<PathBuf> {
+    match events {
+        Ok(evs) => evs.iter().map(|e| e.path.clone()).collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -1066,23 +1173,28 @@ fn describe(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
-fn drain<T>(rx: &mpsc::Receiver<T>) {
-    while rx.try_recv().is_ok() {}
+fn drain<T>(rx: &mpsc::Receiver<T>) -> Vec<T> {
+    let mut out = Vec::new();
+    while let Ok(item) = rx.try_recv() {
+        out.push(item);
+    }
+    out
 }
 
 /// Wait for the filesystem to go quiet, absorbing every event batch that
 /// arrives meanwhile, and report how many extra batches were folded in.
 ///
 /// Returns once either no batch has arrived for [`QUIET_WINDOW_MS`] or
-/// [`MAX_COALESCE_MS`] has elapsed since the first one. See
+/// [`MAX_COALESCE_MS`] has elapsed since the first one. Returns the
+/// batches themselves: their paths are part of the save. See
 /// [`QUIET_WINDOW_MS`] for why a fixed debounce isn't enough.
 ///
 /// Split out from the watcher loops so the policy is unit-testable
 /// against a plain channel — the loops themselves are infinite and own a
 /// real filesystem watcher.
-fn settle<T>(rx: &mpsc::Receiver<T>) -> usize {
+fn settle<T>(rx: &mpsc::Receiver<T>) -> Vec<T> {
     let deadline = std::time::Instant::now() + Duration::from_millis(MAX_COALESCE_MS);
-    let mut folded = 0usize;
+    let mut folded = Vec::new();
     loop {
         let now = std::time::Instant::now();
         if now >= deadline {
@@ -1092,7 +1204,7 @@ fn settle<T>(rx: &mpsc::Receiver<T>) -> usize {
         // than the time left on it.
         let wait = Duration::from_millis(QUIET_WINDOW_MS).min(deadline - now);
         match rx.recv_timeout(wait) {
-            Ok(_) => folded += 1,
+            Ok(item) => folded.push(item),
             // Quiet for a full window, or the watcher hung up — either
             // way there is nothing more to fold in.
             Err(_) => return folded,
@@ -1167,7 +1279,9 @@ where
                 if events.is_err() {
                     continue;
                 }
-                let folded = settle(&rx);
+                // This watcher re-runs one whole-directory sync, so which
+                // files the folded batches named does not matter.
+                let folded = settle(&rx).len();
                 if folded > 0 {
                     eprintln!("[dev-reload {label}] change detected (+{folded} more)");
                 } else {
@@ -1381,14 +1495,21 @@ mod tests {
     /// root, `lab-shared` in a subdirectory, as `cargo metadata` would
     /// describe it.
     fn two_crate_workspace(root: &Path) -> dev_overlay::Workspace {
-        for (dir, name) in [(root.to_path_buf(), "app"), (root.join("lab-shared"), "lab-shared")] {
-            std::fs::create_dir_all(dir.join("src")).unwrap();
-            std::fs::write(
-                dir.join("Cargo.toml"),
-                format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n"),
-            )
-            .unwrap();
-        }
+        // Real manifests, so `cargo metadata` over them (a rebuild's
+        // workspace reload) sees the same two crates.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("lab-shared/src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nlab-shared = { path = \"lab-shared\" }\n\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("lab-shared/Cargo.toml"),
+            "[package]\nname = \"lab-shared\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
         std::fs::write(root.join("src/lib.rs"), "pub fn app() -> u32 { lab_shared::v() }\n").unwrap();
         std::fs::write(root.join("lab-shared/src/lib.rs"), "pub fn v() -> u32 { 1 }\n").unwrap();
         let m = |p: &Path| p.join("Cargo.toml").display().to_string();
@@ -1445,6 +1566,71 @@ mod tests {
         );
     }
 
+    fn patched_ok() -> std::result::Result<PatchEvent, String> {
+        Ok(PatchEvent { json: "{}".into(), redirected: 1, timing: String::new() })
+    }
+
+    /// Regression: after a hot patch the loop rescanned the crates from
+    /// disk and then drained the channel. A save made while the patch
+    /// compiled was both dropped AND already in the new archive, so even
+    /// re-deciding it said "unchanged" — on CrewForge one of four quick
+    /// saves in ui-shared never reached the page, with no message. The
+    /// archive now describes the sources as the patch started.
+    #[test]
+    fn regression_a_save_made_while_a_patch_compiles_is_still_a_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let file = root.join("lab-shared/src/lib.rs");
+        std::fs::write(&file, "pub fn v() -> u32 { 2 }\n").unwrap();
+        let saved = read_saved(&ws, &[file.clone()]);
+        let signal = ReloadSignal::new();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| {
+            // The author saves again while rustc runs.
+            std::fs::write(&file, "pub fn v() -> u32 { 3 }\n").unwrap();
+            patched_ok()
+        };
+        assert!(matches!(handle_save(&mut ws, &root, &saved, false, &signal, &mut build), Handled::Done));
+        assert_eq!(signal.patches_since(0).len(), 1);
+
+        let next = read_saved(&ws, &[file.clone()]);
+        assert!(
+            matches!(ws.decide(&next, false), dev_overlay::WorkspaceDecision::HotPatch(_)),
+            "the save made during the patch must be decided as a change of its own"
+        );
+    }
+
+    /// Regression: a FAILED rebuild still rescanned, so the archives
+    /// described source that never ran. A library shape edit that did not
+    /// compile, then a body-only fix to it, was planned as a hot patch
+    /// over a base that never had the new shape. The archives stay put on
+    /// failure, and advance on success.
+    #[test]
+    fn regression_a_failed_rebuild_does_not_advance_the_archives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let file = root.join("lab-shared/src/lib.rs");
+        // A shape edit that (in this story) does not compile.
+        std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 1 }\n").unwrap();
+        let built: Result<()> = rebuild_with_snapshot(&mut ws, &root, || anyhow::bail!("E0308"));
+        assert!(built.is_err());
+        // The fix is body-only relative to the FAILED source...
+        std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 2 }\n").unwrap();
+        let saved = read_saved(&ws, &[file.clone()]);
+        assert!(
+            matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::Rebuild(_)),
+            "...but the running base never had that shape: it must rebuild"
+        );
+
+        // A rebuild that succeeds installs what it compiled.
+        rebuild_with_snapshot(&mut ws, &root, || Ok(())).unwrap();
+        assert!(ws.crates.contains_key("lab-shared"), "the reload kept the workspace");
+        std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 3 }\n").unwrap();
+        let saved = read_saved(&ws, &[file]);
+        assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::HotPatch(_)));
+    }
+
     /// Regression guard for the save-storm that kept the dev bundle
     /// perpetually mid-build: a multi-file edit arrives as a SEQUENCE of
     /// debounced batches, and the old loop started a full rebuild for
@@ -1463,6 +1649,8 @@ mod tests {
         });
         let folded = settle(&rx);
         writer.join().unwrap();
+        assert_eq!(folded, vec![0, 1, 2, 3, 4], "and hands back what each batch carried");
+        let folded = folded.len();
         assert_eq!(
             folded, 5,
             "every batch in the burst must be absorbed into the pending build",
@@ -1476,7 +1664,7 @@ mod tests {
     fn settle_returns_promptly_when_nothing_follows() {
         let (_tx, rx) = mpsc::channel::<u8>();
         let start = Instant::now();
-        let folded = settle(&rx);
+        let folded = settle(&rx).len();
         let elapsed = start.elapsed();
         assert_eq!(folded, 0);
         assert!(

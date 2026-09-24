@@ -512,17 +512,68 @@ impl Workspace {
     /// [`crate::archive::crate_overlay_dir`]). A crate whose scan fails is
     /// left with no archive, so its next save rebuilds.
     pub fn rescan<'a>(&mut self, project_root: &Path, packages: impl IntoIterator<Item = &'a str>) {
-        let packages: Vec<String> = packages.into_iter().map(str::to_string).collect();
-        for package in packages {
-            let dir = crate::archive::crate_overlay_dir(project_root, &self.tip, &package);
-            let Some(krate) = self.crates.get_mut(&package) else { continue };
-            krate.archive = match crate::archive::write_into(&dir, &krate.dir) {
-                Ok(set) => Some(set),
-                Err(e) => {
-                    eprintln!("[dev-reload] no descriptor set for {package}: {e}");
-                    None
-                }
-            };
+        let read = self.read_sources(packages);
+        let scanned = Self::scan_read(project_root, &self.tip, read);
+        self.install(scanned);
+    }
+
+    /// Read these crates' sources NOW — milliseconds — for an archive
+    /// that has to describe exactly this moment. Scanning is the slow
+    /// half (3.4 s for CrewForge's app crate); [`Self::scan_read`] does
+    /// it, on any thread, while the compile it describes runs.
+    ///
+    /// Why the moment matters: a save that lands while a patch or rebuild
+    /// is compiling is decided AFTER it, against the archive installed
+    /// then. An archive scanned at the end would already contain that
+    /// save, decide it "unchanged", and the screen would never get it.
+    pub fn read_sources<'a>(
+        &self,
+        packages: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<(String, Option<crate::archive::CrateSources>)> {
+        packages
+            .into_iter()
+            .filter_map(|package| {
+                let krate = self.crates.get(package)?;
+                let read = match crate::archive::read_crate(&krate.dir) {
+                    Ok(sources) => Some(sources),
+                    Err(e) => {
+                        eprintln!("[dev-reload] cannot read {package}'s sources: {e}");
+                        None
+                    }
+                };
+                Some((package.to_string(), read))
+            })
+            .collect()
+    }
+
+    /// Scan what [`Self::read_sources`] read, writing each descriptor
+    /// set under `project_root` (see
+    /// [`crate::archive::crate_overlay_dir`]). `None` for a crate that
+    /// could not be read or written: its next save rebuilds.
+    pub fn scan_read(
+        project_root: &Path,
+        tip: &str,
+        read: Vec<(String, Option<crate::archive::CrateSources>)>,
+    ) -> Vec<(String, Option<DescriptorSet>)> {
+        read.into_iter()
+            .map(|(package, sources)| {
+                let dir = crate::archive::crate_overlay_dir(project_root, tip, &package);
+                let set = sources.and_then(|sources| {
+                    crate::archive::write_scanned(&dir, &sources)
+                        .map_err(|e| eprintln!("[dev-reload] no descriptor set for {package}: {e}"))
+                        .ok()
+                });
+                (package, set)
+            })
+            .collect()
+    }
+
+    /// Install archives [`Self::scan_read`] produced.
+    pub fn install(&mut self, scanned: Vec<(String, Option<DescriptorSet>)>) {
+        for (package, set) in scanned {
+            if let Some(krate) = self.crates.get_mut(&package) {
+                krate.archive = set;
+            }
         }
     }
 
@@ -965,6 +1016,32 @@ pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
             plan.source_keys.get("lab-shared"),
             f.ws.source_key("lab-shared").as_ref(),
             "after the rescan the archive agrees with what the patch compiled"
+        );
+    }
+
+    /// Regression: after a patch the dev loop rescanned from disk at the
+    /// END, so a save that landed while the patch compiled was already
+    /// in the archive, was decided "unchanged", and never reached the
+    /// page (seen on CrewForge: one of four consecutive saves vanished).
+    /// Sources read at the START, scanned later, describe the start.
+    #[test]
+    fn regression_an_archive_read_before_a_compile_does_not_absorb_a_save_during_it() {
+        let mut f = fixture();
+        let v2 = SHARED.replace("v1 {}", "v2 {}");
+        std::fs::write(f.root.join("lab-shared/src/lib.rs"), &v2).unwrap();
+        let read = f.ws.read_sources(["lab-shared"]);
+        // The save that lands mid-compile.
+        let v3 = SHARED.replace("v1 {}", "v3 {}");
+        std::fs::write(f.root.join("lab-shared/src/lib.rs"), &v3).unwrap();
+        let root = f.root.clone();
+        let scanned = Workspace::scan_read(&root, &f.ws.tip, read);
+        f.ws.install(scanned);
+        assert!(
+            matches!(
+                f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", v3), false),
+                WorkspaceDecision::HotPatch(_)
+            ),
+            "the save made during the compile must still be decided as a change"
         );
     }
 
