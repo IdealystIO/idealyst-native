@@ -7,7 +7,7 @@ the sorting is worth more than any of the individual mechanisms.
 | Tier | What changed | What happens | Order of magnitude |
 |---|---|---|---|
 | **Overlay patch** | Only literals inside `ui!` bodies | The running app (the sidecar, or the page in `--local`) edits its own mounted tree. No compiler at all. | ~1–10 ms |
-| **Hot patch** | Only function BODIES | The user crate is re-emitted, a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
+| **Hot patch** | Only function BODIES | The edited crate is re-emitted (with its dependents, for a library crate of the app's workspace), a patch (a dylib natively, a wasm side module on the web) is linked, a jump table rebinds the patched functions, and the mounted tree is re-run in place. No respawn, no reconnect, no page reload, and app state survives. | ~0.5–2 s on a small app, ~9–10 s on a large one ([measured](#what-a-save-costs-on-the-web)) |
 | **Rebuild** | Anything that moves a file's SHAPE | Wire mode: `cargo build` + SIGKILL + respawn; clients keep their sockets and re-snapshot. `--local`: the bundle is rebuilt and the page reloads, so page state resets. | seconds to minutes |
 
 The last boundary is a safety boundary, not a speed tier. See
@@ -210,7 +210,11 @@ A decision table, by example:
 | Anything in a `stylesheet!`'s `transitions { … }` (a duration, an easing, an entry added or removed) | Hot patch |
 | A `stylesheet!` signature: its name or vocabulary, an axis, an arm name, a `#[default]`, an `override`, a `state`/`breakpoint` key, a `container` threshold, a `compound` condition | Rebuild |
 | Any `stylesheet!` edit in a premint session (`dev --premint`) | Rebuild |
-| Edit a file outside the app crate | Rebuild |
+| A function body in a library crate of the app's cargo workspace (a path dependency that is a member) | Hot patch — the library AND every workspace crate depending on it are re-emitted ([Workspace crates](#workspace-crates)) |
+| A literal in a `ui!` body of such a library crate | Overlay patch |
+| The body of a generic, `#[inline]`, `const`, `async` or `impl Trait` fn, or a trait's default method, in such a library crate | Rebuild — its dependents compile that body themselves |
+| Any shape edit in such a library crate (a new prop on a shared component) | Rebuild |
+| Edit a file of a local package outside the app's workspace (a `[patch]` checkout of the framework), or a `Cargo.toml` | Rebuild |
 
 A few rows the table above does not make obvious, each a limitation of
 the overlay tier rather than of hot reload as a whole:
@@ -490,10 +494,13 @@ so the ordinary session has it.
 2. A save that `overlay_decide` calls `HotPatch` — a change inside function
    bodies — goes to `build_web::hotpatch_build::WasmPatchBuilder` instead of
    a rebuild.
-3. The builder replays the user crate's captured invocation with
-   `--emit=obj -Crelocation-model=pic`, links those objects alone with
-   `wasm-ld --pie --experimental-pic`, resolves the imports against the
-   running base, and pairs the two tables.
+3. The builder replays the captured invocation of each crate the patch
+   re-emits — the edited crate, its workspace dependents, and every crate
+   patched since the last rebuild ([Workspace crates](#workspace-crates))
+   — with `--emit=obj -Crelocation-model=pic`, concurrently, links those
+   objects alone into one module with `wasm-ld --pie --experimental-pic`,
+   resolves the imports against the running base, and pairs the two
+   tables.
 4. The patch module is written into the served bundle's
    `pkg/hotpatch/patch-N.wasm`, and the dev loop pushes an SSE `hot-patch`
    event carrying `{url, table}`.
@@ -522,6 +529,28 @@ page that records when the new content appears. "Builder" is the
 | CrewForge (large) | body edit, first of session | 34 s | 29 s (rustc 26 s, cold replay cache) | kept, no reload |
 | CrewForge | body edit, later | 8.6 – 9.8 s | 7.9 – 9.1 s (rustc 5.9 – 6.8 s, resolve 1.4 – 1.6 s, link 0.4 – 0.6 s, jump table 0.09 s, strip + write 0.02 s) | kept, no reload |
 | CrewForge | rebuild with the tier armed, after patches | 38.6 s (cargo 15 s) | – | reset |
+
+Workspace crates, measured 2026-09-24 on the same machine under heavier
+load (a VM using ~1.4 cores, load average 8–12), so compare rows within
+this table rather than with the one above:
+
+| App | Save | Save → on screen | Builder | Page state |
+|---|---|---|---|---|
+| Lab + `lab-shared` | library body edit, first of session (library and app replayed side by side) | 1.24 s | 0.70 s (lab-shared 0.55 s, app 0.57 s) | kept, no reload |
+| Lab + `lab-shared` | library body edit, later (app reused) | 0.93 s | 0.38 s | kept |
+| Lab + `lab-shared` | library `stylesheet!` value edit (the app's `view(style = SharedPanel())` too) | 1.08 s | 0.56 s | kept |
+| Lab + `lab-shared` | app edit after library patches (library carried, reused) | 0.95 s | 0.44 s | kept |
+| Lab + `lab-shared` | literal in a library `ui!` body | 0.49 s | overlay, 2 ms | kept |
+| Lab + `lab-shared` | library shape edit (new prop) | 7.7 s (rebuild + reload) | – | reset |
+| CrewForge | `crewforge-ui-shared` body edit, first of session | 13.1 – 14.4 s | 12.3 – 13.6 s (ui-shared 2.1 – 3.6 s, app-main 8.8 – 9.5 s, concurrently) | kept, no reload |
+| CrewForge | `crewforge-ui-shared` body edit, later (app-main reused) | 4.7 – 11.0 s | 3.9 – 10.0 s (ui-shared 1.3 – 5.6 s, resolve 2.1 – 3.1 s) | kept |
+| CrewForge | `crewforge-main` body edit after ui-shared patches (ui-shared reused) | 15.9 – 20.9 s | 14.9 – 19.6 s (app-main 10.1 – 12.9 s, resolve 3.7 – 5.7 s) | kept |
+| CrewForge | `crewforge-ui-shared` shape edit (new prop on `TeamAvatar`) | 59.4 s (rebuild + reload; cargo 29 s) | – | reset |
+| CrewForge | rebuild after an app-main shape edit | ~40 s (cargo 13–15 s); only `crewforge-main` compiles | – | reset |
+
+A ui-shared save is the cheaper of the two on CrewForge once the app
+crate has been replayed once: the library is a third the size, and the
+app's objects are reused.
 | CrewForge | rebuild, tier not armed (reference) | ~23 s | – | reset |
 
 On the page itself a patch applies in about 0.35 s even on CrewForge
@@ -583,6 +612,111 @@ over a 223 MB module (320 MB linked), about 22 s on CrewForge.
 3.7 GB (one walrus parse of the module). The default memory cap is
 4096 MB, and a session exceeded it twice. Run a large app with
 `IDEALYST_MEMORY_LIMIT_MB=8192` while the tier is armed.
+
+### Workspace crates
+
+Most apps outgrow one crate: shared UI moves into a library crate of the
+same cargo workspace (CrewForge's `crewforge-ui-shared` is 37k lines,
+57 files with `ui!`). A body edit there is patched like one in the app
+crate. The dev loop keeps one descriptor set per crate of the app's
+closure of workspace members (`dev_overlay::Workspace`), routes a saved
+file to the crate that owns it, and decides it against that crate's
+archive. A library's sets live in
+`target/idealyst/<app>/overlay/crates/<package>/`, inside the app's
+staging tree. The session prints which crates it can patch:
+
+```text
+[dev-reload] workspace crates patchable with crewforge-main: crewforge-api, crewforge-core, crewforge-ui-shared
+```
+
+**A library patch re-emits the library's dependents too.** The jump
+table only redirects calls that go through a table slot — a
+`#[component]` body, reached through `__hot::call`. The app calls a
+library's plain functions, its stylesheets' `<name>_style()`, its
+builder methods DIRECTLY, and a direct `call` in the base's code cannot
+be redirected. A patch of the library alone would change what the
+library's own components run and leave every call from the app on the
+old body. So a save in a library re-emits it and every workspace crate
+depending on it, up to the app, and links all their objects into ONE
+patch: the app's calls then resolve inside the patch, to the new bodies.
+(`build-web`'s `wasm_patch_roundtrip` shows the difference on a real
+two-crate build: the library alone pairs its own component slot and
+none of the app's.)
+
+One module rather than one per crate, because a patch REPLACES the
+page's jump table: a second module holding only the app would send the
+library's functions back to the base. For the same reason every crate
+patched since the last rebuild is re-emitted by each later patch, even
+when the save touched only the app — otherwise an app-only save would
+silently undo the earlier library edit.
+
+That is not a full recompile of the dependents' graph, for three
+reasons:
+
+- **The replays are concurrent.** Each reads its dependencies' METADATA
+  from the base build, never another replay's output (a replay emits
+  objects only), so the library and the app compile side by side and a
+  save costs the slower one, not the sum.
+- **Unchanged dependents are reused.** A crate carried only for
+  another's edit, whose sources have not moved since its last replay
+  against this base, compiles to the same objects; the builder keys each
+  crate's objects by a digest of its sources and skips the replay. So the
+  first library save of a session replays the app once; later ones do
+  not.
+- **Incremental.** A dependent that is replayed has an unchanged source
+  and unchanged upstream metadata, so its codegen units come out of the
+  cache — it pays the replay's floor (macro expansion, metadata
+  encoding), not a compile.
+
+**What a library patch cannot carry.** Because dependents are replayed
+against the base's metadata, a body that rustc compiles INTO the
+dependent from that metadata stays old there: a generic function (its
+instantiations are compiled wherever the concrete types are named), an
+`#[inline]`/`#[inline(always)]` function, a `const fn`, an `async fn`, a
+function with `impl Trait` in its signature, a trait's default method.
+The archive records a digest of each such function per file
+(`runtime_macros_parse::downstream_bodies`), and a library save that
+moves one rebuilds, naming it:
+
+```text
+[dev] rebuilding: crewforge-ui-shared/src/grid.rs changed the body of `fn sort_rows`, which the crates depending on it compile themselves (generic, `#[inline]`, `const`, `async` or `impl Trait`)
+```
+
+The check reads source, so it sees `#[inline]` and generics as written,
+not as a macro might emit them. That is sound for the macros that matter
+here: `#[component]` splits a body into an `#[inline(never)]`
+`__<Name>_hot_impl`, and a generic component is caught by its own
+signature; `stylesheet!`'s rule values land in a plain `<name>_style()`
+fn. Two things make the rest of the library safe to replay alone
+against old metadata:
+
+- the decision already proved the crate's SHAPE unchanged, so its
+  metadata (types, signatures, layouts) is still true;
+- workspace members build at the dev profile's own `opt-level` — 0
+  unless the app's manifest says otherwise; `--dev-opt optimized` raises
+  only `package."*"` (registry and other non-member dependencies) to 3 —
+  and with incremental compilation on, rustc infers no cross-crate
+  inlining for unmarked functions, so a dependent holds no inlined copy
+  of a plain function's body.
+
+A local package that is NOT a workspace member — a `[patch]` pointing
+the framework at a checkout — is watched but rebuilds: cargo builds it
+with the `package."*"` profile, at `opt-level = 3` in the default
+`--dev-opt optimized`, where dependents do inline its bodies.
+
+**Statics.** As in the app crate, a patch defines its own copy of every
+`static` and `thread_local!` of every crate it re-emits. A library's
+world-lifetime caches (CrewForge's `TEAM_LOGO`) start empty in patched
+code and fill again on first use; state that the app installed into a
+library static at boot, once, is not there for the patched code. Keep
+such installs inside a component, or expect the patched code to see the
+static's initial value.
+
+A body edit in a library costs more than one in the app on the FIRST
+save of a session (two crates replay); see the costs in
+[What a save costs on the web](#what-a-save-costs-on-the-web). Wire mode
+(the native sidecar) still patches the app crate only; a library save
+there respawns.
 
 ### One session per project
 
@@ -734,13 +868,15 @@ is under that parent), the ordinal within that frame, and the value's
   building the same component would compete for one ordinal. Handing one
   region another's state is a worse failure than resetting it, and it
   would be invisible.
-- anything in a `static` or a `thread_local!` in the user crate: the
-  patch dylib gets its own copy.
+- anything in a `static` or a `thread_local!` in a crate the patch
+  re-emits (the app crate, and on the web any workspace library crate a
+  save touched): the patch gets its own copy.
 
 ## Why a shape change cannot be patched
 
 A patch dylib is spliced into a process where every other crate is still
-the old build. Only the user crate is re-emitted. If a save changed a
+the old build. Only the edited crates (and, for a workspace library, the
+crates depending on it) are re-emitted. If a save changed a
 props struct's fields, the patched code computes one layout while the
 framework's own generic instantiations over that type — compiled into an
 rlib that is never re-emitted — keep the other. The symptom is memory
@@ -749,6 +885,13 @@ corruption, not a stale render.
 So a hot patch is attempted ONLY on an explicit body-only decision. A
 missing or unreadable descriptor set means "cannot tell", and cannot-tell
 respawns.
+
+The archives the decision reads always describe what is RUNNING. After a
+patch or a rebuild the dev loop installs archives scanned from the
+sources as they were read just before that compile started (the scan
+itself runs alongside the compile), so a save made while it compiled is
+decided afterwards as the change it is; a failed rebuild leaves them
+alone, so the next save is still decided against the build on screen.
 
 ## Escape hatches and diagnostics
 
