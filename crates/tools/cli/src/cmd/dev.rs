@@ -509,7 +509,7 @@ pub struct Args {
     /// Ignored (with one line saying why) when stderr is not a TTY —
     /// CI and piped runs keep plain lines — or with `--terminal`, which
     /// needs the terminal itself. Everything the panel hides is in the
-    /// session log, `target/idealyst/<app>/dev.log`.
+    /// session log, `target/idealyst/<package>/dev.log`.
     #[arg(long)]
     pub interactive: bool,
 
@@ -1078,15 +1078,14 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// The session log: `target/idealyst/<package>/dev.log` under the
-/// framework source's staging root — beside the build's other per-app
-/// state (`pkg/`, the overlay archives), and never inside `src/`, so the
-/// watcher cannot see it change.
+/// The session log: `<project>/target/idealyst/<package>/dev.log`, under
+/// the project's own `target/` like the dev bundle staging
+/// ([`dev_web_bundle_dir`]) — never inside a watched source root, so
+/// writing it cannot look like a save. Derived from the path alone: the
+/// log opens before anything else runs, and resolving the framework
+/// source here would print its line a second time.
 fn session_log_path(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
-    let root = crate::framework_source::resolve(dir)
-        .map(|source| source.wrapper_root(dir))
-        .unwrap_or_else(|_| dir.join("target").join("idealyst"));
-    root.join(&manifest.name).join("dev.log")
+    dir.join("target").join("idealyst").join(&manifest.name).join("dev.log")
 }
 
 /// Whether this session can hot-patch a body edit, and why not.

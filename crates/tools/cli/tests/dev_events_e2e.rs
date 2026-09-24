@@ -523,6 +523,23 @@ impl Page {
         self.eval("window.__e2e_states || []").as_array().cloned().unwrap_or_default()
     }
 
+    /// Wait until the page has been sent every one of `kinds` (as
+    /// `kinds()` spells them) after sequence number `after`, in order.
+    fn wait_dev_states(&mut self, after: u64, want: &[&str], budget: Duration) -> Vec<String> {
+        let deadline = Instant::now() + budget;
+        loop {
+            let got = kinds(&self.dev_states(), after, u64::MAX);
+            if in_order(&got, want) {
+                return got;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the page was not sent {want:?} after {after}; it got {got:?}"
+            );
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
     /// What the status overlay shows: the badge, whether the error panel
     /// is up, and the panel's text.
     fn overlay(&mut self) -> Value {
@@ -645,6 +662,8 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
         in_order(&k, &["change_detected", "decided:overlay", "overlay_pushed", "page_ack:overlay"]),
         "{k:?}"
     );
+    // The page's status overlay was fed the same facts.
+    page.wait_dev_states(before, &["change_detected", "decided:overlay", "overlay_pushed"], Duration::from_secs(10));
 
     // ── 2. body → hot patch ─────────────────────────────────────────
     let before = session.last_seq();
@@ -658,6 +677,7 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
         in_order(&k, &["change_detected", "decided:hot_patch", "patch_built", "page_ack:hot_patch"]),
         "{k:?}"
     );
+    page.wait_dev_states(before, &["change_detected", "decided:hot_patch", "patch_built"], Duration::from_secs(10));
     assert!(
         page.wait(&format!("document.body.innerText.includes({:?})", script.body_shows), Duration::from_secs(10)),
         "{:?}",
@@ -756,6 +776,14 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
     session.wait_event(reloading["seq"].as_u64().unwrap(), Duration::from_secs(60), "the page reconnecting", |e| {
         e["type"] == "page_ack" && e["ack"]["kind"] == "connected" && e["ack"]["gen"] == reloaded_gen
     });
+    // The reloaded page never saw the rebuild happen — but a page that
+    // connects is sent the session's current state first, so it knows.
+    page.record_dev_state();
+    page.wait_dev_states(
+        before,
+        &["decided:rebuild", "build_started", "build_finished:reloaded"],
+        Duration::from_secs(10),
+    );
 
     // Everything the page was sent before the reload arrived in the
     // file's order: one stream, two consumers.

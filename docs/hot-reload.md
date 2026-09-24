@@ -934,12 +934,10 @@ page, the session log and any tool are consumers of that one stream.
   events that never had a line print nothing, so scripts and the MCP
   dev-runner see no change. Cargo's output is captured rather than
   inherited, then printed verbatim (in colour when stderr is a terminal).
-- **The session log**, `target/idealyst/<package>/dev.log` (under the
-  framework source's staging root: the framework checkout's `target/` for a
-  path-patched app, the project's own otherwise), gets every event in every
-  mode, prefixed with its session time — including the ones a terminal
-  never showed: page acks, stage boundaries, change detection. Nothing is
-  lost when a UI hides it.
+- **The session log**, `<project>/target/idealyst/<package>/dev.log`, gets
+  every event in every mode, prefixed with its session time — including
+  the ones a terminal never showed: page acks, stage boundaries, change
+  detection. Nothing is lost when a UI hides it.
 - **The page** shows the build state over the running app: a small badge
   in the corner (what the loop is doing, with cargo's progress and the
   current stage, or what it last did: the tier and the time), and, when a
