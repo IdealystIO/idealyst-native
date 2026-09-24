@@ -471,6 +471,18 @@ pub struct Args {
     #[arg(long, value_name = "PORT")]
     pub port: Option<u16>,
 
+    /// Full-stack sessions: a fixed port for the page's dev stream
+    /// (livereload, patches, the build badge), bound on every interface
+    /// inside a container. Overrides `stream_port` in `dev.toml`.
+    ///
+    /// Only needed when the project's server does not proxy
+    /// `/__idealyst/*` (one built on the framework's `server::router()`
+    /// does, and the page uses its own origin). Without either the stream
+    /// is on a random loopback port, which a devcontainer does not
+    /// forward; `idealyst configure devcontainer` forwards this one.
+    #[arg(long, value_name = "PORT")]
+    pub stream_port: Option<u16>,
+
     /// HTTP port for the `--ssr` SSR-with-hydration server.
     #[arg(long, default_value_t = 8081)]
     pub ssr_port: u16,
@@ -624,21 +636,36 @@ pub fn run(args: Args) -> Result<()> {
         // Said so the user does not think the panel silently failed.
         crate::dlog!("dev", "--interactive ignored ({why})");
     }
+    // A full-stack project's server: its process output goes to its own
+    // log (and is tagged apart from the dev loop's lines everywhere), and
+    // when the web target runs it, it is a row of the session from the
+    // first frame — see `launch_web_with_backend`.
+    let backend_declared =
+        manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some();
+    let server_log = server_log_path(&dir, &manifest);
+    if backend_declared {
+        match crate::dev_log::ServerLog::create(&server_log) {
+            Ok(sink) => session.reporter.add_sink(Arc::new(sink)),
+            Err(e) => crate::dlog!("dev", "cannot write {}: {e}", server_log.display()),
+        }
+    }
+    let session_server = (backend_declared && active_targets.contains(&Target::Web)).then(|| {
+        dev_events::SessionServer::named(server_display_name(&dir, &manifest))
+            .with_log_file(server_log.display().to_string())
+    });
     session.reporter.emit(dev_events::DevEvent::SessionStarted {
         app: manifest.app.name.clone(),
         targets: active_targets.iter().map(|t| t.as_str().to_string()).collect(),
         mode: if args.local { dev_events::Mode::Local } else { dev_events::Mode::RuntimeServer },
         hot_tier: hot_tier(&args, &active_targets),
         log_file: Some(log_path.display().to_string()),
-        server: None,
+        server: session_server,
     });
     // After the session line: a late subscriber's snapshot starts at it.
     crate::dev_log::serve_events(&dir);
 
 
     // Full-stack projects declare a server (`server_bin` / `server_manifest`).
-    let backend_declared =
-        manifest.app.server_bin.is_some() || manifest.app.server_manifest.is_some();
     // NOTE: declaring a server used to SUPPRESS the runtime-server host
     // ("it's a few hundred crates"). It no longer does. Wire mode is how
     // a save becomes a hot patch instead of a full wasm rebuild, and an
@@ -845,7 +872,15 @@ pub fn run(args: Args) -> Result<()> {
     let mut backend_pid: Option<u32> = None;
     let backend_port = dev_server_port(&args, &manifest.app);
     if backend_declared && !active_targets.contains(&Target::Web) {
-        match spawn_backend(&dir, &manifest, None, &server_target_dir(&dir, args.shared_target), backend_port) {
+        match spawn_backend(
+            &dir,
+            &manifest,
+            None,
+            &server_target_dir(&dir, args.shared_target),
+            backend_port,
+            None,
+            &server_log,
+        ) {
             Ok(child) => {
                 let pid = child.id();
                 crate::dlog!(
@@ -1005,7 +1040,10 @@ pub fn run(args: Args) -> Result<()> {
         }
 
         // Clean up spawned subprocesses. Mirrors the terminal-target
-        // path's drain-and-kill loop below.
+        // path's drain-and-kill loop below. The full-stack server is not
+        // in `children` (its launcher restarts it); it is registered by
+        // pid instead.
+        crate::memory_limit::kill_watched_pids();
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -1087,6 +1125,30 @@ pub fn run(args: Args) -> Result<()> {
 /// source here would print its line a second time.
 fn session_log_path(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
     dir.join("target").join("idealyst").join(&manifest.name).join("dev.log")
+}
+
+/// Where a full-stack project's server process writes (every
+/// `output{source: server}` line), beside the session log. Truncated when
+/// the session starts.
+fn server_log_path(dir: &Path, manifest: &build_ios::Manifest) -> PathBuf {
+    dir.join("target").join("idealyst").join(&manifest.name).join("server.log")
+}
+
+/// What the session calls the project's server: the binary the app
+/// names (`server_bin`), else the package `server_manifest` points at,
+/// else plain `server`.
+fn server_display_name(dir: &Path, manifest: &build_ios::Manifest) -> String {
+    if let Some(bin) = &manifest.app.server_bin {
+        return bin.clone();
+    }
+    manifest
+        .app
+        .server_manifest
+        .as_ref()
+        .and_then(|rel| std::fs::read_to_string(dir.join(rel)).ok())
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("package")?.get("name")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| dev_events::SERVER_TARGET.to_string())
 }
 
 /// Whether this session can hot-patch a body edit, and why not.
@@ -2319,16 +2381,23 @@ fn dev_web_bundle_dir(project_dir: &Path) -> PathBuf {
 /// A full-stack project's own server hands out `index.html` and
 /// `dev-http` never runs as a file server for it, so there is no
 /// serve-time injection to hook — without this the page has no push
-/// channel at all and gets neither livereload nor overlay patches. The
-/// stream runs on its own CLI-owned port beside the app server, so the
-/// URL must be ABSOLUTE and the stream must answer with CORS (see
-/// `dev_http::serve_signal_only`).
+/// channel at all and gets neither livereload nor overlay patches.
+///
+/// The page tries the stream on its OWN origin first: a server built on
+/// the framework's router proxies `/__idealyst/*` to the session
+/// (`server::dev_stream`), and the page's origin is the one address that
+/// is reachable wherever the page is — a devcontainer forwards the app's
+/// port and nothing else, and a page pointed only at the session's
+/// loopback port retried it forever with no overlay and no patches. It
+/// falls back to the stream's own port (ABSOLUTE, answering with CORS —
+/// see `dev_http::serve_signal_only`) when the relative URL answers with
+/// something that is not the stream.
 fn full_stack_reload_script(sse_port: Option<u16>) -> Option<String> {
     let port = sse_port?;
-    Some(dev_http::reload_script_tag(&format!(
-        "http://127.0.0.1:{port}{}",
-        dev_http::RELOAD_SSE_URL
-    )))
+    Some(dev_http::reload_script_tag_with_fallback(
+        dev_http::RELOAD_SSE_URL,
+        Some(&format!("http://127.0.0.1:{port}{}", dev_http::RELOAD_SSE_URL)),
+    ))
 }
 
 fn full_stack_bundle_options(
@@ -2419,6 +2488,27 @@ fn full_stack_bundle_options(
 ///
 /// The SERVER watcher runs either way. A `#[server]` fn's signature is
 /// a contract between two binaries, and no jump table spans them.
+///
+/// The server is a target of the session like the bundle: its first
+/// build runs beside the bundle's (they compile into different target
+/// dirs, so different cargo locks — see [`builds_contend`]) and reports
+/// as `target: server` events, its row exists from the session's first
+/// event (`session_started.server`), and it is announced with
+/// `server_ready{full_stack}` once its port accepts connections. It used
+/// to be built by `cargo run` after the bundle, with its output straight
+/// on the terminal and nothing in the event stream: a session compiling
+/// a server for minutes showed no sign one existed.
+///
+/// The page is served by that server, so a reload must never race its
+/// restart: a server build holds the page's reloads
+/// ([`dev_reload::ReloadSignal::hold_reloads`]) until the restarted server
+/// answers. A save both sides depend on reloads the page once, after
+/// both are ready.
+///
+/// The page reaches the dev stream same-origin when the server proxies
+/// it (`server::router()` does, told where by `IDEALYST_DEV_STREAM`), else
+/// on the stream's own port — `stream_port` / `--stream-port`, or a
+/// random loopback port with a warning. See [`report_stream_route`].
 fn launch_web_with_backend(
     dir: &Path,
     args: &Args,
@@ -2441,53 +2531,25 @@ fn launch_web_with_backend(
     // `dev_web_bundle_dir`.
     let dist_web = dev_web_bundle_dir(dir);
     let server_target = server_target_dir(dir, args.shared_target);
+    let server_log = server_log_path(dir, manifest);
     // The relay `run()` already started and exported (`--no-robot`
     // leaves it unset). Read once: the port is fixed for the session,
     // and every rebuild restages the `index.html` that advertises it.
     let relay_url = std::env::var("IDEALYST_ROBOT_RELAY_URL").ok();
 
-    // Phase 1: initial bundle build + spawn the watcher. `start_with`
-    // runs the build before returning, so by the time we move on the
-    // bundle is populated and the watcher thread is live.
     let signal = dev_reload::ReloadSignal::new();
     crate::dev_log::attach_signal(&signal);
 
-    // The reload/overlay stream, on its own port beside the app server.
-    // Bound BEFORE the build so the staged `index.html` can advertise a
-    // port that is already listening; a page that loaded first would
-    // reconnect on its own, but starting in the right order means the
-    // first save after a cold start lands too.
-    let sse_port = if wire {
-        // See this fn's doc comment: the sidecar's socket is the push
-        // channel in wire mode.
-        None
-    } else {
-        match std::net::TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => match listener.local_addr() {
-            Ok(addr) => {
-                drop(listener);
-                let port = addr.port();
-                let signal_for_sse = signal.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) =
-                        dev_http::serve_signal_only("127.0.0.1", port, signal_for_sse)
-                    {
-                        crate::dlog!("dev web", "reload/overlay stream stopped: {e}");
-                    }
-                });
-                Some(port)
-            }
-            Err(_) => None,
-        },
-        // No port, no push channel — the app still builds and serves.
-        // Livereload and overlay patches are an enhancement to the loop,
-        // not a precondition for it.
-        Err(e) => {
-            crate::dlog!("dev web", "no reload/overlay stream: {e}");
-            None
-        }
-        }
-    };
+    // The page's stream (reload, overlay and hot patches, the build
+    // badge), on its own port beside the app server. Bound BEFORE the
+    // build so the staged `index.html` can advertise a port that is
+    // already listening. Not in wire mode: the sidecar's socket is the
+    // push channel there.
+    let stream = if wire { None } else { start_page_stream(dir, args, signal.clone()) };
+    let sse_port = stream.as_ref().map(|s| s.port);
+    // The server proxies the stream same-origin when it is built on the
+    // framework's router (`server::dev_stream`) and is told where it is.
+    let dev_stream_env = sse_port.map(|p| format!("http://127.0.0.1:{p}"));
 
     let bundle_opts = full_stack_bundle_options(
         args,
@@ -2497,6 +2559,70 @@ fn launch_web_with_backend(
         sse_port,
         runtime_server_port,
     )?;
+
+    // The server's build, typed like the bundle's (`target: server`), and
+    // its watcher. A build that relinked the binary holds the page's
+    // reloads until the restarted server answers: the page is served by
+    // it, and a reload onto the old one — killed a moment later — would
+    // race the restart.
+    let shared = ServerBuildShared {
+        reload: signal.clone(),
+        restart_hold: Arc::new(Mutex::new(None)),
+        down: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    };
+    let server_signal = dev_reload::ReloadSignal::new();
+    let reporter = dev_events::global();
+    // `None` when the server is not built here (`--no-build`, or a server
+    // that cannot be resolved well enough to watch): `cargo run` then
+    // builds it on start, as it always did, and a crash ends the session
+    // because nothing could restart it.
+    let setup = if args.no_build {
+        None
+    } else {
+        match server_watch_setup(dir, manifest, &server_target, shared.clone()) {
+            Ok(setup) => Some(setup),
+            // A server we can't resolve well enough to watch is not a
+            // reason to refuse the dev session — it still runs, it just
+            // needs a manual restart.
+            Err(e) => {
+                crate::dlog!(
+                    "dev web", "server sources will NOT be watched ({e:#}); \
+                     restart the dev session by hand after a server change",
+                );
+                None
+            }
+        }
+    };
+    let watched = setup.is_some();
+
+    // The two builds take different cargo locks — the bundle compiles in
+    // its own keyed target dir, the server in `idealyst-dev-server` or
+    // (`--shared-target`) the workspace's — so they run at once. Only a
+    // layout where they would share one target dir builds them in turn:
+    // two cargos on one dir serialize on its lock anyway, and the second
+    // would sit "building" at 0/N the whole time the first ran.
+    let web_target = dev_reload::web_target_dir(dir, &bundle_opts);
+    let concurrent = !builds_contend(&web_target, &server_target);
+    let mut server_build = None;
+    let mut pending_setup = setup;
+    let start_server_build = |setup: Option<(Vec<PathBuf>, ServerBuild)>| {
+        setup.map(|(roots, build)| {
+            spawn_server_build(roots, build, server_signal.clone(), reporter.clone())
+        })
+    };
+    if watched {
+        crate::dlog!(
+            "dev web",
+            "full-stack: building the server {} (web target {}, server target {})",
+            if concurrent { "alongside the web bundle" } else { "after the web bundle: they share a target dir" },
+            web_target.display(),
+            server_target.display(),
+        );
+    }
+    if concurrent {
+        server_build = start_server_build(pending_setup.take());
+    }
+
     if !args.no_build {
         if wire {
             // Built once, not watched. The thin client does not change
@@ -2518,65 +2644,19 @@ fn launch_web_with_backend(
             );
             let handle = dev_reload::start_with(dir, signal.clone(), bundle_opts)
                 .context("web bundle initial build + watcher start failed")?;
-            // Hand the watcher thread to the runtime — it lives as long
-            // as the dev session. Dropping the JoinHandle here would NOT
-            // stop the thread (it's a detached child), but `mem::forget`
-            // makes the intent explicit and silences the unused warning.
-            std::mem::forget(handle);
+            // The watcher thread lives as long as the session; dropping
+            // the handle detaches it.
+            drop(handle);
         }
     }
-
-    // Phase 1b: the server gets its own watcher — BOTH shapes, not just
-    // standalone. For standalone the sources are a different dependency
-    // closure (typically a separate workspace, overlapping the app only
-    // on the `#[server]` fn crate), so the bundle watcher never sees a
-    // server-bin edit at all. For in-crate they are the same closure,
-    // but routing the server through its own watcher is still what buys
-    // the fix: the callback BUILDS, and only a build that succeeded and
-    // actually relinked the binary bumps the signal.
-    //
-    // Building before restarting is the whole point. The in-crate path
-    // used to `kill()` the child and then `cargo run`, so the port was
-    // down for the entire compile — minutes, on a cold framework — and a
-    // broken edit left it down indefinitely. Now a failed compile leaves
-    // the signal un-bumped and the running server up: a bad save costs a
-    // log line, not a dead port.
-    //
-    // Even for a shared server crate a restaged bundle is only half the
-    // change: the client decode is strict, so a bundle that knows a new
-    // DTO field talking to a server that doesn't fails outright rather
-    // than degrading. Both halves have to move together.
-    let server_signal = dev_reload::ReloadSignal::new();
-    if !args.no_build {
-        match server_watch_setup(dir, manifest, &server_target) {
-            Ok((roots, build)) => {
-                crate::dlog!(
-                    "dev web",
-                    "full-stack: server watcher over {} root(s)",
-                    roots.len(),
-                );
-                let handle =
-                    dev_reload::start_watch(
-                        roots,
-                        server_signal.clone(),
-                        "server",
-                        dev_events::global(),
-                        build,
-                    )?;
-                // Detached for the session's lifetime, same as the
-                // bundle watcher above.
-                std::mem::forget(handle);
-            }
-            // A server we can't resolve well enough to watch is not a
-            // reason to refuse the dev session — it still runs, it just
-            // needs a manual restart, which is where every project was
-            // before this watcher existed.
-            Err(e) => crate::dlog!(
-                "dev web", "server sources will NOT be watched ({e:#}); \
-                 restart the dev session by hand after a server change",
-            ),
-        }
+    if !concurrent {
+        server_build = start_server_build(pending_setup.take());
     }
+    // `true` when the first build succeeded (or there was none to run).
+    let built = match server_build {
+        Some(handle) => handle.join().unwrap_or(false),
+        None => true,
+    };
 
     // The server serves the UI same-origin, so its port is the only URL
     // the user needs. Open the browser once it's accepting connections.
@@ -2595,31 +2675,40 @@ fn launch_web_with_backend(
         spawn_headless_client("127.0.0.1", port, dir, Arc::clone(&children));
     }
 
-    // Phase 2: spawn the server. Captured so we can kill + respawn on
-    // each rebuild.
-    let mut child = spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port)?;
-    // This server is not in the session's shared `children` vec — it is
-    // killed and respawned below on every rebuild, so the handle stays
-    // here. Register the pid so tripping the memory cap takes it (and
-    // the server underneath `cargo run`) down rather than orphaning it.
-    crate::memory_limit::watch_pid(child.id());
-    crate::dlog!(
-        "dev web",
-        "full-stack: server running (pid {}) on port {port}",
-        child.id(),
-    );
-    crate::dev_log::emit(dev_events::DevEvent::ServerReady {
-        target: "web".into(),
-        kind: dev_events::ServerKind::FullStack,
-        url: format!("http://127.0.0.1:{port}"),
-    });
+    let launch = ServerLaunch {
+        dir,
+        manifest,
+        dist_web: &dist_web,
+        target_dir: &server_target,
+        port,
+        dev_stream: dev_stream_env.as_deref(),
+        log: &server_log,
+    };
+    let mut child: Option<Child> = None;
+    if built {
+        child = launch.start(&shared)?;
+        if child.is_some() {
+            if let Some(stream) = &stream {
+                report_stream_route(port, stream);
+            }
+        }
+    } else {
+        crate::dlog!(
+            "dev web",
+            "full-stack: the server's first build failed, so it is not running — \
+             fix it and save: the next good build starts it",
+        );
+    }
+    let mut route_reported = child.is_some();
+
     let mut last_gen = signal.current();
     let mut last_server_gen = server_signal.current();
 
-    // Phase 3: wait on the watcher's generation signal. dev_reload bumps
-    // the counter (and notifies the condvar) after each successful build;
-    // we block here until that happens or until the keepalive interval
-    // elapses, at which point we re-check whether the server child died.
+    // Wait on the watchers' generation signals. dev_reload bumps the
+    // bundle's after each successful build (published once no server
+    // build holds it), the server watcher bumps its own when the binary
+    // relinked; we block until one moves or the keepalive elapses, then
+    // re-check whether the server died.
     //
     // 500ms keepalive == upper bound on how long it takes us to notice a
     // server crash. Bumps wake us immediately.
@@ -2643,43 +2732,357 @@ fn launch_web_with_backend(
 
         if action.restart_server() {
             // The watcher already BUILT this successfully and only bumps
-            // when the binary actually relinked, so the downtime here is
-            // a kill plus a rebind — not a compile.
+            // when the binary actually relinked (or no server is running),
+            // so the downtime here is a kill plus a rebind — not a compile.
             crate::dlog!("dev web", "server rebuilt → restarting on port {port}");
-            // The tree, not the handle: `child` is `cargo run`, and the
-            // server is ITS child. Killing only cargo leaves the server
-            // holding the port this restart is about to rebind, and
-            // re-parents it to init — an orphan indistinguishable from
-            // the ones the memory cap used to leave.
-            crate::memory_limit::unwatch_pid(child.id());
-            crate::memory_limit::kill_tree(child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-            child = match spawn_backend(dir, manifest, Some(dist_web.as_path()), &server_target, port) {
-                Ok(c) => c,
-                Err(e) => {
-                    crate::dlog!("dev web", "server respawn failed: {e:#}");
-                    // Try again on the next gen bump rather than
-                    // tearing down the whole dev session.
-                    continue;
+            if let Some(old) = child.take() {
+                stop_server(old);
+            }
+            child = launch.start(&shared)?;
+            if !route_reported && child.is_some() {
+                if let Some(stream) = &stream {
+                    report_stream_route(port, stream);
                 }
-            };
-            crate::memory_limit::watch_pid(child.id());
+                route_reported = true;
+            }
             continue;
         }
 
-        // Did the server exit on its own (panic, port-in-use, ...)?
-        // Surface the exit code and stop the dev session.
-        if let Some(status) = child.try_wait().ok().flatten() {
-            anyhow::bail!(
-                "server exited with {} — fix the issue and re-run `idealyst dev --web`",
-                status
-                    .code()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".into())
+        // Did the server exit on its own (a panic, the port in use, …)?
+        let exited = match child.as_mut() {
+            Some(c) => c.try_wait().ok().flatten().map(|status| (c.id(), status)),
+            None => None,
+        };
+        if let Some((pid, status)) = exited {
+            crate::memory_limit::unwatch_pid(pid);
+            child = None;
+            let status = status.code().map(|c| c.to_string()).unwrap_or_else(|| "a signal".into());
+            if !watched {
+                // Nothing here can rebuild it: end the session, as a
+                // crash always did before the server had a watcher.
+                anyhow::bail!(
+                    "server exited with {status} — fix the issue and re-run `idealyst dev --web` \
+                     (its output is in {})",
+                    server_log.display()
+                );
+            }
+            // Kept alive: the session can rebuild and restart it, and the
+            // row (and the page's badge) say what happened.
+            shared.down.store(true, std::sync::atomic::Ordering::SeqCst);
+            reporter.error(
+                dev_events::SERVER_TARGET,
+                format!(
+                    "exited with {status} — its output is in {}; save a server source to rebuild and restart it",
+                    server_log.display()
+                ),
             );
         }
     }
+}
+
+/// The page's dev stream, as bound for this session.
+struct PageStream {
+    port: u16,
+    /// `stream_port` / `--stream-port` asked for this port.
+    declared: bool,
+}
+
+/// Bind the page's dev stream: the declared port (`--stream-port`, else
+/// `stream_port` in `dev.toml`) on every interface inside a container —
+/// where it is reached through a forwarded port — or loopback outside
+/// one; with none declared, a random loopback port. `None` when nothing
+/// can be bound: the app still builds and serves, livereload and patches
+/// are an enhancement to the loop, not a precondition for it.
+fn start_page_stream(
+    dir: &Path,
+    args: &Args,
+    signal: Arc<dev_reload::ReloadSignal>,
+) -> Option<PageStream> {
+    let declared = args
+        .stream_port
+        .or_else(|| crate::dev_config::DevConfig::load(dir).ok().and_then(|c| c.stream_port));
+    let host = if declared.is_some() && in_container() { "0.0.0.0" } else { "127.0.0.1" };
+    let bound = match std::net::TcpListener::bind((host, declared.unwrap_or(0))) {
+        Ok(l) => l.local_addr().ok().map(|a| (a.port(), declared.is_some())),
+        Err(e) => {
+            if let Some(p) = declared {
+                dev_events::global().warn(
+                    "dev web",
+                    format!("cannot bind the page's dev stream on {host}:{p} ({e}); using a random loopback port"),
+                );
+            }
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .ok()
+                .and_then(|l| l.local_addr().ok())
+                .map(|a| (a.port(), false))
+        }
+    };
+    let Some((port, declared)) = bound else {
+        crate::dlog!("dev web", "no reload/overlay stream: no port could be bound");
+        return None;
+    };
+    let host = if declared { host } else { "127.0.0.1" };
+    std::thread::spawn(move || {
+        if let Err(e) = dev_http::serve_signal_only(host, port, signal) {
+            crate::dlog!("dev web", "reload/overlay stream stopped: {e}");
+        }
+    });
+    Some(PageStream { port, declared })
+}
+
+/// Whether this process runs inside a container (a devcontainer, a
+/// Codespace, docker or podman): the markers each runtime leaves.
+fn in_container() -> bool {
+    Path::new("/.dockerenv").exists()
+        || Path::new("/run/.containerenv").exists()
+        || ["REMOTE_CONTAINERS", "CODESPACES", "container"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some())
+}
+
+/// Whether the bundle's build and the server's would share a cargo target
+/// dir — and so its lock, which serializes them whatever we do.
+fn builds_contend(web_target: &Path, server_target: &Path) -> bool {
+    let norm = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    norm(web_target) == norm(server_target)
+}
+
+/// Ask the app server whether it proxies the dev stream
+/// (`server::dev_stream`), and say which way the page reaches it: a
+/// `stream_route` event, plus a warning when the page depends on a port
+/// a container may not forward.
+fn report_stream_route(app_port: u16, stream: &PageStream) {
+    let reporter = dev_events::global();
+    if server_proxies_stream(app_port) {
+        reporter.emit(dev_events::DevEvent::StreamRoute {
+            target: "web".into(),
+            route: dev_events::StreamRoute::SameOrigin,
+            url: format!("http://127.0.0.1:{app_port}{}", dev_http::RELOAD_SSE_URL),
+        });
+        return;
+    }
+    reporter.emit(dev_events::DevEvent::StreamRoute {
+        target: "web".into(),
+        route: dev_events::StreamRoute::Port,
+        url: format!("http://127.0.0.1:{}{}", stream.port, dev_http::RELOAD_SSE_URL),
+    });
+    let message = if stream.declared {
+        format!("forward port {} to reach the page's dev stream", stream.port)
+    } else {
+        format!(
+            "the page reaches its dev stream on random loopback port {}, which a devcontainer \
+             does not forward — build the server on `server::router()` (it proxies /__idealyst/*), \
+             or set `stream_port` in dev.toml (or --stream-port) and forward that port",
+            stream.port
+        )
+    };
+    reporter.warn("dev web", message);
+}
+
+/// `GET /__idealyst/stream` on the app server answers `204` with the
+/// proxy's header when it proxies the stream. Anything else — a 404, the
+/// app's `index.html` from a catch-all, no answer — means it does not.
+fn server_proxies_stream(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_secs(2),
+    ) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n",
+        DEV_STREAM_PROBE_PATH
+    );
+    if s.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => head.extend_from_slice(&buf[..n]),
+        }
+    }
+    stream_probe_answered(&String::from_utf8_lossy(&head))
+}
+
+/// The probe path and header `server::dev_stream` answers with. Restated
+/// rather than imported: the CLI does not link the server crate, and the
+/// two are held together by `the_probe_matches_the_server_crates_route`.
+const DEV_STREAM_PROBE_PATH: &str = "/__idealyst/stream";
+const DEV_STREAM_HEADER: &str = "x-idealyst-dev-stream";
+
+fn stream_probe_answered(head: &str) -> bool {
+    let mut lines = head.split("\r\n");
+    let ok = lines.next().is_some_and(|l| l.split_whitespace().nth(1) == Some("204"));
+    ok && lines.any(|l| {
+        l.split_once(':')
+            .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(DEV_STREAM_HEADER))
+    })
+}
+
+/// Everything starting the project's server needs, fixed for the session.
+struct ServerLaunch<'a> {
+    dir: &'a Path,
+    manifest: &'a build_ios::Manifest,
+    dist_web: &'a Path,
+    target_dir: &'a Path,
+    port: u16,
+    dev_stream: Option<&'a str>,
+    log: &'a Path,
+}
+
+impl ServerLaunch<'_> {
+    /// Spawn the server and wait until its port accepts connections, then
+    /// announce it (`server_ready{full_stack}`) and let the page reload if
+    /// a build was holding it. `None` when it exited before answering —
+    /// reported as an error on its row.
+    fn start(&self, shared: &ServerBuildShared) -> Result<Option<Child>> {
+        let mut child = match spawn_backend(
+            self.dir,
+            self.manifest,
+            Some(self.dist_web),
+            self.target_dir,
+            self.port,
+            self.dev_stream,
+            self.log,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::dlog!("dev web", "server respawn failed: {e:#}");
+                // Try again on the next good build rather than tearing
+                // down the whole dev session — and do not keep the page
+                // waiting on a server that is not coming.
+                shared.restart_hold.lock().unwrap().take();
+                return Ok(None);
+            }
+        };
+        // This server is not in the session's shared `children` vec — it
+        // is killed and respawned on every rebuild, so the handle stays
+        // with the loop. Register the pid so the memory cap and the
+        // session's teardown take it (and the server under `cargo run`)
+        // down rather than orphaning it.
+        crate::memory_limit::watch_pid(child.id());
+        let ready = wait_listening(self.port, &mut child);
+        // Whatever happened, the page is not kept waiting past this.
+        let hold = shared.restart_hold.lock().unwrap().take();
+        if !ready {
+            crate::memory_limit::unwatch_pid(child.id());
+            let status = child
+                .try_wait()
+                .ok()
+                .flatten()
+                .and_then(|s| s.code())
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "a signal".into());
+            dev_events::global().error(
+                dev_events::SERVER_TARGET,
+                format!(
+                    "exited with {status} before accepting connections on port {} — its output is in {}",
+                    self.port,
+                    self.log.display()
+                ),
+            );
+            shared.down.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(hold);
+            return Ok(None);
+        }
+        shared.down.store(false, std::sync::atomic::Ordering::SeqCst);
+        crate::dlog!(
+            "dev web",
+            "full-stack: server running (pid {}) on port {}",
+            child.id(),
+            self.port,
+        );
+        crate::dev_log::emit(dev_events::DevEvent::ServerReady {
+            target: "web".into(),
+            kind: dev_events::ServerKind::FullStack,
+            url: format!("http://127.0.0.1:{}", self.port),
+        });
+        // After `server_ready`: a page reloading now reaches the new server.
+        drop(hold);
+        Ok(Some(child))
+    }
+}
+
+/// Block until something accepts connections on `port` (`true`), or the
+/// server exits first (`false`). No deadline while it lives: a server
+/// that takes a minute to run its migrations is still starting, and the
+/// only thing waiting on it is the page, which cannot load without it.
+fn wait_listening(port: u16, child: &mut Child) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let started = std::time::Instant::now();
+    let mut said = false;
+    loop {
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)).is_ok() {
+            return true;
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            return false;
+        }
+        if !said && started.elapsed() > std::time::Duration::from_secs(30) {
+            said = true;
+            crate::dlog!(
+                "dev web",
+                "the server has not accepted connections on port {port} after 30s; still waiting",
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Take the server down: its whole tree, not only the handle — `child` is
+/// `cargo run`, and the server is ITS child. Killing only cargo leaves the
+/// server holding the port the restart is about to rebind, re-parented to
+/// init.
+fn stop_server(mut child: Child) {
+    crate::memory_limit::unwatch_pid(child.id());
+    crate::memory_limit::kill_tree(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The server's first build, on its own thread (beside the bundle's, or
+/// after it — see `builds_contend`), reported like any build; then its
+/// watcher, with the same build closure. Returns whether the first build
+/// succeeded.
+fn spawn_server_build(
+    roots: Vec<PathBuf>,
+    mut build: ServerBuild,
+    server_signal: Arc<dev_reload::ReloadSignal>,
+    reporter: dev_events::Reporter,
+) -> std::thread::JoinHandle<bool> {
+    std::thread::Builder::new()
+        .name("idealyst-server-build".into())
+        .spawn(move || {
+            reporter.emit(dev_events::DevEvent::BuildStarted {
+                target: dev_events::SERVER_TARGET.into(),
+                cause: dev_events::BuildCause::Initial,
+            });
+            let started = std::time::Instant::now();
+            let outcome = match build() {
+                Ok(_) => dev_events::BuildOutcome::Ready { gen: 1 },
+                Err(e) => dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+            };
+            let ok = matches!(outcome, dev_events::BuildOutcome::Ready { .. });
+            reporter.emit(dev_events::DevEvent::BuildFinished {
+                target: dev_events::SERVER_TARGET.into(),
+                outcome,
+                ms: started.elapsed().as_millis() as u64,
+            });
+            // Watched from here on, failed first build or not: the next
+            // save is how a broken server gets fixed.
+            match dev_reload::start_watch(roots, server_signal, "server", reporter, build) {
+                // Detached for the session's lifetime.
+                Ok(handle) => drop(handle),
+                Err(e) => crate::dlog!("dev web", "server watcher did not start: {e:#}"),
+            }
+            ok
+        })
+        .expect("spawn the server build thread")
 }
 
 /// What the full-stack dev loop should do when the watcher generations
@@ -2851,68 +3254,114 @@ pub(crate) fn server_build_args(
     Ok((watched_manifest, base_args))
 }
 
+/// What the server's build shares with the loop that restarts it.
+#[derive(Clone)]
+struct ServerBuildShared {
+    /// The page's reload signal: a server build holds its reloads.
+    reload: Arc<dev_reload::ReloadSignal>,
+    /// The hold of a build that relinked the server, for the loop to drop
+    /// once the restarted server accepts connections.
+    restart_hold: Arc<Mutex<Option<dev_reload::ReloadHold>>>,
+    /// No server process is running (its first build failed, or it
+    /// exited): the next good build must start one, relinked or not.
+    down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The server's build: `cargo build` of exactly what [`spawn_backend`]
+/// then runs, reporting whether the binary moved.
+type ServerBuild = Box<dyn FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static>;
+
 fn server_watch_setup(
     dir: &Path,
     manifest: &build_ios::Manifest,
     target_dir: &Path,
-) -> Result<(Vec<PathBuf>, impl FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static)> {
+    shared: ServerBuildShared,
+) -> Result<(Vec<PathBuf>, ServerBuild)> {
     // Base command + the manifest whose local closure we watch.
     let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
 
     let roots = dev_reload::watch_roots(&watched_manifest);
     let target_dir = target_dir.to_path_buf();
+    // The progress bar's total: the server's dependency closure for the
+    // host, with the feature the in-crate shape builds with.
+    let closure = dev_events::process::Closure {
+        manifest_dir: watched_manifest.parent().unwrap_or(dir).to_path_buf(),
+        platform: host_triple(),
+        features: if manifest.app.server_manifest.is_some() {
+            Vec::new()
+        } else {
+            vec!["server".to_string()]
+        },
+    };
+    let reporter = dev_events::global();
     let mut last: Option<BinStamp> = None;
     let build = move || -> Result<dev_reload::Rebuilt> {
-        let out = Command::new("cargo")
-            .arg("build")
-            .args(&base_args)
-            .arg("--target-dir")
-            .arg(&target_dir)
-            .arg("--message-format=json-render-diagnostics")
-            .stderr(std::process::Stdio::inherit())
-            .output()
-            .context("run `cargo build` for the server")?;
-        anyhow::ensure!(out.status.success(), "server build failed");
-        let exe = last_executable(&out.stdout).context(
-            "cargo reported success but emitted no executable artifact —              is `server_bin` the name of an actual [[bin]] target?",
+        // Held from the start of the build: a bundle rebuild that
+        // finishes first must not reload the page onto the server this
+        // build is about to replace.
+        let hold = shared.reload.hold_reloads();
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build").args(&base_args).arg("--target-dir").arg(&target_dir);
+        reporter.emit(dev_events::DevEvent::StageStarted {
+            target: dev_events::SERVER_TARGET.into(),
+            stage: "cargo".into(),
+        });
+        let started = std::time::Instant::now();
+        // Captured, not inherited: its progress and diagnostics are the
+        // server row's events, and cargo's lines reach the terminal as
+        // `output` events filed under the server.
+        let (status, summary) = dev_events::process::run_cargo(
+            &mut cmd,
+            &reporter,
+            dev_events::SERVER_TARGET,
+            Some(closure.clone()),
+        )
+        .context("run `cargo build` for the server")?;
+        reporter.emit(dev_events::DevEvent::StageFinished {
+            target: dev_events::SERVER_TARGET.into(),
+            stage: "cargo".into(),
+            ms: started.elapsed().as_millis() as u64,
+        });
+        anyhow::ensure!(status.success(), "server build failed");
+        let exe = summary.executable.context(
+            "cargo reported success but emitted no executable artifact — \
+             is `server_bin` the name of an actual [[bin]] target?",
         )?;
         let stamp = BinStamp::of(&exe);
         let changed = last != stamp;
         last = stamp;
-        Ok(if changed {
-            dev_reload::Rebuilt::Changed
+        // A server that is not running needs starting whether or not
+        // this build moved the binary (a fix after a crash, or after a
+        // failed first build that left an old binary in place).
+        if changed || shared.down.load(std::sync::atomic::Ordering::SeqCst) {
+            // The loop drops it once the (re)started server answers.
+            *shared.restart_hold.lock().unwrap() = Some(hold);
+            Ok(dev_reload::Rebuilt::Changed)
         } else {
-            dev_reload::Rebuilt::Unchanged
-        })
+            Ok(dev_reload::Rebuilt::Unchanged)
+        }
     };
-    Ok((roots, build))
+    Ok((roots, Box::new(build)))
 }
 
-/// Last `executable` path in a cargo `--message-format=json` stream.
-///
-/// Cargo emits one `compiler-artifact` record per built target; only
-/// binary targets carry a non-null `executable`, and the final one is the
-/// requested `--bin`. Parsed leniently — a line that isn't JSON, or a
-/// record without the field, is simply not a candidate. Split out from
-/// the closure so the parse is unit-testable against a captured stream.
-fn last_executable(stdout: &[u8]) -> Option<PathBuf> {
-    // Bound to a local: `from_utf8_lossy` returns a Cow whose temporary
-    // would be dropped before `lines()` finished borrowing it.
-    let text = String::from_utf8_lossy(stdout);
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|v| v.get("reason").and_then(|r| r.as_str()) == Some("compiler-artifact"))
-        .filter_map(|v| {
-            v.get("executable")
-                .and_then(|e| e.as_str())
-                .map(PathBuf::from)
-        })
-        .last()
+/// The host's target triple (`rustc -vV`), for the server's progress
+/// total — its build is for the host, not wasm. `None` if rustc cannot
+/// say; the bar then counts without a total.
+fn host_triple() -> Option<String> {
+    static HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        let out = Command::new("rustc").arg("-vV").output().ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| l.strip_prefix("host: ").map(|h| h.trim().to_string()))
+    })
+    .clone()
 }
 
-/// Spawn the project's declared server with `cargo run`, inheriting stdio
-/// so the user sees its log lines in real time. Mirrors the dispatch in
-/// `idealyst run server`:
+/// Spawn the project's declared server with `cargo run`, its output
+/// captured as `output{source: server}` events (see
+/// [`forward_server_output`]) and written to `log`. Mirrors the dispatch
+/// in `idealyst run server`:
 ///
 /// - `server_manifest` → `cargo run --manifest-path <it> [--bin <server_bin>]`
 ///   (the standalone workspace already enables its server deps; no
@@ -2952,6 +3401,8 @@ fn spawn_backend(
     web_dist: Option<&Path>,
     target_dir: &Path,
     port: u16,
+    dev_stream: Option<&str>,
+    log: &Path,
 ) -> Result<std::process::Child> {
     let app = &manifest.app;
     let mut cmd = std::process::Command::new("cargo");
@@ -2991,8 +3442,63 @@ fn spawn_backend(
     if let Some(d) = web_dist {
         cmd.env("WEB_DIST", d);
     }
+    // Where the page's dev stream is: a server on the framework's router
+    // proxies `/__idealyst/*` to it (`server::dev_stream`), so the page
+    // reaches it on its own origin.
+    if let Some(stream) = dev_stream {
+        cmd.env("IDEALYST_DEV_STREAM", stream);
+    }
     apply_pubsub_env(&mut cmd, dir);
-    cmd.spawn().context("spawn server (`cargo run`)")
+    // Its output is captured, never inherited: request logs, tracing and
+    // panics are the app's, not the dev loop's, and on the terminal they
+    // buried the session's own lines (and shredded the panel's grid).
+    // Each line is an `output{source: server}` event — tagged `[server]`
+    // on a plain terminal, kept out of the panel's default log view,
+    // written to server.log.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().context("spawn server (`cargo run`)")?;
+    forward_server_output(&mut child, log);
+    Ok(child)
+}
+
+/// Read the server's stdout and stderr on their own threads, each line an
+/// `output{source: server, target: server}` event. A panic line is also an
+/// `error` from the server, naming the log with the rest of its output.
+fn forward_server_output(child: &mut Child, log: &Path) {
+    use std::io::{BufRead, BufReader, Read};
+    fn pump(pipe: Option<impl Read + Send + 'static>, log: String) {
+        let Some(pipe) = pipe else { return };
+        std::thread::spawn(move || {
+            let reporter = dev_events::global();
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                reporter.target_output(
+                    dev_events::SERVER_TARGET,
+                    dev_events::SERVER_OUTPUT_SOURCE,
+                    line.clone(),
+                );
+                if let Some(message) = server_panic(&line, &log) {
+                    reporter.error(dev_events::SERVER_TARGET, message);
+                }
+            }
+        });
+    }
+    let log = log.display().to_string();
+    pump(child.stdout.take(), log.clone());
+    pump(child.stderr.take(), log);
+}
+
+/// The error a server output line reports, if it is a panic's first line
+/// (`thread 'main' panicked at src/main.rs:9:5:`).
+fn server_panic(line: &str, log: &str) -> Option<String> {
+    let plain = dev_events::plain::strip_ansi(line);
+    let at = plain.find(" panicked at ")?;
+    if !plain[..at].trim_start().starts_with("thread ") {
+        return None;
+    }
+    let what = plain.trim().trim_end_matches(':');
+    Some(format!("{what} — its output is in {log}"))
 }
 
 /// Forward the local `[pubsub]` + `[cache]` backends from `dev.toml` /
@@ -3487,6 +3993,7 @@ fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
         // The empty line ends the terminal's `^C` echo, as it always did.
         dev_events::global().output("dev", "");
         crate::dlog!("dev", "received Ctrl-C — stopping…");
+        crate::memory_limit::kill_watched_pids();
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
@@ -3525,6 +4032,7 @@ impl Args {
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
             shared_target: self.shared_target,
+            stream_port: self.stream_port,
             headless_client: self.headless_client,
             no_headless_client: self.no_headless_client,
             screenshot_dir: self.screenshot_dir.clone(),
@@ -3920,18 +4428,22 @@ mod tests {
             .any(|f| f == "hot-reload"));
     }
 
-    /// A full-stack page is served by the APP's own server, so the
-    /// `EventSource` it opens has to name an absolute URL on the port
-    /// the stream actually listens on. A relative one would resolve
-    /// against the app server, which serves no such route — and the
-    /// failure is silent: `EventSource` retries forever and the author
-    /// sees a dev loop that simply never pushes anything.
+    /// A full-stack page is served by the APP's own server. It tries
+    /// the stream same-origin first (a server on the framework's router
+    /// proxies it — the only origin a devcontainer forwards), and keeps
+    /// the absolute URL on the port the stream listens on as its
+    /// fallback: a server that does not proxy answers the relative URL
+    /// with a 404 or its index.html, and the page must not sit on that.
     #[test]
-    fn the_full_stack_reload_script_targets_an_absolute_url() {
+    fn regression_the_full_stack_page_tries_its_own_origin_then_the_stream_port() {
         let script = full_stack_reload_script(Some(44321)).expect("a port yields a script");
+        let relative = script.find(r#"["/__idealyst/reload","/__idealyst/ack"]"#);
+        let absolute = script.find(
+            r#"["http://127.0.0.1:44321/__idealyst/reload","http://127.0.0.1:44321/__idealyst/ack"]"#,
+        );
         assert!(
-            script.contains("http://127.0.0.1:44321/__idealyst/reload"),
-            "{script}"
+            matches!((relative, absolute), (Some(r), Some(a)) if r < a),
+            "same-origin first, the port second: {script}"
         );
         assert!(script.contains("EventSource"), "{script}");
         // Both channels ride this one stream: a generation bump reloads,
@@ -3964,6 +4476,7 @@ mod tests {
         )
         .unwrap();
         let script = opts.head_script.expect("a port yields a script");
+        assert!(script.contains("\"/__idealyst/reload\""), "{script}");
         assert!(script.contains("http://127.0.0.1:44321/__idealyst/reload"), "{script}");
     }
 
@@ -4083,6 +4596,78 @@ mod tests {
     /// booting six servers and issuing HTTP requests; this catches the
     /// drift at the point it is introduced. Skips silently when the
     /// workspace layout isn't reachable (packaged crate, vendored build).
+    /// The CLI restates `server::dev_stream`'s probe path and header (it
+    /// does not link the server crate); a drift would silently read every
+    /// proxying server as one that does not proxy.
+    #[test]
+    fn the_probe_matches_the_server_crates_route() {
+        let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|a| a.join("crates/api/server/src/dev_stream.rs").is_file())
+        else {
+            return;
+        };
+        let src = std::fs::read_to_string(root.join("crates/api/server/src/dev_stream.rs")).unwrap();
+        assert!(src.contains(&format!("pub const PROBE_PATH: &str = \"{DEV_STREAM_PROBE_PATH}\";")));
+        assert!(src.contains(&format!("pub const HEADER: &str = \"{DEV_STREAM_HEADER}\";")));
+        assert!(stream_probe_answered(
+            "HTTP/1.1 204 No Content\r\nx-idealyst-dev-stream: 1\r\ndate: now\r\n"
+        ));
+        // A catch-all's index.html, or a 204 from something else, is not it.
+        assert!(!stream_probe_answered("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\n"));
+        assert!(!stream_probe_answered("HTTP/1.1 204 No Content\r\n"));
+        assert!(!stream_probe_answered(""));
+    }
+
+    /// A server's panic line becomes an error naming its log; request
+    /// lines that merely mention a panic do not.
+    #[test]
+    fn a_server_panic_is_an_error_that_names_the_log() {
+        assert_eq!(
+            server_panic("thread 'tokio-runtime-worker' panicked at src/routes.rs:12:5:", "/p/server.log")
+                .as_deref(),
+            Some("thread 'tokio-runtime-worker' panicked at src/routes.rs:12:5 — its output is in /p/server.log")
+        );
+        assert_eq!(server_panic("GET /docs/why-it-panicked at-scale 200", "/l"), None);
+        assert_eq!(server_panic("listening on http://127.0.0.1:3100", "/l"), None);
+    }
+
+    /// The bundle and the server build at once unless they would share a
+    /// cargo target dir (whose lock would serialize them anyway).
+    #[test]
+    fn the_builds_run_together_unless_they_share_a_target_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("target/idealyst-web-0123abcd");
+        let server = tmp.path().join("target/idealyst-dev-server");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::create_dir_all(&server).unwrap();
+        assert!(!builds_contend(&web, &server));
+        assert!(builds_contend(&web, &tmp.path().join("target/./idealyst-web-0123abcd")));
+        // `--shared-target`: the workspace's own target/, still not the
+        // bundle's keyed dir.
+        assert!(!builds_contend(&web, &tmp.path().join("target")));
+    }
+
+    /// A full-stack session's server is named after its binary, or the
+    /// package its manifest declares.
+    #[test]
+    fn the_server_row_is_named_after_the_server() {
+        let (_tmp, m) = manifest_with(
+            "[package.metadata.idealyst.app]\nname = \"Demo\"\nbundle_id = \"x.y\"\nversion = \"0.0.0\"\nserver_bin = \"demo-server\"\n",
+        );
+        assert_eq!(server_display_name(Path::new("/nowhere"), &m), "demo-server");
+        let (tmp, m) = manifest_with(
+            "[package.metadata.idealyst.app]\nname = \"Demo\"\nbundle_id = \"x.y\"\nversion = \"0.0.0\"\nserver_manifest = \"srv/Cargo.toml\"\n",
+        );
+        std::fs::create_dir_all(tmp.path().join("srv")).unwrap();
+        std::fs::write(tmp.path().join("srv/Cargo.toml"), "[package]\nname = \"api-server\"\n").unwrap();
+        assert_eq!(server_display_name(tmp.path(), &m), "api-server");
+        assert_eq!(
+            server_log_path(tmp.path(), &m),
+            tmp.path().join("target/idealyst/demo-app/server.log")
+        );
+    }
+
     #[test]
     fn full_stack_example_servers_serve_where_the_cli_stages() {
         let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4179,44 +4764,6 @@ mod tests {
         assert_eq!(action, DevAction::Idle);
         assert!(!action.restart_server());
         assert!(!action.refresh_browser());
-    }
-
-    /// `server_watch_setup`'s closure locates the binary it just built by
-    /// reading cargo's JSON artifact stream. Only binary targets carry a
-    /// non-null `executable`, and the requested `--bin` is the last one.
-    #[test]
-    fn last_executable_picks_the_final_binary_artifact() {
-        let stream = concat!(
-            r#"{"reason":"compiler-artifact","executable":null,"target":{"name":"applib"}}"#,
-            "\n",
-            r#"{"reason":"compiler-message","message":{"rendered":"warning: unused"}}"#,
-            "\n",
-            r#"{"reason":"compiler-artifact","executable":"/t/debug/server","target":{"name":"server"}}"#,
-            "\n",
-            r#"{"reason":"build-finished","success":true}"#,
-            "\n",
-        );
-        assert_eq!(
-            last_executable(stream.as_bytes()),
-            Some(PathBuf::from("/t/debug/server")),
-        );
-    }
-
-    /// A stream with no binary artifact (lib-only package, or a bad
-    /// `server_bin` name) must be reported as "not found" rather than
-    /// silently stamping some other path — the caller turns this into an
-    /// actionable error instead of a mystery no-restart.
-    #[test]
-    fn last_executable_is_none_without_a_binary_artifact() {
-        let stream = concat!(
-            r#"{"reason":"compiler-artifact","executable":null,"target":{"name":"applib"}}"#,
-            "\n",
-            r#"not json at all"#,
-            "\n",
-            r#"{"reason":"build-finished","success":true}"#,
-            "\n",
-        );
-        assert_eq!(last_executable(stream.as_bytes()), None);
     }
 
     /// The dev server must never build into the workspace's `target/`:

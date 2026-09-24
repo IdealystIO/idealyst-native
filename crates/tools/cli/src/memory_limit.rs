@@ -302,6 +302,32 @@ fn kill_watched_processes() -> usize {
     killed
 }
 
+/// Take down every pid-registered tree ([`watch_pid`]) now: the dev
+/// session's own teardown (Ctrl-C, the panel's quit), not only the cap's
+/// abort. Returns how many were killed.
+///
+/// The full-stack server is registered this way and is in no `children`
+/// vec, so nothing else stops it. Quitting the panel (raw mode: no SIGINT
+/// reaches the process group) left it running, holding its port — and,
+/// now that its output is piped, writing into a closed pipe.
+pub fn kill_watched_pids() -> usize {
+    let pids = WATCHED_PIDS.lock().map(|g| g.clone()).unwrap_or_default();
+    let mut killed = 0;
+    for pid in pids {
+        if kill_tree(pid) {
+            killed += 1;
+            // A pid registered here is our direct child: reap it.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            // SAFETY: WNOHANG never blocks; a foreign pid just fails.
+            unsafe {
+                libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
+            }
+        }
+        unwatch_pid(pid);
+    }
+    killed
+}
+
 /// Apply the cap. Silent on default activation so short-lived
 /// commands don't gain a startup banner; logs only when the user
 /// has explicitly overridden the default (so they get confirmation

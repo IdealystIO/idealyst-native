@@ -23,6 +23,24 @@ pub struct DevConfig {
     #[serde(default)]
     pub bridge_port: Option<u16>,
 
+    /// A fixed port for the dev session's page stream (livereload,
+    /// overlay and hot patches, the build badge) in a FULL-STACK session,
+    /// bound on every interface inside a container. Overridden by
+    /// `idealyst dev --stream-port`.
+    ///
+    /// Only needed when the project's server does not proxy
+    /// `/__idealyst/*` itself (servers built on the framework's
+    /// `server::router()` do, and the page then uses its own origin).
+    /// Without either, the stream is on a random loopback port, which a
+    /// devcontainer does not forward: `idealyst configure devcontainer`
+    /// forwards this one, labelled.
+    ///
+    /// ```toml
+    /// stream_port = 4777
+    /// ```
+    #[serde(default)]
+    pub stream_port: Option<u16>,
+
     /// Local job-queue backend for `idealyst dev` / `idealyst worker`. Absent
     /// means the in-process `memory` backend: `dev` runs workers inside the
     /// server process (no separate worker process is spawned, since two

@@ -94,6 +94,38 @@ pub struct EventsOut {
     pub file: Option<PathBuf>,
 }
 
+/// Writes the full-stack server PROCESS's own output — every
+/// `output{source: server}` line — to `server.log`, apart from the dev
+/// loop's lines. Created (truncated) when the session starts, like the
+/// session log beside it.
+pub struct ServerLog {
+    out: Mutex<std::io::BufWriter<std::fs::File>>,
+}
+
+impl ServerLog {
+    pub fn create(path: &Path) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(Self { out: Mutex::new(std::io::BufWriter::new(std::fs::File::create(path)?)) })
+    }
+}
+
+impl Sink for ServerLog {
+    fn emit(&self, envelope: &dev_events::Envelope) {
+        let DevEvent::Output { source, line, .. } = &envelope.event else { return };
+        if source != dev_events::SERVER_OUTPUT_SOURCE {
+            return;
+        }
+        if let Ok(mut out) = self.out.lock() {
+            use std::io::Write;
+            let _ = writeln!(out, "{}", dev_events::plain::strip_ansi(line));
+            // Per line: someone is tailing it.
+            let _ = out.flush();
+        }
+    }
+}
+
 /// Build the session reporter with its sinks and install it
 /// process-wide. `log_path` is created (truncated) for this session.
 pub fn start(ui: Ui, log_path: &Path, events: &EventsOut) -> anyhow::Result<Session> {
@@ -294,6 +326,24 @@ mod tests {
         let events = EventsOut { stdout: true, file: None };
         let err = start(Ui::Panel, &dir.path().join("dev.log"), &events).err().unwrap();
         assert!(err.to_string().contains("--events-file"), "{err}");
+    }
+
+    /// The server process's output goes to server.log and nothing else
+    /// does — its build's cargo lines are the dev loop's.
+    #[test]
+    fn server_log_holds_the_server_process_output_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("target/idealyst/app/server.log");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "last session's output\n").unwrap();
+        let log = Arc::new(ServerLog::create(&path).unwrap());
+        let r = Reporter::new();
+        r.add_sink(log);
+        r.target_output(dev_events::SERVER_TARGET, dev_events::SERVER_OUTPUT_SOURCE, "\x1b[32mGET / 200\x1b[0m");
+        r.target_output(dev_events::SERVER_TARGET, "cargo", "   Compiling crewforge-server");
+        r.log("dev web", "server rebuilt → restarting on port 3100");
+        r.target_output(dev_events::SERVER_TARGET, dev_events::SERVER_OUTPUT_SOURCE, "GET /api/me 200");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "GET / 200\nGET /api/me 200\n", "truncated per session, server lines only, no colour");
     }
 
     #[test]
