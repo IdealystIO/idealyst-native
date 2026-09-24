@@ -199,6 +199,10 @@ pub struct HeadInjectionContext {
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
   var baseline = null;
+  // Where the stream may be, in order: `[stream, ack]` pairs. One pair on
+  // the static path; on the full-stack path the app server's same-origin
+  // proxy first, then the dev session's own port (see `reload_script_tag_with_fallback`).
+  var SOURCES = __SOURCES__;
   var ACK = "__ACK_URL__";
   function ack(o) {
     try {
@@ -209,7 +213,9 @@ const RELOAD_SCRIPT: &str = r#"<script>
     } catch (_) {}
   }
   window.__idealyst_dev_ack = ack;
-  var es = new EventSource("__SSE_URL__");
+__STATUS_OVERLAY__
+  var status = idealystStatusOverlay(document);
+  function wire(es) {
   es.onmessage = function (e) {
     if (baseline === null) {
       baseline = e.data;
@@ -262,8 +268,6 @@ const RELOAD_SCRIPT: &str = r#"<script>
       location.reload();
     }
   });
-__STATUS_OVERLAY__
-  var status = idealystStatusOverlay(document);
   es.addEventListener("dev-state", function (e) {
     try {
       status.apply(JSON.parse(e.data));
@@ -271,6 +275,24 @@ __STATUS_OVERLAY__
       console.warn("[idealyst] dev-state event not shown", err);
     }
   });
+  }
+  // A source that answers with something other than the stream (a 404,
+  // the app's index.html) closes the EventSource for good before it ever
+  // opens: try the next. One that is merely down (a server restarting)
+  // stays CONNECTING and retries on its own, so it is kept.
+  function connect(i) {
+    var es = new EventSource(SOURCES[i][0]);
+    ACK = SOURCES[i][1];
+    var opened = false;
+    es.addEventListener("open", function () { opened = true; });
+    es.addEventListener("error", function () {
+      if (!opened && es.readyState === 2 && i + 1 < SOURCES.length) {
+        connect(i + 1);
+      }
+    });
+    wire(es);
+  }
+  connect(0);
 })();
 </script>"#;
 
@@ -291,16 +313,41 @@ pub const STATUS_OVERLAY_JS: &str = include_str!("status_overlay.js");
 /// port number today, but a `"` reaching it would close the string
 /// literal and leave the rest of the page's `<head>` executable.
 pub fn reload_script_tag(sse_url: &str) -> String {
-    let escape = |u: &str| u.replace('\\', "\\\\").replace('"', "\\\"");
+    reload_script_tag_with_fallback(sse_url, None)
+}
+
+/// [`reload_script_tag`] with a second place to find the stream: the page
+/// tries `sse_url` first and moves to `fallback` only if `sse_url`
+/// answers with something that is not the stream (a `404`, or the app's
+/// `index.html` from a catch-all). A source that is merely unreachable —
+/// a server restarting — is kept: the `EventSource` retries it.
+///
+/// The full-stack shape: `sse_url` is the relative `/__idealyst/reload`,
+/// which the app server proxies to the dev session when it is built on
+/// the framework's server router (`server::dev_stream`) — the one origin
+/// that is always reachable, forwarded container port or not. `fallback`
+/// is the dev session's own port, for a server that does not proxy.
+pub fn reload_script_tag_with_fallback(sse_url: &str, fallback: Option<&str>) -> String {
     // The ack endpoint lives beside the stream, on whichever origin
     // serves it — so it is derived from the stream's URL, absolute or not.
-    let ack = match sse_url.strip_suffix(RELOAD_SSE_URL) {
+    let ack_for = |sse: &str| match sse.strip_suffix(RELOAD_SSE_URL) {
         Some(origin) => format!("{origin}{ACK_URL}"),
         None => ACK_URL.to_string(),
     };
+    let mut sources = vec![(sse_url.to_string(), ack_for(sse_url))];
+    if let Some(f) = fallback {
+        sources.push((f.to_string(), ack_for(f)));
+    }
+    // JSON-encoded, then `<` escaped: the array sits in an inline
+    // `<script>`, where a `</script>` in a URL would end it. Nothing in a
+    // port-built URL has one, but the encoder is what guarantees it.
+    let list = serde_json::to_string(&sources)
+        .expect("strings serialize")
+        .replace('<', "\\u003c");
+    let ack = serde_json::to_string(&sources[0].1).expect("a string serializes").replace('<', "\\u003c");
     RELOAD_SCRIPT
-        .replace("__SSE_URL__", &escape(sse_url))
-        .replace("__ACK_URL__", &escape(&ack))
+        .replace("__SOURCES__", &list)
+        .replace("\"__ACK_URL__\"", &ack)
         .replace("__STATUS_OVERLAY__", STATUS_OVERLAY_JS)
 }
 
