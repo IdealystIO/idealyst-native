@@ -43,8 +43,8 @@ use std::cell::RefCell as StdRefCell;
 
 use runtime_shared::primitives::text_input::{BlurHandler, BlurOutcome};
 use runtime_shared::{
-    set_pointer_modifiers, DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, HoverHandler,
-    PointerModifiers, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
+    set_pointer_button, set_pointer_modifiers, DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, HoverHandler,
+    PointerButton, PointerModifiers, StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint,
     WheelEvent, WheelHandler, WheelKind,
 };
 
@@ -58,6 +58,19 @@ const NS_PASTEBOARD_TYPE_FILE_URL: &str = "public.file-url";
 
 /// Stable id for the single mouse pointer (macOS has no multitouch here).
 const MOUSE_TOUCH_ID: u64 = 1;
+
+/// `NSEvent.buttonNumber` → [`PointerButton`]. AppKit numbers the left
+/// button 0, right 1, middle 2, then extra buttons upward — so this is
+/// only reached for `otherMouseDown:` in practice, but maps every value
+/// so the classification is total. Pure, host-testable.
+pub(crate) fn button_from_number(n: isize) -> PointerButton {
+    match n {
+        0 => PointerButton::Primary,
+        1 => PointerButton::Secondary,
+        2 => PointerButton::Middle,
+        other => PointerButton::Other(other.clamp(0, u16::MAX as isize) as u16),
+    }
+}
 
 /// Which AppKit gesture event `dispatch_wheel` is translating into the
 /// framework's unified [`WheelEvent`] desktop channel.
@@ -280,14 +293,17 @@ declare_class!(
             // delivered as a left `mouseDown:` carrying the Control modifier while
             // the matching release arrives as `rightMouseUp:` (which we don't
             // observe) — so a touch begun here would never get its `Ended`, leaving
-            // a dragged element stuck to the cursor. Treat Ctrl-click as a
-            // secondary press: don't begin a touch (let super show any context
-            // menu). `Began` is the only gate; the unaccepted state means the
-            // following drag/up events are ignored too.
+            // a dragged element stuck to the cursor. Deliver it exactly like
+            // `rightMouseDown:` below: a Secondary `Began` only (never enters the
+            // accepted/drag state), then super if unconsumed so AppKit can still
+            // show a context menu. Web folds Chrome/Firefox's `button 0 + ctrlKey`
+            // into Secondary the same way (`primitives/touch.rs`).
             const FLAG_CONTROL: usize = 1 << 18;
             let flags: usize = unsafe { msg_send![event, modifierFlags] };
             if flags & FLAG_CONTROL != 0 {
-                let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+                if !self.dispatch_mouse(event, TouchPhase::Began, PointerButton::Secondary) {
+                    let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+                }
                 return;
             }
             // Blur any active text-field editing when the user presses a
@@ -332,14 +348,36 @@ declare_class!(
             // Independent of touch dispatch so a styled button dims on press
             // whether or not it also carries an `on_touch` handler.
             self.flip_state(StateBits::PRESSED, true);
-            if !self.dispatch_mouse(event, TouchPhase::Began) {
+            if !self.dispatch_mouse(event, TouchPhase::Began, PointerButton::Primary) {
                 let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            }
+        }
+
+        // Right button → a Secondary `Began` (FRAMEWORK-NOTES #61). AppKit
+        // never routes the right button through `mouseDown:`, so before this
+        // override an `on_touch` handler on macOS could not see a secondary
+        // press at all — a right-click on an overlay's Dismiss backdrop did
+        // nothing, where web dismissed. Began-only per the `PointerButton`
+        // contract; super (context menu / next responder) when unconsumed.
+        #[method(rightMouseDown:)]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            if !self.dispatch_mouse(event, TouchPhase::Began, PointerButton::Secondary) {
+                let _: () = unsafe { msg_send![super(self), rightMouseDown: event] };
+            }
+        }
+
+        // Middle / extra buttons → `Middle` / `Other(n)` `Began`, same shape.
+        #[method(otherMouseDown:)]
+        fn other_mouse_down(&self, event: &NSEvent) {
+            let n: isize = unsafe { msg_send![event, buttonNumber] };
+            if !self.dispatch_mouse(event, TouchPhase::Began, button_from_number(n)) {
+                let _: () = unsafe { msg_send![super(self), otherMouseDown: event] };
             }
         }
 
         #[method(mouseDragged:)]
         fn mouse_dragged(&self, event: &NSEvent) {
-            if !self.dispatch_mouse(event, TouchPhase::Moved) {
+            if !self.dispatch_mouse(event, TouchPhase::Moved, PointerButton::Primary) {
                 let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
             }
         }
@@ -349,7 +387,7 @@ declare_class!(
         // channel (live cursor broadcast). Never part of a gesture.
         #[method(mouseMoved:)]
         fn mouse_moved(&self, event: &NSEvent) {
-            if !self.dispatch_mouse(event, TouchPhase::Hovered) {
+            if !self.dispatch_mouse(event, TouchPhase::Hovered, PointerButton::Primary) {
                 let _: () = unsafe { msg_send![super(self), mouseMoved: event] };
             }
         }
@@ -357,7 +395,7 @@ declare_class!(
         #[method(mouseUp:)]
         fn mouse_up(&self, event: &NSEvent) {
             self.flip_state(StateBits::PRESSED, false);
-            if !self.dispatch_mouse(event, TouchPhase::Ended) {
+            if !self.dispatch_mouse(event, TouchPhase::Ended, PointerButton::Primary) {
                 let _: () = unsafe { msg_send![super(self), mouseUp: event] };
             }
         }
@@ -840,7 +878,7 @@ impl FlippedView {
     /// caller does NOT bubble it to `super`); `false` when there's no handler
     /// or it's a drag/up we didn't start, letting the responder chain carry it
     /// to an ancestor that does have a handler.
-    fn dispatch_mouse(&self, event: &NSEvent, phase: TouchPhase) -> bool {
+    fn dispatch_mouse(&self, event: &NSEvent, phase: TouchPhase, button: PointerButton) -> bool {
         // Snapshot the handler so we don't hold the ivar borrow across the
         // closure (it may re-enter the backend / signals).
         let handler = match self.ivars().handler.borrow().as_ref() {
@@ -932,9 +970,17 @@ impl FlippedView {
         // burst of camera signal writes coalesces into one consistent render
         // per input event — no backend-side `batch()` needed. (Previously a
         // local `batch(..)` here; centralized so every backend gets it.)
+        // Which button produced this event, read out-of-band by the handler
+        // (`runtime_shared::pointer_button`) — same seam as the modifiers.
+        set_pointer_button(button);
         let response = (handler)(&ev);
 
         match phase {
+            // A non-primary press is `Began`-only (the `PointerButton`
+            // contract): it never enters the accepted state, so no
+            // drag/up is routed for it and nothing is left open when its
+            // release arrives on a selector we don't observe.
+            TouchPhase::Began if !button.is_primary() => return response.consumed,
             TouchPhase::Began => {
                 if response.consumed || response.claim {
                     self.ivars().active.set(true);

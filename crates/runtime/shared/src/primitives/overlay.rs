@@ -19,11 +19,16 @@
 /// Backdrop dismissal is composition-level here — we render a
 /// fullscreen `pressable()` as the first child inside the portal and
 /// wire its `on_click` to the user's `on_dismiss` (for `Dismiss`)
-/// or leave it as a passive scrim (for `Opaque`).
+/// or leave it as a passive scrim (for `Opaque`). A `Dismiss` backdrop
+/// also carries a fill layer whose `on_touch` dismisses on a
+/// non-primary press (`runtime_vocabulary::builders::portal`), because
+/// a pressable's click is primary-only on every backend.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BackdropMode {
-    /// Semi-transparent scrim. Clicks on the scrim fire the
-    /// `on_dismiss` callback.
+    /// Semi-transparent scrim. A press of ANY button on the scrim —
+    /// primary click/tap, right-click, middle-click — fires the
+    /// `on_dismiss` callback; a secondary press is consumed, so no
+    /// native context menu opens over the scrim.
     #[default]
     Dismiss,
     /// Semi-transparent scrim. Clicks on the scrim do NOT dismiss;

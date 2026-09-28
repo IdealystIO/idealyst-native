@@ -1255,6 +1255,16 @@ fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_shared::TouchHandler {
     Rc::new(move |ev: &TouchEvent| match ev.phase {
         // Hover isn't part of a tap.
         TouchPhase::Hovered => TouchResponse::IGNORED,
+        // A non-primary press (right / Ctrl / middle click) is not a click:
+        // the platform "click" of every backend is primary-only (DOM `click`,
+        // UIKit tap). Swallow it without arming — the macOS twin of web's
+        // `swallow_ancestor_touch`, which likewise keeps a right-click on a
+        // Button from reaching an ancestor `on_touch` row. Needed since
+        // `FlippedView` began delivering Secondary `Began`s
+        // (`rightMouseDown:`, FRAMEWORK-NOTES #61).
+        TouchPhase::Began if !runtime_shared::pointer_button().is_primary() => {
+            TouchResponse::CONSUMED
+        }
         TouchPhase::Began => {
             start.set((ev.window_position.x, ev.window_position.y));
             armed.set(true);
@@ -5971,3 +5981,70 @@ fn external_placeholder_node(b: &mut MacosBackend, type_name: &'static str) -> M
 }
 
 
+
+// Regression coverage for the macOS half of FRAMEWORK-NOTES #61 (a
+// right-click on an overlay's Dismiss backdrop must dismiss, uniformly
+// with web). The AppKit selector overrides themselves (`rightMouseDown:` /
+// `otherMouseDown:` / Ctrl-`mouseDown:` in `view.rs`) are not reachable
+// from `cargo test`: building an `NSView` and synthesizing an `NSEvent`
+// needs the main thread, which libtest never gives a test (see the skip in
+// `handles.rs`'s `rect_is_window_relative_not_parent_relative`). The
+// closest reachable coverage is the Rust half those overrides feed: the
+// button classification and the pressable tap handler's reaction to a
+// secondary `Began` — the part that decides whether a right-click reaches
+// the backdrop's secondary-press layer or becomes a spurious click.
+#[cfg(test)]
+mod secondary_press_tests {
+    use super::make_tap_handler;
+    use crate::imp::view::button_from_number;
+    use runtime_shared::{
+        set_pointer_button, PointerButton, TouchEvent, TouchId, TouchPhase, TouchPoint,
+    };
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    fn ev(phase: TouchPhase) -> TouchEvent {
+        TouchEvent {
+            id: TouchId(1),
+            phase,
+            position: TouchPoint::new(1.0, 1.0),
+            window_position: TouchPoint::new(1.0, 1.0),
+            timestamp_ns: 0,
+            force: None,
+        }
+    }
+
+    /// `NSEvent.buttonNumber` → `PointerButton` (AppKit: 0 left, 1 right,
+    /// 2 middle, extras upward).
+    #[test]
+    fn appkit_button_numbers_map_to_pointer_buttons() {
+        assert_eq!(button_from_number(0), PointerButton::Primary);
+        assert_eq!(button_from_number(1), PointerButton::Secondary);
+        assert_eq!(button_from_number(2), PointerButton::Middle);
+        assert_eq!(button_from_number(4), PointerButton::Other(4));
+    }
+
+    /// Regression: now that `FlippedView` delivers a Secondary `Began`, a
+    /// pressable's tap handler must not arm on it — a Ctrl-click's release
+    /// can arrive as a plain `mouseUp:`, and an armed handler would turn
+    /// the context-menu press into a click. It still CONSUMES the press
+    /// (web's `swallow_ancestor_touch` parity). Fails against the old
+    /// handler, which armed on every `Began`.
+    #[test]
+    fn regression_macos_tap_handler_ignores_secondary_press() {
+        let clicks = Rc::new(Cell::new(0u32));
+        let c = clicks.clone();
+        let h = make_tap_handler(Rc::new(move || c.set(c.get() + 1)));
+
+        set_pointer_button(PointerButton::Secondary);
+        assert!(h(&ev(TouchPhase::Began)).consumed, "secondary press is swallowed");
+        set_pointer_button(PointerButton::Primary);
+        h(&ev(TouchPhase::Ended));
+        assert_eq!(clicks.get(), 0, "a secondary press never becomes a click");
+
+        // A normal primary press still clicks.
+        h(&ev(TouchPhase::Began));
+        h(&ev(TouchPhase::Ended));
+        assert_eq!(clicks.get(), 1);
+    }
+}

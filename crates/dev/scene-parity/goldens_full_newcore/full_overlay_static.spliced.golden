@@ -1,4 +1,4 @@
-# scene-parity FULL-OP NEW-CORE override — scenario `full_overlay_toggle`, mode `spliced`
+# scene-parity FULL-OP NEW-CORE override — scenario `full_overlay_static`, mode `spliced`
 #
 # Sanctioned divergences only (README + the FULL_NEWCORE_OVERRIDES
 # docs): teardown release interleaving (#5, old LIFO vs new
@@ -14,7 +14,7 @@
 
 == mount ==
 create n0 view
-create n1 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n1 portal target=viewport(Bottom) on_dismiss=<fn> trap_focus=true
 create n2 pressable on_click=<fn>
 create n3 view
 apply_style n3 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0)))}
@@ -25,29 +25,19 @@ insert n1 <- n2
 create n4 view
 create n5 text "modal body"
 insert n4 <- n5
+apply_style n4 {background: Some(Literal(Color("#ffffff"))), width: Some(Literal(Px(320.0)))}
 insert n1 <- n4
-insert_at n0 <- n1 @ 0
-
-== close (backdrop unstyle + release_portal in one window) ==
-remove_child n0 -x n1
-on_node_unstyled n3
-on_node_unstyled n2
-release_portal n1
-create n6 text "closed"
-insert_at n0 <- n6 @ 0
-
-== reopen ==
-remove_child n0 -x n6
-create n7 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
-create n8 pressable on_click=<fn>
-create n9 view
-apply_style n9 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0)))}
-install_touch_handler n9
-insert n8 <- n9
-apply_style n8 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
+insert n0 <- n1
+create n6 portal target=viewport(Center) on_dismiss=none trap_focus=true
+create n7 view
+create n8 text "toast"
 insert n7 <- n8
+insert n6 <- n7
+apply_style n6 {pointer_events: Some(None)}
+insert n0 <- n6
+create n9 portal target=anchor(side=Above align=Center offset=4) on_dismiss=none trap_focus=false
 create n10 view
-create n11 text "modal body"
+create n11 text "tip"
 insert n10 <- n11
-insert n7 <- n10
-insert_at n0 <- n7 @ 0
+insert n9 <- n10
+insert n0 <- n9

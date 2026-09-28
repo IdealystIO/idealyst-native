@@ -112,7 +112,8 @@ stylesheet! {
 }
 
 /// A FULLSCREEN, transparent outside-click catcher portal. Rendered *behind*
-/// an anchored surface so a tap anywhere off the surface fires `on_dismiss`
+/// an anchored surface so a press anywhere off the surface — any button,
+/// right-click included (`BackdropMode::Dismiss`) — fires `on_dismiss`
 /// (an anchored overlay's own `Dismiss` backdrop only fills its small anchored
 /// box, so a click truly away from the surface would miss it). Shared by
 /// `Popover` and `Menu` — both want the universal dropdown "click-outside

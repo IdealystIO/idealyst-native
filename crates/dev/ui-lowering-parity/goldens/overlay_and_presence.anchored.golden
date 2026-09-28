@@ -15,23 +15,25 @@ clear_children n1
 create n5 view
 create n6 portal
 create n7 pressable
-insert n6 <- n7
 create n8 view
-create n9 text "modal"
-insert n8 <- n9
-insert n6 <- n8
+insert n7 <- n8
+insert n6 <- n7
+create n9 view
+create n10 text "modal"
+insert n9 <- n10
+insert n6 <- n9
 insert n5 <- n6
-create n10 portal
-create n11 view
-create n12 text "tip"
+create n11 portal
+create n12 view
+create n13 text "tip"
+insert n12 <- n13
 insert n11 <- n12
-insert n10 <- n11
-insert n5 <- n10
+insert n5 <- n11
 insert n1 <- n5
 
 -- toast=true --
-create n13 text "toast"
-insert n4 <- n13
+create n14 text "toast"
+insert n4 <- n14
 
 -- unmount --
 (none)
@@ -58,29 +60,34 @@ clear_children n1
 create n5 view
 create n6 portal
 create n7 pressable
-insert n6 <- n7
 create n8 view
-create n9 text "modal"
-insert n8 <- n9
-insert n6 <- n8
+apply_style n8 width=none
+install_touch_handler n8
+insert n7 <- n8
+insert n6 <- n7
+create n9 view
+create n10 text "modal"
+insert n9 <- n10
+insert n6 <- n9
 insert n5 <- n6
-create n10 portal
-create n11 view
-create n12 text "tip"
+create n11 portal
+create n12 view
+create n13 text "tip"
+insert n12 <- n13
 insert n11 <- n12
-insert n10 <- n11
-insert n5 <- n10
+insert n5 <- n11
 insert n1 <- n5
 
 -- toast=true --
-create n13 text "toast"
-insert n4 <- n13
-apply_presence n13 op=Some(0.0) ty=None snap
-apply_presence n13 rest 100ms
+create n14 text "toast"
+insert n4 <- n14
+apply_presence n14 op=Some(0.0) ty=None snap
+apply_presence n14 rest 100ms
 
 -- unmount --
+on_node_unstyled n8
 release_portal n6
-release_portal n10
+release_portal n11
 
 === scene ===
 n0 view
@@ -88,12 +95,13 @@ n0 view
     n5 view
       n6 portal
         n7 pressable
-        n8 view
-          n9 text "modal"
-      n10 portal
-        n11 view
-          n12 text "tip"
+          n8 view
+        n9 view
+          n10 text "modal"
+      n11 portal
+        n12 view
+          n13 text "tip"
   n3 presence_placeholder
     n4 anchor
-      n13 text "toast"
+      n14 text "toast"
 n2 view

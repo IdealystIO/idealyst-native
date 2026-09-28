@@ -877,13 +877,13 @@ inventory::submit! {
             PropFieldSpec {
                 name: "backdrop",
                 type_str: "BackdropMode",
-                doc: "Scrim behavior: `Dismiss` (tap the scrim fires `on_dismiss` — default), `Opaque` (scrim swallows taps, host drives close), or `None` (no scrim, viewport behind stays interactive).",
+                doc: "Scrim behavior: `Dismiss` (a press of any button on the scrim — tap, click, right-click — fires `on_dismiss`; default), `Opaque` (scrim swallows taps, host drives close), or `None` (no scrim, viewport behind stays interactive).",
                 constraint: "",
             },
             PropFieldSpec {
                 name: "on_dismiss",
                 type_str: "impl Fn()",
-                doc: "Called when the backdrop is tapped under `BackdropMode::Dismiss` (and by the framework's dismiss path). Typical body flips your open signal false: `move || open.set(false)`. Runs batched.",
+                doc: "Called when the backdrop is pressed under `BackdropMode::Dismiss` — with any button: a right- or middle-click dismisses too, and the native context menu is suppressed — and by the framework's dismiss path. Typical body flips your open signal false: `move || open.set(false)`. Runs batched.",
                 constraint: "",
             },
             PropFieldSpec {

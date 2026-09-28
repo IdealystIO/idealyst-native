@@ -165,6 +165,11 @@ pub const FULL_NEWCORE_OVERRIDES: &[(&str, Mode)] = &[
     // position relative to the structural ops, interleaving only.
     ("nav_swap_dispose_evict", Mode::Spliced),
     ("nav_stack_push_pop", Mode::Spliced),
+    // Divergence #8: a wired `Dismiss` backdrop carries a secondary-press
+    // fill view (FRAMEWORK-NOTES #61) — one extra create/apply_style/
+    // insert under the backdrop pressable, later node ids shift by one.
+    // (`full_overlay_toggle` is already listed above for #5.)
+    ("full_overlay_static", Mode::Spliced),
 ];
 
 fn override_path(name: &str, mode: Mode) -> PathBuf {

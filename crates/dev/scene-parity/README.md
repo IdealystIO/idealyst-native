@@ -354,6 +354,22 @@ same override machinery). ONE new full-op divergence:
      frozen walker copy — deliberately keeps the old constant; it is
      testimony, not a target.)
 
+8. **Dismiss backdrops carry a secondary-press layer (post-freeze
+   behaviour fix).** A `Dismiss` backdrop wired to an `on_dismiss` now
+   holds one child: a transparent `absolute; inset 0` view whose
+   `on_touch` dismisses on a non-primary press (FRAMEWORK-NOTES #61 —
+   a right-click on a popover/menu backdrop used to do nothing, because
+   a pressable's click is primary-only on every backend). The walker
+   had no such child, so the op stream gains, under the backdrop
+   pressable: `create view` → `apply_style {position: Absolute, inset
+   0}` → `install_touch_handler` → `insert`, the pressable's own
+   `apply_style` now follows its (new) child as for any styled
+   container, the layer's `on_node_unstyled` joins the teardown window,
+   and every later node id shifts by one. Nothing else moves.
+   *Pinned by:* `goldens_full_newcore/full_overlay_static.spliced.golden`
+   and `full_overlay_toggle.spliced.golden` (the latter already an
+   override for #5).
+
    All the pairs above are the closed `FULL_NEWCORE_OVERRIDES` set.
 
 ### Known walker-shape facts the full-op goldens pin (worth naming)

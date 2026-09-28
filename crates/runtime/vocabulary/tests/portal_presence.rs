@@ -213,17 +213,22 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
             .build(),
     );
     // Backdrop pressable mounts FIRST (paints behind), then the content
-    // wrapper view hosting the caller's children.
+    // wrapper view hosting the caller's children. A wired `Dismiss`
+    // backdrop carries its secondary-press layer (a styled fill view,
+    // FRAMEWORK-NOTES #61) as its only child.
     assert_eq!(
         h.take_log(),
         [
             "create n0 portal",
             "create n1 pressable",
-            "insert n0 <- n1",
             "create n2 view",
-            "create n3 text \"body\"",
-            "insert n2 <- n3",
-            "insert n0 <- n2",
+            "apply_style n2",
+            "insert n1 <- n2",
+            "insert n0 <- n1",
+            "create n3 view",
+            "create n4 text \"body\"",
+            "insert n3 <- n4",
+            "insert n0 <- n3",
         ]
     );
     let _ = dismissed;

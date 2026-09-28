@@ -14,7 +14,10 @@ use runtime_shared::primitives::overlay::BackdropMode;
 use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalTarget, ViewportPlacement,
 };
-use runtime_shared::{PointerEvents, StyleRules};
+use runtime_shared::{
+    pointer_button, Length, PointerEvents, Position, StyleRules, TouchEvent,
+    TouchHandler, TouchPhase, TouchResponse,
+};
 use runtime_scene::{item, Element};
 
 use crate::prims::{PortalPrim, PressablePrim, PrimCell};
@@ -349,6 +352,16 @@ fn lower_overlay_portal(
             BackdropMode::Opaque => Some(Rc::new(|| {}) as Rc<dyn Fn()>),
             BackdropMode::None => None,
         };
+        // A `Dismiss` backdrop dismisses on a press of ANY button
+        // (FRAMEWORK-NOTES #61). The pressable's own activation is the
+        // platform "click", which is primary-only on every backend (DOM
+        // `click`, AppKit/UIKit tap, Android `OnClickListener`), so a
+        // right-click on the backdrop used to fall through: the popover
+        // stayed open. The secondary layer carries that half.
+        let secondary_layer = match (&backdrop, &on_dismiss) {
+            (BackdropMode::Dismiss, Some(d)) => vec![secondary_press_dismiss_layer(d.clone())],
+            _ => Vec::new(),
+        };
         let on_press: Rc<dyn Fn()> = dismiss_for_backdrop.unwrap_or_else(|| Rc::new(|| {}));
         // PressablePrim constructed directly (not via `pressable()`)
         // so the already-built `Rc<dyn Fn>` and `StyleProp` install
@@ -363,7 +376,7 @@ fn lower_overlay_portal(
                 a11y: AccessibilityProps::default(),
                 ref_fill: None,
             }),
-            Vec::new(),
+            secondary_layer,
         ));
     }
 
@@ -403,9 +416,66 @@ fn lower_overlay_portal(
     )
 }
 
+/// The touch handler behind a `Dismiss` backdrop's non-primary press:
+/// a `Began` from any button other than
+/// [`PointerButton::Primary`](runtime_shared::PointerButton::Primary)
+/// fires `on_dismiss` and is consumed; everything else is IGNORED.
+///
+/// Primary is deliberately left alone — it bubbles to the enclosing
+/// backdrop `pressable`, whose click/tap semantics (release-inside,
+/// keyboard activation, robot `click`) are unchanged. A non-primary
+/// press is contractually `Began`-only (see
+/// [`PointerButton`](runtime_shared::PointerButton)), so the
+/// `Began` IS the whole click. Consuming it is also what suppresses the
+/// native context menu on web (the touch listener's `contextmenu`
+/// `preventDefault`) and stops the press reaching anything beneath.
+fn secondary_press_dismiss_handler(on_dismiss: Rc<dyn Fn()>) -> TouchHandler {
+    Rc::new(move |ev: &TouchEvent| {
+        if ev.phase == TouchPhase::Began && !pointer_button().is_primary() {
+            (on_dismiss)();
+            TouchResponse::CONSUMED
+        } else {
+            TouchResponse::IGNORED
+        }
+    })
+}
+
+/// Transparent fill layer inside a `Dismiss` backdrop that carries
+/// [`secondary_press_dismiss_handler`]. It is a CHILD of the backdrop
+/// pressable (not a parent or sibling) for two reasons:
+///
+/// - hit-testing reaches the deepest node first, so the layer sees the
+///   press before the pressable — and a primary press it ignores still
+///   bubbles up to the pressable's click unchanged;
+/// - the backdrop keeps `backdrop_style` on the same node as before, so
+///   its geometry does not move. `position: absolute; inset: 0` makes
+///   the layer cover exactly the backdrop box (every in-tree backdrop
+///   sheet is itself positioned — Taffy positions absolutely against
+///   the parent on native, CSS against the positioned backdrop on web).
+///
+/// A separate `on_touch` node rather than a touch handler on the
+/// pressable itself because the pressable's click IS its touch handler
+/// on AppKit (`make_tap_handler` in the single `on_touch` slot); a
+/// second install there would replace the primary click.
+fn secondary_press_dismiss_layer(on_dismiss: Rc<dyn Fn()>) -> Element {
+    let fill = StyleRules {
+        position: Some(Position::Absolute),
+        top: Some(Length::Px(0.0).into()),
+        right: Some(Length::Px(0.0).into()),
+        bottom: Some(Length::Px(0.0).into()),
+        left: Some(Length::Px(0.0).into()),
+        ..Default::default()
+    };
+    super::view()
+        .style(StyleProp::Static(Rc::new(fill)))
+        .on_touch(secondary_press_dismiss_handler(on_dismiss))
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_shared::PointerButton;
 
     fn portal_prim_of(el: &Element) -> &PrimCell<PortalPrim> {
         match el {
@@ -462,5 +532,91 @@ mod tests {
             Element::Item { children, .. } => assert_eq!(children.len(), 1),
             _ => panic!("expected Item"),
         }
+    }
+
+    /// The backdrop pressable's children (the portal's FIRST child).
+    fn backdrop_children(el: &Element) -> &Vec<Element> {
+        match el {
+            Element::Item { children, .. } => match &children[0] {
+                Element::Item { data, children } => {
+                    assert!(
+                        data.downcast_ref::<PrimCell<PressablePrim>>().is_some(),
+                        "the portal's first child is the backdrop pressable"
+                    );
+                    children
+                }
+                _ => panic!("backdrop must be an Item"),
+            },
+            _ => panic!("overlay lowering must produce an Item"),
+        }
+    }
+
+    fn touch_began() -> TouchEvent {
+        TouchEvent {
+            id: runtime_shared::TouchId(1),
+            phase: TouchPhase::Began,
+            position: runtime_shared::TouchPoint::new(5.0, 5.0),
+            window_position: runtime_shared::TouchPoint::new(5.0, 5.0),
+            timestamp_ns: 0,
+            force: None,
+        }
+    }
+
+    /// Regression (FRAMEWORK-NOTES #61): a right-click on a `Dismiss`
+    /// backdrop did nothing — the backdrop's only activation was the
+    /// pressable's primary-only click, so the popover/menu stayed open.
+    /// The lowering now puts a secondary-press layer inside the backdrop
+    /// whose `on_touch` dismisses on ANY non-primary `Began` (consuming
+    /// it, which is what suppresses the native context menu) and ignores
+    /// primary so the pressable's click path is untouched. Fails on the
+    /// old lowering: the backdrop pressable had no children at all.
+    #[test]
+    fn regression_dismiss_backdrop_right_click_dismisses() {
+        let fired = Rc::new(std::cell::Cell::new(0u32));
+        let f = fired.clone();
+        let el = overlay().on_dismiss(move || f.set(f.get() + 1)).build();
+        let kids = backdrop_children(&el);
+        assert_eq!(kids.len(), 1, "Dismiss backdrop carries the secondary-press layer");
+        let layer = match &kids[0] {
+            Element::Item { data, .. } => data
+                .downcast_ref::<PrimCell<crate::prims::ViewPrim>>()
+                .expect("secondary-press layer is a view")
+                .take(),
+            _ => panic!("secondary-press layer must be an Item"),
+        };
+        let on_touch = layer.on_touch.expect("layer carries an on_touch handler");
+
+        // Primary press: ignored (bubbles to the pressable's click).
+        runtime_shared::set_pointer_button(PointerButton::Primary);
+        let r = on_touch(&touch_began());
+        assert!(!r.consumed, "primary Began must bubble to the backdrop pressable");
+        assert_eq!(fired.get(), 0, "primary Began must not dismiss by itself");
+
+        // Every non-primary button dismisses and is consumed.
+        for b in [
+            PointerButton::Secondary,
+            PointerButton::Middle,
+            PointerButton::Other(3),
+        ] {
+            runtime_shared::set_pointer_button(b);
+            let r = on_touch(&touch_began());
+            assert!(r.consumed, "{b:?} Began on a Dismiss backdrop is consumed");
+        }
+        runtime_shared::set_pointer_button(PointerButton::Primary);
+        assert_eq!(fired.get(), 3, "each non-primary press dismissed once");
+    }
+
+    /// The secondary layer exists only where there is something to
+    /// dismiss: an `Opaque` backdrop (modal swallow) and a `Dismiss`
+    /// backdrop with no `on_dismiss` keep the bare pressable.
+    #[test]
+    fn secondary_press_layer_only_on_wired_dismiss_backdrops() {
+        let opaque = overlay()
+            .backdrop(BackdropMode::Opaque)
+            .on_dismiss(|| {})
+            .build();
+        assert!(backdrop_children(&opaque).is_empty());
+        let unwired = overlay().build();
+        assert!(backdrop_children(&unwired).is_empty());
     }
 }

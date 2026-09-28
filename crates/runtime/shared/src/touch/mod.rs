@@ -255,6 +255,14 @@ pub fn pointer_modifiers() -> PointerModifiers {
 /// handler that only acts on `Primary` behaves identically on every input
 /// device.
 ///
+/// Backends that deliver non-primary presses to `on_touch`: web (pointer
+/// events, plus `contextmenu` where a browser withholds the `pointerdown`),
+/// macOS (`rightMouseDown:` / `otherMouseDown:` / Ctrl-click) and the wgpu
+/// desktop engine. iOS and Android are touch-first and report every contact
+/// as `Primary`. The GTK (Linux) backend's `GestureDrag` delivery is
+/// primary-only and the Windows backend has no `on_touch` delivery yet, so
+/// neither reports a secondary press today.
+///
 /// **A secondary press delivers only a [`Began`](TouchPhase::Began)** — no
 /// `Moved`, no `Ended`. Non-primary presses deliberately never enter the
 /// drag/capture path: a browser context menu can swallow the matching

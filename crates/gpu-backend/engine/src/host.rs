@@ -863,6 +863,43 @@ impl Host {
         false
     }
 
+    /// A non-primary press (right / middle / extra button). Delivered to
+    /// the raw-touch responder chain as a `Began` ONLY, with the button
+    /// published through `runtime_shared::pointer_button` — the
+    /// `PointerButton` contract web and AppKit implement. It never
+    /// reaches the widget-action / scroll-pan paths (those are primary
+    /// gestures) and never stays in `active_touches`, so no `Moved` /
+    /// `Ended` is routed for it.
+    ///
+    /// Before this the engine dropped every non-primary press outright,
+    /// so an `on_touch` handler could not see a right-click at all — a
+    /// right-click on an overlay's Dismiss backdrop did nothing here
+    /// while web dismissed (FRAMEWORK-NOTES #61).
+    fn secondary_pointer_down(&mut self, ev: &PointerEvent) {
+        let button = match ev.button {
+            PointerButton::Primary => runtime_shared::PointerButton::Primary,
+            PointerButton::Secondary => runtime_shared::PointerButton::Secondary,
+            PointerButton::Middle => runtime_shared::PointerButton::Middle,
+            PointerButton::Other(n) => runtime_shared::PointerButton::Other(n),
+        };
+        runtime_shared::set_pointer_button(button);
+        // The mouse reports every button under one pointer id, so a
+        // right-click during a left-drag shares the drag's key: park the
+        // live gesture's entry across the dispatch (which would overwrite
+        // it on consume) and put it back afterwards.
+        let id = TouchId(ev.id.0);
+        let live = self.active_touches.remove(&id);
+        if self.dispatch_touch_began(ev) {
+            self.active_touches.remove(&id);
+        }
+        if let Some(live) = live {
+            self.active_touches.insert(id, live);
+        }
+        // The primary path never writes the slot, so restore the
+        // default rather than leave `Secondary` for the next press.
+        runtime_shared::set_pointer_button(runtime_shared::PointerButton::Primary);
+    }
+
     /// Raw-touch dispatch — `Moved`. Routes the event to the handler
     /// that consumed `Began` for this [`TouchId`], if any. Returns
     /// `true` when dispatched (caller skips the legacy move path).
@@ -1031,6 +1068,7 @@ impl Host {
     /// - nothing          → drop any active TextInput focus.
     pub fn pointer_down(&mut self, ev: PointerEvent) {
         if !matches!(ev.button, PointerButton::Primary) {
+            self.secondary_pointer_down(&ev);
             return;
         }
         self.pointer = ev.position;
@@ -2563,6 +2601,56 @@ mod tests {
         size_subtree(&mut b, root, w, h);
         let root_layout = root.borrow().layout;
         b.layout.compute(root_layout, w, h);
+    }
+
+    // -------------------------------------------------------------
+    // Non-primary presses (FRAMEWORK-NOTES #61)
+    // -------------------------------------------------------------
+
+    /// Regression: the engine dropped every non-primary press in
+    /// `pointer_down`, so an `on_touch` handler never saw a right-click —
+    /// an overlay's Dismiss backdrop (whose secondary-press layer is an
+    /// `on_touch` view) could not be dismissed by one, where web could.
+    /// A right-click must reach the handler as a `Began` carrying
+    /// `PointerButton::Secondary`, and must not stay active (no later
+    /// `Moved`/`Ended`). Fails pre-fix: the handler is never called.
+    #[test]
+    fn regression_secondary_press_reaches_on_touch_as_began_only() {
+        use render_api::{PointerButton as ApiButton, PointerEvent, PointerId};
+        use runtime_shared::PointerButton;
+
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let seen: Rc<RefCell<Vec<(TouchPhase, PointerButton)>>> = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let root;
+        {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            root = b.create_view_impl(&Default::default());
+            b.install_touch_handler_impl(
+                &root,
+                Rc::new(move |ev: &TouchEvent| {
+                    s.borrow_mut().push((ev.phase, runtime_shared::pointer_button()));
+                    TouchResponse::CONSUMED
+                }),
+            );
+            b.finish_impl(root.clone());
+        }
+        force_layout(host.backend(), &root, 100.0, 100.0);
+
+        let press = |button| PointerEvent { id: PointerId::MOUSE, button, position: (50.0, 50.0) };
+        host.pointer_down(press(ApiButton::Secondary));
+        host.pointer_up(press(ApiButton::Secondary));
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[(TouchPhase::Began, PointerButton::Secondary)],
+            "a right-click is one Secondary Began, never an Ended",
+        );
+        assert_eq!(
+            runtime_shared::pointer_button(),
+            PointerButton::Primary,
+            "the button slot is restored for the next (primary) press",
+        );
     }
 
     // -------------------------------------------------------------
