@@ -205,7 +205,9 @@ pub fn decode_ws_args<T: serde::de::DeserializeOwned>(args: Option<String>) -> R
             .ok_or_else(|| (StatusCode::BAD_REQUEST, "malformed ws args (hex)").into_response())?,
         None => b"null".to_vec(),
     };
-    serde_json::from_slice(&bytes)
+    // Same decoder as `#[server]` bodies, so a zero-arg stream accepts
+    // `[]` as well as `null` (#15).
+    crate::args_from_json(&bytes)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("ws args decode: {e}")).into_response())
 }
 
@@ -461,6 +463,17 @@ mod tests {
         // Any channel registered → no warning.
         assert!(zero_routes_warning(0, 1).is_none());
         assert!(zero_routes_warning(3, 2).is_none());
+    }
+
+    /// #15, stream side: a zero-arg `#[channel]` / `#[subscription]` /
+    /// `#[sse]` shares the args decoder, so its hex-encoded open args
+    /// accept `[]` (hex `5b5d`) as well as `null` / absent.
+    #[test]
+    fn regression_zero_arg_stream_open_args_accept_empty_array() {
+        assert!(decode_ws_args::<()>(Some("5b5d".into())).is_ok(), "`[]`");
+        assert!(decode_ws_args::<()>(Some(crate::client::encode_ws_args(&()))).is_ok(), "`null`");
+        assert!(decode_ws_args::<()>(None).is_ok(), "absent");
+        assert!(decode_ws_args::<(i32,)>(Some("5b5d".into())).is_err(), "arity still checked");
     }
 }
 

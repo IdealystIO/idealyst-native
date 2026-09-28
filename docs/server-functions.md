@@ -690,7 +690,10 @@ Secure/SameSite=Lax cookie for web + bearer for native (one server, both
 transports — `start` branches on the `x-idealyst-client: native` header),
 the guard that resolves either transport and inserts `Authenticated` +
 your serde principal (so `Auth<P>` / `Role<M>` compose unchanged), TTL /
-sliding expiration, and logout. The guard never rejects — an invalid
+sliding expiration, and logout. The cookie's attributes are adjustable
+with `.cookie(|c| c.domain("example.com"))` (or `.secure(false)` for a
+plain-`http://` deployment); login sets that cookie and `end` deletes that
+same cookie, so logout's deletion always matches. The guard never rejects — an invalid
 session is simply anonymous, and the route's own requirements answer. A
 session-store outage inserts nothing (protected routes fail closed) with
 a stderr warning. `examples/login-demo` runs on this.
@@ -761,8 +764,26 @@ per-request jar:
 
 ```rust
 server::set_cookie(server::Cookie::new("session", id));  // httpOnly+Secure+Lax by default
-server::clear_cookie("session");
+server::set_cookie(server::clear_cookie("session"));     // deletes a cookie set with those defaults
 ```
+
+A browser only deletes a cookie when the deletion matches its `Path` and
+`Domain`, and it rejects a `Secure` deletion for a cookie set without
+`Secure` over `http://`. So for a cookie with any non-default attribute,
+build it in one place and delete it with `.clearing()` — the same name,
+`Path`, `Domain`, `Secure`, `HttpOnly` and `SameSite`, an empty value,
+`Max-Age=0` and a past `Expires`:
+
+```rust
+fn session_cookie(value: impl Into<String>) -> server::Cookie {
+    server::Cookie::new("session", value).path("/app").secure(false)
+}
+server::set_cookie(session_cookie(id));                // login
+server::set_cookie(session_cookie("").clearing());     // logout
+```
+
+`server_kit::Sessions` does this for you: `.cookie(|c| c.domain("example.com"))`
+adjusts the session cookie, and `Sessions::end` clears exactly that cookie.
 
 The blessed shapes, both implemented end-to-end in
 [`login-demo`](../examples/login-demo/src/lib.rs):
@@ -791,6 +812,14 @@ server::configure(
 
 On web, point at the page origin so calls are same-origin (that's what makes
 the browser send the httpOnly cookie).
+
+`server::base_url()` reads the configured base back (trailing `/` dropped;
+`None` before `configure`) — for URLs to your server that don't go through a
+server fn, like a download link or a file the OS should open:
+
+```rust
+let href = format!("{}/files/{id}/download", server::base_url().unwrap_or_default());
+```
 
 ### Calling from UI code
 
@@ -994,7 +1023,7 @@ async fn main() {
 
 | Route | Transport | Body |
 |---|---|---|
-| `POST /_srv/<path>` | request/response | JSON args tuple in → JSON `Result<T, E>` out |
+| `POST /_srv/<path>` | request/response | JSON args tuple in (`[a, b]`; a zero-arg fn accepts `null` — what the Rust stub sends — or `[]`) → JSON `Result<T, E>` out |
 | `POST /_srv/_batch` | coalesced calls | array of entries, per-entry middleware |
 | `GET /_srv/_ws/<path>` | WebSocket | JSON frames; open args as hex JSON in `?args=` |
 | `GET /_srv/_sse/<path>` | Server-Sent Events | each item as a `data:` JSON event |

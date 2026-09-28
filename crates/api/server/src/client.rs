@@ -1,8 +1,8 @@
 //! Client-side machinery: configuration + the `call_impl` the macro's
 //! client-side stub ultimately routes through.
 //!
-//! Compiled only when the `server` feature is OFF — i.e. on every
-//! client target. The server build never instantiates this module.
+//! Compiled on every build, `server` feature or not (see the note on the
+//! client surface in `lib.rs`: gating it made the feature non-additive).
 
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -140,6 +140,28 @@ pub fn configure(config: ClientConfig) {
             let _ = CONFIG.set(RwLock::new(arc));
         }
     }
+}
+
+/// The base URL the client is configured to call — what [`configure`] was
+/// last given, with any trailing `/` removed — or `None` before
+/// [`configure`] has run.
+///
+/// For links and requests that go to the app's server but not through a
+/// `#[server]` fn: a download route, a file the OS or browser should open
+/// itself, an image `src`, a plain-HTTP webhook the app calls directly.
+/// Reading it back keeps them pointed wherever the server-fn calls go,
+/// instead of repeating the host in a second place:
+///
+/// ```ignore
+/// let base = server::base_url().expect("server::configure ran at startup");
+/// let href = format!("{base}/files/{id}/download");
+/// ```
+///
+/// On web, when the bundle is served same-origin, this is whatever was
+/// passed to `configure` (often `""` or the page origin).
+pub fn base_url() -> Option<String> {
+    let config = CONFIG.get()?.read().unwrap().clone();
+    Some(config.base_url.trim_end_matches('/').to_string())
 }
 
 /// Snapshot the active config. Returns a `ServerError::Network` if
@@ -288,5 +310,28 @@ pub(crate) fn map_net_error(e: net::Error) -> TransportError {
             message: body.unwrap_or_default(),
         },
         net::Error::Cancelled => TransportError::Cancelled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #81: apps building URLs to their own server (downloads, files the
+    /// OS opens) had no way to read the configured base back —
+    /// `snapshot_config` is crate-private. This is the only lib test that
+    /// touches the process-global `CONFIG`, so the unconfigured step is
+    /// deterministic.
+    #[test]
+    fn base_url_reads_back_the_configured_server() {
+        assert_eq!(base_url(), None, "unconfigured → None");
+
+        configure(ClientConfig::new("https://api.example.com"));
+        assert_eq!(base_url().as_deref(), Some("https://api.example.com"));
+
+        // Reconfiguring is observed, and a trailing slash is dropped so
+        // `format!("{base}/path")` never doubles it.
+        configure(ClientConfig::new("http://127.0.0.1:3000/"));
+        assert_eq!(base_url().as_deref(), Some("http://127.0.0.1:3000"));
     }
 }

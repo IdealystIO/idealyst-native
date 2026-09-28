@@ -437,6 +437,41 @@ mod server_side {
         assert_eq!(result, Ok("pong".into()));
     }
 
+    /// The reported bug (#15): a zero-arg fn rejected the empty args
+    /// tuple `[]` (`invalid type: sequence, expected unit`) — the natural
+    /// thing for curl / a non-Rust client to send, since every other
+    /// arity is a JSON array. `null` (what the Rust client stub sends)
+    /// must keep working alongside it, directly and inside a batch.
+    #[tokio::test]
+    async fn regression_zero_arg_server_fn_accepts_empty_array_body() {
+        let addr = boot().await;
+        let client = net::Client::new();
+        for body in [serde_json::json!([]), serde_json::Value::Null] {
+            let response = client
+                .post(format!("http://{addr}/_srv/v1/ping"))
+                .body(net::Json(&body))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "body {body}");
+            let result: Result<String, ServerError> = response.json().await.unwrap();
+            assert_eq!(result, Ok("pong".into()), "body {body}");
+        }
+
+        let response = client
+            .post(format!("http://{addr}/_srv/_batch"))
+            .body(net::Json(&serde_json::json!([
+                { "path": "v1/ping", "args": [] },
+                { "path": "v1/ping", "args": null },
+            ])))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let results: Vec<Result<String, ServerError>> = response.json().await.unwrap();
+        assert_eq!(results, vec![Ok("pong".into()), Ok("pong".into())]);
+    }
+
     #[tokio::test]
     async fn regression_unknown_path_returns_404() {
         let addr = boot().await;
@@ -1218,6 +1253,24 @@ mod client_side {
 
         let _ = ping().await;
         assert_eq!(mock.calls()[0].path, "v1/ping");
+    }
+
+    /// Pins the zero-arg wire encoding the stub sends: `null` (serde_json's
+    /// spelling of `()`). The server accepts both `null` and `[]` for a
+    /// zero-arg fn (#15); the stub stays on `null` so a new client keeps
+    /// working against a server that predates the `[]` allowance.
+    #[tokio::test]
+    async fn zero_arg_stub_sends_null_args() {
+        let mock = mock_server(Arc::new(|_call| {
+            let body = serde_json::to_vec(&Result::<String, ServerError>::Ok("pong".into()))
+                .unwrap();
+            (StatusCode::OK, body)
+        }))
+        .await;
+        let _guard = configure_for(mock.addr).await;
+
+        assert_eq!(ping().await, Ok("pong".into()));
+        assert_eq!(mock.calls()[0].body, b"null");
     }
 
     #[tokio::test]

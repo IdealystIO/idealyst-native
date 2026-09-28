@@ -106,7 +106,7 @@ mod client;
 pub use batch::{batch, BatchScope};
 pub use cancel::{with_cancel, with_cancel_token, WithCancel};
 pub use client::{
-    bearer, configure, credentials_from_fn, dev_base_url, BearerCredentials, ClientConfig,
+    base_url, bearer, configure, credentials_from_fn, dev_base_url, BearerCredentials, ClientConfig,
     CredentialProvider, FnCredentials,
 };
 
@@ -146,6 +146,35 @@ pub use hook::{install_dispatch_hook, DispatchHook, HookFuture, Next, OpenFuture
 pub use response::{append_response_header, ResponseHeaderJar};
 #[cfg(feature = "server")]
 pub use runtime::{router, schema_for, serve};
+
+/// Decode a `#[server]` / `#[channel]` / `#[subscription]` / `#[sse]` args
+/// tuple from its JSON bytes.
+///
+/// Every args tuple with one or more params is a JSON array (`[a]`,
+/// `[a, b]`), but serde_json encodes the EMPTY tuple `()` as `null` — and
+/// decodes `()` only from `null`. So a zero-arg fn used to reject `[]`
+/// (`invalid type: sequence, expected unit`), the spelling any hand-written
+/// client (curl, a test, a non-Rust caller) naturally sends (#15). An empty
+/// array now decodes as `()` too. The framework's own client stub keeps
+/// sending `null` (`serde_json::to_vec(&())`), so a new client still talks
+/// to an older server.
+///
+/// The fallback runs only after the direct decode fails AND the body is
+/// exactly an empty array, and it only succeeds for a `T` that accepts
+/// `null` — the unit tuple. A wrong-arity call (`[1]` to a zero-arg fn,
+/// `[]` to a one-arg fn) still fails with the original error.
+pub(crate) fn args_from_json<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, serde_json::Error> {
+    serde_json::from_slice(bytes).or_else(|err| {
+        match serde_json::from_slice::<serde_json::Value>(bytes) {
+            Ok(serde_json::Value::Array(items)) if items.is_empty() => {
+                serde_json::from_value(serde_json::Value::Null).map_err(|_| err)
+            }
+            _ => Err(err),
+        }
+    })
+}
 
 // =============================================================================
 // Macro-facing internals. Not stable surface — re-exports here are
@@ -202,9 +231,10 @@ pub mod __private {
     inventory::collect!(ServerFnEntry);
 
     /// Decode the args tuple from the request body. Used by the macro's
-    /// server-side expansion.
+    /// server-side expansion (and, through it, by every batch entry).
+    /// Zero-arg fns accept both `null` and `[]` — see [`crate::args_from_json`].
     pub fn decode_args<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, TransportError> {
-        serde_json::from_slice(bytes).map_err(|e| TransportError::Codec(e.to_string()))
+        crate::args_from_json(bytes).map_err(|e| TransportError::Codec(e.to_string()))
     }
 
     /// Encode the function's `Result` for the wire. Used by the macro's
@@ -290,5 +320,42 @@ pub mod __private {
         Ret: DeserializeOwned + ServerFnReturn,
     {
         crate::client::call_impl::<Args, Ret>(path, schema, args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::__private::decode_args;
+
+    /// The reported bug (#15): `POST /_srv/logout -d '[]'` failed with
+    /// `invalid type: sequence, expected unit`. Every other arity's args
+    /// tuple is a JSON array (`[a]`, `[a, b]`), so `[]` is what a hand
+    /// client (curl, a test, another language) sends for zero args — but
+    /// `()` only decoded from `null`, the one spelling serde_json happens
+    /// to emit for the unit tuple.
+    #[test]
+    fn regression_zero_arg_server_fn_accepts_empty_array() {
+        let () = decode_args::<()>(b"[]").expect("`[]` is the empty args tuple");
+        let () = decode_args::<()>(b" [ ] ").expect("whitespace is still `[]`");
+    }
+
+    /// `null` is what the framework's own client stub sends for zero args
+    /// (`serde_json::to_vec(&())`) — it must keep decoding, or an older
+    /// client talking to a newer server breaks.
+    #[test]
+    fn zero_arg_server_fn_still_accepts_null() {
+        let () = decode_args::<()>(b"null").expect("`null` is the client stub's encoding");
+    }
+
+    /// The `[]` allowance is for the EMPTY tuple only: a non-empty array
+    /// is still a wrong-arity call for a zero-arg fn, and `[]` is still a
+    /// wrong-arity call for a one-arg fn.
+    #[test]
+    fn empty_array_allowance_does_not_mask_arity_errors() {
+        assert!(decode_args::<()>(b"[1]").is_err());
+        assert!(decode_args::<()>(b"{}").is_err());
+        assert!(decode_args::<(i32,)>(b"[]").is_err());
+        assert!(decode_args::<(Option<i32>,)>(b"[]").is_err());
+        assert_eq!(decode_args::<(i32, i32)>(b"[2, 3]").unwrap(), (2, 3));
     }
 }

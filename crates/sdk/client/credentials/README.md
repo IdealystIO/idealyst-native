@@ -61,7 +61,7 @@ pub async fn login(email: String, password: String) -> Result<(), ServerError> {
 // Logout clears it:
 #[server]
 pub async fn logout() -> Result<(), ServerError> {
-    server::clear_cookie("session");
+    server::set_cookie(server::clear_cookie("session"));
     Ok(())
 }
 ```

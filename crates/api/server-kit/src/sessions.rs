@@ -66,6 +66,10 @@ pub struct SessionTicket {
 pub struct Sessions {
     cache: Arc<dyn Cache>,
     cookie_name: String,
+    /// Author overrides applied on top of `Cookie::new`'s secure defaults —
+    /// the ONE definition both `start` (set) and `end` (clear) build from,
+    /// so the deletion always matches the cookie it deletes (#12).
+    cookie_attrs: Arc<dyn Fn(server::Cookie) -> server::Cookie + Send + Sync>,
     namespace: String,
     ttl: Duration,
     /// When set, each authenticated request re-arms the TTL.
@@ -77,6 +81,7 @@ impl Sessions {
         Self {
             cache: Arc::new(cache),
             cookie_name: "session".to_string(),
+            cookie_attrs: Arc::new(|c| c),
             namespace: "sess".to_string(),
             ttl: Duration::from_secs(30 * 24 * 3600), // 30 days
             sliding: false,
@@ -87,6 +92,30 @@ impl Sessions {
     pub fn cookie_name(mut self, name: impl Into<String>) -> Self {
         self.cookie_name = name.into();
         self
+    }
+
+    /// Adjust the session cookie's attributes. The closure receives the
+    /// default cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`) and
+    /// returns the one to use — e.g. `.cookie(|c| c.domain("example.com"))`
+    /// to share it across subdomains, or `.cookie(|c| c.secure(false))` for
+    /// a plain-`http://` deployment. Both [`start`](Self::start) and
+    /// [`end`](Self::end) build from it, so logout's deletion always
+    /// carries the same `Path` / `Domain` / `Secure` as login's cookie — a
+    /// browser ignores a deletion that doesn't match. `Max-Age` is set by
+    /// the sessions system (`ttl` on login, `0` on logout); the value is
+    /// the token.
+    pub fn cookie(
+        mut self,
+        attrs: impl Fn(server::Cookie) -> server::Cookie + Send + Sync + 'static,
+    ) -> Self {
+        self.cookie_attrs = Arc::new(attrs);
+        self
+    }
+
+    /// The session cookie definition carrying `value` — the single source
+    /// of truth for both the login `Set-Cookie` and the logout deletion.
+    fn session_cookie(&self, value: impl Into<String>) -> server::Cookie {
+        (self.cookie_attrs)(server::Cookie::new(self.cookie_name.clone(), value))
     }
 
     /// Cache-key namespace (default `sess`).
@@ -183,17 +212,16 @@ impl Sessions {
         if native {
             Ok(SessionTicket { token: Some(token) })
         } else {
-            server::set_cookie(
-                server::Cookie::new(self.cookie_name.clone(), token)
-                    .max_age_secs(self.ttl.as_secs() as i64),
-            );
+            server::set_cookie(self.session_cookie(token).max_age_secs(self.ttl.as_secs() as i64));
             Ok(SessionTicket { token: None })
         }
     }
 
     /// End the current request's session (logout): delete the stored
-    /// session and clear the cookie. A no-op when no session was
-    /// presented.
+    /// session and clear the cookie. The deletion is the clearing form of
+    /// the configured session cookie ([`cookie`](Self::cookie)), so its
+    /// `Path` / `Domain` / `Secure` match what [`start`](Self::start) set.
+    /// A no-op on the store when no session was presented.
     pub async fn end(&self) -> Result<(), CacheError> {
         let token = server::use_request_headers().and_then(|headers| {
             let from_cookie = headers
@@ -210,7 +238,7 @@ impl Sessions {
         if let Some(token) = token {
             self.cache.delete(&self.key(&token)).await?;
         }
-        server::set_cookie(server::clear_cookie(self.cookie_name.clone()));
+        server::set_cookie(self.session_cookie("").clearing());
         Ok(())
     }
 }

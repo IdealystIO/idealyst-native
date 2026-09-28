@@ -3,7 +3,7 @@
 //! MemoryCache session store, with observer records asserted alongside.
 #![cfg(feature = "server")]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use server::{ServerError, State};
 use server_kit::{Auth, Outcome, Sessions};
@@ -67,7 +67,10 @@ fn records() -> &'static Mutex<Vec<Seen>> {
 fn install_once() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
-        let sessions = Sessions::new(cache::MemoryCache::new());
+        // Non-default cookie attributes — the plain-`http://` shape — so
+        // the logout test can prove the deletion mirrors them (#12).
+        let sessions = Sessions::new(cache::MemoryCache::new())
+            .cookie(|c| c.secure(false).same_site(server::SameSite::Strict).path("/"));
         server::install_state(sessions.clone());
         server_kit::install_middleware(sessions.guard::<Principal>());
         server_kit::install_observer(|r| {
@@ -141,8 +144,28 @@ async fn web_cookie_login_me_logout_round_trip() {
     // Logout → session deleted server-side and the cookie cleared.
     let resp = post(addr, "logout", "null", &[("cookie", &cookie_pair)]).await;
     assert_eq!(resp.status(), 200);
-    let cleared = resp.headers().get("set-cookie").expect("logout must clear the cookie");
-    assert!(cleared.to_str().unwrap().contains("Max-Age=0"), "got: {cleared:?}");
+    let cleared = resp
+        .headers()
+        .get("set-cookie")
+        .expect("logout must clear the cookie")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(cleared.starts_with("session=;"), "got: {cleared}");
+    assert!(cleared.contains("Max-Age=0"), "got: {cleared}");
+    // Regression (#12): the deletion used to be `clear_cookie(name)` —
+    // always `Secure` + `SameSite=Lax` — which a browser rejects for a
+    // cookie set without `Secure` over http, leaving the session cookie in
+    // place. It must carry exactly the attributes login set.
+    let attrs = |h: &str| -> Vec<String> {
+        h.split("; ")
+            .skip(1)
+            .filter(|a| !a.starts_with("Max-Age=") && !a.starts_with("Expires="))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(attrs(&cleared), attrs(&set_cookie), "login: {set_cookie}\nlogout: {cleared}");
+    assert!(!cleared.contains("Secure"), "got: {cleared}");
 
     // The old cookie is dead: the deleted session no longer authenticates.
     let resp = post(addr, "me", "null", &[("cookie", &cookie_pair)]).await;

@@ -80,6 +80,14 @@ server::configure(server::ClientConfig::new("https://api.example.com"));
 ```
 
 Then just call the function — `create_todo(input).await` — and it round-trips.
+`server::base_url()` reads the configured origin back (`None` before
+`configure`), for URLs to the server that aren't server-fn calls — a download
+link, a file the OS opens:
+`format!("{}/files/{id}", server::base_url().unwrap_or_default())`.
+
+On the wire each call is `POST /_srv/<fn>` with the args tuple as a JSON array
+(`[a, b]`); a zero-arg fn takes `null` (what the stub sends) or `[]`, so
+`curl -X POST …/_srv/logout -d '[]'` works.
 
 ## Pairing with reactive state
 

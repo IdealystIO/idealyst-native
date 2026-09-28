@@ -605,7 +605,7 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
 - **Phase 5 — Auth primitives. ◑ PARTIAL.** ✅ Client credential source
   (`ClientConfig::with_credentials` + `bearer` / `credentials_from_fn`), attached
   to every request (single + batch), tested. ✅ **Response cookies**:
-  `server::set_cookie(Cookie)` / `clear_cookie(name)` — handlers attach a
+  `server::set_cookie(Cookie)` / `Cookie::clearing()` / `clear_cookie(name)` — handlers attach a
   `Set-Cookie` (httpOnly/Secure/SameSite=Lax by default) via a per-request cookie
   jar the dispatcher drains (single + batch paths); e2e-tested. This is the server
   half of the web BFF auth pattern. ✅ **Storage split into two honest SDKs**:

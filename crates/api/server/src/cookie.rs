@@ -56,6 +56,11 @@ pub struct Cookie {
     /// Lifetime in seconds. `None` = a session cookie (cleared when the
     /// browser closes). `Some(0)` expires it immediately (delete).
     max_age: Option<i64>,
+    /// Emit `Expires=` at the Unix epoch. Set only by [`Cookie::clearing`]:
+    /// `Max-Age=0` is what current browsers act on, the past `Expires` is
+    /// for user agents that predate `Max-Age` (RFC 6265 §5.3 lets
+    /// `Max-Age` win when both are present, so they never disagree).
+    expired: bool,
 }
 
 impl Cookie {
@@ -71,6 +76,7 @@ impl Cookie {
             path: Some("/".to_string()),
             domain: None,
             max_age: None,
+            expired: false,
         }
     }
 
@@ -112,6 +118,36 @@ impl Cookie {
         self
     }
 
+    /// The `Set-Cookie` that **deletes** this cookie: same name, `Path`,
+    /// `Domain`, `Secure`, `HttpOnly` and `SameSite`, an empty value,
+    /// `Max-Age=0` and an `Expires` in the past.
+    ///
+    /// Derive the deletion from the SAME definition that set the cookie —
+    /// build the cookie in one place and call `.clearing()` on it at
+    /// logout. A browser only replaces (and so only deletes) a stored
+    /// cookie whose name, path and domain all match, so a deletion with a
+    /// different `Path`/`Domain` leaves the original in place; and a
+    /// `Secure` deletion for a cookie that was set without `Secure` over
+    /// plain `http://` is rejected outright. [`clear_cookie`] can't know
+    /// any of that — it assumes [`Cookie::new`]'s defaults.
+    ///
+    /// ```ignore
+    /// fn session_cookie(value: impl Into<String>) -> Cookie {
+    ///     Cookie::new("session", value).path("/app").secure(false)
+    /// }
+    /// server::set_cookie(session_cookie(token));             // login
+    /// server::set_cookie(session_cookie("").clearing());     // logout
+    /// ```
+    #[must_use = "a clearing cookie does nothing until passed to `server::set_cookie`"]
+    pub fn clearing(&self) -> Cookie {
+        Cookie {
+            value: String::new(),
+            max_age: Some(0),
+            expired: true,
+            ..self.clone()
+        }
+    }
+
     /// Render the `Set-Cookie` header value.
     fn to_header(&self) -> String {
         // Values may contain characters needing care, but cookie values
@@ -131,6 +167,9 @@ impl Cookie {
             s.push_str("; Max-Age=");
             s.push_str(&max_age.to_string());
         }
+        if self.expired {
+            s.push_str("; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+        }
         if let Some(same_site) = self.same_site {
             s.push_str("; SameSite=");
             s.push_str(same_site.as_str());
@@ -145,10 +184,26 @@ impl Cookie {
     }
 }
 
-/// Build a cookie that **deletes** `name` (empty value, `Max-Age=0`). Its
-/// other attributes (path/domain) should match the cookie being cleared.
+/// The `Set-Cookie` value, exactly as the dispatcher emits it — e.g.
+/// `session=abc; Path=/; SameSite=Lax; Secure; HttpOnly`.
+impl std::fmt::Display for Cookie {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_header())
+    }
+}
+
+/// Build a cookie that **deletes** `name`, assuming it was set with
+/// [`Cookie::new`]'s defaults — `Path=/`, no `Domain`, `Secure`,
+/// `HttpOnly`, `SameSite=Lax`. Shorthand for
+/// `Cookie::new(name, "").clearing()`.
+///
+/// For a cookie set with ANY other `Path`, `Domain` or `Secure`, this does
+/// not delete it — the browser keeps the original (see
+/// [`Cookie::clearing`] for why). Call `.clearing()` on the same `Cookie`
+/// definition that set it instead.
+#[must_use = "`clear_cookie` only builds the deletion — pass it to `server::set_cookie`"]
 pub fn clear_cookie(name: impl Into<String>) -> Cookie {
-    Cookie::new(name, "").max_age_secs(0)
+    Cookie::new(name, "").clearing()
 }
 
 /// Attach `cookie` to the current request's HTTP response as a
@@ -198,8 +253,61 @@ mod tests {
     #[test]
     fn clear_cookie_expires() {
         let h = clear_cookie("session").to_header();
-        assert!(h.starts_with("session="));
+        assert!(h.starts_with("session=;"), "{h}");
         assert!(h.contains("; Max-Age=0"));
+        assert!(h.contains("; Expires=Thu, 01 Jan 1970 00:00:00 GMT"), "{h}");
+    }
+
+    /// The attributes that decide whether a deletion lands, in the order
+    /// the header renders them.
+    fn attrs(h: &str) -> Vec<&str> {
+        h.split("; ")
+            .skip(1)
+            .filter(|a| !a.starts_with("Max-Age=") && !a.starts_with("Expires="))
+            .collect()
+    }
+
+    /// The reported bug (#12): the only deletion helper was
+    /// `clear_cookie(name)`, always `Path=/`, `Secure`, `HttpOnly`,
+    /// `SameSite=Lax`. A browser drops a `Secure` deletion for a cookie
+    /// set without `Secure` over `http://`, and a deletion whose
+    /// `Path`/`Domain` differ names a DIFFERENT cookie — so logout left the
+    /// real session cookie in place. The clearing form must mirror every
+    /// attribute of the cookie it deletes.
+    #[test]
+    fn regression_clearing_cookie_mirrors_the_cookie_it_clears() {
+        let set = Cookie::new("sid", "tok")
+            .secure(false)
+            .http_only(false)
+            .same_site(SameSite::Strict)
+            .path("/app")
+            .domain("example.com")
+            .max_age_secs(3600);
+        let clear = set.clearing().to_header();
+        assert!(clear.starts_with("sid=;"), "empty value: {clear}");
+        assert_eq!(attrs(&clear), attrs(&set.to_header()), "{clear}");
+        assert!(!clear.contains("Secure"), "{clear}");
+        assert!(clear.contains("; Path=/app"), "{clear}");
+        assert!(clear.contains("; Domain=example.com"), "{clear}");
+        assert!(clear.contains("; Max-Age=0"), "{clear}");
+        assert!(clear.contains("; Expires=Thu, 01 Jan 1970 00:00:00 GMT"), "{clear}");
+        assert!(!clear.contains("Max-Age=3600"), "{clear}");
+    }
+
+    /// `clear_cookie(name)` is exactly the clearing form of a default
+    /// cookie — its documented assumption.
+    #[test]
+    fn clear_cookie_is_the_clearing_form_of_the_defaults() {
+        assert_eq!(
+            clear_cookie("session").to_header(),
+            Cookie::new("session", "abc").clearing().to_header()
+        );
+    }
+
+    #[test]
+    fn display_is_the_set_cookie_value() {
+        let c = Cookie::new("k", "v").path("/p");
+        assert_eq!(c.to_string(), c.to_header());
     }
 
     #[test]
