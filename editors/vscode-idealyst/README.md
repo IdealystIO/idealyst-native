@@ -79,7 +79,13 @@ Data comes from two sources, merged:
   register them. It links none of the workspace's own crates, so a
   compile error in your code can never take it down, and it only
   rebuilds when the dependency graph changes (minutes cold, seconds
-  warm).
+  warm). It builds under the workspace's own cargo target dir —
+  `target/idealyst/<crate>/catalog-deps/` for the generated wrapper,
+  `target/idealyst-mcp/` for its build output — never inside a member
+  crate's directory, so every crate of a monorepo shares one warm
+  dependency build. Incremental compilation stays on; each build trims
+  superseded incremental caches so the dir doesn't grow with every
+  framework release.
 - **`idealyst catalog-scan`** — what the workspace **writes**: every
   framework-dependent crate's components, props, `IdealystSchema` enums
   and `value_of` markers, read from source with `syn` in about a

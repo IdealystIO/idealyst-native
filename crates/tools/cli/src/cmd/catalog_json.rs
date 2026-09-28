@@ -26,11 +26,17 @@
 //!
 //! First run compiles the wrapper (the project graph with the `catalog`
 //! feature on) — minutes cold, seconds warm; cargo caches everything.
+//! The wrapper and its build live under the project's cargo workspace
+//! target dir (`target/idealyst/…`, `target/idealyst-mcp/`), shared by
+//! every member crate, and each run trims superseded incremental caches
+//! (see [`catalog_target_root`] / [`prune_incremental`]).
 //! Build chatter goes to stderr; stdout stays pure JSON.
 //!
 //! [`generate_deps_only`]: super::catalog_wrapper::generate_deps_only
 //!
 //! [`resolve_project_roots`]: super::catalog_wrapper::resolve_project_roots
+//! [`catalog_target_root`]: super::catalog_wrapper::catalog_target_root
+//! [`prune_incremental`]: super::catalog_wrapper::prune_incremental
 
 use std::path::PathBuf;
 use std::process::Command;

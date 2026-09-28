@@ -52,6 +52,33 @@
 //! registrations — into the catalog binary, so a freshly-added
 //! component-library dependency surfaces in the catalog even before the
 //! project references any of its components.
+//!
+//! ## Where it lives, and keeping it small
+//!
+//! The wrapper sources go to `<target>/idealyst/<project(s)>/<flavour>/`
+//! and its build output to the sidecar `<target>/idealyst-mcp/`, where
+//! `<target>` is [`catalog_target_root`]: the framework checkout's
+//! `target/` when the framework is a local path, otherwise the target
+//! directory **cargo itself reports for the project's workspace**
+//! (`cargo metadata`'s `target_directory`, which honours
+//! `CARGO_TARGET_DIR` and `build.target-dir`). It used to be
+//! `<crate dir>/target`, which for a workspace member is a brand-new
+//! `target/` inside the source tree (`crates/ui-shared/target/`) that an
+//! anchored `/target` ignore rule does not cover, holding a second full
+//! copy of the dependency graph per member the editor extension opened.
+//!
+//! Cargo never deletes a superseded compilation unit, and rustc only
+//! garbage-collects sessions *inside* one `incremental/<crate>-<hash>`
+//! dir. The hash moves whenever the unit's metadata does — any
+//! dependency version bump, a feature change, a different project set,
+//! a different toolchain — so every framework release leaves one more
+//! incremental cache per path crate (the wrapper bin, every linked
+//! workspace member) behind for good. Measured on CrewForge's
+//! `app-checkin` sidecar: 174 cache dirs, 36 of them for the 3-line
+//! `catalog` bin, 33 GB. [`prune_incremental`] runs on every generate and
+//! keeps the newest [`INCREMENTAL_KEEP_PER_CRATE`] per crate, so
+//! incremental stays on (warm rebuilds of the linked members stay fast)
+//! and the cache stops growing with history.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -198,11 +225,62 @@ pub const SIDECAR_TARGET_DIR: &str = "idealyst-mcp";
 
 /// Where the generated catalog wrapper writes its build output.
 ///
-/// Rooted at [`FrameworkSource::cargo_target_dir`], so sibling projects
-/// under one framework source share a warm dependency cache — the same
-/// rooting the web and dev-server target dirs use.
+/// Rooted at [`catalog_target_root`], so every crate of a workspace (and,
+/// with a local framework checkout, every project built against it)
+/// shares one warm dependency cache.
 pub fn sidecar_target_dir(source: &FrameworkSource, project_root: &Path) -> PathBuf {
-    source.cargo_target_dir(project_root).join(SIDECAR_TARGET_DIR)
+    catalog_target_root(source, project_root, None).join(SIDECAR_TARGET_DIR)
+}
+
+/// The cargo target root the catalog wrapper lives under — its sources
+/// at `<root>/idealyst/…`, its build output at `<root>/idealyst-mcp`.
+///
+/// - Framework as a local path ([`FrameworkSource::Workspace`]): the
+///   checkout's `target/`, shared by every project built against it so
+///   the framework graph compiles once.
+/// - Otherwise: the target dir cargo reports for the project's
+///   workspace. `known` is that value when the caller already ran a
+///   full `cargo metadata` for the project (generation does, for the
+///   forced deps), so the common path costs no extra cargo call; without
+///   it a `--no-deps` metadata call asks. Falls back to
+///   `<project>/target` only when cargo can't answer at all.
+///
+/// NOT [`FrameworkSource::cargo_target_dir`] for a registry/git project:
+/// that is `<crate dir>/target`, and for a workspace member (the editor
+/// extension catalogs whichever crate a file belongs to) it creates a
+/// fresh `target/` inside the source tree, per member, each a separate
+/// cold copy of the dependency graph.
+pub fn catalog_target_root(
+    source: &FrameworkSource,
+    project_root: &Path,
+    known: Option<PathBuf>,
+) -> PathBuf {
+    if source.is_workspace() {
+        return source.cargo_target_dir(project_root);
+    }
+    known
+        .or_else(|| cargo_workspace_target_dir(project_root))
+        .unwrap_or_else(|| source.cargo_target_dir(project_root))
+}
+
+/// `target_directory` from a `--no-deps` `cargo metadata` of the
+/// workspace `project_root` belongs to. `None` when cargo can't run or
+/// the manifest doesn't parse.
+fn cargo_workspace_target_dir(project_root: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1", "--manifest-path"])
+        .arg(project_root.join("Cargo.toml"))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let meta: Value = serde_json::from_slice(&out.stdout).ok()?;
+    metadata_target_dir(&meta)
+}
+
+fn metadata_target_dir(meta: &Value) -> Option<PathBuf> {
+    meta.get("target_directory")?.as_str().map(PathBuf::from)
 }
 
 /// Expand a user-supplied root into the set of idealyst projects to wrap.
@@ -351,13 +429,6 @@ fn generate_with_link(
 
     let project_names: Vec<&str> = projects.iter().map(|(_, m)| m.name.as_str()).collect();
 
-    let wrapper_dir = source
-        .wrapper_root(anchor_root)
-        .join(wrapper_name(&project_names))
-        .join(subdir);
-    fs::create_dir_all(wrapper_dir.join("src"))
-        .with_context(|| format!("create {}", wrapper_dir.join("src").display()))?;
-
     // `runtime-core` with `catalog` on is the lever: enabling it anywhere
     // in the graph flips the `#[component]` emission gate for every crate,
     // including the project lib.
@@ -390,8 +461,15 @@ fn generate_with_link(
     // explicit `[dependencies]` entry below, and re-declaring it would
     // collide.
     let mut forced: Vec<ForcedDep> = Vec::new();
-    for (root, manifest) in &projects {
-        for dep in discover_forced_deps(root, &source, &manifest.name, link) {
+    // The anchor's `cargo metadata` also says where the workspace's
+    // target dir is — reused so placement costs no extra cargo call.
+    let mut anchor_target: Option<PathBuf> = None;
+    for (i, (root, manifest)) in projects.iter().enumerate() {
+        let (deps, target_dir) = discover_forced_deps(root, &source, &manifest.name, link);
+        if i == 0 {
+            anchor_target = target_dir;
+        }
+        for dep in deps {
             if project_names.contains(&dep.pkg_name.as_str()) {
                 continue;
             }
@@ -400,6 +478,15 @@ fn generate_with_link(
             }
         }
     }
+
+    let target_root = catalog_target_root(&source, anchor_root, anchor_target);
+    let sidecar = target_root.join(SIDECAR_TARGET_DIR);
+    let wrapper_dir = target_root
+        .join("idealyst")
+        .join(wrapper_name(&project_names))
+        .join(subdir);
+    fs::create_dir_all(wrapper_dir.join("src"))
+        .with_context(|| format!("create {}", wrapper_dir.join("src").display()))?;
 
     let forced_dep_lines = forced
         .iter()
@@ -514,7 +601,7 @@ fn main() {{
          \n\
          [build]\n\
          target-dir = \"{}\"\n",
-        sidecar_target_dir(&source, anchor_root).display(),
+        sidecar.display(),
     );
     // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
     // undefined registry name there is a hard error. Define it here rather than
@@ -528,7 +615,208 @@ fn main() {{
     write_if_changed(&wrapper_dir.join(".cargo/config.toml"), &cargo_config)?;
     seed_lockfile(&wrapper_dir, anchor_root)?;
 
+    // Housekeeping, never fatal: a cache we fail to trim costs disk, not
+    // a catalog. Every extraction path (catalog-json, mcp's reload
+    // closure, `mcp --check`, docs, export) calls generate immediately
+    // before its build, so this is the one place that sees them all —
+    // and the reload closure has no post-build hook to hang it on.
+    prune_incremental(&sidecar);
+    if !source.is_workspace() {
+        for (root, _) in &projects {
+            remove_legacy_catalog_dirs(&root.join("target"), &target_root);
+        }
+    }
+
     Ok(wrapper_dir)
+}
+
+/// How many `incremental/<crate>-<hash>` caches the sidecar keeps per
+/// crate name.
+///
+/// Three because three extractor flavours build into one sidecar — the
+/// full catalog (`catalog`), the dependency catalog (`catalog-deps`) and
+/// `export`'s `external-manifest` — and each resolves its own feature
+/// union, so the same crate can legitimately hold a live cache per
+/// flavour. Anything past the newest three belongs to a dependency graph
+/// that has since moved (a version bump, another project set) and would
+/// only be reused if that exact graph came back. Deleting a cache that
+/// *was* still wanted is not a correctness problem: rustc compiles that
+/// one crate without incremental reuse, the same as its first build.
+pub const INCREMENTAL_KEEP_PER_CRATE: usize = 3;
+
+/// Trim superseded incremental caches from a sidecar target dir. See
+/// [`INCREMENTAL_KEEP_PER_CRATE`] and the module docs for why they pile
+/// up. Returns how many cache dirs were removed.
+///
+/// Each profile dir (`debug`, `release`, `<triple>/<profile>`) is
+/// pruned only while holding cargo's own build locks on it
+/// (`.cargo-lock` / `.cargo-build-lock` — both are held exclusively for
+/// a whole build, measured with cargo 1.97). If a build holds them, that
+/// profile is skipped this time: rustc could be writing a session into
+/// any cache, and it is simply pruned on the next run instead.
+///
+/// "Newest" is the cache dir's own mtime, which moves when rustc
+/// finalises a session into it (it creates the new session and deletes
+/// the old one), i.e. whenever that unit was last compiled.
+pub fn prune_incremental(target_dir: &Path) -> usize {
+    let mut removed = 0;
+    for profile in profile_dirs(target_dir) {
+        let Some(_locks) = CargoBuildLocks::try_acquire(&profile) else {
+            continue;
+        };
+        removed += prune_incremental_dir(&profile.join("incremental"), INCREMENTAL_KEEP_PER_CRATE);
+    }
+    removed
+}
+
+/// Every dir under `target_dir` that holds an `incremental/` —
+/// `<target>/<profile>` and `<target>/<triple>/<profile>`.
+fn profile_dirs(target_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(target_dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("incremental").is_dir() {
+            out.push(path);
+            continue;
+        }
+        if let Ok(inner) = fs::read_dir(&path) {
+            out.extend(
+                inner
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.join("incremental").is_dir()),
+            );
+        }
+    }
+    out
+}
+
+/// Cargo's exclusive build locks on one profile dir, held for as long as
+/// this value lives.
+struct CargoBuildLocks(#[allow(dead_code)] Vec<fs::File>);
+
+impl CargoBuildLocks {
+    /// `None` if any lock is held by someone else (a build is running).
+    /// A lock file that doesn't exist is not held by anyone.
+    fn try_acquire(profile: &Path) -> Option<Self> {
+        let mut held = Vec::new();
+        for name in [".cargo-lock", ".cargo-build-lock"] {
+            let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(profile.join(name))
+            else {
+                continue;
+            };
+            match file.try_lock() {
+                Ok(()) => held.push(file),
+                Err(_) => return None,
+            }
+        }
+        Some(Self(held))
+    }
+}
+
+/// Pure core of [`prune_incremental`] for one `incremental/` dir: group
+/// the `<crate>-<hash>` cache dirs by crate and remove all but the
+/// `keep` most recently written of each. Entries that aren't a cache dir
+/// are left alone.
+fn prune_incremental_dir(incremental: &Path, keep: usize) -> usize {
+    use std::collections::HashMap;
+    let Ok(entries) = fs::read_dir(incremental) else {
+        return 0;
+    };
+    let mut by_crate: HashMap<String, Vec<(std::time::SystemTime, PathBuf)>> = HashMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // rustc names the dir `<crate name>-<base36 stable crate id>`.
+        let Some((krate, hash)) = name.rsplit_once('-') else {
+            continue;
+        };
+        if krate.is_empty()
+            || hash.is_empty()
+            || !hash.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+        {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        by_crate.entry(krate.to_string()).or_default().push((mtime, path));
+    }
+    let mut removed = 0;
+    for (_, mut caches) in by_crate {
+        if caches.len() <= keep {
+            continue;
+        }
+        caches.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, stale) in caches.into_iter().skip(keep) {
+            if fs::remove_dir_all(&stale).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// Remove catalog wrappers and the sidecar an older CLI left in a
+/// project's OWN `target/` — the `<crate dir>/target` placement
+/// [`catalog_target_root`] replaced — when that is not where the wrapper
+/// lives now. Only what the catalog generator itself creates is touched
+/// (`idealyst-mcp/`, and `idealyst/*/{catalog,catalog-deps,
+/// external-manifest}` holding a generated manifest); the web, dev and
+/// platform builds beside them are left alone, and a `target/` the
+/// catalog was the only user of is removed once empty. Skipped while a
+/// build holds the old sidecar's locks.
+fn remove_legacy_catalog_dirs(legacy_target: &Path, current_target: &Path) {
+    if !legacy_target.is_dir() || same_dir(legacy_target, current_target) {
+        return;
+    }
+    let old_sidecar = legacy_target.join(SIDECAR_TARGET_DIR);
+    if old_sidecar.is_dir() {
+        let locks: Option<Vec<CargoBuildLocks>> = profile_dirs(&old_sidecar)
+            .iter()
+            .map(|p| CargoBuildLocks::try_acquire(p))
+            .collect();
+        let Some(locks) = locks else {
+            return;
+        };
+        let _ = fs::remove_dir_all(&old_sidecar);
+        drop(locks);
+    }
+    let staging = legacy_target.join("idealyst");
+    if let Ok(sets) = fs::read_dir(&staging) {
+        for set in sets.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            for flavour in ["catalog", "catalog-deps", "external-manifest"] {
+                let dir = set.join(flavour);
+                let generated = fs::read_to_string(dir.join("Cargo.toml"))
+                    .is_ok_and(|m| m.starts_with("# GENERATED by `idealyst mcp`"));
+                if generated {
+                    let _ = fs::remove_dir_all(&dir);
+                }
+            }
+            let _ = fs::remove_dir(&set); // only succeeds when empty
+        }
+        let _ = fs::remove_dir(&staging);
+    }
+    let _ = fs::remove_dir(legacy_target);
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// Make the wrapper resolve exactly what the project resolves.
@@ -597,7 +885,8 @@ struct ForcedDep {
 }
 
 /// Run `cargo metadata` for `project_root` and collect the component-
-/// library dependencies to force-link. Non-fatal: on any failure we log
+/// library dependencies to force-link, plus the workspace's
+/// `target_directory` from the same document. Non-fatal: on any failure we log
 /// to stderr and return an empty list — the wrapper still links the
 /// project's own library, so the project's own components appear.
 fn discover_forced_deps(
@@ -605,7 +894,7 @@ fn discover_forced_deps(
     source: &FrameworkSource,
     project_pkg_name: &str,
     link: Link,
-) -> Vec<ForcedDep> {
+) -> (Vec<ForcedDep>, Option<PathBuf>) {
     let manifest_path = project_root.join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(["metadata", "--format-version", "1"])
@@ -620,24 +909,25 @@ fn discover_forced_deps(
                  appear in the catalog: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
             );
-            return Vec::new();
+            return (Vec::new(), None);
         }
         Err(e) => {
             eprintln!(
                 "[idealyst mcp] could not run cargo metadata ({e}); dependency \
                  components may not appear in the catalog"
             );
-            return Vec::new();
+            return (Vec::new(), None);
         }
     };
     let json: Value = match serde_json::from_slice(&output.stdout) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[idealyst mcp] cargo metadata produced invalid JSON: {e}");
-            return Vec::new();
+            return (Vec::new(), None);
         }
     };
-    collect_forced_deps(&json, source, &manifest_path, project_pkg_name, link)
+    let target_dir = metadata_target_dir(&json);
+    (collect_forced_deps(&json, source, &manifest_path, project_pkg_name, link), target_dir)
 }
 
 /// Pure core of [`discover_forced_deps`], split out so it's unit-testable
@@ -1262,6 +1552,197 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&project);
+    }
+
+    /// A registry-sourced cargo workspace: a root package `ws-app` plus a
+    /// member `shared/` (`ws-shared`). No dependencies at all, so every
+    /// `cargo metadata` the generator runs resolves OFFLINE, and with no
+    /// framework dependency the source falls back to the registry — the
+    /// CrewForge shape, where the wrapper does NOT live in a framework
+    /// checkout.
+    fn fake_workspace(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "idealyst-catwrap-ws-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("shared/src")).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"shared\"]\n\n[package]\nname = \"ws-app\"\n\
+             version = \"0.0.1\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            dir.join("shared/Cargo.toml"),
+            "[package]\nname = \"ws-shared\"\nversion = \"0.0.1\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(dir.join("shared/src/lib.rs"), "").unwrap();
+        fs::canonicalize(&dir).unwrap()
+    }
+
+    fn sidecar_line(wrapper: &Path) -> String {
+        let cfg = fs::read_to_string(wrapper.join(".cargo/config.toml")).unwrap();
+        cfg.lines()
+            .find(|l| l.starts_with("target-dir"))
+            .unwrap_or_else(|| panic!("no target-dir in config: {cfg}"))
+            .to_string()
+    }
+
+    /// REGRESSION: the editor extension catalogs whichever crate a file
+    /// belongs to, and for a workspace member the wrapper and its whole
+    /// sidecar build landed in `<member>/target/` — a new `target/`
+    /// inside the source tree per member (`crates/ui-shared/target/`,
+    /// untracked under an anchored `/target` ignore rule), each a cold
+    /// second copy of the dependency graph. They belong under the
+    /// workspace's own target dir, shared by every member.
+    #[test]
+    fn regression_member_crate_wrapper_lives_under_the_workspace_target() {
+        let ws = fake_workspace("member");
+        let member = ws.join("shared");
+
+        let wrapper = generate(&member).expect("generate for a workspace member");
+        assert_eq!(wrapper, ws.join("target/idealyst/ws-shared/catalog"));
+        let expected_sidecar = ws.join("target").join(SIDECAR_TARGET_DIR);
+        assert!(
+            sidecar_line(&wrapper).contains(&format!("\"{}\"", expected_sidecar.display())),
+            "sidecar must be the workspace's: {}",
+            sidecar_line(&wrapper)
+        );
+        assert!(
+            !member.join("target").exists(),
+            "nothing may be created inside the member's source dir"
+        );
+
+        // The root package lands in the same tree, so both share one
+        // warm sidecar.
+        let root_wrapper = generate(&ws).expect("generate for the root package");
+        assert_eq!(root_wrapper, ws.join("target/idealyst/ws-app/catalog"));
+        assert_eq!(sidecar_line(&root_wrapper), sidecar_line(&wrapper));
+
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// An older CLI's per-member wrapper + sidecar are removed once the
+    /// wrapper lives under the workspace target — but only what the
+    /// catalog generator made; the web/dev builds beside it stay.
+    #[test]
+    fn regression_legacy_member_catalog_dirs_are_removed() {
+        let ws = fake_workspace("legacy");
+        let member = ws.join("shared");
+        let legacy = member.join("target");
+        let old_cache = legacy.join(SIDECAR_TARGET_DIR).join("debug/incremental/ws_shared-abc123");
+        fs::create_dir_all(&old_cache).unwrap();
+        for flavour in ["catalog", "catalog-deps"] {
+            let d = legacy.join("idealyst/ws-shared").join(flavour);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("Cargo.toml"), "# GENERATED by `idealyst mcp`. Do not edit.\n").unwrap();
+        }
+        let web = legacy.join("idealyst/ws-shared/web");
+        fs::create_dir_all(&web).unwrap();
+        fs::write(web.join("keep.txt"), "not ours").unwrap();
+
+        generate(&member).expect("generate");
+
+        assert!(!legacy.join(SIDECAR_TARGET_DIR).exists(), "old sidecar removed");
+        assert!(!legacy.join("idealyst/ws-shared/catalog").exists());
+        assert!(!legacy.join("idealyst/ws-shared/catalog-deps").exists());
+        assert!(web.join("keep.txt").is_file(), "non-catalog output is left alone");
+
+        // With nothing else in it, the stray `target/` goes entirely.
+        fs::remove_dir_all(legacy.join("idealyst/ws-shared/web")).unwrap();
+        fs::create_dir_all(legacy.join(SIDECAR_TARGET_DIR)).unwrap();
+        generate(&member).expect("generate again");
+        assert!(!legacy.exists(), "an emptied member target/ is removed");
+
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    fn set_mtime(path: &Path, secs_ago: u64) {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        fs::File::open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(when))
+            .unwrap();
+    }
+
+    /// Seed `n` incremental caches for `krate`, oldest first; returns them
+    /// newest first.
+    fn seed_caches(incremental: &Path, krate: &str, n: usize) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for i in 0..n {
+            let d = incremental.join(format!("{krate}-{}h{i}", "0a1b2c3d4e5f"));
+            fs::create_dir_all(d.join(format!("s-sess{i}"))).unwrap();
+            set_mtime(&d, 1000 * (n - i) as u64);
+            out.push(d);
+        }
+        out.reverse();
+        out
+    }
+
+    /// REGRESSION: cargo never deletes superseded units, and rustc only
+    /// GCs sessions within one `<crate>-<hash>` cache, so every
+    /// dependency-graph change (a framework release, another project set)
+    /// left one more incremental cache per linked crate in the sidecar
+    /// for good — 174 dirs / 33 GB in one CrewForge sidecar. A generate
+    /// keeps only the newest few per crate.
+    #[test]
+    fn regression_repeated_generates_do_not_grow_the_incremental_cache() {
+        let ws = fake_workspace("prune");
+        let incremental = ws.join("target").join(SIDECAR_TARGET_DIR).join("debug/incremental");
+        fs::create_dir_all(&incremental).unwrap();
+        let members = seed_caches(&incremental, "ws_app", 6);
+        let bins = seed_caches(&incremental, "catalog", 2);
+        fs::write(incremental.join("stray-file"), "").unwrap();
+
+        generate(&ws).expect("generate");
+
+        let kept: Vec<&PathBuf> = members.iter().filter(|p| p.exists()).collect();
+        assert_eq!(
+            kept,
+            members.iter().take(INCREMENTAL_KEEP_PER_CRATE).collect::<Vec<_>>(),
+            "the newest {INCREMENTAL_KEEP_PER_CRATE} caches survive, the rest go"
+        );
+        assert!(bins.iter().all(|p| p.exists()), "a crate under the cap is untouched");
+        assert!(incremental.join("stray-file").exists(), "non-cache entries are left alone");
+
+        // More history arrives; a second generate trims back to the cap.
+        seed_caches(&incremental, "ws_app", 5);
+        generate(&ws).expect("regenerate");
+        let count = fs::read_dir(&incremental)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("ws_app-"))
+            .count();
+        assert_eq!(count, INCREMENTAL_KEEP_PER_CRATE);
+
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    /// A running build holds cargo's locks on the profile dir; pruning
+    /// under it could delete a cache rustc is writing, so it waits for the
+    /// next run.
+    #[test]
+    fn prune_skips_a_profile_whose_build_is_running() {
+        let ws = fake_workspace("locked");
+        let profile = ws.join("target").join(SIDECAR_TARGET_DIR).join("debug");
+        let incremental = profile.join("incremental");
+        fs::create_dir_all(&incremental).unwrap();
+        let caches = seed_caches(&incremental, "ws_app", 5);
+        let lock = fs::File::create(profile.join(".cargo-lock")).unwrap();
+        lock.lock().unwrap();
+
+        assert_eq!(prune_incremental(&profile.parent().unwrap()), 0);
+        assert!(caches.iter().all(|p| p.exists()), "nothing pruned under a held lock");
+
+        lock.unlock().unwrap();
+        assert_eq!(prune_incremental(&profile.parent().unwrap()), 5 - INCREMENTAL_KEEP_PER_CRATE);
+
+        let _ = fs::remove_dir_all(&ws);
     }
 
     #[test]
