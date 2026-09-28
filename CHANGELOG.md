@@ -5,7 +5,96 @@ each entry links to its migration guide.
 
 ## Unreleased
 
+### Breaking
+
+These change behaviour an app can observe, or stop code that compiled
+from compiling. Each names its migration.
+
+- **`ui!` / `jsx!` reject props a primitive does not accept** (`runtime-macros`).
+  A typo, a prop the primitive never had, a duplicate, a conflicting pair
+  (`image` `src`+`asset`, `icon` `animate`+`draw_in`, `link`
+  `external`+`route`, `flat_list` `gap`+spacing, `text` `content` plus a
+  body), a lone slider `min`/`max`, or children on a childless primitive
+  is now a compile error on the prop name, listing the valid props and the
+  closest match. All of these used to compile and be silently dropped.
+  The flip side is also observable: props that were dropped now take
+  effect — `view(on_touch / on_wheel / on_hover / on_file_drop / safe_area
+  / preserves_focus / bind)`, `image(on_load / on_error)`,
+  `text_input(on_focus / on_key_down)`, `icon(size)`, `link(url /
+  on_activate)`, `bind` on every primitive. *Migration:* fix the prop the
+  error names, or chain the builder method it suggests; re-check any
+  inline handler you had written that never fired, because now it does.
+- **Navigator route ties resolve deterministically** (`runtime-vocabulary`).
+  When several patterns match a URL, the one consuming more segments
+  wins, then the one with more literal segments (`/projects/new` beats
+  `/projects/:id`), then the first registered. Equal-length ties used to
+  follow `HashMap` order and could differ between runs of the same
+  binary; the stack's cold re-mount path had no ranking at all.
+  `NavScreenEntry` gains a public `order` field, so a struct-literal
+  construction must add it. *Migration:* a `from_segments` that rejected
+  a sibling's literal to force the tie can go; with two `:param`
+  patterns of equal length, registration order now decides.
+- **`Dismiss` backdrops dismiss on any mouse button** (`runtime-vocabulary`,
+  `backend-macos`, `render-wgpu`). A right- or middle-click on a
+  popover, menu, select or modal backdrop now calls `on_dismiss` and
+  suppresses the native context menu. To carry it, macOS and the wgpu
+  engine now deliver secondary presses to `on_touch` as a single
+  `Began`, as web already did. GTK and Windows still report primary
+  only. *Migration:* a hand-written `on_touch` that should ignore
+  right-clicks checks `pointer_button().is_primary()`.
+- **`flat_list` re-renders a row whose item changed under the same key**
+  (`runtime-shared`, `runtime-vocabulary`, `backend-web`,
+  `backend-android-mobile`). On web and Android a surviving key kept its
+  row as-is, so an edited item showed stale content. Each surviving key's
+  item is now compared (`==`) with the item its row was rendered from; a
+  changed row is rebuilt, an unchanged row keeps its native node (focus
+  and row state survive edits elsewhere). iOS, macOS, GTK and wgpu
+  already rebuilt every visible row. `VirtualizerCallbacks` gains an
+  `item_changed` field, so a third-party backend constructing it must
+  pass it through. *Migration:* a row that edits its own item (a
+  `text_input` writing back into `data`) now remounts on each edit — keep
+  such fields as signals inside the item so the `Vec` does not change.
+- **`idea-ui` `Chip` without `on_select` is a plain view**, not a no-op
+  pressable, so it no longer swallows taps meant for what is behind or
+  around it. The `tag` / `tag.label` premint identities gained a size
+  axis (class names regenerate).
+- **`Modal`'s `width` above 560 takes effect** (`idea-ui`). The sheet's
+  `max_width: 560` silently capped every centered modal; an author width
+  now wins, still capped to the viewport. Modals that set a large width
+  and relied on the cap get wider.
+- **Cookie deletions mirror the cookie they clear** (`server`,
+  `server-kit`). New `Cookie::clearing()` copies name, Path, Domain,
+  Secure, HttpOnly and SameSite onto an empty, `Max-Age=0`, past-`Expires`
+  cookie; `Sessions::end` sends its own session cookie's clearing form, so
+  logout works for non-`Secure` or custom-Path/Domain session cookies.
+  `clear_cookie(name)` is now `#[must_use]` (calling it without
+  `set_cookie` never cleared anything) and every deletion carries
+  `Expires`. *Migration:* for a cookie set with non-default attributes,
+  replace `clear_cookie(name)` with `the_same_cookie("").clearing()`.
+
 ### Added
+
+- **`runtime_core` re-exports `GridPlacement` and `OverscrollBehavior`**,
+  so `StyleRules::grid_row` / `grid_column` / `overscroll_behavior` can be
+  filled without a direct `runtime-shared` dependency. A compile test
+  destructures `StyleRules` exhaustively through `runtime_core`, so a
+  future field whose type is not re-exported fails the build.
+- **`idea-ui`: `typography_kind::H4`, `H5`, `H6`**, continuing the heading
+  ramp on the theme's body size tokens (no new theme fields), with
+  `Role::Header` like H1–H3.
+- **`idea-ui`: an optional tone takes a bare marker** — `tone =
+  tone::Danger` in `ui!`, `tone::Danger.into()` in a struct literal — for
+  built-in and `tone!`-declared tones. `Some(tone::X.into())` still works.
+- **`idea_ui::{AnchorTarget, ElementSide, ElementAlign}`** re-exported
+  next to the Popover API.
+- **`server::base_url()`** returns the configured server base URL
+  (trailing `/` removed; `None` before `configure`), for building
+  download or open links to the app's server.
+- **`stylesheet!` accepts `///` doc comments** (they land on the
+  generated builder) and `#[cfg]` / lint attributes (applied to every
+  generated item). Generated items carry docs, so sheets compile under
+  `deny(missing_docs)`. Editing a sheet's doc comment changes its premint
+  class hash, consistently at dump and runtime.
 
 - **`idealyst check` checks the server half.** A full-stack project
   (`server_bin` / `server_manifest`) now gets one more check after the
@@ -136,6 +225,11 @@ each entry links to its migration guide.
 
 ### Changed
 
+- **The `on_cleanup called outside an effect` panic points at
+  `on_scope_drop(f)`** and explains that component bodies, mount handlers
+  and the initial realize are not effect bodies. The leading sentence is
+  unchanged.
+
 - **`idealyst dev` starts a save's build as soon as the save arrives.**
   The watcher used to wait 400 ms for the filesystem to go quiet before
   every build, which was most of a small app's save-to-replay time. Now
@@ -260,6 +354,40 @@ each entry links to its migration guide.
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A freed effect never runs again in the same flush** (`runtime-world`).
+  A structural driver freed during a flush — an `if` / `match` region
+  re-keyed by a control inside it — let its subtree's already-queued
+  effects run against freed signals and crash with
+  `idealyst[stale-signal-handle]`. `free_effect` now drops the effect's
+  body (and everything it captures) at free time instead of when the
+  flush releases its queued reference; an effect that frees itself
+  mid-run releases its body as soon as that run returns.
+- **A second `install_tokens` no longer drops the first.** Pending
+  installs before one flush merge by name (later value wins, first
+  position kept), and the SSR and email backends now merge across
+  flushes too, matching the web backend's `:root` `setProperty`.
+- **`on_layout` writes commit on their own.** A signal set inside
+  `ViewHandle::on_layout` waited for an unrelated event to flush it on
+  web, macOS, iOS and Android; every backend now schedules the flush
+  after delivering layout callbacks.
+- **`idea-ui`: `Chip`'s documented `size` prop now sizes the pill**
+  (Sm/Md/Lg; Md unchanged), and a lit chip's label carries its tone
+  colour on native backends.
+- **`stylesheet!` no longer warns that its `<ThemeType>` import is unused**
+  when no block reads the theme binding.
+- **Zero-argument `#[server]` functions accept `[]`** as well as `null`
+  (single calls, batches, and stream open args). The Rust client still
+  sends `null`, so mixed versions keep working.
+- **Lint precision:** `prefer-ui-macro` no longer flags third-party
+  builder constructors (`Pool::builder()`, `reqwest::Client::builder()`),
+  and `prefer-keyed-list` no longer flags `Option::map(|x| ui!{…})` —
+  only a `.map` over a visible iterator or a `.collect()`ed one.
+- **Docs:** the `idiomatic-components` guide's test example ran against
+  element types that no longer exist; it is rewritten and lives as a real
+  test (`idea-ui/tests/guide_test_example.rs`). The reactivity guide said
+  `on_cleanup` outside an effect is a no-op; it panics. The guides no
+  longer teach `ui! { … }.into_element()`.
 
 - **Completed prop values bring their `use`.** Accepting
   `typography_kind::Body` inserted the value and nothing else; the file
