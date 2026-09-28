@@ -218,8 +218,12 @@ pub(crate) fn nth_from_end(path: &syn::Path, n: usize) -> Option<String> {
     Some(path.segments[len - 1 - n].ident.to_string())
 }
 
-/// True when any segment of the path has the given ident (e.g. detecting a
-/// `builder::` qualifier anywhere in `runtime_core::builder::view`).
-pub(crate) fn has_segment(path: &syn::Path, ident: &str) -> bool {
-    path.segments.iter().any(|s| s.ident == ident)
+/// True when a MODULE segment of the path — any segment but the last — has
+/// the given ident (e.g. detecting a `glue::` qualifier in
+/// `runtime_vocabulary::glue::view`). The last segment is the called item
+/// itself, never a qualifier: counting it is how `Pool::builder()` once
+/// read as "a path through the `builder` module".
+pub(crate) fn has_module_segment(path: &syn::Path, ident: &str) -> bool {
+    let n = path.segments.len();
+    path.segments.iter().take(n.saturating_sub(1)).any(|s| s.ident == ident)
 }

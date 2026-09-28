@@ -48,7 +48,7 @@ use std::collections::{HashMap, HashSet};
 use syn::visit::Visit;
 
 use crate::diagnostic::RawDiag;
-use crate::rules::{has_segment, last_segment, nth_from_end};
+use crate::rules::{has_module_segment, last_segment, nth_from_end};
 
 pub(crate) const RULE: &str = "prefer-ui-macro";
 
@@ -125,7 +125,36 @@ fn tracked(name: &str) -> Option<&'static str> {
 }
 
 fn has_framework_root(path: &syn::Path) -> bool {
-    FRAMEWORK_ROOTS.iter().any(|root| has_segment(path, root))
+    FRAMEWORK_ROOTS.iter().any(|root| has_module_segment(path, root))
+}
+
+/// The framework's raw builder layer, called directly: a fn whose OWNING
+/// module is `builder` / `builders` — `builders::view()`,
+/// `runtime_vocabulary::builders::scroll_view()`, `builder::text(…)`.
+///
+/// Two conditions keep this to the framework's layer (#26 / #105):
+///
+/// - the `builder(s)` segment must be the one directly before the called
+///   fn. A trailing `builder` is the ubiquitous builder-PATTERN
+///   constructor — `r2d2::Pool::builder()`, `reqwest::Client::builder()`,
+///   `Foo::builder()` — and a type nested under some crate's `builders`
+///   module (`aws_sdk_s3::types::builders::ObjectBuilder::default()`)
+///   puts it further back;
+/// - it is either the path's first segment (the module brought into scope
+///   by a `use`, the spelling the framework's docs show) or sits under a
+///   framework root (`runtime_vocabulary::`, `runtime_core::`,
+///   `idealyst::`). `some_crate::builders::make()` is some other crate's.
+fn is_builder_layer_call(path: &syn::Path) -> bool {
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let n = segs.len();
+    if n < 2 || !matches!(segs[n - 2].as_str(), "builder" | "builders") {
+        return false;
+    }
+    let owners = &segs[..n - 2];
+    owners.is_empty()
+        || owners.iter().any(|s| {
+            FRAMEWORK_ROOTS.contains(&s.as_str()) && !matches!(s.as_str(), "builder" | "builders")
+        })
 }
 
 /// What the file says about bare constructor idents: which of them were
@@ -234,11 +263,12 @@ pub(crate) fn check_call(call: &syn::ExprCall, cx: &FileContext, out: &mut Vec<R
         return;
     };
 
-    // `builder::…` / `builders::…` — the raw builder layer, qualified.
+    // `builder::…` / `builders::…` — the raw builder layer, qualified (see
+    // `is_builder_layer_call` for what does NOT count).
     // Kept as its own arm (ahead of the constructor-name check) so a
     // builder-layer fn that ISN'T in the constructor list — `builders::
     // virtual_grid()`, say — still gets the pointer.
-    if has_segment(path, "builder") || has_segment(path, "builders") {
+    if is_builder_layer_call(path) {
         out.push(
             RawDiag::new(
                 RULE,
@@ -405,6 +435,48 @@ mod tests {
             }
         });
         assert_eq!(out.len(), 3, "{out:?}");
+    }
+
+    /// The reported bug (#26 / #105): the builder arm matched a `builder`
+    /// segment ANYWHERE in the path — including the last one — so every
+    /// third-party builder-pattern constructor (`r2d2::Pool::builder()`,
+    /// `reqwest::Client::builder()`) was reported as a hand-built element.
+    /// Only a `builder` / `builders` MODULE directly owning the called fn
+    /// is the framework's builder layer.
+    #[test]
+    fn regression_third_party_builder_pattern_is_not_flagged() {
+        let out = diags(quote! {
+            fn f() {
+                let pool = Pool::builder().max_size(4).build(manager);
+                let pool = r2d2::Pool::builder().build(manager);
+                let client = reqwest::Client::builder().build();
+                let client = reqwest::blocking::Client::builder().build();
+                let foo = Foo::builder().build();
+                let b = builder();
+                // A third-party crate's own `builders` module, and a type
+                // UNDER such a module (the aws-sdk shape) — not ours.
+                let o = aws_sdk_s3::types::builders::ObjectBuilder::default();
+                let x = some_crate::builders::make_thing();
+            }
+        });
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// The framework's builder layer keeps being caught under every
+    /// spelling the rule exists for, including through `idealyst::`.
+    #[test]
+    fn framework_builder_layer_spellings_are_still_flagged() {
+        for src in [
+            quote! { fn f() { builders::view(); } },
+            quote! { fn f() { builder::text("x"); } },
+            quote! { fn f() { runtime_vocabulary::builders::scroll_view(); } },
+            quote! { fn f() { idealyst::runtime_vocabulary::builders::virtual_grid(); } },
+            quote! { fn f() { runtime_core::builders::view().child(x).build(); } },
+        ] {
+            let out = diags(src.clone());
+            assert_eq!(out.len(), 1, "{src} → {out:?}");
+            assert!(out[0].message.contains("bypasses the `ui!` macro"), "{out:?}");
+        }
     }
 
     /// Bare `view(…)` with an explicit framework import is the same call
