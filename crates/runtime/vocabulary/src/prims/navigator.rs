@@ -63,6 +63,13 @@ pub struct NavScreenEntry {
     pub path: &'static str,
     pub build: Rc<dyn Fn(Box<dyn Any>) -> Screen>,
     pub from_segments: ParamsFromSegments,
+    /// Registration index within its navigator (0 = first `.screen(..)`),
+    /// stamped by [`NavConfig::insert_screen`]. The LAST tie-break of
+    /// route resolution: [`NavConfig::screens`] is a `HashMap`, whose
+    /// iteration order is randomly seeded per map, so two equally
+    /// specific patterns (`/:id` next to `/:slug`) would otherwise resolve
+    /// differently from one process run to the next.
+    pub order: usize,
 }
 
 // ===========================================================================
@@ -184,7 +191,24 @@ impl LinkActivator {
 pub struct NavConfig {
     pub initial: &'static str,
     pub initial_path: &'static str,
+    /// Keyed by route name. Iteration order is NOT meaningful — route
+    /// resolution ranks candidates by specificity and falls back to
+    /// [`NavScreenEntry::order`], never to map order.
     pub screens: HashMap<&'static str, NavScreenEntry>,
+}
+
+impl NavConfig {
+    /// Register `entry` under `name`, stamping its registration order.
+    /// Re-registering a name replaces the entry but keeps its original
+    /// slot, so an override does not move in the tie-break order.
+    pub fn insert_screen(&mut self, name: &'static str, mut entry: NavScreenEntry) {
+        entry.order = self
+            .screens
+            .get(name)
+            .map(|prev| prev.order)
+            .unwrap_or(self.screens.len());
+        self.screens.insert(name, entry);
+    }
 }
 
 // ===========================================================================

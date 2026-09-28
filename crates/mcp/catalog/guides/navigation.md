@@ -62,6 +62,8 @@ nav.get().map(|h| h.push(&DETAIL, ())).unwrap_or_default(); // pushes /detail
 
 **Typed route params**: a route can carry a typed payload that also round-trips through the URL. Declare `const NOTE: Route<NoteId> = Route::<NoteId>::new("note", "/note/:slug");`, implement `RouteParams` for `NoteId` (`to_path` fills `:slug`; `from_segments` parses it back), and the `.screen(NOTE, |params: NoteId| ...)` closure receives the typed value — including on a web cold load of `/note/<slug>`. Pushing with the wrong param shape is a compile error.
 
+**When two patterns match the same URL** (`/projects/new` beside `/projects/:id`), the navigator picks the most specific one, deterministically: first the pattern that consumes more URL segments, then the one with more literal (non-`:param`) segments, then the screen registered first. So `/projects/new` opens the `new` screen and `/projects/42` the `:id` one, in either registration order — no need to make `from_segments` reject its siblings' literals. A `from_segments` that returns `None` still disqualifies its route for that URL.
+
 The compile-checked **`stack_two_screens` recipe** (visible in `list_recipes` once `stack-navigator = { workspace = true }` is in your `Cargo.toml`) is the full list + detail skeleton with a typed param and a layout shell — copy-paste it as a starting point.
 
 ## Passing state to a screen

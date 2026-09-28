@@ -1452,3 +1452,52 @@ fn nested_navigator_base_is_the_concrete_parent_path() {
         );
     });
 }
+
+// ===========================================================================
+// Route specificity (FRAMEWORK-NOTES #72)
+// ===========================================================================
+
+const NEW_ITEM: Route<()> = Route::new("new-item", "/new");
+
+/// `/new` registered beside `/:id` must open the "new" screen through the
+/// real dispatch path (robot `navigate` → `resolve_entry`), whichever order
+/// the screens were registered in. Each mount builds a fresh screens map
+/// with its own random `HashMap` seed; before the specificity ranking the
+/// same URL opened the item screen with id "new" on roughly half of them.
+#[cfg(feature = "robot")]
+#[test]
+fn regression_literal_route_beats_param_sibling_through_navigate() {
+    use runtime_vocabulary::robot::{all_navigators, navigate, NavAction, NavId, Robot};
+
+    for literal_first in [true, false] {
+        for _ in 0..16 {
+            let robot = Robot::new();
+            robot.reset();
+            let h = harness();
+            let world = h.world.clone();
+            world.enter(|| {
+                let nav = swap_navigator(&HOME).screen(HOME, |_| text().content("home").build());
+                let nav = if literal_first {
+                    nav.screen(NEW_ITEM, |_| text().content("new").build())
+                        .screen(ITEM, |_p: IdParams| text().content("item").build())
+                } else {
+                    nav.screen(ITEM, |_p: IdParams| text().content("item").build())
+                        .screen(NEW_ITEM, |_| text().content("new").build())
+                };
+                let _realized = realize(&h.backend, &h.registry, nav.build());
+                let id = NavId(all_navigators()[0].nav_id);
+                navigate(id, NavAction::Push("/new".into())).expect("select");
+                world.flush();
+                assert_eq!(
+                    all_navigators()[0].active_route,
+                    "new-item",
+                    "literal_first={literal_first}"
+                );
+                navigate(id, NavAction::Push("/p1".into())).expect("select");
+                world.flush();
+                assert_eq!(all_navigators()[0].active_route, "item");
+            });
+            robot.reset();
+        }
+    }
+}

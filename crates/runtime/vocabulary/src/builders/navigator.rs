@@ -59,7 +59,7 @@ impl SwapNavigatorBuilder {
         F: Fn(P) -> R + 'static,
     {
         let (entry, select) = screen_entry(&route, render);
-        self.prim.config.screens.insert(route.name(), entry);
+        self.prim.config.insert_screen(route.name(), entry);
         self.prim.select_args.insert(route.name(), select);
         self
     }
@@ -142,7 +142,7 @@ impl StackNavigatorBuilder {
         F: Fn(P) -> R + 'static,
     {
         let (entry, _select) = screen_entry(&route, render);
-        self.prim.config.screens.insert(route.name(), entry);
+        self.prim.config.insert_screen(route.name(), entry);
         self
     }
 
@@ -251,7 +251,7 @@ where
             .map(|params| (params.to_path(route_path), Box::new(params) as Box<dyn Any>))
     });
     (
-        NavScreenEntry { path: route_path, build, from_segments },
+        NavScreenEntry { path: route_path, build, from_segments, order: 0 },
         select,
     )
 }

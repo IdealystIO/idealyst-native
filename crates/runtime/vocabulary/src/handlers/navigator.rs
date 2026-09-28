@@ -476,30 +476,50 @@ fn realize_screen<H: NavCaps + 'static>(
     }
 }
 
+/// Specificity rank of a candidate route — larger wins. One ranking
+/// shared by [`resolve_entry`] (prefix resolution) and [`match_path`]
+/// (cold re-mount), so a URL resolves to the same screen on both paths:
+///
+/// 1. more pattern segments consumed (a specific route beats an index
+///    `""`, and a nested-navigator host beats nothing);
+/// 2. then more LITERAL segments (`/new` beats `/:id`, `users/new` beats
+///    `users/:id` — the CRUD shape every URL router resolves this way);
+/// 3. then earlier registration ([`NavScreenEntry::order`]).
+///
+/// Rule 3 is what makes the ranking total. Before it existed the tie was
+/// broken by `HashMap` iteration order, which is randomly seeded per map:
+/// `/projects/new` next to `/projects/:id` opened either screen, varying
+/// between runs of the same binary.
+fn route_rank(entry: &NavScreenEntry) -> (usize, usize, std::cmp::Reverse<usize>) {
+    let (mut segments, mut literals) = (0, 0);
+    for seg in entry.path.split('/').filter(|s| !s.is_empty()) {
+        segments += 1;
+        if !seg.starts_with(':') {
+            literals += 1;
+        }
+    }
+    (segments, literals, std::cmp::Reverse(entry.order))
+}
+
 /// Prefix-resolve `path` against `screens` (base already stripped by the
-/// caller via `match_prefix(path, base)`): the route whose relative
-/// pattern consumes the MOST segments wins (a specific route beats an
-/// index `""`), returning the unconsumed tail for a nested navigator.
-/// Port of the walker's `resolve_entry`.
+/// caller via `match_prefix(path, base)`): the best-ranked matching
+/// route per [`route_rank`] wins, returning the unconsumed tail for a
+/// nested navigator. Port of the walker's `resolve_entry`.
 fn resolve_entry(
     screens: &HashMap<&'static str, NavScreenEntry>,
     base: &str,
     path: &str,
 ) -> Option<(&'static str, Box<dyn Any>, String)> {
     let rel = match_prefix(path, base).map(|(_, rem)| rem)?;
-    let mut best: Option<(&'static str, Box<dyn Any>, String, usize)> = None;
-    for (name, entry) in screens.iter() {
-        if let Some((segs, rem)) = match_prefix(&rel, entry.path) {
-            if let Some(params) = (entry.from_segments)(&segs) {
-                let pat_len = entry.path.split('/').filter(|s| !s.is_empty()).count();
-                let better = best.as_ref().map(|(_, _, _, l)| pat_len > *l).unwrap_or(true);
-                if better {
-                    best = Some((*name, params, rem, pat_len));
-                }
-            }
-        }
-    }
-    best.map(|(n, p, r, _)| (n, p, r))
+    screens
+        .iter()
+        .filter_map(|(name, entry)| {
+            let (segs, rem) = match_prefix(&rel, entry.path)?;
+            let params = (entry.from_segments)(&segs)?;
+            Some((route_rank(entry), *name, params, rem))
+        })
+        .max_by_key(|(rank, ..)| *rank)
+        .map(|(_, n, p, r)| (n, p, r))
 }
 
 /// Resolve a FULL path (`active_path` form, optionally `?query`) for the
@@ -521,20 +541,23 @@ fn robot_resolve(
 
 /// Full-match `path` against `screens` — the walker's `match_path`,
 /// used by the stack to re-mount cold (disposed) entries from their URL.
+/// Ranked by [`route_rank`] exactly like [`resolve_entry`]: a cold
+/// re-mount must rebuild the screen the URL originally resolved to.
 fn match_path(
     screens: &HashMap<&'static str, NavScreenEntry>,
     base: &str,
     path: &str,
 ) -> Option<(&'static str, Box<dyn Any>)> {
     let rel = match_prefix(path, base).map(|(_, rem)| rem)?;
-    for (name, entry) in screens.iter() {
-        if let Some(segs) = match_pattern(&rel, entry.path) {
-            if let Some(params) = (entry.from_segments)(&segs) {
-                return Some((*name, params));
-            }
-        }
-    }
-    None
+    screens
+        .iter()
+        .filter_map(|(name, entry)| {
+            let segs = match_pattern(&rel, entry.path)?;
+            let params = (entry.from_segments)(&segs)?;
+            Some((route_rank(entry), *name, params))
+        })
+        .max_by_key(|(rank, ..)| *rank)
+        .map(|(_, n, p)| (n, p))
 }
 
 // ===========================================================================
@@ -2289,4 +2312,100 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
     // navigator can address this node for screen swaps.
     outlet_capture_record::<H::Node>(&node);
     node
+}
+
+#[cfg(test)]
+mod route_rank_tests {
+    //! Route resolution specificity (FRAMEWORK-NOTES #72). The bug was a
+    //! tie broken by `HashMap` iteration order, which std seeds randomly
+    //! PER MAP — so each case below builds a fresh map many times, in
+    //! both registration orders. Pre-fix, every map whose iteration
+    //! reached the param route first resolved to it; the chance that all
+    //! `ROUNDS` maps happened to iterate the literal first is 2^-ROUNDS.
+    //! Post-fix the ranking is total, so the result never depends on
+    //! the seed.
+    use super::*;
+    use crate::prims::NavConfig;
+
+    const ROUNDS: usize = 64;
+
+    fn entry(path: &'static str) -> NavScreenEntry {
+        NavScreenEntry {
+            path,
+            build: Rc::new(|_| panic!("route_rank tests never build a screen")),
+            from_segments: Rc::new(|_| Some(Box::new(()) as Box<dyn Any>)),
+            order: 0,
+        }
+    }
+
+    fn screens(routes: &[(&'static str, &'static str)]) -> HashMap<&'static str, NavScreenEntry> {
+        let mut config = NavConfig { initial: routes[0].0, initial_path: routes[0].1, screens: HashMap::new() };
+        for (name, path) in routes {
+            config.insert_screen(name, entry(path));
+        }
+        config.screens
+    }
+
+    /// Resolve `path` against `routes` in both registration orders,
+    /// `ROUNDS` fresh maps each, through BOTH resolvers; every
+    /// resolution must name `want`.
+    fn assert_resolves(routes: [(&'static str, &'static str); 2], path: &str, want: &str) {
+        let reversed = [routes[1], routes[0]];
+        for order in [routes, reversed] {
+            for _ in 0..ROUNDS {
+                let map = screens(&order);
+                let (prefix, _, rem) = resolve_entry(&map, "", path).expect("resolves");
+                assert_eq!((prefix, rem.as_str()), (want, ""), "resolve_entry {path} with {order:?}");
+                let (full, _) = match_path(&map, "", path).expect("matches");
+                assert_eq!(full, want, "match_path {path} with {order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn regression_literal_route_beats_param_sibling_at_equal_length() {
+        assert_resolves([("new", "/new"), ("item", "/:id")], "/new", "new");
+        // The param route still owns every other value.
+        assert_resolves([("new", "/new"), ("item", "/:id")], "/p1", "item");
+    }
+
+    #[test]
+    fn regression_nested_literal_route_beats_param_sibling() {
+        assert_resolves([("new", "/users/new"), ("user", "/users/:id")], "/users/new", "new");
+        assert_resolves([("new", "/users/new"), ("user", "/users/:id")], "/users/u1", "user");
+    }
+
+    #[test]
+    fn regression_equally_specific_routes_resolve_in_registration_order() {
+        // Neither pattern is more specific — the first registered wins,
+        // every time, instead of whichever the map seed iterates first.
+        for _ in 0..ROUNDS {
+            let map = screens(&[("by-id", "/:id"), ("by-slug", "/:slug")]);
+            assert_eq!(resolve_entry(&map, "", "/x").unwrap().0, "by-id");
+            assert_eq!(match_path(&map, "", "/x").unwrap().0, "by-id");
+            let map = screens(&[("by-slug", "/:slug"), ("by-id", "/:id")]);
+            assert_eq!(resolve_entry(&map, "", "/x").unwrap().0, "by-slug");
+            assert_eq!(match_path(&map, "", "/x").unwrap().0, "by-slug");
+        }
+    }
+
+    #[test]
+    fn more_segments_still_outrank_more_literals() {
+        // `/:org/:id` consumes two segments; `/new` only one. Prefix
+        // resolution keeps preferring the longer consumption (the nested
+        // navigator contract), literal count only breaks ties below it.
+        let map = screens(&[("new", "/new"), ("deep", "/:org/:id")]);
+        assert_eq!(resolve_entry(&map, "", "/new/x").unwrap().0, "deep");
+    }
+
+    #[test]
+    fn re_registering_a_route_keeps_its_original_order() {
+        let mut config = NavConfig { initial: "a", initial_path: "/:a", screens: HashMap::new() };
+        config.insert_screen("a", entry("/:a"));
+        config.insert_screen("b", entry("/:b"));
+        config.insert_screen("a", entry("/:a"));
+        config.insert_screen("c", entry("/:c"));
+        let orders: Vec<_> = ["a", "b", "c"].iter().map(|n| config.screens[n].order).collect();
+        assert_eq!(orders, [0, 1, 2]);
+    }
 }
