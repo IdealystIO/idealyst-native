@@ -309,10 +309,34 @@ activates and a row's once per row, exactly as before. A `view`'s or
 component's children are *not* a new scope: they are built inline in the
 parent's block and share its prelude.
 
-A primitive silently ignores props it doesn't recognise
-(`view(gap = 4)` reaches nothing). Such a prop's slot is dropped from the
-prelude rather than evaluated, so the split never starts running an
-expression the emitter discards.
+A prop a primitive does not accept is a **compile error**, spanned on the
+prop name and listing every prop the primitive does take (with a
+did-you-mean for a near miss): `view(gap = 4)` fails to build. So does a
+prop written twice, a pair where one would silently win
+(`image(src = …, asset = …)`, `icon(animate = …, draw_in = …)`,
+`link(external = …, route = …)`, `flat_list(gap = …, main_spacing = …)`,
+`text(content = …) { "body" }`, a `slider` `min` without `max`), and a
+`{ … }` block on a primitive that takes no children. Before this every
+emitter read a hand-picked handful of props and dropped the rest —
+`view(on_touch = …)` and `image(on_load = …)` compiled and never
+installed their handlers.
+
+What each primitive accepts is one table in `ui.rs` (`prim_surface`):
+the COMMON props `emit_component` lowers for every primitive (`style`,
+`test_id`, the a11y attrs; `disabled` on `button`), the primitive's OWN
+props its emitter reads (constructor arguments, sugar like `slider`'s
+`min`/`max`), and a TABLE lowered `name = v` → `.name(v)` onto the glue
+builder setter of the same name. A setter with no inline spelling
+(`view`'s `.container()`, every `.on_handle(..)`) is listed with what to
+write instead, and the error says it. The `setter_tables_cover_every_glue_setter`
+test reads `runtime-vocabulary/src/glue.rs` and fails when a glue setter
+is in none of those lists, so a new setter cannot land without an inline
+spelling or an explicit decision. `jsx!` shares the same surface for the
+four primitives it lowers.
+
+The prelude still keeps only the slots the emission actually uses (see
+`Scope::prelude_for`), so an expression is never evaluated for a prop the
+emitter would not have consumed.
 
 ### Why the split exists
 

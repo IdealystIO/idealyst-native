@@ -67,3 +67,8 @@ runtime-template = { workspace = true }
 # from either side alone.
 runtime-macros-parse = { workspace = true }
 syn = { workspace = true }
+# Compile-fail cases for `ui!` (`tests/compile_fail.rs`): a prop a
+# primitive does not accept must be a compile error spanned on the prop
+# name — the half of the "unknown primitive prop" fix that only a
+# compiler can observe. Same harness `i18n` uses for its typing proofs.
+trybuild = "1"

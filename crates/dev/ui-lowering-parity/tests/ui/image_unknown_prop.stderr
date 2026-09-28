@@ -1,0 +1,7 @@
+error: `image` has no prop `on_click`
+       `image` accepts: `src`, `asset`, `alt`, `on_load`, `on_error`, `alt_reactive`, `bind`, `style`, `test_id`, `accessibility`, `a11y_label`, `a11y_hint`, `a11y_role`, `a11y_hidden`, `a11y_traits`, `live_region`
+       (for a builder method with no inline spelling, chain `.method(…)` after the call)
+ --> tests/ui/image_unknown_prop.rs:7:30
+  |
+7 |         image(src = "a.png", on_click = || {})
+  |                              ^^^^^^^^

@@ -93,13 +93,23 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::visit::{self, Visit};
-use syn::{braced, parenthesized, Expr, Ident, Token, Type, Visibility};
+use syn::{braced, parenthesized, Attribute, Expr, Ident, Token, Type, Visibility};
 
 // =============================================================================
 // AST
 // =============================================================================
 
 pub struct StyleSheetDecl {
+    /// `///` doc comments written on the sheet. They land on the
+    /// generated builder struct and its same-named entry fn — the two
+    /// items an author's `Card` resolves to.
+    docs: Vec<Attribute>,
+    /// `#[cfg]` / `#[cfg_attr]` / lint-level attributes (`allow`,
+    /// `expect`, `warn`, `deny`, `forbid`) written on the sheet. They
+    /// land on EVERY generated item: a `cfg` that stripped the struct but
+    /// not its `impl` would not compile, and a lint level meant for "this
+    /// sheet" means all of what the sheet expands to.
+    item_attrs: Vec<Attribute>,
     vis: Visibility,
     name: Ident,
     /// The token vocabulary this sheet references (`pub Card<IdeaThemeRef>`).
@@ -232,8 +242,36 @@ struct RulesBlock {
 // Parser
 // =============================================================================
 
+/// The outer attributes `stylesheet!` forwards, beyond doc comments.
+/// Anything else (`#[derive]`, `#[deprecated]`, a proc-macro attribute)
+/// has no one obvious item to land on among the several the sheet
+/// generates, so it is rejected rather than guessed at.
+const FORWARDED_ATTRS: &[&str] = &["cfg", "cfg_attr", "allow", "expect", "warn", "deny", "forbid"];
+
 impl Parse for StyleSheetDecl {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        // Outer attributes first: `/// docs` and `#[cfg]`/lint attrs on
+        // the declared sheet. The parser used to read a visibility and
+        // then demand an identifier, so a doc comment on a sheet was
+        // "expected identifier" (Wave-42 / #2).
+        let mut docs = Vec::new();
+        let mut item_attrs = Vec::new();
+        for attr in input.call(Attribute::parse_outer)? {
+            if attr.path().is_ident("doc") {
+                docs.push(attr);
+            } else if FORWARDED_ATTRS.iter().any(|a| attr.path().is_ident(a)) {
+                item_attrs.push(attr);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    attr.path(),
+                    format!(
+                        "`stylesheet!` forwards doc comments and `#[{}]` onto the items it \
+                         generates; this attribute has no single item to land on",
+                        FORWARDED_ATTRS.join("]` / `#[")
+                    ),
+                ));
+            }
+        }
         let vis: Visibility = input.parse()?;
         let name: Ident = input.parse()?;
         let _lt: Token![<] = input.parse()?;
@@ -454,6 +492,8 @@ impl Parse for StyleSheetDecl {
         }
 
         Ok(StyleSheetDecl {
+            docs,
+            item_attrs,
             vis,
             name,
             theme_ty,
@@ -638,12 +678,55 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
         TokenStream2::new()
     };
 
-    quote! {
+    let items = quote! {
         #stylesheet_fn
         #(#enums)*
         #builder
         #registration
+    };
+    attach_outer_attrs(&decl, items)
+}
+
+/// Put the sheet's own outer attributes onto what it generated: docs on
+/// the builder struct and its same-named entry fn, `cfg`/lint attributes
+/// on every item. Done on the parsed output rather than threaded through
+/// each emitter, so an item added to the expansion later cannot miss its
+/// `cfg`.
+fn attach_outer_attrs(decl: &StyleSheetDecl, items: TokenStream2) -> TokenStream2 {
+    if decl.docs.is_empty() && decl.item_attrs.is_empty() {
+        return items;
     }
+    let mut file: syn::File = match syn::parse2(items.clone()) {
+        Ok(f) => f,
+        // The expansion is always a list of items; if it ever is not,
+        // emit it unchanged and let rustc report whatever is wrong with
+        // it rather than masking that with a parse error of ours.
+        Err(_) => return items,
+    };
+    for item in &mut file.items {
+        let (attrs, named): (&mut Vec<Attribute>, bool) = match item {
+            syn::Item::Struct(i) => {
+                let named = i.ident == decl.name;
+                (&mut i.attrs, named)
+            }
+            syn::Item::Fn(i) => {
+                let named = i.sig.ident == decl.name;
+                (&mut i.attrs, named)
+            }
+            syn::Item::Enum(i) => (&mut i.attrs, false),
+            syn::Item::Impl(i) => (&mut i.attrs, false),
+            syn::Item::Const(i) => (&mut i.attrs, false),
+            syn::Item::Static(i) => (&mut i.attrs, false),
+            _ => continue,
+        };
+        let mut front: Vec<Attribute> = decl.item_attrs.clone();
+        if named {
+            // Docs lead, ahead of the generated `#[allow(non_snake_case)]`.
+            front.splice(0..0, decl.docs.iter().cloned());
+        }
+        attrs.splice(0..0, front);
+    }
+    quote! { #file }
 }
 
 /// `true` if any rules block sets `font_family` to a value the premint
@@ -960,8 +1043,18 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
         None => quote! { ::std::rc::Rc::new(#sheet_expr) },
     };
 
+    let fn_doc = format!("The cached `StyleSheet` behind [`{}`].", decl.name);
     quote! {
+        #[doc = #fn_doc]
         #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
+            // Name the declared vocabulary type unconditionally. The
+            // per-block bindings above are emitted only for blocks that
+            // READ them, so a sheet whose blocks all write `_t` expanded
+            // to nothing that mentioned `#theme_ty` — and the `use` that
+            // imported it was reported unused, failing any crate under
+            // `deny(unused_imports)` (#3). A `PhantomData` value is
+            // zero-sized and needs no bound on the type.
+            let _ = ::core::marker::PhantomData::<#theme_ty>;
             // Process-unique key for this stylesheet: the address of a
             // function-local `static`. We deliberately DO NOT emit a
             // per-sheet `::std::thread_local!` here — on Android, std's
@@ -1187,8 +1280,13 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
     let vis = &decl.vis;
     let variants = axis.arms.iter().map(|arm| {
         let v = format_ident!("{}", pascal(&arm.name));
-        quote! { #v }
+        let doc = format!("The `{}` arm of the `{}` axis.", arm.name, axis.axis);
+        quote! { #[doc = #doc] #v }
     });
+    // Generated items carry docs so a sheet compiles clean in a crate
+    // under `deny(missing_docs)` — the author's own `///` lands on the
+    // builder (see `attach_outer_attrs`), these cover the rest.
+    let enum_doc = format!("The `{}` variant axis of [`{}`].", axis.axis, decl.name);
     // For Default, pick the arm marked #[default]. If none, no Default impl.
     let default_impl = axis.arms.iter().find(|a| a.is_default).map(|arm| {
         let v = format_ident!("{}", pascal(&arm.name));
@@ -1213,6 +1311,7 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
     });
     quote! {
         #[derive(::std::clone::Clone, ::std::marker::Copy, ::std::fmt::Debug, ::std::cmp::PartialEq, ::std::cmp::Eq)]
+        #[doc = #enum_doc]
         #vis enum #enum_name {
             #(#variants,)*
         }
@@ -1312,7 +1411,12 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
         let setter = &axis.axis;
         let f = format_ident!("__v_{}", axis.axis);
         let enum_name = format_ident!("{}{}", decl.name, pascal(&axis.axis));
+        let doc = format!(
+            "Select the `{}` variant — a value, or a reactive source to re-apply on change.",
+            axis.axis
+        );
         quote! {
+            #[doc = #doc]
             pub fn #setter<V: ::runtime_core::IntoVariantSource<#enum_name>>(mut self, value: V) -> Self {
                 // A reactive source (Signal / `derived`) forces the whole
                 // builder onto `StyleSource::Reactive` so the style
@@ -1336,7 +1440,12 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
         let setter = &o.name;
         let f = format_ident!("__o_{}", o.name);
         let ty = &o.ty;
+        let doc = format!(
+            "Override `{}` — a value, or a reactive source to re-apply on change.",
+            o.name
+        );
         quote! {
+            #[doc = #doc]
             pub fn #setter<V: ::runtime_core::IntoOverrideSource<#ty>>(mut self, value: V) -> Self {
                 self.__reactive = self.__reactive
                     || <V as ::runtime_core::IntoOverrideSource<#ty>>::is_reactive(&value);
@@ -1499,6 +1608,7 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
         }
 
         impl #name {
+            /// A builder with every axis at its default and no overrides.
             pub fn new() -> Self {
                 Self {
                     #(#default_axis_fields,)*
@@ -1546,5 +1656,90 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
         /// `Card().size(...).kind(...)`.
         #[allow(non_snake_case)]
         #vis fn #entry_fn() -> #name { #name::new() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand(input: TokenStream2) -> syn::File {
+        let decl: StyleSheetDecl = syn::parse2(input).expect("parse stylesheet");
+        syn::parse2(emit(decl, 0)).expect("expansion is a list of items")
+    }
+
+    fn has_doc(attrs: &[Attribute], needle: &str) -> bool {
+        attrs.iter().any(|a| {
+            a.path().is_ident("doc") && quote!(#a).to_string().contains(needle)
+        })
+    }
+
+    /// Regression (Wave-42 / #2): a `///` doc on the sheet was a parse
+    /// error ("expected identifier"). It now lands on the builder struct
+    /// and the same-named entry fn, and on nothing else.
+    #[test]
+    fn regression_stylesheet_doc_comment_lands_on_the_builder() {
+        let file = expand(quote! {
+            /// The card surface.
+            #[allow(dead_code)]
+            pub Card<()> { base(_t) { padding: 8 } }
+        });
+        let mut struct_doc = false;
+        let mut entry_doc = false;
+        for item in &file.items {
+            match item {
+                syn::Item::Struct(s) if s.ident == "Card" => {
+                    struct_doc = has_doc(&s.attrs, "The card surface");
+                }
+                syn::Item::Fn(f) if f.sig.ident == "Card" => {
+                    entry_doc = has_doc(&f.attrs, "The card surface");
+                }
+                syn::Item::Fn(f) => {
+                    assert!(!has_doc(&f.attrs, "The card surface"), "{}", f.sig.ident);
+                }
+                _ => {}
+            }
+        }
+        assert!(struct_doc && entry_doc, "the doc must reach the struct and the entry fn");
+        // The lint attribute reaches EVERY item.
+        for item in &file.items {
+            let attrs = match item {
+                syn::Item::Struct(i) => &i.attrs,
+                syn::Item::Fn(i) => &i.attrs,
+                syn::Item::Impl(i) => &i.attrs,
+                syn::Item::Const(i) => &i.attrs,
+                _ => continue,
+            };
+            assert!(
+                attrs.iter().any(|a| quote!(#a).to_string().contains("dead_code")),
+                "`#[allow(dead_code)]` missing on {}",
+                quote!(#item)
+            );
+        }
+    }
+
+    /// An attribute with no single item to land on is rejected, not
+    /// guessed at.
+    #[test]
+    fn stylesheet_rejects_attributes_it_cannot_place() {
+        let err = syn::parse2::<StyleSheetDecl>(quote! {
+            #[derive(Debug)]
+            pub Card<()> { base(_t) { padding: 8 } }
+        })
+        .err()
+        .expect("`#[derive]` on a sheet must be an error");
+        assert!(err.to_string().contains("forwards doc comments"), "{err}");
+    }
+
+    /// Regression (#3): with no block reading its binding, the expansion
+    /// never named the `<ThemeType>`, so its import read as unused. The
+    /// `_style` fn now always names it.
+    #[test]
+    fn regression_stylesheet_always_names_its_theme_type() {
+        let file = expand(quote! {
+            pub Panel<Marker> { base(_t) { padding: 8 } }
+        });
+        let text = quote!(#file).to_string();
+        assert!(text.contains("PhantomData :: < Marker >"), "{text}");
     }
 }

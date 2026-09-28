@@ -12802,6 +12802,7 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "syn 2.0.117",
+ "trybuild",
 ]
 
 [[package]]

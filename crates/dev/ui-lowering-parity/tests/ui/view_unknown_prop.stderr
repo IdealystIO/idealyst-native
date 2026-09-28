@@ -1,0 +1,7 @@
+error: `view` has no prop `on_tuch` — did you mean `on_touch`?
+       `view` accepts: `safe_area`, `on_touch`, `on_wheel`, `on_hover`, `on_file_drop`, `preserves_focus`, `bind`, `style`, `test_id`, `accessibility`, `a11y_label`, `a11y_hint`, `a11y_role`, `a11y_hidden`, `a11y_traits`, `live_region`
+       (for a builder method with no inline spelling, chain `.method(…)` after the call)
+ --> tests/ui/view_unknown_prop.rs:8:14
+  |
+8 |         view(on_tuch = |_e| ()) {}
+  |              ^^^^^^^

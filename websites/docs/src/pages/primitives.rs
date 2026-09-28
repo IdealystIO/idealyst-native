@@ -155,7 +155,7 @@ docs! {
           " on iOS, ", code("VectorDrawable"), " on Android."),
         code(rust, r##"
             ui! {
-                icon(name = "chevron-right")
+                icon(data = icons_lucide::CHEVRON_RIGHT)
             }
         "##),
         p("The icon registry is tree-shakeable — only icons referenced by your \
@@ -377,8 +377,8 @@ docs! {
                 flat_list(
                     data = signal_of_items,
                     key = |_idx, item| item.id as u64,
-                    item_size = fixed_size(72.0),
-                    render_item = |_idx, item| ui! { Card { text { &item.title } } },
+                    size = fixed_size(72.0),
+                    render = |_idx, item| ui! { Card { text { &item.title } } },
                 )
             }
         "##),

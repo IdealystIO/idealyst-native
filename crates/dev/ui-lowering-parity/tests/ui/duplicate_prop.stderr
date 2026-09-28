@@ -1,0 +1,5 @@
+error: `view` prop `on_hover` is written twice — only one would take effect; remove the duplicate
+ --> tests/ui/duplicate_prop.rs:7:40
+  |
+7 |         view(on_hover = |_h: bool| {}, on_hover = |_h: bool| {}) {}
+  |                                        ^^^^^^^^

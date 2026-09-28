@@ -503,6 +503,19 @@ fn emit_element(
     let canonical = crate::primitives::canonical_primitive(&name_str);
     let is_primitive = canonical.is_some();
 
+    // Same prop surface and the same loud failure as `ui!`: a prop the
+    // primitive does not accept is a compile error spanned on its name
+    // (`ui::check_primitive_props`). `jsx!` lowers four primitives; the
+    // rest fall through to component dispatch as before.
+    if let Some(canon @ ("text" | "button" | "view" | "when")) = canonical {
+        let names: Vec<&Ident> = props.iter().map(|p| &p.name).collect();
+        let has_children = children.is_some_and(|c| !c.is_empty());
+        let errors = crate::ui::check_primitive_props(name, canon, &names, has_children);
+        if !errors.is_empty() {
+            return quote! {{ #(#errors)* ::runtime_core::view(::std::vec::Vec::new()) }};
+        }
+    }
+
     // Same trick as `ui!`: pull `style` out of the prop list for primitives
     // and emit `.with_style(...)`. User components pass `style = ...` as an
     // ordinary field in their props struct literal.
@@ -510,15 +523,23 @@ fn emit_element(
     // (`a11y_label`, `accessibility`, …) out for primitives; they attach
     // as post-fix setter calls. User components receive them as ordinary
     // props-struct fields via `emit_user`.
+    //
+    // `test_id` and (on `button`) `disabled` attach post-fix too — they
+    // used to fall into the rest and be dropped, as they once were in
+    // `ui!`.
     let (style_value, a11y_props, other_props): (Option<&PropValue>, Vec<&Prop>, Vec<&Prop>) =
         if is_primitive {
             let mut style = None;
             let mut a11y = Vec::new();
             let mut rest = Vec::with_capacity(props.len());
             for p in props {
-                if p.name == "style" && style.is_none() {
+                let n = p.name.to_string();
+                if n == "style" && style.is_none() {
                     style = Some(&p.value);
-                } else if runtime_macros_parse::ast::is_a11y_attr(&p.name.to_string()) {
+                } else if runtime_macros_parse::ast::is_a11y_attr(&n)
+                    || n == "test_id"
+                    || (n == "disabled" && canonical == Some("button"))
+                {
                     a11y.push(p);
                 } else {
                     rest.push(p);
@@ -564,6 +585,12 @@ fn emit_element(
 }
 
 fn emit_text(props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
+    let setters = builder_calls(props, crate::ui::prim_surface("text").table);
+    let base = emit_text_base(props, children);
+    quote! { #base #setters }
+}
+
+fn emit_text_base(props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
     if let Some(kids) = children {
         match kids.len() {
             0 => quote! { ::runtime_core::text("") },
@@ -603,7 +630,21 @@ fn emit_text(props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
     }
 }
 
+/// `name = v` → `.name(v)` for each prop of `table` the author wrote —
+/// the `jsx!` twin of `ui::builder_calls`, over the SAME tables.
+fn builder_calls(props: &[&Prop], table: &[&str]) -> TokenStream2 {
+    let calls = table.iter().filter_map(|name| {
+        props.iter().find(|p| p.name == *name).map(|p| {
+            let m = Ident::new(name, p.name.span());
+            let v = emit_attr_value_raw(&p.value);
+            quote! { .#m(#v) }
+        })
+    });
+    quote! { #(#calls)* }
+}
+
 fn emit_button(props: &[&Prop], _children: Option<&[JsxNode]>) -> TokenStream2 {
+    let setters = builder_calls(props, crate::ui::prim_surface("button").table);
     let label = props
         .iter()
         .find(|p| p.name == "label")
@@ -614,19 +655,20 @@ fn emit_button(props: &[&Prop], _children: Option<&[JsxNode]>) -> TokenStream2 {
         .find(|p| p.name == "on_click")
         .map(|p| emit_attr_value_raw(&p.value))
         .unwrap_or_else(|| quote! { || {} });
-    quote! { ::runtime_core::button(#label, #on_click) }
+    quote! { ::runtime_core::button(#label, #on_click) #setters }
 }
 
-fn emit_view(_props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
+fn emit_view(props: &[&Prop], children: Option<&[JsxNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(emit_node);
+    let setters = builder_calls(props, crate::ui::prim_surface("view").table);
     quote! {
         ::runtime_core::view({
             let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
-        })
+        }) #setters
     }
 }
 
@@ -814,6 +856,31 @@ mod tests {
             Ok(j) => panic!("expected parse error, got: {}", emit(j, &input)),
             Err(e) => e.to_string(),
         }
+    }
+
+    /// Regression: `jsx!`'s `view` read none of its props, exactly like
+    /// `ui!`'s did — `<view on_hover={h}>` compiled and installed
+    /// nothing, and `test_id` / `disabled` were dropped too.
+    #[test]
+    fn regression_jsx_view_lowers_its_builder_props() {
+        let out = parse_and_emit(quote! {
+            <view on_hover={h} on_touch={t} test_id="v"></view>
+        });
+        assert!(out.contains(". on_hover ("), "{out}");
+        assert!(out.contains(". on_touch ("), "{out}");
+        assert!(out.contains(". test_id ("), "{out}");
+        let out = parse_and_emit(quote! { <button label="x" disabled={d} leading_icon={I} /> });
+        assert!(out.contains(". disabled ("), "{out}");
+        assert!(out.contains(". leading_icon ("), "{out}");
+    }
+
+    /// Regression: an unknown prop on a `jsx!` primitive was dropped in
+    /// silence; it is the same compile error `ui!` gives.
+    #[test]
+    fn regression_jsx_view_unknown_prop_is_a_compile_error() {
+        let out = parse_and_emit(quote! { <view on_tuch={t}></view> });
+        assert!(out.contains("`view` has no prop `on_tuch`"), "{out}");
+        assert!(out.contains("did you mean `on_touch`?"), "{out}");
     }
 
     #[test]

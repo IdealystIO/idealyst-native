@@ -79,12 +79,14 @@
 //!
 //! # Unused props
 //!
-//! Several primitives silently ignore props they don't recognise
-//! (`view(gap = 4)` reaches nothing). Hoisting such a prop would start
-//! *evaluating* an expression the emitter drops. Rather than maintain a
-//! per-primitive table of consumed prop names — a second source of truth
-//! that would rot — [`Scope::prelude_for`] takes the emitted body and
-//! keeps only the entries whose slot local actually appears in it. Slot
+//! A prop a primitive does not accept is a compile error in the emitter
+//! (`runtime-macros`' `check_primitive_props`), but an emitter can still
+//! leave a written prop unused — the placeholder emitted beside that
+//! very error uses none of them. Hoisting such a prop would start
+//! *evaluating* an expression the emitter drops. Rather than keep a
+//! second per-primitive table of consumed prop names here — a second
+//! source of truth that would rot — [`Scope::prelude_for`] takes the
+//! emitted body and keeps only the entries whose slot local actually appears in it. Slot
 //! locals are globally unique per expansion ([`next_slot`]), so the scan
 //! is exact and a nested scope's `__ui_s7` can never be mistaken for an
 //! outer one's.

@@ -219,6 +219,19 @@ fn emit_component(
     let is_primitive = canonical.is_some();
     let supports_disabled = canonical == Some("button");
 
+    // A prop the primitive does not accept is a compile error, spanned on
+    // the prop name (see `check_primitive_props`). The placeholder keeps
+    // the surrounding expression well-typed so the author sees the one
+    // diagnostic that matters, not a cascade.
+    if let Some(canon) = canonical {
+        let names: Vec<&Ident> = props.iter().map(|p| &p.name).collect();
+        let has_children = children.is_some_and(|c| !c.is_empty());
+        let errors = check_primitive_props(name, canon, &names, has_children);
+        if !errors.is_empty() {
+            return quote! {{ #(#errors)* ::runtime_core::view(::std::vec::Vec::new()) }};
+        }
+    }
+
     // `new-core` deferrals: primitives whose subsystems haven't migrated
     // fail loudly with their migration phase (repo rule: no silent scope
     // cuts). Everything else lowers through the vocabulary glue —
@@ -602,15 +615,16 @@ pub(crate) enum TextLowering {
 }
 
 fn emit_text(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let setters = builder_calls(props, TEXT_BUILDER_PROPS);
     match text_lowering(props, children) {
         TextLowering::Literal => {
             // The literal path is `Expr` too as far as emission goes;
             // `text_lowering` only splits it out. Re-render from the
             // original tokens.
             let content = literal_content_tokens(props, children);
-            quote! { ::runtime_core::text(#content) }
+            quote! { ::runtime_core::text(#content) #setters }
         }
-        TextLowering::Expr(e) => quote! { ::runtime_core::text(#e) },
+        TextLowering::Expr(e) => quote! { ::runtime_core::text(#e) #setters },
         TextLowering::Error(e) => e,
     }
 }
@@ -835,19 +849,8 @@ fn expression_reads_signal(tokens: &TokenStream2) -> bool {
 fn emit_button(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let label = button_label(props);
     let on_click = button_on_click(props);
-    let leading = if let Some(p) = props.iter().find(|p| p.name == "leading_icon") {
-        let v = &p.value;
-        quote! { .leading_icon(#v) }
-    } else {
-        quote! {}
-    };
-    let trailing = if let Some(p) = props.iter().find(|p| p.name == "trailing_icon") {
-        let v = &p.value;
-        quote! { .trailing_icon(#v) }
-    } else {
-        quote! {}
-    };
-    quote! { ::runtime_core::button(#label, #on_click) #leading #trailing }
+    let setters = builder_calls(props, BUTTON_BUILDER_PROPS);
+    quote! { ::runtime_core::button(#label, #on_click) #setters }
 }
 
 /// A `button`'s label expression.
@@ -888,16 +891,20 @@ pub(crate) fn button_on_click(props: &[Prop]) -> TokenStream2 {
     }
 }
 
-fn emit_view(_props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+fn emit_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
+    // `view` used to take `_props` and read none of them: `on_touch`,
+    // `on_hover`, `on_wheel`, `safe_area`, `bind`, … all compiled and
+    // reached nothing.
+    let setters = builder_calls(props, VIEW_BUILDER_PROPS);
     quote! {
         ::runtime_core::view({
             let mut __c: ::std::vec::Vec<::runtime_core::Element>
                 = ::std::vec::Vec::new();
             #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
             __c
-        })
+        }) #setters
     }
 }
 
@@ -919,46 +926,34 @@ fn emit_icon(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .find(|p| p.name == "data")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { compile_error!("Icon requires a `data` prop") });
-    let color_call = if let Some(p) = props.iter().find(|p| p.name == "color") {
-        let v = &p.value;
-        quote! { .color(#v) }
-    } else {
-        quote! {}
-    };
-    let stroke_call = if let Some(p) = props.iter().find(|p| p.name == "stroke") {
-        let v = &p.value;
-        quote! { .stroke(#v) }
-    } else {
-        quote! {}
-    };
-    // `animate` takes a StrokeAnimation struct directly. `draw_in` is
-    // shorthand for a `(duration, easing)` tuple.
+    // `color`, `stroke`, `animate` (a `StrokeAnimation` struct), `size`,
+    // `bind` — straight to the setters of the same name.
+    let setters = builder_calls(props, ICON_BUILDER_PROPS);
+    // `draw_in` is shorthand for a `(duration, easing)` tuple.
+    // `check_primitive_props` rejects it alongside `animate` (both set
+    // the stroke animation; `animate` used to win in silence).
     //
     // The tuple is bound to a local FIRST, and that is a fix, not a
     // style choice: the emission used to splice the author's expression
     // TWICE (`.draw_in((#v).0, (#v).1)`), so `draw_in = next_anim()` ran
     // the call once per element — the duration and the easing came from
     // two different evaluations, and any side effect happened twice.
-    let (anim_prelude, anim_call) =
-        if let Some(p) = props.iter().find(|p| p.name == "animate") {
-            let v = &p.value;
-            (quote! {}, quote! { .animate(#v) })
-        } else if let Some(p) = props.iter().find(|p| p.name == "draw_in") {
-            let v = &p.value;
-            (
-                quote! { let __ui_draw_in = #v; },
-                quote! { .draw_in(__ui_draw_in.0, __ui_draw_in.1) },
-            )
-        } else {
-            (quote! {}, quote! {})
-        };
+    let (anim_prelude, anim_call) = if let Some(p) = props.iter().find(|p| p.name == "draw_in") {
+        let v = &p.value;
+        (
+            quote! { let __ui_draw_in = #v; },
+            quote! { .draw_in(__ui_draw_in.0, __ui_draw_in.1) },
+        )
+    } else {
+        (quote! {}, quote! {})
+    };
     if anim_prelude.is_empty() {
-        quote! { ::runtime_core::icon(#data) #color_call #stroke_call #anim_call }
+        quote! { ::runtime_core::icon(#data) #setters }
     } else {
         quote! {
             {
                 #anim_prelude
-                ::runtime_core::icon(#data) #color_call #stroke_call #anim_call
+                ::runtime_core::icon(#data) #setters #anim_call
             }
         }
     }
@@ -976,11 +971,15 @@ fn emit_icon(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
 ///   dereferencing a `static`: `asset = *LOGO`, or shorthand
 ///   `asset = &LOGO` which the macro auto-derefs).
 fn emit_image(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
+    // `on_load` / `on_error` / `alt_reactive` / `bind` — the setters
+    // `GlueImage` always had and the emitter never lowered, so
+    // `image(on_load = …)` compiled and installed nothing.
+    let setters = builder_calls(props, IMAGE_BUILDER_PROPS);
     let alt_call = if let Some(a) = props.iter().find(|p| p.name == "alt") {
         let v = emit_attr_value(&a.value);
-        quote! { .alt(#v) }
+        quote! { .alt(#v) #setters }
     } else {
-        quote! {}
+        setters
     };
     if let Some(a) = props.iter().find(|p| p.name == "asset") {
         let v = a.value.to_token_stream();
@@ -1022,14 +1021,10 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
     } else {
         quote! {}
     };
-    let secure_call = if let Some(p) = props.iter().find(|p| p.name == "secure") {
-        let v = p.value.to_token_stream();
-        quote! { .secure(#v) }
-    } else {
-        quote! {}
-    };
+    // `secure`, `on_focus`, `on_key_down`, `placeholder_reactive`, `bind`.
+    let setters = builder_calls(props, TEXT_INPUT_BUILDER_PROPS);
     quote! {
-        ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call #secure_call
+        ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call #setters
     }
 }
 
@@ -1055,15 +1050,21 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
 ///
 /// The primitive emitters used to hand-roll one `if let Some(p) =
 /// props.iter().find(..)` per prop, and every prop that was NOT
-/// hand-rolled was dropped in silence — an unknown attribute on a
-/// primitive is not an error. That is how `scroll_view(on_end_reached
-/// = cb)` compiled and reached nothing, and cost an instrumented device
-/// build to diagnose (47d014a2). A table is harder to leave a setter
-/// out of than a chain of `if let`s.
+/// hand-rolled was dropped in silence. That is how `scroll_view(
+/// on_end_reached = cb)` compiled and reached nothing, and cost an
+/// instrumented device build to diagnose (47d014a2) — and how
+/// `view(on_touch = …)` / `image(on_load = …)` did the same later. A
+/// table is harder to leave a setter out of than a chain of `if let`s,
+/// and [`check_primitive_props`] now turns any prop that is in no table
+/// into a compile error, so "dropped in silence" is no longer a state a
+/// prop can be in.
+///
+/// The method ident carries the PROP NAME's span, so a type mismatch on
+/// the value points at the attribute the author wrote.
 fn builder_calls(props: &[Prop], names: &[&str]) -> TokenStream2 {
     let calls = names.iter().filter_map(|name| {
         props.iter().find(|p| p.name == *name).map(|p| {
-            let m = syn::Ident::new(name, proc_macro2::Span::call_site());
+            let m = syn::Ident::new(name, p.name.span());
             let v = &p.value;
             quote! { .#m(#v) }
         })
@@ -1071,10 +1072,101 @@ fn builder_calls(props: &[Prop], names: &[&str]) -> TokenStream2 {
     quote! { #(#calls)* }
 }
 
+// =============================================================================
+// Primitive prop surface — what each primitive tag accepts inline.
+// =============================================================================
+//
+// Every prop written on a primitive is exactly one of:
+//
+// - COMMON — lowered by `emit_component` for every primitive (`style`,
+//   `test_id`, the a11y attrs; `disabled` on `button`);
+// - OWN — read by that primitive's emitter itself (a constructor
+//   argument like `text_input`'s `value`, or sugar like `slider`'s
+//   `min`/`max` → `.range(min, max)`);
+// - TABLE — lowered `name = v` → `.name(v)` onto the glue builder's
+//   setter of the same name ([`builder_calls`]);
+//
+// and anything else is a compile error ([`check_primitive_props`]).
+// `setter_tables_cover_every_glue_setter` reads `glue.rs` and fails when
+// a glue setter is in none of the lists (and not declared BUILDER-ONLY
+// with a reason), so a new setter cannot land without an inline
+// spelling or an explicit decision not to have one.
+
+/// The a11y + automation props every glue wrapper with an identity
+/// surface accepts (`glue_wrapper_common!`). `emit_component` lowers
+/// them for every primitive.
+const COMMON_PROPS: &[&str] = &[
+    "style",
+    "test_id",
+    "accessibility",
+    "a11y_label",
+    "a11y_hint",
+    "a11y_role",
+    "a11y_hidden",
+    "a11y_traits",
+    "live_region",
+];
+
+/// `button` adds `disabled`, which `emit_component` lowers too.
+const BUTTON_COMMON_PROPS: &[&str] = &[
+    "style",
+    "disabled",
+    "test_id",
+    "accessibility",
+    "a11y_label",
+    "a11y_hint",
+    "a11y_role",
+    "a11y_hidden",
+    "a11y_traits",
+    "live_region",
+];
+
+/// The overlays are compositions, not `glue_wrapper_common!` wrappers:
+/// they have `with_style` (the content wrapper) and nothing else of the
+/// common surface.
+const OVERLAY_COMMON_PROPS: &[&str] = &["style"];
+
+/// `view`'s inline setters on `GlueView`.
+const VIEW_BUILDER_PROPS: &[&str] = &[
+    "safe_area",
+    "on_touch",
+    "on_wheel",
+    "on_hover",
+    "on_file_drop",
+    "preserves_focus",
+    "bind",
+];
+
+/// `GlueView` setters with no inline spelling, and what to write instead.
+const VIEW_BUILDER_ONLY: &[(&str, &str)] = &[(
+    "container",
+    "`container` takes no value — chain `.container()` after the `view(…)` call",
+)];
+
+const TEXT_BUILDER_PROPS: &[&str] = &["bind"];
+
+const BUTTON_BUILDER_PROPS: &[&str] = &["leading_icon", "trailing_icon", "bind"];
+
+/// `icon`'s inline setters. `data` is not here: it is the constructor
+/// argument (`emit_icon`), and `draw_in` is sugar the emitter binds once.
+const ICON_BUILDER_PROPS: &[&str] = &["color", "stroke", "animate", "size", "bind"];
+
+/// `image`'s inline setters. `src` / `asset` / `alt` are the emitter's
+/// own (constructor choice, and `alt`'s literal `.into()`).
+const IMAGE_BUILDER_PROPS: &[&str] = &["on_load", "on_error", "alt_reactive", "bind"];
+
+/// `text_input`'s inline setters. `placeholder` is the emitter's own
+/// (literal `.into()`).
+const TEXT_INPUT_BUILDER_PROPS: &[&str] =
+    &["secure", "on_focus", "on_key_down", "placeholder_reactive", "bind"];
+
+const SLIDER_BUILDER_PROPS: &[&str] = &["step"];
+
+const SLIDER_BUILDER_ONLY: &[(&str, &str)] =
+    &[("range", "write the bounds as `min = …, max = …`")];
+
 /// The inline props `scroll_view` lowers, each to the `GlueScrollView`
-/// setter of the same name. Every entry here is a setter on that
-/// builder; adding a setter there means adding it here, or the inline
-/// spelling is dropped in silence.
+/// setter of the same name.
 const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
     "horizontal",
     "on_scroll",
@@ -1083,16 +1175,272 @@ const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
     "bounces",
     "always_bounce",
     "safe_area",
+    // `bind` used to be builder-only here ("spelled `.bind(r)` after the
+    // call"), while `view(bind = r)` compiled and was dropped. One rule
+    // for every primitive now: `bind = r` lowers inline.
+    "bind",
 ];
 
-/// `GlueScrollView` setters that are builder-only BY DECISION, so
-/// `setter_tables_cover_every_glue_setter` does not flag them. Every
-/// name here needs a reason.
+const ACTIVITY_INDICATOR_BUILDER_PROPS: &[&str] = &["size", "color", "size_reactive"];
+
+const GRAPHICS_BUILDER_PROPS: &[&str] = &["on_resize", "on_lost"];
+
+const GRAPHICS_BUILDER_ONLY: &[(&str, &str)] = &[(
+    "on_handle",
+    "`on_handle` takes a `FnOnce(GraphicsHandle)` — chain `.on_handle(…)` after the call",
+)];
+
+const LINK_BUILDER_PROPS: &[&str] = &["url", "on_activate"];
+
+const PRESENCE_BUILDER_PROPS: &[&str] = &["present", "enter", "exit"];
+
+const PRESENCE_BUILDER_ONLY: &[(&str, &str)] = &[(
+    "on_handle",
+    "`on_handle` takes a `FnOnce(PresenceHandle)` — chain `.on_handle(…)` after the call",
+)];
+
+/// Everything one primitive accepts inline. See the section comment.
+pub(crate) struct PrimSurface {
+    pub(crate) common: &'static [&'static str],
+    pub(crate) own: &'static [&'static str],
+    pub(crate) table: &'static [&'static str],
+    pub(crate) builder_only: &'static [(&'static str, &'static str)],
+    /// Whether the `{ … }` block means anything. For the rest the
+    /// emitter never read it, so a non-empty block was dropped.
+    pub(crate) takes_children: bool,
+}
+
+impl PrimSurface {
+    fn accepts(&self, name: &str) -> bool {
+        self.common.contains(&name) || self.own.contains(&name) || self.table.contains(&name)
+    }
+
+    /// Every accepted name, in declaration order, for the error message.
+    fn accepted(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for n in self.own.iter().chain(self.table).chain(self.common) {
+            if !out.contains(n) {
+                out.push(n);
+            }
+        }
+        out
+    }
+}
+
+/// The inline surface of the primitive `canonical` (a
+/// `canonical_primitive` result).
+pub(crate) fn prim_surface(canonical: &str) -> PrimSurface {
+    let s = |common, own, table, builder_only, takes_children| PrimSurface {
+        common,
+        own,
+        table,
+        builder_only,
+        takes_children,
+    };
+    match canonical {
+        "view" => s(COMMON_PROPS, &[], VIEW_BUILDER_PROPS, VIEW_BUILDER_ONLY, true),
+        "text" => s(COMMON_PROPS, &["content"], TEXT_BUILDER_PROPS, &[], true),
+        "button" => {
+            s(BUTTON_COMMON_PROPS, &["label", "on_click"], BUTTON_BUILDER_PROPS, &[], false)
+        }
+        "when" => s(&[], &["cond", "then", "otherwise"], &[], &[], false),
+        "icon" => s(COMMON_PROPS, &["data", "draw_in"], ICON_BUILDER_PROPS, &[], false),
+        "image" => s(COMMON_PROPS, &["src", "asset", "alt"], IMAGE_BUILDER_PROPS, &[], false),
+        "text_input" => s(
+            COMMON_PROPS,
+            &["value", "on_change", "placeholder"],
+            TEXT_INPUT_BUILDER_PROPS,
+            &[],
+            false,
+        ),
+        "toggle" => s(COMMON_PROPS, &["value", "on_change"], &[], &[], false),
+        "slider" => s(
+            COMMON_PROPS,
+            &["value", "on_change", "min", "max"],
+            SLIDER_BUILDER_PROPS,
+            SLIDER_BUILDER_ONLY,
+            false,
+        ),
+        "scroll_view" => s(COMMON_PROPS, &[], SCROLL_VIEW_BUILDER_PROPS, &[], true),
+        "activity_indicator" => {
+            s(COMMON_PROPS, &[], ACTIVITY_INDICATOR_BUILDER_PROPS, &[], false)
+        }
+        "flat_list" => s(
+            COMMON_PROPS,
+            &["data", "key", "size", "render", "gap", "main_spacing", "cross_spacing"],
+            FLAT_LIST_BUILDER_PROPS,
+            FLAT_LIST_BUILDER_ONLY,
+            false,
+        ),
+        "graphics" => s(
+            COMMON_PROPS,
+            &["on_ready"],
+            GRAPHICS_BUILDER_PROPS,
+            GRAPHICS_BUILDER_ONLY,
+            false,
+        ),
+        "link" => s(COMMON_PROPS, &["external", "route", "params"], LINK_BUILDER_PROPS, &[], true),
+        "overlay" => {
+            s(OVERLAY_COMMON_PROPS, &[], OVERLAY_BUILDER_PROPS, OVERLAY_BUILDER_ONLY, true)
+        }
+        "anchored_overlay" => s(
+            OVERLAY_COMMON_PROPS,
+            &["target"],
+            ANCHORED_OVERLAY_BUILDER_PROPS,
+            ANCHORED_OVERLAY_BUILDER_ONLY,
+            true,
+        ),
+        "presence" => {
+            s(COMMON_PROPS, &[], PRESENCE_BUILDER_PROPS, PRESENCE_BUILDER_ONLY, true)
+        }
+        other => unreachable!("`{other}` is not a canonical primitive"),
+    }
+}
+
+/// Pairs of props where writing BOTH meant one was dropped in silence.
+/// `(primitive, a, b, why)`: a prop named in `a` together with one in `b`
+/// is an error. Each row is a drop the emitter used to perform.
+const CONFLICTING_PROPS: &[(&str, &[&str], &[&str], &str)] = &[
+    ("image", &["src"], &["asset"], "`asset` won and `src` was ignored — give one source"),
+    (
+        "icon",
+        &["animate"],
+        &["draw_in"],
+        "both set the stroke animation (`animate` won) — use one",
+    ),
+    (
+        "link",
+        &["external"],
+        &["route", "params"],
+        "an `external` link ignores `route`/`params` — an off-app link has no route",
+    ),
+    (
+        "flat_list",
+        &["gap"],
+        &["main_spacing", "cross_spacing"],
+        "`gap` won and `main_spacing`/`cross_spacing` were ignored — `gap = v` is shorthand for \
+         both; use one spelling",
+    ),
+];
+
+/// Levenshtein distance, for "did you mean" on an unknown prop.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != *cb);
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// Validate the props written on primitive `canonical`, returning one
+/// `compile_error!` per problem, each spanned on the offending prop NAME
+/// (or the tag, for a dropped children block). Empty when all is well.
 ///
-/// - `bind` takes a `Ref<ScrollViewHandle>`; every primitive spells
-///   that as `.bind(r)` after the call, never inline.
-#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
-const SCROLL_VIEW_BUILDER_ONLY: &[&str] = &["bind"];
+/// Before this existed an unknown prop on a primitive was not an error:
+/// every emitter read the props it knew and dropped the rest, so
+/// `view(on_touch = …)`, `image(on_load = …)`, a typo, a duplicate or a
+/// conflicting pair all compiled and did nothing. `jsx!` runs the same
+/// check (it shares [`prim_surface`]).
+pub(crate) fn check_primitive_props(
+    tag: &Ident,
+    canonical: &str,
+    names: &[&Ident],
+    has_children: bool,
+) -> Vec<TokenStream2> {
+    let surface = prim_surface(canonical);
+    let accepted = surface.accepted();
+    let mut errors = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    // The first prop spelled `x`, for the cross-prop checks below.
+    let find = |x: &str| names.iter().copied().find(|n| *n == x);
+
+    for name in names {
+        let n = name.to_string();
+        if seen.contains(&n) {
+            let msg = format!(
+                "`{canonical}` prop `{n}` is written twice — only one would take effect; \
+                 remove the duplicate"
+            );
+            errors.push(quote::quote_spanned! { name.span() => ::std::compile_error!(#msg); });
+            continue;
+        }
+        seen.push(n.clone());
+        if surface.accepts(&n) {
+            continue;
+        }
+        let msg = if let Some((_, instead)) =
+            surface.builder_only.iter().find(|(setter, _)| *setter == n)
+        {
+            format!("`{canonical}({n} = …)` is not an inline prop: {instead}")
+        } else {
+            let hint = accepted
+                .iter()
+                .map(|a| (edit_distance(&n, a), *a))
+                .filter(|(d, a)| *d <= 2.max(a.len() / 4) && *d < n.len())
+                .min_by_key(|(d, _)| *d)
+                .map(|(_, a)| format!(" — did you mean `{a}`?"))
+                .unwrap_or_default();
+            let list = if accepted.is_empty() {
+                "none".to_string()
+            } else {
+                accepted.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(", ")
+            };
+            format!(
+                "`{canonical}` has no prop `{n}`{hint}\n`{canonical}` accepts: {list}\n\
+                 (for a builder method with no inline spelling, chain `.method(…)` after the call)"
+            )
+        };
+        errors.push(quote::quote_spanned! { name.span() => ::std::compile_error!(#msg); });
+    }
+
+    for (prim, a, b, why) in CONFLICTING_PROPS {
+        if *prim != canonical {
+            continue;
+        }
+        let first_a = a.iter().find_map(|x| find(x));
+        let first_b = b.iter().find_map(|x| find(x));
+        if let (Some(na), Some(nb)) = (first_a, first_b) {
+            let msg = format!("`{canonical}`: `{na}` and `{nb}` cannot both be given: {why}");
+            errors.push(quote::quote_spanned! { nb.span() => ::std::compile_error!(#msg); });
+        }
+    }
+
+    if canonical == "slider" {
+        let min = find("min");
+        let max = find("max");
+        if let Some(lone) = match (min, max) {
+            (Some(m), None) | (None, Some(m)) => Some(m),
+            _ => None,
+        } {
+            let msg = format!(
+                "`slider`: `{lone}` needs its pair — `min` and `max` lower together to \
+                 `.range(min, max)`, so one alone was ignored"
+            );
+            errors.push(quote::quote_spanned! { lone.span() => ::std::compile_error!(#msg); });
+        }
+    }
+
+    if let (true, Some(n)) = (canonical == "text" && has_children, find("content")) {
+        let msg = "`text`: give the content as `content = …` OR as the `{ … }` body, not both \
+                   — the body won and `content` was ignored";
+        errors.push(quote::quote_spanned! { n.span() => ::std::compile_error!(#msg); });
+    }
+
+    if has_children && !surface.takes_children {
+        let msg = format!(
+            "`{canonical}` takes no children — the `{{ … }}` block would be dropped"
+        );
+        errors.push(quote::quote_spanned! { tag.span() => ::std::compile_error!(#msg); });
+    }
+
+    errors
+}
 
 /// `scroll_view(horizontal = bool, on_scroll = …, on_end_reached = …,
 /// end_reached_threshold = px, bounces = bool, safe_area = …) { children }`.
@@ -1136,16 +1484,11 @@ fn emit_slider(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         }
         _ => quote! {},
     };
-    let step_call = if let Some(p) = props.iter().find(|p| p.name == "step") {
-        let v = &p.value;
-        quote! { .step(#v) }
-    } else {
-        quote! {}
-    };
+    let setters = builder_calls(props, SLIDER_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::slider::slider(#value, #on_change)
             #range_call
-            #step_call
+            #setters
     }
 }
 
@@ -1168,46 +1511,22 @@ fn emit_graphics(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .find(|p| p.name == "on_ready")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { |_event| {} });
-    let on_resize_call = if let Some(p) = props.iter().find(|p| p.name == "on_resize") {
-        let v = &p.value;
-        quote! { .on_resize(#v) }
-    } else {
-        quote! {}
-    };
-    let on_lost_call = if let Some(p) = props.iter().find(|p| p.name == "on_lost") {
-        let v = &p.value;
-        quote! { .on_lost(#v) }
-    } else {
-        quote! {}
-    };
+    let setters = builder_calls(props, GRAPHICS_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::graphics::graphics(#on_ready)
-            #on_resize_call
-            #on_lost_call
+            #setters
     }
 }
 
-/// `ActivityIndicator(size = ..., color = ...)`.
+/// `activity_indicator(size = ..., color = ..., size_reactive = ...)`.
 fn emit_activity_indicator(
     props: &[Prop],
     _children: Option<&[UiNode]>,
 ) -> TokenStream2 {
-    let size_call = if let Some(p) = props.iter().find(|p| p.name == "size") {
-        let v = &p.value;
-        quote! { .size(#v) }
-    } else {
-        quote! {}
-    };
-    let color_call = if let Some(p) = props.iter().find(|p| p.name == "color") {
-        let v = &p.value;
-        quote! { .color(#v) }
-    } else {
-        quote! {}
-    };
+    let setters = builder_calls(props, ACTIVITY_INDICATOR_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::activity_indicator::activity_indicator()
-            #size_call
-            #color_call
+            #setters
     }
 }
 
@@ -1237,10 +1556,13 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         }
     };
 
+    // `url` / `on_activate` — the `GlueLink` setters, on either shape.
+    let setters = builder_calls(props, LINK_BUILDER_PROPS);
+
     if let Some(external) = props.iter().find(|p| p.name == "external") {
         let url = external.value.to_token_stream();
         return quote! {
-            ::runtime_core::primitives::link::external_link(#url, #children_vec)
+            ::runtime_core::primitives::link::external_link(#url, #children_vec) #setters
         };
     }
 
@@ -1263,7 +1585,7 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         .unwrap_or_else(|| quote! { () });
 
     quote! {
-        ::runtime_core::primitives::link::link(#route, #params, #children_vec)
+        ::runtime_core::primitives::link::link(#route, #params, #children_vec) #setters
     }
 }
 
@@ -1277,12 +1599,18 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
 const OVERLAY_BUILDER_PROPS: &[&str] =
     &["placement", "backdrop", "backdrop_style", "on_dismiss", "trap_focus", "click_through"];
 
-/// `GlueOverlay` setters the emitter does not lower by name:
+/// `GlueOverlay` setters the emitter does not lower by name, and what to
+/// write instead:
 /// - `with_style` is what `style = …` lowers to (the generic style path);
 /// - `on_handle` takes a `FnOnce(PortalHandle)` and is spelled after the
 ///   call like every `on_handle`.
-#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
-const OVERLAY_BUILDER_ONLY: &[&str] = &["with_style", "on_handle"];
+const OVERLAY_BUILDER_ONLY: &[(&str, &str)] = &[
+    ("with_style", "write `style = …`"),
+    (
+        "on_handle",
+        "`on_handle` takes a `FnOnce(PortalHandle)` — chain `.on_handle(…)` after the call",
+    ),
+];
 
 /// The `anchored_overlay` props lowered by name, in emission order.
 /// `target` is not here: it is positional (see `emit_anchored_overlay`).
@@ -1291,8 +1619,7 @@ const ANCHORED_OVERLAY_BUILDER_PROPS: &[&str] =
 
 /// `GlueAnchoredOverlay` setters not lowered by name — same reasons as
 /// [`OVERLAY_BUILDER_ONLY`].
-#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
-const ANCHORED_OVERLAY_BUILDER_ONLY: &[&str] = &["with_style", "on_handle"];
+const ANCHORED_OVERLAY_BUILDER_ONLY: &[(&str, &str)] = OVERLAY_BUILDER_ONLY;
 
 /// `Overlay(placement = ..., backdrop = ..., backdrop_style = ...,
 ///          on_dismiss = ..., trap_focus = ..., click_through = ...) { children }`.
@@ -1368,36 +1695,11 @@ fn emit_anchored_overlay(props: &[Prop], children: Option<&[UiNode]>) -> TokenSt
 fn emit_presence(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let child_expr = emit_block_as_primitive(children.unwrap_or(&[]));
 
-    let present_call = props
-        .iter()
-        .find(|p| p.name == "present")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .present(#v) }
-        })
-        .unwrap_or_default();
-    let enter_call = props
-        .iter()
-        .find(|p| p.name == "enter")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .enter(#v) }
-        })
-        .unwrap_or_default();
-    let exit_call = props
-        .iter()
-        .find(|p| p.name == "exit")
-        .map(|p| {
-            let v = &p.value;
-            quote! { .exit(#v) }
-        })
-        .unwrap_or_default();
+    let setters = builder_calls(props, PRESENCE_BUILDER_PROPS);
 
     quote! {
         ::runtime_core::primitives::presence::presence(move || #child_expr)
-            #present_call
-            #enter_call
-            #exit_call
+            #setters
     }
 }
 
@@ -1494,13 +1796,20 @@ const FLAT_LIST_BUILDER_PROPS: &[&str] = &[
 ///   after the call like every `on_handle`.
 /// - `spacing(main, cross)` is two inline props, `main_spacing` and
 ///   `cross_spacing`, not one — `emit_flat_list` lowers those itself.
-/// - `gap` IS reachable from `ui!`, just not from the table:
-///   `emit_flat_list`'s `spacing_call` owns it (it is the one-value
-///   spelling of the `main_spacing`/`cross_spacing` pair). It used to be
-///   in BOTH, which emitted `.gap(v).gap(v)` and evaluated the author's
-///   expression twice.
-#[cfg(test)] // read only by `setter_tables_cover_every_glue_setter`
-const FLAT_LIST_BUILDER_ONLY: &[&str] = &["on_handle", "spacing", "gap"];
+///
+/// `gap` IS reachable from `ui!`, just not from the table: it is one of
+/// `flat_list`'s OWN props (see `prim_surface`), lowered by
+/// `emit_flat_list`'s `spacing_call` as the one-value spelling of the
+/// `main_spacing`/`cross_spacing` pair. It used to be in the table AND
+/// the spacing call, which emitted `.gap(v).gap(v)` and evaluated the
+/// author's expression twice.
+const FLAT_LIST_BUILDER_ONLY: &[(&str, &str)] = &[
+    (
+        "on_handle",
+        "`on_handle` takes a `FnOnce(VirtualizerHandle)` — chain `.on_handle(…)` after the call",
+    ),
+    ("spacing", "write `main_spacing = …, cross_spacing = …` (or `gap = …` for both)"),
+];
 
 /// Emit a user-defined component invocation as a `BuildElement` struct
 /// literal (see the function body for the full rationale). A children
@@ -2523,18 +2832,190 @@ mod tests {
         );
     }
 
-    /// Every setter on the glue builder is either lowered inline by name
-    /// or declared builder-only with a reason. Three times in one week a
-    /// new `scroll_view` / `flat_list` setter landed without an entry in
-    /// the lowering table — `on_end_reached`, `always_bounce`,
+    /// Regression (#49/#62): `view(on_touch = …)` compiled and reached
+    /// nothing — `emit_view` took `_props` and read none of them. The
+    /// behavioural half (the handler reaches the backend) is
+    /// `ui-lowering-parity`'s `regression_ui_view_on_touch_attaches_a_touch_handler`.
+    #[test]
+    fn regression_ui_view_lowers_its_builder_props() {
+        let out = parse_and_emit(quote::quote! {
+            view(
+                on_touch = |e| r,
+                on_wheel = |e| r,
+                on_hover = |h| {},
+                on_file_drop = |e| r,
+                safe_area = SafeAreaSides::all(),
+                preserves_focus = true,
+                bind = my_ref,
+            ) {}
+        });
+        for call in [
+            ". on_touch (",
+            ". on_wheel (",
+            ". on_hover (",
+            ". on_file_drop (",
+            ". safe_area (",
+            ". preserves_focus (",
+            ". bind (",
+        ] {
+            assert!(out.contains(call), "missing `{call}` in:\n{out}");
+        }
+    }
+
+    /// Regression: `image(on_load = …)` / `on_error` compiled and were
+    /// dropped although `GlueImage` always had both setters.
+    #[test]
+    fn regression_ui_image_lowers_on_load_and_on_error() {
+        let out = parse_and_emit(quote::quote! {
+            image(src = "a.png", alt = "logo", on_load = |e| {}, on_error = || {})
+        });
+        assert!(out.contains(". on_load ("), "{out}");
+        assert!(out.contains(". on_error ("), "{out}");
+        assert!(out.contains(". alt ("), "{out}");
+    }
+
+    /// Regression (#49/#62/Wave-16/Wave-28): an unknown prop on a
+    /// primitive was not an error. It is now a `compile_error!` naming
+    /// the primitive, the prop, the closest valid name, and the full
+    /// valid list. (`ui-lowering-parity`'s trybuild suite proves the
+    /// diagnostic reaches rustc spanned on the prop name.)
+    #[test]
+    fn regression_ui_view_unknown_prop_is_a_compile_error() {
+        let out = parse_and_emit(quote::quote! {
+            view(on_tuch = |e| r) { text { "x" } }
+        });
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("`view` has no prop `on_tuch`"), "{out}");
+        assert!(out.contains("did you mean `on_touch`?"), "{out}");
+        assert!(out.contains("`safe_area`"), "the valid list is spelled out: {out}");
+        // And nothing of the tree is emitted beside the error.
+        assert!(!out.contains(". on_tuch ("), "{out}");
+    }
+
+    /// Every primitive rejects an unknown prop, not just `view`.
+    #[test]
+    fn every_primitive_rejects_an_unknown_prop() {
+        for (prim, _) in PRIMITIVE_GLUE_TYPES {
+            let tag = syn::Ident::new(prim, proc_macro2::Span::call_site());
+            let bogus = syn::Ident::new("definitely_not_a_prop", proc_macro2::Span::call_site());
+            let errs = check_primitive_props(&tag, prim, &[&bogus], false);
+            assert_eq!(errs.len(), 1, "`{prim}` must reject an unknown prop");
+            assert!(errs[0].to_string().contains("has no prop"), "{prim}: {}", errs[0]);
+        }
+    }
+
+    /// A builder-only setter written inline gets told what to write.
+    #[test]
+    fn a_builder_only_setter_inline_says_what_to_write_instead() {
+        let out = parse_and_emit(quote::quote! { view(container = true) {} });
+        assert!(out.contains("chain `.container()`"), "{out}");
+    }
+
+    /// Duplicates, conflicting pairs, a lone slider bound and a dropped
+    /// children block were all silent drops too.
+    #[test]
+    fn silent_drops_between_props_are_compile_errors() {
+        for (src, needle) in [
+            (quote::quote! { view(on_hover = a, on_hover = b) {} }, "written twice"),
+            (quote::quote! { image(asset = &LOGO, src = "x") }, "cannot both be given"),
+            (quote::quote! { icon(data = D, animate = a, draw_in = b) }, "cannot both be given"),
+            (quote::quote! { link(external = "u", route = R) {} }, "cannot both be given"),
+            (quote::quote! { flat_list(data = d, gap = 1.0, main_spacing = 2.0) }, "cannot both be given"),
+            (quote::quote! { slider(value = v, min = 0.0) }, "needs its pair"),
+            (quote::quote! { text(content = "a") { "b" } }, "not both"),
+            (quote::quote! { image(src = "a") { text { "dropped" } } }, "takes no children"),
+        ] {
+            let out = parse_and_emit(src.clone());
+            assert!(out.contains(needle), "`{src}` must error with `{needle}`:\n{out}");
+        }
+    }
+
+    /// Controls for the above: the legitimate spellings stay clean.
+    #[test]
+    fn valid_primitive_props_emit_no_error() {
+        for src in [
+            quote::quote! { view(style = s, test_id = "t", a11y_label = "l", on_hover = h) {} },
+            quote::quote! { button(label = "x", on_click = f, disabled = d, leading_icon = I) },
+            quote::quote! { text(content = "a") },
+            quote::quote! { text(content = "a") {} },
+            quote::quote! { slider(value = v, min = 0.0, max = 1.0, step = 0.1) },
+            quote::quote! { flat_list(data = d, main_spacing = 1.0, cross_spacing = 2.0) },
+            quote::quote! { overlay(style = s, on_dismiss = f) {} },
+            quote::quote! { image(src = "a") {} },
+        ] {
+            let out = parse_and_emit(src.clone());
+            assert!(!out.contains("compile_error"), "`{src}` must be accepted:\n{out}");
+        }
+    }
+
+    /// Every canonical primitive, with the glue wrapper its emission
+    /// builds (`None` for `when`, which lowers to a plain fn).
+    const PRIMITIVE_GLUE_TYPES: &[(&str, Option<&str>)] = &[
+        ("view", Some("GlueView")),
+        ("text", Some("GlueText")),
+        ("button", Some("GlueButton")),
+        ("when", None),
+        ("icon", Some("GlueIcon")),
+        ("image", Some("GlueImage")),
+        ("text_input", Some("GlueTextInput")),
+        ("toggle", Some("GlueToggle")),
+        ("slider", Some("GlueSlider")),
+        ("scroll_view", Some("GlueScrollView")),
+        ("activity_indicator", Some("GlueActivityIndicator")),
+        ("flat_list", Some("GlueFlatList")),
+        ("graphics", Some("GlueGraphics")),
+        ("link", Some("GlueLink")),
+        ("overlay", Some("GlueOverlay")),
+        ("anchored_overlay", Some("GlueAnchoredOverlay")),
+        ("presence", Some("GluePresence")),
+    ];
+
+    /// The list above IS the primitive set: nothing `canonical_primitive`
+    /// accepts is missing from it (so `prim_surface` cannot hit its
+    /// `unreachable!`), and nothing in it is not a primitive.
+    #[test]
+    fn every_canonical_primitive_has_a_prop_surface() {
+        for (name, _) in PRIMITIVE_GLUE_TYPES {
+            assert_eq!(crate::primitives::canonical_primitive(name), Some(*name));
+            let _ = prim_surface(name);
+        }
+        // The primitive list lives in `runtime-macros-parse`; read its
+        // match arms so a primitive added there fails HERE until it gets
+        // a prop surface.
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../macros-parse/src/primitives.rs"
+        ))
+        .expect("read runtime-macros-parse/src/primitives.rs");
+        let arms = src
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('"'))
+            .filter_map(|l| l.split_once("\" => Some(").map(|(n, _)| n.to_string()))
+            .collect::<Vec<_>>();
+        assert!(arms.len() >= PRIMITIVE_GLUE_TYPES.len(), "parser drifted: {arms:?}");
+        for arm in arms {
+            assert!(
+                PRIMITIVE_GLUE_TYPES.iter().any(|(n, _)| *n == arm),
+                "primitive `{arm}` has no entry in PRIMITIVE_GLUE_TYPES / `prim_surface`"
+            );
+        }
+    }
+
+    /// Every setter on every primitive's glue builder is either reachable
+    /// inline (common, the emitter's own, or the by-name table) or
+    /// declared builder-only with what to write instead. Three times in
+    /// one week a new `scroll_view` / `flat_list` setter landed without
+    /// an entry in the lowering table — `on_end_reached`, `always_bounce`,
     /// `safe_area` — and each time `name = v` inside `ui!` compiled and
-    /// reached nothing. The table's own comment asked authors to keep it
-    /// in step; this asks the compiler to.
+    /// reached nothing. Then `view` and `image` turned out never to have
+    /// had a table at all (`on_touch`, `on_hover`, `on_load`, …). This
+    /// covers every primitive, not the four that had already bitten.
     ///
     /// Reads `glue.rs` as text. That is deliberate: the macro crate
-    /// cannot depend on the vocabulary, and a setter is a `pub fn` in a
-    /// known `impl` block. If the glue is restructured this fails loudly
-    /// with the block it could not find, which is the right failure.
+    /// cannot depend on the vocabulary, and a setter is a `pub fn …(self
+    /// | mut self, …) -> Self` in an `impl Glue… {` block. If the glue is
+    /// restructured this fails loudly with the type it could not find,
+    /// which is the right failure.
     #[test]
     fn setter_tables_cover_every_glue_setter() {
         let glue = std::fs::read_to_string(concat!(
@@ -2543,56 +3024,89 @@ mod tests {
         ))
         .expect("read runtime-vocabulary/src/glue.rs");
 
+        /// Setters from EVERY `impl {ty} {` block (a wrapper can have
+        /// several — `GlueView`'s `bind` lives in a second one).
         fn setters_of(glue: &str, ty: &str) -> Vec<String> {
-            let start = glue
-                .find(&format!("impl {ty} {{"))
-                .unwrap_or_else(|| panic!("no `impl {ty} {{` block in glue.rs"));
-            let body = &glue[start..];
-            // The impl ends at the first line that is exactly the block's
-            // closing brace at its indentation; glue nests these two
-            // levels deep.
-            let end = body.find("\n        }\n").map(|i| i + 1).unwrap_or(body.len());
-            let body = &body[..end];
+            assert!(
+                glue.contains(&format!("pub struct {ty} ")) || glue.contains(&format!("pub struct {ty}{{")),
+                "no `pub struct {ty}` in glue.rs — parser drifted"
+            );
+            let header = format!("impl {ty} {{");
+            let bytes = glue.as_bytes();
             let mut out = Vec::new();
-            for line in body.lines() {
-                let t = line.trim_start();
-                if let Some(rest) = t.strip_prefix("pub fn ") {
+            let mut from = 0;
+            while let Some(i) = glue[from..].find(&header) {
+                let start = from + i + header.len();
+                // Brace-match to the block's end, skipping `//` comments
+                // (doc comments carry unbalanced `{ … }` prose).
+                let (mut k, mut depth) = (start, 1i32);
+                while depth > 0 {
+                    match bytes[k] {
+                        b'/' if bytes[k + 1] == b'/' => {
+                            while bytes[k] != b'\n' {
+                                k += 1;
+                            }
+                        }
+                        b'{' => depth += 1,
+                        b'}' => depth -= 1,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                let body = &glue[start..k];
+                let mut rest = body;
+                while let Some(j) = rest.find("pub fn ") {
+                    let sig_start = &rest[j + "pub fn ".len()..];
+                    let sig = &sig_start[..sig_start.find('{').unwrap_or(sig_start.len())];
                     let name: String =
-                        rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                    // Setters take `mut self`; constructors and accessors do not.
-                    if rest.contains("(mut self") {
+                        sig.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                    let params = sig[sig.find('(').expect("fn has params") + 1..].trim_start();
+                    // A setter takes `self` by value and returns `Self`;
+                    // constructors and accessors do not.
+                    if (params.starts_with("mut self") || params.starts_with("self"))
+                        && sig.trim_end().ends_with("-> Self")
+                    {
                         out.push(name);
                     }
+                    rest = &sig_start[sig.len()..];
                 }
+                from = k;
             }
-            assert!(!out.is_empty(), "found no setters in `impl {ty}` — parser drifted from glue.rs");
             out
         }
 
-        for (ty, inline, builder_only) in [
-            ("GlueScrollView", SCROLL_VIEW_BUILDER_PROPS, SCROLL_VIEW_BUILDER_ONLY),
-            ("GlueFlatList", FLAT_LIST_BUILDER_PROPS, FLAT_LIST_BUILDER_ONLY),
-            ("GlueOverlay", OVERLAY_BUILDER_PROPS, OVERLAY_BUILDER_ONLY),
-            ("GlueAnchoredOverlay", ANCHORED_OVERLAY_BUILDER_PROPS, ANCHORED_OVERLAY_BUILDER_ONLY),
-        ] {
-            for setter in setters_of(&glue, ty) {
-                let covered = inline.contains(&setter.as_str()) || builder_only.contains(&setter.as_str());
+        let mut total = 0;
+        for (prim, ty) in PRIMITIVE_GLUE_TYPES {
+            let Some(ty) = ty else { continue };
+            let surface = prim_surface(prim);
+            let existing = setters_of(&glue, ty);
+            total += existing.len();
+            for setter in &existing {
+                let s = setter.as_str();
+                // `style = …` lowers to `.with_style(…)`; every other
+                // common prop is its own setter name.
+                let common = surface.common.iter().any(|c| *c == s || (*c == "style" && s == "with_style"));
+                let covered = common
+                    || surface.own.contains(&s)
+                    || surface.table.contains(&s)
+                    || surface.builder_only.iter().any(|(b, _)| *b == s);
                 assert!(
                     covered,
-                    "`{ty}::{setter}` is a setter the `ui!` emitter does not know: `{setter} = v` \
-                     would compile and be dropped in silence. Add it to the inline table, or to \
-                     the BUILDER_ONLY list with a reason."
+                    "`{ty}::{setter}` is a setter the `ui!` emitter does not know: `{prim}({setter} \
+                     = v)` would be rejected with no way to reach it inline. Add it to the \
+                     primitive's table in `prim_surface`, or to its BUILDER_ONLY list with what \
+                     to write instead."
                 );
             }
             // And the tables must not name setters that no longer exist.
-            let existing = setters_of(&glue, ty);
-            for name in inline.iter().chain(builder_only.iter()) {
+            for name in surface.table.iter().chain(surface.builder_only.iter().map(|(b, _)| b)) {
                 assert!(
                     existing.iter().any(|s| s == name),
-                    "the `{ty}` tables name `{name}`, which is not a setter on the glue any more"
+                    "the `{prim}` tables name `{name}`, which is not a setter on `{ty}` any more"
                 );
             }
         }
+        assert!(total > 40, "found only {total} glue setters — parser drifted from glue.rs");
     }
 
     /// Regression: `icon(draw_in = expr)` evaluated `expr` TWICE.

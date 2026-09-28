@@ -42,7 +42,7 @@ const COMMON_ACCESSIBILITY_FIELD: PropFieldSpec = PropFieldSpec {
 const COMMON_REF_FILL_FIELD: PropFieldSpec = PropFieldSpec {
     name: "ref",
     type_str: "Option<Ref<...Handle>>",
-    doc: "Optional `Ref` slot the framework fills with the primitive's native handle on mount.",
+    doc: "Optional `Ref` slot the framework fills with the primitive's native handle on mount. Spelled `bind = r` inline in `ui!` (`ref={r}` in `jsx!`), or `.bind(r)` chained after the call.",
     constraint: "",
 };
 
@@ -50,7 +50,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "view",
         pascal_name: "View",
-        docs: "Container primitive — holds zero or more child primitives in a layout box. Maps to UIView (iOS), FrameLayout (Android), <div> (web), and NSView (macOS). Supports per-side safe-area opt-in via `safe_area_sides` and raw touch via `on_touch`.",
+        docs: "Container primitive — holds zero or more child primitives in a layout box. Maps to UIView (iOS), FrameLayout (Android), <div> (web), and NSView (macOS). Supports per-side safe-area opt-in via `safe_area`, raw touch via `on_touch`, wheel via `on_wheel`, hover via `on_hover`, and OS file drops via `on_file_drop` — all inline props. Like every primitive, `view` rejects a prop it does not have at compile time (a typo like `on_tuch` is an error naming the valid props), where it used to drop it silently.",
         props: &[
             PropFieldSpec {
                 name: "children",
@@ -61,22 +61,40 @@ inventory::submit! {
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
             PropFieldSpec {
-                name: "safe_area_sides",
+                name: "safe_area",
                 type_str: "SafeAreaSides",
                 doc: "Per-side opt-in for system safe-area inset padding. Reactive to orientation flips.",
                 constraint: "",
             },
             PropFieldSpec {
                 name: "on_touch",
-                type_str: "Option<TouchHandler>",
+                type_str: "Fn(&TouchEvent) -> TouchResponse",
                 doc: "Optional raw-touch handler. Author-level novel gesture surface — bubbles via the `consumed` flag.",
-                constraint: "",
+                constraint: "inline prop or builder method `.on_touch(..)`",
+            },
+            PropFieldSpec {
+                name: "on_wheel",
+                type_str: "Fn(&WheelEvent) -> TouchResponse",
+                doc: "Mouse-wheel / trackpad scroll delivered to this view (desktop + web).",
+                constraint: "inline prop or builder method `.on_wheel(..)`",
+            },
+            PropFieldSpec {
+                name: "on_hover",
+                type_str: "Fn(bool)",
+                doc: "Pointer enter (`true`) / leave (`false`). No-op on touch-only backends.",
+                constraint: "inline prop or builder method `.on_hover(..)`",
+            },
+            PropFieldSpec {
+                name: "on_file_drop",
+                type_str: "Fn(&FileDropEvent) -> TouchResponse",
+                doc: "OS file drag-and-drop onto this view.",
+                constraint: "inline prop or builder method `.on_file_drop(..)`",
             },
             PropFieldSpec {
                 name: "preserves_focus",
                 type_str: "bool",
                 doc: "Focus-preserving press region: presses inside this subtree do NOT blur the focused text input / dismiss the soft keyboard. For surfaces that belong to a focused input — a combobox's anchored option menu, an input adornment — so a close-on-blur can't tear them down mid-press. Delivered on web (canceled capture-phase pointerdown), macOS (outside-click resign exemption), iOS (keyboard-dismiss tap exemption); no-op elsewhere.",
-                constraint: "builder method `.preserves_focus(true)` — also available on `pressable`",
+                constraint: "inline prop or builder method `.preserves_focus(true)` — also available on `pressable`",
             },
             COMMON_ACCESSIBILITY_FIELD,
         ],
@@ -93,9 +111,9 @@ inventory::submit! {
         docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`). SLOTS TAKE A BARE IDENTIFIER ONLY (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT a slot and is a COMPILE ERROR (loud, never silent): the message names the fix. Pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",
         props: &[
             PropFieldSpec {
-                name: "source",
+                name: "content",
                 type_str: "TextSource",
-                doc: "Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting). Only a bare identifier is a slot — a field path/index/call (`{item.name}`) is a COMPILE ERROR, not a silent literal. Use a reactive closure (`move || item.name.clone()`) for anything that isn't a plain variable name.",
+                doc: "The `{ … }` body, or `content = …` (one or the other — both is a compile error). Static string, f-string literal (`\"count: {count}\"` — slots live-or-static by type), or reactive closure (`move || format!(…)` for positional/Debug formatting). Only a bare identifier is a slot — a field path/index/call (`{item.name}`) is a COMPILE ERROR, not a silent literal. Use a reactive closure (`move || item.name.clone()`) for anything that isn't a plain variable name.",
                 constraint: "brace slots take a BARE identifier only; `{a.b}` / `{a[0]}` / `{a()}` are a COMPILE ERROR (not silently literal) — use a closure",
             },
             COMMON_STYLE_FIELD,
@@ -192,13 +210,37 @@ inventory::submit! {
     PrimitiveEntry {
         name: "image",
         pascal_name: "Image",
-        docs: "Bitmap / vector image. Source is platform-aware (asset path, URL, base64); backends use `UIImageView` (iOS), `ImageView` (Android), `<img>` (web), and a layer-backed image view (macOS). Content fit is controlled by the `object_fit` style property (`Fill` / `Contain` / `Cover`); the default is `Contain` (aspect-fit) on every backend. Optional load observers: `.on_load(|ev| ...)` fires once the bitmap decodes with its natural `ev.width`/`ev.height`; `.on_error(|| ...)` fires on load/decode failure. Both are delivered on web + Apple and are a no-op on Android (no URL loader) / headless backends.",
+        docs: "Bitmap / vector image. Source is platform-aware (asset path, URL, base64); backends use `UIImageView` (iOS), `ImageView` (Android), `<img>` (web), and a layer-backed image view (macOS). Content fit is controlled by the `object_fit` style property (`Fill` / `Contain` / `Cover`); the default is `Contain` (aspect-fit) on every backend. Optional load observers: `on_load = |ev| ...` fires once the bitmap decodes with its natural `ev.width`/`ev.height`; `on_error = || ...` fires on load/decode failure (inline props, or the same-named builder methods). Both are delivered on web + Apple and are a no-op on Android (no URL loader) / headless backends.",
         props: &[
             PropFieldSpec {
-                name: "source",
-                type_str: "ImageSource",
-                doc: "Asset path, URL, or in-memory bytes.",
+                name: "src",
+                type_str: "impl IntoValue<String>",
+                doc: "URL or path — static, or a closure/signal for a live source.",
+                constraint: "give `src` OR `asset`, not both (compile error)",
+            },
+            PropFieldSpec {
+                name: "asset",
+                type_str: "&Asset<kinds::Image>",
+                doc: "A declared image asset (`asset = &LOGO`).",
+                constraint: "give `src` OR `asset`, not both (compile error)",
+            },
+            PropFieldSpec {
+                name: "alt",
+                type_str: "String",
+                doc: "Accessible description. `alt_reactive = move || …` for a live one.",
                 constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_load",
+                type_str: "Fn(&ImageLoadEvent)",
+                doc: "Fires once the bitmap decodes, with its natural `width`/`height`.",
+                constraint: "inline prop or builder method `.on_load(..)`",
+            },
+            PropFieldSpec {
+                name: "on_error",
+                type_str: "Fn()",
+                doc: "Fires on load/decode failure.",
+                constraint: "inline prop or builder method `.on_error(..)`",
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
@@ -214,13 +256,37 @@ inventory::submit! {
     PrimitiveEntry {
         name: "icon",
         pascal_name: "Icon",
-        docs: "Vector icon from the registered icon system. Pass the icon name as a string; the backend looks it up in the framework's icon registry.",
+        docs: "Vector icon. `data` is an `IconData` value — typically a constant from an icon set crate (`icons_lucide::CHEVRON_RIGHT`) — so only the icons a build references end up in the binary.",
         props: &[
             PropFieldSpec {
-                name: "name",
-                type_str: "&str",
-                doc: "Icon identifier — must be registered in the icon registry.",
-                constraint: "Must be a known icon name",
+                name: "data",
+                type_str: "IconData",
+                doc: "The icon's vector paths.",
+                constraint: "required",
+            },
+            PropFieldSpec {
+                name: "color",
+                type_str: "impl IntoValue<Color>",
+                doc: "Stroke/fill color — static, or a closure for a live one.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "size",
+                type_str: "f32",
+                doc: "Pin the icon to a `size × size` point square (an icon has no intrinsic size).",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "stroke",
+                type_str: "impl IntoValue<f32>",
+                doc: "Stroke-draw progress 0.0–1.0.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "draw_in",
+                type_str: "(u32, Easing)",
+                doc: "Mount stroke-draw animation `(duration_ms, easing)`; `animate = StrokeAnimation { … }` is the full form.",
+                constraint: "`draw_in` OR `animate`, not both (compile error)",
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
@@ -266,25 +332,25 @@ inventory::submit! {
                 name: "on_key_down",
                 type_str: "Fn(&KeyEvent) -> KeyOutcome",
                 doc: "Keydown hook while focused. Return KeyOutcome::PreventDefault to suppress the platform default — this is how Enter-to-submit is built.",
-                constraint: "builder method ONLY (chain `.on_key_down(..)` after the ui! call) — an inline prop is silently dropped",
+                constraint: "inline prop or builder method `.on_key_down(..)`",
             },
             PropFieldSpec {
                 name: "on_blur",
                 type_str: "Fn() -> BlurOutcome",
                 doc: "Consulted when the input is about to lose focus via the dismiss path. Return BlurOutcome::Keep to veto and keep focus (keyboard stays up on mobile).",
-                constraint: "builder method (.on_blur(..)) — check ui! support before using as an inline prop",
+                constraint: "builder method (.on_blur(..)) — NOT an inline `ui!` prop: writing it inline is a compile error",
             },
             PropFieldSpec {
                 name: "on_focus",
                 type_str: "Fn(bool)",
                 doc: "Focus-change notification: true on gain, false on loss. No veto — for driving focus-dependent chrome (e.g. a parent's focus ring).",
-                constraint: "builder method (.on_focus(..)) — check ui! support before using as an inline prop",
+                constraint: "inline prop or builder method `.on_focus(..)`",
             },
             PropFieldSpec {
                 name: "ref",
                 type_str: "Ref<TextInputHandle>",
                 doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text).",
-                constraint: "bind via `.bind(ref)` builder method",
+                constraint: "`bind = r` inline, or the `.bind(r)` builder method",
             },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
@@ -456,6 +522,18 @@ inventory::submit! {
                 name: "max",
                 type_str: "f32",
                 doc: "Upper bound of the value range.",
+                constraint: "`min` and `max` go together (one alone is a compile error)",
+            },
+            PropFieldSpec {
+                name: "on_change",
+                type_str: "Fn(f32)",
+                doc: "Fires with the new value on user interaction; typical body `value.set(v)`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "step",
+                type_str: "f32",
+                doc: "Snap increment.",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,
@@ -676,9 +754,33 @@ inventory::submit! {
         docs: "Navigation link — backend-specific URL handling. Native opens via the platform's URL scheme handler; web is `<a href>`; navigates within navigator routes when the URL matches one.",
         props: &[
             PropFieldSpec {
+                name: "route",
+                type_str: "&Route<P>",
+                doc: "In-app destination, resolved against the enclosing navigator (a stack pushes, a swap selects).",
+                constraint: "`route` (+ `params`) OR `external`, not both (compile error)",
+            },
+            PropFieldSpec {
+                name: "params",
+                type_str: "P: RouteParams",
+                doc: "The route's params. Default `()`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "external",
+                type_str: "impl IntoValue<String>",
+                doc: "Off-app URL: a real `<a target=\"_blank\">` on web, the platform URL opener on native.",
+                constraint: "",
+            },
+            PropFieldSpec {
                 name: "url",
-                type_str: "&str",
-                doc: "Target URL or internal navigator path.",
+                type_str: "impl IntoValue<String>",
+                doc: "Override the `href` (live when given a closure/signal).",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_activate",
+                type_str: "Fn()",
+                doc: "Called when the link is activated, alongside its navigation.",
                 constraint: "",
             },
             PropFieldSpec {
@@ -720,7 +822,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "presence",
         pascal_name: "Presence",
-        docs: "THE canonical primitive for animated show/hide. Wrap children whose mount/unmount should animate — the framework applies the `enter` state before first paint then interpolates to rest, and on hide plays the `exit` state before actually dropping the subtree. This is the DECLARATIVE animation tool (contrast the imperative `animated!` value driver): reach for `presence` whenever a panel/modal/toast should fade or slide in and out. The prop is `present` (a reactive `Fn() -> bool`) — NOT `when` (that's the `when` control-flow primitive; a `presence` with a `when` prop silently never hides). `enter`/`exit` are `PresenceAnim` values built from a `PresenceState` (opacity + 2D translate + uniform scale — the cross-backend-cheap vocabulary) plus a duration and `Easing`.",
+        docs: "THE canonical primitive for animated show/hide. Wrap children whose mount/unmount should animate — the framework applies the `enter` state before first paint then interpolates to rest, and on hide plays the `exit` state before actually dropping the subtree. This is the DECLARATIVE animation tool (contrast the imperative `animated!` value driver): reach for `presence` whenever a panel/modal/toast should fade or slide in and out. The prop is `present` (a reactive `Fn() -> bool`) — NOT `when` (that's the `when` control-flow primitive; `presence(when = …)` is a compile error naming the valid props). `enter`/`exit` are `PresenceAnim` values built from a `PresenceState` (opacity + 2D translate + uniform scale — the cross-backend-cheap vocabulary) plus a duration and `Easing`.",
         props: &[
             PropFieldSpec {
                 name: "present",

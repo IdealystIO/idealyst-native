@@ -1,0 +1,5 @@
+error: `text`: give the content as `content = …` OR as the `{ … }` body, not both — the body won and `content` was ignored
+ --> tests/ui/conflicting_props.rs:8:14
+  |
+8 |         text(content = "from the prop") { "from the body" }
+  |              ^^^^^^^
