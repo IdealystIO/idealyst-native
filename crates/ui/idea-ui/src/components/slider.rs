@@ -354,8 +354,13 @@ mod tests {
     /// Pull the drag container's real `on_touch` out of the built tree.
     /// `classify` collapses handler presence to a `bool`, which is enough
     /// for structure tests but can't exercise the handler itself.
-    fn drag_handler(el: Element) -> runtime_core::TouchHandler {
+    fn drag_handler(mut el: Element) -> runtime_core::TouchHandler {
         use runtime_vocabulary::prims::{PrimCell, ViewPrim};
+        // A robot build wraps every component root in `Element::Owned` to
+        // carry its Inspector realize hook; look through it.
+        while let Element::Owned { element, .. } = el {
+            el = *element;
+        }
         match el {
             Element::Item { data, .. } => data
                 .downcast_ref::<PrimCell<ViewPrim>>()

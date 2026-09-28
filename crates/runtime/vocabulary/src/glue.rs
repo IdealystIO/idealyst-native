@@ -1239,6 +1239,21 @@ pub mod __inspect {
     pub use crate::robot_props::{entry, probe, InspectProps, PropEntry, PropProbe, PropsProbe};
 }
 
+/// Compatibility shim for `runtime-macros` 1.9 and older, which wrap the
+/// root of every `#[method]` component in this call, in every build.
+/// Those macros can still resolve against this vocabulary (both sit behind
+/// `runtime-core`'s caret requirements), so removing the name broke their
+/// expansion. Identity: the element↔component link it used to arm is now
+/// made by `__inspect::__inspect_component`, which newer macros emit, so an
+/// old-macros robot build only loses that link in the Inspector.
+#[doc(hidden)]
+pub fn __component_root(
+    child: Element,
+    _instance: crate::robot_methods::ComponentInstanceId,
+) -> Element {
+    child
+}
+
 /// Keepalive for a hand-registered component's robot registration: an
 /// effect whose closure owns the `ComponentRegistration` guard. Created
 /// inside a component body — i.e. inside `component_scope`'s collector —

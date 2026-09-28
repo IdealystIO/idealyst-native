@@ -2288,6 +2288,9 @@ enum OwnedItem {
 /// tore them down).
 pub struct Owned {
     items: Vec<OwnedItem>,
+    /// Values a higher layer rides on this scope, one per type (see
+    /// [`Owned::attachment_mut`]). Dropped with the scope, after its items.
+    attachments: Vec<Box<dyn Any>>,
     /// Worlds are thread-local; freeing from another thread could only
     /// silently leak. Reject the shape at compile time.
     _not_send: PhantomData<*const ()>,
@@ -2317,15 +2320,54 @@ impl Owned {
     /// before any merged signal is freed.
     pub fn merge(&mut self, mut other: Owned) {
         self.items.append(&mut other.items);
+        // Attachments of a type `self` already holds are dropped with
+        // `other`; the rest move over.
+        for value in std::mem::take(&mut other.attachments) {
+            let ty = (*value).type_id();
+            if !self.attachments.iter().any(|a| (**a).type_id() == ty) {
+                self.attachments.push(value);
+            }
+        }
         // `other` drops here with an empty item list — a no-op.
+    }
+
+    /// The value of type `T` attached to this scope, created with
+    /// `T::default()` on first use.
+    ///
+    /// An attachment is out-of-band data a higher layer rides on a scope
+    /// without the kernel knowing what it is — the scene carries a
+    /// component's realize hooks this way, on the `Owned` its
+    /// `Element::Owned` wrapper already holds, so tooling can bracket a
+    /// subtree without changing the shape of the published `Element`
+    /// enum. At most one value per type. Attachments are not collected
+    /// items: they don't count toward [`len`](Self::len) /
+    /// [`is_empty`](Self::is_empty), and they are dropped with the scope
+    /// after its items are torn down.
+    pub fn attachment_mut<T: Default + 'static>(&mut self) -> &mut T {
+        let index = match self.attachments.iter().position(|a| a.is::<T>()) {
+            Some(i) => i,
+            None => {
+                self.attachments.push(Box::new(T::default()));
+                self.attachments.len() - 1
+            }
+        };
+        self.attachments[index].downcast_mut::<T>().expect("attachment index matches its type")
+    }
+
+    /// Remove and return the attached value of type `T`, if any.
+    pub fn take_attachment<T: 'static>(&mut self) -> Option<T> {
+        let index = self.attachments.iter().position(|a| a.is::<T>())?;
+        let value = self.attachments.swap_remove(index);
+        Some(*value.downcast::<T>().expect("attachment index matches its type"))
     }
 }
 
 /// An empty scope: dropping it frees nothing. The scene uses one to carry
-/// a realize hook on a subtree whose component body collected nothing.
+/// a realize hook (as an attachment) on a subtree whose component body
+/// collected nothing.
 impl Default for Owned {
     fn default() -> Self {
-        Owned { items: Vec::new(), _not_send: PhantomData }
+        Owned { items: Vec::new(), attachments: Vec::new(), _not_send: PhantomData }
     }
 }
 
@@ -2401,7 +2443,7 @@ pub fn collect_owned<R>(f: impl FnOnce() -> R) -> (R, Owned) {
                     .ok()
                     .flatten()
                     .unwrap_or_default();
-                drop(Owned { items, _not_send: PhantomData });
+                drop(Owned { items, attachments: Vec::new(), _not_send: PhantomData });
             }
         }
     }
@@ -2409,7 +2451,7 @@ pub fn collect_owned<R>(f: impl FnOnce() -> R) -> (R, Owned) {
     let result = f();
     guard.armed = false;
     let items = with_tls(|t| t.collectors.pop()).expect("collector stack imbalance");
-    (result, Owned { items, _not_send: PhantomData })
+    (result, Owned { items, attachments: Vec::new(), _not_send: PhantomData })
 }
 
 /// Run `f` with the running-effect stack SUSPENDED, so [`in_effect`]

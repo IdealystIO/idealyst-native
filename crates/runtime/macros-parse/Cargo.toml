@@ -20,7 +20,7 @@
 # purpose), so nothing here needs a compiler.
 [package]
 name = "runtime-macros-parse"
-version = "1.8.0"
+version = "1.9.0"
 edition.workspace = true
 license.workspace = true
 description = "Idealyst ui! front end: parser, split pass, and the descriptor both the macro and the CLI address by."

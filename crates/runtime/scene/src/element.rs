@@ -64,15 +64,10 @@ pub enum Element {
     /// [`Realized`](crate::Realized) at realize time and lives exactly as
     /// long as the subtree stays realized.
     ///
-    /// `hooks` are realize-time brackets for tooling (see
-    /// [`with_realize_hook`]), outermost first. Empty for every element
-    /// the author surface builds, so a normal build carries no cost; match
-    /// with `..` if you only need the subtree and its scope.
-    Owned {
-        element: Box<Element>,
-        owned: Owned,
-        hooks: Vec<RealizeHook>,
-    },
+    /// The scope may also carry realize-time brackets for tooling, as an
+    /// attachment (see [`with_realize_hook`]). They ride inside `owned`
+    /// so this variant keeps the shape published crates destructure.
+    Owned { element: Box<Element>, owned: Owned },
     /// A **multi-node** primitive: one payload that mounts N sibling
     /// nodes directly into the enclosing parent through a
     /// [`register_many`](crate::Registry::register_many) handler. This is
@@ -167,10 +162,9 @@ pub fn with_rebuild(element: Element, rebuilder: std::rc::Rc<dyn Any>) -> Elemen
         Element::Item { data, children, tag, .. } => {
             Element::Item { data, children, tag, rebuild: Some(rebuilder) }
         }
-        Element::Owned { element, owned, hooks } => Element::Owned {
+        Element::Owned { element, owned } => Element::Owned {
             element: Box::new(with_rebuild(*element, rebuilder)),
             owned,
-            hooks,
         },
         other => other,
     }
@@ -197,8 +191,8 @@ pub fn with_tag(element: Element, tag: NodeTag) -> Element {
         // An `Owned` is a component boundary: tag the subtree ROOT it
         // wraps, so a component's own node carries the tag of the call
         // site that built it.
-        Element::Owned { element, owned, hooks } => {
-            Element::Owned { element: Box::new(with_tag(*element, tag)), owned, hooks }
+        Element::Owned { element, owned } => {
+            Element::Owned { element: Box::new(with_tag(*element, tag)), owned }
         }
         // A region is not a node, but a component whose body IS one
         // (idea-ui's `Button` the moment a structural prop is live) has
@@ -296,11 +290,7 @@ pub fn many(data: impl Any) -> Element {
 /// Attach a component body's collected scope to its returned element —
 /// the manual form of [`component_scope`].
 pub fn owned(element: Element, owned: Owned) -> Element {
-    Element::Owned {
-        element: Box::new(element),
-        owned,
-        hooks: Vec::new(),
-    }
+    Element::Owned { element: Box::new(element), owned }
 }
 
 /// A realize-time bracket: called just before the subtree it is attached
@@ -311,6 +301,13 @@ pub fn owned(element: Element, owned: Owned) -> Element {
 /// `Fn` (not `FnOnce`) because a hook on a reactive region re-runs for
 /// every branch the region builds (see [`with_realize_hook`]).
 pub type RealizeHook = Rc<dyn Fn() -> Box<dyn FnOnce()>>;
+
+/// The realize hooks an `Element::Owned` carries, outermost first — a
+/// [`runtime_world::Owned`] attachment, so adding them left the
+/// `Element::Owned { element, owned }` shape untouched. Empty (absent)
+/// for every element the author surface builds.
+#[derive(Default)]
+pub(crate) struct RealizeHooks(pub(crate) Vec<RealizeHook>);
 
 /// Bracket `element`'s realization with `hook`, without adding a node or
 /// an effect.
@@ -338,10 +335,9 @@ pub type RealizeHook = Rc<dyn Fn() -> Box<dyn FnOnce()>>;
 pub fn with_realize_hook(element: Element, hook: RealizeHook) -> Element {
     if is_region_rooted(&element) {
         return match element {
-            Element::Owned { element, owned, hooks } => Element::Owned {
+            Element::Owned { element, owned } => Element::Owned {
                 element: Box::new(with_realize_hook(*element, hook)),
                 owned,
-                hooks,
             },
             Element::Dyn(spec) => {
                 Element::Dyn(spec.map_build(move |built| with_realize_hook(built, hook.clone())))
@@ -350,15 +346,15 @@ pub fn with_realize_hook(element: Element, hook: RealizeHook) -> Element {
         };
     }
     match element {
-        Element::Owned { element, owned, mut hooks } => {
-            hooks.insert(0, hook);
-            Element::Owned { element, owned, hooks }
+        Element::Owned { element, mut owned } => {
+            owned.attachment_mut::<RealizeHooks>().0.insert(0, hook);
+            Element::Owned { element, owned }
         }
-        other => Element::Owned {
-            element: Box::new(other),
-            owned: Owned::default(),
-            hooks: vec![hook],
-        },
+        other => {
+            let mut owned = Owned::default();
+            owned.attachment_mut::<RealizeHooks>().0.push(hook);
+            Element::Owned { element: Box::new(other), owned }
+        }
     }
 }
 
@@ -381,11 +377,7 @@ pub fn component_scope(f: impl FnOnce() -> Element) -> Element {
     if owned.is_empty() {
         element
     } else {
-        Element::Owned {
-            element: Box::new(element),
-            owned,
-            hooks: Vec::new(),
-        }
+        Element::Owned { element: Box::new(element), owned }
     }
 }
 

@@ -1846,3 +1846,23 @@ fn realize_hook_keeps_the_component_scope_alive_until_unmount() {
     rig.flush();
     assert_eq!(runs.get(), 2, "and retired with the subtree");
 }
+
+/// Published crates (idea-ui 1.12, table 1.6) destructure `Element::Owned`
+/// with no `..`. The realize hooks first landed as a third field on the
+/// variant, which would have broken those crates against any newer
+/// `runtime-scene` 1.x; they ride in the scope as an attachment instead.
+/// This exhaustive pattern is the pin: it stops compiling if the variant
+/// grows a field.
+#[test]
+fn regression_element_owned_keeps_its_published_two_field_shape() {
+    let ops = Rc::new(RefCell::new(Vec::new()));
+    let hooked = with_realize_hook(fragment(Vec::new()), logging_hook(&ops, "c"));
+    match hooked {
+        Element::Owned { element, owned } => {
+            assert!(matches!(*element, Element::Fragment(_)));
+            // The hook is an attachment, not a collected item.
+            assert!(owned.is_empty());
+        }
+        _ => panic!("a hook on a plain subtree is carried by an Owned wrapper"),
+    }
+}

@@ -2866,3 +2866,60 @@ fn effect_that_frees_itself_mid_run_drops_its_body_after_the_run() {
     // The body captured `self_slot`; dropping the body released that clone.
     assert_eq!(Rc::strong_count(&self_slot), 1, "no body-held cycle survives");
 }
+
+// ---------------------------------------------------------------------------
+// `Owned` attachments — out-of-band values a higher layer rides on a scope
+// (the scene's realize hooks), kept out of the published `Element` shape.
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Debug, PartialEq)]
+struct Tagged(Vec<&'static str>);
+
+#[derive(Default, Debug, PartialEq)]
+struct Other(u32);
+
+#[test]
+fn owned_attachment_is_created_once_per_type_and_taken_whole() {
+    let mut owned = Owned::default();
+    owned.attachment_mut::<Tagged>().0.push("a");
+    owned.attachment_mut::<Tagged>().0.push("b");
+    owned.attachment_mut::<Other>().0 = 7;
+    assert!(owned.is_empty(), "attachments are not collected items");
+    assert_eq!(owned.len(), 0);
+
+    assert_eq!(owned.take_attachment::<Tagged>(), Some(Tagged(vec!["a", "b"])));
+    assert_eq!(owned.take_attachment::<Tagged>(), None, "taken, not copied");
+    assert_eq!(owned.take_attachment::<Other>(), Some(Other(7)));
+}
+
+#[test]
+fn owned_merge_moves_new_attachment_types_and_keeps_the_receivers() {
+    let mut outer = Owned::default();
+    outer.attachment_mut::<Tagged>().0.push("outer");
+    let mut inner = Owned::default();
+    inner.attachment_mut::<Tagged>().0.push("inner");
+    inner.attachment_mut::<Other>().0 = 3;
+
+    outer.merge(inner);
+    assert_eq!(outer.take_attachment::<Tagged>(), Some(Tagged(vec!["outer"])));
+    assert_eq!(outer.take_attachment::<Other>(), Some(Other(3)));
+}
+
+#[test]
+fn owned_attachments_drop_after_the_scope_tears_down() {
+    struct Probe(Rc<Cell<bool>>, Signal<u32>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            // The scope's signal is freed before its attachments drop.
+            self.0.set(!self.1.is_alive());
+        }
+    }
+    let world = World::new();
+    world.enter(|| {
+        let saw_freed = Rc::new(Cell::new(false));
+        let (sig, mut owned) = component_scope(|| signal(1u32));
+        owned.attachments.push(Box::new(Probe(saw_freed.clone(), sig)));
+        drop(owned);
+        assert!(saw_freed.get(), "attachment dropped after the scope's items were freed");
+    });
+}

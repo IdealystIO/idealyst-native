@@ -466,9 +466,12 @@ impl<'a, H: Host> MountCx<'a, H> {
         let mut exits = Vec::new();
         loop {
             match element {
-                Element::Owned { element: inner, owned, hooks } => {
+                Element::Owned { element: inner, mut owned } => {
+                    // Take the hooks BEFORE banking the scope: the merge
+                    // into the enclosing scope must not carry them on.
+                    let hooks = owned.take_attachment::<crate::element::RealizeHooks>();
                     self.absorbed.push(owned);
-                    for hook in hooks {
+                    for hook in hooks.map(|h| h.0).unwrap_or_default() {
                         exits.push(hook());
                     }
                     element = *inner;

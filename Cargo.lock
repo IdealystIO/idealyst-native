@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.6.3"
+version = "1.7.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -3377,7 +3377,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -3410,7 +3410,7 @@ dependencies = [
 
 [[package]]
 name = "dev-overlay"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "runtime-macros-parse",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "host-mock",
  "runtime-core",
@@ -5543,7 +5543,7 @@ dependencies = [
 
 [[package]]
 name = "host-appkit"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "backend-apple-core",
  "backend-macos",
@@ -6174,7 +6174,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "1.12.0"
+version = "1.12.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6191,7 +6191,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -7362,7 +7362,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10111,7 +10111,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10128,7 +10128,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10141,7 +10141,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-parse"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10151,7 +10151,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "runtime-world",
  "rustc-hash 2.1.2",
@@ -10198,7 +10198,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -10214,7 +10214,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "rustc-hash 2.1.2",
 ]
