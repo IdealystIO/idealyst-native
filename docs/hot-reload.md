@@ -528,6 +528,12 @@ write, against a `MutationObserver` (or a computed-style poll) in the
 page that records when the new content appears. "Builder" is the
 `[hotpatch]` log line's total: replay, link, resolve, jump table.
 
+Both tables were measured while the watcher still waited out a 400 ms
+quiet window before every build. That wait was removed on 2026-09-28
+(see **Before the replay starts** below), so each "save → on screen"
+figure here is about 400 ms higher than a save costs now. The "Builder"
+column is unaffected.
+
 | App | Save | Save → on screen | Builder | Page state |
 |---|---|---|---|---|
 | Lab (small) | body edit, first of session | 1.57 s | 0.68 s | kept, no reload |
@@ -596,11 +602,53 @@ machine, as in the workspace table): first save 39.1 s save to screen
 (rustc 34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.
 `IDEALYST_HOTPATCH_NO_SEED=1` turns it off, for A/B timing.
 
-**Before the replay starts** about 0.5 s passes: the file watcher's
-50 ms debounce, then `settle`'s 400 ms quiet window, which coalesces a
-multi-file save into one build, then reading and deciding. Measured save
-to replay start on the lab: 499–515 ms. The patch itself is linked
-`--strip-debug`, since the served module never carried DWARF.
+**Before the replay starts** about 70 ms passes: the file watcher's
+50 ms debounce, then reading and deciding. There is no quiet window any
+more. One used to wait 400 ms for the filesystem to go quiet before
+every build, so that a multi-file save (format-on-save writing twice, a
+refactor across files, `git checkout`) became one build. That was half
+of a small app's whole save: on the lab, save to replay start was
+~476 ms and save to a built patch ~621 ms.
+
+Now the work starts as soon as the first batch arrives. If another save
+lands while it runs, the watcher starts over on every file changed
+since, so a burst still ends in ONE applied result, built from the final
+contents. The work in flight is handled per tier:
+
+- **Overlay patch**: decided in milliseconds. It is dropped, and never
+  pushed, if a save lands before the push.
+- **Hot patch**: its replays are killed (`replay::run_rustc_emit_obj_cancellable`).
+  That is safe: rustc only finalizes an incremental session on success,
+  the next replay loads the newest finalized one, and rustc deletes the
+  dead `-working` directory once it is 10 s old. Each replay's object dir
+  is emptied first, the killed crate's cached objects are dropped, and no
+  patch file is written. A patch that finished anyway is not pushed.
+- **Rebuild**: not killed. It writes the served bundle in place, and
+  killing it mid-packaging would leave a half-written bundle. Killing
+  cargo would also orphan its rustc processes. So it runs to the end, no
+  page is reloaded onto it, and the restart rebuilds (incrementally) and
+  reloads once. Until it does, the save stays on the rebuild tier: a
+  patch decided against the new bundle would reach a page still running
+  the old one.
+
+Each overtaken attempt emits `superseded` (see
+[Watching a session](#watching-a-session)). Supersession only applies
+within `MAX_COALESCE_MS` (3 s) of the burst's first batch, judged by when
+the newer save arrived. So a steady stream of writes still gets built:
+after 3 s, the work in flight is applied, and later writes are the next
+save.
+
+Measured on the lab (`dev --web --local`, a one-token body edit, seven
+saves):
+
+| | before | after |
+|---|---|---|
+| save → replay start (`decided`) | 476 ms | 70 ms |
+| save → patch built | 621 ms | 228 ms |
+| two saves 150 ms apart: last save → the one applied patch | ~620 ms | ~210 ms |
+
+The patch itself is linked `--strip-debug`, since the served module
+never carried DWARF.
 
 **The served patch has no names.** A patch's `name` section is more than
 half of it (33 of 60 MB on CrewForge; walrus already drops the DWARF on
@@ -1195,9 +1243,10 @@ The event types, by what they say:
 | `server_ready` | a server is listening (`livereload`, `runtime_server_bridged`, `full_stack` — once the project's server accepts connections, again after each restart —, `reload_stream`, `events`) |
 | `stream_route` | how a full-stack page reaches the stream: `same_origin` (the app server proxies it) or `port` |
 | `watching` | the watch set, and again when a save changes the dependency graph |
-| `change_detected` | files changed (after the quiet window), with their crates |
+| `change_detected` | files changed, with their crates; `folded` counts the extra batches in the same save |
 | `decided` | the tier: `overlay`, `hot_patch`, `rebuild` (with the reason), `unchanged` |
 | `overlay_pushed` / `patch_built` / `patch_failed` | a patch was sent (with timings, functions redirected, bytes), or could not be built |
+| `superseded` | a newer save arrived while a save's `overlay`, `hot_patch` or `rebuild` was in flight. That work is abandoned and never reaches a page, and a new `change_detected` follows with every file changed since. It ends the episode, so a superseded rebuild has no `build_finished` |
 | `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome |
 | `cargo_progress` | packages compiled so far, of the build's total; the crate in flight |
 | `diagnostic` | a rustc diagnostic: level, message, code, primary `file:line:column`, rendered text |

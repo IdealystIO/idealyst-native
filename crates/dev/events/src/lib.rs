@@ -210,7 +210,9 @@ pub enum BuildCause {
     /// The session's first build.
     Initial,
     /// A save the watcher could not patch. `folded` counts the extra
-    /// event batches the quiet window absorbed into this one build.
+    /// event batches folded into this one build: batches that arrived
+    /// together, plus those that superseded earlier work for the same
+    /// save (see [`DevEvent::Superseded`]).
     Save { folded: usize },
     /// Someone asked (the panel's `r`).
     Forced,
@@ -234,6 +236,31 @@ pub enum BuildOutcome {
     PremintRefreshed { gen: u64 },
     /// The build failed. The page keeps running the last good bundle.
     Failed { error: String },
+}
+
+/// The work a newer save overtook ([`DevEvent::Superseded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SupersededWork {
+    /// A decided overlay patch, dropped before it was pushed.
+    Overlay,
+    /// A hot patch being built: its replays are killed.
+    HotPatch,
+    /// A rebuild. Not killed — its output is the served bundle, written
+    /// in place — so it runs to the end, and pages are not reloaded onto
+    /// it; the restart rebuilds and reloads once.
+    Rebuild,
+}
+
+impl SupersededWork {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SupersededWork::Overlay => "overlay patch",
+            SupersededWork::HotPatch => "hot patch",
+            SupersededWork::Rebuild => "rebuild",
+        }
+    }
 }
 
 /// How the runtime-server host applied a save.
@@ -466,6 +493,18 @@ pub enum DevEvent {
     },
     /// A body edit could not be patched; the watcher rebuilds instead.
     PatchFailed { target: String, files: Vec<String>, reason: String },
+    /// Files changed again while a save's work was in flight, so that
+    /// work is abandoned and its result never reaches a page: the watcher
+    /// starts over on every file changed since, with a new
+    /// [`DevEvent::ChangeDetected`]. A burst of saves thus ends in one
+    /// applied result, built from the final contents.
+    ///
+    /// Ends the episode its `change_detected` opened — a superseded
+    /// rebuild has no `build_finished`. `ms` is how long the work ran.
+    /// Only saves within the first 3 s of a burst supersede; after that
+    /// the work in flight is applied, so a steady stream of writes still
+    /// gets built.
+    Superseded { target: String, work: SupersededWork, ms: u64 },
     /// A build started. The cause is inlined: `"cause": "save",
     /// "folded": 0`.
     BuildStarted {

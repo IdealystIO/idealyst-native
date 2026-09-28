@@ -136,6 +136,25 @@ each entry links to its migration guide.
 
 ### Changed
 
+- **`idealyst dev` starts a save's build as soon as the save arrives.**
+  The watcher used to wait 400 ms for the filesystem to go quiet before
+  every build, which was most of a small app's save-to-replay time. Now
+  the work starts at once. A save that lands while it runs supersedes it:
+  a hot patch's replays are killed, and a rebuild runs to its end but
+  pages are not reloaded onto it. The watcher then starts over on every
+  file changed since, so a burst of saves still applies one result, from
+  the final contents. On the lab, save to replay start went from 476 ms
+  to 70 ms, and save to a built patch from 621 ms to 228 ms. A new
+  `superseded` dev event (schema v1, additive) reports each overtaken
+  attempt. See `docs/hot-reload.md#what-a-save-costs-on-the-web`.
+
+- **`idealyst dev --web --local` raises the CLI's memory cap itself.**
+  With the hot-patch tier armed, the cap becomes min(8192 MB, half of
+  physical RAM), and never less than the 4096 MB default. A large app's
+  base prep (~3.7 GB on CrewForge) no longer needs
+  `IDEALYST_MEMORY_LIMIT_MB=8192` set by hand. The variable still wins
+  when set.
+
 - **A sheet no longer carries a grabber, or a drag gesture.**
   `ModalPresentation::Sheet` used to grow a pill at its top edge; briefly
   that pill also dragged the surface down to dismiss. Both are gone, and

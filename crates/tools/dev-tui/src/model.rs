@@ -400,6 +400,11 @@ impl Model {
                     }
                 }
             }
+            // The save's row closes as overtaken; the restart's own
+            // `change_detected` opens the row that carries the result.
+            DevEvent::Superseded { target, work, .. } => {
+                self.finish_save(target, work.as_str(), "superseded by a newer save".into(), false);
+            }
             DevEvent::BuildStarted { target, cause } => {
                 let label = match cause {
                     BuildCause::Initial | BuildCause::OneShot => "building",
@@ -748,6 +753,48 @@ mod tests {
             (save.tier.as_str(), save.ms, save.detail.as_str(), save.acked),
             ("overlay", Some(12), "1 site", true)
         );
+    }
+
+    /// A save overtaken mid-patch closes its row as superseded; the
+    /// restart gets its own row, which carries the result.
+    #[test]
+    fn a_superseded_save_closes_its_row_and_the_restart_carries_the_result() {
+        let mut m = started();
+        let change = |at| {
+            (at, DevEvent::ChangeDetected { target: web(), paths: vec!["src/app.rs".into()], crates: vec![], folded: 0 })
+        };
+        let decided = |at| {
+            (at, DevEvent::Decided {
+                target: web(),
+                decision: Decision::HotPatch { crates: vec!["app".into()], files: vec!["src/app.rs".into()] },
+            })
+        };
+        run(
+            &mut m,
+            vec![
+                change(100),
+                decided(101),
+                (180, DevEvent::Superseded { target: web(), work: dev_events::SupersededWork::HotPatch, ms: 79 }),
+                change(181),
+                decided(182),
+                (600, DevEvent::PatchBuilt {
+                    target: web(),
+                    files: vec!["src/app.rs".into()],
+                    crates: vec![],
+                    redirected: 2,
+                    steps: vec![],
+                    skipped: vec![],
+                    bytes: 1,
+                    ms: 418,
+                }),
+            ],
+        );
+        let rows: Vec<(&str, &str)> =
+            m.history.iter().map(|s| (s.tier.as_str(), s.detail.as_str())).collect();
+        assert!(rows.contains(&("hot patch", "superseded by a newer save")), "{rows:?}");
+        assert!(rows.contains(&("hot patch", "2 fn redirected")), "{rows:?}");
+        assert!(m.history.iter().all(|s| s.ms.is_some()), "every row closed");
+        assert_eq!(m.targets[0].state, State::Patched { redirected: Some(2), ms: 418 });
     }
 
     #[test]

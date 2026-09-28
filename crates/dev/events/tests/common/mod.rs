@@ -2,7 +2,7 @@
 
 use dev_events::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, HotTier, Mode, PageAck,
-    ServerKind, SessionServer, SidecarUpdate, StreamRoute, Timing, SERVER_TARGET,
+    ServerKind, SessionServer, SidecarUpdate, StreamRoute, SupersededWork, Timing, SERVER_TARGET,
 };
 
 /// One of every variant, so a variant added without serde support (or
@@ -68,6 +68,7 @@ pub fn every_event() -> Vec<DevEvent> {
             ms: 310,
         },
         DevEvent::PatchFailed { target: web(), files: vec![], reason: "r".into() },
+        DevEvent::Superseded { target: web(), work: SupersededWork::HotPatch, ms: 120 },
         DevEvent::BuildStarted { target: web(), cause: BuildCause::Forced },
         DevEvent::StageStarted { target: web(), stage: "cargo".into() },
         DevEvent::StageFinished { target: web(), stage: "cargo".into(), ms: 1 },

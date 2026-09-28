@@ -108,6 +108,53 @@ pub fn run_rustc_emit_obj_with(
     captured: &CapturedInvocation,
     extra: &[String],
 ) -> Result<Vec<PathBuf>> {
+    run_rustc_emit_obj_cancellable(captured, extra, &|| false)
+}
+
+/// A replay abandoned because `cancel` said so. Returned (inside
+/// `anyhow::Error`) by [`run_rustc_emit_obj_cancellable`]; callers tell it
+/// apart from a failed compile with `err.is::<Cancelled>()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the replay was cancelled: a newer save superseded it")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// How often a running replay asks `cancel`. Short against a replay
+/// (hundreds of ms on a small crate, seconds on a big one), long enough
+/// that the polling costs nothing.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// As [`run_rustc_emit_obj_with`], killing rustc as soon as `cancel`
+/// returns true.
+///
+/// Killing a replay mid-compile is safe for everything it touches:
+///
+/// - **Its incremental session.** rustc works in a `s-…-working`
+///   directory under a lock file and only renames it to a finalized
+///   session on success. The next compile loads the newest FINALIZED
+///   session and never reads a working one; it garbage-collects a dead
+///   working directory (its lock is released with the process) once that
+///   is 10 s old. `regression_a_killed_replay_leaves_the_next_one_working`
+///   kills one mid-session and checks the next replay compiles and
+///   finalizes its own session beside the dead one.
+/// - **Its object dir.** Emptied at the start of every replay (above),
+///   so a killed replay's partial objects are never linked.
+/// - **Nothing else.** `--emit=obj` never links, so rustc has no child
+///   process to orphan, and the base build's artifacts are only read.
+pub fn run_rustc_emit_obj_cancellable(
+    captured: &CapturedInvocation,
+    extra: &[String],
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<PathBuf>> {
+    if cancel() {
+        return Err(Cancelled.into());
+    }
     let out_dir = replay_out_dir(&captured.args)?;
     // A fresh directory per replay. With many codegen units rustc writes
     // one object per unit under a HASHED name, so a previous replay's
@@ -125,11 +172,44 @@ pub fn run_rustc_emit_obj_with(
         cmd.env(k, v);
     }
 
-    let output = cmd
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .output()
+        .spawn()
         .context("spawn rustc")?;
+    use std::io::Read as _;
+    // Drained on their own threads, as `Command::output` does: a rustc
+    // that fills a pipe nobody reads would block for ever.
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+    let status = loop {
+        if let Some(status) = child.try_wait().context("wait for rustc")? {
+            break status;
+        }
+        if cancel() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err(Cancelled.into());
+        }
+        std::thread::sleep(CANCEL_POLL);
+    };
+    let output = std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    };
     if !output.status.success() {
         // The captured invocation carries cargo's `--error-format=json`, so
         // rustc wrote JSON. Report each diagnostic as the text rustc would
@@ -455,6 +535,113 @@ mod tests {
             replay_objects(vec![PathBuf::from("/o/app-ab.o")], &args),
             vec![PathBuf::from("/o/app-ab.o")]
         );
+    }
+
+    /// A real rustc and a crate big enough that its compile takes seconds,
+    /// captured the way cargo would have invoked it.
+    fn slow_crate(root: &Path) -> CapturedInvocation {
+        let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output().unwrap();
+        let rustc = PathBuf::from(String::from_utf8(sysroot.stdout).unwrap().trim())
+            .join("bin")
+            .join("rustc");
+        let src = root.join("lib.rs");
+        let mut text = String::new();
+        for i in 0..6000 {
+            text.push_str(&format!(
+                "pub fn f{i}(x: u64) -> u64 {{ let mut v = vec![x; 8]; \
+                 for (j, e) in v.iter_mut().enumerate() {{ *e = e.wrapping_mul(j as u64 + {i}); }} \
+                 v.iter().fold({i}, |a, b| a ^ b) }}\n"
+            ));
+        }
+        std::fs::write(&src, text).unwrap();
+        let args = [
+            "--crate-name", "killtest", "--edition=2021", src.to_str().unwrap(),
+            "--crate-type", "lib", "--emit=dep-info,metadata,link",
+            "-C", &format!("incremental={}", root.join("incremental").display()),
+            "--out-dir", root.join("deps").to_str().unwrap(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        CapturedInvocation {
+            rustc: rustc.display().to_string(),
+            args,
+            cwd: root.display().to_string(),
+            env: Vec::new(),
+        }
+    }
+
+    /// Every incremental session directory rustc left unfinished.
+    fn working_sessions(incremental: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for krate in std::fs::read_dir(incremental).into_iter().flatten().flatten() {
+            for session in std::fs::read_dir(krate.path()).into_iter().flatten().flatten() {
+                let p = session.path();
+                if p.is_dir() && p.to_string_lossy().ends_with("-working") {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
+    /// The dev loop kills a replay when a newer save supersedes it, so a
+    /// killed replay must not poison the next: its incremental session is
+    /// left `-working`, and its object dir half-written. Killed here
+    /// mid-session (the moment rustc's working directory exists), then
+    /// replayed to completion: the second replay must compile, produce
+    /// objects, and garbage-collect the dead session.
+    #[test]
+    fn regression_a_killed_replay_leaves_the_next_one_working() {
+        let root = std::env::temp_dir().join(format!("idealyst-replay-kill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let captured = slow_crate(&root);
+        let incremental = root.join("incremental-hotpatch");
+
+        let started = std::time::Instant::now();
+        let killed = run_rustc_emit_obj_cancellable(&captured, &[], &|| {
+            !working_sessions(&incremental).is_empty()
+        });
+        let err = killed.expect_err("the replay should have been cancelled mid-session");
+        assert!(err.is::<Cancelled>(), "{err:#}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        let dead = working_sessions(&incremental);
+        assert_eq!(dead.len(), 1, "the kill should leave exactly its own session behind");
+
+        let objects = run_rustc_emit_obj_cancellable(&captured, &[], &|| false)
+            .expect("the replay after a killed one must compile");
+        assert!(!objects.is_empty());
+        assert!(objects.iter().all(|o| o.is_file()));
+        // The replay finalized a session of its own beside the dead one, and
+        // started none it left unfinished. rustc collects the dead one on a
+        // later compile once it is 10 s old (its GC skips younger working
+        // dirs, which may belong to a live process), so it is still there.
+        assert_eq!(working_sessions(&incremental), dead, "a second working session appeared");
+        let finalized = std::fs::read_dir(dead[0].parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                e.path().is_dir() && name.starts_with("s-") && !name.ends_with("-working")
+            })
+            .count();
+        assert_eq!(finalized, 1, "the replay after the kill should have finalized its session");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Asked before anything is spawned, too: a replay that is already
+    /// stale does not start.
+    #[test]
+    fn a_replay_cancelled_before_it_starts_spawns_nothing() {
+        let captured = CapturedInvocation {
+            rustc: "/nonexistent/rustc".into(),
+            args: vec!["--out-dir".into(), "/nonexistent/deps".into()],
+            cwd: "/".into(),
+            env: Vec::new(),
+        };
+        let err = run_rustc_emit_obj_cancellable(&captured, &[], &|| true).unwrap_err();
+        assert!(err.is::<Cancelled>(), "{err:#}");
     }
 
     fn write(dir: &Path, name: &str) {

@@ -112,6 +112,7 @@ impl SessionState {
                 }
             }
             DevEvent::BuildFinished { target, .. }
+            | DevEvent::Superseded { target, .. }
             | DevEvent::PatchBuilt { target, .. }
             | DevEvent::OverlayPushed { target, .. }
             | DevEvent::SidecarApplied { target, .. } => {
@@ -203,6 +204,31 @@ mod tests {
             vec!["session_started", "change_detected", "decided", "build_started", "cargo_progress"]
         );
         assert!(snap.windows(2).all(|w| w[0].seq < w[1].seq));
+    }
+
+    /// A superseded rebuild never finishes: `superseded` is what closes its
+    /// episode, so the restart's episode (a new `change_detected`, then
+    /// its build) is the one a late consumer sees.
+    #[test]
+    fn a_superseded_rebuild_closes_its_episode() {
+        let web = || "web".to_string();
+        let change = |seq| {
+            env(seq, DevEvent::ChangeDetected { target: web(), paths: vec!["a.rs".into()], crates: vec![], folded: 0 })
+        };
+        let mut s = SessionState::new();
+        s.apply(&change(1));
+        s.apply(&env(2, DevEvent::BuildStarted { target: web(), cause: BuildCause::Save { folded: 0 } }));
+        s.apply(&env(
+            3,
+            DevEvent::Superseded { target: web(), work: crate::SupersededWork::Rebuild, ms: 900 },
+        ));
+        assert!(s.targets["web"].closed, "superseded must close the episode");
+        assert_eq!(types(&s.snapshot()), vec!["change_detected", "build_started", "superseded"]);
+
+        s.apply(&change(4));
+        s.apply(&env(5, DevEvent::BuildStarted { target: web(), cause: BuildCause::Save { folded: 1 } }));
+        assert_eq!(types(&s.snapshot()), vec!["change_detected", "build_started"]);
+        assert_eq!(s.snapshot()[0].seq, 4);
     }
 
     #[test]

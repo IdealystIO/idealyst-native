@@ -77,6 +77,12 @@ pub fn render(event: &DevEvent) -> Option<String> {
             "[hotpatch] {} changed inside function bodies, but no patch: {reason}; rebuilding",
             files.join(", "),
         ),
+        // New with supersession; before it the save queued behind the work
+        // in flight and both results were applied.
+        DevEvent::Superseded { target, work, ms } => {
+            let prefix = if target == WEB { "[dev-reload]".to_string() } else { format!("[dev-reload {target}]") };
+            format!("{prefix} {} superseded by a newer save after {ms} ms, restarting", work.as_str())
+        }
         DevEvent::BuildStarted { target, cause } => match (target.as_str(), cause) {
             (WEB, BuildCause::Initial) => "[dev-reload] initial build…".into(),
             (WEB, BuildCause::Save { folded: 0 }) => {

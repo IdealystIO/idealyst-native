@@ -23,6 +23,7 @@ pub fn wants(event: &DevEvent) -> bool {
         | DevEvent::OverlayPushed { .. }
         | DevEvent::PatchBuilt { .. }
         | DevEvent::PatchFailed { .. }
+        | DevEvent::Superseded { .. }
         | DevEvent::BuildStarted { .. }
         | DevEvent::StageStarted { .. }
         | DevEvent::CargoProgress { .. }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use dev_events::{
     plain, BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, HotTier, Mode,
-    PageAck, PlainLines, Reporter, ServerKind, Timing, Verbosity,
+    PageAck, PlainLines, Reporter, ServerKind, SupersededWork, Timing, Verbosity,
 };
 
 fn web() -> String {
@@ -175,6 +175,26 @@ fn the_hot_patch_lines() {
         })
         .as_deref(),
         Some("[hotpatch] src/app.rs changed inside function bodies, but no patch: no capture; rebuilding")
+    );
+}
+
+/// New with supersession (no legacy `eprintln!` behind it): a save that
+/// overtakes work in flight says so, so a terminal reading two
+/// `change detected` lines in a row knows why the first never finished.
+#[test]
+fn the_superseded_lines() {
+    assert_eq!(
+        line(DevEvent::Superseded { target: web(), work: SupersededWork::HotPatch, ms: 180 }).as_deref(),
+        Some("[dev-reload] hot patch superseded by a newer save after 180 ms, restarting")
+    );
+    assert_eq!(
+        line(DevEvent::Superseded { target: web(), work: SupersededWork::Rebuild, ms: 4100 }).as_deref(),
+        Some("[dev-reload] rebuild superseded by a newer save after 4100 ms, restarting")
+    );
+    assert_eq!(
+        line(DevEvent::Superseded { target: "server".into(), work: SupersededWork::Rebuild, ms: 9 })
+            .as_deref(),
+        Some("[dev-reload server] rebuild superseded by a newer save after 9 ms, restarting")
     );
 }
 

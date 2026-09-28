@@ -62,6 +62,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use build_runtime_server::hotpatch::replay;
+/// What [`WasmPatchBuilder::build_crates_cancellable`] fails with when it
+/// was cancelled rather than broken.
+pub use build_runtime_server::hotpatch::replay::Cancelled;
 
 use crate::hotpatch_patch::BaseIndex;
 use crate::hotpatch_wasm::{base_slots, build_jump_table_with, WasmJumpTable};
@@ -182,7 +185,9 @@ impl SeedSlot {
         let captures = captures_dir.to_path_buf();
         let name = krate.crate_name.clone();
         let handle = std::thread::spawn(move || {
-            let result = replay_crate(&captures, &name);
+            // Never cancelled: nothing is waiting on a seed but the next
+            // save, which joins it (see `WasmPatchBuilder::seed`).
+            let result = replay_crate(&captures, &name, &|| false);
             // Said here, when it happens, not when a save joins it: the
             // session log is how anyone knows the first save will be warm.
             match &result {
@@ -342,9 +347,9 @@ impl WasmPatchBuilder {
     /// only CARRIES the crate (a library save) reuses them outright.
     ///
     /// A save that arrives mid-seed waits for it ([`Self::build_crates`]
-    /// joins it first) rather than superseding it: killing a rustc can
-    /// leave its incremental session half-written, and running a second
-    /// one beside it would share the session and the object dir.
+    /// joins it first) rather than starting a second replay beside it,
+    /// which would share the session and the object dir. Nor is the seed
+    /// cancelled: it is the warm cache the save is about to use.
     pub fn seed(&self, krate: PatchCrate) {
         self.seed.start(&self.captures_dir, krate, &self.objects, &self.reporter);
     }
@@ -359,16 +364,43 @@ impl WasmPatchBuilder {
     /// module. See the module docs for why one module, and why the
     /// replays run concurrently.
     pub fn build_crates(&self, crates: &[PatchCrate]) -> Result<BuiltPatch> {
+        self.build_crates_cancellable(crates, &|| false)
+    }
+
+    /// [`Self::build_crates`], abandoned as soon as `cancel` returns true:
+    /// the dev loop's answer to a newer save arriving mid-patch (the
+    /// patch would describe sources that are already stale).
+    ///
+    /// A running replay is killed ([`replay::run_rustc_emit_obj_cancellable`]
+    /// says why that is safe); between steps `cancel` is asked again, so
+    /// a patch is never written once it is known to be stale. The error is
+    /// [`replay::Cancelled`] (`err.is::<replay::Cancelled>()`). What a
+    /// cancelled build leaves behind is consistent: a killed crate's cache
+    /// entry is dropped with its object dir (the next replay empties the
+    /// dir), a crate that finished is cached as usual, and no patch file
+    /// is written.
+    pub fn build_crates_cancellable(
+        &self,
+        crates: &[PatchCrate],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Result<BuiltPatch> {
         if crates.is_empty() {
             bail!("a patch of no crates");
         }
+        let checkpoint = || -> Result<()> {
+            if cancel() {
+                return Err(replay::Cancelled.into());
+            }
+            Ok(())
+        };
         let mut timings = Vec::new();
 
         // A seed still running goes first; its wait is part of this save.
         let started = Instant::now();
         self.seed.finish(&self.objects, &self.reporter);
         let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
-        let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build)?;
+        checkpoint()?;
+        let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build, cancel)?;
         let mut objects = Vec::new();
         let mut carried = Vec::with_capacity(in_build.len());
         for (krate, (objs, took)) in in_build.iter().zip(replayed) {
@@ -376,6 +408,7 @@ impl WasmPatchBuilder {
             carried.push((krate.crate_name.clone(), took));
         }
         timings.push(("cargo", started.elapsed()));
+        checkpoint()?;
 
         let serial = self.serial.get() + 1;
         self.serial.set(serial);
@@ -386,6 +419,10 @@ impl WasmPatchBuilder {
         let started = Instant::now();
         self.link(&objects, &linked)?;
         timings.push(("link", started.elapsed()));
+        if let Err(e) = checkpoint() {
+            let _ = std::fs::remove_file(&linked);
+            return Err(e);
+        }
 
         let started = Instant::now();
         let raw = std::fs::read(&linked)
@@ -396,6 +433,7 @@ impl WasmPatchBuilder {
         // them fills a dev session's staging dir.
         let _ = std::fs::remove_file(&linked);
         timings.push(("resolve", started.elapsed()));
+        checkpoint()?;
 
         // Pair while the names are still there: the jump table matches
         // functions BY NAME, from the `name` section.
@@ -524,9 +562,10 @@ pub const PATCH_LINK_ARGS: &[&str] = &[
 /// holds a replay of the same sources, replayed — all at once —
 /// otherwise. The `Duration` is the replay's, `None` for a reuse.
 fn collect_objects(
-captures_dir: &Path,
-objects: &std::cell::RefCell<ObjectCache>,
-crates: &[PatchCrate],
+    captures_dir: &Path,
+    objects: &std::cell::RefCell<ObjectCache>,
+    crates: &[PatchCrate],
+    cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<(Vec<PathBuf>, Option<Duration>)>> {
     let mut out: Vec<Option<(Vec<PathBuf>, Option<Duration>)>> = vec![None; crates.len()];
     let mut to_replay = Vec::new();
@@ -555,7 +594,7 @@ crates: &[PatchCrate],
             .map(|&i| {
                 let name = crates[i].crate_name.clone();
                 let captures = captures_dir.to_path_buf();
-                (i, scope.spawn(move || replay_crate(&captures, &name)))
+                (i, scope.spawn(move || replay_crate(&captures, &name, cancel)))
             })
             .collect();
         handles
@@ -584,10 +623,17 @@ crates: &[PatchCrate],
                 out[i] = Some((objs, Some(took)));
             }
             Err(e) => {
-                // A failed replay emptied that crate's object dir, so
-                // whatever the cache said about it is gone too.
+                // A failed (or killed) replay emptied that crate's object
+                // dir, so whatever the cache said about it is gone too.
                 cache.remove(&krate.crate_name);
-                first_error.get_or_insert(e);
+                // A cancellation outranks a failure: when a newer save
+                // killed the replays, one that failed on the way down is
+                // not what the caller should report.
+                if e.is::<replay::Cancelled>() {
+                    first_error = Some(e);
+                } else if !first_error.as_ref().is_some_and(|f| f.is::<replay::Cancelled>()) {
+                    first_error.get_or_insert(e);
+                }
             }
         }
     }
@@ -619,17 +665,26 @@ fn in_this_build(captures_dir: &Path, crates: &[PatchCrate]) -> Result<(Vec<Patc
 }
 
 /// Replay one crate's captured invocation as a PIC object compile.
-fn replay_crate(captures_dir: &Path, crate_name: &str) -> Result<(Vec<PathBuf>, Duration)> {
+fn replay_crate(
+    captures_dir: &Path,
+    crate_name: &str,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<(Vec<PathBuf>, Duration)> {
     let started = Instant::now();
     let captured = replay::find_capture(captures_dir, crate_name)?;
-    let objects = replay::run_rustc_emit_obj_with(
+    let objects = match replay::run_rustc_emit_obj_cancellable(
         &captured,
         // See the module docs: this rides the replayed command line so
         // cargo's `-Cmetadata` — and therefore the symbol hashes the jump
         // table pairs on — stay exactly as the base's.
         &["-Crelocation-model=pic".to_string()],
-    )
-    .with_context(|| format!("recompiling `{crate_name}` as a PIC object"))?;
+        cancel,
+    ) {
+        Ok(objects) => objects,
+        // Not wrapped: the caller tests for it by type.
+        Err(e) if e.is::<replay::Cancelled>() => return Err(e),
+        Err(e) => return Err(e.context(format!("recompiling `{crate_name}` as a PIC object"))),
+    };
     if objects.is_empty() {
         bail!("rustc produced no object files for `{crate_name}` — nothing to link a patch from");
     }
@@ -877,7 +932,7 @@ mod tests {
         let caps = FakeCaptures::new(&["lab_shared", "app"]);
         let cache = Default::default();
         let crates = [PatchCrate::new("lab_shared", None), PatchCrate::new("app", None)];
-        let got = collect_objects(&caps.dir, &cache, &crates).unwrap();
+        let got = collect_objects(&caps.dir, &cache, &crates, &|| false).unwrap();
         assert_eq!(names(&got), vec![vec!["lab_shared.o"], vec!["app.o"]]);
         assert!(got.iter().all(|(_, took)| took.is_some()), "both were replayed");
         assert_eq!(caps.calls(), vec!["app", "lab_shared"]);
@@ -892,22 +947,22 @@ mod tests {
         let cache = Default::default();
         let key = |k: &str| Some(k.to_string());
 
-        collect_objects(&caps.dir, &cache, &[PatchCrate::new("lab_shared", key("s1")), PatchCrate::new("app", key("a1"))]).unwrap();
+        collect_objects(&caps.dir, &cache, &[PatchCrate::new("lab_shared", key("s1")), PatchCrate::new("app", key("a1"))], &|| false).unwrap();
         assert_eq!(caps.calls().len(), 2);
 
         // The next save edits lab-shared again: app's sources did not move.
-        let got = collect_objects(&caps.dir, &cache, &[PatchCrate::new("lab_shared", key("s2")), PatchCrate::new("app", key("a1"))]).unwrap();
+        let got = collect_objects(&caps.dir, &cache, &[PatchCrate::new("lab_shared", key("s2")), PatchCrate::new("app", key("a1"))], &|| false).unwrap();
         assert_eq!(caps.calls(), vec!["app", "lab_shared", "lab_shared"], "app was reused");
         assert!(got[1].1.is_none(), "the reuse reports no replay time");
         assert_eq!(names(&got)[1], vec!["app.o"]);
 
         // app moved (an overlay edit advanced its key): replayed.
-        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", key("a2"))]).unwrap();
+        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", key("a2"))], &|| false).unwrap();
         assert_eq!(caps.calls().iter().filter(|c| *c == "app").count(), 2);
 
         // No key: never trusted.
-        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)]).unwrap();
-        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)]).unwrap();
+        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)], &|| false).unwrap();
+        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)], &|| false).unwrap();
         assert_eq!(caps.calls().iter().filter(|c| *c == "app").count(), 4);
     }
 
@@ -921,11 +976,7 @@ mod tests {
         slot.start(&caps.dir, PatchCrate::carried("app", Some("k".into())), &cache, &dev_events::Reporter::new());
         slot.finish(&cache, &dev_events::Reporter::new());
         assert_eq!(caps.calls(), vec!["app"]);
-        let got = collect_objects(
-            &caps.dir,
-            &cache,
-            &[PatchCrate::new("lib", None), PatchCrate::carried("app", Some("k".into()))],
-        )
+        let got = collect_objects(&caps.dir, &cache, &[PatchCrate::new("lib", None), PatchCrate::carried("app", Some("k".into()))], &|| false)
         .unwrap();
         assert!(got[1].1.is_none(), "app came from the seed");
         assert_eq!(caps.calls(), vec!["app", "lib"]);
@@ -943,7 +994,7 @@ mod tests {
         slot.start(&caps.dir, PatchCrate::carried("app", Some("k1".into())), &cache, &dev_events::Reporter::new());
         slot.start(&caps.dir, PatchCrate::carried("app", Some("k2".into())), &cache, &dev_events::Reporter::new());
         slot.finish(&cache, &dev_events::Reporter::new());
-        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)]).unwrap();
+        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)], &|| false).unwrap();
         let trace = std::fs::read_to_string(&caps.trace).unwrap();
         assert_eq!(
             trace.lines().collect::<Vec<_>>(),
@@ -980,14 +1031,39 @@ mod tests {
         let caps = FakeCaptures::new(&["broken_lib", "app"]);
         let cache: std::cell::RefCell<ObjectCache> = Default::default();
         cache.borrow_mut().insert("broken_lib".into(), ("k".into(), vec![PathBuf::from("/nope.o")]));
-        let err = collect_objects(
-            &caps.dir,
-            &cache,
-            &[PatchCrate::new("broken_lib", Some("k2".into())), PatchCrate::new("app", None)],
-        )
+        let err = collect_objects(&caps.dir, &cache, &[PatchCrate::new("broken_lib", Some("k2".into())), PatchCrate::new("app", None)], &|| false)
         .unwrap_err();
         assert!(format!("{err:#}").contains("broken_lib"), "{err:#}");
         assert!(!cache.borrow().contains_key("broken_lib"));
+    }
+
+    /// A newer save cancels the patch mid-replay: the replay is killed
+    /// (well before it would have finished), the error says CANCELLED
+    /// rather than failed — the loop restarts instead of rebuilding — and
+    /// the killed crate is forgotten, so the next patch replays it afresh.
+    #[test]
+    fn a_cancelled_replay_is_killed_reported_as_cancelled_and_forgotten() {
+        // A replay that takes 2 s unless it is killed.
+        let caps = FakeCaptures::with_delay(&["app"], "2");
+        let cache: std::cell::RefCell<ObjectCache> = Default::default();
+        cache.borrow_mut().insert("app".into(), ("old".into(), vec![PathBuf::from("/nope.o")]));
+        let started = Instant::now();
+        let cancel_at = Duration::from_millis(50);
+        let err = collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", Some("k".into()))], &|| {
+            started.elapsed() >= cancel_at
+        })
+        .unwrap_err();
+        assert!(err.is::<replay::Cancelled>(), "{err:#}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "the replay ran to the end instead of being killed"
+        );
+        assert!(!cache.borrow().contains_key("app"), "a killed replay's objects must not be reused");
+        assert!(caps.calls().is_empty(), "the fake rustc was killed before it finished");
+
+        let got = collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", Some("k".into()))], &|| false)
+            .unwrap();
+        assert_eq!(names(&got), vec![vec!["app.o"]]);
     }
 
     /// The bundled linker has to exist for any of this to work, and a

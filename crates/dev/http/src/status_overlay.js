@@ -254,6 +254,10 @@ function idealystStatusOverlay(doc) {
       case "patch_failed":
         st.text = "no patch (" + ev.reason + "), rebuilding";
         break;
+      case "superseded":
+        // The restart's own change_detected follows at once.
+        st.text = "newer save, restarting";
+        break;
       case "overlay_pushed":
         succeeded("overlay · " + ev.sites + " site(s) · " + ms(ev.ms));
         break;
