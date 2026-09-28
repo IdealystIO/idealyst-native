@@ -271,12 +271,17 @@ pub use runtime_shared::premint;
 // --- 1. Shared data types & modules -----------------------------------------
 
 // Style vocabulary not already re-exported above (the style DATA MODEL
-// is runtime-core's on both cores).
+// is runtime-core's on both cores). Every type a `StyleRules` field (or
+// its payload) holds must appear here or above — an app names style
+// types through `runtime_core` only. `runtime-core/tests/style_reexports.rs`
+// destructures `StyleRules` exhaustively through that path, so a new
+// field whose type is missing here fails to compile there.
 pub use runtime_shared::{
     AlignContent, AlignItems, AlignSelf, Cursor, Derive, DisplayKind, FlexDirection, FlexWrap,
-    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, JustifyContent,
-    ObjectFit, Overflow, PointerEvents, Position, RadialExtent, ScrollbarVisibility, Shadow,
-    TextAlign, TextTransform, TrackSize, Transform, UserSelect, VariantAxis, VariantValue,
+    FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, GridPlacement,
+    JustifyContent, ObjectFit, Overflow, OverscrollBehavior, PointerEvents, Position,
+    RadialExtent, ScrollbarVisibility, Shadow, TextAlign, TextTransform, TrackSize, Transform,
+    UserSelect, VariantAxis, VariantValue,
 };
 
 // Typefaces + assets (fonts, images): shared asset model.
