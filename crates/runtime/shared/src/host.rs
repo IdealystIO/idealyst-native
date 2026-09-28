@@ -83,6 +83,25 @@ pub struct VirtualizerCallbacks<N: Clone + 'static> {
     /// `create_scroll_view`'s. Backends that route it through their
     /// dispatch-site glue get the flush for free.
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// Whether the LIVE row that shows the key now at `idx` was rendered
+    /// from an item that differs from the current one — i.e. its key
+    /// survived a data change but its content did not (FRAMEWORK-NOTES
+    /// #50). A backend doing a keyed diff calls this for each surviving
+    /// key on data-changed and REMOUNTS the row when it returns `true`
+    /// (release + mount). A survivor whose item is unchanged must keep
+    /// its native node — that is what preserves focus / scroll / row
+    /// state across unrelated edits.
+    ///
+    /// Returns `false` when no live row has that key (nothing to
+    /// refresh). `None` when the author's data has no change detection
+    /// (the raw `virtualizer()` builder without `.item_diff(..)`); a
+    /// backend then keeps every survivor as-is. A pure read like
+    /// `item_key`: no `World::enter` requirement, no flush.
+    ///
+    /// Backends that rebuild every visible row on each data change
+    /// (`reloadData` on iOS / macOS) may ignore it: their rows are
+    /// always fresh.
+    pub item_changed: Option<Rc<dyn Fn(usize) -> bool>>,
 }
 
 // ---------------------------------------------------------------------------

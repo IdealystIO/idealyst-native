@@ -878,6 +878,7 @@ impl caps::VirtualizerOps for WindowsBackend {
             release_item,
             set_measured_size,
             on_scroll,
+            item_changed,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -916,6 +917,8 @@ impl caps::VirtualizerOps for WindowsBackend {
                     schedule_flush();
                 })
             }),
+            // Pure read (like `item_key`): no world entry, no flush.
+            item_changed,
         };
         // Delegates to the inherent painted-scene body — the branch's
         // Win32 implementation, which master's seam stubbed out.

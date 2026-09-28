@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives::virtualizer::{
-    Axis, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
+    Axis, ItemDiff, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
 };
 use runtime_scene::{item, Element};
 
@@ -30,6 +30,7 @@ pub fn virtualizer(
             item_key: Box::new(item_key),
             item_size,
             render_item: Rc::new(render_item),
+            item_diff: None,
             overscan: 1.0,
             layout: VirtualLayout::default(),
             style: None,
@@ -52,6 +53,16 @@ impl VirtualizerBuilder {
     /// viewport extent above and below).
     pub fn overscan(mut self, factor: f32) -> Self {
         self.prim.overscan = factor;
+        self
+    }
+
+    /// Item-change detection for keyed rows: with it, a row whose key
+    /// survives a data change but whose item changed is re-rendered,
+    /// while an unchanged survivor keeps its node. `flat_list` wires
+    /// this from `T: PartialEq`; the raw builder has no `T` to compare,
+    /// so without it every survivor is kept as-is.
+    pub fn item_diff(mut self, diff: ItemDiff) -> Self {
+        self.prim.item_diff = Some(diff);
         self
     }
 

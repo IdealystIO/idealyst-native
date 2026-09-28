@@ -149,6 +149,17 @@ pub(crate) fn create(
     // boundary on scroll. That's the property this class exists to
     // preserve (see the module header), so an unconditional no-op
     // closure here would quietly undo it.
+    // Item-change probe (FRAMEWORK-NOTES #50): `refresh()` asks it for
+    // every surviving key and remounts the stale ones. Built only when
+    // the author's data has change detection (`flat_list`); absent, the
+    // JS keeps every survivor exactly as before.
+    let item_changed_cb = callbacks.item_changed.clone().map(|f| {
+        Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+            let i = idx.as_f64().unwrap_or(0.0) as usize;
+            JsValue::from_bool(f(i))
+        })
+    });
+
     let on_scroll_cb = callbacks.on_scroll.clone().map(|f| {
         Closure::<dyn FnMut(JsValue, JsValue)>::new(move |x: JsValue, y: JsValue| {
             f(
@@ -175,6 +186,9 @@ pub(crate) fn create(
         &JsValue::from_str("measureSizes"),
         &JsValue::from_bool(callbacks.measure_sizes),
     );
+    if let Some(cb) = item_changed_cb.as_ref() {
+        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemChanged"), cb.as_ref());
+    }
     if let Some(cb) = on_scroll_cb.as_ref() {
         let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("onScroll"), cb.as_ref());
     }
@@ -268,6 +282,7 @@ pub(crate) fn create(
     // 5) Hand each closure to the JS instance as a property so JS
     //    keeps a reference. Crucially, we DO NOT `.forget()` them
     //    — Rust retains ownership in `VirtualizerInstance._closures`
+    //    (item_changed's closure is added with on_scroll's below)
     //    so `release()` can drop them deterministically when the
     //    surrounding scope tears down.
     let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_count"), item_count_cb.as_ref());
@@ -293,6 +308,9 @@ pub(crate) fn create(
     // than `.forget()`-ed — otherwise a scroll event queued after the
     // surrounding scope drops would fire into a freed signal arena,
     // which is exactly the panic the module header describes.
+    if let Some(cb) = item_changed_cb {
+        closures.push(Box::new(cb));
+    }
     if let Some(cb) = on_scroll_cb {
         let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_on_scroll"), cb.as_ref());
         closures.push(Box::new(cb));

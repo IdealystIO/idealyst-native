@@ -640,3 +640,81 @@ fn virtualizer_handle_is_inert_but_safe_on_a_backend_without_ops() {
     handle.scroll_to(10.0, 20.0);
     handle.scroll_to_index(3);
 }
+
+// ===========================================================================
+// Item-change detection (FRAMEWORK-NOTES #50)
+// ===========================================================================
+
+/// Regression (FRAMEWORK-NOTES #50): the handler must be able to tell a
+/// backend that a surviving key's row was rendered from an item that has
+/// since changed — and that an unchanged survivor is still fresh. Pre-fix
+/// there was no `item_changed` at all, so a keyed-diff backend (web,
+/// Android) had nothing to go on and kept every survivor, stale content
+/// included. Asserts the change-detection logic end to end through
+/// `flat_list` → handler → `VirtualizerCallbacks::item_changed`:
+/// asked by the key's NEW index (so it holds across a reorder), false for
+/// unchanged items and for keys with no live row, true only for the edited
+/// item, and forgotten when the row is released.
+#[test]
+fn regression_flat_list_item_changed_detects_edited_survivor() {
+    use runtime_vocabulary::glue::primitives::flat_list::{flat_list, FlatListItemSize};
+    use runtime_vocabulary::glue::IntoElement;
+
+    let h = harness();
+    let world = h.world.clone();
+    let (_realized, data) = world.enter(|| {
+        let data = signal(vec![(1u64, "a".to_string()), (2, "b".to_string()), (3, "c".to_string())]);
+        let realized = realize(
+            &h.backend,
+            &h.registry,
+            flat_list::<_, _, (), _>(
+                data,
+                |_, it: &(u64, String)| it.0,
+                FlatListItemSize::Known(Rc::new(|_, _| 20.0)),
+                |_, it: &(u64, String)| text().content(it.1.clone()).build(),
+            )
+            .into_element(),
+        );
+        (realized, data)
+    });
+    let cbs = h.virtualizer(0);
+    let item_changed = cbs.item_changed.clone().expect("flat_list supplies change detection");
+    // Rows for keys 1 and 2 are live; key 3 is not mounted.
+    let (_, s0) = world.enter(|| (cbs.mount_item)(0));
+    let (_, _s1) = world.enter(|| (cbs.mount_item)(1));
+    assert!(!item_changed(0) && !item_changed(1), "freshly mounted rows are not stale");
+    assert!(!item_changed(2), "a key with no live row is never reported");
+
+    // Edit key 2's item AND reorder: [3, 2', 1].
+    data.set(vec![(3, "c".to_string()), (2, "B".to_string()), (1, "a".to_string())]);
+    world.flush();
+    assert!(item_changed(1), "key 2 (now at index 1) survived with a changed item");
+    assert!(!item_changed(2), "key 1 (now at index 2) moved but is unchanged");
+    assert!(!item_changed(0), "key 3 has no live row");
+
+    // Released row: its key is forgotten, so it is never reported again.
+    (cbs.release_item)(s0);
+    data.set(vec![(3, "c".to_string()), (2, "B".to_string()), (1, "A".to_string())]);
+    world.flush();
+    assert!(!item_changed(2), "released key 1 is not reported even though its item changed");
+}
+
+/// The raw `virtualizer()` builder has no `T` to compare, so it offers no
+/// change detection unless `.item_diff(..)` is given: backends then keep
+/// every survivor exactly as before.
+#[test]
+fn raw_virtualizer_without_item_diff_has_no_item_changed() {
+    let h = harness();
+    let world = h.world.clone();
+    let _realized = world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtualizer(|| 1, |i| i as u64, ItemSize::Known(Rc::new(|_| 40.0)), |_| {
+                text().content("x").build()
+            })
+            .build(),
+        )
+    });
+    assert!(h.virtualizer(0).item_changed.is_none());
+}

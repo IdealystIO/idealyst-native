@@ -9,6 +9,7 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SimpleItemAnimator
 
 /**
  * RecyclerView adapter whose data lives on the Rust side. Every
@@ -38,6 +39,21 @@ class RustListAdapter(private val nativePtr: Long) :
     private var lastKeys: LongArray = LongArray(0)
 
     override fun getItemCount(): Int = nativeItemCount(nativePtr)
+
+    /**
+     * A changed survivor (same key, different item — FRAMEWORK-NOTES
+     * #50) is rebound through `notifyItemChanged`. The default item
+     * animator runs that as a crossfade between TWO holders, briefly
+     * showing the old row over the new one and releasing/mounting on a
+     * different holder than the one on screen. Rows here are rebuilt
+     * wholesale from Rust, so the swap must be an in-place rebind —
+     * matching web, where the stale row is replaced without animation.
+     * Insert/remove/move animations are unaffected.
+     */
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        (recyclerView.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
+    }
 
     override fun getItemViewType(position: Int): Int = 0
 
@@ -114,13 +130,16 @@ class RustListAdapter(private val nativePtr: Long) :
             override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
                 oldKeys[oldItemPosition] == newKeys[newItemPosition]
 
-            // We don't compare contents on the Kotlin side — if the
-            // key is the same we let Rust's reactive subtree decide
-            // whether the bound view needs visual updates. Returning
-            // true here means "same key, no rebind" which is what we
-            // want for stable-key updates.
+            // Same key: ask Rust whether the item the live row was
+            // rendered from still equals the item now at this position
+            // (`VirtualizerCallbacks::item_changed`, FRAMEWORK-NOTES
+            // #50). Unchanged → no rebind, so the row's native views
+            // (focus, scroll, row-local state) survive unrelated edits;
+            // changed → DiffUtil dispatches `notifyItemChanged` and the
+            // holder rebinds with fresh content. Web's virtualizer.js
+            // makes the identical decision in `refresh()`.
             override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
-                true
+                !nativeItemChanged(nativePtr, newItemPosition)
         })
         diff.dispatchUpdatesTo(this)
     }
@@ -132,6 +151,7 @@ class RustListAdapter(private val nativePtr: Long) :
 
     private external fun nativeItemCount(ptr: Long): Int
     private external fun nativeItemKey(ptr: Long, position: Int): Long
+    private external fun nativeItemChanged(ptr: Long, position: Int): Boolean
     private external fun nativeMountItem(ptr: Long, position: Int): MountResult
     private external fun nativeReleaseItem(ptr: Long, scopeId: Long)
     private external fun nativeSetMeasuredSize(ptr: Long, scopeId: Long, size: Float)

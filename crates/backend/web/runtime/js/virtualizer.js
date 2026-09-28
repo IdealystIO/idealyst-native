@@ -37,6 +37,10 @@
 //  * @property {(scopeId: number, size: number) => void} setMeasuredSize
 //  *   Backend->framework: notify a measured size change.
 //  * @property {boolean} measureSizes
+//  * @property {(idx: number) => boolean} [itemChanged]
+//  *   Whether the live row showing the key now at `idx` was rendered
+//  *   from a different item (key survived, content changed). Absent
+//  *   when the data has no change detection — every survivor is kept.
 //  * @property {(x: number, y: number) => void} [onScroll]
 //  *   Author scroll observer. Absent unless `.on_scroll(..)` was set;
 //  *   the scroll handler skips the wasm crossing when it is.
@@ -244,6 +248,23 @@
             for (const [oldIdx, entry] of this.mountedByIdx) {
                 if (!this.keyToIdx.has(entry.key)) {
                     this._unmountEntry(oldIdx);
+                }
+            }
+            // Phase 1b (FRAMEWORK-NOTES #50): a survivor whose key is
+            // unchanged but whose ITEM changed is stale — its content is
+            // whatever `mountItem` built from the old item. Unmount it
+            // here; the `update()` below remounts its new index fresh
+            // (it is still in range). A survivor whose item is equal is
+            // left alone — same DOM node, so focus, scroll position and
+            // row-local state survive unrelated edits. Without
+            // `itemChanged` (raw builder, no `T: PartialEq`) every
+            // survivor is kept, the pre-#50 behavior.
+            if (this.cb.itemChanged) {
+                for (const [oldIdx, entry] of Array.from(this.mountedByIdx.entries())) {
+                    const newIdx = this.keyToIdx.get(entry.key);
+                    if (newIdx !== undefined && this.cb.itemChanged(newIdx)) {
+                        this._unmountEntry(oldIdx);
+                    }
                 }
             }
             // Phase 2: re-key every survivor by its NEW idx. Two

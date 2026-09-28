@@ -884,6 +884,7 @@ mod tests {
             release_item: Rc::new(|_| {}),
             set_measured_size: Rc::new(|_, _| {}),
             on_scroll: None,
+            item_changed: None,
         }
     }
 

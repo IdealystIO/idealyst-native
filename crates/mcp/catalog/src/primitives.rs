@@ -577,13 +577,13 @@ inventory::submit! {
             PropFieldSpec {
                 name: "render",
                 type_str: "Fn(usize, &T) -> Element",
-                doc: "Builds one row from its index and item. Rows are recycled — do not keep state in the closure.",
+                doc: "Builds one row from its index and item. Runs once per mount. On a data change, a row whose `key` survives is kept as-is if its item is unchanged (`==`) and re-rendered if it changed — so row-local state survives only while its own item is unchanged. Rows are recycled — do not keep state in the closure.",
                 constraint: "",
             },
             PropFieldSpec {
                 name: "key",
                 type_str: "Fn(usize, &T) -> u64",
-                doc: "Stable identity per item, so a reorder or insert moves rows instead of rebuilding them. Default: the index.",
+                doc: "Stable identity per item, so a reorder or insert moves rows instead of rebuilding them; a surviving key keeps its row unless its item changed. Default: the index — content stays correct, but an insert or reorder re-renders every visible row, so pass a stable id.",
                 constraint: "",
             },
             PropFieldSpec {

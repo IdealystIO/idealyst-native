@@ -511,6 +511,17 @@ Three concepts to understand:
    to decide what to preserve. Items whose key still exists keep
    their mounted subtree intact (signals retain their values, refs
    remain bound). Items whose key is gone get their scope dropped.
+   A surviving key whose **item changed** (`!=`, via `T: PartialEq`) is
+   re-rendered; one whose item is unchanged keeps its node (focus and
+   row state intact). A row that edits its own item — a `text_input`
+   writing into `data` — remounts on each edit, so keep such fields as
+   signals inside the item. The default key is the index: content stays
+   correct, but an insert or reorder re-renders every visible row. The
+   raw `virtualizer()` builder has no item to compare and keeps every
+   survivor unless given `.item_diff(..)`. (iOS, macOS, GTK and wgpu
+   currently rebuild every visible row on each data change, so row
+   state does not survive there even for unchanged items — a known
+   divergence.)
 2. **Size strategy.** `Known(f)` — author provides exact sizes;
    layout is deterministic. `Measured(f)` — author provides an
    *estimate*, backend measures the actual rendered size after

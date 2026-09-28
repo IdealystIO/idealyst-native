@@ -8,7 +8,10 @@
 //!
 //! Stable identity via the required `key` closure: the framework
 //! uses the returned `u64` to decide which mounted items to preserve
-//! across data updates.
+//! across data updates. A preserved row whose item changed (`!=`, from
+//! the `T: PartialEq` bound) is re-rendered; one whose item is unchanged
+//! keeps its node. See the "Stable identity" section of
+//! [`super::virtualizer`] for the full contract.
 
 use std::rc::Rc;
 

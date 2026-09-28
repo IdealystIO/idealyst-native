@@ -2526,8 +2526,29 @@ pub mod primitives {
                 }
             };
 
+            // Item-change detection (FRAMEWORK-NOTES #50): each mounted
+            // row keeps a clone of the item it rendered from; on a data
+            // change the backend asks whether a surviving key's item is
+            // still `==` and remounts the row only if not. Uses the
+            // `T: PartialEq` bound this fn already carries, so no caller
+            // gains a bound. Untracked reads: these run from the backend's
+            // diff, never as a dependency of anything.
+            let item_diff = runtime_shared::primitives::virtualizer::ItemDiff {
+                capture: Rc::new(move |idx| {
+                    data.with_untracked(|v| v.get(idx).cloned())
+                        .map(|item| Box::new(item) as Box<dyn std::any::Any>)
+                }),
+                differs: Rc::new(move |snapshot, idx| {
+                    let Some(old) = snapshot.downcast_ref::<T>() else {
+                        return true;
+                    };
+                    data.with_untracked(|v| v.get(idx).map_or(true, |new| new != old))
+                }),
+            };
+
             GlueFlatList {
-                b: builders::virtualizer(item_count, item_key, item_size, render),
+                b: builders::virtualizer(item_count, item_key, item_size, render)
+                    .item_diff(item_diff),
                 a11y: AccessibilityProps::default(),
             }
         }

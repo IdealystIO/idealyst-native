@@ -1569,6 +1569,7 @@ impl Harness {
             release_item: v.release_item.clone(),
             set_measured_size: v.set_measured_size.clone(),
             on_scroll: v.on_scroll.clone(),
+            item_changed: v.item_changed.clone(),
         }
     }
 

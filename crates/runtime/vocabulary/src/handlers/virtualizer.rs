@@ -43,6 +43,9 @@ where
 struct RowScope<N> {
     _realized: Realized<N>,
     _extra: Owned,
+    /// The item this row was rendered from (`ItemDiff::capture`), for
+    /// `item_changed`. Lives in the row scope so it dies on release.
+    snapshot: Option<Box<dyn std::any::Any>>,
 }
 
 /// Mount a `virtualizer` — port of `walker/virtualizer.rs::build` +
@@ -92,6 +95,16 @@ struct RowScope<N> {
 ///   `release_item` (drop of its [`RowScope`]) — without this, queued
 ///   platform events fire into freed row state ("signal used after its
 ///   scope was dropped").
+/// - **A row renders once per mount; a changed survivor is remounted by
+///   the backend.** `mount_item` builds the row from `render_item(idx)`
+///   untracked and, when the prim carries an `ItemDiff` (`flat_list`
+///   does, from `T: PartialEq`), stores a snapshot of the item in the
+///   row scope. `item_changed(idx)` compares that snapshot with the item
+///   now at `idx`; a keyed-diff backend (web, Android) releases + remounts
+///   a surviving key whose item changed and keeps an unchanged survivor's
+///   node (FRAMEWORK-NOTES #50). iOS/macOS `reloadData` remounts every
+///   visible row anyway. `live_by_key` maps a key to its live row so the
+///   backend can ask by the key's NEW index after a reorder.
 /// - **The measured-size cache is keyed by item KEY, not scope id, and
 ///   deliberately survives release**: a re-entering row reuses its
 ///   previously measured size instead of restarting from the estimate.
@@ -121,6 +134,10 @@ where
     let scope_id_to_key: Rc<RefCell<HashMap<u64, ItemKey>>> =
         Rc::new(RefCell::new(HashMap::new()));
     let next_scope_id: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+    // key → scope id of the LIVE row showing it, for `item_changed`
+    // (the backend asks by the key's NEW index). Entries die on release.
+    let live_by_key: Rc<RefCell<HashMap<ItemKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+    let item_diff = prim.item_diff;
 
     let item_count: Rc<dyn Fn() -> usize> = Rc::from(prim.item_count);
     let item_key: Rc<dyn Fn(usize) -> ItemKey> = Rc::from(prim.item_key);
@@ -156,12 +173,17 @@ where
         let key_map = scope_id_to_key.clone();
         let key_fn = item_key.clone();
         let next_id = next_scope_id.clone();
+        let live = live_by_key.clone();
+        let capture = item_diff.as_ref().map(|d| d.capture.clone());
         Rc::new(move |idx| {
             // Element construction runs INSIDE the row's collector (and
             // untracked, like keyed row renders — only the backend's
             // window math decides row lifetime, never a stray signal
             // read during construction). `realize` then collects the
             // mount walk's creations into the row's own `Realized`.
+            // Snapshot BEFORE rendering, from the same data the render
+            // reads (untracked, like the render itself).
+            let snapshot = capture.as_ref().and_then(|c| untrack(|| c(idx)));
             let ((node, realized), extra) = collect_owned(|| {
                 let element = untrack(|| render(idx));
                 let realized = realize(&backend, &registry, element);
@@ -187,9 +209,12 @@ where
                 RowScope {
                     _realized: realized,
                     _extra: extra,
+                    snapshot,
                 },
             );
-            key_map.borrow_mut().insert(id, key_fn(idx));
+            let key = key_fn(idx);
+            key_map.borrow_mut().insert(id, key);
+            live.borrow_mut().insert(key, id);
             (node, id)
         })
     };
@@ -201,8 +226,17 @@ where
     let release_item: Rc<dyn Fn(u64)> = {
         let scopes = scopes.clone();
         let key_map = scope_id_to_key.clone();
+        let live = live_by_key.clone();
         Rc::new(move |id| {
-            key_map.borrow_mut().remove(&id);
+            if let Some(key) = key_map.borrow_mut().remove(&id) {
+                // Only forget the key if it still points at THIS row: a
+                // remount of the same key may have registered a newer id
+                // before the old row's release arrives.
+                let mut live = live.borrow_mut();
+                if live.get(&key) == Some(&id) {
+                    live.remove(&key);
+                }
+            }
             // Take the scope OUT of the map before dropping so row
             // cleanups can never observe a held map borrow.
             let row = scopes.borrow_mut().remove(&id);
@@ -222,6 +256,29 @@ where
         })
     };
 
+    // item_changed: is the live row for the key now at `idx` stale? Pure
+    // read — the backend calls it per surviving key on data-changed.
+    let item_changed: Option<Rc<dyn Fn(usize) -> bool>> = item_diff.map(|diff| {
+        let scopes = scopes.clone();
+        let live = live_by_key.clone();
+        let key_fn = item_key.clone();
+        Rc::new(move |idx: usize| -> bool {
+            untrack(|| {
+                let key = key_fn(idx);
+                let Some(id) = live.borrow().get(&key).copied() else {
+                    return false;
+                };
+                let scopes = scopes.borrow();
+                match scopes.get(&id).and_then(|row| row.snapshot.as_deref()) {
+                    Some(snap) => (diff.differs)(snap, idx),
+                    // Mounted past the end of the data (no snapshot) and
+                    // now back in range → its content is stale.
+                    None => true,
+                }
+            })
+        }) as Rc<dyn Fn(usize) -> bool>
+    });
+
     let callbacks = VirtualizerCallbacks {
         item_count: item_count.clone(),
         item_key: item_key.clone(),
@@ -237,6 +294,7 @@ where
         // installing scroll observation entirely rather than paying a
         // no-op call per scroll frame.
         on_scroll: prim.on_scroll,
+        item_changed,
     };
 
     let node = backend

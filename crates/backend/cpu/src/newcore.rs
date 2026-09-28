@@ -844,6 +844,7 @@ impl caps::VirtualizerOps for CpuBackend {
             release_item,
             set_measured_size,
             on_scroll,
+            item_changed,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -882,6 +883,8 @@ impl caps::VirtualizerOps for CpuBackend {
                     schedule_flush();
                 })
             }),
+            // Pure read (like `item_key`): no world entry, no flush.
+            item_changed,
         };
         let _callbacks = callbacks;
         self.alloc_node(

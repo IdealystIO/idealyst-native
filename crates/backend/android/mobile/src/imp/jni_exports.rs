@@ -686,7 +686,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustPopupDismissListener_
 // ---------------------------------------------------------------------------
 //
 // The Kotlin adapter calls into Rust for every lifecycle event (item
-// count, key, mount, release, measured size, drop). All five exports
+// count, key, item-changed, mount, release, measured size, drop). All the exports
 // share a leaked `VirtualizerCallbacks` pointer; `nativeDrop` is the
 // only one that frees the box.
 
@@ -729,6 +729,26 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeIte
     position: jint,
 ) -> jlong {
     with_callbacks(ptr, |cbs| (cbs.item_key)(position as usize) as jlong).unwrap_or(0)
+}
+
+/// `DiffUtil.areContentsTheSame` for a surviving key: has the item the
+/// live row was rendered from changed (FRAMEWORK-NOTES #50)? `false`
+/// when the data has no change detection (`item_changed` is `None`) —
+/// the adapter then keeps every survivor bound, the pre-#50 behavior.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeItemChanged(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    position: jint,
+) -> jni::sys::jboolean {
+    let changed = with_callbacks(ptr, |cbs| {
+        cbs.item_changed
+            .as_ref()
+            .is_some_and(|f| f(position as usize))
+    })
+    .unwrap_or(false);
+    changed as jni::sys::jboolean
 }
 
 /// Build the item subtree and return a `MountResult(view, scopeId)`.

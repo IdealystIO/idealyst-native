@@ -30,6 +30,38 @@
 //! — they may move in the layout, but their internal signals,
 //! refs, and mounted state survive.
 //!
+//! **A surviving row whose ITEM changed is re-rendered; an unchanged
+//! survivor keeps its node** (FRAMEWORK-NOTES #50). `flat_list<T>`
+//! snapshots the item each live row was rendered from (via
+//! [`ItemDiff`], using `T: PartialEq`) and the backend asks
+//! `VirtualizerCallbacks::item_changed` for every surviving key on a data
+//! change:
+//!
+//! - item `==` its snapshot → the row is kept: same native node, so focus,
+//!   scroll position and row-local signals survive unrelated edits;
+//! - item `!=` → the row is released and mounted again from the new item.
+//!   Row-local state (a signal created in `render_item`, a focused input
+//!   inside the row) does NOT survive its own item changing. A row that
+//!   edits its own item — a `text_input` writing back into `data` —
+//!   therefore remounts on each edit; keep such fields as signals inside
+//!   the item (`title: Signal<String>`) so the `Vec` itself does not
+//!   change.
+//!
+//! The raw `virtualizer()` builder has no `T` to compare: without
+//! `.item_diff(..)` it keeps every survivor as mounted, so there the key
+//! must change whenever the row's content should.
+//!
+//! The default key (`flat_list`'s, and `ui!`'s when `key` is omitted) is
+//! the **index**. Content is still correct with it (a replaced item is
+//! detected and re-rendered), but any insert or reorder shifts every
+//! index and re-renders every visible row — use a stable id.
+//!
+//! Per backend: web and Android do the keyed diff above. iOS, macOS, GTK
+//! and the wgpu engine rebuild every visible row on each data change
+//! (`reloadData` / full refill): content is always fresh, but row state
+//! never survives a data change there, even for unchanged items. That is
+//! a known divergence, not a contract — don't rely on either side of it.
+
 //! # Size resolution
 //!
 //! Two modes per `ItemSize`:
@@ -52,6 +84,27 @@ use std::rc::Rc;
 /// same key are a user bug — the framework treats them as the same
 /// identity and will silently drop one.
 pub type ItemKey = u64;
+
+/// Type-erased item-change detection a typed wrapper (`flat_list<T>`)
+/// supplies so the virtualizer can tell a surviving row whose ITEM
+/// changed from one whose item is identical (FRAMEWORK-NOTES #50).
+///
+/// The handler calls [`capture`](Self::capture) when it mounts a row
+/// (snapshot of the item the row renders from, kept in the row's scope
+/// so it dies on release) and [`differs`](Self::differs) when a backend
+/// asks whether a surviving key's row is stale. Type-erased because the
+/// virtualizer core never sees `T`; the wrapper that does owns the
+/// `PartialEq`.
+#[derive(Clone)]
+pub struct ItemDiff {
+    /// Snapshot the item currently at `idx`, or `None` for an index
+    /// past the end.
+    pub capture: Rc<dyn Fn(usize) -> Option<Box<dyn Any>>>,
+    /// Whether the item now at `idx` differs from `snapshot` (a value
+    /// [`capture`](Self::capture) produced). An index past the end, or
+    /// a snapshot of the wrong type, counts as different.
+    pub differs: Rc<dyn Fn(&dyn Any, usize) -> bool>,
+}
 
 /// Size-knowledge strategy. `flat_list<T>` accepts either variant
 /// at the typed layer; this is the type-erased form Virtualizer

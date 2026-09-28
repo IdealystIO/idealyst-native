@@ -4,7 +4,9 @@ use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::SafeAreaSides;
-use runtime_shared::primitives::virtualizer::{ItemKey, ItemSize, VirtualLayout, VirtualizerHandle};
+use runtime_shared::primitives::virtualizer::{
+    ItemDiff, ItemKey, ItemSize, VirtualLayout, VirtualizerHandle,
+};
 use runtime_scene::Element;
 
 use crate::style_attach::StyleProp;
@@ -46,6 +48,10 @@ pub struct VirtualizerPrim {
     /// fragment rows in an item) — same contract as
     /// `MountCx::realize_detached`.
     pub render_item: Rc<dyn Fn(usize) -> Element>,
+    /// Item-change detection (`flat_list<T>` supplies it from
+    /// `T: PartialEq`). Lets the backend remount a surviving row whose
+    /// item changed; `None` keeps every survivor as-is.
+    pub item_diff: Option<ItemDiff>,
     /// Buffer factor outside the visible window (viewport extents).
     pub overscan: f32,
     /// Scroll axis + cross-axis lane subdivision + gaps.

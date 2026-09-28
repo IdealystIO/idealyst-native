@@ -1567,6 +1567,7 @@ impl caps::VirtualizerOps for WebBackend {
             release_item,
             set_measured_size,
             on_scroll,
+            item_changed,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -1605,6 +1606,8 @@ impl caps::VirtualizerOps for WebBackend {
                     schedule_flush();
                 })
             }),
+            // Pure read (like `item_key`): no world entry, no flush.
+            item_changed,
         };
         WebBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
     }
@@ -2423,6 +2426,100 @@ mod tests {
             );
         }
         stop();
+        // Drain the JS virtualizer's microtask-deferred `release()` before
+        // the next test boots: left queued, it ran inside the following
+        // test's single-microtask first-render window and broke its
+        // "boot mounted the tree" assertion (seen as
+        // `regression_click_flushes_via_dispatch_site_glue` failing only in
+        // a full-suite run).
+        sleep_ms(20).await;
+    }
+
+    /// Regression (FRAMEWORK-NOTES #50): a `flat_list` row whose key
+    /// survives a data change but whose ITEM changed is re-rendered,
+    /// while a survivor whose item is unchanged keeps its DOM node.
+    /// Pre-fix, `virtualizer.js` `refresh()` kept every surviving key's
+    /// row untouched, so an edited item kept showing its old content
+    /// (`row:beta` after renaming it to `BETA`) until it scrolled out and
+    /// back in. Driven through the real `flat_list` → handler → JS
+    /// windowing path with a stable id key.
+    #[wasm_bindgen_test]
+    async fn regression_flat_list_changed_survivor_rerenders_unchanged_keeps_node() {
+        use runtime_vocabulary::glue::primitives::flat_list::{flat_list, FlatListItemSize};
+
+        let mount = setup_mount();
+        let slot: Rc<Cell<Option<runtime_world::Signal<Vec<(u64, String)>>>>> =
+            Rc::new(Cell::new(None));
+        let slot_for_build = slot.clone();
+        start(move || {
+            let data = signal(vec![(1u64, "alpha".to_string()), (2, "beta".to_string())]);
+            slot_for_build.set(Some(data));
+            let sheet = Rc::new(runtime_shared::StyleSheet::r#static(runtime_shared::StyleRules {
+                height: Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(120.0))),
+                ..Default::default()
+            }));
+            let list = flat_list::<_, _, (), _>(
+                data,
+                |_, item: &(u64, String)| item.0,
+                FlatListItemSize::Known(Rc::new(|_, _| 20.0)),
+                |_, item: &(u64, String)| {
+                    let label = item.1.clone();
+                    text().content(move || format!("row:{label}")).build()
+                },
+            );
+            // `GlueFlatList` → Element, then style the virtualizer node
+            // by wrapping in a sized view (the glue has no `.style`).
+            view().style(sheet).child(runtime_vocabulary::glue::IntoElement::into_element(list)).build()
+        });
+        sleep_ms(50).await;
+        let body = || mount.text_content().unwrap();
+        assert!(body().contains("row:alpha") && body().contains("row:beta"), "{}", body());
+
+        let row_node = |label: &str| -> web_sys::Element {
+            let all = mount.query_selector_all("*").unwrap();
+            (0..all.length())
+                .filter_map(|i| all.item(i))
+                .filter_map(|n| n.dyn_into::<web_sys::Element>().ok())
+                .filter(|e| e.text_content().as_deref() == Some(&format!("row:{label}")))
+                .last()
+                .expect("row element")
+        };
+        let alpha_before = row_node("alpha");
+        let beta_before = row_node("beta");
+
+        // 1. An unrelated insert: both survivors' items are unchanged, so
+        //    their rows are kept — the very same DOM nodes.
+        let data = slot.get().expect("build ran");
+        data.update(|v| {
+            let mut v = v.clone();
+            v.insert(0, (0, "zero".to_string()));
+            v
+        });
+        schedule_flush();
+        sleep_ms(50).await;
+        assert!(body().contains("row:zero"), "inserted row mounted: {}", body());
+        assert!(row_node("beta").is_same_node(Some(&beta_before)), "unchanged survivor keeps its node");
+
+        // 2. Rename item 2 under the SAME key: its row must re-render;
+        //    item 1 (unchanged) keeps its node.
+        data.update(|v| {
+            let mut v = v.clone();
+            v[2].1 = "BETA".to_string();
+            v
+        });
+        schedule_flush();
+        sleep_ms(50).await;
+        assert!(body().contains("row:BETA"), "changed survivor re-rendered: {}", body());
+        assert!(!body().contains("row:beta"), "stale content gone: {}", body());
+        assert!(
+            row_node("alpha").is_same_node(Some(&alpha_before)),
+            "an unchanged survivor is not remounted by a sibling's edit"
+        );
+        stop();
+        // The JS virtualizer's `release()` is microtask-deferred; drain it
+        // (and its row releases) before the next test boots, or it lands
+        // inside that test's single-microtask first-render window.
+        sleep_ms(20).await;
     }
 
     /// The full boot path: `start` mounts into `#app`, and the flush

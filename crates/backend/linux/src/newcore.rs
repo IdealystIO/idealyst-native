@@ -1113,6 +1113,7 @@ impl caps::VirtualizerOps for LinuxBackend {
             release_item,
             set_measured_size,
             on_scroll,
+            item_changed,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -1151,6 +1152,8 @@ impl caps::VirtualizerOps for LinuxBackend {
                     schedule_flush();
                 })
             }),
+            // Pure read (like `item_key`): no world entry, no flush.
+            item_changed,
         };
         LinuxBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
     }

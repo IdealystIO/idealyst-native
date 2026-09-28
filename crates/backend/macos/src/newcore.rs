@@ -1207,6 +1207,7 @@ impl caps::VirtualizerOps for MacosBackend {
             release_item,
             set_measured_size,
             on_scroll,
+            item_changed,
         } = callbacks;
         let callbacks = VirtualizerCallbacks {
             item_count,
@@ -1245,6 +1246,8 @@ impl caps::VirtualizerOps for MacosBackend {
                     schedule_flush();
                 })
             }),
+            // Pure read (like `item_key`): no world entry, no flush.
+            item_changed,
         };
         MacosBackend::create_virtualizer_impl(self, callbacks, overscan, layout, a11y)
     }

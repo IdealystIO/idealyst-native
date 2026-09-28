@@ -105,6 +105,14 @@ docs! {
         p("Items whose key is still present after a data change keep their \
            mounted subtree intact. They may move in the layout, but their \
            internal state survives."),
+        p("If a kept item itself changed (compared with ", code("=="),
+          ", which is why ", code("T"), " must be ", code("PartialEq"),
+          "), its row is rendered again from the new item; an unchanged item's \
+           row is left alone, so focus and row state survive edits elsewhere \
+           in the list. A row that edits its own item — an input writing back \
+           into ", code("data"), " — is rebuilt on each edit, so keep such \
+           fields as signals inside the item (see \"List with reactive item \
+           content\" below)."),
 
         code(rust, r##"
             key = |_idx, msg| msg.id           // stable: matches database id
@@ -242,6 +250,7 @@ docs! {
             ["Removals unmount the items if they were inside the window. Their scopes drop."],
             ["Reorders preserve mounted subtrees — items whose key stayed move to their new position, but their internal state survives."],
             ["Bulk replacements (assigning a whole new ", code("Vec"), ") — same diff algorithm. Keys that match preserve state; new keys build fresh; old keys tear down."],
+            ["A matching key keeps the row only while its item is unchanged; an edited item's row is rendered again, and its row-local state starts over."],
         ),
     },
 
@@ -321,8 +330,8 @@ docs! {
     section(heading = "Pitfalls") {
         list(
             ["Duplicate keys. Two items returning the same key get conflated. The visible symptom is rows appearing to \"lose\" state on a reorder. Pick a key from a unique field."],
-            ["Index-as-key. ", code("key = |idx, _| idx as u64"),
-             " is tempting but defeats the point — any insertion or reorder shifts every index, so the framework tears down every mounted item and rebuilds. Use a stable id from the data instead."],
+            ["Index-as-key (also the default when ", code("key"), " is omitted). ", code("key = |idx, _| idx as u64"),
+             " keeps content correct, but an insertion or reorder shifts every index, so every visible row is rebuilt and loses its state. Use a stable id from the data instead."],
             ["Stale closure captures in ", code("render_item"), ". ",
              code("render_item"),
              " runs per mount — every time an item enters the window. If you capture a ", code("Vec"),
