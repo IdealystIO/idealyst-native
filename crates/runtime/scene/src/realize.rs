@@ -450,21 +450,30 @@ impl<'a, H: Host> MountCx<'a, H> {
     /// rows' effects/cleanups die with the enclosing subtree exactly as
     /// per-node-mounted children would.
     pub fn realize_in_place(&mut self, element: Element) -> LiveNode<H::Node> {
-        let element = self.unwrap_owned(element);
-        self.realize_element_detached(element)
+        let (element, exits) = self.unwrap_owned(element);
+        let live = self.realize_element_detached(element);
+        run_exits(exits);
+        live
     }
 
     // --- internal walk ---
 
-    /// Peel `Element::Owned` wrappers, banking their scopes for the merge.
-    fn unwrap_owned(&mut self, mut element: Element) -> Element {
+    /// Peel `Element::Owned` wrappers, banking their scopes for the merge
+    /// and ENTERING their realize hooks (outermost first). The returned
+    /// exits must run, via [`run_exits`], once the peeled element has
+    /// realized — every caller realizes it immediately.
+    fn unwrap_owned(&mut self, mut element: Element) -> (Element, Vec<Box<dyn FnOnce()>>) {
+        let mut exits = Vec::new();
         loop {
             match element {
-                Element::Owned { element: inner, owned } => {
+                Element::Owned { element: inner, owned, hooks } => {
                     self.absorbed.push(owned);
+                    for hook in hooks {
+                        exits.push(hook());
+                    }
                     element = *inner;
                 }
-                other => return other,
+                other => return (other, exits),
             }
         }
     }
@@ -480,7 +489,7 @@ impl<'a, H: Host> MountCx<'a, H> {
     ) -> Vec<LiveNode<H::Node>> {
         let mut out = Vec::with_capacity(children.len());
         for child in children {
-            let child = self.unwrap_owned(child);
+            let (child, exits) = self.unwrap_owned(child);
             match child {
                 Element::Fragment(sub) => {
                     // Layout-transparent: splice the fragment's children
@@ -510,6 +519,7 @@ impl<'a, H: Host> MountCx<'a, H> {
                 }
                 other => out.push(self.realize_placed(parent, other, inserted)),
             }
+            run_exits(exits);
         }
         out
     }
@@ -599,7 +609,15 @@ impl<'a, H: Host> MountCx<'a, H> {
     /// anchor provides it (matches the old walker, where a `when` at a
     /// subtree root always anchors — only children-list positions splice).
     fn realize_element_detached(&mut self, element: Element) -> LiveNode<H::Node> {
-        let element = self.unwrap_owned(element);
+        let (element, exits) = self.unwrap_owned(element);
+        let live = self.realize_unwrapped_detached(element);
+        run_exits(exits);
+        live
+    }
+
+    /// [`realize_element_detached`](Self::realize_element_detached) for an
+    /// element whose `Owned` wrappers are already peeled.
+    fn realize_unwrapped_detached(&mut self, element: Element) -> LiveNode<H::Node> {
         match element {
             Element::Item { .. } => self.mount_item(element),
             Element::Fragment(children) => LiveNode::Fragment(
@@ -871,6 +889,14 @@ mod depth {
 }
 
 pub use depth::MAX_DEPTH;
+
+/// Leave the realize hooks [`MountCx::unwrap_owned`] entered, innermost
+/// first — the mirror of their outermost-first enter order.
+fn run_exits(exits: Vec<Box<dyn FnOnce()>>) {
+    for exit in exits.into_iter().rev() {
+        exit();
+    }
+}
 
 /// Current realize nesting depth — test-only observability for the RAII
 /// unwind invariant (see [`depth`]).

@@ -151,36 +151,40 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
     // Checkmark — mounted only while checked, tinted to the variant
     // foreground by the glyph sheet's appearance arm. A custom `icon`
     // replaces the default ✓ glyph, inheriting the same foreground. The
-    // switch re-runs on `value`; the appearance/size/icon keys are read live
-    // inside so the glyph re-styles when those props change too.
+    // `if` re-runs `mark` each time `value` turns true; the
+    // appearance/size/icon keys are read live inside so the glyph re-styles
+    // when those props change too.
+    //
+    // The icon choice stays a plain Rust `match` in `mark`, outside the
+    // macro: `IconData` is not `PartialEq`, and a `match` on a live read
+    // inside `ui!` lowers to a value-keyed `switch`, which requires it.
     let glyph_sheet = sheets.glyph_sheet.clone();
     let glyph_appearance_for = appearance_for.clone();
     let glyph_size_for = size_key_for.clone();
     let glyph_icon = icon_data.clone();
-    let glyph = runtime_core::switch(
-        move || value.get(),
-        move |on: &bool| {
-            if !*on {
-                return ui! { view {} }.into_element();
-            }
-            let gs = glyph_sheet.clone();
-            let ga = glyph_appearance_for.clone();
-            let gz = glyph_size_for.clone();
-            match glyph_icon.get() {
-                Some(data) => checkmark_icon(
-                    data,
-                    StyleApplication::new(gs).with("appearance", ga()).with("size", gz()),
-                ),
-                None => runtime_core::text(CHECK_GLYPH)
-                    .with_style(move || {
-                        StyleApplication::new(gs.clone())
-                            .with("appearance", ga())
-                            .with("size", gz())
-                    })
-                    .into_element(),
-            }
-        },
-    );
+    let mark = move || -> Element {
+        let gs = glyph_sheet.clone();
+        let ga = glyph_appearance_for.clone();
+        let gz = glyph_size_for.clone();
+        match glyph_icon.get() {
+            Some(data) => checkmark_icon(
+                data,
+                StyleApplication::new(gs).with("appearance", ga()).with("size", gz()),
+            ),
+            None => runtime_core::text(CHECK_GLYPH)
+                .with_style(move || {
+                    StyleApplication::new(gs.clone())
+                        .with("appearance", ga())
+                        .with("size", gz())
+                })
+                .into_element(),
+        }
+    };
+    let glyph = ui! {
+        if value.get() {
+            mark()
+        }
+    };
 
     // The box — fill flips between the tone appearance (checked) and
     // the muted outline (unchecked) via the `checked` axis. Appearance/size

@@ -148,6 +148,7 @@ pub fn Avatar(props: &AvatarProps) -> Element {
         }
     } else {
         let src = props.src.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- static-prop fast path (see `components/mod.rs`)
         runtime_core::when(move || src.get().is_some(), build_image, build_initials)
     }
 }

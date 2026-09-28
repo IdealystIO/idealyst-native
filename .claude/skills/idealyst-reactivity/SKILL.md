@@ -41,8 +41,8 @@ Everything is re-exported under `runtime_core::…`, but `runtime-core` is now a
 | Action-dispatched state | `reducer(init, \|&s,a\| next)` → `(Signal, dispatch)` | folds on the staged value (dispatches compose); always notifies; never subscribes the caller. |
 | Async data keyed on signals | `resource(deps, fetcher)` → `Resource<T,E>` | `Loading/Error/Success/Idle`. |
 | Pass a value down the scope tree | `provide(v)` / `inject::<T>()` / `inject_or` / `with_inject` | keyed by TYPE — newtype to disambiguate; panics outside a scope. The entry is **owned by the providing scope** (retracted on its drop), like a signal. World-lifetime service ⇒ `unscoped(\|\| provide(v))`; bounded region ⇒ wrap the `provide` in its own `collect_owned`. |
-| Two-way reactive subtree | `when(cond, then, otherwise)` | dispose-on-hide. |
-| Multi-way reactive subtree | `switch(scrutinee, \|&k\| …)` | `ui!` `match` lowers to this; key is `PartialEq`. |
+| Two-way reactive subtree | `if cond.get() { … } else { … }` inside `ui!` | lowers to `when`; dispose-on-hide. Don't hand-call `when` (lint `prefer-ui-control-flow`). |
+| Multi-way reactive subtree | `match key.get() { … }` inside `ui!` | lowers to `switch`; key is `PartialEq`. Hand-call `switch` only for the two cases in `idea-ui/src/components/mod.rs`, with a `-- reason` suppression. |
 | Several siblings from one `#[component]` | `fragment(children)` | layout-transparent, built once, not reconciled. |
 | Reactivity OUTSIDE the tree | `watch(f)` → `Subscription` | `#[must_use]`; store it or `.leak()`. |
 | Teardown | `on_cleanup(f)` | effect: before re-run + on disposal; scope: on drop. |

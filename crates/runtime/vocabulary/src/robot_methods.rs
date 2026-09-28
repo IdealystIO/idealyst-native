@@ -1,58 +1,63 @@
-//! Component-method registry for the NEW core — the vocabulary port of
-//! `runtime_shared::robot::components` (P5 `#[method]` seam).
+//! Component registry for the NEW core — every mounted `#[component]`
+//! instance, its props, its `#[method]`s, and the element it renders as.
+//! This is what the inspector's component tree and Props table read.
 //!
 //! # Emission surface (why this module always compiles)
 //!
-//! The `#[component]` macro emits `register_component(...)` + a
-//! keepalive effect + a `__component_root(...)` wrap for every
-//! `#[method]`-bearing component UNCONDITIONALLY — under `new-core` the
-//! retarget maps those `::runtime_shared::…` paths to
-//! `::runtime_vocabulary::glue::…`, which re-exports from HERE. Exactly
-//! like the old core's stub `robot` module, the names must exist in
-//! every build: with the vocabulary `robot` feature OFF these are
-//! zero-work stubs (`register_component` builds nothing, hands back an
-//! inert guard; `__component_root` is identity), so non-robot builds
-//! pay only the `Method` vec construction the optimizer strips.
+//! `#[component]` emits, for EVERY component body returning `Element`:
 //!
-//! # Model (mirrors the old registry 1:1)
+//! ```text
+//! let __idealyst_inspect = __inspect_component(NAME, file!(), line!(), || props…);
+//! __idealyst_inspect.finish(component_scope(move || { body }))
+//! ```
 //!
-//! - Fresh, never-recycled [`ComponentInstanceId`] per registration —
-//!   callers caching one can detect re-mounts.
-//! - [`ComponentRegistration`] guard: `Drop` removes the entry AND its
-//!   element link in lockstep, so a recycled element id can never
-//!   resolve to a dead instance. The macro ties the guard's lifetime to
-//!   the mounted lifetime by capturing it in a keepalive effect created
-//!   inside the component body (collected into the component's `Owned`
-//!   by `component_scope` — the new-core analogue of the old
-//!   scope-owned `Effect`).
-//! - Element↔component link via a one-shot pending cell: armed just
-//!   before the component's root subtree realizes, consumed by the next
-//!   [`register_mount`](crate::robot::register_mount) (the root
-//!   primitive). See [`__component_root`] for how the new core arms it
-//!   at REALIZE time (the old walker armed it while unwrapping
-//!   `Element::Component`, which was build==mount time — the new core
-//!   builds eagerly and realizes later, so the arm must ride the
-//!   realize walk).
+//! and, for a component with `#[method]`s, a
+//! [`__attach_component_methods`] call inside the body. The names must
+//! exist in every build: with the vocabulary `robot` feature OFF,
+//! [`__inspect_component`] never calls its props closure (so the probes
+//! are never instantiated), `finish` is identity, and attaching methods
+//! drops them.
 //!
-//! # `__component_root`: the realize-time arm (robot builds only)
+//! # Model
 //!
-//! The scene [`Element`] carries no metadata slot and `runtime-scene`
-//! is frozen for this wave, so the wrap is expressed as a `Dyn` hole
-//! whose (dependency-free, single-fire) build closure arms the pending
-//! link and yields the already-built subtree. Costs, robot builds only:
-//! on splice-capable hosts (web) the hole contributes no extra node; on
-//! anchored hosts / detached roots (navigator screens, keyed row roots)
-//! it contributes one anchor view. Two knock-on effects, both accepted
-//! and documented here: a `#[method]` component used as a STACK screen
-//! root is skipped by the screen-overlay style fold (its root is a
-//! `Dyn`, not an `Item` — same skip class as `when`-rooted screens),
-//! and the hole adds one driver effect per methods-bearing component.
-//! Non-robot builds get the identity wrap — zero structural change.
+//! - Fresh, never-recycled [`ComponentInstanceId`] per registration.
+//! - The registration lives exactly as long as the component's subtree:
+//!   `finish` moves the guard into a scope that rides the returned
+//!   element and is absorbed into the enclosing realized tree.
+//! - **Element link.** `finish` brackets the subtree with a scene realize
+//!   hook ([`runtime_scene::with_realize_hook`]). Entering arms a pending
+//!   link; the first element the robot registry registers inside the
+//!   bracket consumes every armed link — so a component whose root is
+//!   another component's element links both to the same element, outer
+//!   first. Leaving disarms a link nothing consumed (a component that
+//!   mounted no registered node must not claim the next sibling's).
+//!   On a component rooted in a reactive region the hook re-brackets
+//!   each branch, so the link follows the swap.
+//! - **Parent component.** Not stored: the bridge derives it from the
+//!   element tree (the nearest ancestor element carrying a link belongs
+//!   to the parent). That gives the RENDERED hierarchy — `Card { Button }`
+//!   written inside `Screen` reads `Screen › Card › Button` — which is
+//!   what a build-time owner stack could not give.
+//!
+//! Known approximation: a component whose root is a FRAGMENT links to the
+//! fragment's first registered node only; its other top-level nodes read
+//! as belonging to its parent.
+//!
+//! # Why a hook and not a wrapper node
+//!
+//! The previous link wrapped each `#[method]` component in a `Dyn` hole,
+//! which added an anchor node on anchored hosts and an effect per
+//! component, and hid the component's root from the navigator's
+//! screen-style fold. Applied to every component in every dev build that
+//! would have made dev layout differ from release. The realize hook
+//! creates no node and no effect.
 
 use std::rc::Rc;
 
 use runtime_shared::__serde_json as serde_json;
 use runtime_scene::Element;
+
+pub use crate::robot_props::{PropEntry, PropMode};
 
 /// Opaque per-instance ID. Stable while the component is mounted; never
 /// reused after unmount. (Stub-compatible shape when `robot` is off.)
@@ -60,9 +65,8 @@ use runtime_scene::Element;
 pub struct ComponentInstanceId(pub u32);
 
 /// One method exposed by a component. Built by the `#[component]`
-/// macro; consumed by [`register_component`]. Field shape frozen to the
-/// old core's `robot::Method` (the macro's struct literal must
-/// type-check identically on both cores).
+/// macro; consumed by [`register_component`] /
+/// [`__attach_component_methods`].
 pub struct Method {
     /// Method name as written on the `#[method] fn NAME(...)`.
     pub name: &'static str,
@@ -85,62 +89,136 @@ mod real {
 
     pub(super) struct ComponentEntry {
         pub name: &'static str,
+        /// Source location of the component fn (`file!()` / `line!()` at
+        /// the definition). Empty / 0 for a hand-registered entry.
+        pub file: &'static str,
+        pub line: u32,
         pub methods: Vec<Method>,
+        pub props: Vec<PropEntry>,
     }
 
     thread_local! {
         pub(super) static COMPONENTS: RefCell<HashMap<u32, ComponentEntry>> =
             RefCell::new(HashMap::new());
         pub(super) static NEXT_ID: Cell<u32> = const { Cell::new(1) };
-        /// `ComponentInstanceId → ElementId` (raw u32): the robot element a
-        /// component instance renders as (its root primitive).
-        pub(super) static ELEMENT_LINKS: RefCell<HashMap<u32, u32>> =
+        /// `ComponentInstanceId → (ElementId, link order)`: the robot
+        /// element a component instance renders as, and a global sequence
+        /// number so instances sharing one element order outer → inner.
+        pub(super) static ELEMENT_LINKS: RefCell<HashMap<u32, (u32, u64)>> =
             RefCell::new(HashMap::new());
-        /// Armed by `__component_root`'s realize-time closure; consumed by
-        /// the very next `register_mount` (the component's root primitive).
-        pub(super) static PENDING_LINK: Cell<Option<ComponentInstanceId>> =
-            const { Cell::new(None) };
+        pub(super) static LINK_SEQ: Cell<u64> = const { Cell::new(0) };
+        /// Links armed by entered realize hooks and not yet consumed,
+        /// outermost first.
+        pub(super) static PENDING_LINKS: RefCell<Vec<ComponentInstanceId>> =
+            const { RefCell::new(Vec::new()) };
+        /// Component bodies currently executing, innermost last — where
+        /// [`__attach_component_methods`] finds its instance.
+        pub(super) static BUILDING: RefCell<Vec<ComponentInstanceId>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn next_id() -> ComponentInstanceId {
+        NEXT_ID.with(|c| {
+            let id = c.get();
+            c.set(id.checked_add(1).unwrap_or(1));
+            ComponentInstanceId(id)
+        })
     }
 }
 
 #[cfg(feature = "robot")]
 use real::*;
 
-/// Arm the link: the next robot-registered element is `instance`'s root.
+/// Arm a link: the next robot-registered element is `instance`'s root.
 #[cfg(feature = "robot")]
-pub(crate) fn set_pending_component_link(instance: ComponentInstanceId) {
-    PENDING_LINK.with(|p| p.set(Some(instance)));
+pub(crate) fn arm_component_link(instance: ComponentInstanceId) {
+    PENDING_LINKS.with(|p| p.borrow_mut().push(instance));
 }
 
-/// Take (and clear) the pending component link. One-shot so only the
-/// first registration after arming — the root primitive — links.
+/// Disarm `instance`'s link if nothing consumed it.
 #[cfg(feature = "robot")]
-pub(crate) fn take_pending_component_link() -> Option<ComponentInstanceId> {
-    PENDING_LINK.with(|p| p.take())
+pub(crate) fn disarm_component_link(instance: ComponentInstanceId) {
+    PENDING_LINKS.with(|p| p.borrow_mut().retain(|i| *i != instance));
+}
+
+/// Take every armed link, outermost first. Called by the robot registry
+/// for each element it registers; only the first one inside a bracket
+/// finds anything.
+#[cfg(feature = "robot")]
+pub(crate) fn take_pending_component_links() -> Vec<ComponentInstanceId> {
+    PENDING_LINKS.with(|p| std::mem::take(&mut *p.borrow_mut()))
 }
 
 /// Record that component `instance` renders as element `element_id`.
+/// A later link for the same instance (its region swapped) replaces the
+/// earlier one.
 #[cfg(feature = "robot")]
 pub(crate) fn link_component_element(instance: ComponentInstanceId, element_id: u32) {
+    if !COMPONENTS.with(|c| c.borrow().contains_key(&instance.0)) {
+        return; // the registration already dropped
+    }
+    let seq = LINK_SEQ.with(|s| {
+        let n = s.get() + 1;
+        s.set(n);
+        n
+    });
     ELEMENT_LINKS.with(|m| {
-        m.borrow_mut().insert(instance.0, element_id);
+        m.borrow_mut().insert(instance.0, (element_id, seq));
     });
 }
 
-/// The component instance rendered as `element_id`, if any (reverse
-/// lookup — the inspector's "select an element → call its methods").
+/// Every component instance rendered as `element_id`, outermost first
+/// (a component returning another component's element shares it).
 #[cfg(feature = "robot")]
-pub fn component_for_element(element_id: u32) -> Option<ComponentInstanceId> {
+pub fn components_for_element(element_id: u32) -> Vec<ComponentInstanceId> {
     ELEMENT_LINKS.with(|m| {
-        m.borrow()
+        let mut hits: Vec<(u64, u32)> = m
+            .borrow()
             .iter()
-            .find(|(_, el)| **el == element_id)
-            .map(|(id, _)| ComponentInstanceId(*id))
+            .filter(|(_, (el, _))| *el == element_id)
+            .map(|(id, (_, seq))| (*seq, *id))
+            .collect();
+        hits.sort();
+        hits.into_iter().map(|(_, id)| ComponentInstanceId(id)).collect()
     })
 }
 
-/// RAII guard returned by [`register_component`]. Dropping it removes
-/// the entry (and its element link) from the registry.
+/// The innermost component instance rendered as `element_id`, if any.
+#[cfg(feature = "robot")]
+pub fn component_for_element(element_id: u32) -> Option<ComponentInstanceId> {
+    components_for_element(element_id).pop()
+}
+
+/// Element → its linked instances (outermost first), for every linked
+/// element — one pass for the bridge's tree render.
+#[cfg(feature = "robot")]
+pub(crate) fn element_component_index() -> std::collections::HashMap<u32, Vec<(ComponentInstanceId, &'static str)>> {
+    let mut by_element: std::collections::HashMap<u32, Vec<(u64, ComponentInstanceId, &'static str)>> =
+        std::collections::HashMap::new();
+    COMPONENTS.with(|c| {
+        let c = c.borrow();
+        ELEMENT_LINKS.with(|m| {
+            for (id, (el, seq)) in m.borrow().iter() {
+                if let Some(entry) = c.get(id) {
+                    by_element
+                        .entry(*el)
+                        .or_default()
+                        .push((*seq, ComponentInstanceId(*id), entry.name));
+                }
+            }
+        });
+    });
+    by_element
+        .into_iter()
+        .map(|(el, mut v)| {
+            v.sort_by_key(|(seq, _, _)| *seq);
+            (el, v.into_iter().map(|(_, id, name)| (id, name)).collect())
+        })
+        .collect()
+}
+
+/// RAII guard: dropping it removes the entry (and its element link) from
+/// the registry.
 pub struct ComponentRegistration {
     id: ComponentInstanceId,
 }
@@ -162,40 +240,155 @@ impl Drop for ComponentRegistration {
         ELEMENT_LINKS.with(|m| {
             m.borrow_mut().remove(&self.id.0);
         });
+        disarm_component_link(self.id);
+        crate::robot::bump_component_revision();
     }
 }
 
-/// Register a freshly-mounted component instance and its methods.
-/// Returns a guard that unregisters on drop.
 #[cfg(feature = "robot")]
-pub fn register_component(name: &'static str, methods: Vec<Method>) -> ComponentRegistration {
-    let id = NEXT_ID.with(|c| {
-        let id = c.get();
-        c.set(id.checked_add(1).unwrap_or(1));
-        ComponentInstanceId(id)
-    });
+fn insert_entry(
+    name: &'static str,
+    file: &'static str,
+    line: u32,
+    methods: Vec<Method>,
+    props: Vec<PropEntry>,
+) -> ComponentRegistration {
+    let id = next_id();
     COMPONENTS.with(|c| {
-        c.borrow_mut().insert(id.0, ComponentEntry { name, methods });
+        c.borrow_mut().insert(id.0, ComponentEntry { name, file, line, methods, props });
     });
+    crate::robot::bump_component_revision();
     ComponentRegistration { id }
 }
 
-/// No-op when the vocabulary `robot` feature is off (stub mirror of the
-/// old core's non-robot `register_component`).
+/// Register a component instance by hand (no props, no source location).
+/// The `#[component]` macro uses [`__inspect_component`] instead; this
+/// stays for hosts and tests that build a methods-bearing entry directly.
+#[cfg(feature = "robot")]
+pub fn register_component(name: &'static str, methods: Vec<Method>) -> ComponentRegistration {
+    insert_entry(name, "", 0, methods, Vec::new())
+}
+
+/// No-op when the vocabulary `robot` feature is off.
 #[cfg(not(feature = "robot"))]
 pub fn register_component(_name: &'static str, _methods: Vec<Method>) -> ComponentRegistration {
-    ComponentRegistration {
-        id: ComponentInstanceId(0),
+    ComponentRegistration { id: ComponentInstanceId(0) }
+}
+
+/// A component body's registration in progress: returned by
+/// [`__inspect_component`] at the top of the body, consumed by
+/// [`finish`](ComponentInspect::finish) with the body's element.
+#[must_use = "pass the component's element through `finish`"]
+pub struct ComponentInspect {
+    #[cfg(feature = "robot")]
+    reg: Option<ComponentRegistration>,
+}
+
+#[cfg(feature = "robot")]
+impl Drop for ComponentInspect {
+    fn drop(&mut self) {
+        // Pops the build frame on every exit path — `finish`, an early
+        // return, or a panic in the body.
+        if let Some(reg) = &self.reg {
+            let id = reg.id();
+            BUILDING.with(|b| {
+                let mut b = b.borrow_mut();
+                if b.last() == Some(&id) {
+                    b.pop();
+                } else {
+                    b.retain(|i| *i != id);
+                }
+            });
+        }
     }
 }
 
-/// Snapshot of one entry, returned by [`list_components`]. Same shape as
-/// the old core's `ComponentSnapshot` (the conformance methods suite and
-/// the bridge JSON renderer consume it identically on both cores).
+impl ComponentInspect {
+    /// Tie the registration to `element`'s mounted lifetime and bracket
+    /// its realization so the robot registry links the instance to the
+    /// first element it mounts (module docs). Identity without `robot`.
+    #[cfg(feature = "robot")]
+    pub fn finish(mut self, element: Element) -> Element {
+        let Some(reg) = self.reg.take() else { return element };
+        let id = reg.id();
+        // Pop the build frame now (the body has run); Drop sees `None`.
+        BUILDING.with(|b| b.borrow_mut().retain(|i| *i != id));
+        // The guard rides a scope that rides the element: absorbed into
+        // the enclosing realized tree at mount, dropped with it at
+        // unmount — or dropped right away if the element is never
+        // realized. Outside a world `on_owned_drop` is inert and the
+        // guard drops here, which is the right answer: nothing mounted.
+        let (_, scope) = runtime_world::component_scope(move || {
+            runtime_world::on_owned_drop(move || drop(reg));
+        });
+        let element = runtime_scene::owned(element, scope);
+        runtime_scene::with_realize_hook(
+            element,
+            Rc::new(move || {
+                arm_component_link(id);
+                Box::new(move || disarm_component_link(id)) as Box<dyn FnOnce()>
+            }),
+        )
+    }
+
+    #[cfg(not(feature = "robot"))]
+    #[inline(always)]
+    pub fn finish(self, element: Element) -> Element {
+        element
+    }
+}
+
+/// Register the component whose body is starting. `props` runs only in
+/// robot builds (module docs). Macro emission target.
+#[doc(hidden)]
+#[cfg(feature = "robot")]
+pub fn __inspect_component(
+    name: &'static str,
+    file: &'static str,
+    line: u32,
+    props: impl FnOnce() -> Vec<PropEntry>,
+) -> ComponentInspect {
+    let reg = insert_entry(name, file, line, Vec::new(), props());
+    BUILDING.with(|b| b.borrow_mut().push(reg.id()));
+    ComponentInspect { reg: Some(reg) }
+}
+
+#[doc(hidden)]
+#[cfg(not(feature = "robot"))]
+#[inline(always)]
+pub fn __inspect_component(
+    _name: &'static str,
+    _file: &'static str,
+    _line: u32,
+    _props: impl FnOnce() -> Vec<PropEntry>,
+) -> ComponentInspect {
+    ComponentInspect {}
+}
+
+/// Attach `#[method]`s to the component whose body is executing. Macro
+/// emission target (inside the body, after the handle is built).
+#[doc(hidden)]
+pub fn __attach_component_methods(methods: Vec<Method>) {
+    #[cfg(feature = "robot")]
+    {
+        let Some(id) = BUILDING.with(|b| b.borrow().last().copied()) else { return };
+        COMPONENTS.with(|c| {
+            if let Some(entry) = c.borrow_mut().get_mut(&id.0) {
+                entry.methods = methods;
+            }
+        });
+    }
+    #[cfg(not(feature = "robot"))]
+    drop(methods);
+}
+
+/// Snapshot of one entry, returned by [`list_components`].
 #[cfg(feature = "robot")]
 pub struct ComponentSnapshot {
     pub id: ComponentInstanceId,
     pub name: &'static str,
+    pub file: &'static str,
+    pub line: u32,
     pub methods: Vec<(&'static str, &'static [(&'static str, &'static str)])>,
     /// The robot element this component renders as (its root
     /// primitive), if the realize-time link was established.
@@ -204,7 +397,7 @@ pub struct ComponentSnapshot {
 
 #[cfg(feature = "robot")]
 pub fn list_components() -> Vec<ComponentSnapshot> {
-    COMPONENTS.with(|c| {
+    let mut out: Vec<ComponentSnapshot> = COMPONENTS.with(|c| {
         ELEMENT_LINKS.with(|links| {
             let links = links.borrow();
             c.borrow()
@@ -212,12 +405,59 @@ pub fn list_components() -> Vec<ComponentSnapshot> {
                 .map(|(id, entry)| ComponentSnapshot {
                     id: ComponentInstanceId(*id),
                     name: entry.name,
+                    file: entry.file,
+                    line: entry.line,
                     methods: entry.methods.iter().map(|m| (m.name, m.args)).collect(),
-                    element_id: links.get(id).copied().map(crate::robot::ElementId),
+                    element_id: links.get(id).map(|(el, _)| crate::robot::ElementId(*el)),
                 })
                 .collect()
         })
-    })
+    });
+    out.sort_by_key(|s| s.id.0);
+    out
+}
+
+/// One prop's rendered state, from [`component_props`].
+#[cfg(feature = "robot")]
+pub struct PropSnapshot {
+    pub name: &'static str,
+    pub ty: &'static str,
+    pub mode: PropMode,
+    /// The `Debug` rendering of the CURRENT value, truncated to
+    /// [`PROP_VALUE_MAX_CHARS`]; `None` when it can't be rendered.
+    pub value: Option<String>,
+}
+
+/// Cap on a rendered prop value — a `Debug` of a large collection would
+/// otherwise dominate the bridge reply.
+pub const PROP_VALUE_MAX_CHARS: usize = 400;
+
+/// Render `instance`'s props now. `None` if the instance is gone.
+///
+/// The readers are cloned out under a short borrow and run after it
+/// drops: a `Live` prop's closure is AUTHOR code and may touch anything.
+#[cfg(feature = "robot")]
+pub fn component_props(instance: ComponentInstanceId) -> Option<Vec<PropSnapshot>> {
+    let props = COMPONENTS.with(|c| c.borrow().get(&instance.0).map(|e| e.props.clone()))?;
+    Some(
+        props
+            .into_iter()
+            .map(|p| PropSnapshot {
+                name: p.name,
+                ty: p.ty,
+                mode: p.mode,
+                value: p.read.map(|read| truncate_chars(read(), PROP_VALUE_MAX_CHARS)),
+            })
+            .collect(),
+    )
+}
+
+#[cfg(feature = "robot")]
+fn truncate_chars(s: String, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s,
+    }
 }
 
 /// Invoke a method on a registered component. `Err` if the instance is
@@ -271,46 +511,8 @@ pub fn invoke_method(
 pub(crate) fn reset() {
     COMPONENTS.with(|c| c.borrow_mut().clear());
     ELEMENT_LINKS.with(|m| m.borrow_mut().clear());
-    PENDING_LINK.with(|p| p.set(None));
-}
-
-// ===========================================================================
-// __component_root — the element↔component link wrap
-// ===========================================================================
-
-/// Tag a `#[component]`'s root subtree with its component instance so
-/// the next mount registration links element↔component. Robot builds
-/// wrap in a dependency-free `Dyn` hole that arms the pending link at
-/// realize time (module docs — the new-core substitute for the old
-/// walker-unwrapped `Element::Component`); non-robot builds are
-/// identity.
-#[cfg(feature = "robot")]
-#[doc(hidden)]
-pub fn __component_root(child: Element, instance: ComponentInstanceId) -> Element {
-    use std::cell::RefCell;
-    let slot: RefCell<Option<Element>> = RefCell::new(Some(child));
-    runtime_scene::dyn_element(move || {
-        match slot.borrow_mut().take() {
-            Some(el) => {
-                // Armed HERE — realize consumes the returned element
-                // synchronously next, so the first `register_mount` in
-                // this subtree (its root primitive) takes the link.
-                set_pending_component_link(instance);
-                el
-            }
-            // Unreachable in practice: the closure reads no signals, so
-            // the driver effect never re-fires. Defensive empty subtree
-            // instead of a panic (an Element is single-use).
-            None => runtime_scene::fragment(Vec::new()),
-        }
-    })
-}
-
-#[cfg(not(feature = "robot"))]
-#[doc(hidden)]
-#[inline(always)]
-pub fn __component_root(child: Element, _instance: ComponentInstanceId) -> Element {
-    child
+    PENDING_LINKS.with(|p| p.borrow_mut().clear());
+    BUILDING.with(|b| b.borrow_mut().clear());
 }
 
 #[cfg(all(test, feature = "robot"))]
@@ -365,22 +567,20 @@ mod tests {
         reset();
     }
 
-    /// The element↔component link: arm (realize-time closure) → next
-    /// registration consumes → both lookups resolve → drop removes the
-    /// link in lockstep. Mirror of the old
-    /// `element_component_link_round_trips`.
+    /// The element↔component link: arm → the next registration consumes
+    /// every armed link → both lookups resolve → drop removes the link in
+    /// lockstep.
     #[test]
     fn element_component_link_round_trips() {
         reset();
         let reg = register_component("Counter", Vec::new());
         let id = reg.id();
 
-        set_pending_component_link(id);
-        assert_eq!(take_pending_component_link(), Some(id));
-        assert_eq!(
-            take_pending_component_link(),
-            None,
-            "pending link is one-shot — descendants must not re-link"
+        arm_component_link(id);
+        assert_eq!(take_pending_component_links(), vec![id]);
+        assert!(
+            take_pending_component_links().is_empty(),
+            "consumed links are gone — descendants must not re-link"
         );
         link_component_element(id, 4242);
 
@@ -395,6 +595,81 @@ mod tests {
             None,
             "link dropped with the component registration"
         );
+        reset();
+    }
+
+    /// A component whose root is another component's element: both arm
+    /// before the element registers, both link to it, outer first.
+    #[test]
+    fn nested_links_share_an_element_outermost_first() {
+        reset();
+        let outer = register_component("Outer", Vec::new());
+        let inner = register_component("Inner", Vec::new());
+        arm_component_link(outer.id());
+        arm_component_link(inner.id());
+        for instance in take_pending_component_links() {
+            link_component_element(instance, 7);
+        }
+        assert_eq!(components_for_element(7), vec![outer.id(), inner.id()]);
+        assert_eq!(component_for_element(7), Some(inner.id()), "innermost");
+        let index = element_component_index();
+        let names: Vec<&str> = index[&7].iter().map(|(_, n)| *n).collect();
+        assert_eq!(names, ["Outer", "Inner"]);
+        reset();
+    }
+
+    /// Why disarm exists: a component that mounted no registered node
+    /// must not hand its link to whatever registers next (a sibling).
+    #[test]
+    fn regression_unconsumed_link_does_not_leak_to_a_sibling() {
+        reset();
+        let empty = register_component("Empty", Vec::new());
+        arm_component_link(empty.id());
+        disarm_component_link(empty.id()); // its bracket closed, nothing mounted
+        assert!(take_pending_component_links().is_empty());
+        reset();
+    }
+
+    /// Methods attach to the component whose body is running, and the
+    /// build frame pops even when the body never reaches `finish`.
+    #[test]
+    fn methods_attach_to_the_building_component() {
+        reset();
+        let inspect = __inspect_component("Tally", "src/tally.rs", 3, Vec::new);
+        __attach_component_methods(vec![Method {
+            name: "reset",
+            args: &[],
+            invoke: Rc::new(|_| Ok(())),
+        }]);
+        let snap = list_components();
+        let tally = snap.iter().find(|s| s.name == "Tally").expect("registered");
+        assert_eq!(tally.methods, vec![("reset", &[][..])]);
+        assert_eq!((tally.file, tally.line), ("src/tally.rs", 3));
+        drop(inspect); // an early return / panic path
+        assert!(BUILDING.with(|b| b.borrow().is_empty()), "frame popped");
+        reset();
+    }
+
+    /// Props render their CURRENT value through the registry, truncated.
+    #[test]
+    fn component_props_render_current_values() {
+        use crate::robot_props::{entry, PropMode};
+        reset();
+        let long = "x".repeat(PROP_VALUE_MAX_CHARS + 50);
+        let long_in = long.clone();
+        let inspect = __inspect_component("Card", "", 0, move || {
+            vec![
+                entry("title", "Reactive<String>", (PropMode::Static, Some(Rc::new(|| "\"Hi\"".to_string())))),
+                entry("body", "String", (PropMode::Value, Some(Rc::new(move || long_in.clone())))),
+                entry("on_close", "Rc<dyn Fn()>", (PropMode::Handler, None)),
+            ]
+        });
+        let id = list_components().into_iter().find(|s| s.name == "Card").unwrap().id;
+        let props = component_props(id).expect("instance is live");
+        assert_eq!(props[0].value.as_deref(), Some("\"Hi\""));
+        assert_eq!(props[1].value.as_ref().map(|v| v.chars().count()), Some(PROP_VALUE_MAX_CHARS + 1));
+        assert_eq!((props[2].mode, props[2].value.as_deref()), (PropMode::Handler, None));
+        drop(inspect);
         reset();
     }
 }

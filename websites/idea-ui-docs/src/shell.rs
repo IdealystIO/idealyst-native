@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, effect, fragment, pressable, signal, switch, ui, when, Breakpoint, Color,
+    component, derived, effect, pressable, signal, switch, ui, Breakpoint, Color,
     Element, IntoElement, Ref, SafeAreaSides, ScrollViewHandle, Signal, StyleApplication,
     Tokenized, ViewHandle,
 };
@@ -52,14 +52,16 @@ pub fn header(
     is_dark: Signal<bool>,
     drawer_open: Signal<bool>,
 ) -> Element {
-    // Token hint follows the active component. Rebuilt on navigation.
-    let token_hint = switch(
-        move || active_route.get(),
-        move |route_name: &&'static str| {
-            let token = crate::routes::entry_for(route_name).map(|e| e.token).unwrap_or("");
-            ui! { text(style = HeaderMono()) { token.to_string() } }
-        },
-    );
+    // Token hint follows the active component: live text, updated in place
+    // on navigation.
+    let token_hint = ui! {
+        text(style = HeaderMono()) {
+            move || {
+                let route = active_route.get();
+                crate::routes::entry_for(route).map(|e| e.token).unwrap_or("").to_string()
+            }
+        }
+    };
 
     let toggle = header_theme_toggle(is_dark);
     ui! {
@@ -85,31 +87,32 @@ pub fn header(
 /// the narrow header can't fit brand + label + hint + toggle without
 /// overflowing the viewport into a horizontal scroll.
 fn header_theme_toggle(is_dark: Signal<bool>) -> Element {
-    when(
-        move || idea_ui_nav::sidebar_pinned(Breakpoint::Lg),
-        move || theme_toggle(is_dark),
-        || fragment(vec![]),
-    )
+    ui! {
+        if idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+            theme_toggle(is_dark)
+        }
+    }
 }
 
 // The leading hamburger. The AppShell's sidebar pins in-flow at/above
 // the `Lg` breakpoint (900 px — see `install_breakpoints` in `lib.rs`)
 // and becomes an off-canvas drawer below it, so the hamburger is only
 // rendered while the sidebar is a drawer. `sidebar_pinned` reads the
-// reactive breakpoint, so the `when` flips in lockstep with the
+// reactive breakpoint, so the `if` flips in lockstep with the
 // AppShell's own pin/drawer switch. Pressing it opens the app-owned
 // `drawer_open` signal the AppShell panel + scrim subscribe to.
 fn menu_button(drawer_open: Signal<bool>) -> Element {
-    when(
-        move || !idea_ui_nav::sidebar_pinned(Breakpoint::Lg),
-        move || {
-            let glyph = ui! { text(style = MenuGlyph()) { "\u{2630}".to_string() } };
-            pressable(vec![glyph], move || drawer_open.set(true))
-                .with_style(MenuButton())
-                .into_element()
-        },
-        || fragment(vec![]),
-    )
+    let button = move || {
+        let glyph = ui! { text(style = MenuGlyph()) { "\u{2630}".to_string() } };
+        pressable(vec![glyph], move || drawer_open.set(true))
+            .with_style(MenuButton())
+            .into_element()
+    };
+    ui! {
+        if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+            button()
+        }
+    }
 }
 
 fn theme_toggle(is_dark: Signal<bool>) -> Element {
@@ -170,11 +173,11 @@ pub fn sidebar(
     // sidebar serves BOTH the pinned column and the off-canvas drawer,
     // so the toggle is gated to the drawer case to avoid two toggles
     // on desktop.
-    let drawer_toggle = when(
-        move || !idea_ui_nav::sidebar_pinned(Breakpoint::Lg),
-        move || theme_toggle(is_dark),
-        || fragment(vec![]),
-    );
+    let drawer_toggle = ui! {
+        if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
+            theme_toggle(is_dark)
+        }
+    };
 
     // The search now lives in a dialog. This open-state drives the modal; the
     // sidebar shows a button that opens it.
@@ -278,6 +281,7 @@ fn search_dialog(
         .with_style(move || StyleApplication::new(SearchInputBare::sheet()))
         .into_element();
 
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the result list for a query
     let results = switch(
         move || q.get(),
         move |query: &String| build_search_results(query, active_route),
@@ -698,11 +702,11 @@ pub fn page_frame_content(entry: &'static Entry, body: Element, mut toc: Vec<Toc
             let active_idx: Signal<Option<usize>> = signal(None);
             install_scroll_spy(toc.clone(), ctx, active_idx);
             let entries = toc;
-            when(
-                move || matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl),
-                move || render_toc(entries.clone(), active_idx, ctx),
-                || runtime_core::view(Vec::new()).into_element(),
-            )
+            ui! {
+                if matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl) {
+                    render_toc(entries.clone(), active_idx, ctx)
+                }
+            }
         }
         _ => runtime_core::view(Vec::new()).into_element(),
     };
@@ -852,6 +856,7 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
 pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelBox();
     let src = props.src.clone();
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the code block per palette
     let dynamic = switch(theme_is_dark, move |&is_dark| {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src, palette);

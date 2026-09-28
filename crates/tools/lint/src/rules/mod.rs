@@ -75,6 +75,11 @@ pub fn all_rules() -> &'static [RuleInfo] {
             summary: "build elements with the `ui!` / `jsx!` macro, not by hand",
         },
         RuleInfo {
+            id: prefer_ui::CONTROL_FLOW_RULE,
+            default_level: Level::Warn,
+            summary: "a hand-called `when(…)` / `switch(…)` — write `if` / `match` inside `ui!`; suppress with a `-- reason` where the macro can't express the shape",
+        },
+        RuleInfo {
             id: component_case::RULE,
             default_level: Level::Error,
             summary: "`#[component]` functions must be PascalCase",
@@ -171,7 +176,26 @@ impl<'ast> Visit<'ast> for Linter {
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
         prefer_macros::check_macro(node, &mut self.diags);
         snapshot_loop::check_ui_macro(node, &mut self.diags);
+        visit_vec_elements(self, node);
         syn::visit::visit_macro(self, node);
+    }
+}
+
+/// `vec![a, b, c]` is ordinary Rust expressions behind a macro, and it is
+/// exactly where a hand-built child list lives (`view(vec![switch(…)])`) —
+/// but `syn` never descends into macro tokens, so everything inside it was
+/// invisible to every rule. Re-parse the comma form and walk it like any
+/// other code. (The `vec![x; n]` repeat form fails the parse and is left
+/// alone; other macros keep their opaque bodies.)
+fn visit_vec_elements(linter: &mut Linter, node: &syn::Macro) {
+    if !node.path.is_ident("vec") {
+        return;
+    }
+    let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+    if let Ok(elems) = syn::parse::Parser::parse2(parser, node.tokens.clone()) {
+        for e in &elems {
+            linter.visit_expr(e);
+        }
     }
 }
 

@@ -26,8 +26,10 @@ license.workspace = true
 # automation surface (find-by-test_id, tap, type_text, snapshot, …).
 # OFF by default, mirroring runtime-core's `robot` gate — the `test_id`
 # slots always exist (so `ui! { view(test_id = …) }` compiles in every
-# build), only the per-mount registration overhead is gated.
-robot = []
+# build), only the per-mount registration overhead is gated. `serde`
+# carries the `Deserialize` bound of `robot::watch_signal_writable` (the
+# bridge's `write_signal` verb parses the new value as JSON).
+robot = ["dep:serde"]
 
 # Phase-timer instrumentation for the new-core mount/style hot paths
 # (repeat batch, dynamic-sheet effect). Same discipline as the other
@@ -112,6 +114,7 @@ runtime-world = { workspace = true }
 # type must resolve in every build — the dependency is unconditional even
 # though the overlay that consumes descriptors is feature-gated.
 runtime-template = { workspace = true }
+serde = { workspace = true, optional = true }
 
 # Catalog anchor (see the `catalog` feature above).
 mcp-catalog = { workspace = true, optional = true }

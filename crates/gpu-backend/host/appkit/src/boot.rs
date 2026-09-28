@@ -160,6 +160,9 @@ where
     backend_apple_core::scheduler::end_mount_buffering();
     // The app lives until the process exits with the run loop.
     std::mem::forget(app_state);
+    // Scheduler installed, app mounted, buffering closed: the point a
+    // wrapper's deferred start (the Robot bridge) can schedule its poll.
+    crate::run_main_loop_start_hooks();
 
     // ── Show window + run loop ────────────────────────────────────────
     window.makeKeyAndOrderFront(None);

@@ -1,21 +1,25 @@
 //! App discovery — find running idealyst apps by scanning the per-process
 //! registration files their robot bridge writes on bind.
 //!
-//! Each live app (built `--features robot`) writes
+//! Each live app with the robot bridge (every `idealyst dev` build) writes
 //! `~/.idealyst/apps/<name>-<pid>.json` containing `{port, pid, name,
-//! bundle_id, project_root, proto}` (see `runtime_core::robot::bridge`).
+//! bundle_id, project_root, platform, proto}` (see
+//! `runtime_shared::robot::bridge`).
 //! We read every `*.json` there. Liveness isn't probed here — a dead app's
 //! port simply won't accept a connection, which the client surfaces.
 
 use std::path::PathBuf;
 
 /// One discovered app the inspector can connect to.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppInfo {
     pub name: String,
     pub bundle_id: Option<String>,
     pub port: u16,
     pub pid: u32,
+    /// `macos`, `web`, `ios`, … when the registration says.
+    pub platform: Option<String>,
+    pub project_root: Option<String>,
 }
 
 impl AppInfo {
@@ -92,6 +96,8 @@ pub fn list() -> Vec<AppInfo> {
             bundle_id: v["bundle_id"].as_str().map(|s| s.to_string()),
             port: port as u16,
             pid,
+            platform: v["platform"].as_str().map(|s| s.to_string()),
+            project_root: v["project_root"].as_str().map(|s| s.to_string()),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));

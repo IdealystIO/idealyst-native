@@ -285,6 +285,7 @@ fn regression_branch_swap_disposes_old_branch_from_robot_registry() {
     let (_recorder, holder) = boot(move || {
         let onboarded = signal(false);
         slot_for_app.set(Some(onboarded));
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- builder-layer test; this file builds without `ui!`
         runtime_vocabulary::glue::when(
             move || onboarded.get(),
             || {

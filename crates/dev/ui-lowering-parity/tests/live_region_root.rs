@@ -70,6 +70,7 @@ pub struct BannerProps {
 fn Banner(props: &BannerProps) -> Element {
     let label = props.label.get();
     let flip = flip();
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- the fixture pins the ELEMENT VARIANT its component returns (see module docs)
     glue::switch(
         move || flip.get(),
         move |on: &bool| {

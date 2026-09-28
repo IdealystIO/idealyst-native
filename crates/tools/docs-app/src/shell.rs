@@ -249,11 +249,13 @@ fn search_results(
 ) -> Element {
     // Filter chips stay pinned above the scroll region; they rebuild only
     // when the active filter changes.
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the chip row per active filter
     let chips = switch(
         move || filter.get(),
         move |f: &Option<Kind>| filter_chips(filter, *f),
     );
     // The results list — the only part that scrolls.
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the result list per (query, filter)
     let results = switch(
         move || (query.get(), filter.get()),
         move |(q, f): &(String, Option<Kind>)| {
@@ -544,6 +546,7 @@ fn highlight(src: &str, palette: Palette) -> Vec<(String, Color)> {
 pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelBox();
     let src = props.src.clone();
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the code block per palette
     let dynamic = switch(theme_is_dark, move |&is_dark| {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src, palette);

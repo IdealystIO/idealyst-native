@@ -148,6 +148,7 @@ impl BuildElement for MarkdownProps {
     fn build(self) -> Element {
         let source = self.source;
         let theme = self.theme;
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the rendered document per (source, theme)
         switch(
             move || (source.get(), theme.get()),
             move |key| {

@@ -14,7 +14,7 @@ use std::rc::Rc;
 use charts::prelude::*;
 use charts::{ChartHover, DatumRef, MarkBounds, MarkContext, MarkOverride, PolarHover, StyleFn};
 use idea_ui::{install_idea_theme, light_theme, tone, variant, Button, VariantRef};
-use runtime_core::{after_animation_frame, component, rx, signal, switch, ui, when,
+use runtime_core::{after_animation_frame, component, rx, signal, switch, ui,
     AnchorableHandle, Element,
     IntoElement, LayoutSubscription, Length, Position, Ref, Signal, StyleApplication, StyleRules,
     StyleSheet, ViewHandle};
@@ -212,6 +212,8 @@ fn tooltip_surface(tip: Signal<Option<(Vec<String>, f32, f32)>>) -> Element {
         });
     }
 
+    // CONTENT — rebuilt per column, not per pixel.
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the tooltip lines
     let rows = switch(
         move || tip.get().map(|(lines, _, _)| lines).unwrap_or_default(),
         move |lines: &Vec<String>| {
@@ -729,22 +731,20 @@ pub fn app() -> Element {
         }
     });
 
-    // The chart area is a `switch` on the FAMILY rather than an `if` chain,
+    // The chart area is a `match` on the FAMILY rather than an `if` chain,
     // because the three components take different spec types — swapping
-    // between them is a structural rebuild, which is exactly what `switch`
-    // keys on. Keying on the family and not the kind means moving between
-    // Donut and Pie reuses the same `PieChart` and animates, instead of
-    // tearing it down and remounting.
-    let chart_area = switch(
-        move || kind.get().family(),
-        move |family: &Family| {
-            let on_hover = on_hover.clone();
-            let on_polar_hover = on_polar_hover.clone();
-            let threshold = threshold.clone();
-            match family {
-                Family::Cartesian => ui! {
-                    Chart(
-                        spec = rx!(build_spec(
+    // between them is a structural rebuild. Keying on the family and not the
+    // kind means moving between Donut and Pie reuses the same `PieChart` and
+    // animates, instead of tearing it down and remounting.
+    let chart_area = ui! {
+        match kind.get().family() {
+            Family::Cartesian => {
+                Chart(
+                    // The arm is re-run on each swap, so the `rx!` closure
+                    // takes its own handle rather than moving the shared one.
+                    spec = {
+                        let threshold = threshold.clone();
+                        rx!(build_spec(
                             kind.get(),
                             seed.get(),
                             show_costs.get(),
@@ -755,57 +755,48 @@ pub fn app() -> Element {
                             // unchanged, so specs still compare equal.
                             threshold_on.get().then(|| threshold.clone()),
                             annotate.get(),
-                        )),
-                        dim_others = rx!(dim.get()),
-                        value_transition = VALUE_GLIDE,
-                        color_transition = COLOR_FADE,
-                        on_hover = on_hover.clone(),
-                    )
-                },
-                Family::Pie => ui! {
-                    PieChart(
-                        spec = rx!(build_pie(kind.get(), seed.get(), slice_selected.get())),
-                        dim_others = rx!(dim.get()),
-                        value_transition = VALUE_GLIDE,
-                        color_transition = COLOR_FADE,
-                        on_hover = on_polar_hover.clone(),
-                    )
-                },
-                Family::Radial => ui! {
-                    RadialChart(
-                        spec = rx!(build_radial(kind.get(), seed.get(), slice_selected.get())),
-                        dim_others = rx!(dim.get()),
-                        value_transition = VALUE_GLIDE,
-                        color_transition = COLOR_FADE,
-                        on_hover = on_polar_hover.clone(),
-                    )
-                },
+                        ))
+                    },
+                    dim_others = rx!(dim.get()),
+                    value_transition = VALUE_GLIDE,
+                    color_transition = COLOR_FADE,
+                    on_hover = on_hover.clone(),
+                )
             }
-            .into_element()
-        },
-    );
+            Family::Pie => {
+                PieChart(
+                    spec = rx!(build_pie(kind.get(), seed.get(), slice_selected.get())),
+                    dim_others = rx!(dim.get()),
+                    value_transition = VALUE_GLIDE,
+                    color_transition = COLOR_FADE,
+                    on_hover = on_polar_hover.clone(),
+                )
+            }
+            Family::Radial => {
+                RadialChart(
+                    spec = rx!(build_radial(kind.get(), seed.get(), slice_selected.get())),
+                    dim_others = rx!(dim.get()),
+                    value_transition = VALUE_GLIDE,
+                    color_transition = COLOR_FADE,
+                    on_hover = on_polar_hover.clone(),
+                )
+            }
+        }
+    };
 
     // The tooltip lives at the app root, NOT inside the chart — which is
     // what lets it sit over the axis gutters and the controls. A surface
     // rendered inside the plot would be clipped by the plot's own
     // `overflow: hidden`, the clip that keeps marks off the gutters.
-    let tooltip = when(
-        move || tip.get().is_some(),
-        move || tooltip_surface(tip),
-        // The closed branch MUST be out of flow too. Both branches occupy the
-        // same child slot in the root's flex column, and that column has a
-        // `gap`: an in-flow empty view contributes a gap slot while the
-        // absolute bubble does not, so the entire page shifts by one gap
-        // every time the pointer enters or leaves the chart.
-        || {
-            runtime_core::view(Vec::new())
-                .with_style(std::rc::Rc::new(StyleSheet::r#static(StyleRules {
-                    position: Some(Position::Absolute),
-                    ..Default::default()
-                })))
-                .into_element()
-        },
-    );
+    // `ui!`'s `if` gives the closed branch an out-of-flow placeholder, which
+    // matters here: the root's flex column has a `gap`, and an in-flow empty
+    // view would contribute a gap slot the absolute bubble does not, shifting
+    // the whole page every time the pointer enters or leaves the chart.
+    let tooltip = ui! {
+        if tip.get().is_some() {
+            tooltip_surface(tip)
+        }
+    };
 
     ui! {
         view(style = styles::Root()) {

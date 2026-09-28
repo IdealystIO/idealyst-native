@@ -34,7 +34,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    fragment, view, when, Element, IntoElement, Length, PointerEvents, Position, Ref, StyleRules,
+    fragment, ui, view, Element, IntoElement, Length, PointerEvents, Position, Ref, StyleRules,
     StyleSheet, Tokenized, ViewHandle,
 };
 
@@ -46,26 +46,27 @@ use crate::context::DragContext;
 pub fn drag_layer<T: Clone + 'static>(ctx: &DragContext<T>) -> Element {
     let dragging = ctx.dragging();
     let ctx = ctx.clone();
-    when(
-        move || dragging.get(),
-        move || {
-            // Only in-flight *preview* drags get a ghost; an in-place draggable
-            // (no preview) leaves this empty and moves its own element instead.
-            if !ctx.has_preview() {
-                return fragment(Vec::new());
-            }
-            let ghost_ref: Ref<ViewHandle> = Ref::new();
-            // Positioned entirely by the bound translate (window coords); see
-            // `set_preview` for the one-frame-flash handling (microtask re-apply).
-            ctx.bind_ghost(ghost_ref);
-            let content = ctx.build_preview();
-            view(vec![content])
-                .with_style(ghost_sheet())
-                .bind(ghost_ref)
-                .into_element()
-        },
-        || fragment(Vec::new()),
-    )
+    let ghost = move || {
+        // Only in-flight *preview* drags get a ghost; an in-place draggable
+        // (no preview) leaves this empty and moves its own element instead.
+        if !ctx.has_preview() {
+            return fragment(Vec::new());
+        }
+        let ghost_ref: Ref<ViewHandle> = Ref::new();
+        // Positioned entirely by the bound translate (window coords); see
+        // `set_preview` for the one-frame-flash handling (microtask re-apply).
+        ctx.bind_ghost(ghost_ref);
+        let content = ctx.build_preview();
+        view(vec![content])
+            .with_style(ghost_sheet())
+            .bind(ghost_ref)
+            .into_element()
+    };
+    ui! {
+        if dragging.get() {
+            ghost()
+        }
+    }
 }
 
 /// The ghost wrapper: out of flow at the root's top-left, moved by the bound

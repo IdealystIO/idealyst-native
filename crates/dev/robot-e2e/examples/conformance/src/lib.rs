@@ -26,8 +26,11 @@
 //! ## Web build
 //!
 //! ```text
-//! wasm-pack build --target web --dev crates/dev/robot-e2e/examples/conformance
+//! idealyst dev --web --local crates/dev/robot-e2e/examples/conformance
 //! ```
+//!
+//! (`src/main.rs` is the one-line `idealyst::entry!` that boots every
+//! platform, web included.)
 //!
 use runtime_vocabulary::glue::Route;
 
@@ -68,17 +71,3 @@ const INITIAL_RUN_DELAY_MS: i32 = 1000;
 
 pub use screens::{app, State};
 
-// Web boot: `wasm-pack build --target web` produces a module whose start
-// fn mounts into `#app`.
-#[cfg(target_arch = "wasm32")]
-mod web_entry {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen(start)]
-    pub fn boot() {
-        // Console logger so `[e2e]` / `[E2E-RESULT]` lines reach the
-        // devtools console (the CLI wrapper normally installs this).
-        backend_web::install_logger();
-        backend_web::newcore::start(crate::app);
-    }
-}

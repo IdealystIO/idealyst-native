@@ -361,6 +361,7 @@ fn file_tree_panel(
     let build_expanded = expanded;
     let build_files = files;
     let build_buffer = buffer;
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the file tree per (paths, expanded, active)
     let body = switch(
         move || {
             let paths: Vec<String> = dep_files.get().keys().cloned().collect();

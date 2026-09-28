@@ -918,6 +918,68 @@ fn robot_nav_registry_swap_snapshot_is_depthless() {
     robot.reset();
 }
 
+/// The bridge's `navigate` verb drives a stack exactly like a link / back
+/// press: a full path resolves to its screen, pop reveals the previous
+/// one, and popping the root is an error rather than a silent no-op.
+#[cfg(feature = "robot")]
+#[test]
+fn robot_navigate_drives_the_stack_like_a_link() {
+    use runtime_vocabulary::robot::{all_navigators, navigate, NavAction, NavId, Robot};
+
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let fx = mount_stack(&h, StackRetention::Retain);
+        let snap = &all_navigators()[0];
+        assert!(snap.controllable, "a stack installs its robot control at mount");
+        let id = NavId(snap.nav_id);
+
+        navigate(id, NavAction::Push("/detail".into())).expect("push");
+        world.flush();
+        let snap = &all_navigators()[0];
+        assert_eq!((snap.active_route.as_str(), snap.depth), ("detail", 2));
+        assert_eq!(fx.builds_detail.get(), 1, "the pushed screen mounted");
+
+        navigate(id, NavAction::Pop).expect("pop");
+        world.flush();
+        assert_eq!(all_navigators()[0].active_route, "home");
+
+        let err = navigate(id, NavAction::Pop).unwrap_err();
+        assert!(err.contains("root"), "{err}");
+
+        navigate(id, NavAction::Reset("/detail".into())).expect("reset");
+        world.flush();
+        let snap = &all_navigators()[0];
+        assert_eq!((snap.active_route.as_str(), snap.depth), ("detail", 1), "reset replaces the stack");
+    });
+    robot.reset();
+}
+
+/// A swap navigator's only verb is select: every path action selects,
+/// and there is no back stack to pop.
+#[cfg(feature = "robot")]
+#[test]
+fn robot_navigate_selects_on_a_swap_navigator() {
+    use runtime_vocabulary::robot::{all_navigators, navigate, NavAction, NavId, Robot};
+
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let _fx = mount_swap(&h, MountPolicy::LazyPersistent);
+        let id = NavId(all_navigators()[0].nav_id);
+        navigate(id, NavAction::Push("/about".into())).expect("select");
+        world.flush();
+        assert_eq!(all_navigators()[0].active_route, "about");
+        let err = navigate(id, NavAction::Pop).unwrap_err();
+        assert!(err.contains("no back stack"), "{err}");
+    });
+    robot.reset();
+}
+
 /// A navigator's published context must not outlive the navigator.
 ///
 /// `StackNav` / `SwapNav` / `ScreenNav` all carry the navigator's OWN

@@ -1706,3 +1706,143 @@ fn late_handlers_are_not_counted_in_the_boot_handler_set() {
     assert_eq!(rig.registry.late_handler_count(), 1);
     assert!(rig.registry.has::<Heavy>(), "but the handler IS resolvable");
 }
+
+// ============================================================================
+// Realize hooks (`with_realize_hook`) — the tooling bracket that must not
+// change what the host sees.
+// ============================================================================
+
+/// A hook that records `enter <name>` / `exit <name>` into the rig's op
+/// log, so bracket placement reads straight off the same log the host
+/// writes into.
+fn logging_hook(ops: &Rc<RefCell<Vec<String>>>, name: &'static str) -> RealizeHook {
+    let ops = ops.clone();
+    Rc::new(move || {
+        ops.borrow_mut().push(format!("enter {name}"));
+        let ops = ops.clone();
+        Box::new(move || ops.borrow_mut().push(format!("exit {name}"))) as Box<dyn FnOnce()>
+    })
+}
+
+/// Why this exists: the robot registry brackets every component with a
+/// hook in dev builds. The previous wrapper was a `Dyn` hole, which put an
+/// anchor node around each component on anchored hosts — a dev tree that
+/// no longer matched release. On BOTH host kinds the hooked tree must
+/// create exactly the nodes the plain tree creates.
+#[test]
+fn regression_realize_hook_adds_no_host_node() {
+    for splice in [true, false] {
+        let plain_rig = Rig::new(splice);
+        let _plain = plain_rig.realize(v(vec![t("a"), t("b")]));
+        let plain_ops = plain_rig.take_ops();
+
+        let rig = Rig::new(splice);
+        let hooked = with_realize_hook(t("a"), logging_hook(&rig.ops, "c"));
+        let _live = rig.realize(v(vec![hooked, t("b")]));
+        let ops: Vec<String> = rig
+            .take_ops()
+            .into_iter()
+            .filter(|op| !op.starts_with("enter") && !op.starts_with("exit"))
+            .collect();
+        assert_eq!(ops, plain_ops, "splice={splice}: the hook changed the host ops");
+    }
+}
+
+#[test]
+fn realize_hook_brackets_exactly_its_subtree() {
+    let rig = Rig::new(true);
+    let hooked = with_realize_hook(v(vec![t("inner")]), logging_hook(&rig.ops, "c"));
+    let _live = rig.realize(v(vec![t("before"), hooked, t("after")]));
+    let ops = rig.take_ops();
+    let pos = |needle: &str| {
+        ops.iter()
+            .position(|op| op.contains(needle))
+            .unwrap_or_else(|| panic!("no op containing {needle:?} in {ops:?}"))
+    };
+    assert!(pos("before") < pos("enter c"), "{ops:?}");
+    assert!(pos("enter c") < pos("create n2 view"), "{ops:?}");
+    assert!(pos("inner") < pos("exit c"), "{ops:?}");
+    assert!(pos("exit c") < pos("after"), "{ops:?}");
+}
+
+/// A detached root (navigator screen, keyed row, the app root) takes the
+/// other peel path; the bracket must hold there too.
+#[test]
+fn realize_hook_brackets_a_detached_root() {
+    let rig = Rig::new(false);
+    let hooked = with_realize_hook(t("root"), logging_hook(&rig.ops, "c"));
+    let _live = rig.realize(hooked);
+    assert_eq!(rig.take_ops(), ["enter c", "create n0 root", "exit c"]);
+}
+
+/// A component returning another component's element: the later hook is
+/// the outer one, so it enters first and exits last.
+#[test]
+fn nested_realize_hooks_enter_outer_first() {
+    let rig = Rig::new(true);
+    let inner = with_realize_hook(t("x"), logging_hook(&rig.ops, "inner"));
+    let outer = with_realize_hook(inner, logging_hook(&rig.ops, "outer"));
+    let _live = rig.realize(outer);
+    assert_eq!(
+        rig.take_ops(),
+        ["enter outer", "enter inner", "create n0 x", "exit inner", "exit outer"]
+    );
+}
+
+/// A component whose root is a reactive region: the bracket must follow
+/// the region's CURRENT branch, so a swap re-enters it around the new
+/// contents (otherwise tooling would keep pointing at the torn-down node).
+#[test]
+fn realize_hook_on_a_region_brackets_every_branch() {
+    for splice in [true, false] {
+        let rig = Rig::new(splice);
+        let on = rig.world.enter(|| signal(false));
+        let region = dyn_element(move || if on.get() { t("yes") } else { t("no") });
+        let hooked = with_realize_hook(region, logging_hook(&rig.ops, "c"));
+        let _live = rig.realize(v(vec![hooked]));
+        let first = rig.take_ops();
+        let enter = first.iter().position(|op| op == "enter c").expect("entered");
+        let no = first.iter().position(|op| op.ends_with(" no")).expect("built no");
+        let exit = first.iter().position(|op| op == "exit c").expect("exited");
+        assert!(enter < no && no < exit, "splice={splice}: {first:?}");
+
+        rig.world.enter(|| on.set(true));
+        rig.flush();
+        let swap = rig.take_ops();
+        let enter = swap.iter().position(|op| op == "enter c");
+        let yes = swap.iter().position(|op| op.ends_with(" yes"));
+        let exit = swap.iter().position(|op| op == "exit c");
+        assert!(
+            matches!((enter, yes, exit), (Some(e), Some(y), Some(x)) if e < y && y < x),
+            "splice={splice}: the swap was not re-bracketed: {swap:?}"
+        );
+    }
+}
+
+/// The hook rides the component boundary; the component's own scope must
+/// still be folded into the realized tree and die with it.
+#[test]
+fn realize_hook_keeps_the_component_scope_alive_until_unmount() {
+    let rig = Rig::new(true);
+    let runs = counter();
+    let s = rig.world.enter(|| signal(0));
+    let element = rig.world.enter(|| {
+        let runs = runs.clone();
+        component_scope(move || {
+            effect(move || {
+                let _ = s.get();
+                runs.set(runs.get() + 1);
+            });
+            t("x")
+        })
+    });
+    let hooked = with_realize_hook(element, logging_hook(&rig.ops, "c"));
+    let live = rig.realize(hooked);
+    rig.world.enter(|| s.set(1));
+    rig.flush();
+    assert_eq!(runs.get(), 2, "the component's effect is live while mounted");
+    drop(live);
+    rig.world.enter(|| s.set(2));
+    rig.flush();
+    assert_eq!(runs.get(), 2, "and retired with the subtree");
+}

@@ -733,3 +733,81 @@ fn directional_hold_commits_regardless_of_direction() {
     assert!(committed.get(), "a still hold picks up regardless of direction");
     h(&ev(TouchPhase::Ended, 1, 50.0, 50.0, 32_000_000));
 }
+
+// ---------------------------------------------------------------------------
+// `drag_layer` — what is actually mounted per drag phase.
+//
+// Realized against `host-mock` (the recording host): the layer's branch is the
+// scene's reactive hole, which is backend-independent, so the mock runs the
+// same code a real backend does. Written against the hand-called `when`
+// version first and kept unchanged across the move to `ui!`'s `if`.
+// ---------------------------------------------------------------------------
+
+/// The live tree with node ids stripped — the SHAPE on screen. (Ids are
+/// minted fresh each time a branch rebuilds, so they can't be compared.)
+fn live_screen(h: &host_mock::Harness) -> String {
+    h.live_roots()
+        .iter()
+        .map(|r| h.live_tree(*r))
+        .collect::<Vec<_>>()
+        .join("\n--\n")
+        .lines()
+        .map(|l| {
+            let indent = &l[..l.len() - l.trim_start().len()];
+            let kind = l.trim_start().split_once(' ').map_or("", |(_, k)| k);
+            format!("{indent}{kind}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Mount `drag_layer` for a fresh context and run `body` while it is live.
+fn with_mounted_layer(body: impl FnOnce(&host_mock::Harness, &DragContext<u32>)) {
+    let h = host_mock::Harness::new();
+    let ctx_cell: RefCell<Option<DragContext<u32>>> = RefCell::new(None);
+    let tree = h.world.enter(|| {
+        let ctx: DragContext<u32> = DragContext::new();
+        *ctx_cell.borrow_mut() = Some(ctx.clone());
+        crate::drag_layer(&ctx)
+    });
+    let _realized = h.mount(tree);
+    h.flush();
+    let ctx = ctx_cell.into_inner().unwrap();
+    body(&h, &ctx);
+}
+
+#[test]
+fn drag_layer_shows_the_ghost_only_while_a_preview_drag_is_in_flight() {
+    use runtime_core::{text, IntoElement};
+    with_mounted_layer(|h, ctx| {
+    let idle = live_screen(h);
+    assert!(!idle.contains("ghost"), "{idle}");
+
+    h.world.enter(|| {
+        ctx.set_preview(Rc::new(|| text("ghost").into_element()), 10.0, 20.0);
+        ctx.begin(7);
+    });
+    h.flush();
+    let dragging = live_screen(h);
+    assert!(dragging.contains("text \"ghost\""), "{dragging}");
+
+    h.world.enter(|| ctx.cancel());
+    h.flush();
+    assert_eq!(live_screen(h), idle, "the ghost unmounts when the drag ends");
+    });
+}
+
+#[test]
+fn drag_layer_stays_empty_for_an_in_place_drag() {
+    // No preview installed: the draggable moves its own element, so the
+    // layer must not mount a ghost even while `dragging` is true.
+    with_mounted_layer(|h, ctx| {
+    h.world.enter(|| ctx.begin(7));
+    h.flush();
+    let screen = live_screen(h);
+    // At most an empty out-of-flow placeholder under the layer's anchor —
+    // never ghost content.
+    assert!(screen.lines().count() <= 2, "{screen}");
+    assert!(!screen.contains("text"), "{screen}");
+    });
+}

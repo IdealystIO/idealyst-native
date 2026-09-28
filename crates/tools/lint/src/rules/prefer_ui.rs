@@ -29,13 +29,16 @@
 //! both legitimate hand-written forms in the sources that still carry
 //! them.
 //!
-//! Also deliberately NOT flagged: the reactive control-flow glue
-//! (`when`, `switch`, `dynamic`, `each_keyed`). Those are how `ui!`
-//! lowers `if` / `match` / `for`, but they're also the sanctioned
-//! library-level escape for shapes the macro can't express (a `switch`
-//! over a tuple scrutinee, a `dynamic` rebuilt from a `Ref`), and a
-//! component library reaches for them on purpose. Flagging them would
-//! trade precision for noise.
+//! The reactive control-flow glue (`when`, `switch`) is reported under
+//! its own id, [`CONTROL_FLOW_RULE`] (`prefer-ui-control-flow`): those
+//! are what `ui!` lowers `if` / `match` to, so a hand call is usually an
+//! `if` / `match` written outside the tree. A few shapes the macro cannot
+//! express DO need the direct call — a separate id lets those sites opt out
+//! one by one, with the reason on the directive
+//! (`// idealyst-lint-disable-next-line prefer-ui-control-flow -- <why>`),
+//! without silencing the primitive-constructor findings around them.
+//! `dynamic` / `each_keyed` stay unflagged: they have no `ui!` spelling
+//! (a `dynamic` rebuilt from a `Ref`, a hand-keyed row list).
 //!
 //! Because `syn` never descends into `ui! { … }` token streams, every node
 //! this rule sees is genuinely outside the macro.
@@ -48,6 +51,14 @@ use crate::diagnostic::RawDiag;
 use crate::rules::{has_segment, last_segment, nth_from_end};
 
 pub(crate) const RULE: &str = "prefer-ui-macro";
+
+/// Hand calls to the reactive branch glue `ui!` lowers `if` / `match` to.
+pub(crate) const CONTROL_FLOW_RULE: &str = "prefer-ui-control-flow";
+
+/// The glue behind `ui!`'s reactive `if` (`when`) and `match` (`switch`).
+/// Tracked through the same import/shadow evidence as the constructors, so
+/// a bare `switch(…)` counts only when the file imported the framework's.
+const CONTROL_FLOW: &[&str] = &["when", "switch"];
 
 /// Element variants that are legitimate to construct by hand — the
 /// extension escape hatches — and so are exempt from this rule.
@@ -107,6 +118,12 @@ pub(crate) fn constructor(name: &str) -> Option<&'static str> {
     PRIMITIVE_CONSTRUCTORS.iter().copied().find(|c| *c == name)
 }
 
+/// A framework name this module tracks through imports: a constructor or
+/// one of the [`CONTROL_FLOW`] glue fns.
+fn tracked(name: &str) -> Option<&'static str> {
+    constructor(name).or_else(|| CONTROL_FLOW.iter().copied().find(|c| *c == name))
+}
+
 fn has_framework_root(path: &syn::Path) -> bool {
     FRAMEWORK_ROOTS.iter().any(|root| has_segment(path, root))
 }
@@ -152,7 +169,7 @@ impl FileContext {
             return Some(ctor);
         }
         if self.framework_glob {
-            return constructor(name);
+            return tracked(name);
         }
         None
     }
@@ -172,12 +189,12 @@ impl FileContext {
                 }
             }
             syn::UseTree::Name(n) if under_framework => {
-                if let Some(ctor) = constructor(&n.ident.to_string()) {
+                if let Some(ctor) = tracked(&n.ident.to_string()) {
                     self.named_imports.insert(ctor.to_string(), ctor);
                 }
             }
             syn::UseTree::Rename(r) if under_framework => {
-                if let Some(ctor) = constructor(&r.ident.to_string()) {
+                if let Some(ctor) = tracked(&r.ident.to_string()) {
                     self.named_imports.insert(r.rename.to_string(), ctor);
                 }
             }
@@ -236,10 +253,35 @@ pub(crate) fn check_call(call: &syn::ExprCall, cx: &FileContext, out: &mut Vec<R
     // A primitive constructor: qualified into the framework, or bare with
     // import evidence (possibly under a renamed local name).
     let ctor = if path.segments.len() > 1 {
-        constructor(&name).filter(|_| has_framework_root(path))
+        tracked(&name).filter(|_| has_framework_root(path))
     } else {
         cx.bare_call_constructor(&name)
     };
+    if let Some(glue) = ctor.filter(|c| CONTROL_FLOW.contains(c)) {
+        let (spelling, form) = if glue == "when" {
+            ("if", "`if cond.get() { … } else { … }`")
+        } else {
+            ("match", "`match key.get() { A => …, B => … }`")
+        };
+        out.push(
+            RawDiag::new(
+                CONTROL_FLOW_RULE,
+                format!(
+                    "calling `{}(…)` by hand — this is the reactive `{spelling}` that `ui!` \
+                     generates",
+                    render(path)
+                ),
+                span_of(path_expr),
+            )
+            .with_help(format!(
+                "write {form} inside `ui! {{ … }}`; the macro picks static vs reactive and \
+                 supplies an out-of-flow placeholder for a missing branch. If this shape \
+                 genuinely needs the direct call, suppress it with the reason: \
+                 `// idealyst-lint-disable-next-line {CONTROL_FLOW_RULE} -- <why>`"
+            )),
+        );
+        return;
+    }
     if let Some(ctor) = ctor {
         out.push(
             RawDiag::new(
@@ -514,5 +556,102 @@ mod tests {
             }
         });
         assert_eq!(out.len(), 2, "{out:?}");
+    }
+
+    fn control_flow_diags(file_tokens: proc_macro2::TokenStream) -> Vec<RawDiag> {
+        let file: syn::File = syn::parse2(file_tokens).unwrap();
+        crate::rules::collect(&file)
+            .into_iter()
+            .filter(|d| d.rule == CONTROL_FLOW_RULE)
+            .collect()
+    }
+
+    /// The reported bug: an agent reached for `runtime_core::switch` all over
+    /// a component library because nothing said otherwise — the rule
+    /// exempted the control-flow glue outright, so hand-written `if` /
+    /// `match` outside the tree linted clean.
+    #[test]
+    fn regression_hand_called_switch_and_when_are_flagged() {
+        let out = control_flow_diags(quote! {
+            fn f() -> Element {
+                let a = runtime_core::switch(move || on.get(), |on| mark(*on));
+                let b = runtime_core::when(move || open.get(), panel, placeholder);
+                glue::switch(move || k.get(), render)
+            }
+        });
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(out[0].message.contains("reactive `match`"), "{out:?}");
+        assert!(out[1].message.contains("reactive `if`"), "{out:?}");
+        let help = out[0].help.as_deref().unwrap_or("");
+        assert!(help.contains("-- <why>"), "the help names the reasoned opt-out: {help}");
+    }
+
+    /// Its own id, so a site that legitimately needs the call can opt out
+    /// without also silencing the constructor findings — and vice versa.
+    #[test]
+    fn control_flow_is_reported_under_its_own_id() {
+        let out = diags(quote! {
+            fn f() { runtime_core::switch(move || k.get(), render); }
+        });
+        assert!(out.is_empty(), "not a prefer-ui-macro finding: {out:?}");
+    }
+
+    #[test]
+    fn bare_control_flow_needs_import_evidence() {
+        let imported = control_flow_diags(quote! {
+            use runtime_core::{switch, when};
+            fn f() { switch(move || k.get(), render); when(c, t, e); }
+        });
+        assert_eq!(imported.len(), 2, "{imported:?}");
+
+        let glob = control_flow_diags(quote! {
+            use runtime_core::*;
+            fn f() { when(c, t, e); }
+        });
+        assert_eq!(glob.len(), 1, "{glob:?}");
+
+        // The author's own `switch` (a docs page named after the Switch
+        // component, say) is not the framework's.
+        let own = control_flow_diags(quote! {
+            use runtime_core::*;
+            pub fn switch() -> Element { page() }
+            fn nav() { switch(); }
+        });
+        assert!(own.is_empty(), "{own:?}");
+
+        let unimported = control_flow_diags(quote! {
+            fn f() { when(c, t, e); }
+        });
+        assert!(unimported.is_empty(), "{unimported:?}");
+    }
+
+    /// `if` / `match` inside `ui!` are the sanctioned spelling — invisible.
+    #[test]
+    fn ui_if_and_match_are_clean() {
+        let out = control_flow_diags(quote! {
+            use runtime_core::*;
+            fn f() -> Element {
+                ui! { view { if open.get() { text { "x" } } match k.get() { A => text { "a" }, _ => view {} } } }
+            }
+        });
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// `syn` doesn't descend into macro bodies, so a switch built straight
+    /// into a child list — `vec![runtime_core::switch(…)]`, the SubMenu
+    /// rows' shape — linted clean.
+    #[test]
+    fn regression_calls_inside_vec_macro_are_seen() {
+        let out = control_flow_diags(quote! {
+            fn f() -> Vec<Element> { vec![runtime_core::switch(move || k.get(), render)] }
+        });
+        assert_eq!(out.len(), 1, "{out:?}");
+        let ctor = diags(quote! {
+            fn f() -> Element { runtime_core::view(vec![runtime_core::text("a"), x]) }
+        });
+        assert_eq!(ctor.len(), 2, "{ctor:?}");
+        // The repeat form isn't a list of exprs; it's skipped, not an error.
+        let repeat = diags(quote! { fn f() { let v = vec![0u8; 4]; } });
+        assert!(repeat.is_empty(), "{repeat:?}");
     }
 }

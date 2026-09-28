@@ -203,20 +203,46 @@ let style = match props.axis.clone() {
 ui! { view(style = style) {} }
 ```
 
-**Structural rebuild** (Checkbox) — when a prop change swaps *which* elements
-render (not just their style), wrap the subtree in `switch(scrutinee, arm)`:
-the scrutinee closure reads `.get()` (subscribing), and the arm rebuilds when
-its value changes:
+**Structural branches** (Checkbox, Select) — when a prop change swaps
+*which* elements render (not just their style), write `if` / `match`
+**inside `ui!`**. A condition that reads `.get()` lowers to a reactive
+branch that rebuilds when the condition changes; a missing `else` gets an
+out-of-flow placeholder, so the toggle never shifts layout:
 
 ```rust
-let glyph = runtime_core::switch(
-    move || value.get(),
-    move |on: &bool| {
-        if !*on { return ui! { view {} }.into_element(); }
-        ui! { text { "✓" } }.into_element()
-    },
-);
+let glyph = ui! {
+    if value.get() {
+        text { "✓" }
+    }
+};
+
+ui! {
+    view {
+        trigger
+        if open.get() {
+            menu_panel(value, options.clone())   // a snake_case helper call is a child as-is
+        }
+    }
+}
 ```
+
+A multi-way choice is a `match` in the macro (`match zoom.get() { Zoom::Days
+=> { … } Zoom::Months => { … } }`), and so is a choice keyed on a tuple
+(`match (visible.get(), zoom.get()) { … }`). If only a node's **text**
+changes, don't branch at all — use live text (`text { move || … }` or an
+f-string `text { "{count} items" }`), which updates in place.
+
+Don't hand-call `runtime_core::when(…)` / `switch(…)`: those are what the
+macro generates, and the `prefer-ui-control-flow` lint flags them. The macro
+can't express only two shapes, and those sites keep the call with a reasoned
+`// idealyst-lint-disable-next-line prefer-ui-control-flow -- <why>`:
+
+- **static-prop fast path** — a branch picked by a value *derived* from a
+  `Reactive<T>` prop (`src.is_some()`), where a static prop must build its
+  branch with no reactive hole (`avatar.rs`, `tabs.rs`, `progress.rs`).
+- **keyed rebuild of one shape** — one subtree rebuilt when a derived key
+  changes (`pagination.rs` on `(page, total)`, `button.rs`). The `ui!`
+  spelling would be a single-arm `match`, the same thing in disguise.
 
 > Depth note: the reactive **fast-path split** (static vs live, per-node
 > foreground re-resolution, layered `with_computed` style, slot overrides) is
@@ -281,8 +307,9 @@ struct literal is post-`#[props]`, so the fields are the wrapped types.
       `props: Props` + a `ChildList::append_to` flatten loop.
 - [ ] Body is `ui!`; primitives lowercase, components PascalCase; children
       built inside the macro.
-- [ ] Reactive props routed via the `Reactive::Static … / derived(...)` sink
-      or `switch(...)`, reading `.get()` inside the closure.
+- [ ] Reactive props routed via the `Reactive::Static … / derived(...)` sink,
+      reading `.get()` inside the closure; structural branches are `if` /
+      `match` inside `ui!`, not hand-called `when` / `switch`.
 - [ ] Tests present; bug fixes carry a named regression test.
 
 See [[component-hygiene]] for the DO/DON'T rules, [[reactivity]] for signals

@@ -98,10 +98,14 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
         }
     }
 
-    let literals = apply_literal_impl(&input.ident, &collect_fields(&input), false);
+    let fields = collect_fields(&input);
+    let literals = apply_literal_impl(&input.ident, &fields, false);
+    // What the explicit-props `#[component]` form's Props table reads.
+    let inspect = crate::inspect_emit::inspect_props_impl(&input, &fields);
     quote! {
         #input
         #literals
+        #inspect
     }
 }
 

@@ -107,13 +107,12 @@ pub fn radio() -> Element {
     let billing = signal("monthly".to_string());
     let on_billing: Rc<dyn Fn(String)> = Rc::new(move |id| billing.set(id));
 
-    let current = runtime_core::switch(
-        move || plan.get(),
-        |v: &String| {
-            let label = format!("Selected plan: {}", v);
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+    let current = ui! {
+        Typography(
+            content = rx!(format!("Selected plan: {}", plan.get())),
+            muted = true,
+        )
+    };
 
     body(vec![ui! {
         Section(title = "Radio group".to_string()) {
@@ -279,13 +278,12 @@ pub fn slider() -> Element {
     let t_success = signal(0.7f32);
     let on_t_success: Rc<dyn Fn(f32)> = Rc::new(move |v| t_success.set(v));
 
-    let readout = runtime_core::switch(
-        move || (volume.get() * 100.0).round() as i32,
-        |pct: &i32| {
-            let label = format!("Value: {}%", pct);
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+    let readout = ui! {
+        Typography(
+            content = rx!(format!("Value: {}%", (volume.get() * 100.0).round() as i32)),
+            muted = true,
+        )
+    };
 
     body(vec![ui! {
         Section(title = "Range".to_string()) {
@@ -356,7 +354,7 @@ pub fn field() -> Element {
     let on_sized: Rc<dyn Fn(String)> = Rc::new(move |s| sized.set(s));
 
     // Password + visibility toggle. `secure` is now reactive, so there is NO
-    // `switch` around the Field: the mask flips in place (on macOS, an
+    // branch around the Field: the mask flips in place (on macOS, an
     // in-place secure-cell swap), the input is never rebuilt, and the typed
     // `pw` is never disturbed. Only the tiny eye icon swaps, in its own
     // reactive scope inside the trailing adornment.
@@ -371,12 +369,13 @@ pub fn field() -> Element {
             placeholder = Some("••••••••".to_string()),
             secure = rx!(!visible.get()),
             trailing = Adornment::element(move || {
-                let glyph = runtime_core::switch(
-                    move || visible.get(),
-                    move |&shown| ui! {
-                        Icon(data = if shown { EYE_OFF } else { EYE }, size = 16.0)
-                    },
-                );
+                let glyph = ui! {
+                    if visible.get() {
+                        Icon(data = EYE_OFF, size = 16.0)
+                    } else {
+                        Icon(data = EYE, size = 16.0)
+                    }
+                };
                 pressable(vec![glyph], move || visible.set(!visible.get()))
                     .with_style(crate::styles::IconToggleBtn())
                     .into_element()
@@ -491,7 +490,7 @@ ui! {
     }, ui! {
         Section(title = "Password + visibility toggle".to_string()) {
             P(content = "`secure` is a reactive prop, so `secure = rx!(!visible.get())` flips the \
-                mask in place — no `switch` around the Field, the input is never rebuilt, and the \
+                mask in place — no branch around the Field, the input is never rebuilt, and the \
                 typed value is never disturbed (on macOS the backend swaps the secure cell in \
                 place). Only the tiny eye icon swaps, in its own reactive scope.".to_string())
             DemoSurface {
@@ -507,9 +506,13 @@ ui! {
         // Reactive mask — toggles in place, no Field rebuild.
         secure = rx!(!visible.get()),
         trailing = Adornment::element(move || {
-            let glyph = switch(move || visible.get(), move |&shown| ui! {
-                Icon(data = if shown { EYE_OFF } else { EYE }, size = 16.0)
-            });
+            let glyph = ui! {
+                if visible.get() {
+                    Icon(data = EYE_OFF, size = 16.0)
+                } else {
+                    Icon(data = EYE, size = 16.0)
+                }
+            };
             pressable(vec![glyph], move || visible.set(!visible.get())).into_element()
         }),
     )
@@ -547,13 +550,12 @@ pub fn textarea() -> Element {
     let on_note: Rc<dyn Fn(String)> = Rc::new(move |s| note.set(s));
 
     // Live character count helper, derived from the bound value.
-    let count = runtime_core::switch(
-        move || bio.get().chars().count(),
-        |n: &usize| {
-            let label = format!("{} characters", n);
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+    let count = ui! {
+        Typography(
+            content = rx!(format!("{} characters", bio.get().chars().count())),
+            muted = true,
+        )
+    };
 
     body(vec![ui! {
         Section(title = "Multi-line input".to_string()) {
@@ -618,13 +620,12 @@ pub fn select() -> Element {
     let value = signal("pear".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
 
-    let current = runtime_core::switch(
-        move || value.get(),
-        |v: &String| {
-            let label = format!("Current value: {}", v);
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+    let current = ui! {
+        Typography(
+            content = rx!(format!("Current value: {}", value.get())),
+            muted = true,
+        )
+    };
 
     let preview = ui! {
         Select(
@@ -683,13 +684,12 @@ pub fn autocomplete() -> Element {
     let value = signal("pear".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
 
-    let current = runtime_core::switch(
-        move || value.get(),
-        |v: &String| {
-            let label = format!("Current value: {}", v);
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+    let current = ui! {
+        Typography(
+            content = rx!(format!("Current value: {}", value.get())),
+            muted = true,
+        )
+    };
 
     let preview = ui! {
         Autocomplete(
@@ -772,13 +772,12 @@ pub fn segmented_control() -> Element {
     let theme = signal("system".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
 
-    let current = runtime_core::switch(
-        move || view.get(),
-        |v: &String| {
-            let label = format!("Showing: {}", v);
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+    let current = ui! {
+        Typography(
+            content = rx!(format!("Showing: {}", view.get())),
+            muted = true,
+        )
+    };
 
     body(vec![ui! {
         Section(title = "With icons".to_string()) {
@@ -849,16 +848,15 @@ ui! {
 pub fn calendar() -> Element {
     let picked: Signal<Option<CivilDate>> = signal(None);
     let on_pick: Rc<dyn Fn(CivilDate)> = Rc::new(move |d| picked.set(Some(d)));
-    let picked_label = runtime_core::switch(
-        move || picked.get(),
-        |v: &Option<CivilDate>| {
-            let label = match v {
-                Some(d) => format!("Picked: {}", format_date(*d, "YYYY-MM-DD")),
+    let picked_label = ui! {
+        Typography(
+            content = rx!(match picked.get() {
+                Some(d) => format!("Picked: {}", format_date(d, "YYYY-MM-DD")),
                 None => "Nothing picked yet.".to_string(),
-            };
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+            }),
+            muted = true,
+        )
+    };
 
     let single = ui! {
         Calendar(value = picked, on_change = on_pick)
@@ -879,20 +877,19 @@ pub fn calendar() -> Element {
 
     let range: Signal<Option<(CivilDate, CivilDate)>> = signal(None);
     let on_range: Rc<dyn Fn(CivilDate, CivilDate)> = Rc::new(move |a, b| range.set(Some((a, b))));
-    let range_label = runtime_core::switch(
-        move || range.get(),
-        |v: &Option<(CivilDate, CivilDate)>| {
-            let label = match v {
+    let range_label = ui! {
+        Typography(
+            content = rx!(match range.get() {
                 Some((a, b)) => format!(
                     "Range: {} – {}",
-                    format_date(*a, "YYYY-MM-DD"),
-                    format_date(*b, "YYYY-MM-DD")
+                    format_date(a, "YYYY-MM-DD"),
+                    format_date(b, "YYYY-MM-DD")
                 ),
                 None => "Press once for the start, again for the end.".to_string(),
-            };
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+            }),
+            muted = true,
+        )
+    };
     let range_demo = ui! {
         RangeCalendar(value = range, on_change = on_range)
     };
@@ -964,16 +961,15 @@ ui! {
 pub fn date_picker() -> Element {
     let due: Signal<Option<CivilDate>> = signal(None);
     let on_due: Rc<dyn Fn(Option<CivilDate>)> = Rc::new(move |d| due.set(d));
-    let due_label = runtime_core::switch(
-        move || due.get(),
-        |v: &Option<CivilDate>| {
-            let label = match v {
-                Some(d) => format!("Due: {}", format_date(*d, "YYYY-MM-DD")),
+    let due_label = ui! {
+        Typography(
+            content = rx!(match due.get() {
+                Some(d) => format!("Due: {}", format_date(d, "YYYY-MM-DD")),
                 None => "No deadline set.".to_string(),
-            };
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+            }),
+            muted = true,
+        )
+    };
     let single = ui! {
         DatePicker(
             value = due,
@@ -997,16 +993,15 @@ pub fn date_picker() -> Element {
 
     let meet: Signal<Option<CivilDateTime>> = signal(None);
     let on_meet: Rc<dyn Fn(Option<CivilDateTime>)> = Rc::new(move |v| meet.set(v));
-    let meet_label = runtime_core::switch(
-        move || meet.get(),
-        |v: &Option<CivilDateTime>| {
-            let label = match v {
-                Some(dt) => format!("Meeting: {}", format_datetime(*dt, "YYYY-MM-DD HH:mm")),
+    let meet_label = ui! {
+        Typography(
+            content = rx!(match meet.get() {
+                Some(dt) => format!("Meeting: {}", format_datetime(dt, "YYYY-MM-DD HH:mm")),
                 None => "No meeting scheduled.".to_string(),
-            };
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+            }),
+            muted = true,
+        )
+    };
     let datetime = ui! {
         DateTimePicker(
             value = meet,
@@ -1075,16 +1070,15 @@ pub fn date_picker() -> Element {
 pub fn date_input() -> Element {
     let birthday: Signal<Option<CivilDate>> = signal(None);
     let on_birthday: Rc<dyn Fn(Option<CivilDate>)> = Rc::new(move |d| birthday.set(d));
-    let birthday_label = runtime_core::switch(
-        move || birthday.get(),
-        |v: &Option<CivilDate>| {
-            let label = match v {
-                Some(d) => format!("Committed: {}", format_date(*d, "YYYY-MM-DD")),
+    let birthday_label = ui! {
+        Typography(
+            content = rx!(match birthday.get() {
+                Some(d) => format!("Committed: {}", format_date(d, "YYYY-MM-DD")),
                 None => "Nothing committed yet.".to_string(),
-            };
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+            }),
+            muted = true,
+        )
+    };
     let typed = ui! {
         DateInput(
             value = birthday,
@@ -1159,16 +1153,15 @@ pub fn date_input() -> Element {
 pub fn time_input() -> Element {
     let alarm: Signal<Option<CivilTime>> = signal(None);
     let on_alarm: Rc<dyn Fn(Option<CivilTime>)> = Rc::new(move |t| alarm.set(t));
-    let alarm_label = runtime_core::switch(
-        move || alarm.get(),
-        |v: &Option<CivilTime>| {
-            let label = match v {
-                Some(t) => format!("Committed: {}", format_time(*t, "HH:mm")),
+    let alarm_label = ui! {
+        Typography(
+            content = rx!(match alarm.get() {
+                Some(t) => format!("Committed: {}", format_time(t, "HH:mm")),
                 None => "Nothing committed yet.".to_string(),
-            };
-            ui! { Typography(content = label, muted = true) }
-        },
-    );
+            }),
+            muted = true,
+        )
+    };
     let twenty_four = ui! {
         TimeInput(
             value = alarm,

@@ -38,7 +38,7 @@ use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::stylesheet;
 use runtime_core::{
-    component, effect, icon, pressable, signal, text, ui, view, when, Color, Element, FillRule,
+    component, effect, icon, pressable, signal, text, ui, view, Color, Element, FillRule,
     IconData, IdealystSchema, IntoElement, Length, Position, PressableHandle, Reactive, Ref,
     Signal, StyleApplication, StyleSheet, VariantEnum,
 };
@@ -237,47 +237,46 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
     let labels = props.labels.clone();
     let clearable = props.clearable.clone();
 
-    let popup = when(
-        move || open.get(),
-        move || {
-            let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let build_popup = move || {
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-            let pick_close = close.clone();
-            let pick_commit = on_change.clone();
-            let calendar = ui! {
-                Calendar(
-                    value = value,
-                    on_change = Rc::new(move |d: CivilDate| {
-                        (pick_commit)(Some(d));
-                        (pick_close)();
-                    }) as Rc<dyn Fn(CivilDate)>,
-                    min = min.clone(),
-                    max = max.clone(),
-                    is_date_disabled = is_date_disabled.clone(),
-                    first_weekday = first_weekday.clone(),
-                    labels = labels.clone(),
-                    framed = false,
-                )
-            };
+        let pick_close = close.clone();
+        let pick_commit = on_change.clone();
+        let calendar = ui! {
+            Calendar(
+                value = value,
+                on_change = Rc::new(move |d: CivilDate| {
+                    (pick_commit)(Some(d));
+                    (pick_close)();
+                }) as Rc<dyn Fn(CivilDate)>,
+                min = min.clone(),
+                max = max.clone(),
+                is_date_disabled = is_date_disabled.clone(),
+                first_weekday = first_weekday.clone(),
+                labels = labels.clone(),
+                framed = false,
+            )
+        };
 
-            let mut content = vec![calendar];
-            if clearable.get() {
-                let clear_close = close.clone();
-                let clear_commit = on_change.clone();
-                content.push(footer_action("Clear".to_string(), move || {
-                    (clear_commit)(None);
-                    (clear_close)();
-                }));
-            }
-            anchored_panel(AnchorTarget::from(trigger_ref), content, close)
-        },
-        runtime_core::empty_absolute_view,
-    );
+        let mut content = vec![calendar];
+        if clearable.get() {
+            let clear_close = close.clone();
+            let clear_commit = on_change.clone();
+            content.push(footer_action("Clear".to_string(), move || {
+                (clear_commit)(None);
+                (clear_close)();
+            }));
+        }
+        anchored_panel(AnchorTarget::from(trigger_ref), content, close)
+    };
+
 
     ui! {
         view {
             trigger
-            popup
+            if open.get() {
+                build_popup()
+            }
         }
     }
 }
@@ -387,72 +386,71 @@ pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
     let clearable = props.clearable.clone();
     let time_format = props.time_format.clone();
 
-    let popup = when(
-        move || open.get(),
-        move || {
-            let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let build_popup = move || {
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-            // Combined commit — from either half.
-            let commit = {
-                let on_change = on_change.clone();
-                let default_time = default_time.clone();
-                Rc::new(move || {
-                    if let Some(d) = date_part.peek() {
-                        let t = time_part.peek().unwrap_or(default_time.get());
-                        (on_change)(Some(CivilDateTime::new(d, t)));
+        // Combined commit — from either half.
+        let commit = {
+            let on_change = on_change.clone();
+            let default_time = default_time.clone();
+            Rc::new(move || {
+                if let Some(d) = date_part.peek() {
+                    let t = time_part.peek().unwrap_or(default_time.get());
+                    (on_change)(Some(CivilDateTime::new(d, t)));
+                }
+            })
+        };
+
+        let pick_commit = commit.clone();
+        let calendar = ui! {
+            Calendar(
+                value = date_part,
+                on_change = Rc::new(move |d: CivilDate| {
+                    date_part.set(Some(d));
+                    (pick_commit)();
+                }) as Rc<dyn Fn(CivilDate)>,
+                min = min.clone(),
+                max = max.clone(),
+                is_date_disabled = is_date_disabled.clone(),
+                first_weekday = first_weekday.clone(),
+                labels = labels.clone(),
+                framed = false,
+            )
+        };
+
+        let time_commit = commit.clone();
+        let time_row = ui! {
+            TimeInput(
+                value = time_part,
+                on_change = Rc::new(move |t: Option<CivilTime>| {
+                    if let Some(t) = t {
+                        time_part.set(Some(t));
+                        (time_commit)();
                     }
-                })
-            };
+                }) as Rc<dyn Fn(Option<CivilTime>)>,
+                format = time_format.clone(),
+            )
+        };
 
-            let pick_commit = commit.clone();
-            let calendar = ui! {
-                Calendar(
-                    value = date_part,
-                    on_change = Rc::new(move |d: CivilDate| {
-                        date_part.set(Some(d));
-                        (pick_commit)();
-                    }) as Rc<dyn Fn(CivilDate)>,
-                    min = min.clone(),
-                    max = max.clone(),
-                    is_date_disabled = is_date_disabled.clone(),
-                    first_weekday = first_weekday.clone(),
-                    labels = labels.clone(),
-                    framed = false,
-                )
-            };
+        let mut content = vec![calendar, time_row];
+        if clearable.get() {
+            let clear_close = close.clone();
+            let clear_commit = on_change.clone();
+            content.push(footer_action("Clear".to_string(), move || {
+                (clear_commit)(None);
+                (clear_close)();
+            }));
+        }
+        anchored_panel(AnchorTarget::from(trigger_ref), content, close)
+    };
 
-            let time_commit = commit.clone();
-            let time_row = ui! {
-                TimeInput(
-                    value = time_part,
-                    on_change = Rc::new(move |t: Option<CivilTime>| {
-                        if let Some(t) = t {
-                            time_part.set(Some(t));
-                            (time_commit)();
-                        }
-                    }) as Rc<dyn Fn(Option<CivilTime>)>,
-                    format = time_format.clone(),
-                )
-            };
-
-            let mut content = vec![calendar, time_row];
-            if clearable.get() {
-                let clear_close = close.clone();
-                let clear_commit = on_change.clone();
-                content.push(footer_action("Clear".to_string(), move || {
-                    (clear_commit)(None);
-                    (clear_close)();
-                }));
-            }
-            anchored_panel(AnchorTarget::from(trigger_ref), content, close)
-        },
-        runtime_core::empty_absolute_view,
-    );
 
     ui! {
         view {
             trigger
-            popup
+            if open.get() {
+                build_popup()
+            }
         }
     }
 }
@@ -540,47 +538,46 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
     let labels = props.labels.clone();
     let clearable = props.clearable.clone();
 
-    let popup = when(
-        move || open.get(),
-        move || {
-            let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let build_popup = move || {
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-            let pick_close = close.clone();
-            let pick_commit = on_change.clone();
-            let calendar = ui! {
-                RangeCalendar(
-                    value = value,
-                    on_change = Rc::new(move |a: CivilDate, b: CivilDate| {
-                        (pick_commit)(Some((a, b)));
-                        (pick_close)();
-                    }) as Rc<dyn Fn(CivilDate, CivilDate)>,
-                    min = min.clone(),
-                    max = max.clone(),
-                    is_date_disabled = is_date_disabled.clone(),
-                    first_weekday = first_weekday.clone(),
-                    labels = labels.clone(),
-                    framed = false,
-                )
-            };
+        let pick_close = close.clone();
+        let pick_commit = on_change.clone();
+        let calendar = ui! {
+            RangeCalendar(
+                value = value,
+                on_change = Rc::new(move |a: CivilDate, b: CivilDate| {
+                    (pick_commit)(Some((a, b)));
+                    (pick_close)();
+                }) as Rc<dyn Fn(CivilDate, CivilDate)>,
+                min = min.clone(),
+                max = max.clone(),
+                is_date_disabled = is_date_disabled.clone(),
+                first_weekday = first_weekday.clone(),
+                labels = labels.clone(),
+                framed = false,
+            )
+        };
 
-            let mut content = vec![calendar];
-            if clearable.get() {
-                let clear_close = close.clone();
-                let clear_commit = on_change.clone();
-                content.push(footer_action("Clear".to_string(), move || {
-                    (clear_commit)(None);
-                    (clear_close)();
-                }));
-            }
-            anchored_panel(AnchorTarget::from(trigger_ref), content, close)
-        },
-        runtime_core::empty_absolute_view,
-    );
+        let mut content = vec![calendar];
+        if clearable.get() {
+            let clear_close = close.clone();
+            let clear_commit = on_change.clone();
+            content.push(footer_action("Clear".to_string(), move || {
+                (clear_commit)(None);
+                (clear_close)();
+            }));
+        }
+        anchored_panel(AnchorTarget::from(trigger_ref), content, close)
+    };
+
 
     ui! {
         view {
             trigger
-            popup
+            if open.get() {
+                build_popup()
+            }
         }
     }
 }

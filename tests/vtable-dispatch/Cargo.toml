@@ -14,6 +14,8 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
+# The platform surface `src/main.rs` boots through.
+idealyst = { workspace = true }
 # The author surface, aliased to `runtime_core` at the crate root.
 # `runtime-vocabulary` because the `ui!` emission spells absolute
 # `::runtime_vocabulary::glue::…` paths; `runtime-scene` for the

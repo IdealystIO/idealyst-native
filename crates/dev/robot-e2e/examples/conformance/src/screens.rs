@@ -324,8 +324,8 @@ fn MethodCounter(
         value.set(value.get() + n);
     }
 
-    // Builder-form tail like the old file; the `#[component]` macro
-    // wraps this root view in the instance link (`__component_root`).
+    // Builder-form tail like the old file; the `#[component]` macro's
+    // registration links this root view to the instance.
     let label = text(move || format!("methods: {}", value.get()))
         .test_id("method-counter-val")
         .into_element();

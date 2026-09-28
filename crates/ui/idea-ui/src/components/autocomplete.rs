@@ -115,7 +115,7 @@ use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view, when,
+    component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view,
     EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, ReadSignal, Ref, Signal,
     StyleApplication, TextInputHandle, VariantEnum, ViewHandle,
 };
@@ -659,79 +659,78 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let menu_revert = revert.clone();
     let header_slot = props.header.clone();
     let footer_slot = props.footer.clone();
-    let panel = when(
-        move || open.get(),
-        move || {
-            let snapshot_options = menu_options.clone();
-            let snapshot_commit = menu_commit.clone();
-            let empty_text = empty_text.clone();
-            let rows = each_keyed(move || {
-                let idxs = filtered.get();
-                if idxs.is_empty() {
-                    let empty_text = empty_text.clone();
-                    let build: EachRowBuild = Box::new(move || {
-                        vec![text(empty_text).with_style(AutocompleteEmpty()).into_element()]
-                    });
-                    return vec![(EachKey::new("__empty".to_string()), build)];
-                }
-                idxs.iter()
-                    .map(|&oi| {
-                        let o = snapshot_options[oi].clone();
-                        let key = EachKey::new(o.id.clone());
-                        let commit_row = snapshot_commit.clone();
-                        let build: EachRowBuild =
-                            Box::new(move || {
-                                vec![row(
-                                    o,
-                                    oi,
-                                    commit_row,
-                                    move || filtered.get(),
-                                    highlight,
-                                    value,
-                                    selection,
-                                )]
-                            });
-                        (key, build)
-                    })
-                    .collect()
-            });
-            // Cap + scroll the filtered list so a long set of matches scrolls
-            // within a bounded panel instead of running off the viewport. The
-            // combobox shape additionally floors the panel's width at the
-            // input's (so filtering doesn't make it jump) and marks it
-            // focus-preserving (so row presses don't blur the input — see
-            // the input's `on_focus` close-on-blur). Header/footer slots are
-            // built fresh per open (the panel is a structural rebuild) and
-            // pinned outside the scrolling row area.
-            let cx = slot_cx(query, open, menu_revert.clone());
-            let header = header_slot.as_ref().map(|s| s.build(cx.clone()));
-            let footer = footer_slot.as_ref().map(|s| s.build(cx));
-            let menu = crate::components::menu_panel::combobox_menu_panel(
-                vec![rows],
-                AnchorTarget::from(wrapper_ref),
-                header,
-                footer,
-            );
-            let dismiss_revert = menu_revert.clone();
-            runtime_core::anchored_overlay(AnchorTarget::from(wrapper_ref), vec![menu])
-                .side(ElementSide::Below)
-                .align(ElementAlign::Start)
-                .offset(4.0)
-                .backdrop(BackdropMode::None)
-                .trap_focus(false)
-                .on_dismiss(move || {
-                    open.set(false);
-                    (dismiss_revert)();
+    let build_panel = move || {
+        let snapshot_options = menu_options.clone();
+        let snapshot_commit = menu_commit.clone();
+        let empty_text = empty_text.clone();
+        let rows = each_keyed(move || {
+            let idxs = filtered.get();
+            if idxs.is_empty() {
+                let empty_text = empty_text.clone();
+                let build: EachRowBuild = Box::new(move || {
+                    vec![text(empty_text).with_style(AutocompleteEmpty()).into_element()]
+                });
+                return vec![(EachKey::new("__empty".to_string()), build)];
+            }
+            idxs.iter()
+                .map(|&oi| {
+                    let o = snapshot_options[oi].clone();
+                    let key = EachKey::new(o.id.clone());
+                    let commit_row = snapshot_commit.clone();
+                    let build: EachRowBuild =
+                        Box::new(move || {
+                            vec![row(
+                                o,
+                                oi,
+                                commit_row,
+                                move || filtered.get(),
+                                highlight,
+                                value,
+                                selection,
+                            )]
+                        });
+                    (key, build)
                 })
-                .into_element()
-        },
-        || ui! { view {} }.into_element(),
-    );
+                .collect()
+        });
+        // Cap + scroll the filtered list so a long set of matches scrolls
+        // within a bounded panel instead of running off the viewport. The
+        // combobox shape additionally floors the panel's width at the
+        // input's (so filtering doesn't make it jump) and marks it
+        // focus-preserving (so row presses don't blur the input — see
+        // the input's `on_focus` close-on-blur). Header/footer slots are
+        // built fresh per open (the panel is a structural rebuild) and
+        // pinned outside the scrolling row area.
+        let cx = slot_cx(query, open, menu_revert.clone());
+        let header = header_slot.as_ref().map(|s| s.build(cx.clone()));
+        let footer = footer_slot.as_ref().map(|s| s.build(cx));
+        let menu = crate::components::menu_panel::combobox_menu_panel(
+            vec![rows],
+            AnchorTarget::from(wrapper_ref),
+            header,
+            footer,
+        );
+        let dismiss_revert = menu_revert.clone();
+        runtime_core::anchored_overlay(AnchorTarget::from(wrapper_ref), vec![menu])
+            .side(ElementSide::Below)
+            .align(ElementAlign::Start)
+            .offset(4.0)
+            .backdrop(BackdropMode::None)
+            .trap_focus(false)
+            .on_dismiss(move || {
+                open.set(false);
+                (dismiss_revert)();
+            })
+            .into_element()
+    };
+
 
     ui! {
         view {
             wrapper
-            panel
+            if open.get() {
+                build_panel()
+            }
         }
     }
 }

@@ -702,6 +702,7 @@ fn flyout_rows(items: &Reactive<Vec<MenuEntry>>, close: Rc<dyn Fn()>) -> Vec<Ele
     }
     let identity = items.clone();
     let build = items.clone();
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape (see `components/mod.rs`)
     vec![runtime_core::switch(
         // The row list's identity: its labels, in order. Cheap to compare,
         // and `switch`'s `PartialEq` dedup means a keystroke that doesn't
@@ -879,50 +880,49 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     // hover so the pointer can travel from the trigger into it (and dwell
     // there) without the grace timer collapsing it; reaching the panel is
     // also what engages a slotted flyout's latch.
-    let flyout = runtime_core::when(
-        move || open.get(),
-        {
-            let items = items.clone();
-            let header = header.clone();
-            let footer = footer.clone();
-            let close = close.clone();
+    let build_flyout = {
+        let items = items.clone();
+        let header = header.clone();
+        let footer = footer.clone();
+        let close = close.clone();
+        let latch = latch.clone();
+        let open_now = open_now.clone();
+        let schedule_close = schedule_close.clone();
+        move || {
+            let panel =
+                flyout_panel(&items, header.as_ref(), footer.as_ref(), close.clone());
+            let on_enter = open_now.clone();
+            let on_leave = schedule_close.clone();
             let latch = latch.clone();
-            let open_now = open_now.clone();
-            let schedule_close = schedule_close.clone();
-            move || {
-                let panel =
-                    flyout_panel(&items, header.as_ref(), footer.as_ref(), close.clone());
-                let on_enter = open_now.clone();
-                let on_leave = schedule_close.clone();
-                let latch = latch.clone();
-                let panel_view = runtime_core::view(vec![panel])
-                    .on_hover(move |entering| {
-                        if entering {
-                            latch.engage();
-                            on_enter();
-                        } else {
-                            on_leave();
-                        }
-                    })
-                    .into_element();
-                let dismiss = close.clone();
-                runtime_core::anchored_overlay(AnchorTarget::from(trigger_ref), vec![panel_view])
-                    .side(side)
-                    .align(ElementAlign::Start)
-                    .offset(2.0)
-                    .backdrop(BackdropMode::None)
-                    .trap_focus(false)
-                    .on_dismiss(move || (dismiss)())
-                    .into_element()
-            }
-        },
-        || ui! { view {} }.into_element(),
-    );
+            let panel_view = runtime_core::view(vec![panel])
+                .on_hover(move |entering| {
+                    if entering {
+                        latch.engage();
+                        on_enter();
+                    } else {
+                        on_leave();
+                    }
+                })
+                .into_element();
+            let dismiss = close.clone();
+            runtime_core::anchored_overlay(AnchorTarget::from(trigger_ref), vec![panel_view])
+                .side(side)
+                .align(ElementAlign::Start)
+                .offset(2.0)
+                .backdrop(BackdropMode::None)
+                .trap_focus(false)
+                .on_dismiss(move || (dismiss)())
+                .into_element()
+        }
+    };
+
 
     ui! {
         view {
             trigger
-            flyout
+            if open.get() {
+                build_flyout()
+            }
         }
     }
 }

@@ -1188,11 +1188,10 @@ impl<T: Clone + 'static> Trackable for Reactive<T> {
 }
 
 // ============================================================================
-// `#[method]` emission surface (P5). The `#[component]` macro emits, for a
-// methods-bearing component: `::runtime_shared::robot::Method` literals +
-// `::runtime_shared::robot::register_component(...)`, a
-// `::runtime_shared::__component_keepalive_effect(...)`, and a
-// `::runtime_shared::__component_root(...)` tail wrap — all retargeted here.
+// Component-registry emission surface. The `#[component]` macro emits, for
+// every `Element`-returning body, the `__inspect` registration bracket
+// (below), and for a methods-bearing component `robot::Method` literals +
+// `robot::__attach_component_methods(...)` — all retargeted here.
 // The registration surface always exists (`crate::robot_methods` is
 // stub-shaped when the vocabulary `robot` feature is off, mirroring the
 // old core's non-robot stub module), so the emission is unconditional on
@@ -1220,21 +1219,28 @@ pub use runtime_shared::__wasm_split;
 /// against the vocabulary method registry.
 pub mod robot {
     pub use crate::robot_methods::{
-        register_component, ComponentInstanceId, ComponentRegistration, Method,
+        __attach_component_methods, register_component, ComponentInstanceId,
+        ComponentRegistration, Method,
     };
 }
 
+/// The component-registry emission surface every `#[component]` body
+/// expands to (see `robot_methods`' module docs): the registration
+/// bracket, and the prop probes `#[component]` / `#[props]` build its
+/// props list from. Always present; only robot builds do any work.
 #[doc(hidden)]
-pub use crate::robot_methods::__component_root;
+pub mod __inspect {
+    pub use crate::robot_methods::{__inspect_component, ComponentInspect};
+    pub use crate::robot_props::{entry, probe, InspectProps, PropEntry, PropProbe, PropsProbe};
+}
 
-/// Keepalive for a `#[method]` component's robot registration: an
+/// Keepalive for a hand-registered component's robot registration: an
 /// effect whose closure owns the `ComponentRegistration` guard. Created
-/// inside the component body — i.e. inside `component_scope`'s
-/// collector — so the surrounding `Owned` owns it and the registration
-/// deregisters exactly when the component's subtree unrealizes (the
-/// new-core analogue of the old scope-adopted keepalive `Effect`). The
-/// closure reads no signals, so the effect fires once and never
-/// re-runs.
+/// inside a component body — i.e. inside `component_scope`'s collector —
+/// so the surrounding `Owned` owns it and the registration deregisters
+/// exactly when the subtree unrealizes. The closure reads no signals, so
+/// the effect fires once and never re-runs. (`#[component]` no longer
+/// emits this: its registration rides `__inspect::ComponentInspect`.)
 #[doc(hidden)]
 pub fn __component_keepalive_effect(f: impl FnMut() + 'static) {
     let mut f = f;

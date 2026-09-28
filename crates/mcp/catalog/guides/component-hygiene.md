@@ -76,8 +76,16 @@ flattening *received* children, not authoring new ones in a loop.
 
 If a child only sometimes appears, express it with `if` / `if let` /
 `match` *inside* `ui!` — not by conditionally pushing into a `Vec`
-before the macro call. Same for iteration: `for … { … }` inside the
-macro is the standard form.
+before the macro call, and not by hand-calling `runtime_core::when(…)` /
+`switch(…)` (the functions `ui!` lowers a reactive `if` / `match` to). Same
+for iteration: `for … { … }` inside the macro is the standard form.
+
+The macro can't express only two shapes, and those keep the direct call
+with a reasoned suppression: a **static-prop fast path** (a branch picked by
+a value derived from a `Reactive<T>` prop, built with no reactive hole when
+the prop is static) and a **keyed rebuild of one shape** (one subtree
+rebuilt when a derived key changes). A choice between different shapes is
+always a `ui!` `match`, even over a tuple key. See [[idiomatic-components]].
 
 ## Effects: `effect!` in the tree, `watch` outside it
 
@@ -147,6 +155,11 @@ command checks them over your source:
   `glue::text(…)`, `builders::view()`, or a bare `view(…)` / `text(…)` the
   file imports from the framework), `BuildElement::build`, and the old
   `Element::View { … }` literal.
+- `prefer-ui-control-flow` — flags a hand-called `runtime_core::when(…)` /
+  `switch(…)` (also inside `vec![…]`, or bare when the file imports it).
+  Write `if` / `match` inside `ui!`; for the two shapes above, suppress
+  with the reason:
+  `// idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape`.
 - `component-pascal-case` — flags a `#[component]` fn that isn't
   PascalCase.
 - `prefer-component` — flags a free fn that composes a tree and returns
@@ -167,7 +180,9 @@ command checks them over your source:
 
 Every rule is individually configurable (`off` / `warn` / `error`) in
 `idealyst-lint.toml` and suppressible inline with
-`// idealyst-lint-disable-next-line <rule>`. Run `idealyst lint --rules`
+`// idealyst-lint-disable-next-line <rule> -- <reason>` (everything after
+` -- ` is prose; give it whenever the suppression marks a deliberate
+exception). Run `idealyst lint --rules`
 to list them. The same engine drives a rust-analyzer
 `check.overrideCommand` so the findings appear as inline editor squiggles
 — see `crates/tools/lint/README.md`. For a build that must never compile a

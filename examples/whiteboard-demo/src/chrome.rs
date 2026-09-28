@@ -742,6 +742,7 @@ pub fn LayersPopover(props: &LayersPopoverProps) -> Element {
             let canvases_rows = canvases.clone();
             let strokes_add = strokes.clone();
             let canvases_add = canvases.clone();
+            // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the row list per id set (a reactive `for` shows no rows in a macOS scroll_view — see above)
             let rows = runtime_core::switch(
                 move || canvas_ids.get(),
                 move |ids: &Vec<u64>| {

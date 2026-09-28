@@ -2632,6 +2632,7 @@ dependencies = [
  "dev-server",
  "icons-lucide",
  "idea-ui",
+ "idealyst",
  "robot-e2e",
  "runtime-macros",
  "runtime-scene",
@@ -3572,8 +3573,10 @@ dependencies = [
 name = "dnd"
 version = "1.5.4"
 dependencies = [
+ "host-mock",
  "runtime-core",
  "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]
@@ -6478,14 +6481,15 @@ dependencies = [
 name = "inspector"
 version = "1.5.2"
 dependencies = [
+ "host-mock",
  "icons-lucide",
  "idea-ui",
- "idea-ui-nav",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
+ "serde",
  "serde_json",
- "stack-navigator",
 ]
 
 [[package]]
@@ -6734,13 +6738,12 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.99"
+version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142bc4740e452c1e57ade0cbc129f139c9093e354346f0872ef985f4f5cf5f11"
+checksum = "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e"
 dependencies = [
  "cfg-if",
  "futures-util",
- "once_cell",
  "wasm-bindgen",
 ]
 
@@ -6922,6 +6925,7 @@ name = "lazy-chunk-handoff-test"
 version = "1.5.2"
 dependencies = [
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -6932,6 +6936,7 @@ name = "lazy-many-splits-test"
 version = "1.5.2"
 dependencies = [
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -6942,6 +6947,7 @@ name = "lazy-payload-split-eager"
 version = "1.5.2"
 dependencies = [
  "idea-ui",
+ "idealyst",
  "lazy-payload-split-heavy",
  "runtime-core",
  "runtime-scene",
@@ -6963,6 +6969,7 @@ name = "lazy-payload-split-lazy"
 version = "1.5.2"
 dependencies = [
  "idea-ui",
+ "idealyst",
  "lazy-payload-split-heavy",
  "runtime-core",
  "runtime-scene",
@@ -10202,6 +10209,7 @@ dependencies = [
  "runtime-template",
  "runtime-vocabulary",
  "runtime-world",
+ "serde",
 ]
 
 [[package]]
@@ -13201,6 +13209,7 @@ name = "vtable-dispatch-test"
 version = "1.5.2"
 dependencies = [
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -13286,9 +13295,9 @@ checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.122"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ed04576f974d2b2fba0f38c51dbc5518011e38c36bf1143164be765528fd409"
+checksum = "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -13299,9 +13308,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.72"
+version = "0.4.78"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9473dbd2991ae90b6291c3c32c30c6187ac49aa32f9905d1cce280ec1e110b0f"
+checksum = "6ef4c5d3d2cdf5c54f4231181768f5510842e350db025faf1f7163b1030ed928"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -13309,9 +13318,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.122"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "916151b09da36bd82f6615cbf3a419e2f0ba23a03c6160e8e92eb6bd4aa1dec6"
+checksum = "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -13319,31 +13328,31 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.122"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "299047362ccbfce148b67ab7e73349f77748e00c8296f9542adfad2ad82c5c5e"
+checksum = "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a"
 dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
  "wasm-bindgen-shared",
 ]
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.122"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a929b2c61f11ba3e9bc35b50c1f25cb38e0e892c0c231ae2b8cf78d5dad4437"
+checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "wasm-bindgen-test"
-version = "0.3.72"
+version = "0.3.78"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74fde991ccdc895cb7fbaa14b137d62af74d9011be67b71c694bfc40edd3119c"
+checksum = "45863ef0bef521c12124eb39d9a38513c47db75f22e503c06beacd40afeb35db"
 dependencies = [
  "async-trait",
  "cast",
@@ -13363,20 +13372,20 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-test-macro"
-version = "0.3.72"
+version = "0.3.78"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e925354648d2a4d1bf205412e36d520a800280622eef4719678d268e5d40e978"
+checksum = "8c89dcab8b516b6b603baca9d550b7282d68fcc7f367e3956cff7ebf406a3f12"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.3",
 ]
 
 [[package]]
 name = "wasm-bindgen-test-shared"
-version = "0.2.122"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "684365b586a9a6256c1cc3544eee8680de48d6041142f581776ec7b139622ae9"
+checksum = "f37b4f992cebe528ef34964ae69681ac0fe7080071e7298e46008f9d380302af"
 
 [[package]]
 name = "wasm-encoder"
@@ -13658,9 +13667,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.99"
+version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d621441cfc37b84979402712047321980c178f299193a3589d05b99e8763436"
+checksum = "9fbddc4a036f00ec4f18c83445bd3115cb306a91da554919a099d9222fe4a7f8"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

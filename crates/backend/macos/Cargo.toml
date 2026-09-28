@@ -38,6 +38,16 @@ async-driver = ["runtime-shared/async-driver", "backend-apple-core/async-driver"
 # Mirrors `backend-ios-mobile`'s `runtime-server` feature; pulls in the
 # shared `runtime-server-shell-native` worker.
 runtime-server = ["dep:runtime-server-shell-native", "runtime-server-shell-native/runtime-server"]
+# Point the Robot bridge at the element registry this backend's boot
+# actually fills (`newcore::install_robot_env`). Forwards the vocabulary
+# gate that makes mount handlers register identities in the first place.
+#
+# Without it a dev build is reachable and BLIND: the bridge answers from
+# the shared substrate's legacy registry, so `get_snapshot` has no
+# components and the Inspector's component tree is empty. Mirrors
+# `backend-ios-mobile/robot` and `host-gtk/robot`; the macOS wrapper's
+# `dev` feature turns it on through `host-appkit/robot`.
+robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
 runtime-shared = { workspace = true }

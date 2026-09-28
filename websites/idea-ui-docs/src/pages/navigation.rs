@@ -119,36 +119,36 @@ fn tabs_underline_section() -> Element {
     let active = signal("overview".to_string());
     let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
-    // The strip owns the active id; the caller wires the panel swap via
-    // `runtime_core::switch` keyed on that same id.
-    let panel = runtime_core::switch(
-        move || active.get(),
-        |id: &String| match id.as_str() {
-            "overview" => ui! {
+    // The strip owns the active id; the caller swaps the panel with a `match`
+    // on that same id inside `ui!`. A `String` can't be matched against
+    // literals directly, so the arms compare in guards.
+    let panel = ui! {
+        match active.get() {
+            id if id == "overview" => {
                 Stack(gap = StackGap::Sm) {
                     H3(content = "Overview".to_string())
                     P(content = "The Overview panel is mounted whenever its id is active; \
                         switching tabs disposes this subtree and mounts a fresh one for the \
                         newly-active panel.".to_string())
                 }
-            },
-            "activity" => ui! {
+            }
+            id if id == "activity" => {
                 Stack(gap = StackGap::Sm) {
                     H3(content = "Activity".to_string())
                     P(content = "Because the panel is rebuilt on every tab change, signal \
                         subscriptions inside it release when the user switches away — no \
                         stale effects accumulate.".to_string())
                 }
-            },
-            _ => ui! {
+            }
+            _ => {
                 Stack(gap = StackGap::Sm) {
                     H3(content = "Settings".to_string())
                     P(content = "The strip doesn't dictate panel layout — each branch returns \
                         whatever primitive tree makes sense for that view.".to_string())
                 }
-            },
-        },
-    );
+            }
+        }
+    };
 
     ui! {
         Section(title = "Underline".to_string()) {
@@ -169,14 +169,15 @@ fn tabs_underline_section() -> Element {
             CodePanel(src = r##"let active = signal("overview".to_string());
 let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
 
-let panel = runtime_core::switch(
-    move || active.get(),
-    |id: &String| match id.as_str() {
-        "overview" => ui! { /* Overview content */ },
-        "activity" => ui! { /* Activity content */ },
-        _ => ui! { /* Settings content */ },
-    },
-);
+// Swap the panel with a `match` on the same id — a `String`, so the arms
+// compare in guards.
+let panel = ui! {
+    match active.get() {
+        id if id == "overview" => { /* Overview content */ }
+        id if id == "activity" => { /* Activity content */ }
+        _ => { /* Settings content */ }
+    }
+};
 
 ui! {
     Tabs(

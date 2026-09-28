@@ -494,6 +494,7 @@ pub fn Button(props: &ButtonProps) -> Element {
         let trailing_s = trailing_icon.clone();
         let disabled_s = disabled_prop.clone();
         let block_s = block_prop.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape (see `components/mod.rs`)
         let switch_el = runtime_core::switch(
             move || {
                 (

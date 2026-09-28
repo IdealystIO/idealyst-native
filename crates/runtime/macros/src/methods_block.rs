@@ -38,11 +38,12 @@
 //!  - removes the fn items and constructs the handle just before the
 //!    tail (maximal capture scope), filling the auto-injected
 //!    `bind_to: Option<Ref<CounterHandle>>` prop when present,
-//!  - registers the methods with the robot bridge (JSON-invocable),
-//!  - wraps the tail in `__component_root` (element↔component link);
-//!    only the LEGACY explicit-props form still wraps in
-//!    `Bindable::new` (fn-call `.bind()` binding — no prop injection
-//!    is possible into an author-written props struct).
+//!  - attaches the methods (JSON-invocable) to the robot registration
+//!    `#[component]` makes for every instance (see `inspect_emit`),
+//!    which also owns the element↔component link; only the LEGACY
+//!    explicit-props form still wraps the tail in `Bindable::new`
+//!    (fn-call `.bind()` binding — no prop injection is possible into
+//!    an author-written props struct).
 //!
 //! The handle's name is derived from the component's fn name by
 //! converting `snake_case` to `PascalCase` and appending `Handle`
@@ -58,7 +59,8 @@ use syn::{Block, FnArg, Ident, ItemFn, Pat, Stmt, Type};
 ///    `TokenStream2`),
 ///  - removes the fn items, constructing the handle just before the
 ///    tail (plus the `bind_to` fill on the new path),
-///  - wraps the tail (`__component_root`; legacy adds `Bindable::new`).
+///  - attaches the methods to the component's robot registration
+///    (legacy also wraps the tail in `Bindable::new`).
 ///
 /// If no `#[method]` fns are present, returns an empty `TokenStream2`
 /// and leaves the function untouched.
@@ -71,7 +73,6 @@ pub(crate) fn extract_and_rewrite(
     };
 
     let handle_name = derive_handle_name(&item_fn.sig.ident);
-    let fn_name = item_fn.sig.ident.clone();
     let extra = generate_handle_type(&handle_name, &item_fn.sig.ident, &methods);
 
     let infos: Vec<MethodInfo> = methods
@@ -90,7 +91,7 @@ pub(crate) fn extract_and_rewrite(
         })
         .collect();
 
-    rewrite_body(item_fn, &indices, &handle_name, &fn_name, &methods, bind_to_injected);
+    rewrite_body(item_fn, &indices, &handle_name, &methods, bind_to_injected);
 
     Ok((extra, infos))
 }
@@ -390,16 +391,14 @@ fn handle_mod_ident(component: &Ident) -> Ident {
 ///      binding in the body is visible there, regardless of where the
 ///      `#[method]` fns were declared), inserts: the handle
 ///      construction, the `bind_to` fill (new path), and the robot
-///      registration + keepalive.
+///      method attach (onto the instance `#[component]` registered).
 ///   3. Wraps the tail: new path (`bind_to` injected) keeps the plain
-///      `Element` return, wrapping only in `__component_root` for the
-///      robot element↔component link; the legacy explicit-props path
-///      still wraps in `Bindable::new` (fn-call `.bind()` binding).
+///      `Element` return; the legacy explicit-props path still wraps in
+///      `Bindable::new` (fn-call `.bind()` binding).
 fn rewrite_body(
     item_fn: &mut ItemFn,
     indices: &[usize],
     handle_name: &Ident,
-    fn_name: &Ident,
     methods: &[MethodDef],
     bind_to_injected: bool,
 ) {
@@ -457,7 +456,6 @@ fn rewrite_body(
     // deserializes each argument by name, then forwards to the handle's
     // method. The whole block is `#[cfg]`-gated to the consuming crate's
     // `robot` feature so non-robot builds pay nothing.
-    let component_name_str = fn_name.to_string();
     let method_entries = methods.iter().map(|m| {
         let method_name_str = m.name.to_string();
         let arg_names_str: Vec<String> = m.args.iter().map(|(n, _)| n.to_string()).collect();
@@ -470,28 +468,8 @@ fn rewrite_body(
         // then re-inserted one between adjacent alphanumerics, turning the
         // one-token type `i32` into `i 3 2`. Token-level formatting isn't
         // worth a `prettyplease` dep for one-line type renderings.
-        let arg_types_str: Vec<String> = m.args.iter().map(|(_, ty)| {
-            const PUNCT: &[char] = &['<', '>', ',', '(', ')', '&', '\'', ':', ';'];
-            let raw = quote!(#ty).to_string();
-            let chars: Vec<char> = raw.chars().collect();
-            let mut out = String::with_capacity(raw.len());
-            for (i, &ch) in chars.iter().enumerate() {
-                if ch == ' ' {
-                    // Drop this space iff the char on either side is
-                    // punctuation; keep it when it sits between two word
-                    // tokens (it's a meaningful separator there).
-                    let prev = out.chars().last();
-                    let next = chars.get(i + 1).copied();
-                    let hugs_punct = prev.map_or(true, |p| PUNCT.contains(&p))
-                        || next.map_or(true, |n| PUNCT.contains(&n));
-                    if hugs_punct {
-                        continue;
-                    }
-                }
-                out.push(ch);
-            }
-            out
-        }).collect();
+        let arg_types_str: Vec<String> =
+            m.args.iter().map(|(_, ty)| crate::inspect_emit::render_type(ty)).collect();
         let arg_idents: Vec<&Ident> = m.args.iter().map(|(n, _)| n).collect();
         let arg_idents_for_call = arg_idents.clone();
         let arg_tys: Vec<&Type> = m.args.iter().map(|(_, ty)| ty).collect();
@@ -522,51 +500,20 @@ fn rewrite_body(
         }
     });
 
-    // Emitted UNCONDITIONALLY — the registration surface
-    // (`register_component` / `Method` / `ComponentRegistration`) always
-    // exists in `runtime-core` (a no-op stub when the `robot` feature is
-    // off). Gating this on the *consuming* crate's `robot` feature meant
-    // a scaffolded app / idea-ui (which never declare that feature)
-    // silently never registered their component methods — `invoke_method`
-    // saw nothing. Now methods register whenever `runtime-core/robot` is
-    // on, regardless of the defining crate's features.
+    // Emitted UNCONDITIONALLY: the methods attach to the component
+    // instance `#[component]` registered at the top of this body (see
+    // `inspect_emit`), which already owns the registration's lifetime and
+    // its element link. Without the vocabulary `robot` feature the attach
+    // is a no-op.
     let registration_stmt: Stmt = syn::parse_quote! {
-        let __robot_component_registration = {
+        ::runtime_core::robot::__attach_component_methods({
             let __methods: ::std::vec::Vec<::runtime_core::robot::Method> = ::std::vec![
                 #(#method_entries),*
             ];
-            ::runtime_core::robot::register_component(#component_name_str, __methods)
-        };
-    };
-    // The Effect's closure captures the registration guard by move.
-    // While a `Scope` is active (the build walker runs each Element
-    // inside one), the returned `Effect` handle is a no-op on drop —
-    // the scope owns the slot and frees it (and the captured guard)
-    // on scope drop. That ties the component's registration lifetime
-    // to its mounted lifetime.
-    // Capture the instance id BEFORE the keepalive moves the registration
-    // into its Effect closure. Used by `__component_root` to tag the
-    // component's root element so the robot walker links element↔component
-    // (for the inspector's "select an element → call its methods"). `Copy`,
-    // so capturing it doesn't disturb the move into the keepalive.
-    let instance_id_stmt: Stmt = syn::parse_quote! {
-        let __robot_component_instance = __robot_component_registration.id();
-    };
-    // Keepalive effect: its closure captures the registration guard by move.
-    // While a `Scope` is active (the build walker runs each Element inside
-    // one), the effect's slot is owned by that scope, which frees it (and the
-    // captured guard) on scope drop — tying the component's registration
-    // lifetime to its mounted lifetime. `__component_keepalive_effect` is the
-    // framework's internal codegen entry (adopt-or-own, no scope assertion);
-    // author code can't reach the raw `Effect` constructor.
-    let keepalive_stmt: Stmt = syn::parse_quote! {
-        ::runtime_core::__component_keepalive_effect(move || {
-            let _ = &__robot_component_registration;
+            __methods
         });
     };
     item_fn.block.stmts.insert(idx + 1, registration_stmt);
-    item_fn.block.stmts.insert(idx + 2, instance_id_stmt);
-    item_fn.block.stmts.insert(idx + 3, keepalive_stmt);
 
     // Now wrap the trailing expression with Bindable::new.
     //
@@ -582,22 +529,17 @@ fn rewrite_body(
         if bind_to_injected {
             // New path: the handle already reached the caller through the
             // injected `bind_to` prop, so the component returns a plain
-            // `Element` — only the robot element↔component link wraps.
+            // `Element`; the element link rides `#[component]`'s own
+            // registration bracket.
             syn::parse_quote! {
-                ::runtime_core::__component_root(
-                    ::runtime_core::IntoElement::into_element(#inner),
-                    __robot_component_instance,
-                )
+                ::runtime_core::IntoElement::into_element(#inner)
             }
         } else {
             // Legacy explicit-props path: the handle escapes through the
             // `Bindable` return (fn-call `.bind()` binding).
             syn::parse_quote! {
                 ::runtime_core::Bindable::new(
-                    ::runtime_core::__component_root(
-                        ::runtime_core::IntoElement::into_element(#inner),
-                        __robot_component_instance,
-                    ),
+                    ::runtime_core::IntoElement::into_element(#inner),
                     __component_handle,
                 )
             }
@@ -689,7 +631,14 @@ mod tests {
         .unwrap();
         assert!(body.contains("__r.fill"), "bind_to fill emitted: {body}");
         assert!(!body.contains("Bindable::new"), "new path returns plain Element: {body}");
-        assert!(body.contains("__component_root"), "robot link wrap kept: {body}");
+        assert!(
+            body.contains("__attach_component_methods"),
+            "methods attach to the #[component] registration: {body}"
+        );
+        assert!(
+            !body.contains("register_component") && !body.contains("__component_root"),
+            "no second registration or wrapper node: {body}"
+        );
     }
 
     #[test]
@@ -726,8 +675,7 @@ mod tests {
     /// The NEW-core emission surface (P5 robot remainder): piping the
     /// rewritten body through the retarget must land every `#[method]`
     /// reference on a name `runtime_vocabulary::glue` provides —
-    /// `glue::robot::{Method, register_component}`,
-    /// `glue::__component_keepalive_effect`, `glue::__component_root`,
+    /// `glue::robot::{Method, __attach_component_methods}`,
     /// `glue::__serde_json`, and the `bind_to` fill's `glue::Ref` (via
     /// the injected prop type). A rename on either side breaks this
     /// pin, not a downstream app build.
@@ -750,9 +698,7 @@ mod tests {
             .collect();
         for needle in [
             "::runtime_vocabulary::glue::robot::Method",
-            "::runtime_vocabulary::glue::robot::register_component",
-            "::runtime_vocabulary::glue::__component_keepalive_effect",
-            "::runtime_vocabulary::glue::__component_root",
+            "::runtime_vocabulary::glue::robot::__attach_component_methods",
             "::runtime_vocabulary::glue::__serde_json::from_value",
         ] {
             assert!(out.contains(needle), "missing {needle} in: {out}");

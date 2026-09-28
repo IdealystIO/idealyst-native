@@ -251,6 +251,7 @@ pub struct CodeBlockProps {
 #[component]
 pub fn CodeBlock(props: CodeBlockProps) -> Element {
     let src_owned = props.src;
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the code block per palette
     switch(theme_is_dark, move |&is_dark| {
         let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
         let spans = highlight(&src_owned, palette);

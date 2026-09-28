@@ -218,24 +218,22 @@ pub fn Select(props: SelectProps) -> Element {
     let menu_options = options.clone();
     let menu_on_change = on_change.clone();
     let menu_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
-    let menu = runtime_core::when(
-        move || open.get(),
-        move || {
-            menu_build(
-                value,
-                menu_options.clone(),
-                menu_on_change.clone(),
-                menu_close.clone(),
-                trigger_ref,
-            )
-        },
-        || ui! { view {} }.into_element(),
-    );
-
+    // The menu exists only while open: each open builds it fresh (rows
+    // reflect the current `value`), each close tears it down.
     ui! {
         view {
             trigger
-            menu
+            if open.get() {
+                {
+                    menu_build(
+                        value,
+                        menu_options.clone(),
+                        menu_on_change.clone(),
+                        menu_close.clone(),
+                        trigger_ref,
+                    )
+                }
+            }
         }
     }
 }

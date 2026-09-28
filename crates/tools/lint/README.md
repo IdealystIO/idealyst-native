@@ -10,6 +10,7 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 | `prefer-memo-fn` | warn | removed `memo!(…)` | `memo(move \|\| …)` |
 | `prefer-text-fstring` | warn | removed `text_fmt!(…)` / `bind!(…)` | `text { "count: {count}" }` |
 | `prefer-ui-macro` | warn | a primitive constructor called by hand — `runtime_core::view(…)`, `glue::text(…)`, `builders::view()`, or a bare `view(…)` the file imports from the framework — plus `BuildElement::build(…)` and `Element::View { … }` | `ui! { … }` / `jsx! { … }` |
+| `prefer-ui-control-flow` | warn | a hand call to the reactive branch glue — `runtime_core::when(…)` / `switch(…)` (qualified, inside `vec![…]`, or a bare `when(…)` the file imports) | `if cond.get() { … }` / `match key.get() { … }` inside `ui!`. For the two shapes the macro can't express (a static-prop fast path, a keyed rebuild of one shape — see below), suppress with the reason |
 | `component-pascal-case` | error | `#[component] fn icon_button` | `#[component] fn IconButton` |
 | `prefer-component` | warn | a free fn that composes a tree (`ui!` / `jsx!` or a primitive constructor) and returns `Element` without `#[component]` — any such fn with params (incl. a hand-rolled `fn Card(props: &CardProps)`), or a zero-arg one called from 2+ sites. Exempt: fns used as values (`app` entry, screens, render callbacks), a zero-arg one-off helper (CLAUDE.md §9.5), methods, tests, and a non-idealyst `Element` (`web_sys::Element`) | `#[component] fn UserRow(name: String, active: bool) -> Element`, called as `ui! { UserRow(name = …, active = true) }` |
 | `snapshot-condition` | warn | hoisted `let ok = x.get()…;` used as a `ui!` `if` condition | `memo(move \|\| …)`, inline the `.get()`, or `.peek()` if intentional (`.get_untracked()` on a `Reactive<T>` prop) |
@@ -28,7 +29,35 @@ Flags idiom-drift patterns in idealyst projects, over the project's
 > see inside — `snapshot-condition`, `snapshot-loop` — deliberately tokenize
 > the visible `ui!` / `jsx!` invocation bodies and scan lexically, and
 > `signal-across-await` re-parses `effect! { … }` bodies as real blocks,
-> because the mount-time-load idiom puts the `spawn_async` in there.)
+> because the mount-time-load idiom puts the `spawn_async` in there. `vec![…]`
+> is re-parsed too — it's plain expressions, and it's where a hand-built
+> child list lives.)
+
+### `prefer-ui-control-flow` — the two legitimate direct calls
+
+`ui!` lowers `if` / `match` to `when` / `switch` itself, choosing static vs
+reactive and supplying an out-of-flow placeholder for a missing branch, so a
+hand call is almost always an `if` / `match` written outside the tree. Two
+shapes can't be spelled in the macro and keep the direct call, each with a
+reasoned suppression:
+
+- **static-prop fast path** — the branch is picked by a value *derived* from
+  a `Reactive<T>` prop (`src.is_some()`), and a static prop must build its
+  branch directly with no reactive hole. The macro's type-driven static
+  dispatch only covers a bare `Reactive<bool>` / `Signal<bool>` path.
+- **keyed rebuild of one shape** — one subtree rebuilt whenever a derived
+  key changes (a pager row on `(page, total)`). The `ui!` form would be a
+  single-arm `match`, the same call in disguise.
+
+```rust
+// idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
+runtime_core::switch(move || (page.get(), total.get()), move |&(p, t)| row(p, t))
+```
+
+A choice between *different* shapes is always a `ui!` `match`, even over a
+tuple key. Framework tests that exist to pin the glue itself (a fixture whose
+point is the element variant its component returns, a builder-layer test
+file with no `ui!`) suppress the same way, naming that as the reason. `crates/ui/idea-ui/src/components/mod.rs` documents both cases.
 
 ### `signal-across-await` — known false positive
 
@@ -83,10 +112,15 @@ let s = Signal::new(0);
 
 // Same line, specific rules (comma- or space-separated):
 let s = Signal::new(0); // idealyst-lint-disable-line prefer-signal-fn
+
+// With a reason — everything after ` -- ` is prose, never rule ids:
+// idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
 ```
 
 A directive with no rule ids after it suppresses **all** rules on its target
-line/file.
+line/file. When a suppression marks a deliberate exception rather than a
+false positive, give the reason after ` -- ` so the next reader learns why
+the rule doesn't apply.
 
 ## rust-analyzer integration (inline editor squiggles)
 

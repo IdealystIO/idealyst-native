@@ -8,10 +8,11 @@ description = "Cross-platform conformance app: mounts the framework's primitives
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
 
+# The app is its binary: `src/main.rs` is one `idealyst::entry!` line
+# whose shell the target triple picks (web included). The iOS/Android
+# wrappers the CLI still generates consume the rlib.
 [lib]
-# `cdylib` for the standalone web build (`wasm-pack build --target web`);
-# the CLI's generated wrappers consume the rlib.
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [features]
 # `robot` MUST be a default feature: the `ui!` macro's
@@ -38,6 +39,8 @@ robot = [
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface `src/main.rs` boots through.
+idealyst = { workspace = true }
 runtime-macros = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }

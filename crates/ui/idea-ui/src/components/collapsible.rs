@@ -46,7 +46,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, derived, on_scope_drop, pressable, signal, switch, text, ui, ChildList, Element,
+    component, derived, on_scope_drop, pressable, signal, text, ui, ChildList, Element,
     IdealystSchema, IntoElement, LayoutSubscription, Reactive, Ref, Signal, StyleApplication,
     VariantEnum, ViewHandle,
 };
@@ -211,16 +211,14 @@ fn collapsible_header(
     value: Signal<bool>,
     on_change: Rc<dyn Fn(bool)>,
 ) -> Element {
-    // Reactive style for the chevron glyph — re-derives when `value`
-    // changes so the indicator flips from `›` (closed) to `⌄` (open).
-    let chevron = switch(
-        move || value.get(),
-        |&open| {
-            let style = move || StyleApplication::new(CollapsibleChevron::sheet());
-            let glyph = if open { "\u{2304}" } else { "\u{203A}" }.to_string();
-            text(glyph).with_style(style).into_element()
-        },
-    );
+    // The chevron flips from `›` (closed) to `⌄` (open). Only its TEXT
+    // changes, so it is live text that updates in place — no subtree swap.
+    let chevron_style = || StyleApplication::new(CollapsibleChevron::sheet());
+    let chevron = ui! {
+        text(style = chevron_style) {
+            move || if value.get() { "\u{2304}" } else { "\u{203A}" }.to_string()
+        }
+    };
 
     // Header style is shared between open/closed states (the chevron
     // carries the open indicator). One reactive style closure keeps

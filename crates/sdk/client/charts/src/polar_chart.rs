@@ -393,6 +393,7 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
     // recolors a wedge does not churn them.
     let labels = {
         let label_style = label_style.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the label layer
         switch(
             move || {
                 output
@@ -448,6 +449,7 @@ fn polar_body<S: Clone + PartialEq + 'static>(cfg: PolarConfig<S>, ops: PolarOps
         let spec = spec.clone();
         let entries = ops.entries;
         let label_style = label_style.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the legend row
         switch(
             move || {
                 let (rows, on) = entries(&spec.get());

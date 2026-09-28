@@ -41,7 +41,7 @@
 use idea_ui::{
     install_idea_theme, light_theme, typography_kind, Stack, StackGap, StackPadding, Typography,
 };
-use runtime_core::{button, signal, text, text_input, ui, when, Element, IntoElement, Signal};
+use runtime_core::{button, signal, text, text_input, ui, Element, IntoElement, Signal};
 
 #[cfg(feature = "robot")]
 mod e2e;
@@ -110,18 +110,17 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>) -
     let dec = move || count.set(count.get() - 1);
     let toggle = move || show_secret.set(!show_secret.get());
 
-    // The secret panel: a `when` branch that mounts (and registers) the
+    // The secret panel: an `if` branch that mounts (and registers) the
     // `secret` text only while `show_secret` is true — so the E2E suite
     // can assert it's *not* visible first, then visible after a click.
-    let secret_branch = when(
-        move || show_secret.get(),
-        || {
-            text("🔓 Secret unlocked")
-                .test_id("secret")
-                .into_element()
-        },
-        || runtime_core::view(vec![]).into_element(),
-    );
+    // The text itself uses the builder form for its `test_id` (see the NOTE
+    // below).
+    let secret = || text("🔓 Secret unlocked").test_id("secret").into_element();
+    let secret_branch = ui! {
+        if show_secret.get() {
+            secret()
+        }
+    };
 
     // Reactive labels via the builder form (`text(closure).test_id(...)`):
     // unambiguous, and the registry recomputes them on read so the E2E

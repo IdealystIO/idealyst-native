@@ -502,6 +502,23 @@ fn resolve_entry(
     best.map(|(n, p, r, _)| (n, p, r))
 }
 
+/// Resolve a FULL path (`active_path` form, optionally `?query`) for the
+/// robot `navigate` verb into what a link dispatch carries: the route, its
+/// base-RELATIVE url (dispatch prefixes the base itself), params, query.
+#[cfg(feature = "robot")]
+fn robot_resolve(
+    screens: &HashMap<&'static str, NavScreenEntry>,
+    base: &str,
+    full: &str,
+) -> Result<(&'static str, String, Box<dyn Any>, QueryParams), String> {
+    let (path, query) = split_query(full);
+    let (route, params, rem) = resolve_entry(screens, base, path)
+        .ok_or_else(|| format!("no screen of the navigator at '{base}' matches '{path}'"))?;
+    let consumed = consumed_prefix(path, &rem);
+    let rel = match_prefix(&consumed, base).map(|(_, rel)| rel).unwrap_or(consumed);
+    Ok((route, rel, params, query))
+}
+
 /// Full-match `path` against `screens` — the walker's `match_path`,
 /// used by the stack to re-mount cold (disposed) entries from their URL.
 fn match_path(
@@ -1305,6 +1322,30 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     };
     *shared.link_activator.borrow_mut() = Some(link_activator.clone());
 
+    // Robot control: a swap navigator has one verb — select — so every
+    // path-carrying action selects, and there is nothing to pop.
+    #[cfg(feature = "robot")]
+    {
+        let dispatch = dispatch.clone();
+        let screens = shared.screens.clone();
+        let base = base.clone();
+        crate::robot::set_navigator_control(
+            nav_id,
+            Rc::new(move |action| {
+                use crate::robot::NavAction;
+                let path = match action {
+                    NavAction::Push(p) | NavAction::Replace(p) | NavAction::Reset(p) => p,
+                    NavAction::Pop => {
+                        return Err("a swap navigator has no back stack to pop".to_string())
+                    }
+                };
+                let (name, url, params, query) = robot_resolve(&screens, &base, &path)?;
+                dispatch(NavCommand::Select { name, url, params, query });
+                Ok(())
+            }),
+        );
+    }
+
     // Driver effect: drains the queue inside the flush (module docs).
     // Owned by the navigator's Realized via the ambient collector.
     {
@@ -2001,6 +2042,42 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         })
     };
     *shared.link_activator.borrow_mut() = Some(link_activator.clone());
+
+    // Robot control: the same commands a link / back press dispatch.
+    #[cfg(feature = "robot")]
+    {
+        let dispatch = dispatch.clone();
+        let screens = shared.screens.clone();
+        let base = base.clone();
+        crate::robot::set_navigator_control(
+            nav_id,
+            Rc::new(move |action| {
+                use crate::robot::NavAction;
+                let cmd = match action {
+                    NavAction::Pop => {
+                        if !can_go_back.peek() {
+                            return Err("the navigator is at its root screen".to_string());
+                        }
+                        NavCommand::Pop
+                    }
+                    NavAction::Push(p) => {
+                        let (name, url, params, query) = robot_resolve(&screens, &base, &p)?;
+                        NavCommand::Push { name, url, params, query }
+                    }
+                    NavAction::Replace(p) => {
+                        let (name, url, params, query) = robot_resolve(&screens, &base, &p)?;
+                        NavCommand::Replace { name, url, params, query }
+                    }
+                    NavAction::Reset(p) => {
+                        let (name, url, params, query) = robot_resolve(&screens, &base, &p)?;
+                        NavCommand::Reset { name, url, params, query }
+                    }
+                };
+                dispatch(cmd);
+                Ok(())
+            }),
+        );
+    }
 
     {
         let shared = shared.clone();

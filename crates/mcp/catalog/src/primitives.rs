@@ -592,18 +592,24 @@ inventory::submit! {
     PrimitiveEntry {
         name: "when",
         pascal_name: "When",
-        docs: "Conditional rendering. Renders children only while the reactive condition is true; preserves the surrounding tree shape so the walker can install/remove just the gated subtree.",
+        docs: "Reactive two-way branch — what `ui!` lowers an `if` whose condition reads a signal to. **Write `if open.get() { … } else { … }` inside `ui!`**; the macro decides static vs reactive and gives a missing `else` an out-of-flow placeholder so the toggle never shifts layout. The active branch is rebuilt from scratch when the condition flips (dispose-on-hide: state in the hidden branch is lost) and is NOT rebuilt while the condition stays the same. The `when(cond = …, then = …, otherwise = …)` tag and the `runtime_core::when(cond, then, otherwise)` fn are the lowering, not the authoring form — the `prefer-ui-control-flow` lint flags hand calls.",
         props: &[
             PropFieldSpec {
                 name: "cond",
-                type_str: "impl Fn() -> bool",
-                doc: "Reactive predicate. Children mount when `true`, unmount when `false`.",
+                type_str: "impl Fn() -> bool + 'static",
+                doc: "Reactive predicate; the branch swaps when its value changes.",
                 constraint: "",
             },
             PropFieldSpec {
-                name: "children",
-                type_str: "Vec<Element>",
-                doc: "Gated subtree.",
+                name: "then",
+                type_str: "impl Fn() -> impl IntoElement + 'static",
+                doc: "Builds the subtree shown while `cond` is true. Re-run on each flip to true.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "otherwise",
+                type_str: "impl Fn() -> impl IntoElement + 'static",
+                doc: "Builds the subtree shown while `cond` is false.",
                 constraint: "",
             },
         ],
@@ -617,12 +623,18 @@ inventory::submit! {
     PrimitiveEntry {
         name: "switch",
         pascal_name: "Switch",
-        docs: "N-way conditional. Renders the first matching arm; arms are evaluated reactively. Use over chained `When` blocks when you have mutually-exclusive cases.",
+        docs: "Reactive multi-way branch keyed on a value — what `ui!` lowers a `match` whose scrutinee reads a signal to. **Write `match mode.get() { Mode::A => { … } Mode::B => { … } }` inside `ui!`** (a tuple scrutinee works too). The arm is rebuilt only when the key changes by `PartialEq`, so an equal re-fire keeps the mounted subtree. No `ui!` tag; `runtime_core::switch(scrutinee, render)` is the lowering, and the `prefer-ui-control-flow` lint flags hand calls. Two shapes the macro can't express keep the direct call with a reasoned suppression: a static-prop fast path (branching on a value derived from a `Reactive<T>` prop with no reactive hole when the prop is static) and a keyed rebuild of one shape (one subtree rebuilt when a derived key changes).",
         props: &[
             PropFieldSpec {
-                name: "arms",
-                type_str: "Vec<(impl Fn() -> bool, Element)>",
-                doc: "Predicate + subtree pairs. First matching arm wins.",
+                name: "scrutinee",
+                type_str: "impl Fn() -> S + 'static  (S: PartialEq + 'static)",
+                doc: "Reads the signals the branch depends on and returns the key.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "render",
+                type_str: "impl Fn(&S) -> Element + 'static",
+                doc: "Builds the subtree for the current key. Re-run only when the key changes.",
                 constraint: "",
             },
         ],

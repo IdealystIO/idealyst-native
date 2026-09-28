@@ -20,7 +20,8 @@ Read it for the full worked template; use the files below as ground truth.
 | --- | --- |
 | Leaf, single reactive prop routed to a style sink | `crates/ui/idea-ui/src/components/divider.rs` |
 | Container: owned props + `ChildList::append_to` flatten | `crates/ui/idea-ui/src/components/card.rs`, `stack.rs`, `center.rs` |
-| Structural `switch(...)` rebuild + controlled `Signal` | `crates/ui/idea-ui/src/components/checkbox.rs` |
+| Structural branch as `if` / `match` inside `ui!` + controlled `Signal` | `crates/ui/idea-ui/src/components/checkbox.rs`, `select.rs`, `calendar.rs` |
+| When a direct `when` / `switch` is legitimate (and how to mark it) | `crates/ui/idea-ui/src/components/mod.rs` (module docs) |
 | Full reactive fast-path split (static vs live, slot overrides) | `crates/ui/idea-ui/src/components/button.rs` |
 | `#[props]` macro behavior (what wraps / what's skipped) | `crates/runtime/macros/src/props_attr.rs` |
 | `#[component]` args + signature rules | `crates/runtime/macros/src/component_attr.rs`, `invocation_macro.rs` |
@@ -64,9 +65,13 @@ forces the wrap. Hand-write `impl Default` when a field can't derive it.
 **3. Body — `ui!`. Primitives lowercase, components PascalCase, strictly.**
 Build children inside the macro (`for … , key = expr { }`, `if`/`match`, splats).
 Route a reactive prop via `match props.x.clone() { Reactive::Static(v) => sink.x(v),
-dynamic => sink.x(derived(move || dynamic.get())) }`, or `switch(scrutinee, arm)`
-for a structural rebuild — always read `.get()` INSIDE the closure so the effect
-subscribes. Optional callbacks: bind only when `Some` (never an unconditional
+dynamic => sink.x(derived(move || dynamic.get())) }` — always read `.get()`
+INSIDE the closure so the effect subscribes. A structural branch (a node that
+exists only in some states) is `if` / `match` inside `ui!`, never a hand-called
+`runtime_core::when` / `switch` (lint: `prefer-ui-control-flow`). The only two
+exceptions — static-prop fast path, keyed rebuild of one shape — are listed in
+`components/mod.rs` and carry `// idealyst-lint-disable-next-line
+prefer-ui-control-flow -- <reason>`. Optional callbacks: bind only when `Some` (never an unconditional
 no-op closure).
 
 **4. Tests — non-negotiable (CLAUDE.md §1, §8).**

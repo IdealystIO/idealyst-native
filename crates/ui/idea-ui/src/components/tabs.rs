@@ -319,6 +319,7 @@ fn tab_button(
         }
     } else {
         let indicator = indicator.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- static-prop fast path (see `components/mod.rs`)
         tab_children.push(runtime_core::when(
             move || matches!(indicator.get(), TabIndicator::Dot),
             build_dot,

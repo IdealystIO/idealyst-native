@@ -1,291 +1,184 @@
-//! Idealyst Inspector — a runtime debugging dashboard.
+//! Idealyst Inspector — a runtime debugging dashboard for idealyst apps.
 //!
-//! Connects to a running idealyst app's **robot bridge** (the single TCP
-//! newline-JSON transport every `--features robot` app exposes) and shows,
-//! live: every loaded navigator (current + back-stack), the element tree,
-//! components and their callable methods, reactive-arena + perf phase
-//! counters, watched signal values, and captured logs. A small command bar
-//! drives the target back (click an element by `test_id`, invoke a
-//! component method, clear logs).
+//! Connects to a running app's **robot bridge** (the TCP newline-JSON
+//! transport every `idealyst dev` build exposes) and shows, live:
+//!
+//! - **Components** — every mounted `#[component]` in its rendered
+//!   hierarchy, optionally interleaved with the primitive elements; the
+//!   selected one's props (each marked Live / Static / Handler …, with its
+//!   current value), its `#[method]`s (invokable), and its root element's
+//!   frame and native read-back;
+//! - **Signals** — watched signals with write counts and recent history,
+//!   settable when registered with `watch_signal_writable`;
+//! - **Navigation** — every navigator's back stack and query state, and
+//!   push / replace / reset / pop;
+//! - **Logs & perf** — the captured log stream and phase timers.
+//!
+//! The Inspector only displays what the bridge reports; everything it
+//! knows arrives through [`bridge`], which has no UI in it.
 //!
 //! ## Run it
 //!
 //! ```text
-//! # 1. a target app, built with the robot bridge:
-//! idealyst dev --macos --local crates/dev/robot-e2e/examples/conformance
-//! # 2. the inspector (this app), in another shell:
-//! idealyst dev --macos --local examples/inspector
+//! idealyst dev --macos --local crates/dev/robot-e2e/examples/conformance   # a target
+//! idealyst dev --macos --local examples/inspector                          # this app
 //! ```
 //!
-//! MVP host is macOS desktop: raw TCP to the bridge is trivial there. (Web
-//! can't open raw TCP from wasm; that would need the bridge to also speak
-//! WebSocket — a separate, single-transport change, deliberately out of
-//! scope here.)
+//! Set `IDEALYST_INSPECT_ADDR=127.0.0.1:<port>` to skip the app picker
+//! and connect straight to one bridge — the hook a launcher (the CLI)
+//! uses to open the Inspector on the app it just started.
+//!
+//! macOS desktop is the host: raw TCP is trivial there, while wasm cannot
+//! open a TCP socket (a web build needs the bridge to speak WebSocket).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use std::collections::HashSet;
-
-use idea_ui::{install_idea_theme, light_theme, Button, Stack, StackGap, StackPadding, Tab, Tabs};
-use runtime_core::{
-    component, rx, signal, ui, Element, FlexDirection, Length, Ref, Route, Screen, Signal,
-    StyleApplication, StyleRules, StyleSheet,
-};
+use idea_ui::{dark_theme, install_idea_theme};
+use runtime_core::{component, signal, ui, Element, Signal};
 use serde_json::Value;
-use idea_ui_nav::StackHeader;
-use stack_navigator::{
-    header_state, StackBuilder, StackContext, StackHandle, StackNavigator, StackScreenExt,
-};
 
-mod client;
-mod discovery;
-mod format;
-mod panels;
+pub mod bridge;
+mod ui;
 
-use client::{BridgeClient, Snapshot};
-use panels::{ElementsPanel, LogsPanel, StatsPanel};
+use bridge::client::{BridgeClient, Focus};
+use bridge::discovery::AppInfo;
+use bridge::model::Snapshot;
+use ui::connect::Connect;
+use ui::shell::Shell;
 
-/// How often the UI thread copies the background client's latest snapshot
-/// into the reactive signal. The client refreshes independently; this is
-/// just the render cadence.
-const POLL_MS: i32 = 300;
+/// How often the UI copies the client's latest snapshot into the
+/// reactive signal. The client refreshes on its own; this is only the
+/// render cadence.
+const POLL_MS: i32 = 250;
 
-pub(crate) const PICKER: Route<()> = Route::<()>::new("picker", "/");
-pub(crate) const INSPECTOR: Route<()> = Route::<()>::new("inspector", "/inspector");
+/// The environment variable that skips the picker (see the crate docs).
+pub const ADDR_ENV: &str = "IDEALYST_INSPECT_ADDR";
+
+/// The connected target, as the sidebar names it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Target {
+    pub name: String,
+    /// `macOS · pid 48213`, or the address for a manual connection.
+    pub detail: String,
+}
+
+impl Target {
+    fn from_app(app: &AppInfo) -> Target {
+        let platform = app.platform.as_deref().map(platform_label).unwrap_or("app");
+        Target { name: app.name.clone(), detail: format!("{platform} · pid {}", app.pid) }
+    }
+
+    fn from_addr(addr: &str) -> Target {
+        Target { name: addr.to_string(), detail: "connected by address".to_string() }
+    }
+}
+
+/// `macos` → `macOS`.
+pub fn platform_label(platform: &str) -> &str {
+    match platform {
+        "macos" => "macOS",
+        "ios" => "iOS",
+        "android" => "Android",
+        "web" => "Web",
+        "linux" => "Linux",
+        "windows" => "Windows",
+        other => other,
+    }
+}
 
 thread_local! {
-    /// The currently-connected target. Single-target at a time; the picker
-    /// swaps it. Kept here (not as a component prop) so the command bar and
-    /// poll reach it without threading a non-`Default` handle through props.
-    static CURRENT_CLIENT: RefCell<Option<BridgeClient>> = const { RefCell::new(None) };
+    /// The one connected target. The UI reaches it through the functions
+    /// below rather than threading a non-`Default` handle through props.
+    static CLIENT: RefCell<Option<BridgeClient>> = const { RefCell::new(None) };
 }
 
-/// Connect to a discovered app, replacing any prior connection.
-fn connect_to(addr: String) {
-    CURRENT_CLIENT.with(|c| *c.borrow_mut() = Some(BridgeClient::connect(addr)));
+pub(crate) fn connect(addr: String) {
+    CLIENT.with(|c| *c.borrow_mut() = Some(BridgeClient::connect(addr)));
 }
 
-/// The latest snapshot from the connected target (default = disconnected).
-fn client_snapshot() -> Snapshot {
-    CURRENT_CLIENT.with(|c| {
-        c.borrow()
-            .as_ref()
-            .map(|cl| cl.snapshot())
-            .unwrap_or_default()
-    })
+pub(crate) fn disconnect() {
+    CLIENT.with(|c| *c.borrow_mut() = None);
 }
 
-/// Queue an action verb for the connected target (no-op when disconnected).
-fn client_action(cmd: &str, args: Value) {
-    CURRENT_CLIENT.with(|c| {
+fn client_snapshot() -> Option<Snapshot> {
+    CLIENT.with(|c| c.borrow().as_ref().map(|cl| cl.snapshot()))
+}
+
+/// What the per-item verbs fetch (the selected component / signal).
+pub(crate) fn set_focus(focus: Focus) {
+    CLIENT.with(|c| {
         if let Some(cl) = c.borrow().as_ref() {
-            cl.action(cmd, args);
+            cl.set_focus(focus);
         }
     });
 }
 
-/// SDK-handler registration seam the CLI-generated wrapper invokes after
-/// `runtime_vocabulary::register_builtins`. The stack navigator is a
-/// builtin scene handler, so there is nothing extra to register here.
-pub fn register_scene_extensions<H: runtime_scene::Host>(
-    _registry: &mut runtime_scene::Registry<H>,
-) {
+/// Send an action verb; its outcome shows as `Snapshot::last_action`.
+pub(crate) fn action(label: impl Into<String>, cmd: &str, args: Value) {
+    CLIENT.with(|c| {
+        if let Some(cl) = c.borrow().as_ref() {
+            cl.action(label, cmd, args);
+        }
+    });
 }
+
+/// SDK-handler registration seam the CLI-generated wrapper calls after
+/// `runtime_vocabulary::register_builtins`. Nothing extra to register.
+pub fn register_scene_extensions<H: runtime_scene::Host>(_registry: &mut runtime_scene::Registry<H>) {}
 
 #[component]
 pub fn app() -> Element {
-    install_idea_theme(light_theme());
+    install_idea_theme(dark_theme());
 
-    // The reactive mirror of the target's state, refreshed by the poll below.
     let snapshot: Signal<Snapshot> = signal(Snapshot::default());
-    let nav: Ref<StackHandle> = Ref::new();
+    let target: Signal<Option<Target>> = signal(None);
 
-    // UI-thread poll: copy the background client's latest snapshot into the
-    // signal so the reactive `text` panels re-render. Self-reschedules.
+    if let Ok(addr) = std::env::var(ADDR_ENV) {
+        connect(addr.clone());
+        target.set(Some(Target::from_addr(&addr)));
+    }
     schedule_poll(snapshot);
 
-    let builder = StackNavigator::new(&PICKER)
-        .screen(PICKER, move |_| {
-            Screen::new(picker_page(nav)).title("Idealyst Inspector")
-        })
-        .screen(INSPECTOR, move |_| {
-            Screen::new(inspector_page(snapshot, nav)).title("Inspector")
-        })
-        // Outlet-model chrome: the header is author layout (the same
-        // `StackHeader` on every backend), replacing the legacy
-        // navigator's built-in bar.
-        .layout(|nav: StackContext| {
-            let screen_chrome = nav.screen_chrome;
-            let state = rx!(header_state(&screen_chrome));
-            let outlet = nav.outlet;
-            ui! {
-                view(style = nav_column_style) {
-                    StackHeader(
-                        state = state,
-                        show_back = nav.can_go_back,
-                        on_back = Some(nav.pop.clone()),
-                    )
-                    outlet
-                }
+    // Plain closures over `Copy` signals are themselves `Copy`, so the
+    // reactive branch below can wrap a fresh `Rc` on every rebuild.
+    let on_connect = move |app: Option<AppInfo>, addr: String| {
+        connect(addr.clone());
+        snapshot.set(Snapshot::default());
+        target.set(Some(match &app {
+            Some(app) => Target::from_app(app),
+            None => Target::from_addr(&addr),
+        }));
+    };
+    let on_disconnect = move || {
+        disconnect();
+        target.set(None);
+    };
+    let connected = runtime_core::memo(move || target.get().is_some());
+    let target_now = runtime_core::memo(move || target.get().unwrap_or_default());
+
+    ui! {
+        view(style = ui::styles::Root()) {
+            if connected {
+                Shell(
+                    snapshot = snapshot,
+                    target = target_now,
+                    on_disconnect = Rc::new(on_disconnect) as Rc<dyn Fn()>,
+                )
+            } else {
+                Connect(on_connect = Rc::new(on_connect) as Rc<dyn Fn(Option<AppInfo>, String)>)
             }
-        });
-
-    ui! { builder.bind(nav) }
+        }
+    }
 }
 
-/// Header-over-outlet column for the author stack chrome.
-fn nav_column_style() -> StyleApplication {
-    static KEY: u8 = 0;
-    let sheet = runtime_core::cached_stylesheet(&KEY as *const u8 as usize, || {
-        std::rc::Rc::new(StyleSheet::r#static(StyleRules {
-            flex_direction: Some(FlexDirection::Column),
-            width: Some(Length::Percent(100.0).into()),
-            height: Some(Length::Percent(100.0).into()),
-            ..Default::default()
-        }))
-    });
-    StyleApplication::new(sheet)
-}
-
+/// Copy the client's latest snapshot into `snapshot`. The write is
+/// equality-guarded, so an unchanged target wakes nothing.
 fn schedule_poll(snapshot: Signal<Snapshot>) {
     runtime_core::after_ms_detached(POLL_MS, move || {
-        // The write STAGES and the driver commits it after this callback
-        // returns, so a poll tick can never land mid-update. `set` is
-        // equality-guarded at commit time, so an unchanged snapshot wakes
-        // no subscriber — which is what keeps the selectable `pressable`
-        // rows from rebuilding 3×/s (the panels' selection state would
-        // otherwise race a rebuild).
-        snapshot.set(client_snapshot());
+        if let Some(snap) = client_snapshot() {
+            snapshot.set(snap);
+        }
         schedule_poll(snapshot);
     });
-}
-
-/// App picker — one button per discovered app. Tapping connects and opens
-/// the inspector. Rescans by resetting the screen.
-fn picker_page(nav: Ref<StackHandle>) -> Element {
-    let apps = discovery::list();
-    let empty = apps.is_empty();
-
-    let nav_rescan = nav;
-    let rescan: Rc<dyn Fn()> = Rc::new(move || {
-        nav_rescan.get().map(|h| h.reset(&PICKER, ()));
-    });
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
-            text { "Running idealyst apps" }
-            if empty {
-                text {
-                    "No apps found in ~/.idealyst/apps. Launch one with \
-                     `--features robot` (e.g. `idealyst dev --macos --local \
-                     crates/dev/robot-e2e/examples/conformance`), then Rescan."
-                }
-            }
-            for app in apps {
-                Button(
-                    label = format!(
-                        "{}{}  (pid {}, :{})",
-                        app.name,
-                        app.bundle_id
-                            .as_deref()
-                            .map(|b| format!("  [{b}]"))
-                            .unwrap_or_default(),
-                        app.pid,
-                        app.port
-                    ),
-                    on_click = {
-                        let addr = app.addr();
-                        Rc::new(move || {
-                            connect_to(addr.clone());
-                            // `.get()` (clone the handle out) NOT `.with()` —
-                            // `with` holds the slot borrow across the closure
-                            // while `push` writes the navigator's route.
-                            nav.get().map(|h| h.push(&INSPECTOR, ()));
-                        }) as Rc<dyn Fn()>
-                    },
-                )
-            }
-            Button(label = "Rescan".to_string(), on_click = rescan)
-        }
-    }
-}
-
-/// The live inspector screen: a status header, a tab strip, and the active
-/// tab's panel. Selection / expand / filter state lives in signals here so
-/// it survives panel rebuilds and tab switches.
-fn inspector_page(snapshot: Signal<Snapshot>, nav: Ref<StackHandle>) -> Element {
-    let tab: Signal<usize> = signal(0);
-    let sel_node: Signal<Option<u64>> = signal(None);
-    let expanded: Signal<HashSet<u64>> = signal(HashSet::new());
-    let log_filter: Signal<String> = signal(String::new());
-    let invoke_arg: Signal<String> = signal(String::new());
-
-    // Current idea-ui Tabs API: id-keyed tabs in a Signal list, id-based
-    // active + on_change. The body still branches on the index signal.
-    let tabs = signal(vec![
-        Tab::new("elements", "Elements"),
-        Tab::new("logs", "Logs"),
-        Tab::new("stats", "Stats"),
-    ]);
-    let active_id = rx!(match tab.get() {
-        0 => "elements".to_string(),
-        1 => "logs".to_string(),
-        _ => "stats".to_string(),
-    });
-    let on_tab: Rc<dyn Fn(String)> = Rc::new(move |id| {
-        tab.set(match id.as_str() {
-            "elements" => 0,
-            "logs" => 1,
-            _ => 2,
-        })
-    });
-    let back: Rc<dyn Fn()> = Rc::new(move || {
-        nav.get().map(|h| h.pop());
-    });
-
-    ui! {
-        scroll_view {
-            Stack(gap = StackGap::Sm, padding = StackPadding::Sm) {
-                text { move || format::header(&snapshot.get()) }
-                Tabs(tabs = tabs, active = active_id, on_change = on_tab)
-                InspectorBody(
-                    snapshot = snapshot,
-                    tab = tab,
-                    sel_node = sel_node,
-                    expanded = expanded,
-                    log_filter = log_filter,
-                    invoke_arg = invoke_arg,
-                )
-                Button(label = "Disconnect".to_string(), on_click = back)
-            }
-        }
-    }
-}
-
-/// Reactive tab switch. The scrutinee reads `tab.get()`, so the `ui!`
-/// `match` lowers to `runtime_core::switch(...)` and rebuilds the active
-/// arm whenever the tab changes. Patterns use guards on the bound `&usize`.
-#[component]
-fn InspectorBody(
-    snapshot: Signal<Snapshot>,
-    tab: Signal<usize>,
-    sel_node: Signal<Option<u64>>,
-    expanded: Signal<HashSet<u64>>,
-    log_filter: Signal<String>,
-    invoke_arg: Signal<String>,
-) -> Element {
-    ui! {
-        match tab.get() {
-            n if *n == 1 => {
-                LogsPanel(snapshot = snapshot, filter = log_filter)
-            }
-            n if *n == 2 => {
-                StatsPanel(snapshot = snapshot)
-            }
-            _ => {
-                ElementsPanel(snapshot = snapshot, selected = sel_node, expanded = expanded, invoke_arg = invoke_arg)
-            }
-        }
-    }
 }

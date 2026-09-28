@@ -27,6 +27,11 @@ default = []
 # available. Off by default so the local-render build path pulls
 # zero transport code.
 runtime-server = ["backend-macos/runtime-server"]
+# Forwarded to the backend so the generated wrapper can turn the Robot
+# surface on through its own `dev` feature — the wrapper depends on
+# `host-appkit`, not on `backend-macos` directly. Same shape as
+# `host-gtk/robot`.
+robot = ["backend-macos/robot"]
 
 [dependencies]
 # The scene-element vocabulary the boot entries take. (`runtime-core` is

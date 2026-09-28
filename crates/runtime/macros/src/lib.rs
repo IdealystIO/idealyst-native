@@ -45,6 +45,7 @@ mod doc_check;
 #[cfg_attr(not(feature = "strict-naming"), allow(dead_code))]
 mod naming_check;
 mod inline_props;
+mod inspect_emit;
 mod invocation_macro;
 mod jsx;
 mod lazy;
@@ -413,10 +414,8 @@ pub(crate) fn emit_component_tokens(
     // rule: an unmigrated feature must fail with its migration status).
     //
     // `#[method]` lowers for the inline-props component shape: the
-    // retarget maps `::runtime_core::robot::…` /
-    // `::runtime_core::__component_root` /
-    // `::runtime_core::__component_keepalive_effect` onto their
-    // `runtime_vocabulary::glue` mirrors. Only the LEGACY explicit-props
+    // retarget maps `::runtime_core::robot::…` onto its
+    // `runtime_vocabulary::glue` mirror. Only the LEGACY explicit-props
     // form stays rejected: its handle escaped through a `Bindable<H>`
     // return over the deleted `Element` — un-portable by type. Generic
     // components can't take the injected `bind_to` prop either
@@ -500,6 +499,9 @@ pub(crate) fn emit_component_tokens(
         Ok(g) => g,
         Err(e) => return e.to_compile_error(),
     };
+    // The explicit-props form reads its props list through the struct's
+    // `#[props]`-generated `InspectProps`; the inline form probes params.
+    let legacy_props = inline_glue.is_none() && inline_props::is_legacy_props_sig(&item_fn.sig);
     // Lazy mode threads the component's props across the chunk boundary and
     // generates the `loading`/`error` config fields — both of which need the
     // macro-generated inline-props struct. A no-arg or legacy explicit-props
@@ -540,6 +542,11 @@ pub(crate) fn emit_component_tokens(
     // bare `Element` are wrapped — richer return types (`Bindable<H>`,
     // …) can't flow through the `FnOnce() -> Element` collector.
     wrap_component_body_new_core(&mut item_fn);
+
+    // Register every instance with the robot component registry (props,
+    // source location, element link) — the inspector's component tree.
+    // Inert outside robot builds; see `inspect_emit`.
+    inspect_emit::wrap_body(&mut item_fn, legacy_props, bind_to_injected);
 
     // Bracket the body with a build probe so the runtime knows "a
     // component body is executing" — that's what powers the dev-build

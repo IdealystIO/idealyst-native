@@ -412,6 +412,9 @@ pub fn start_with<S, R, B>(
     // (b) the apple-core scheduler/executor post-dispatch hook.
     backend_apple_core::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
+    // Point the Robot bridge at the registry this boot actually fills.
+    #[cfg(feature = "robot")]
+    install_robot_env();
     // Live viewport source: the AppKit resize seams now reach the
     // world's ctx through [`forward_viewport`]. `finish`'s deferred
     // first mirror (a mount-buffered microtask that drains after the
@@ -425,6 +428,50 @@ pub fn start_with<S, R, B>(
         _registry: registry,
         world,
     }
+}
+
+/// Point the Robot bridge at the vocabulary registry and give it a way
+/// to enter the mounted world.
+///
+/// The bridge transport (`runtime_shared::robot::bridge`) dispatches to
+/// the shared substrate's LEGACY registry unless a host redirects it, and
+/// the v2 realize path registers every primitive and component in
+/// `runtime_vocabulary`'s. Without this a `--local` macOS dev build
+/// answers every verb well-formed and empty — the Inspector connects and
+/// shows no components. `backend_linux::newcore::install_robot_env` is
+/// the reference and documents both halves:
+///
+/// - `install_driver_env`: queries run inside the mounted world (a
+///   reactive label reads world signals) and actions settle through a
+///   flush, so a `click`'s staged writes are committed before it returns.
+/// - `install_verb_router`: forward to the vocabulary's command table,
+///   falling back on the exact `unknown command:` marker so verbs it
+///   does not own (`get_logs`, `screenshot`) still resolve.
+#[cfg(feature = "robot")]
+pub(crate) fn install_robot_env() {
+    runtime_vocabulary::robot::install_driver_env(
+        |f| match mounted_world() {
+            Some(world) => world.enter(|| f()),
+            // Pre-boot / post-stop there is no world; run plainly so a
+            // query still resolves static labels instead of panicking.
+            None => f(),
+        },
+        || {
+            if let Some(world) = mounted_world() {
+                // Re-entrant flush would panic; the in-flight one will
+                // commit these writes anyway.
+                if !world.is_flushing() {
+                    world.flush();
+                }
+            }
+        },
+    );
+    runtime_shared::robot::bridge::install_verb_router(|cmd, args| {
+        match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
+            Err(e) if e.starts_with("unknown command:") => None,
+            other => Some(other),
+        }
+    });
 }
 
 fn set_flush_world(world: Option<World>) {
@@ -1456,6 +1503,31 @@ impl caps::WireBindingOps for MacosBackend {
 mod tests {
     use super::*;
     use runtime_world::{effect, signal};
+
+    /// `idealyst dev --macos --local` connected the Inspector to a healthy
+    /// app and showed an EMPTY component tree: nothing pointed the bridge
+    /// transport at the vocabulary registry the v2 realize path fills, so
+    /// every verb answered from the shared substrate's legacy registry.
+    /// Drives `list_components` through the shared bridge's dispatch —
+    /// the path the TCP bridge's `poll` takes — and requires the
+    /// vocabulary's component to come back.
+    #[cfg(feature = "robot")]
+    #[test]
+    fn regression_macos_bridge_answers_from_the_vocabulary_registry() {
+        use runtime_shared::__serde_json as serde_json;
+        let _reg = runtime_vocabulary::robot::register_component("MacosProbe", Vec::new());
+        install_robot_env();
+        let out = runtime_shared::robot::bridge::invoke_command(
+            "list_components",
+            &serde_json::json!({}),
+        )
+        .expect("list_components");
+        runtime_shared::robot::bridge::clear_verb_router();
+        assert!(
+            out.contains("\"MacosProbe\""),
+            "the bridge must list components from the vocabulary registry; got {out}"
+        );
+    }
 
     /// `schedule_flush` queues exactly one deduped microtask; during a
     /// mount-buffering window it buffers (instead of dispatching to the

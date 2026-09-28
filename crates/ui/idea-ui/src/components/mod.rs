@@ -2,6 +2,39 @@
 //! plus the variant enums its stylesheet uses. Invocation macros
 //! live in `crate::invocations` so all of them are `#[macro_export]`
 //! at the crate root.
+//!
+//! # Reactive branches: `if` / `match` inside `ui!`
+//!
+//! A subtree that exists only in some states (a checkmark while checked,
+//! a popup while open, one grid per zoom level) is written as `if` /
+//! `match` INSIDE `ui!`. The macro lowers a condition that reads a signal
+//! to the scene's reactive branch glue (`when` for `if`, `switch` for
+//! `match`), keeps a provably static condition a plain Rust branch, and
+//! gives a missing `else` an out-of-flow placeholder so a toggle never
+//! shifts layout. Hand-calling `runtime_core::when` / `switch` bypasses all
+//! of that, and the `prefer-ui-control-flow` lint flags it.
+//!
+//! Two shapes genuinely need the direct call. Each such site carries
+//! `// idealyst-lint-disable-next-line prefer-ui-control-flow -- <reason>`
+//! naming one of them:
+//!
+//! - **static-prop fast path** — the branch is picked by a value DERIVED
+//!   from a `Reactive<T>` prop (`src.is_some()`, `indicator == Dot`,
+//!   `mode`), and a `Reactive::Static` prop must build its branch directly
+//!   with no reactive hole. `ui!` can't express that: any condition with a
+//!   call in it lowers reactively, and the type-driven static/reactive
+//!   dispatch only covers a bare `Reactive<bool>` / `Signal<bool>` path
+//!   (`if props.open { … }`). Closing this gap in the macro — e.g. a
+//!   `Reactive::map` that keeps a static prop static, so `if has_src { … }`
+//!   dispatches by type — would retire these sites.
+//! - **keyed rebuild of one shape** — the subtree has ONE shape, rebuilt
+//!   whenever a derived key changes (Pagination on `(page, total)`,
+//!   Button on its structural props, SubMenu rows on their labels). The
+//!   macro has no keyed-rebuild form; the `ui!` spelling would be a
+//!   single-arm `match key { k => … }`, which is the same call in disguise.
+//!
+//! A multi-way choice between DIFFERENT shapes is always a `ui!` `match`,
+//! even when the key is a tuple (Calendar's per-zoom grid).
 
 use std::rc::Rc;
 
@@ -59,6 +92,7 @@ pub(crate) fn optional_reactive_text(
                 let f = f.clone();
                 move || f().is_some()
             };
+            // idealyst-lint-disable-next-line prefer-ui-control-flow -- static-prop fast path (see `components/mod.rs`)
             Some(when(
                 cond,
                 move || {

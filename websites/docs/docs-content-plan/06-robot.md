@@ -119,26 +119,29 @@ Captured logs include `eprintln!` from Rust, `NSLog` from iOS, and
 the backend's own diagnostics. The buffer is a ring; old entries
 are dropped if you don't drain.
 
-### Drive component methods
+### Inspect components
 
-The most interesting part for testing apps that use `methods!`:
+Every mounted `#[component]` registers itself in robot builds (every
+`idealyst dev` build), with its props and source location. Registering
+adds no node to the tree: a dev build lays out exactly like a release
+build.
 
 | Tool | What it does |
 | --- | --- |
-| `list_components` | Every mounted `#[component]` instance that declared a `methods!` block. Returns `{instance_id, fn_name, methods: [{name, args}]}`. |
-| `invoke_method` | Call one of those methods with a JSON args object keyed by parameter name. |
+| `get_snapshot` | The element tree. A node that is a component's root carries `components: [{instance_id, name}]`, outermost first (a component whose root is another component's element shares it). Read top-down, those links are the rendered component hierarchy. |
+| `list_components` | Every mounted component instance: `{instance_id, name, file, line, element_id, methods: [{name, args}]}`. |
+| `get_component` | One instance with its props: `props: [{name, type, mode, value}]`. `mode` is `static` or `live` for a `Reactive<T>` prop (which arm the caller passed), `signal`, `handler`, `children`, `value` or `opaque`; `value` is the current `Debug` rendering (truncated), or `null` when the type has no `Debug`. |
+| `invoke_method` | Call one of a component's `#[method]`s with a JSON args object keyed by parameter name. |
 
 So if you have:
 
 ```rust
 #[component]
-pub fn counter(props: &Props) -> Bindable<CounterHandle> {
-    let value = signal(0);
-    methods! {
-        fn reset(&self) { value.set(0); }
-        fn bump_by(&self, n: i32) { value.update(|v| *v += n); }
-    }
-    // ...
+fn Counter(initial: i32) -> Element {
+    let value = signal(initial.get());
+    #[method]
+    fn bump_by(n: i32) { value.update(|v| v + n); }
+    ui! { text(test_id = "count") { "{value}" } }
 }
 ```
 
@@ -155,12 +158,30 @@ pub fn counter(props: &Props) -> Bindable<CounterHandle> {
 
 …and the running app's counter increments by 5. Args
 JSON-deserialize into the parameter types reported by
-`list_components` — anything `serde` can decode works, including
+`list_components`, so anything `serde` can decode works, including
 custom structs.
 
-This is what makes `methods!` actually useful for testing: the
-parent's view of a component's imperative surface becomes the
-test's view too.
+### Watch signals
+
+A signal is visible to the bridge once the app calls
+`robot::watch_signal("name", sig)`; `robot::watch_signal_writable`
+also lets the bridge set it (the value type must be `Deserialize`).
+
+| Tool | What it does |
+| --- | --- |
+| `list_watched_signals` | `{id, name, value, writes, changed_ago_ms, writable}` per watched signal. |
+| `read_signal` | One value, by `name` or `id`. |
+| `get_signal_history` | The last 64 values, oldest first, each with `ago_ms`. |
+| `write_signal` | Set a writable signal: `{id or name, value}` with the value as JSON. |
+
+### Drive navigators
+
+| Tool | What it does |
+| --- | --- |
+| `list_navigators` | Every navigator: active route and path, back stack, `controllable`. |
+| `navigate` | `{nav_id, action: push/replace/reset/pop, path}`. The path is a full path (the navigator's base included) and resolves the way a deep link does. |
+
+The [Inspector](#) is a desktop app built on exactly these tools.
 
 ## What a session looks like
 
@@ -255,6 +276,6 @@ The full set of Robot MCP tools mirrors the bridge surface above:
 
 - [Dev tools](#) — the MCP proxy in context, the bridge protocol
   on the wire, how Robot fits with `idealyst dev`.
-- [Components](#) — `methods!` blocks, the source of
-  `list_components` / `invoke_method` targets.
+- [Components](#) — `#[method]` fns, the source of
+  `invoke_method` targets.
 - [Primitives](#) — the `test_id` slot every primitive carries.

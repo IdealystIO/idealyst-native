@@ -63,7 +63,16 @@ pub enum Element {
     /// collector). The scope is folded into the enclosing
     /// [`Realized`](crate::Realized) at realize time and lives exactly as
     /// long as the subtree stays realized.
-    Owned { element: Box<Element>, owned: Owned },
+    ///
+    /// `hooks` are realize-time brackets for tooling (see
+    /// [`with_realize_hook`]), outermost first. Empty for every element
+    /// the author surface builds, so a normal build carries no cost; match
+    /// with `..` if you only need the subtree and its scope.
+    Owned {
+        element: Box<Element>,
+        owned: Owned,
+        hooks: Vec<RealizeHook>,
+    },
     /// A **multi-node** primitive: one payload that mounts N sibling
     /// nodes directly into the enclosing parent through a
     /// [`register_many`](crate::Registry::register_many) handler. This is
@@ -158,9 +167,10 @@ pub fn with_rebuild(element: Element, rebuilder: std::rc::Rc<dyn Any>) -> Elemen
         Element::Item { data, children, tag, .. } => {
             Element::Item { data, children, tag, rebuild: Some(rebuilder) }
         }
-        Element::Owned { element, owned } => Element::Owned {
+        Element::Owned { element, owned, hooks } => Element::Owned {
             element: Box::new(with_rebuild(*element, rebuilder)),
             owned,
+            hooks,
         },
         other => other,
     }
@@ -187,8 +197,8 @@ pub fn with_tag(element: Element, tag: NodeTag) -> Element {
         // An `Owned` is a component boundary: tag the subtree ROOT it
         // wraps, so a component's own node carries the tag of the call
         // site that built it.
-        Element::Owned { element, owned } => {
-            Element::Owned { element: Box::new(with_tag(*element, tag)), owned }
+        Element::Owned { element, owned, hooks } => {
+            Element::Owned { element: Box::new(with_tag(*element, tag)), owned, hooks }
         }
         // A region is not a node, but a component whose body IS one
         // (idea-ui's `Button` the moment a structural prop is live) has
@@ -289,6 +299,75 @@ pub fn owned(element: Element, owned: Owned) -> Element {
     Element::Owned {
         element: Box::new(element),
         owned,
+        hooks: Vec::new(),
+    }
+}
+
+/// A realize-time bracket: called just before the subtree it is attached
+/// to realizes, and the closure it returns is called just after. Both run
+/// inside the realize walk, so every node the subtree mounts is created
+/// between the two calls.
+///
+/// `Fn` (not `FnOnce`) because a hook on a reactive region re-runs for
+/// every branch the region builds (see [`with_realize_hook`]).
+pub type RealizeHook = Rc<dyn Fn() -> Box<dyn FnOnce()>>;
+
+/// Bracket `element`'s realization with `hook`, without adding a node or
+/// an effect.
+///
+/// This is how tooling learns which mounted nodes a component produced
+/// (the robot registry links a component to the first node realized
+/// inside its bracket). It must not change what the host sees: a
+/// structural wrapper — a `Dyn` hole, say — would put an anchor node
+/// into every component on hosts that anchor regions, which is a
+/// different layout in dev than in release.
+///
+/// Where the bracket goes, by the root's shape:
+///
+/// - **A reactive region** (`Dyn`, possibly under `Owned` wrappers): the
+///   hook moves onto each branch the region builds, so it brackets the
+///   CURRENT contents after every swap, not just the first ones.
+/// - **Anything else**: an `Owned` wrapper carries it (an existing
+///   `Owned` gains it as its new outermost hook). Everything that walks
+///   the scene already sees through `Owned`, so the subtree reads the
+///   same to every consumer.
+///
+/// Hooks applied later bracket OUTSIDE hooks applied earlier, so a
+/// component that returns another component's element wraps it: the
+/// outer component's enter runs first and its exit last.
+pub fn with_realize_hook(element: Element, hook: RealizeHook) -> Element {
+    if is_region_rooted(&element) {
+        return match element {
+            Element::Owned { element, owned, hooks } => Element::Owned {
+                element: Box::new(with_realize_hook(*element, hook)),
+                owned,
+                hooks,
+            },
+            Element::Dyn(spec) => {
+                Element::Dyn(spec.map_build(move |built| with_realize_hook(built, hook.clone())))
+            }
+            _ => unreachable!("is_region_rooted accepts only Owned-wrapped or bare Dyn"),
+        };
+    }
+    match element {
+        Element::Owned { element, owned, mut hooks } => {
+            hooks.insert(0, hook);
+            Element::Owned { element, owned, hooks }
+        }
+        other => Element::Owned {
+            element: Box::new(other),
+            owned: Owned::default(),
+            hooks: vec![hook],
+        },
+    }
+}
+
+/// `true` when `element`, seen through `Owned` wrappers, is a `Dyn` hole.
+fn is_region_rooted(element: &Element) -> bool {
+    match element {
+        Element::Owned { element, .. } => is_region_rooted(element),
+        Element::Dyn(_) => true,
+        _ => false,
     }
 }
 
@@ -305,6 +384,7 @@ pub fn component_scope(f: impl FnOnce() -> Element) -> Element {
         Element::Owned {
             element: Box::new(element),
             owned,
+            hooks: Vec::new(),
         }
     }
 }
@@ -359,13 +439,13 @@ pub struct DynSpec {
     pub(crate) retire: Option<RetireHook>,
 }
 
-#[cfg(feature = "ui-overlay")]
 impl DynSpec {
     /// Wrap whatever this hole builds, on EVERY build.
     ///
-    /// That "every build" is the whole property [`with_tag`] needs: the
-    /// wrapper it installs runs again each time the region swaps, so the
-    /// contents that are showing are always the ones carrying the tag.
+    /// That "every build" is the whole property [`with_tag`] and
+    /// [`with_realize_hook`] need: the wrapper runs again each time the
+    /// region swaps, so the contents that are showing are always the ones
+    /// carrying the tag / hook.
     /// The guard (`changed`) is untouched — wrapping it would change when
     /// the region fires, and this must change only what it produces.
     pub(crate) fn map_build(self, f: impl Fn(Element) -> Element + 'static) -> DynSpec {

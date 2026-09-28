@@ -166,7 +166,7 @@ fn navigation_suite() -> robot_e2e::Suite {
 /// `#[method]` invocation over the robot surface — the same
 /// `list_components` → `invoke_method` path the MCP server and the Inspector
 /// use. Also asserts the element↔component link the macro establishes
-/// (the realize-time `__component_root` arm — so the Inspector can
+/// (the registration's realize hook — so the Inspector can
 /// resolve a selected element to its
 /// methods).
 fn component_methods_suite() -> robot_e2e::Suite {

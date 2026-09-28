@@ -41,7 +41,7 @@ use std::rc::Rc;
 
 use runtime_core::primitives::portal::AnchorTarget;
 use runtime_core::{
-    component, effect, signal, ui, view, when, Element, FillRule, IconData, IdealystSchema,
+    component, effect, signal, ui, view, Element, FillRule, IconData, IdealystSchema,
     IntoElement, Reactive, Ref, Signal, ViewHandle,
 };
 
@@ -226,33 +226,34 @@ pub fn DateInput(props: DateInputProps) -> Element {
     let first_weekday = props.first_weekday.clone();
     let labels = props.labels.clone();
 
-    let popup = when(
-        move || open.get(),
-        move || {
-            let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
-            let pick_close = close.clone();
-            let pick_commit = on_change.clone();
-            let calendar = ui! {
-                Calendar(
-                    value = value,
-                    on_change = Rc::new(move |d: CivilDate| {
-                        // The host writes `value`; the wiring's follow
-                        // effect re-renders the text canonically.
-                        (pick_commit)(Some(d));
-                        (pick_close)();
-                    }) as Rc<dyn Fn(CivilDate)>,
-                    min = min.clone(),
-                    max = max.clone(),
-                    is_date_disabled = is_date_disabled.clone(),
-                    first_weekday = first_weekday.clone(),
-                    labels = labels.clone(),
-                    framed = false,
-                )
-            };
-            anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar], close)
-        },
-        runtime_core::empty_absolute_view,
-    );
+    let build_popup = move || {
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+        let pick_close = close.clone();
+        let pick_commit = on_change.clone();
+        let calendar = ui! {
+            Calendar(
+                value = value,
+                on_change = Rc::new(move |d: CivilDate| {
+                    // The host writes `value`; the wiring's follow
+                    // effect re-renders the text canonically.
+                    (pick_commit)(Some(d));
+                    (pick_close)();
+                }) as Rc<dyn Fn(CivilDate)>,
+                min = min.clone(),
+                max = max.clone(),
+                is_date_disabled = is_date_disabled.clone(),
+                first_weekday = first_weekday.clone(),
+                labels = labels.clone(),
+                framed = false,
+            )
+        };
+        anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar], close)
+    };
+    let popup = ui! {
+        if open.get() {
+            build_popup()
+        }
+    };
 
     view(vec![field, popup]).bind(anchor_ref).into_element()
 }
@@ -416,57 +417,58 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
     let time_format = props.time_format.clone();
     let default_time = props.default_time.clone();
 
-    let popup = when(
-        move || open.get(),
-        move || {
-            let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+    let build_popup = move || {
+        let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 
-            let commit = {
-                let on_change = on_change.clone();
-                let default_time = default_time.clone();
-                Rc::new(move || {
-                    if let Some(d) = date_part.peek() {
-                        let t = time_part.peek().unwrap_or(default_time.get());
-                        (on_change)(Some(CivilDateTime::new(d, t)));
+        let commit = {
+            let on_change = on_change.clone();
+            let default_time = default_time.clone();
+            Rc::new(move || {
+                if let Some(d) = date_part.peek() {
+                    let t = time_part.peek().unwrap_or(default_time.get());
+                    (on_change)(Some(CivilDateTime::new(d, t)));
+                }
+            })
+        };
+
+        let pick_commit = commit.clone();
+        let calendar = ui! {
+            Calendar(
+                value = date_part,
+                on_change = Rc::new(move |d: CivilDate| {
+                    date_part.set(Some(d));
+                    (pick_commit)();
+                }) as Rc<dyn Fn(CivilDate)>,
+                min = min.clone(),
+                max = max.clone(),
+                is_date_disabled = is_date_disabled.clone(),
+                first_weekday = first_weekday.clone(),
+                labels = labels.clone(),
+                framed = false,
+            )
+        };
+
+        let time_commit = commit.clone();
+        let time_row = ui! {
+            TimeInput(
+                value = time_part,
+                on_change = Rc::new(move |t: Option<CivilTime>| {
+                    if let Some(t) = t {
+                        time_part.set(Some(t));
+                        (time_commit)();
                     }
-                })
-            };
+                }) as Rc<dyn Fn(Option<CivilTime>)>,
+                format = time_format.clone(),
+            )
+        };
 
-            let pick_commit = commit.clone();
-            let calendar = ui! {
-                Calendar(
-                    value = date_part,
-                    on_change = Rc::new(move |d: CivilDate| {
-                        date_part.set(Some(d));
-                        (pick_commit)();
-                    }) as Rc<dyn Fn(CivilDate)>,
-                    min = min.clone(),
-                    max = max.clone(),
-                    is_date_disabled = is_date_disabled.clone(),
-                    first_weekday = first_weekday.clone(),
-                    labels = labels.clone(),
-                    framed = false,
-                )
-            };
-
-            let time_commit = commit.clone();
-            let time_row = ui! {
-                TimeInput(
-                    value = time_part,
-                    on_change = Rc::new(move |t: Option<CivilTime>| {
-                        if let Some(t) = t {
-                            time_part.set(Some(t));
-                            (time_commit)();
-                        }
-                    }) as Rc<dyn Fn(Option<CivilTime>)>,
-                    format = time_format.clone(),
-                )
-            };
-
-            anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar, time_row], close)
-        },
-        runtime_core::empty_absolute_view,
-    );
+        anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar, time_row], close)
+    };
+    let popup = ui! {
+        if open.get() {
+            build_popup()
+        }
+    };
 
     view(vec![field, popup]).bind(anchor_ref).into_element()
 }

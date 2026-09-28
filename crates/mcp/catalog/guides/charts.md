@@ -321,36 +321,45 @@ bubble through `anchored_overlay`.
 
 Both of these produce symptoms that look like chart bugs. Neither is.
 
-**1. `when` dedups on its predicate's boolean.** Building the whole bubble
-inside `when(|| hover.get().is_some())` mounts it once and then never updates
-it: the predicate stays `true` as you scrub, so the branch closure does not
+**1. A reactive `if` dedups on its condition's boolean.** Building the whole
+bubble inside `if tip.get().is_some() { … }` mounts it once and then never
+updates it: the condition stays `true` as you scrub, so the branch does not
 re-run and the bubble keeps whichever column you hovered first. It appears to
 work if you test by leaving the chart between hovers, because that flips the
-predicate and forces a rebuild. Split the work by how often each part changes:
+condition and forces a rebuild. Split the work by how often each part changes:
 
 ```rust
-when(
-    move || tip.get().is_some(),        // EXISTENCE only
-    move || {
-        let rows = switch(               // CONTENT — per column, not per pixel
-            move || tip.get().map(|(lines, _, _)| lines).unwrap_or_default(),
-            move |lines: &Vec<String>| { /* text nodes */ },
-        );
-        view(vec![rows]).with_style(move || {   // POSITION — per move, no rebuild
-            let (x, y) = tip.get().map(|(_, x, y)| (x, y)).unwrap_or((0.0, 0.0));
-            StyleApplication::new(bubble_sheet(x, y))
-        })
-    },
-    || /* closed branch — see trap 2 */,
-)
+// CONTENT — rebuilt per column, not per pixel. One shape rebuilt when its
+// key changes: the one case the direct `switch` is the right call.
+let rows = move || {
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
+    switch(
+        move || tip.get().map(|(lines, _, _)| lines).unwrap_or_default(),
+        move |lines: &Vec<String>| { /* text nodes */ },
+    )
+};
+// POSITION — per move, no rebuild.
+let bubble_style = move || {
+    let (x, y) = tip.get().map(|(_, x, y)| (x, y)).unwrap_or((0.0, 0.0));
+    StyleApplication::new(bubble_sheet(x, y))
+};
+ui! {
+    if tip.get().is_some() {                  // EXISTENCE only
+        view(style = bubble_style.clone()) {
+            rows()
+        }
+    }
+}
 ```
 
-**2. Both `when` branches must be out of flow.** The two branches occupy the
-same child slot in the parent. If the open branch is `Position::Absolute` and
-the closed one is a plain `view`, then in a flex parent with a `gap` the empty
-view contributes a gap slot and the absolute bubble does not — so the whole
-layout shifts by one gap every time the pointer enters or leaves the chart.
-Give the closed branch `position: absolute` too.
+**2. The closed branch must be out of flow.** The open and closed branches
+occupy the same child slot in the parent. If the open branch is
+`Position::Absolute` and the closed one is a plain `view`, then in a flex
+parent with a `gap` the empty view contributes a gap slot and the absolute
+bubble does not — so the whole layout shifts by one gap every time the pointer
+enters or leaves the chart. An `if` with no `else` inside `ui!` already emits
+an out-of-flow placeholder; if you write an `else`, give it
+`position: absolute` too.
 
 `examples/charts-demo` implements all three placements on one callback, with
 both traps handled, and is the reference.

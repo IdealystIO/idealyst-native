@@ -941,6 +941,7 @@ pub fn Chart(props: &ChartProps) -> Element {
     // them: the rule draws and its label does not.
     let plot_labels = {
         let label_style = label_style.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the in-plot label layer
         switch(
             move || {
                 output
@@ -1021,11 +1022,13 @@ pub fn Chart(props: &ChartProps) -> Element {
         // the plot size cycling 312x166 / 356x166 / 312x188 — the swings
         // are exactly the two gutters — and the canvas repainting on
         // every one of them, which is what made the chart flicker.
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the y gutter box, keyed on its width
         switch(
             move || gutters.get().0,
             move |w: &f32| {
                 let w = *w;
                 let label_style = label_style.clone();
+                // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the y labels
                 let inner = switch(
                     move || {
                         output
@@ -1077,11 +1080,13 @@ pub fn Chart(props: &ChartProps) -> Element {
         // the x labels are offset by the Y gutter to get back into
         // plot-local x, so this box depends on BOTH reserved sizes; both
         // are spec-derived and stable.
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the x gutter box, keyed on both gutters
         switch(
             move || gutters.get(),
             move |(y_w, h): &(f32, f32)| {
                 let (y_w, h) = (*y_w, *h);
                 let label_style = label_style.clone();
+                // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the x labels
                 let inner = switch(
                     move || {
                         output
@@ -1129,6 +1134,7 @@ pub fn Chart(props: &ChartProps) -> Element {
     let legend = {
         let spec_for_legend = spec.clone();
         let label_style = label_style.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the legend row
         switch(
             move || {
                 let s = spec_for_legend.get();

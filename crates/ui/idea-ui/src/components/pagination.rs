@@ -98,31 +98,32 @@ fn nav_button(glyph: &str, target: Option<usize>, on_change: Rc<dyn Fn(usize)>) 
 /// matching `page` is marked active; navigation fires `on_change`.
 ///
 /// The whole row is rebuilt through [`switch`](runtime_core::switch) keyed
-/// on `page`. A `#[component]` body builds **once**, so computing the
-/// prev/next targets and the windowed cell list from a single `page.get()`
-/// snapshot froze the arrows (they always fired the initial ±1 and the
-/// window never slid — only the fine-grained active-highlight updated).
-/// `switch` re-runs the builder with the live page on every change, so the
-/// targets, the sliding window, and the highlight all stay correct.
+/// on `(page, total)`. A `#[component]` body builds **once**, so computing
+/// the prev/next targets and the windowed cell list from a single
+/// `page.get()` snapshot froze the arrows (they always fired the initial ±1
+/// and the window never slid — only the fine-grained active-highlight
+/// updated). `switch` re-runs the builder with the live page and page count
+/// on every change, so the targets, the sliding window, and the highlight
+/// all stay correct.
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
     let page = props.page;
-    // TODO(reactive-sweep): route `total` reactively. It drives the windowed
-    // cell STRUCTURE (the count + which cells ellipsize, rebuilt in
-    // `build_row`). The row is already `switch`-keyed on `page`, not `total`, so
-    // a live `total` signal won't slide the window in place; switching on
-    // `(page, total)` is the fix. Snapshotted at build for now.
-    let total = props.total.get().max(1);
+    let total = props.total.clone();
     let on_change = props.on_change.clone();
+    // A direct `switch`, not a `ui!` `match`: the row has ONE shape, rebuilt
+    // whenever its derived key changes. `ui!` has no keyed-rebuild form —
+    // the equivalent would be a single-arm `match (page.get(), …) { k => … }`,
+    // which is this call in disguise.
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
     runtime_core::switch(
-        move || page.get(),
-        move |current| build_row(*current, total, on_change.clone()),
+        move || (page.get(), total.get().max(1)),
+        move |&(current, total)| build_row(current, total, on_change.clone()),
     )
 }
 
 /// Build the pagination row for a concrete `current` page. Called fresh by
-/// `switch` on every page change, so all page-derived values (nav targets,
-/// the windowed cells, the active mark) are computed from the live page.
+/// `switch` on every page or page-count change, so all derived values (nav
+/// targets, the windowed cells, the active mark) are computed live.
 fn build_row(current: usize, total: usize, on_change: Rc<dyn Fn(usize)>) -> Element {
     let mut kids: Vec<Element> = Vec::new();
 

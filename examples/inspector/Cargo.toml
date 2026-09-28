@@ -3,7 +3,7 @@ name = "inspector"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Idealyst Inspector — a runtime debugging dashboard. Connects to a running idealyst app's robot bridge (the single TCP newline-JSON transport) and shows, live: every loaded navigator (current + back-stack), the element tree, components and their callable methods, reactive-arena + perf phase counters, watched signal values, and captured logs. MVP host: macOS desktop."
+description = "Idealyst Inspector — a runtime debugging dashboard. Connects to a running idealyst app's robot bridge (the single TCP newline-JSON transport) and shows, live: the rendered component tree with each instance's props (live/static, current values) and callable methods, watched signals with history, every navigator's back stack, captured logs and phase timers. Host: macOS desktop."
 # Not published to the idealyst registry: this crate is workspace-internal
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
@@ -20,18 +20,24 @@ crate-type = ["rlib"]
 # src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
 # absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
 # `register_scene_extensions` is generic over the registry host.
+# The platform surface `src/main.rs` boots through.
+idealyst = { workspace = true }
 runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
-stack-navigator = { workspace = true }
-idea-ui-nav = { workspace = true }
+serde = { workspace = true }
 serde_json = "1"
 
 # No backend deps: this crate is a platform-agnostic app library (the
 # CLI-generated macOS wrapper brings `backend-macos` and calls
 # `host_appkit::newcore::run_with`), so it compiles on any host target.
+
+[dev-dependencies]
+# Screen mount tests (`src/ui/tests.rs`) realize the real screens against
+# the recording mock host.
+host-mock = { path = "../../crates/dev/host-mock" }
 
 [package.metadata.idealyst.app]
 name      = "Inspector"

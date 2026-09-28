@@ -32,7 +32,7 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, effect, pressable, signal, switch, text, ui, view, Element, FillRule, IconData,
+    component, effect, pressable, signal, text, ui, view, Element, FillRule, IconData,
     IdealystSchema, IntoElement, Signal, StyleApplication,
 };
 
@@ -192,23 +192,20 @@ pub(crate) fn calendar_view(core: Rc<CalendarCore>) -> Element {
         .into_element();
 
     // --- body -------------------------------------------------------------
-    // Keyed on everything the grid's STRUCTURE depends on. Selection is
-    // deliberately absent: it only affects cell styles, which re-resolve
-    // live without a rebuild (and without remounting pressables mid-drag).
+    // One grid per zoom level, rebuilt whenever anything the grid's
+    // STRUCTURE depends on changes (the visible month, the zoom, the
+    // bounds). Selection is deliberately absent from the key: it only
+    // affects cell styles, which re-resolve live without a rebuild (and
+    // without remounting pressables mid-drag).
     let body_core = core.clone();
-    let body = switch(
-        {
-            let core = core.clone();
-            move || (visible.get(), zoom.get(), core.min.get(), core.max.get())
-        },
-        move |(vis, zoom_now, min, max): &((i32, u8), Zoom, Option<CivilDate>, Option<CivilDate>)| {
-            match zoom_now {
-                Zoom::Days => day_grid(&body_core, *vis, *min, *max),
-                Zoom::Months => month_grid(&body_core, *vis, zoom),
-                Zoom::Years => year_grid(&body_core, *vis, zoom),
-            }
-        },
-    );
+    let key_core = core.clone();
+    let body = ui! {
+        match (visible.get(), zoom.get(), key_core.min.get(), key_core.max.get()) {
+            (vis, Zoom::Days, min, max) => { day_grid(&body_core, *vis, *min, *max) }
+            (vis, Zoom::Months, _, _) => { month_grid(&body_core, *vis, zoom) }
+            (vis, Zoom::Years, _, _) => { year_grid(&body_core, *vis, zoom) }
+        }
+    };
 
     let framed = core.framed;
     let panel_style = move || {

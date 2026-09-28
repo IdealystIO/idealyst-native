@@ -192,12 +192,15 @@ pub mod handlers;
 pub mod prims;
 #[cfg(feature = "robot")]
 pub mod robot;
-// Always compiled (stub-shaped without `robot`): the `#[component]`
-// macro's `#[method]` emission references `glue::robot::…` +
-// `glue::__component_root` unconditionally — old-core stub-module
-// parity (see robot_methods' module docs).
+// Always compiled (stub-shaped without `robot`): every `#[component]`
+// emits `glue::__inspect::…` (and a `#[method]` component `glue::robot::…`)
+// unconditionally (see robot_methods' module docs).
 #[doc(hidden)]
 pub mod robot_methods;
+// Always compiled for the same reason: `#[component]` / `#[props]` emit
+// the prop probes unconditionally (called only in robot builds).
+#[doc(hidden)]
+pub mod robot_props;
 #[cfg(feature = "robot")]
 #[doc(hidden)]
 pub mod robot_watch;

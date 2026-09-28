@@ -419,6 +419,7 @@ pub fn Progress(props: &ProgressProps) -> Element {
         build_for(props.mode.get())
     } else {
         let mode = props.mode.clone();
+        // idealyst-lint-disable-next-line prefer-ui-control-flow -- static-prop fast path (see `components/mod.rs`)
         runtime_core::switch(move || mode.get(), move |&m| build_for(m))
     };
 

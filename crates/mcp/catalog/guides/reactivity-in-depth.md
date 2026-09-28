@@ -174,19 +174,30 @@ dropped and its signal subscriptions released — **state in the hidden branch i
 lost.**
 
 - `when(cond, then, otherwise)` — two-way. `cond` reads signals and returns
-  `bool`; the active branch rebuilds from scratch on change.
+  `bool`; the active branch rebuilds from scratch on change. **This is what
+  `ui!`'s `if` lowers to** — write `if open.get() { … }` inside the macro.
 - `switch(scrutinee, |&key| …)` — multi-way. `scrutinee` returns any
   `PartialEq + 'static` value (usually an enum); the subtree rebuilds only when
-  the key actually changes. `ui!`'s `match` lowers to this — write a normal
-  `match` in the macro and it emits `switch`.
+  the key actually changes. **This is what `ui!`'s `match` lowers to** — write
+  `match mode.get() { … }` inside the macro.
 - `fragment(children)` — a **layout-transparent** sibling group. Return it from
   a `#[component]` that conceptually yields several siblings but must return one
   `Element` — realize splices the children into the parent with no wrapper
   view (so `flex: 1` / absolute overlays aren't broken by a box). Built once,
-  **not** reconciled — for a reactive child set use `switch`/`when`/keyed `for`
+  **not** reconciled — for a reactive child set use `ui!` `if` / `match` / keyed `for`
   (`for item in items, key = item.id` — the SIGNAL itself in the header, never
   `items.get()`, which freezes a build-time snapshot; see the
   `keyed_list_add_remove` recipe).
+
+Author code writes the `ui!` form, not these calls: the macro decides static
+vs reactive per condition and gives a missing `else` an out-of-flow
+placeholder. A hand call is flagged by the `prefer-ui-control-flow` lint. The
+two shapes the macro can't express — a **static-prop fast path** (branching on
+a value derived from a `Reactive<T>` prop without a reactive hole when the
+prop is static) and a **keyed rebuild of one shape** (one subtree rebuilt when
+a derived key changes) — keep the direct call with a reasoned
+`// idealyst-lint-disable-next-line prefer-ui-control-flow -- <why>`. See
+[[idiomatic-components]].
 
 ## Lifecycle — `on_cleanup`
 

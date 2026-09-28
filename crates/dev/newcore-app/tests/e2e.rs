@@ -708,7 +708,7 @@ fn robot_registry_empties_on_app_unmount() {
 // ===========================================================================
 
 /// The `#[method]` component registers its methods at mount, links to
-/// its root element (the realize-time `__component_root` arm), invokes
+/// its root element (the registration's realize hook), invokes
 /// by name + JSON args (writes settle through the driver env), and
 /// deregisters on unmount.
 #[test]

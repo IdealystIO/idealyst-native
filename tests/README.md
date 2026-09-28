@@ -7,7 +7,8 @@ toolchain changes don't break the runtime independently of any
 particular example app's evolving content.
 
 Each subdirectory is a normal idealyst project (`pub fn app() -> Element`
-+ `pub fn register_scene_extensions(...)`) that builds via `idealyst build
++ `pub fn register_scene_extensions(...)` in `src/lib.rs`, and the
+one-line `idealyst::entry!` in `src/main.rs`) that builds via `idealyst build
 --web --release` like any other scaffold. They're tiny on purpose — if
 something regresses here, the surface area to bisect is small.
 

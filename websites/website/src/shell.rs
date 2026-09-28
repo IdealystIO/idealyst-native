@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use runtime_core::ScrollViewHandle;
 use runtime_core::{
-    component, derived, effect, icon, pressable, signal, text, ui, view, when, Easing,
+    component, derived, effect, icon, pressable, signal, text, ui, view, Easing,
     IntoElement, Element, Ref, Route, SafeAreaSides, Signal, StrokeAnimation, StyleApplication,
     ViewHandle,
 };
@@ -144,25 +144,23 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
     install_scroll_spy(entries.clone(), scroll_y, active_idx, viewport_ref, content_ref);
 
     // The TOC ("On this page") column is only rendered at Lg or
-    // wider — below that it crowds the prose. `when(...)` swaps
+    // wider — below that it crowds the prose. The `if` swaps
     // between the TOC subtree and an empty placeholder reactively,
     // so a window resize across the threshold mounts/unmounts the
     // TOC + its scroll-spy effect rather than just hiding via CSS.
     let toc_entries = entries;
-    let toc = when(
-        move || {
-            matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl)
-        },
-        move || render_toc(
-            toc_entries.clone(),
-            active_idx,
-            scroll_y,
-            scroll_ref,
-            viewport_ref,
-            content_ref,
-        ),
-        || view(Vec::<Element>::new()).into_element(),
-    );
+    let toc = ui! {
+        if matches!(current_breakpoint().get(), Breakpoint::Lg | Breakpoint::Xl) {
+            render_toc(
+                toc_entries.clone(),
+                active_idx,
+                scroll_y,
+                scroll_ref,
+                viewport_ref,
+                content_ref,
+            )
+        }
+    };
 
     let body_style = ScreenScroll();
     // The scroll viewport wrapper tightly wraps the `scroll_view`

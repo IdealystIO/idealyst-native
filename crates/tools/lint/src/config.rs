@@ -156,6 +156,15 @@ impl Scope {
 /// ```
 ///
 /// A directive with no rule ids after it suppresses *all* rules.
+///
+/// Anything after ` -- ` is the REASON — free prose, never read as rule
+/// ids (ESLint's convention). Write one whenever the suppression marks a
+/// deliberate exception rather than a false positive, so the next reader
+/// learns why the rule doesn't apply here:
+///
+/// ```ignore
+/// // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape
+/// ```
 #[derive(Debug, Default)]
 pub struct Suppressions {
     file: Option<Scope>,
@@ -207,9 +216,12 @@ impl Suppressions {
 }
 
 /// Parse the rule-id list trailing a directive. Empty → all rules.
-/// Accepts comma- and/or whitespace-separated ids.
+/// Accepts comma- and/or whitespace-separated ids, up to an optional
+/// `-- reason` (rule ids are kebab-case with single hyphens, so `--` can
+/// never start one).
 fn parse_scope(rest: &str) -> Scope {
-    let ids: Vec<String> = rest
+    let ids_part = rest.split("--").next().unwrap_or("");
+    let ids: Vec<String> = ids_part
         .split(|c: char| c == ',' || c.is_whitespace())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -272,6 +284,22 @@ mod tests {
         assert!(sup.suppresses("prefer-signal-fn", 2));
         assert!(!sup.suppresses("prefer-signal-fn", 1));
         assert!(!sup.suppresses("prefer-ui-macro", 2), "other rules unaffected");
+    }
+
+    /// Before `-- reason` was recognized, every word of the reason became a
+    /// "rule id" — harmless for the named rule, but it turned a reason-only
+    /// directive (`-- why`) from "all rules" into a list of nonsense ids that
+    /// suppressed nothing.
+    #[test]
+    fn regression_reason_after_double_dash_is_not_rule_ids() {
+        let src = "// idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape\nswitch(a, b);\n";
+        let sup = Suppressions::parse(src);
+        assert!(sup.suppresses("prefer-ui-control-flow", 2));
+        assert!(!sup.suppresses("prefer-ui-macro", 2), "only the named rule");
+        assert!(!sup.suppresses("rebuild", 2), "reason words are not ids");
+
+        let bare = "switch(a, b); // idealyst-lint-disable-line -- the macro can't express it\n";
+        assert!(Suppressions::parse(bare).suppresses("anything-at-all", 1), "reason-only = all rules");
     }
 
     #[test]

@@ -524,7 +524,7 @@ mod tests {
         // proxy work); its children are the cells.
         loop {
             match row {
-                Element::Owned { element, owned } => {
+                Element::Owned { element, owned, .. } => {
                     ROW_SCOPES.with(|k| k.borrow_mut().push(owned));
                     row = *element;
                 }
@@ -945,7 +945,7 @@ mod tests {
     fn peel_owned_keepalive(mut el: Element) -> Element {
         loop {
             match el {
-                Element::Owned { element, owned } => {
+                Element::Owned { element, owned, .. } => {
                     ROW_SCOPES.with(|k| k.borrow_mut().push(owned));
                     el = *element;
                 }

@@ -2277,6 +2277,14 @@ impl Owned {
     }
 }
 
+/// An empty scope: dropping it frees nothing. The scene uses one to carry
+/// a realize hook on a subtree whose component body collected nothing.
+impl Default for Owned {
+    fn default() -> Self {
+        Owned { items: Vec::new(), _not_send: PhantomData }
+    }
+}
+
 impl std::fmt::Debug for Owned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Owned({} slots)", self.items.len())

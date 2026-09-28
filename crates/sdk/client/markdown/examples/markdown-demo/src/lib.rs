@@ -101,6 +101,7 @@ pub fn app() -> Element {
 
     // Reactive region: re-evaluated whenever `dark` flips. Rebuilds the
     // themed page container + the Markdown with the matching MdTheme.
+    // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the themed page per light/dark
     switch(move || dark.get(), move |&is_dark| page(is_dark, dark))
 }
 

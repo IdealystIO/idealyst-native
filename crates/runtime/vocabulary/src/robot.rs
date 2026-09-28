@@ -87,12 +87,14 @@ use crate::caps::IntrospectionOps;
 // component `#[method]` registry + element link, and the signal watch
 // registry.
 pub use crate::robot_methods::{
-    component_for_element, invoke_method, list_components, register_component,
-    ComponentInstanceId, ComponentRegistration, ComponentSnapshot, Method,
+    component_for_element, component_props, components_for_element, invoke_method,
+    list_components, register_component, ComponentInstanceId, ComponentRegistration,
+    ComponentSnapshot, Method, PropMode, PropSnapshot,
 };
 pub use crate::robot_watch::{
     list_watched, read_watched_by_id, read_watched_by_name, unwatch_signal, watch_signal,
-    WatchTarget, WatchedSnapshot,
+    watch_signal_writable, watched_history, write_watched, HistoryPoint, WatchTarget,
+    WatchedSnapshot, WATCH_HISTORY_LEN,
 };
 
 // =============================================================================
@@ -274,6 +276,13 @@ fn bump_revision() {
     ROBOT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// A component registered or deregistered: the component tree a
+/// subscribed inspector shows changed, so push a revision the same way an
+/// element (de)registration does.
+pub(crate) fn bump_component_revision() {
+    bump_revision();
+}
+
 /// The current change-revision (read by a bridge/relay transport).
 /// The element a registration would currently be parented under — the top of
 /// the parent stack, or `None` at a realize root.
@@ -446,13 +455,12 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
             }
         });
     }
-    // Element↔component link: a `#[method]` component's realize-time
-    // wrap (`robot_methods::__component_root`) armed a one-shot pending
-    // cell just before its subtree realized; the FIRST registration
-    // after arming — this one, the component's root primitive —
-    // consumes it (old walker parity: `take_pending_component_link` at
-    // `robot_register`).
-    if let Some(instance) = crate::robot_methods::take_pending_component_link() {
+    // Element↔component link: every component whose realize hook is
+    // entered and unconsumed (`robot_methods` module docs) renders as
+    // THIS element — the first one registered inside its bracket. More
+    // than one when a component's root is another component's element;
+    // taken outermost first, which is the order the links record.
+    for instance in crate::robot_methods::take_pending_component_links() {
         crate::robot_methods::link_component_element(instance, id.0);
     }
     bump_revision();
@@ -514,12 +522,34 @@ pub struct NavSnapshot {
     pub is_current: bool,
     pub base: String,
     pub stack: Vec<(String, String)>,
+    /// Accepts [`navigate`] commands.
+    pub controllable: bool,
 }
+
+/// What the bridge's `navigate` verb asks a navigator to do. Paths are
+/// FULL paths (base included, like `active_path`), optionally with a
+/// `?query`, and resolve the way a deep link does: the screen whose
+/// pattern matches the longest prefix wins, and any remainder is left for
+/// a navigator nested in that screen. A path is an error only when it
+/// falls outside the navigator's base.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NavAction {
+    Push(String),
+    Replace(String),
+    Reset(String),
+    Pop,
+}
+
+/// A navigator's robot control: resolve and dispatch a [`NavAction`]
+/// exactly as an in-app link or back press would. Installed by the mount
+/// handler once its dispatch exists.
+pub(crate) type NavControl = Rc<dyn Fn(NavAction) -> Result<(), String>>;
 
 struct NavRegEntry {
     type_name: &'static str,
     element_id: Option<u32>,
     snapshot: Rc<dyn Fn() -> Option<NavSnapshotData>>,
+    control: Option<NavControl>,
 }
 
 #[derive(Default)]
@@ -551,6 +581,7 @@ pub(crate) fn register_navigator(
             type_name,
             element_id,
             snapshot,
+            control: None,
         };
         let id = if let Some(idx) = reg.free.pop() {
             reg.entries[idx as usize] = Some(entry);
@@ -565,6 +596,38 @@ pub(crate) fn register_navigator(
         }
         id
     })
+}
+
+/// Install `id`'s robot control (see [`NavControl`]).
+pub(crate) fn set_navigator_control(id: NavId, control: NavControl) {
+    NAV_REGISTRY.with(|r| {
+        if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(id.0 as usize) {
+            entry.control = Some(control);
+        }
+    });
+}
+
+/// Drive navigator `id` (the bridge's `navigate` verb). The dispatch
+/// stages its writes; this settles them so a query on the next line sees
+/// the new screen — the `invoke_method` action contract.
+pub fn navigate(id: NavId, action: NavAction) -> Result<(), String> {
+    let control = NAV_REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let entry = reg
+            .entries
+            .get(id.0 as usize)
+            .and_then(|s| s.as_ref())
+            .ok_or_else(|| format!("no navigator with id {}", id.0))?;
+        entry
+            .control
+            .clone()
+            .ok_or_else(|| format!("navigator {} ({}) takes no robot commands", id.0, entry.type_name))
+    })?;
+    // Run after the registry borrow drops: the dispatch marks this
+    // navigator active, which borrows the registry again.
+    control(action)?;
+    settle();
+    Ok(())
 }
 
 /// Remove a navigator (its subtree tore down). Clears `active` if it
@@ -607,7 +670,8 @@ pub(crate) fn mark_active_navigator(id: NavId) {
 /// they read signals and could re-enter. Callers wanting label-accurate
 /// signal reads run this entered (the bridge does).
 pub fn all_navigators() -> Vec<NavSnapshot> {
-    let collected: Vec<(u32, &'static str, Option<u32>, Rc<dyn Fn() -> Option<NavSnapshotData>>, bool)> =
+    type Collected = (u32, &'static str, Option<u32>, Rc<dyn Fn() -> Option<NavSnapshotData>>, bool, bool);
+    let collected: Vec<Collected> =
         NAV_REGISTRY.with(|r| {
             let reg = r.borrow();
             let active = reg.active;
@@ -622,13 +686,14 @@ pub fn all_navigators() -> Vec<NavSnapshot> {
                         entry.element_id,
                         entry.snapshot.clone(),
                         active == Some(NavId(i as u32)),
+                        entry.control.is_some(),
                     ))
                 })
                 .collect()
         });
     let mut out = Vec::with_capacity(collected.len());
     let mut dead = Vec::new();
-    for (id, type_name, element_id, snapshot, is_current) in collected {
+    for (id, type_name, element_id, snapshot, is_current, controllable) in collected {
         match snapshot() {
             Some(data) => out.push(NavSnapshot {
                 nav_id: id,
@@ -641,6 +706,7 @@ pub fn all_navigators() -> Vec<NavSnapshot> {
                 is_current,
                 base: data.base,
                 stack: data.stack,
+                controllable,
             }),
             None => dead.push(NavId(id)),
         }
@@ -1276,7 +1342,8 @@ pub mod bridge {
             }
             "get_snapshot" => {
                 let tree = robot.snapshot();
-                let nodes: Vec<String> = tree.iter().map(tree_node_json).collect();
+                let index = crate::robot_methods::element_component_index();
+                let nodes: Vec<String> = tree.iter().map(|n| tree_node_json(n, &index)).collect();
                 Ok(format!("[{}]", nodes.join(",")))
             }
             "get_children" => {
@@ -1384,15 +1451,49 @@ pub mod bridge {
                             None => "null".to_string(),
                         };
                         format!(
-                            "{{\"instance_id\":{},\"name\":{},\"element_id\":{},\"methods\":[{}]}}",
+                            "{{\"instance_id\":{},\"name\":{},\"file\":{},\"line\":{},\"element_id\":{},\"methods\":[{}]}}",
                             s.id.0,
                             serde_json::to_string(s.name).unwrap(),
+                            serde_json::to_string(s.file).unwrap(),
+                            s.line,
                             element_id,
                             methods.join(",")
                         )
                     })
                     .collect();
                 Ok(format!("[{}]", entries.join(",")))
+            }
+            "get_component" => {
+                let instance = crate::robot_methods::ComponentInstanceId(
+                    args["instance_id"].as_u64().ok_or("missing 'instance_id' argument")? as u32,
+                );
+                let Some(snap) = crate::robot_methods::list_components()
+                    .into_iter()
+                    .find(|c| c.id == instance)
+                else {
+                    return Ok("null".into());
+                };
+                // A `Live` prop's reader is author code reading signals:
+                // run it entered, like a label query.
+                let props = entered(|| crate::robot_methods::component_props(instance)).unwrap_or_default();
+                Ok(serde_json::json!({
+                    "instance_id": snap.id.0,
+                    "name": snap.name,
+                    "file": snap.file,
+                    "line": snap.line,
+                    "element_id": snap.element_id.map(|e| e.0),
+                    "methods": snap.methods.iter().map(|(name, args)| serde_json::json!({
+                        "name": name,
+                        "args": args.iter().map(|(n, t)| serde_json::json!({ "name": n, "type": t })).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                    "props": props.iter().map(|p| serde_json::json!({
+                        "name": p.name,
+                        "type": p.ty,
+                        "mode": p.mode.as_str(),
+                        "value": p.value,
+                    })).collect::<Vec<_>>(),
+                })
+                .to_string())
             }
             "invoke_method" => {
                 let instance_id = args["instance_id"]
@@ -1420,15 +1521,48 @@ pub mod bridge {
                     .iter()
                     .map(|s| {
                         format!(
-                            "{{\"id\":{},\"name\":{},\"value\":{}}}",
+                            "{{\"id\":{},\"name\":{},\"value\":{},\"writes\":{},\"changed_ago_ms\":{},\"writable\":{}}}",
                             s.id,
                             serde_json::to_string(&s.name).unwrap_or_else(|_| "\"\"".into()),
                             // `Value`'s Display emits valid compact JSON.
                             s.value,
+                            s.writes,
+                            s.changed_ago_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "null".into()),
+                            s.writable,
                         )
                     })
                     .collect();
                 Ok(format!("[{}]", items.join(",")))
+            }
+            "get_signal_history" => {
+                let id = crate::robot_watch::resolve_watched(
+                    args["id"].as_u64().map(|i| i as u32),
+                    args["name"].as_str(),
+                )
+                .ok_or("get_signal_history requires the 'id' or 'name' of a watched signal")?;
+                match crate::robot_watch::watched_history(id) {
+                    Some((name, writes, points)) => Ok(serde_json::json!({
+                        "id": id,
+                        "name": name,
+                        "writes": writes,
+                        "history": points.iter().map(|p| serde_json::json!({
+                            "ago_ms": p.ago_ms,
+                            "value": p.value,
+                        })).collect::<Vec<_>>(),
+                    })
+                    .to_string()),
+                    None => Ok("null".into()),
+                }
+            }
+            "write_signal" => {
+                let id = crate::robot_watch::resolve_watched(
+                    args["id"].as_u64().map(|i| i as u32),
+                    args["name"].as_str(),
+                )
+                .ok_or("write_signal requires the 'id' or 'name' of a watched signal")?;
+                let value = args.get("value").ok_or("write_signal requires a 'value' argument")?;
+                crate::robot_watch::write_watched(id, value)?;
+                Ok("true".into())
             }
             "read_signal" => {
                 let value = if let Some(name) = args["name"].as_str() {
@@ -1447,6 +1581,24 @@ pub mod bridge {
                     .map(nav_snapshot_json)
                     .collect();
                 Ok(format!("[{}]", items.join(",")))
+            }
+            "navigate" => {
+                let nav_id = args["nav_id"].as_u64().ok_or("missing 'nav_id' argument")? as u32;
+                let path = || {
+                    args["path"]
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "navigate requires a 'path' for push/replace/reset".to_string())
+                };
+                let action = match args["action"].as_str().ok_or("missing 'action' argument")? {
+                    "push" => NavAction::Push(path()?),
+                    "replace" => NavAction::Replace(path()?),
+                    "reset" => NavAction::Reset(path()?),
+                    "pop" => NavAction::Pop,
+                    other => return Err(format!("unknown navigate action '{other}' (push|replace|reset|pop)")),
+                };
+                navigate(NavId(nav_id), action)?;
+                Ok("true".into())
             }
             "get_navigator_state" => {
                 let nav_id =
@@ -1480,7 +1632,7 @@ pub mod bridge {
         format!(
             "{{\"nav_id\":{},\"element_id\":{},\"type_name\":{},\"active_route\":{},\
                \"active_path\":{},\"depth\":{},\"can_go_back\":{},\"is_current\":{},\
-               \"base\":{},\"stack\":[{}]}}",
+               \"base\":{},\"stack\":[{}],\"controllable\":{}}}",
             s.nav_id,
             element_id,
             serde_json::to_string(s.type_name).unwrap_or_else(|_| "\"\"".into()),
@@ -1491,6 +1643,7 @@ pub mod bridge {
             s.is_current,
             serde_json::to_string(&s.base).unwrap_or_else(|_| "\"\"".into()),
             stack.join(","),
+            s.controllable,
         )
     }
 
@@ -1571,10 +1724,34 @@ pub mod bridge {
         )
     }
 
-    fn tree_node_json(node: &TreeNode) -> String {
-        let children: Vec<String> = node.children.iter().map(tree_node_json).collect();
+    /// One tree node. `components` lists the component instances this
+    /// element is the root of, outermost first — omitted for an element
+    /// no component links to, so a component-free tree is byte-identical
+    /// to the old shape.
+    fn tree_node_json(
+        node: &TreeNode,
+        index: &std::collections::HashMap<u32, Vec<(crate::robot_methods::ComponentInstanceId, &'static str)>>,
+    ) -> String {
+        let children: Vec<String> =
+            node.children.iter().map(|c| tree_node_json(c, index)).collect();
+        let components = match index.get(&node.id.0) {
+            Some(linked) if !linked.is_empty() => {
+                let items: Vec<String> = linked
+                    .iter()
+                    .map(|(id, name)| {
+                        format!(
+                            "{{\"instance_id\":{},\"name\":{}}}",
+                            id.0,
+                            serde_json::to_string(name).unwrap()
+                        )
+                    })
+                    .collect();
+                format!(",\"components\":[{}]", items.join(","))
+            }
+            _ => String::new(),
+        };
         format!(
-            "{{\"id\":{},\"kind\":\"{:?}\",\"test_id\":{},\"label\":{},\"children\":[{}]}}",
+            "{{\"id\":{},\"kind\":\"{:?}\",\"test_id\":{},\"label\":{}{},\"children\":[{}]}}",
             node.id.0,
             node.kind,
             node.test_id
@@ -1584,6 +1761,7 @@ pub mod bridge {
                 .as_deref()
                 .map(|l| serde_json::to_string(l).unwrap_or_else(|_| "null".into()))
                 .unwrap_or_else(|| "null".into()),
+            components,
             children.join(","),
         )
     }
@@ -1726,11 +1904,11 @@ mod tests {
 
         let list = bridge::invoke_command("list_components", &json!({})).expect("list");
         let expected = format!(
-            "[{{\"instance_id\":{},\"name\":\"MethodCounter\",\"element_id\":7,\
+            "[{{\"instance_id\":{},\"name\":\"MethodCounter\",\"file\":\"\",\"line\":0,\"element_id\":7,\
              \"methods\":[{{\"name\":\"bump_by\",\"args\":[{{\"name\":\"n\",\"type\":\"i32\"}}]}}]}}]",
             reg.id().0
         );
-        assert_eq!(list, expected, "old-bridge wire shape");
+        assert_eq!(list, expected, "old-bridge wire shape plus the additive file/line");
 
         let ok = bridge::invoke_command(
             "invoke_method",
@@ -1786,8 +1964,12 @@ mod tests {
         let list = bridge::invoke_command("list_watched_signals", &json!({})).unwrap();
         assert_eq!(
             list,
-            format!("[{{\"id\":{id},\"name\":\"bridge_counter\",\"value\":\"42\"}}]"),
-            "old-bridge wire shape"
+            format!(
+                "[{{\"id\":{id},\"name\":\"bridge_counter\",\"value\":\"42\",\
+                 \"writes\":1,\"changed_ago_ms\":null,\"writable\":false}}]"
+            ),
+            "old-bridge wire shape plus the additive history/writable fields \
+             (no clock installed in this test, so the age is null)"
         );
         assert!(bridge::invoke_command("read_signal", &json!({})).is_err());
         clear_driver_env();
@@ -1832,10 +2014,10 @@ mod tests {
                  \"active_route\":\"detail\",\"active_path\":\"/detail\",\"depth\":2,\
                  \"can_go_back\":true,\"is_current\":true,\
                  \"base\":\"\",\"stack\":[{{\"route\":\"root\",\"path\":\"/\"}},\
-                 {{\"route\":\"detail\",\"path\":\"/detail\"}}]}}",
+                 {{\"route\":\"detail\",\"path\":\"/detail\"}}],\"controllable\":false}}",
                 id.0
             ),
-            "old-bridge wire shape"
+            "old-bridge wire shape plus the additive `controllable`"
         );
 
         // A second navigator; marking it active flips is_current.

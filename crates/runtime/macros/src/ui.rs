@@ -171,7 +171,7 @@ pub(crate) fn emit_node(node: &UiNode, ctx: Ctx) -> TokenStream2 {
             emit_for(pat, iter, key.as_ref(), body, chain, ctx)
         }
         UiNode::Match { scrutinee, arms } => emit_match(scrutinee, arms, ctx),
-        UiNode::Expr(e) => e.to_token_stream(),
+        UiNode::Expr(e) => ui_split::unbrace_tail_block(e).to_token_stream(),
     }
 }
 
@@ -2759,6 +2759,25 @@ mod tests {
             assert!(out.contains("move||"), "{out}");
             assert!(out.contains("label((count).get())"), "{out}");
             assert!(!out.contains("Derived"), "no wire metadata: {out}");
+        }
+
+        /// A braced child (`{ hero() }`, required for `{ Hero() }`) used to
+        /// have its braces emitted verbatim as a function argument, so every
+        /// such child tripped rustc's `unused_braces` on the author's code.
+        /// A single-tail-expression block emits the bare expression; a
+        /// block with statements keeps its braces.
+        #[test]
+        fn regression_call_splice_child_emits_without_braces() {
+            let out = squash(parse_and_emit(quote! { view { { hero() } } }));
+            assert!(out.contains("hero()"), "{out}");
+            assert!(!out.contains("{hero()}"), "{out}");
+
+            let branch = squash(parse_and_emit(quote! { if open.get() { { panel() } } }));
+            assert!(branch.contains("panel()"), "{branch}");
+            assert!(!branch.contains("{panel()}"), "{branch}");
+
+            let real_block = squash(parse_and_emit(quote! { view { { let x = f(); x } } }));
+            assert!(real_block.contains("{letx=f();x}"), "{real_block}");
         }
 
         /// `if is_even(count) { … }` — same rule for the bool shape.

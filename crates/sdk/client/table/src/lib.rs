@@ -623,7 +623,7 @@ fn extract_row(row: Element, owneds: &mut Vec<glue::Owned>) -> NativeRow {
             NativeRow { cells: children, slots: Some(cell.take()) }
         }
         Element::Fragment(children) => NativeRow { cells: children, slots: None },
-        Element::Owned { element, owned } => {
+        Element::Owned { element, owned, .. } => {
             owneds.push(owned);
             extract_row(*element, owneds)
         }

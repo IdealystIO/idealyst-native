@@ -34,7 +34,7 @@ use idea_ui::{
 use media_writer::{MediaInputs, MediaWriter, RecordConfig, Recording};
 use microphone::{AudioStreamConfig, MicError, Microphone};
 use runtime_core::{
-    rx, signal, switch, ui, Element, IntoElement, Length, Position, Ref, Signal, StyleRules,
+    rx, signal, ui, Element, IntoElement, Length, Position, Ref, Signal, StyleRules,
     StyleSheet, ViewHandle,
 };
 use video::{Video, VideoBind, VideoHandle, VideoProps};
@@ -620,144 +620,150 @@ pub fn app() -> Element {
     };
 
     // ---- The main panel, one screen per phase --------------------------------
-    let panel = switch(
-        move || phase.get(),
-        {
+    // Each screen builds in its own closure (its handler wrappers, meters and
+    // players are made fresh whenever its phase becomes active); the `match`
+    // at the end picks the screen.
+    let idle_screen = {
+        let on_record = on_record.clone();
+        move || {
+            // The Record button IS the model-loader: while the warm pipeline
+            // builds, it shows a spinner and is inert; once ready it becomes the
+            // live Record button. No card — it's a single call-to-action, just
+            // centered.
             let on_record = on_record.clone();
-            let on_stop = on_stop.clone();
-            let on_ab = on_ab.clone();
-            let on_play_pause = on_play_pause.clone();
-            let on_replay = on_replay.clone();
-            let raw_player = raw_player.clone();
-            let den_player = den_player.clone();
-            let wave_box = wave_box.clone();
-            move |p: &Phase| match p {
-                Phase::Idle => {
-                    // The Record button IS the model-loader: while the warm
-                    // pipeline builds, it shows a spinner and is inert; once ready
-                    // it becomes the live Record button. No card — it's a single
-                    // call-to-action, just centered. Nested `switch` on `ready`.
-                    let on_record = on_record.clone();
-                    switch(move || ready.get(), move |&is_ready| {
-                        if is_ready {
-                            let on_record: Rc<dyn Fn()> = Rc::new(on_record.clone());
-                            ui! {
-                                Stack(gap = StackGap::Sm, align = StackAlign::Center) {
-                                    Typography(content = status, muted = true)
-                                    Button(
-                                        label = "● Record".to_string(),
-                                        on_click = on_record,
-                                        tone = tone::Danger,
-                                        size = size::Lg,
-                                    )
-                                }
-                            }
-                        } else {
-                            ui! {
-                                Stack(align = StackAlign::Center) {
-                                    Button(
-                                        label = "Loading model…".to_string(),
-                                        loading = true,
-                                        disabled = true,
-                                        tone = tone::Danger,
-                                        size = size::Lg,
-                                    )
-                                }
-                            }
-                        }
-                    })
-                }
-                Phase::Recording => {
-                    // Meters are content → a panel (card); the Stop button is a
-                    // single centered action, not full-width.
-                    let on_stop: Rc<dyn Fn()> = Rc::new(on_stop.clone());
-                    let raw_meter = meter("Raw input", raw_level, tone::Neutral.into());
-                    let den_meter = meter("Denoised", denoised_level, tone::Success.into());
-                    ui! {
-                        Card(padding = CardPadding::Lg) {
-                            Stack(gap = StackGap::Md) {
-                                Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Sm) {
-                                    Badge(label = "● REC".to_string(), tone = tone::Danger)
-                                    Typography(content = status, muted = true)
-                                }
-                                raw_meter
-                                den_meter
-                                Divider()
-                                Stack(align = StackAlign::Center) {
-                                    Button(
-                                        label = "■ Stop".to_string(),
-                                        on_click = on_stop,
-                                        tone = tone::Danger,
-                                    )
-                                }
-                            }
-                        }
+            ui! {
+                if ready.get() {
+                    Stack(gap = StackGap::Sm, align = StackAlign::Center) {
+                        Typography(content = status, muted = true)
+                        Button(
+                            label = "● Record".to_string(),
+                            on_click = Rc::new(on_record.clone()) as Rc<dyn Fn()>,
+                            tone = tone::Danger,
+                            size = size::Lg,
+                        )
+                    }
+                } else {
+                    Stack(align = StackAlign::Center) {
+                        Button(
+                            label = "Loading model…".to_string(),
+                            loading = true,
+                            disabled = true,
+                            tone = tone::Danger,
+                            size = size::Lg,
+                        )
                     }
                 }
-                Phase::Finalizing => {
-                    // Transient — just a centered spinner + label, no card.
-                    ui! {
-                        Stack(gap = StackGap::Sm, axis = StackAxis::Row, align = StackAlign::Center, justify = StackJustify::Center) {
-                            Spinner()
+            }
+        }
+    };
+    let recording_screen = {
+        let on_stop = on_stop.clone();
+        move || {
+            // Meters are content → a panel (card); the Stop button is a
+            // single centered action, not full-width.
+            let on_stop: Rc<dyn Fn()> = Rc::new(on_stop.clone());
+            let raw_meter = meter("Raw input", raw_level, tone::Neutral.into());
+            let den_meter = meter("Denoised", denoised_level, tone::Success.into());
+            ui! {
+                Card(padding = CardPadding::Lg) {
+                    Stack(gap = StackGap::Md) {
+                        Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Sm) {
+                            Badge(label = "● REC".to_string(), tone = tone::Danger)
                             Typography(content = status, muted = true)
                         }
-                    }
-                }
-                Phase::Preview => {
-                    let on_record: Rc<dyn Fn()> = Rc::new(on_record.clone());
-                    let on_play_pause: Rc<dyn Fn()> = Rc::new(on_play_pause.clone());
-                    let on_replay: Rc<dyn Fn()> = Rc::new(on_replay.clone());
-                    let raw_p = hidden_player(raw_url, true, raw_player.clone());
-                    let den_p = hidden_player(denoised_url, false, den_player.clone());
-                    let scrub = scrubber(
-                        raw_wave,
-                        den_wave,
-                        progress,
-                        dur_secs,
-                        wave_w,
-                        wave_box.clone(),
-                        ab,
-                        on_ab.clone(),
-                    );
-                    ui! {
-                        Card(padding = CardPadding::Lg) {
-                            Stack(gap = StackGap::Md) {
-                                Typography(content = "A/B monitor".to_string(), kind = typography_kind::H2)
-                                Typography(content = status, muted = true)
-                                scrub
-                                Stack(gap = StackGap::Sm, axis = StackAxis::Row, justify = StackJustify::Center) {
-                                    Button(
-                                        label = rx!(if playing.get() {
-                                            "⏸ Pause".to_string()
-                                        } else {
-                                            "▶ Play".to_string()
-                                        }),
-                                        on_click = on_play_pause,
-                                        tone = tone::Primary,
-                                    )
-                                    Button(
-                                        label = "↺ Restart".to_string(),
-                                        on_click = on_replay,
-                                        tone = tone::Neutral,
-                                    )
-                                }
-                                Divider()
-                                Stack(align = StackAlign::Center) {
-                                    Button(
-                                        label = "● Record again".to_string(),
-                                        on_click = on_record,
-                                        tone = tone::Danger,
-                                    )
-                                }
-                                raw_p
-                                den_p
-                            }
+                        raw_meter
+                        den_meter
+                        Divider()
+                        Stack(align = StackAlign::Center) {
+                            Button(
+                                label = "■ Stop".to_string(),
+                                on_click = on_stop,
+                                tone = tone::Danger,
+                            )
                         }
                     }
                 }
             }
-        },
-    );
+        }
+    };
+    let finalizing_screen = move || {
+            // Transient — just a centered spinner + label, no card.
+            ui! {
+                Stack(gap = StackGap::Sm, axis = StackAxis::Row, align = StackAlign::Center, justify = StackJustify::Center) {
+                    Spinner()
+                    Typography(content = status, muted = true)
+                }
+            }
+    };
+    let preview_screen = {
+        let on_record = on_record.clone();
+        let on_ab = on_ab.clone();
+        let on_play_pause = on_play_pause.clone();
+        let on_replay = on_replay.clone();
+        let raw_player = raw_player.clone();
+        let den_player = den_player.clone();
+        let wave_box = wave_box.clone();
+        move || {
+            let on_record: Rc<dyn Fn()> = Rc::new(on_record.clone());
+            let on_play_pause: Rc<dyn Fn()> = Rc::new(on_play_pause.clone());
+            let on_replay: Rc<dyn Fn()> = Rc::new(on_replay.clone());
+            let raw_p = hidden_player(raw_url, true, raw_player.clone());
+            let den_p = hidden_player(denoised_url, false, den_player.clone());
+            let scrub = scrubber(
+                raw_wave,
+                den_wave,
+                progress,
+                dur_secs,
+                wave_w,
+                wave_box.clone(),
+                ab,
+                on_ab.clone(),
+            );
+            ui! {
+                Card(padding = CardPadding::Lg) {
+                    Stack(gap = StackGap::Md) {
+                        Typography(content = "A/B monitor".to_string(), kind = typography_kind::H2)
+                        Typography(content = status, muted = true)
+                        scrub
+                        Stack(gap = StackGap::Sm, axis = StackAxis::Row, justify = StackJustify::Center) {
+                            Button(
+                                label = rx!(if playing.get() {
+                                    "⏸ Pause".to_string()
+                                } else {
+                                    "▶ Play".to_string()
+                                }),
+                                on_click = on_play_pause,
+                                tone = tone::Primary,
+                            )
+                            Button(
+                                label = "↺ Restart".to_string(),
+                                on_click = on_replay,
+                                tone = tone::Neutral,
+                            )
+                        }
+                        Divider()
+                        Stack(align = StackAlign::Center) {
+                            Button(
+                                label = "● Record again".to_string(),
+                                on_click = on_record,
+                                tone = tone::Danger,
+                            )
+                        }
+                        raw_p
+                        den_p
+                    }
+                }
+            }
+        }
+    };
+    let panel = ui! {
+        match phase.get() {
+            Phase::Idle => { idle_screen() }
+            Phase::Recording => { recording_screen() }
+            Phase::Finalizing => { finalizing_screen() }
+            Phase::Preview => { preview_screen() }
+        }
+    };
 
     // Constrain the content to a readable, centered column rather than letting
     // it span the whole window.

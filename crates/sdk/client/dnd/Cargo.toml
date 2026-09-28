@@ -47,7 +47,7 @@ license.workspace = true
 #
 # The author surface, aliased to `runtime_core` at the crate root (see
 # src/lib.rs): `Signal` (the reactive `dragging` / `is_over` flags an author
-# binds), `Element` / `view` / `when` for the drag layer, and — critically —
+# binds), `Element` / `view` for the drag layer, and — critically —
 # glue's `animation::AnimatedValue`, whose `bind*` keeps its per-frame
 # subscription alive through a world effect (the shared handle's does not).
 runtime-core = { workspace = true }
@@ -55,3 +55,12 @@ runtime-core = { workspace = true }
 # family the `DragRecognizer` implements, `active_touch_claim`, and
 # `schedule_microtask`. One-line glue gaps, reported.
 runtime-shared = { workspace = true }
+# `ui!` (the drag layer's `if dragging.get()`) emits `::runtime_vocabulary::glue`
+# paths, so every crate that uses it needs this in scope directly — the same
+# reason `charts` and `idea-ui` depend on it.
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+# `drag_layer`'s mount test (`src/tests.rs`) realizes the layer against a
+# recording host to pin what is actually on screen per drag phase.
+host-mock = { path = "../../../dev/host-mock" }

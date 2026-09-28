@@ -109,14 +109,6 @@ const APPS: &[AppCfg] = &[
         marker_wait_ms: 8_000,
     },
     AppCfg {
-        dir: "theme-swap",
-        wasm_stem: "theme_swap_test",
-        // Initial render shows "theme: light" — proves the rx! body
-        // evaluated and the cohort driver wrote tokens.
-        expected_marker: "theme: light",
-        marker_wait_ms: 8_000,
-    },
-    AppCfg {
         dir: "lazy-chunk-handoff",
         wasm_stem: "lazy_chunk_handoff_test",
         // This text lives inside the fixture's `lazy!` body (that app

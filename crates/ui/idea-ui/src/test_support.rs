@@ -233,7 +233,7 @@ mod imp {
     /// `Item` payload against each modeled prim.
     pub fn classify(el: Element) -> P {
         match el {
-            Element::Owned { element, owned } => {
+            Element::Owned { element, owned, .. } => {
                 KEEPALIVE.with(|k| k.borrow_mut().push(owned));
                 classify(*element)
             }

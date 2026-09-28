@@ -34,8 +34,8 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
-    after_ms_detached, component, long_press, signal, when, ChildList, Element, IdealystSchema,
-    IntoElement, LongPressRecognizer, Position, Reactive, Ref, StyleRules, StyleSheet, ViewHandle,
+    after_ms_detached, component, long_press, signal, ui, ChildList, Element, IdealystSchema,
+    IntoElement, LongPressRecognizer, Reactive, Ref, StyleSheet, ViewHandle,
 };
 
 use crate::stylesheets::{TooltipBubble, TooltipBubbleText};
@@ -96,17 +96,6 @@ fn hug_sheet() -> Rc<StyleSheet> {
     Rc::new(StyleSheet::r#static(crate::components::hug_self()))
 }
 
-/// Layout-neutral (out-of-flow) wrapper for the `when` bubble's *closed*
-/// branch, so a hidden tooltip never adds a flex slot that would shift the
-/// trigger's siblings as it mounts/unmounts. Mirrors the `if`-without-else
-/// macro lowering and `Popover`'s wrapper.
-fn hidden_sheet() -> Rc<StyleSheet> {
-    Rc::new(StyleSheet::r#static(StyleRules {
-        position: Some(Position::Absolute),
-        ..Default::default()
-    }))
-}
-
 /// The bubble surface: a `view` BOX carrying the background, border, padding,
 /// radius and the max-width clamp, with the label `text` inside it.
 ///
@@ -133,10 +122,10 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     // TODO(reactive-sweep): route `side`/`align`/`offset`/`dismiss_ms`
     // reactively into the bubble's `anchored_overlay` placement + the
     // long-press timer. They're consumed by value as builder args (inside the
-    // `when` bubble closure) and the touch-dismiss delay — STRUCTURE, not a
-    // style closure — so a live signal would need the bubble rebuilt on change.
-    // The `when` already rebuilds the bubble on each open, so a value change
-    // between shows is picked up. `text` stays reactive (routes to `text()`).
+    // bubble's `if open` branch) and the touch-dismiss delay — STRUCTURE, not a
+    // style closure. All four are snapshotted here at build; the bubble is
+    // rebuilt on each open, so reading them inside the branch instead would
+    // pick up a change between shows. `text` stays reactive (routes to `text()`).
     let side = props.side.get();
     let align = props.align.get();
     let offset = props.offset.get();
@@ -167,24 +156,24 @@ pub fn Tooltip(props: TooltipProps) -> Element {
         .with_style(hug_sheet())
         .into_element();
 
-    // The bubble — anchored to the wrapper, gated on `open`. Closed branch is
-    // out-of-flow so toggling visibility never shifts layout.
-    let bubble = when(
-        move || open.get(),
-        move || {
-            runtime_core::anchored_overlay(
-                AnchorTarget::from(anchor_ref),
-                vec![bubble_box(text.clone())],
-            )
+    // The bubble — anchored to the wrapper, present only while `open`. The
+    // macro's closed-branch placeholder is out of flow, so toggling
+    // visibility never shifts layout.
+    let bubble = ui! {
+        if open.get() {
+            {
+                runtime_core::anchored_overlay(
+                    AnchorTarget::from(anchor_ref),
+                    vec![bubble_box(text.clone())],
+                )
                 .side(side)
                 .align(align)
                 .offset(offset)
                 .backdrop(BackdropMode::None)
                 .trap_focus(false)
-                .into_element()
-        },
-        || runtime_core::view(Vec::new()).with_style(hidden_sheet()).into_element(),
-    );
+            }
+        }
+    };
 
     runtime_core::fragment(vec![anchor, bubble])
 }

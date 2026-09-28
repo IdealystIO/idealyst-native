@@ -679,6 +679,7 @@ fn rewrite_node(slots: &mut Vec<SlotDef>, node: &UiNode) -> UiNode {
         }
 
         UiNode::Expr(e) => {
+            let e = unbrace_tail_block(e);
             if classify_static(e).is_some() {
                 return UiNode::Expr(e.clone());
             }
@@ -747,6 +748,28 @@ fn rewrite_prop(slots: &mut Vec<SlotDef>, canonical: Option<&str>, p: &Prop) -> 
         value: local_expr(index),
         arrow_target: None,
     }
+}
+
+/// A `{ expr }` child is an expression in braces. The braces are only
+/// REQUIRED when the bare expression would parse as a tag — a PascalCase
+/// call (`{ Hero() }` reads as a component otherwise) or a call named like
+/// a primitive; a snake_case helper call (`hero()`) is already an
+/// expression child. But authors write them anyway (the website's
+/// `{ hero() }`), and emitted verbatim they land as a function argument or
+/// a slot assignment (`into_element({ mark() })`, `__ui_s0 = { hero() };`),
+/// where rustc's `unused_braces` lint fires on the author's code. So a block
+/// that is exactly ONE tail expression (no statements, no label, no
+/// attributes) stands for the expression alone. Blocks with statements keep
+/// their braces — those are real blocks.
+pub fn unbrace_tail_block(e: &Expr) -> &Expr {
+    if let Expr::Block(b) = e {
+        if b.attrs.is_empty() && b.label.is_none() {
+            if let [syn::Stmt::Expr(inner, None)] = b.block.stmts.as_slice() {
+                return inner;
+            }
+        }
+    }
+    e
 }
 
 /// The slot index a `__ui_sN` local names, if `expr` is one.

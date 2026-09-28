@@ -62,30 +62,22 @@ fn radio_indicator(
     size_key: impl Fn() -> String + Clone + 'static,
     sheets: RadioSheets,
 ) -> Element {
-    // Inner dot — mounted only while selected.
+    // Inner dot — mounted only while selected. Its style reads the live
+    // appearance/size so a reactive tone/variant/size re-styles it in place.
     let dot_sheet = sheets.dot_sheet.clone();
     let dot_appearance = appearance.clone();
     let dot_size = size_key.clone();
+    let dot_style = move || {
+        StyleApplication::new(dot_sheet.clone())
+            .with("appearance", dot_appearance())
+            .with("size", dot_size())
+    };
     let sel_for_dot = is_selected.clone();
-    let dot = runtime_core::switch(
-        move || sel_for_dot(),
-        move |on: &bool| {
-            if *on {
-                let ds = dot_sheet.clone();
-                let da = dot_appearance.clone();
-                let dz = dot_size.clone();
-                runtime_core::view(Vec::new())
-                    .with_style(move || {
-                        StyleApplication::new(ds.clone())
-                            .with("appearance", da())
-                            .with("size", dz())
-                    })
-                    .into_element()
-            } else {
-                ui! { view {} }.into_element()
-            }
-        },
-    );
+    let dot = ui! {
+        if sel_for_dot() {
+            view(style = dot_style.clone()) {}
+        }
+    };
 
     // Outer ring — the pressable host.
     let outer_sheet = sheets.outer_sheet.clone();
