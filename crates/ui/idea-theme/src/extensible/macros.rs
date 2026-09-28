@@ -234,6 +234,27 @@ macro_rules! tone {
             }
         }
 
+        // Optional-tone coercion: `tone = Hype` into an `Option<ToneRef>`
+        // prop (`Reactive<Option<ToneRef>>` under `#[props]`) without a
+        // `Some(...)`. Orphan-legal in the app's crate because `$name` is
+        // local there — see the builtin half in `extensible/tone.rs`.
+        impl ::core::convert::From<$name>
+            for ::core::option::Option<$crate::extensible::ToneRef>
+        {
+            fn from(marker: $name) -> Self {
+                ::core::option::Option::Some($crate::extensible::ToneRef::from(marker))
+            }
+        }
+        impl ::core::convert::From<$name>
+            for ::runtime_core::Reactive<::core::option::Option<$crate::extensible::ToneRef>>
+        {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(::core::option::Option::Some(
+                    $crate::extensible::ToneRef::from(marker),
+                ))
+            }
+        }
+
         // Optional inherent `tokens()` — emitted only when the
         // `tokens = [...]` block is present. Returns the token
         // entries this tone introduces, so they can be aggregated by

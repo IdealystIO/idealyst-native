@@ -218,9 +218,9 @@ pub struct FieldProps {
     /// (validation result).
     #[schema(constraint = "reactive: static Option<String> or Signal/rx!")]
     pub error: Reactive<Option<String>>,
-    /// Optional tone overlay (border + help-text color). Write
-    /// `Some(tone::Warning.into())`; orphan rule blocks a bare-tone
-    /// `Into<Option<ToneRef>>`.
+    /// Optional tone overlay (border + help-text color). A bare marker
+    /// coerces (`tone = tone::Warning` in `ui!`, or `tone::Warning.into()`
+    /// in a struct literal); `Some(tone::Warning.into())` also works.
     pub tone: Option<ToneRef>,
     /// Input density (`Sm`/`Md`/`Lg`) — drives padding + font size.
     /// Default `Md`.

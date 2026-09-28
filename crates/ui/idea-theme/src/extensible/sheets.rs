@@ -476,9 +476,20 @@ fn build_tone_variant_sheet<B>(
 where
     B: Fn(&VariantSet) -> StyleRules + 'static,
 {
+    tone_variant_sheet(&tones, &variants, base)
+        .premint_as(&premint_identity(component, tone_variant_parts(&tones, &variants)))
+}
+
+/// The un-minted body of [`build_tone_variant_sheet`] — the appearance,
+/// focus-ring and `interactive` axes — for a builder that adds an axis of
+/// its own (Tag's `size`) before minting under an identity that names it.
+fn tone_variant_sheet<B>(tones: &[ToneRef], variants: &[VariantRef], base: B) -> StyleSheet
+where
+    B: Fn(&VariantSet) -> StyleRules + 'static,
+{
     let mut sheet = StyleSheet::new(base);
-    for tone in &tones {
-        for variant in &variants {
+    for tone in tones {
+        for variant in variants {
             let key = format!("{}_{}", tone.current_key(), variant.current_key());
             let tone_c = tone.clone();
             let variant_c = variant.clone();
@@ -521,15 +532,7 @@ where
         cursor: Some(Cursor::Pointer),
         ..Default::default()
     });
-    sheet = sheet.variant_default("interactive", "off");
-    let identity = premint_identity(
-        component,
-        [
-            tones.iter().map(|t| t.current_key()).collect::<Vec<_>>().join(","),
-            variants.iter().map(|v| v.current_key()).collect::<Vec<_>>().join(","),
-        ],
-    );
-    sheet.premint_as(&identity)
+    sheet.variant_default("interactive", "off")
 }
 
 /// Builder for the Badge component's stylesheet.
@@ -630,21 +633,16 @@ impl TagSheetBuilder {
         self.variants.push(v.into());
         self
     }
+    /// The pill container: tone × variant `appearance` arms plus a closed
+    /// `size` axis (`sm` / `md` / `lg`, default `md`) carrying the padding —
+    /// the label's font half of each size lives on
+    /// [`TagTextSheets::label`] (native text inherits nothing from the box,
+    /// so the split mirrors Button's container / label sheets).
     pub fn build(self) -> Rc<StyleSheet> {
-        build_tone_variant_sheet("tag", self.tones, self.variants, |_vs: &VariantSet| StyleRules {
+        let mut sheet = tone_variant_sheet(&self.tones, &self.variants, |_vs: &VariantSet| StyleRules {
             // Hug — see the Badge sheet's base for why this isn't a computed
             // layer. Shared by Tag and Chip (both resolve the tag sheet).
             align_self: Some(AlignSelf::Center),
-            padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
-            padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(2.0))),
-            padding_left: Some(Tokenized::token(
-                "spacing-sm",
-                runtime_core::Length::Px(8.0),
-            )),
-            padding_right: Some(Tokenized::token(
-                "spacing-sm",
-                runtime_core::Length::Px(8.0),
-            )),
             border_top_left_radius: Some(Tokenized::token(
                 "radius-pill",
                 runtime_core::Length::Full,
@@ -672,8 +670,57 @@ impl TagSheetBuilder {
             flex_direction: Some(runtime_core::FlexDirection::Row),
             align_items: Some(runtime_core::AlignItems::Center),
             ..Default::default()
-        })
+        });
+        for (key, (pad_v, pad_h), _) in TAG_SIZES {
+            sheet = sheet.variant("size", key, move |_vs| {
+                let pad_h = pad_h();
+                StyleRules {
+                    padding_top: Some(Tokenized::Literal(runtime_core::Length::Px(pad_v))),
+                    padding_bottom: Some(Tokenized::Literal(runtime_core::Length::Px(pad_v))),
+                    padding_left: Some(pad_h.clone()),
+                    padding_right: Some(pad_h),
+                    ..Default::default()
+                }
+            });
+        }
+        sheet
+            .variant_default("size", "md")
+            .premint_as(&premint_identity("tag", tag_parts(&self.tones, &self.variants)))
     }
+}
+
+type TokenLength = fn() -> Tokenized<runtime_core::Length>;
+
+/// The Tag / Chip `size` axis: `(key, (vertical padding px, horizontal
+/// padding token), label font-size token)`. `md` is the pill's original
+/// (pre-size-axis) geometry, so a Tag that names no size is unchanged.
+/// The vertical padding is a literal because the pill's height is set
+/// by its label's line box — the theme's smallest spacing step (`xs`,
+/// 4) already doubles `md`'s 2px — while the horizontal inset and the
+/// label type ride the theme's spacing / typography tokens.
+const TAG_SIZES: [(&str, (f32, TokenLength), TokenLength); 3] = [
+    (
+        "sm",
+        (1.0, || Tokenized::token("spacing-xs", runtime_core::Length::Px(4.0))),
+        || Tokenized::token("typography-caption-size", runtime_core::Length::Px(12.0)),
+    ),
+    (
+        "md",
+        (2.0, || Tokenized::token("spacing-sm", runtime_core::Length::Px(8.0))),
+        || Tokenized::token("typography-body-sm-size", runtime_core::Length::Px(13.0)),
+    ),
+    (
+        "lg",
+        (4.0, || Tokenized::token("spacing-md", runtime_core::Length::Px(12.0))),
+        || Tokenized::token("typography-body-size", runtime_core::Length::Px(14.0)),
+    ),
+];
+
+/// `premint_identity` parts for the tag sheets: tones, variants, sizes.
+fn tag_parts(tones: &[ToneRef], variants: &[VariantRef]) -> [String; 3] {
+    let [t, v] = tone_variant_parts(tones, variants);
+    let sizes = TAG_SIZES.iter().map(|(k, _, _)| *k).collect::<Vec<_>>().join(",");
+    [t, v, sizes]
 }
 impl Default for TagSheetBuilder {
     fn default() -> Self {
@@ -880,24 +927,28 @@ pub struct TagTextSheets {
 impl TagSheetBuilder {
     /// Text-slot sheets for the SAME tones/variants as [`Self::build`] —
     /// see [`AlertSheetBuilder::build_text`] for the contract.
+    ///
+    /// The label carries the `size` axis's font half (`sm` / `md` / `lg`,
+    /// default `md`), matching the container's padding half.
     pub fn build_text(&self) -> TagTextSheets {
-        let label = default_neutral_soft(text_color_axis(
+        let mut label = default_neutral_soft(text_color_axis(
             StyleSheet::new(|_vs: &VariantSet| StyleRules {
-                font_size: Some(Tokenized::token(
-                    "typography-body-sm-size",
-                    runtime_core::Length::Px(13.0),
-                )),
                 font_weight: Some(FontWeight::SemiBold),
                 letter_spacing: Some(Tokenized::Literal(0.3)),
                 ..Default::default()
             }),
             &self.tones,
             &self.variants,
-        ))
-        .premint_as(&premint_identity(
-            "tag.label",
-            tone_variant_parts(&self.tones, &self.variants),
         ));
+        for (key, _, font) in TAG_SIZES {
+            label = label.variant("size", key, move |_vs| StyleRules {
+                font_size: Some(font()),
+                ..Default::default()
+            });
+        }
+        let label = label
+            .variant_default("size", "md")
+            .premint_as(&premint_identity("tag.label", tag_parts(&self.tones, &self.variants)));
         let glyph = default_neutral_soft(text_color_axis(
             StyleSheet::new(|_vs: &VariantSet| StyleRules::default()),
             &self.tones,

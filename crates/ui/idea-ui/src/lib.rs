@@ -226,6 +226,10 @@ pub use stylesheets::{FieldAppearance, FieldSize};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
 pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
+// The anchoring vocabulary of Popover / Menu / SubMenu / Tooltip props
+// (`target = AnchorTarget::from(trigger)`, `side`, `align`), so an app
+// anchoring an overlay needs no `runtime_core::primitives::portal` path.
+pub use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 pub use components::progress::{Progress, ProgressCap, ProgressMode, ProgressProps};
 pub use components::segmented_control::{
     SegmentOption, SegmentedControl, SegmentedControlProps,

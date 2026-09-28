@@ -182,11 +182,19 @@ impl ToneRef {
     }
 }
 
-// Note: a blanket `From<T: Tone> for Option<ToneRef>` would let
-// components with an optional tone accept `tone: Hype.into()` without
-// `Some(...)`, but Rust's orphan rule rejects it — `Option` isn't
-// `#[fundamental]`. Affected components (Field) require an explicit
-// `Some(Hype.into())`. One extra `Some(...)` per call site.
+// Optional tones (`tone: Option<ToneRef>` on Typography, Icon, Field,
+// Card, TextArea) take a bare marker: `tone = tone::Danger` in `ui!`, or
+// `tone: tone::Danger.into()` in a props literal. A BLANKET
+// `impl<T: Tone> From<T> for Option<ToneRef>` is orphan-illegal (`Option`
+// isn't `#[fundamental]`, and an uncovered `T` can't satisfy the local-type
+// requirement), but a CONCRETE `impl From<Marker> for Option<ToneRef>` is
+// legal wherever `Marker` is defined — the local type is the trait's type
+// parameter. So each tone marker emits its own pair (`Option<ToneRef>` and
+// `Reactive<Option<ToneRef>>`): `builtin_tone!` for the seven built-ins,
+// the `tone!` macro for app tones. A hand-written `impl Tone` gets neither
+// automatically; it can add the same two impls, or keep `Some(X.into())`,
+// which still works. (Variants have no optional-typed props in idea-ui, so
+// they carry no such impls.)
 
 // =============================================================================
 // Variant — skeleton (which surfaces fill, stroke, or are transparent)
@@ -500,6 +508,9 @@ impl TypographyKindRef {
             ("h1", TypographyKindRef(Rc::new(typography::H1))),
             ("h2", TypographyKindRef(Rc::new(typography::H2))),
             ("h3", TypographyKindRef(Rc::new(typography::H3))),
+            ("h4", TypographyKindRef(Rc::new(typography::H4))),
+            ("h5", TypographyKindRef(Rc::new(typography::H5))),
+            ("h6", TypographyKindRef(Rc::new(typography::H6))),
             ("body-xl", TypographyKindRef(Rc::new(typography::BodyXl))),
             ("body-lg", TypographyKindRef(Rc::new(typography::BodyLg))),
             ("body", TypographyKindRef(Rc::new(typography::Body))),
@@ -598,13 +609,29 @@ mod tests {
         let _k: TypographyKindRef = typography::H1.into();
     }
 
-    /// Optional tone fields (Field's `tone: Option<ToneRef>`) require
-    /// an explicit `Some(...)` wrap. Orphan rule blocks a blanket
-    /// `From<T: Tone> for Option<ToneRef>`.
+    /// The explicit `Some(X.into())` wrap keeps working next to the bare
+    /// form — the per-marker `Option` impls must not make it ambiguous.
     #[test]
-    fn optional_tone_wrap_is_explicit() {
+    fn optional_tone_explicit_some_still_compiles() {
         let opt: Option<ToneRef> = Some(tone::Danger.into());
         assert!(opt.is_some());
+    }
+
+    /// Regression #24: an `Option<ToneRef>` / `Reactive<Option<ToneRef>>`
+    /// field took only `Some(tone::X.into())` — the source claimed the
+    /// orphan rule forbade anything shorter. Concrete per-marker impls are
+    /// legal; a bare marker must coerce into both shapes, keep its key,
+    /// and do the same for an app tone declared with `tone!`.
+    #[test]
+    fn regression_bare_tone_marker_coerces_into_optional_tone() {
+        let opt: Option<ToneRef> = tone::Danger.into();
+        assert_eq!(opt.map(|t| t.key()), Some("danger"));
+        let reactive: runtime_core::Reactive<Option<ToneRef>> = tone::Info.into();
+        assert_eq!(reactive.get().map(|t| t.key()), Some("info"));
+        let app: Option<ToneRef> = Hype.into();
+        assert_eq!(app.map(|t| t.key()), Some("hype"));
+        let app_reactive: runtime_core::Reactive<Option<ToneRef>> = Hype.into();
+        assert_eq!(app_reactive.get().map(|t| t.key()), Some("hype"));
     }
 
     /// `modifier_defaults` (the free function) emits padding,

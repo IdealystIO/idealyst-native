@@ -68,7 +68,8 @@ macro_rules! builtin_kind {
 // the visual output is identical to the pre-migration baseline.
 
 // Sizes, line-heights, weights and letter-spacing mirror the idea-ui
-// design type scale: a tight display/heading ramp (display 40 → h3 19)
+// design type scale: a tight display/heading ramp (display 40 → h3 19,
+// then h4–h6 on the body sizes — see below)
 // with negative tracking on the large roles, and generous body
 // line-heights (~1.5–1.6×) for reading comfort. The `size_fallback`s
 // match the theme's typography tokens so an un-themed surface still
@@ -108,6 +109,40 @@ builtin_kind!(
     weight = FontWeight::SemiBold,
     line_height_px = 24.0,
     letter_spacing_px = -0.2,
+);
+// H4–H6 continue the heading ramp below H3 (19) by borrowing the body
+// ramp's SIZE tokens (body-xl 18 → body-lg 16 → body 14) at heading weight
+// and tighter line-heights. Borrowing rather than minting
+// `typography-h4-size`…`h6-size` is deliberate: those would have to be
+// new `IdeaTheme` typography fields, and every theme built as a struct
+// literal would stop compiling. Borrowed tokens keep the three minor
+// headings tracking a theme's body scale with no new theme surface.
+builtin_kind!(
+    H4,
+    key = "h4",
+    size_token = "typography-body-xl-size",
+    size_fallback = 18.0,
+    weight = FontWeight::SemiBold,
+    line_height_px = 24.0,
+    letter_spacing_px = -0.1,
+);
+builtin_kind!(
+    H5,
+    key = "h5",
+    size_token = "typography-body-lg-size",
+    size_fallback = 16.0,
+    weight = FontWeight::SemiBold,
+    line_height_px = 22.0,
+    letter_spacing_px = 0.0,
+);
+builtin_kind!(
+    H6,
+    key = "h6",
+    size_token = "typography-body-size",
+    size_fallback = 14.0,
+    weight = FontWeight::SemiBold,
+    line_height_px = 20.0,
+    letter_spacing_px = 0.0,
 );
 builtin_kind!(
     BodyXl,

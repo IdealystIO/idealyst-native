@@ -87,7 +87,7 @@ recipe!(
             filled: true,
         };
         ui! {
-            Icon(data = HEART, size = 24.0, tone = Some(tone::Danger.into()))
+            Icon(data = HEART, size = 24.0, tone = tone::Danger)
         }
     }
 );
@@ -221,7 +221,7 @@ recipe!(
         use ::runtime_core::ui;
 
         ui! {
-            Card(padding = CardPadding::Md, tone = Some(tone::Danger.into())) {
+            Card(padding = CardPadding::Md, tone = tone::Danger) {
                 Typography(content = "Account at risk", kind = typography_kind::H3)
                 Typography(content = "Verify your email to avoid suspension.")
             }
@@ -374,7 +374,7 @@ recipe!(
     /// children; flip the signal in each `on_select` and `on_dismiss`.
     pub fn menu_anchored() -> ::runtime_core::Element {
         use crate::{Button, Menu, MenuItem, MenuLabel, MenuSeparator};
-        use ::runtime_core::primitives::portal::AnchorTarget;
+        use crate::AnchorTarget;
         use ::runtime_core::{signal, ui, PressableHandle, Ref};
         use ::std::rc::Rc;
 
@@ -959,7 +959,7 @@ recipe!(
     /// the anchor.
     pub fn popover_anchored() -> ::runtime_core::Element {
         use crate::{typography_kind, Button, Popover, Stack, StackGap, Typography};
-        use ::runtime_core::primitives::portal::AnchorTarget;
+        use crate::AnchorTarget;
         use ::runtime_core::{signal, ui, PressableHandle, Ref};
         use ::std::rc::Rc;
 

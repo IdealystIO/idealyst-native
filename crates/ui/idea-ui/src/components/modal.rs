@@ -49,7 +49,10 @@
 //! ## Width and height
 //! [`ModalProps::width`] is the surface's desired width on a roomy viewport;
 //! it is capped to the viewport width (minus a margin) reactively so the
-//! surface never overflows a phone. The surface height is likewise capped to
+//! surface never overflows a phone. For a centered card it REPLACES the
+//! theme sheet's `max_width` (560) — any width, including one above 560,
+//! is honored up to the viewport cap. A sheet fills its container up to
+//! the theme's `max_width`. The surface height is likewise capped to
 //! the viewport height (minus the same margin) — a `max-height`, not a fixed
 //! height, so a short modal stays content-sized. When the content is taller
 //! than the cap, the card clips (`overflow: hidden`, keeping the rounded
@@ -200,8 +203,11 @@ pub struct ModalProps {
     /// and routes Escape/back to `on_dismiss`. `false` makes the backdrop
     /// inert (no dismissal) unless `on_backdrop_press` is set.
     pub dismissable: bool,
-    /// Desired surface width on a roomy viewport, in DIPs. Capped to the
-    /// viewport width reactively so it never overflows a phone.
+    /// Desired surface width on a roomy viewport, in DIPs (default 520).
+    /// Capped to the viewport width reactively so it never overflows a
+    /// phone; otherwise honored as given — it overrides the theme sheet's
+    /// 560 `max_width`. Ignored by `ModalPresentation::Sheet`, which
+    /// spans its container.
     pub width: f32,
     /// Custom backdrop scrim style. `None` uses the default dimming scrim.
     /// Must keep the backdrop full-bleed (`position: absolute` + zero
@@ -841,9 +847,22 @@ fn assemble_overlay(
                     (Some(Tokenized::Literal(Length::Px(0.0))), insets.bottom)
                 }
             };
+            // `ModalStyle` carries `max_width: 560` as the THEME's default
+            // cap, and a max-width beats `width` in every layout engine — so
+            // an inline `width` alone could never exceed 560 and
+            // `ModalProps::width = 1200` was silently a no-op (#109). For a
+            // card the author's width, already viewport-capped by
+            // `effective_modal_width`, IS the cap: pin `max_width` to it.
+            // A sheet keeps the sheet's cap (it fills its container up to
+            // it, which is what keeps a sheet phone-shaped on a tablet).
+            let max_width = match presentation {
+                ModalPresentation::Centered => Some(Tokenized::Literal(width.clone())),
+                ModalPresentation::Sheet => None,
+            };
             let app = StyleApplication::new(ModalStyle::sheet()).with_inline(
                 StyleRules {
                     width: Some(Tokenized::Literal(width)),
+                    max_width,
                     max_height: Some(Tokenized::Literal(Length::Px(max_h))),
                     // Clip the scroll content to the frame's rounded corners.
                     overflow: Some(Overflow::Hidden),
@@ -1295,6 +1314,106 @@ mod tests {
                 MODAL_MIN_HEIGHT_FIT
             );
     });
+    }
+
+    /// Walk `[center] → [backdrop, card] → anim view → surface` and return
+    /// the surface's resolved rules.
+    fn surface_rules(portal: Element) -> Rc<StyleRules> {
+        let mut portal_children = match classify(portal) {
+            P::Portal { children, .. } => children,
+            _ => panic!("assemble_overlay should build a Portal"),
+        };
+        let mut layers = match classify(portal_children.remove(0)) {
+            P::View { children, .. } => children,
+            _ => panic!("portal child should be the placement container"),
+        };
+        let mut card = match classify(layers.remove(1)) {
+            P::Pressable { children, .. } => children,
+            _ => panic!("card layer should be a Pressable"),
+        };
+        let mut anim = match classify(card.remove(0)) {
+            P::View { children, .. } => children,
+            _ => panic!("card layer wraps the animation view"),
+        };
+        match classify(anim.remove(0)) {
+            P::View { style: Some(style), .. } => style.resolve(),
+            _ => panic!("animation view wraps a styled surface"),
+        }
+    }
+
+    /// The width the surface actually lays out at: `width`, clamped by
+    /// `max_width` — the clamp every backend's layout engine applies.
+    fn laid_out_width(rules: &StyleRules) -> f32 {
+        let px = |l: Option<&Tokenized<Length>>| match l.map(|t| t.resolve()) {
+            Some(Length::Px(v)) => Some(v),
+            None => None,
+            other => panic!("expected a px length, got {other:?}"),
+        };
+        let width = px(rules.width.as_ref()).expect("the surface carries a width");
+        match px(rules.max_width.as_ref()) {
+            Some(max) => width.min(max),
+            None => width,
+        }
+    }
+
+    /// Regression #109: `ModalProps::width` had no effect above 560.
+    /// `ModalStyle` caps `max_width: 560` and the surface only set an
+    /// inline `width`, so a max-width that beats width in every layout
+    /// engine silently clamped `width = 1200` back to 560.
+    #[test]
+    fn regression_modal_width_above_560_is_honored() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            runtime_core::viewport_size().set(runtime_core::ViewportSize {
+                width: 1600.0,
+                height: 1000.0,
+            });
+            idea_theme::testing::commit();
+            let portal = assemble_overlay(
+                runtime_core::text("hi").into_element(),
+                Ref::new(),
+                Ref::new(),
+                None,
+                None,
+                1200.0,
+                ModalPresentation::Centered,
+                None,
+                None,
+                None,
+            );
+            let w = laid_out_width(&surface_rules(portal));
+            assert_eq!(w, 1200.0, "an author width of 1200 lays out at 1200, not the sheet's 560 cap");
+        });
+    }
+
+    /// The author width stays viewport-capped, like the default: a
+    /// 1200-wide card on an 800-wide window fits with a margin each side.
+    #[test]
+    fn wide_modal_width_still_caps_to_the_viewport() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            runtime_core::viewport_size().set(runtime_core::ViewportSize {
+                width: 800.0,
+                height: 1000.0,
+            });
+            idea_theme::testing::commit();
+            let portal = assemble_overlay(
+                runtime_core::text("hi").into_element(),
+                Ref::new(),
+                Ref::new(),
+                None,
+                None,
+                1200.0,
+                ModalPresentation::Centered,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(
+                laid_out_width(&surface_rules(portal)),
+                800.0 - MODAL_EDGE_MARGIN * 2.0
+            );
+        });
     }
 
     /// A sheet's surface holds the scroller ALONE, exactly like a centered

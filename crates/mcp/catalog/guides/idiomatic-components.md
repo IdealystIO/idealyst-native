@@ -272,35 +272,56 @@ if let Some(cb) = on_press {
 ## 4. Tests
 
 Every component ships with tests, and every bug fix ships with a regression
-test named after the bug. Install a theme, build the component, and assert on
-its resolved output by matching the returned `Element`:
+test named after the bug. Three things every test needs:
+
+- **A world.** Signals and effects live in a reactive world, and a
+  `Reactive` prop, a theme install, or a style closure all touch one. Wrap
+  the body in `idea_theme::testing::with_test_world(|| …)` — it enters a
+  fresh world and drops it afterwards. (`idea_theme::testing::commit()`
+  flushes staged signal writes mid-test, when a test `set`s a signal and
+  then reads the result.)
+- **A theme.** `install_idea_theme(light_theme())`, inside the world, before
+  building anything that resolves a stylesheet.
+- **A way into the built tree.** A primitive is an `Element::Item` whose
+  payload is type-erased, so a test can't pattern-match it directly.
+  `idea_ui::test_support::classify` (`crate::test_support` inside idea-ui)
+  downcasts one element to the normalized `P` mirror (`P::View`,
+  `P::Text`, `P::Pressable`, …), and its `style` slot resolves to concrete
+  rules with `.resolve()`, whether the style is static or reactive.
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{classify, P};
+    use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, AlignItems, StyleSource};
+    use runtime_core::AlignItems;
 
     #[test]
     fn row_align_center_resolves_to_align_items_center() {
-        install_idea_theme(light_theme());
-        let el = Stack(StackProps {
-            axis: Reactive::Static(StackAxis::Row),
-            align: Reactive::Static(StackAlign::Center),
-            ..Default::default()
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = Stack(StackProps {
+                axis: Reactive::Static(StackAxis::Row),
+                align: Reactive::Static(StackAlign::Center),
+                ..Default::default()
+            });
+            let rules = match classify(el) {
+                P::View { style: Some(style), .. } => style.resolve(),
+                _ => panic!("Stack renders a styled view"),
+            };
+            assert_eq!(rules.align_items, Some(AlignItems::Center));
         });
-        let app = match el {
-            Element::View { style: Some(StyleSource::Static(a)), .. } => a,
-            _ => panic!("Stack renders a statically-styled View"),
-        };
-        assert_eq!(resolve_style(&app).align_items, Some(AlignItems::Center));
     }
 }
 ```
 
 Note the props are constructed with `Reactive::Static(...)` in tests — the
-struct literal is post-`#[props]`, so the fields are the wrapped types.
+struct literal is post-`#[props]`, so the fields are the wrapped types. This
+test runs in idea-ui's suite as `crates/ui/idea-ui/tests/guide_test_example.rs`
+(with `idea_ui::` paths in place of `super::*` / `crate::`), so the example
+can't drift from the harness.
 
 ## Checklist
 

@@ -34,25 +34,32 @@
 //! chips reads as "one (or some) lit up, the rest muted" without the
 //! caller wiring two stylesheets. Pass an explicit `variant` to set the
 //! *selected* look (e.g. `Filled` for a stronger highlight).
+//!
+//! ## Size
+//! `size` (`ControlSize::Sm` / `Md` / `Lg`, default `Md`) rides the Tag
+//! sheets' `size` axis: the pill's padding on the container sheet and the
+//! label's font size on the label sheet. `Md` is the Tag's own geometry.
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, ui, Element, IdealystSchema, IntoElement, Reactive,
+    component, pressable, recipe, ui, view, Element, IdealystSchema, IntoElement, Reactive,
     StyleApplication,
 };
 
-use idea_theme::extensible::{installed_tag_sheet, tone, variant, ToneRef, Variant, VariantRef};
+use idea_theme::extensible::{
+    installed_tag_sheet, installed_tag_text_sheets, tone, variant, ToneRef, Variant, VariantRef,
+};
 
 use crate::components::ControlSize;
-use crate::stylesheets::TagLabel;
 
 // Reactive-by-default: `#[props]` wraps `selected`/`tone`/`variant`/`size` →
 // `Reactive<…>`; `label` is already reactive, and `on_select` (an
 // `Rc<dyn Fn()>` handler) is auto-skipped. Bare markers (`tone =
 // tone::Primary`) coerce to `Reactive<ToneRef>` via the marker's generated
-// `From`. The style-driving props route into the container-style sink, read
-// `.get()` INSIDE so the apply-style Effect subscribes to whichever are live.
+// `From`. The style-driving props route into the container and label style
+// sinks, read `.get()` INSIDE so the apply-style Effect subscribes to
+// whichever are live.
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
@@ -77,9 +84,9 @@ pub struct ChipProps {
     /// Outline, …). Default Soft. The unselected state always uses the
     /// quieter Ghost variant of the same tone.
     pub variant: VariantRef,
-    /// Size scale (Sm, Md, Lg). Default Md. Shared with the other
-    /// selection controls.
-    #[cfg_attr(feature = "docs", doc_control(skip))]
+    /// Size scale (Sm, Md, Lg). Default Md. Picks the pill's padding and
+    /// the label's font size (Sm: caption type, tight inset; Md: body-sm
+    /// type, the Tag's geometry; Lg: body type, roomier inset).
     pub size: ControlSize,
 }
 
@@ -99,61 +106,98 @@ impl Default for ChipProps {
 /// Renders a selectable pill: a pressable whose tone × variant appearance
 /// switches between a lit (`selected`) and a muted (unselected) state,
 /// reporting taps via `on_select`. The host owns the selected boolean.
+/// Without an `on_select` the chip is a plain view — nothing to press, so
+/// nothing swallows the tap (§9.6).
 #[component]
 pub fn Chip(props: &ChipProps) -> Element {
     let label = props.label.clone();
     let on_select = props.on_select.clone();
     let clickable = on_select.is_some();
 
-    // The container style is REACTIVE when any of selected/tone/variant is
+    // The styles are REACTIVE when any of selected/tone/variant/size is
     // live; else the build-time fast path (no first-paint flicker). The
-    // closure reads each prop's `.get()` INSIDE so the apply-style Effect
+    // closures read each prop's `.get()` INSIDE so the apply-style Effect
     // subscribes to whichever are dynamic.
-    let style_is_reactive =
-        !props.selected.is_static() || !props.tone.is_static() || !props.variant.is_static();
-    let make_style = {
+    let style_is_reactive = !props.selected.is_static()
+        || !props.tone.is_static()
+        || !props.variant.is_static()
+        || !props.size.is_static();
+
+    // Selected → caller's variant (lit); unselected → Ghost (muted) of the
+    // same tone. The container AND the label resolve the same key from the
+    // installed Tag sheets, so a chip looks like a tag of the matching
+    // tone/variant — and the label carries the tone's foreground itself,
+    // because native text inherits no color from its box.
+    let appearance = {
         let selected = props.selected.clone();
         let tone = props.tone.clone();
         let variant = props.variant.clone();
         move || {
-            // Selected → caller's variant (lit); unselected → Ghost (muted) of
-            // the same tone. Both arms resolve from the installed Tag sheet, so
-            // a chip looks like a tag of the matching tone/variant — no
-            // separate stylesheet needed.
             let variant_key = if selected.get() {
                 variant.get().key()
             } else {
                 variant::Ghost.key()
             };
-            let appearance_key = format!("{}_{}", tone.get().key(), variant_key);
-            // Hug lives in the tag sheet's base (it's unconditional). The
-            // pointer cursor — "anything selectable shows a pointer" — rides
-            // the sheet's `interactive` variant, so `clickable` is part of the
-            // resolution cache identity. It used to ride a `with_computed`
-            // layer under the constant key `"chip-box"`, which left `clickable`
-            // out of that identity and let two chips with the same
-            // tone+variant but different `on_select` share one resolved style.
+            format!("{}_{}", tone.get().key(), variant_key)
+        }
+    };
+    let make_style = {
+        let appearance = appearance.clone();
+        let size = props.size.clone();
+        move || {
+            // Hug lives in the tag sheet's base (it's unconditional); `size`
+            // picks the padding arm. The pointer cursor — "anything
+            // selectable shows a pointer" — rides the sheet's `interactive`
+            // variant, so `clickable` is part of the resolution cache
+            // identity. It used to ride a `with_computed` layer under the
+            // constant key `"chip-box"`, which left `clickable` out of that
+            // identity and let two chips with the same tone+variant but
+            // different `on_select` share one resolved style.
             StyleApplication::new(installed_tag_sheet())
-                .with("appearance", appearance_key)
+                .with("appearance", appearance())
+                .with("size", size.get().as_variant_str().to_string())
                 .with("interactive", if clickable { "on" } else { "off" }.to_string())
         }
     };
-
-    let label_style = TagLabel();
-    let label_el: Element = ui! { text(style = label_style) { label } };
-
-    // §9.6: bind the press handler only when the host supplied one. A
-    // `pressable` always needs *a* handler, so the inert case gets a
-    // no-op — but we keep the conditional shape so the intent reads
-    // clearly and matches the rest of the library.
-    let node = match on_select {
-        Some(cb) => pressable(vec![label_el], move || (cb)()),
-        None => pressable(vec![label_el], || {}),
+    let make_label_style = {
+        let size = props.size.clone();
+        let sheet = installed_tag_text_sheets().label.clone();
+        move || {
+            // The label half of the size axis (font size) + the fill's
+            // foreground — see `TagSheetBuilder::build_text`.
+            StyleApplication::new(sheet.clone())
+                .with("appearance", appearance())
+                .with("size", size.get().as_variant_str().to_string())
+        }
     };
-    if style_is_reactive {
-        node.with_style(make_style).into_element()
+
+    let label_el: Element = if style_is_reactive {
+        ui! { text(style = make_label_style) { label } }
     } else {
-        node.with_style(make_style()).into_element()
+        let label_style = make_label_style();
+        ui! { text(style = label_style) { label } }
+    };
+
+    // §9.6: a pressable only when the host supplied a handler. An inert chip
+    // is a plain view — a no-op pressable would swallow the tap and block
+    // hit-test fall-through to whatever sits under it.
+    match on_select {
+        Some(cb) => {
+            let node = pressable(vec![label_el], move || (cb)());
+            if style_is_reactive {
+                node.with_style(make_style).into_element()
+            } else {
+                node.with_style(make_style()).into_element()
+            }
+        }
+        None => {
+            let node = view(vec![label_el]);
+            if style_is_reactive {
+                node.with_style(make_style).into_element()
+            } else {
+                node.with_style(make_style()).into_element()
+            }
+        }
     }
 }
 
@@ -222,11 +266,13 @@ mod tests {
                     on_select,
                     ..Default::default()
                 });
+                // A clickable chip is a pressable, an inert one a view (§9.6);
+                // both resolve the same tag sheet.
                 match classify(el) {
-                    P::Pressable { style, .. } => {
+                    P::Pressable { style, .. } | P::View { style, .. } => {
                         style.expect("chip carries a style").resolve().cursor.clone()
                     }
-                    _ => panic!("a chip builds a pressable"),
+                    _ => panic!("a chip builds a pressable or a view"),
                 }
             };
 
@@ -254,7 +300,112 @@ mod tests {
                 label: Reactive::Static("Tag".to_string()),
                 ..Default::default()
             });
-            assert!(matches!(classify(el), P::Pressable { .. }));
+            assert!(matches!(classify(el), P::View { .. }));
     });
+    }
+
+    /// Regression (§9.6): a chip with no `on_select` used to build a
+    /// pressable bound to a no-op closure, which consumes the tap and
+    /// blocks hit-test fall-through on some backends. With nothing to
+    /// press it must build a plain view.
+    #[test]
+    fn regression_inert_chip_is_not_a_noop_pressable() {
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
+            let inert = Chip(&ChipProps {
+                label: Reactive::Static("Tag".to_string()),
+                ..Default::default()
+            });
+            assert!(
+                !matches!(classify(inert), P::Pressable { .. }),
+                "an inert chip must not be a pressable"
+            );
+            let live = Chip(&ChipProps {
+                label: Reactive::Static("Tag".to_string()),
+                on_select: Some(std::rc::Rc::new(|| {})),
+                ..Default::default()
+            });
+            assert!(matches!(classify(live), P::Pressable { .. }));
+        });
+    }
+
+    /// `(container padding-left, container padding-top, label font-size)`
+    /// for a clickable chip of `size`.
+    fn chip_metrics(size: ControlSize) -> (f32, f32, f32) {
+        use runtime_core::Length;
+        let el = Chip(&ChipProps {
+            label: Reactive::Static("Tag".to_string()),
+            on_select: Some(std::rc::Rc::new(|| {})),
+            size: Reactive::Static(size),
+            ..Default::default()
+        });
+        let (children, style) = match classify(el) {
+            P::Pressable { children, style, .. } => (children, style),
+            _ => panic!("a clickable chip builds a pressable"),
+        };
+        let rules = style.expect("chip carries a style").resolve();
+        let px = |l: Option<Length>| match l {
+            Some(Length::Px(v)) => v,
+            other => panic!("expected px, got {other:?}"),
+        };
+        let pad_left = px(rules.padding_left.as_ref().map(|t| t.resolve()));
+        let pad_top = px(rules.padding_top.as_ref().map(|t| t.resolve()));
+        let label_rules = match classify(children.into_iter().next().expect("a label")) {
+            P::Text { style, .. } => style.expect("label carries a style").resolve(),
+            _ => panic!("chip's child is its label text"),
+        };
+        let font = px(label_rules.font_size.as_ref().map(|t| t.resolve()));
+        (pad_left, pad_top, font)
+    }
+
+    /// Regression (Wave-41): `ChipProps::size` was documented but never
+    /// read — every size rendered the Md pill. Each size must now resolve
+    /// its own padding and label font, growing Sm → Md → Lg, with Md
+    /// keeping the Tag's original geometry (8px inset, 13px body-sm type).
+    #[test]
+    fn regression_chip_size_prop_changes_padding_and_font() {
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
+            let sm = chip_metrics(ControlSize::Sm);
+            let md = chip_metrics(ControlSize::Md);
+            let lg = chip_metrics(ControlSize::Lg);
+            assert_eq!(md, (8.0, 2.0, 13.0), "Md is the Tag's pre-size-axis geometry");
+            assert!(sm.0 < md.0 && md.0 < lg.0, "inset grows with size: {sm:?} {md:?} {lg:?}");
+            assert!(sm.1 < md.1 && md.1 < lg.1, "vertical padding grows with size");
+            assert!(sm.2 < md.2 && md.2 < lg.2, "label font grows with size");
+        });
+    }
+
+    /// Regression: the chip label used the colorless `TagLabel` sheet, so on
+    /// native backends (text inherits no color from its box) a lit chip's
+    /// label kept the default text color instead of the tone's foreground.
+    /// The label must carry the same appearance foreground as the fill.
+    #[test]
+    fn regression_chip_label_carries_the_tone_foreground() {
+        with_test_world(|| {
+            use idea_theme::theme::{install_idea_theme, light_theme};
+            install_idea_theme(light_theme());
+            let el = Chip(&ChipProps {
+                label: Reactive::Static("Tag".to_string()),
+                selected: Reactive::Static(true),
+                on_select: Some(std::rc::Rc::new(|| {})),
+                tone: tone::Danger.into(),
+                variant: variant::Filled.into(),
+                ..Default::default()
+            });
+            let (children, style) = match classify(el) {
+                P::Pressable { children, style, .. } => (children, style),
+                _ => panic!("a clickable chip builds a pressable"),
+            };
+            let fill_color = style.expect("style").resolve().color.clone();
+            assert!(fill_color.is_some(), "a filled chip paints a foreground");
+            let label_color = match classify(children.into_iter().next().unwrap()) {
+                P::Text { style, .. } => style.expect("label style").resolve().color.clone(),
+                _ => panic!("chip's child is its label text"),
+            };
+            assert_eq!(label_color, fill_color, "the label is painted in the fill's foreground");
+        });
     }
 }

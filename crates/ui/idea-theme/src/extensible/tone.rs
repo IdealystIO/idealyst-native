@@ -70,6 +70,27 @@ macro_rules! builtin_tone {
                 ::runtime_core::Reactive::Static(super::ToneRef::from(marker))
             }
         }
+
+        // Optional-tone coercion: `tone = tone::Danger` into an
+        // `Option<ToneRef>` prop (`#[props]` wraps it as
+        // `Reactive<Option<ToneRef>>`) with no `Some(...)`. Orphan-legal
+        // because the marker — the trait's type parameter — is local: only
+        // a BLANKET `impl<T: Tone> From<T> for Option<ToneRef>` is barred.
+        // See the note after `ToneRef::builtins` in `extensible/mod.rs`.
+        impl ::core::convert::From<$name> for ::core::option::Option<super::ToneRef> {
+            fn from(marker: $name) -> Self {
+                ::core::option::Option::Some(super::ToneRef::from(marker))
+            }
+        }
+        impl ::core::convert::From<$name>
+            for ::runtime_core::Reactive<::core::option::Option<super::ToneRef>>
+        {
+            fn from(marker: $name) -> Self {
+                ::runtime_core::Reactive::Static(::core::option::Option::Some(
+                    super::ToneRef::from(marker),
+                ))
+            }
+        }
     };
 }
 

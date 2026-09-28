@@ -5,7 +5,7 @@
 //! use icons_lucide::SEARCH;
 //!
 //! ui! {
-//!     Icon(data = SEARCH, size = 20.0, tone = Some(tone::Primary.into()))
+//!     Icon(data = SEARCH, size = 20.0, tone = tone::Primary)
 //! }
 //! ```
 //!

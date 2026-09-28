@@ -35,10 +35,10 @@ pub struct TypographyProps {
     /// no parent rebuild. The `ui!`/`jsx!` dispatch coerces all of these
     /// via `.into()`, so call sites are unchanged for the static case.
     pub content: Reactive<String>,
-    /// Typographic role (font family/size/weight/line-height), e.g.
-    /// H1/Body/Caption. Default Body. VISUAL type scale only — a heading
-    /// `kind` does not set an accessibility heading role (see the
-    /// component doc for how to mark a real heading).
+    /// Typographic role (font size/weight/line-height): `Display`,
+    /// `H1`…`H6`, `BodyXl`/`BodyLg`/`Body`/`BodySm`, `Caption`,
+    /// `Overline`, or an app-defined kind. Default Body. A heading kind
+    /// also gets `Role::Header` unless `a11y_role` says otherwise.
     pub kind: TypographyKindRef,
     /// Optional intent-colored text. When `Some`, overrides `muted`.
     pub tone: Option<ToneRef>,
@@ -345,6 +345,9 @@ mod tests {
                 TypographyKindRef::from(idea_theme::extensible::typography::H1),
                 TypographyKindRef::from(idea_theme::extensible::typography::H2),
                 TypographyKindRef::from(idea_theme::extensible::typography::H3),
+                TypographyKindRef::from(idea_theme::extensible::typography::H4),
+                TypographyKindRef::from(idea_theme::extensible::typography::H5),
+                TypographyKindRef::from(idea_theme::extensible::typography::H6),
                 TypographyKindRef::from(idea_theme::extensible::typography::Display),
             ] {
                 let props = TypographyProps {
@@ -455,6 +458,48 @@ mod tests {
                 }));
                 assert_eq!(rules.font_weight, Some(w), "weight {w:?} did not resolve");
             }
+        });
+    }
+
+    /// Regression #6: the docs promised `H1…H6` but `typography_kind` stopped
+    /// at `H3` — `typography_kind::H4` did not compile. H4–H6 must exist, be
+    /// reachable from a `ui!` call site, and continue the heading ramp:
+    /// each strictly smaller than the one above, starting below H3.
+    #[test]
+    fn regression_typography_kind_h4_to_h6_exist_and_continue_the_ramp() {
+        with_test_world(|| {
+            use crate::{typography_kind, TypographyKind};
+            install_idea_theme(light_theme());
+            let size_of = |kind: TypographyKindRef| -> f32 {
+                let rules = resolve(Typography(&TypographyProps {
+                    content: Reactive::Static("Hi".to_string()),
+                    kind: Reactive::Static(kind),
+                    ..Default::default()
+                }));
+                match rules.font_size.as_ref().map(|t| t.resolve()) {
+                    Some(runtime_core::Length::Px(v)) => v,
+                    other => panic!("expected a px font size, got {other:?}"),
+                }
+            };
+            let sizes = [
+                size_of(typography_kind::H3.into()),
+                size_of(typography_kind::H4.into()),
+                size_of(typography_kind::H5.into()),
+                size_of(typography_kind::H6.into()),
+            ];
+            assert!(
+                sizes.windows(2).all(|w| w[0] > w[1]),
+                "H3 > H4 > H5 > H6, got {sizes:?}"
+            );
+            for kind in [typography_kind::H4.key(), typography_kind::H5.key(), typography_kind::H6.key()] {
+                assert!(
+                    TypographyKindRef::builtins().iter().any(|(k, _)| *k == kind),
+                    "{kind} is a registered builtin, so the typography sheet has an arm for it"
+                );
+            }
+            // The `ui!` struct-literal path coerces the bare marker.
+            let el = runtime_core::ui! { Typography(content = "Section", kind = typography_kind::H6) };
+            assert_eq!(a11y_role(el), Some(Role::Header));
         });
     }
 }
