@@ -653,14 +653,34 @@ pub fn run(args: Args) -> Result<()> {
         dev_events::SessionServer::named(server_display_name(&dir, &manifest))
             .with_log_file(server_log.display().to_string())
     });
+    let session_hot_tier = hot_tier(&args, &active_targets);
+    let hot_patch_armed = matches!(session_hot_tier, dev_events::HotTier::Armed);
     session.reporter.emit(dev_events::DevEvent::SessionStarted {
         app: manifest.app.name.clone(),
         targets: active_targets.iter().map(|t| t.as_str().to_string()).collect(),
         mode: if args.local { dev_events::Mode::Local } else { dev_events::Mode::RuntimeServer },
-        hot_tier: hot_tier(&args, &active_targets),
+        hot_tier: session_hot_tier,
         log_file: Some(log_path.display().to_string()),
         server: session_server,
     });
+    // The hot-patch tier's base prep parses the whole debug module in this
+    // process (~3.7 GB peak on CrewForge), past the 4096 MB default cap.
+    // Raised here, once the tier is known to be armed, rather than at
+    // startup where the tier is not known yet. See `memory_limit`.
+    if hot_patch_armed {
+        if let Some(mb) = crate::memory_limit::raise_for_hot_patch() {
+            session.reporter.log(
+                "idealyst",
+                format!(
+                    "memory cap: {mb} MB RSS for the hot-patch tier (min({} MB, half of RAM), \
+                     never below {} MB; {} overrides)",
+                    crate::memory_limit::HOT_PATCH_CEILING_MB,
+                    crate::memory_limit::DEFAULT_LIMIT_MB,
+                    crate::memory_limit::ENV_OVERRIDE,
+                ),
+            );
+        }
+    }
     // After the session line: a late subscriber's snapshot starts at it.
     crate::dev_log::serve_events(&dir);
 

@@ -99,7 +99,26 @@
 //!
 //! [`ENV_OVERRIDE`] — integer megabytes. `0` disables the cap (for
 //! debugging the leak with a memory profiler that needs unbounded
-//! growth).
+//! growth). The override always wins, including over the hot-patch
+//! raise below.
+//!
+//! ## The hot-patch raise
+//!
+//! A session that arms the wasm hot-patch tier (`idealyst dev --web
+//! --local`) does legitimately heavy work in THIS process: base prep
+//! parses the linked debug module with walrus, and on CrewForge (a
+//! ~220 MB debug wasm) that peaks at ~3.7 GB RSS — close enough to the
+//! 4096 MB default that sessions aborted. Users had to know to export
+//! `IDEALYST_MEMORY_LIMIT_MB=8192`. So `dev` calls
+//! [`raise_for_hot_patch`] once the tier is armed, which lifts the cap to
+//! `min(8192 MB, half of physical RAM)`, never below the default
+//! ([`select_limit_mb`] is the policy). Half of RAM keeps the cap's
+//! purpose — a leak aborts before it craters the host — on a small
+//! machine, where 8 GB would be all of it.
+//!
+//! The cap is an atomic the monitor thread re-reads every poll, so the
+//! raise takes effect on the running monitor rather than spawning a
+//! second one.
 
 /// Default cap. 4 GB is ~80× the steady-state RSS of an idle MCP
 /// server and ~20× a typical `dev` orchestrator, so a leak still
@@ -112,6 +131,86 @@ pub const DEFAULT_LIMIT_MB: u64 = 4096;
 
 /// Env var name for override. `0` disables.
 pub const ENV_OVERRIDE: &str = "IDEALYST_MEMORY_LIMIT_MB";
+
+/// The ceiling of the hot-patch raise (see the module docs): twice the
+/// ~3.7 GB peak measured on CrewForge's base prep, the largest app the
+/// tier runs on.
+pub const HOT_PATCH_CEILING_MB: u64 = 8192;
+
+/// The cap the monitor thread enforces, in megabytes. Written by
+/// [`apply`] and [`raise_for_hot_patch`], read on every poll.
+static LIMIT_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the user set [`ENV_OVERRIDE`] to a number. Parsed the same
+/// way [`apply`] reads it: a value that is not an integer is ignored.
+fn env_override(value: Option<&str>) -> Option<u64> {
+    value.and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+/// The cap a process should run under, in megabytes.
+///
+/// - `env` is [`ENV_OVERRIDE`]'s value: when it parses, it wins outright
+///   (`0` included, which disables the cap).
+/// - Otherwise a session that has not armed the hot-patch tier gets
+///   [`DEFAULT_LIMIT_MB`].
+/// - An armed session gets `min(HOT_PATCH_CEILING_MB, physical RAM / 2)`,
+///   and never less than the default. When physical RAM cannot be read the
+///   half-of-RAM guard cannot be honoured, so it stays at the default.
+///
+/// Pure, so the policy is tested without touching the process's cap.
+pub fn select_limit_mb(env: Option<&str>, physical_ram_mb: Option<u64>, hot_patch_armed: bool) -> u64 {
+    if let Some(mb) = env_override(env) {
+        return mb;
+    }
+    if !hot_patch_armed {
+        return DEFAULT_LIMIT_MB;
+    }
+    match physical_ram_mb {
+        Some(ram) => HOT_PATCH_CEILING_MB.min(ram / 2).max(DEFAULT_LIMIT_MB),
+        None => DEFAULT_LIMIT_MB,
+    }
+}
+
+/// Raise the running cap for a session that armed the hot-patch tier.
+///
+/// Returns the cap now in force, for the caller to log once, or `None`
+/// when [`ENV_OVERRIDE`] is set (it wins, and [`apply`] already said so
+/// at startup) or the cap is not being enforced at all.
+pub fn raise_for_hot_patch() -> Option<u64> {
+    let env = std::env::var(ENV_OVERRIDE).ok();
+    if env_override(env.as_deref()).is_some() {
+        return None;
+    }
+    let mb = select_limit_mb(None, physical_ram_mb(), true);
+    // `0` means `apply` never started a monitor (or this platform has
+    // none): there is no cap to raise.
+    let current = LIMIT_MB.load(std::sync::atomic::Ordering::Relaxed);
+    if current == 0 {
+        return None;
+    }
+    if mb > current {
+        LIMIT_MB.store(mb, std::sync::atomic::Ordering::Relaxed);
+    }
+    Some(mb.max(current))
+}
+
+/// This machine's physical memory in megabytes, or `None` if it cannot be
+/// read. `sysconf(_SC_PHYS_PAGES)` answers on both Linux and macOS.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn physical_ram_mb() -> Option<u64> {
+    // SAFETY: sysconf is a thread-safe read of static system values.
+    let (pages, page_size) =
+        unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+    if pages <= 0 || page_size <= 0 {
+        return None;
+    }
+    Some((pages as u64).saturating_mul(page_size as u64) / (1024 * 1024))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn physical_ram_mb() -> Option<u64> {
+    None
+}
 
 /// RSS poll cadence. Long enough that overhead is invisible, short
 /// enough that we abort well before a leak that's growing at MB/s
@@ -333,21 +432,23 @@ pub fn kill_watched_pids() -> usize {
 /// has explicitly overridden the default (so they get confirmation
 /// their override took effect).
 pub fn apply(default_mb: u64) {
-    let user_override = std::env::var(ENV_OVERRIDE)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok());
+    let user_override = env_override(std::env::var(ENV_OVERRIDE).ok().as_deref());
     let mb = user_override.unwrap_or(default_mb);
     if mb == 0 {
         return;
     }
-    let bytes = mb.saturating_mul(1024 * 1024);
     let log = user_override.is_some();
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    spawn_rss_monitor(bytes, mb, log);
+    {
+        // Only a platform with a monitor records a cap: `raise_for_hot_patch`
+        // reads a zero as "nothing is enforced here".
+        LIMIT_MB.store(mb, std::sync::atomic::Ordering::Relaxed);
+        spawn_rss_monitor(mb, log);
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (bytes, mb, log);
+        let _ = log;
     }
 }
 
@@ -356,7 +457,7 @@ pub fn apply(default_mb: u64) {
 /// Deliberately NOT `setrlimit` — see the module docs: an rlimit is
 /// inherited by every build subprocess and would cap compilation.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn spawn_rss_monitor(limit_bytes: u64, mb: u64, log: bool) {
+fn spawn_rss_monitor(mb: u64, log: bool) {
     if log {
         eprintln!(
             "[idealyst] memory cap: {mb} MB RSS via poll thread (via {ENV_OVERRIDE}; \
@@ -367,6 +468,9 @@ fn spawn_rss_monitor(limit_bytes: u64, mb: u64, log: bool) {
         .name("idealyst-mem-monitor".to_string())
         .spawn(move || loop {
             std::thread::sleep(POLL_INTERVAL);
+            // Re-read each poll: `raise_for_hot_patch` moves it mid-session.
+            let mb = LIMIT_MB.load(std::sync::atomic::Ordering::Relaxed);
+            let limit_bytes = mb.saturating_mul(1024 * 1024);
             if let Some(rss) = current_rss_bytes() {
                 if rss > limit_bytes {
                     // Before the abort, not after: SIGABRT runs no
@@ -646,6 +750,64 @@ mod tests {
         // kill, and nothing to panic about either.
         drop(children);
         assert_eq!(kill_watched_processes(), 0, "a dropped session must kill nothing");
+    }
+
+    const GB: u64 = 1024;
+
+    /// The env override wins over everything, `0` (disable) included.
+    #[test]
+    fn the_env_override_always_wins() {
+        assert_eq!(select_limit_mb(Some("12000"), Some(64 * GB), true), 12000);
+        assert_eq!(select_limit_mb(Some(" 2048 "), Some(64 * GB), true), 2048);
+        assert_eq!(select_limit_mb(Some("0"), Some(64 * GB), true), 0);
+        assert_eq!(select_limit_mb(Some("3000"), Some(64 * GB), false), 3000);
+    }
+
+    /// A value that is not a number is ignored, as `apply` ignores it.
+    #[test]
+    fn an_unparseable_override_is_ignored() {
+        assert_eq!(select_limit_mb(Some("lots"), Some(64 * GB), true), HOT_PATCH_CEILING_MB);
+        assert_eq!(select_limit_mb(Some(""), None, false), DEFAULT_LIMIT_MB);
+    }
+
+    #[test]
+    fn an_unarmed_session_keeps_the_default() {
+        assert_eq!(select_limit_mb(None, Some(64 * GB), false), DEFAULT_LIMIT_MB);
+    }
+
+    /// Regression: CrewForge's base prep peaks at ~3.7 GB, and an armed
+    /// session under the 4096 MB default aborted until the user exported
+    /// `IDEALYST_MEMORY_LIMIT_MB=8192` by hand.
+    #[test]
+    fn regression_an_armed_session_on_a_big_machine_gets_8192() {
+        assert_eq!(select_limit_mb(None, Some(32 * GB), true), 8192);
+        assert_eq!(select_limit_mb(None, Some(128 * GB), true), 8192);
+    }
+
+    /// Half of RAM between the default and the ceiling.
+    #[test]
+    fn an_armed_session_gets_half_of_ram_below_the_ceiling() {
+        assert_eq!(select_limit_mb(None, Some(12 * GB), true), 6 * GB);
+    }
+
+    /// Never below the default, on a machine where half of RAM is less.
+    #[test]
+    fn the_raise_never_lowers_the_cap() {
+        assert_eq!(select_limit_mb(None, Some(4 * GB), true), DEFAULT_LIMIT_MB);
+        assert_eq!(select_limit_mb(None, Some(8 * GB), true), DEFAULT_LIMIT_MB);
+    }
+
+    /// Unknown RAM: the half-of-RAM guard cannot hold, so no raise.
+    #[test]
+    fn unknown_ram_keeps_the_default() {
+        assert_eq!(select_limit_mb(None, None, true), DEFAULT_LIMIT_MB);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn physical_ram_reads_a_plausible_value() {
+        let mb = physical_ram_mb().expect("sysconf(_SC_PHYS_PAGES) should answer");
+        assert!(mb > 256 && mb < 64 * 1024 * 1024, "{mb} MB");
     }
 
     #[cfg(target_os = "linux")]

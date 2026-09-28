@@ -637,8 +637,15 @@ over a 223 MB module (320 MB linked), about 22 s on CrewForge.
 
 **Memory.** On CrewForge the CLI's peak RSS during base prep is about
 3.7 GB (one walrus parse of the module). The default memory cap is
-4096 MB, and a session exceeded it twice. Run a large app with
-`IDEALYST_MEMORY_LIMIT_MB=8192` while the tier is armed.
+4096 MB, and sessions exceeded it. So a session that arms the tier raises
+its own cap to the smaller of 8192 MB and half the machine's RAM (never
+below 4096 MB), and says so once:
+
+```text
+[idealyst] memory cap: 8192 MB RSS for the hot-patch tier (min(8192 MB, half of RAM), never below 4096 MB; IDEALYST_MEMORY_LIMIT_MB overrides)
+```
+
+`IDEALYST_MEMORY_LIMIT_MB` still wins when set (`0` turns the cap off).
 
 ### Workspace crates
 
@@ -763,7 +770,7 @@ idealyst dev --web --local --port 8096
 
 # CrewForge (full-stack; its own server serves the staged bundle)
 cd crates/app-main
-IDEALYST_MEMORY_LIMIT_MB=8192 RUSTUP_TOOLCHAIN=1.97.1-aarch64-apple-darwin \
+RUSTUP_TOOLCHAIN=1.97.1-aarch64-apple-darwin \
   PATH=<wasm-bindgen 0.2.126>/bin:$PATH \
   idealyst dev --web --local --port 3150
 ```
@@ -1235,8 +1242,10 @@ terminal host's own `.idealyst/terminal.log`.
 - `IDEALYST_HOTPATCH_KEEP_NAMES=1` serves the web patch WITH its `name`
   section, so a stack trace through patched code is readable in the
   browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
-- `IDEALYST_MEMORY_LIMIT_MB=8192` raises the CLI's memory cap (default
-  4096 MB), which a large app's base prep needs.
+- `IDEALYST_MEMORY_LIMIT_MB=<MB>` sets the CLI's memory cap outright
+  (`0` disables it). Without it the cap is 4096 MB, raised automatically
+  to min(8192 MB, half of RAM) when the hot-patch tier is armed — a large
+  app's base prep needs more than the default.
 - `[hotpatch] …` lines from the web dev loop name each step of a patch
   build and, on failure, what it could not resolve; the rebuild it falls
   back to follows.
