@@ -902,7 +902,7 @@ mod tests {
             // Root: the surface view carrying the themed Table sheet,
             // which must clip (rounded corners over scrolling columns).
             let mut surface_children = match el {
-                Element::Item { data, children } => {
+                Element::Item { data, children, .. } => {
                     let vp = data
                         .downcast_ref::<runtime_vocabulary::prims::PrimCell<
                             runtime_vocabulary::prims::ViewPrim,
