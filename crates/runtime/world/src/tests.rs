@@ -2625,3 +2625,51 @@ fn current_effect_dies_with_its_owner_not_with_its_reruns() {
     drop(owned);
     assert!(!taken.borrow()[0].is_alive(), "the owner's drop does");
 }
+
+#[test]
+fn subscriber_count_tracks_the_readers_of_the_latest_run() {
+    // The dev overlay's liveness probe: a literal component prop swapped
+    // for a signal is only worth writing when something READS it in a
+    // binding. The count has to follow re-runs (a branch that stops
+    // reading unsubscribes) and frees (a dropped effect unlinks), or a
+    // write the screen never sees would be reported as applied.
+    let world = World::new();
+    let (read, gate, owned) = world.enter(|| {
+        let read = signal(String::from("a"));
+        let gate = signal(true);
+        let ((), owned) = collect_owned(|| {
+            effect(move || {
+                if gate.get() {
+                    let _ = read.get();
+                }
+            });
+        });
+        (read, gate, owned)
+    });
+    assert_eq!(read.subscriber_count(), 1, "one effect read it");
+    assert_eq!(read.read_only().subscriber_count(), 1, "the read half agrees");
+
+    // A plain untracked read subscribes nothing.
+    world.enter(|| untrack(|| read.get()));
+    assert_eq!(read.subscriber_count(), 1);
+
+    world.enter(|| gate.set(false));
+    world.flush();
+    assert_eq!(read.subscriber_count(), 0, "the re-run stopped reading it");
+
+    world.enter(|| gate.set(true));
+    world.flush();
+    assert_eq!(read.subscriber_count(), 1);
+
+    drop(owned);
+    assert_eq!(read.subscriber_count(), 0, "a freed effect unlinks");
+}
+
+#[test]
+fn subscriber_count_of_a_stale_handle_is_zero_not_a_panic() {
+    let world = World::new();
+    let (sig, owned) = world.enter(|| collect_owned(|| signal(1u8)));
+    drop(owned);
+    assert!(!sig.is_alive());
+    assert_eq!(sig.subscriber_count(), 0);
+}

@@ -223,7 +223,7 @@ the overlay tier rather than of hot reload as a whole:
 
 | Edit | Tier |
 |---|---|
-| A `#[component]`'s literal prop (`Typography(content = "Hi")` → `"Hello"`) | Overlay patch — but it shows on that site's NEXT render, not immediately, unless the component's props are `Clone`. `#[component]` does not derive `Clone` on the props it generates (only `#[component(lazy, retryable)]` does), so this is the usual case; the page console says `overlay patch: 0 applied, 1 waiting for the next render` |
+| A `#[component]`'s literal prop (`Typography(content = "Hi")` → `"Hello"`, `Button(label = "Save")`, also the wrapped spellings) | Overlay patch, shown live with the component's own state kept, when the prop is `Reactive` (the `#[component]` default) and the body reads it in a binding (`text(content)`, a style closure, `.bind(…)`). The call site's literal props reach the component as signal-backed "cells" in a dev build, and the patch writes the cell ([details](./ui-layer.md#component-props-live-cells)). A `#[prop(static)]` prop, or one the body reads once while building (`format!("{}", label.get())`), has nothing live to write: it is rebuilt in place when the props are `Clone`; otherwise the page acks the patch with `refused`, and the dev loop sends the same save again as a hot patch (state carried; a rebuild when the tier is not armed or cannot carry it). An edit is never left waiting for a render that may not come — the log says `the page could not show an overlay edit live; carrying it with a hot patch: …` |
 | Insert a sibling that carries a `style` (or any other dynamic prop) into a `ui!` body | Hot patch — the overlay would need to know the new node's expression is the same compiled code as a neighbour's ("slot aliasing"), which is not built |
 | Any edit inside a `jsx!` body | Hot patch — `jsx!` is not on the overlay's split pass: its sites have no descriptor and no tags |
 
@@ -856,6 +856,11 @@ Two consequences worth knowing:
 - A signal created at the root level, outside any `#[component]`, is not
   carried. On the web the root has to be a component to be patchable at
   all, so app state lives in components anyway.
+- The overlay's per-literal-prop cells are created in the calling
+  component's frame but take no carried value and no position
+  (`runtime_world::hot_state_exempt`): they exist only while a prop is a
+  literal, so a hot patch that turns `label = "Save"` into `label = name`
+  would otherwise shift that component's later signals by one.
 - A creation inside `runtime_world::unscoped` (a world-lifetime service)
   is not part of any component's state: it takes no carried value and
   does not count toward the position that matches a signal to its

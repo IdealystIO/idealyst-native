@@ -458,6 +458,55 @@ mod tests {
         assert_eq!((a, b), (10, 20), "the cache's value leaked into a component's state");
     }
 
+    /// `hot_state_exempt` is the owned twin of the `unscoped` rule above:
+    /// the dev overlay creates one signal per literal component prop in
+    /// the CALLER's frame, and those exist only while the prop is a
+    /// literal. A hot patch that turns `label = "Save"` into
+    /// `label = name` removes one, and had it consumed an ordinal, `b`
+    /// would start the next run holding the label's value.
+    #[test]
+    fn regression_an_exempt_creation_does_not_shift_the_frame() {
+        let w1 = World::new();
+        let (_, state) = run_and_harvest(&w1, || {
+            push_frame("Screen");
+            let a = signal(1i32);
+            a.set(10);
+            let cell = crate::hot_state_exempt(|| signal(0i32));
+            cell.set(99);
+            let b = signal(2i32);
+            b.set(20);
+            pop_frame();
+            w1.flush();
+        });
+        drop(w1);
+
+        let w2 = World::new();
+        seed(state);
+        arm();
+        let (a, b) = w2.enter(|| {
+            push_frame("Screen");
+            let a = signal(1i32).get();
+            // The prop is code now: no cell is created this run.
+            let b = signal(2i32).get();
+            pop_frame();
+            (a, b)
+        });
+        disarm();
+        assert_eq!((a, b), (10, 20), "an overlay cell's value leaked into a component's state");
+    }
+
+    /// And unlike `unscoped`, the exempt signal is still OWNED: it is
+    /// freed with the scope that was collecting when it was made.
+    #[test]
+    fn an_exempt_creation_is_still_collected_by_its_scope() {
+        let w = World::new();
+        let (cell, owned) =
+            w.enter(|| crate::collect_owned(|| crate::hot_state_exempt(|| signal(0i32))));
+        assert!(cell.is_alive());
+        drop(owned);
+        assert!(!cell.is_alive(), "the collector must own an exempt signal");
+    }
+
     /// Regression: the web rebuild keeps its world, and anything that
     /// outlives the tree — an app's `thread_local` signal cache, a
     /// framework service — must still be readable after the harvest. On

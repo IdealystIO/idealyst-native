@@ -1090,6 +1090,19 @@ fn signal_is_alive(world: WorldId, slot: u32, gen: u32) -> bool {
     })
 }
 
+/// How many effects are subscribed to `(world, slot, gen)` as of their
+/// latest run; `0` for a dead handle. Never panics, never subscribes.
+fn signal_subscriber_count(world: WorldId, slot: u32, gen: u32) -> usize {
+    arena_of(world).map_or(0, |arena| {
+        arena
+            .signals
+            .borrow()
+            .get(slot as usize)
+            .filter(|s| s.gen == gen)
+            .map_or(0, |s| s.subscribers.len())
+    })
+}
+
 /// True when `(world, slot, gen)` still names a live effect.
 fn effect_is_alive(world: WorldId, slot: u32, gen: u32) -> bool {
     arena_of(world).is_some_and(|arena| {
@@ -1119,6 +1132,22 @@ macro_rules! impl_signal_liveness {
             /// not a probe.
             pub fn is_alive(&self) -> bool {
                 signal_is_alive(self.world, self.slot, self.gen)
+            }
+
+            /// How many effects READ this signal on their latest run —
+            /// its live readers. `0` for a stale handle.
+            ///
+            /// Never panics and never subscribes. A probe for tooling
+            /// that has to know whether a write would be SEEN: the
+            /// dev-time overlay swaps a component's literal prop for a
+            /// signal and must tell "the body reads it in a binding"
+            /// (a write updates the screen) from "the body read it once
+            /// while building" (a write changes nothing, and the edit
+            /// has to take another path). Subscriptions are reconciled
+            /// on every effect run and unlinked when an effect is freed,
+            /// so the count is exact, not an upper bound.
+            pub fn subscriber_count(&self) -> usize {
+                signal_subscriber_count(self.world, self.slot, self.gen)
             }
         }
     };
@@ -1776,6 +1805,26 @@ pub fn unscoped<R>(f: impl FnOnce() -> R) -> R {
         }
     }
     let _guard = Guard { saved };
+    f()
+}
+
+/// Run `f` with signal creation EXEMPT from the hot-reload state carrier:
+/// a signal created inside neither takes a carried-over value nor
+/// consumes an ordinal of the component frame that is open. Ownership is
+/// untouched — unlike [`unscoped`], the ambient collector still owns what
+/// is created here, so it is freed with its subtree.
+///
+/// For tooling that creates signals inside an AUTHOR's frame that the
+/// author did not write. The carrier matches state across a re-run by
+/// the Nth `signal()` in a frame, so an extra creation that appears in
+/// one run and not the next (the dev overlay's per-literal-prop cells
+/// exist only while a prop is a literal) would shift every later signal
+/// of that frame onto its neighbour's value — a `String` of state
+/// receiving a button label, with nothing to say so. Without the
+/// `hot-reload` feature this is just `f()`.
+pub fn hot_state_exempt<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(feature = "hot-reload")]
+    let _exempt = hot_state::WorldLifetimeRegion::enter();
     f()
 }
 

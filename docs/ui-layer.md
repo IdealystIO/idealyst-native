@@ -553,9 +553,9 @@ when the rest of the file's shape is unchanged and that tier is armed
 | the edit | what happens |
 |---|---|
 | a string, number or bool literal in a `ui!` body | **patched** |
-| a `#[component]`'s literal prop | **patched**; live when its props are `Clone` and its root is a node, otherwise on that site's next render. `#[component]` does not derive `Clone` on the props it generates (only `#[component(lazy, retryable)]` does), so in practice a component's literal prop — every idea-ui `Typography(content = "…")` — shows on that site's next render |
+| a `#[component]`'s literal prop | **patched**, and live through the prop's cell when the prop is `Reactive` and the body reads it in a binding — every idea-ui `Typography(content = "…")` and `Button(label = "…")` ([Component props: live cells](#component-props-live-cells)). Otherwise live when its props are `Clone` and its root is a node, and on that site's next render when neither holds (a `#[prop(static)]` prop of a non-`Clone` props type, or a body that bakes the value in while building) |
 | …of a component whose root is a `switch`, `when` or keyed list | **patched**; live when the seam has a setter for the prop (a text's content, a button's label), otherwise on that site's next render — the region's contents carry the tag, so the node is reached and the refusal names it |
-| a string literal in a conversion wrapper — `Some("…".to_string())`, `Some("…".into())`, `Some("…".to_owned())`, `Some(String::from("…"))`, `String::from("…")` | **patched**, with the same reach as a bare literal (a primitive's prop live, a component's on that site's next render). The split pass hoists these into a slot, and the descriptor records the slot's literal and its WRAPPER; the patch carries the string, and an `Option<String>` field gets `Some(…)` back. idea-ui's `Field(placeholder = Some("….to_string()))` is the case this exists for: it was a 49 s hot patch on CrewForge and is now a 21 ms overlay patch |
+| a string literal in a conversion wrapper — `Some("…".to_string())`, `Some("…".into())`, `Some("…".to_owned())`, `Some(String::from("…"))`, `String::from("…")` | **patched**, with the same reach as a bare literal (a primitive's prop live, a component's through its cell). The split pass hoists these into a slot, and the descriptor records the slot's literal and its WRAPPER; the patch carries the string, and an `Option<String>` field gets `Some(…)` back. idea-ui's `Field(placeholder = Some("….to_string()))` is the case this exists for: it was a 49 s hot patch on CrewForge and is now a 21 ms overlay patch |
 | the WRAPPER of such a literal (`Some("a".to_string())` → `Some("a".into())`, or → `"a".to_string()`) | hot patch — the wrapper is the slot's signature, so a new wrapper is new code |
 | `Some("…")` with a bare literal inside | hot patch — `Option<&str>` converts into neither `Option<String>` nor `Reactive<Option<String>>`, so it only compiles against an `Option<&'static str>` target, and no applier can give a string that arrived at run time a `'static` lifetime |
 | any other change to a hoisted prop's expression (`hint = x.clone()` → `y.clone()`) | hot patch. The descriptor records each slot's squashed source; before it did, such a change moved nothing in the descriptor and the save was dropped as "no UI or code change" |
@@ -681,6 +681,64 @@ COUNTS what it could not do rather than pretending, so a dev server can
 say "showing on next render" instead of leaving the author wondering —
 and, since the node is now reached, it says it about the node the author
 edited rather than reporting nothing at all.
+
+### Component props: live cells
+
+A component's prop has no setter on the seam, and re-running the
+component needs a `Clone` copy of its props, which `#[component]` does
+not generate — so for most of an idea-ui app's text the live path above
+had nothing to call. What it does have is the props model: a data prop
+is `Reactive<T>` by default, and a component that renders one through a
+binding already updates when a `Dynamic` value changes. The overlay
+uses exactly that.
+
+Under `ui-overlay`, `ui!` names the props a component call site wrote
+as LITERALS (`__overlay::enter_live(site, node, &["label"])` in place
+of `enter`; the classification is `split::is_literal_data`, the same
+one the descriptor is built from, so a prop has a cell exactly when a
+patch can address it). The props type's generated `build` then calls
+its generated `__overlay_liven`, which swaps each named prop for a
+`Reactive::Dynamic` reading a signal seeded with the literal and
+registers the signal under `(site, node, prop)`
+(`runtime_vocabulary::overlay::cells`). The live path writes the cell
+first; the component's own bindings do the rest. Nothing is re-run, so
+the component's local state survives, and nothing needs `Clone`.
+
+Which props CAN be cells is decided by the type, at compile time:
+`__overlay_liven` has an arm only for a field that is `Reactive<T>` with
+a `T` a literal builds (`String`, `Option<String>`, integers, floats,
+`bool`), converted by the same code `__apply_literal` uses. A
+`#[prop(static)]` or otherwise plain-typed field has no arm, keeps its
+value, and falls through to the rebuild or next-render path. The
+decider does not need to know any of this — it is source-level, and it
+patches every literal it can describe; the runtime reports the ones it
+could not show.
+
+Registered is not the same as live. A body that reads a prop once while
+building (`format!("{}", label.get())`, a structural `if`) bakes the
+value in, and writing the cell would change nothing. The cell write
+asks the kernel how many effects read the signal
+(`Signal::subscriber_count`); a cell nothing reads is not counted as
+applied, and the prop takes the rebuild path or is reported waiting. A
+body that reads the same prop both ways is counted live; its baked half
+shows on the next render. What the page cannot show it counts as
+`refused` in its ack, and the web dev loop escalates that save to a hot
+patch (or a rebuild) — `dev_overlay::Workspace::escalate`, decided before
+the overlay advances the archive, and `crates/dev/reload/src/escalate.rs`
+— so a `#[prop(static)]` edit is never parked waiting for a render.
+
+The cell's signal is created in the CALLER's scope (the props are built
+before the component's own scope opens), so it is freed with the
+caller's subtree, and it is exempt from the hot-reload state carrier
+(`runtime_world::hot_state_exempt`) so its appearing or disappearing
+cannot shift the caller's state by one position. Its `Dynamic` read is
+guarded by `is_alive`: a dev-only cell the author never wrote must not
+be what aborts their app on a stale handle. In a release build none of
+this exists — `enter_live`, `__overlay_liven` and the cells are all
+behind `ui-overlay`, and a literal prop is the `Reactive::Static` it has
+always been. In a dev build a literal prop is `Dynamic` instead, so a
+component's `is_static()` fast path (idea-ui's static style, for one)
+takes its reactive branch there; the rendered result is the same.
 
 ## The primitive builders
 

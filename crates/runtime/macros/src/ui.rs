@@ -93,7 +93,7 @@ pub fn emit(mut ui: Ui, input: &TokenStream2) -> TokenStream2 {
     // otherwise, and nothing is prepended to the body either way — a
     // tagged site adds per-NODE calls and nothing per site. See
     // `ui_overlay`'s module docs.
-    crate::ui_overlay::begin_site();
+    crate::ui_overlay::begin_site(&ui.elements);
     let body = emit_root_scope(&ui.elements);
     emit_shell(input, body)
 }
@@ -2396,14 +2396,76 @@ mod tests {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        assert!(out.contains("__overlay::enter("), "{out}");
+        // `enter_live` carries the literal prop NAMES — a `'static`
+        // slice, no generics, nothing resolved per call site.
+        assert!(out.contains(r#"__overlay::enter_live("#), "{out}");
+        assert!(out.contains(r#",&["label"]);"#), "{out}");
         assert!(out.contains("__overlay::exit("), "{out}");
+        assert!(!out.contains("liven"), "the live cells belong in the props type's `build`: {out}");
         assert!(
             !out.contains("Probe"),
             "the Clone probe belongs in the props type's `build`, not here: {out}"
         );
         assert!(!out.contains("ViaClone"), "{out}");
         assert!(!out.contains("rebuilder"), "{out}");
+    }
+
+    /// Which props a call site names as literals: exactly the ones the
+    /// build-time descriptor records as literal DATA, so every prop a
+    /// patch can address has a live cell and no other prop gets one.
+    /// Code (`name`), a path (`Tone::Danger`), a handler and an arrow
+    /// target stay off the list; a WRAPPED literal is on it even though
+    /// the split pass hoists it into a `__ui_sN` local before emission.
+    #[cfg(feature = "ui-overlay")]
+    #[test]
+    fn a_call_site_names_exactly_its_literal_props() {
+        let out: String = parse_and_emit(quote! {
+            Button(
+                label = "Save",
+                size = 12,
+                disabled = true,
+                placeholder = Some("Search".to_string()),
+                content = String::from("x"),
+                tone = Tone::Danger,
+                title = name,
+                on_click = move || go(),
+            )
+        })
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+        assert!(
+            out.contains(r#",&["label","size","disabled","placeholder","content"]);"#),
+            "{out}"
+        );
+    }
+
+    /// A call site with no literal props keeps the plain two-integer
+    /// `enter`, and primitives never carry a list — their literals are
+    /// patched through the seam, not through cells. Nested call sites
+    /// (inside a primitive's children, an `if`, a `for`) are found too.
+    #[cfg(feature = "ui-overlay")]
+    #[test]
+    fn only_component_call_sites_with_literals_name_them() {
+        let out: String = parse_and_emit(quote! {
+            view() {
+                text { "hello" }
+                Badge(label = name)
+                if flag {
+                    Chip(label = "in an if")
+                }
+                for item in items {
+                    Row(label = "in a for", value = item)
+                }
+            }
+        })
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+        assert_eq!(out.matches("__overlay::enter(").count(), 1, "Badge has no literal: {out}");
+        assert!(out.contains(r#",&["label"]);"#), "Chip and Row name theirs: {out}");
+        assert_eq!(out.matches("enter_live(").count(), 2, "{out}");
+        assert!(!out.contains(r#"&["content"]"#), "a primitive's literal is not a cell: {out}");
     }
 
     /// With the feature OFF none of it is emitted — a component call

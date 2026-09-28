@@ -375,6 +375,24 @@ pub fn wrapped_literal(expr: &Expr) -> Option<(String, String)> {
     }
 }
 
+/// Whether a prop value is a literal a patch can later rewrite as DATA:
+/// a string / number / bool literal (in any of [`classify_static`]'s
+/// spellings) or a [`wrapped_literal`]. An enum-like path is not — the
+/// descriptor records it, but no generated applier can build its value.
+///
+/// The overlay's `ui!` emission uses this to tell a `#[component]` which
+/// of its props the call site wrote as literals, so it can make exactly
+/// those live (see `runtime_vocabulary::overlay::cells`). It is the SAME
+/// classification the descriptor is built from, which is what keeps "a
+/// patch arrives for this prop" and "this prop has a live cell" in step.
+pub fn is_literal_data(expr: &Expr) -> bool {
+    match classify_static(expr) {
+        Some(StaticValue::Path(_)) => false,
+        Some(_) => true,
+        None => wrapped_literal(expr).is_some(),
+    }
+}
+
 /// A bare string literal's value.
 fn str_lit(expr: &Expr) -> Option<String> {
     match expr {
@@ -758,6 +776,23 @@ mod tests {
 
     fn st(tokens: TokenStream2) -> Option<StaticValue> {
         classify_static(&syn::parse2::<Expr>(tokens).unwrap())
+    }
+
+    #[test]
+    fn literal_data_is_literals_and_wrapped_literals_but_not_paths() {
+        let is = |t: TokenStream2| is_literal_data(&syn::parse2(t).unwrap());
+        assert!(is(quote! { "Save" }));
+        assert!(is(quote! { 12 }));
+        assert!(is(quote! { -1.5 }));
+        assert!(is(quote! { true }));
+        assert!(is(quote! { "x".to_string() }));
+        assert!(is(quote! { String::from("x") }));
+        assert!(is(quote! { Some("x".into()) }));
+        assert!(!is(quote! { Tone::Danger }), "a path has no generated applier");
+        assert!(!is(quote! { t.color.text() }));
+        assert!(!is(quote! { name }));
+        assert!(!is(quote! { name.clone() }));
+        assert!(!is(quote! { Some("x") }), "an Option<&str> no applier can honour");
     }
 
     #[test]

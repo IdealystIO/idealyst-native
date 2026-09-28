@@ -129,6 +129,9 @@ pub struct ReloadSignal {
     /// generation a bump made while one was outstanding — published when
     /// the last hold is released.
     held: Mutex<Held>,
+    /// Overlay saves the page may still refuse, and what carries them if
+    /// it does. See [`escalate`].
+    escalation: Mutex<escalate::Escalation>,
 }
 
 #[derive(Default)]
@@ -201,6 +204,8 @@ pub struct PushedPatch {
     pub json: String,
 }
 
+mod escalate;
+
 impl ReloadSignal {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
@@ -220,6 +225,11 @@ impl ReloadSignal {
         let Ok(ack) = serde_json::from_str::<dev_events::PageAck>(body) else {
             return false;
         };
+        // An overlay edit the page could not show is never left waiting
+        // for a render: the save goes to the tier that can show it.
+        if let dev_events::PageAck::Overlay { refused: Some(refused), .. } = &ack {
+            self.escalate_refused(*refused);
+        }
         if let Some(r) = self.acks.lock().unwrap().as_ref() {
             r.emit(dev_events::DevEvent::PageAck { target: "web".into(), ack });
         }
@@ -272,6 +282,9 @@ impl ReloadSignal {
     /// published when the last hold is released, and bumps made meanwhile
     /// fold into that one.
     pub fn bump_after(&self, before: impl FnOnce(u64)) -> u64 {
+        // A rebuild compiled every save, including any the overlay could
+        // not show.
+        self.escalation_settled();
         let _serial = self.bumping.lock().unwrap();
         let new = {
             let held = self.held.lock().unwrap();
@@ -345,6 +358,7 @@ impl ReloadSignal {
     /// protocol between the watcher and the page change without this
     /// crate's public surface moving.
     pub fn push_patch(&self, json: String) -> u64 {
+        self.escalation_pushed();
         self.push(PatchKind::Overlay, json)
     }
 
@@ -358,6 +372,7 @@ impl ReloadSignal {
     /// as differently-named SSE events so the page routes each to the
     /// right applier without parsing the payload first.
     pub fn push_hot_patch(&self, json: String) -> u64 {
+        self.escalation_settled();
         self.push(PatchKind::Hot, json)
     }
 
@@ -1478,7 +1493,7 @@ fn handle_save(
     let decided = |decision| {
         reporter.emit(dev_events::DevEvent::Decided { target: TARGET.into(), decision })
     };
-    match ws.decide(saved, premint) {
+    match escalate::decide(ws, signal, reporter, saved, premint) {
         dev_overlay::WorkspaceDecision::Patch(patches) => {
             let count = patches.len();
             decided(dev_events::Decision::Overlay { sites: count });

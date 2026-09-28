@@ -6,12 +6,17 @@
 //! an idea-ui app is most of what an author edits — was refused live and
 //! waited for the next render.
 //!
-//! The fix runs the component again from a copy of its props and swaps
-//! the subtree. The copy only exists when the props type is `Clone`, and
-//! `#[component]` does not require that, so the call site decides with
-//! autoref specialization. Both branches are here: the `Clone` one must
-//! change the screen, and the other must still refuse and SAY so rather
-//! than silently doing nothing.
+//! The first fix runs the component again from a copy of its props and
+//! swaps the subtree. The copy only exists when the props type is
+//! `Clone`, and `#[component]` does not require that, so the call site
+//! decides with autoref specialization. Both branches are here: the
+//! `Clone` one must change the screen, and the other must still refuse
+//! and SAY so rather than silently doing nothing.
+//!
+//! Since the live CELLS (`tests/live_cells.rs`), a literal prop the body
+//! reads in a binding applies without either. So every component here
+//! BAKES its prop (`props.label.get()` while building): that is the case
+//! the cells cannot show, and the one the rebuild path still exists for.
 
 #![cfg(feature = "ui-overlay")]
 
@@ -36,14 +41,17 @@ pub struct ChipProps {
 
 #[component]
 fn Chip(props: &ChipProps) -> Element {
-    let label = props.label.clone();
+    // Baked: read once while building, so a live cell would be unread.
+    let label = props.label.get();
     ui! { text { label } }
 }
 
 /// A props type that is NOT `Clone` — the ordinary inline-props form,
-/// which is every `#[component]` in the tree today.
+/// which is every `#[component]` in the tree today — whose body bakes
+/// its prop, so neither a cell nor a rebuild can show an edit.
 #[component]
 fn Plain(label: String) -> Element {
+    let label = label.get();
     ui! { text { label } }
 }
 
@@ -134,7 +142,7 @@ pub struct PairProps {
 
 #[component]
 fn Pair(props: &PairProps) -> Element {
-    let (a, b) = (props.a.clone(), props.b.clone());
+    let (a, b) = (props.a.get(), props.b.get());
     ui! {
         view() {
             text { a }
@@ -198,7 +206,7 @@ pub struct RowProps {
 
 #[component]
 fn Row(props: &RowProps) -> Element {
-    let label = props.label.clone();
+    let label = props.label.get();
     ui! { text { label } }
 }
 

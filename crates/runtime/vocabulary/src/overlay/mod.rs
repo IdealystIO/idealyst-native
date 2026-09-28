@@ -61,6 +61,7 @@
 //! [`NodeTag`]: runtime_scene::NodeTag
 
 mod apply;
+pub mod cells;
 mod construct;
 pub mod live;
 mod prims;
@@ -148,6 +149,7 @@ pub fn reset() {
     REBUILDER.with(|r| r.borrow_mut().clear());
     live::release_all();
     rebuild::release_all();
+    cells::clear();
     // The scene's live-instance registry too: it is thread-local and
     // per-process, so a suite that mounts a tree in one case would
     // otherwise leave its instances matching in the next.
@@ -171,7 +173,7 @@ thread_local! {
     /// consuming its parent's address and applying that node's patch to
     /// itself. A missed patch is recoverable; a patch applied to the
     /// wrong node is not.
-    static AMBIENT: RefCell<Vec<Option<(u64, u32)>>> = const { RefCell::new(Vec::new()) };
+    static AMBIENT: RefCell<Vec<Option<Frame>>> = const { RefCell::new(Vec::new()) };
 
     /// The rebuilder for each open frame, parallel to `AMBIENT`.
     ///
@@ -183,6 +185,10 @@ thread_local! {
     };
 }
 
+/// One open component frame: the node's address, and the props its call
+/// site wrote as literals (see [`enter_live`]).
+type Frame = (u64, u32, &'static [&'static str]);
+
 /// Announce which node of which site is about to be built.
 ///
 /// Emitted by `ui!` immediately before a `#[component]`'s build
@@ -192,7 +198,20 @@ thread_local! {
 /// scope — is resolution work multiplied by thousands of call sites. See
 /// `runtime_macros`' `ui_overlay` for what that cost measured.
 pub fn enter(site: u64, node: u32) {
-    AMBIENT.with(|a| a.borrow_mut().push(Some((site, node))));
+    enter_live(site, node, &[]);
+}
+
+/// [`enter`], for a call site that wrote some props as literals.
+///
+/// `literals` names them — the props a build-time descriptor records as
+/// literal DATA, so the props a patch can later address. The component's
+/// generated `build` turns each one its type allows into a live cell
+/// ([`cells::liven`]), which is what lets a patch change it on screen
+/// without rebuilding the component. `ui!` emits this form only when the
+/// list is non-empty; the slice is a `'static` literal, so the call is
+/// still two integers and a pointer.
+pub fn enter_live(site: u64, node: u32, literals: &'static [&'static str]) {
+    AMBIENT.with(|a| a.borrow_mut().push(Some((site, node, literals))));
     REBUILDER.with(|r| r.borrow_mut().push(None));
 }
 
@@ -233,6 +252,11 @@ pub fn exit(element: Element) -> Element {
 /// Called from a props type's generated `BuildElement::build`. See
 /// [`AMBIENT`] on why it takes rather than reads.
 pub fn take_current() -> Option<(u64, u32)> {
+    take_current_live().map(|(site, node, _)| (site, node))
+}
+
+/// [`take_current`], with the call site's literal prop names.
+pub fn take_current_live() -> Option<(u64, u32, &'static [&'static str])> {
     AMBIENT.with(|a| a.borrow_mut().last_mut().and_then(|f| f.take()))
 }
 

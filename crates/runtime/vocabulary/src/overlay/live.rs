@@ -41,6 +41,13 @@
 //! the prop falls through to the next render. Reached and refused is the
 //! useful answer; unreachable and silent was the old one.
 //!
+//! Before either, a component's literal prop is tried as a LIVE CELL
+//! (`super::cells`): under the overlay a call site's literal props of a
+//! `Reactive` type reach the component as signals, so a patch writes one
+//! and the component's own bindings update — no rebuild, no `Clone`, and
+//! the component keeps its local state. The rebuild and "next render"
+//! paths above are what is left for a prop the cells cannot show.
+//!
 //! That split is reported, not hidden: [`Outcome::refused`] counts what
 //! the live pass could not do, so a dev server can say "showing on next
 //! render" instead of leaving the author wondering.
@@ -127,7 +134,30 @@ pub fn apply_live_to<H: AllCaps + 'static>(
     };
     let mut rebuilt: Vec<u32> = Vec::new();
 
+    // A component prop its call site wrote as a literal, of a `Reactive`
+    // type, is a live cell the component's own bindings read (see
+    // `super::cells`). Writing it is the cheapest path there is and the
+    // only one that keeps the component's local state, so it goes first.
+    // A prop taken here skips the rest of this function for every
+    // instance; one the cells cannot show (none registered, or one a
+    // body baked in) falls through to a rebuild or a refusal, exactly as
+    // before the cells existed.
+    let mut in_cells: Vec<(u32, &str)> = Vec::new();
     for edit in edits.iter() {
+        if let Edit::SetProp { node, name, value } = edit {
+            if let Some(n) = super::cells::set(site, *node, name, value) {
+                outcome.applied += n;
+                in_cells.push((*node, name));
+            }
+        }
+    }
+
+    for edit in edits.iter() {
+        if let Edit::SetProp { node, name, .. } = edit {
+            if in_cells.contains(&(*node, name.as_ref())) {
+                continue;
+            }
+        }
         let node_index = match edit {
             Edit::SetProp { node, .. } | Edit::SetChildren { node, .. } => *node,
         };

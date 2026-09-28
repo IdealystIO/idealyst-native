@@ -21,13 +21,20 @@
 //!
 //! ```ignore
 //! {
-//!     let mut __p = Badge { .. };
-//!     __p.__overlay_bind("Badge", SITE, NODE);
-//!     __p
+//!     ::runtime_core::__overlay::enter(SITE, NODE);
+//!     ::runtime_core::__overlay::exit(
+//!         ::runtime_core::BuildElement::build(Badge { .. }),
+//!     )
 //! }
 //! ```
 //!
-//! Two integer literals and a call per node; ONE call per component
+//! — or `enter_live(SITE, NODE, &["label"])` when the call site wrote
+//! some props as literals, naming them so the component's generated
+//! `build` can make those props live overlay cells (see
+//! `runtime_vocabulary::overlay::cells`). The names are a `'static`
+//! slice literal: still nothing generic and nothing to resolve.
+//!
+//! Two integer literals and a call per node; ONE bracket per component
 //! call site. No `static`, no descriptor, no prelude, nothing
 //! per SITE at all.
 //!
@@ -111,7 +118,7 @@ mod inert {
     use super::TokenStream2;
 
     #[inline(always)]
-    pub(crate) fn begin_site() {}
+    pub(crate) fn begin_site(_elements: &[runtime_macros_parse::ast::UiNode]) {}
 
     #[inline(always)]
     pub(crate) fn tag(body: TokenStream2, _node: u32) -> TokenStream2 {
@@ -134,19 +141,80 @@ mod inert {
 
 #[cfg(feature = "ui-overlay")]
 mod live {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
 
     use proc_macro2::TokenStream as TokenStream2;
     use quote::quote;
+    use runtime_macros_parse::ast::UiNode;
 
     thread_local! {
         /// The site currently being expanded.
         static SITE: Cell<u64> = const { Cell::new(0) };
+
+        /// Per `#[component]` node of the site being expanded, the props
+        /// its call site wrote as literals. Collected from the tree
+        /// BEFORE the split pass, which hoists a wrapped literal
+        /// (`"x".to_string()`) into a `__ui_sN` local and would leave
+        /// nothing here to classify.
+        static LITERALS: RefCell<HashMap<u32, Vec<String>>> = RefCell::new(HashMap::new());
     }
 
-    /// Start a site: compute its key from the invocation's location.
-    pub(crate) fn begin_site() {
+    /// Start a site: compute its key from the invocation's location, and
+    /// note which component props are literals.
+    pub(crate) fn begin_site(elements: &[UiNode]) {
         SITE.with(|s| s.set(site_key()));
+        LITERALS.with(|l| {
+            let mut l = l.borrow_mut();
+            l.clear();
+            collect_literals(elements, &mut l);
+        });
+    }
+
+    /// Walk the stamped tree for `#[component]` call sites (a PascalCase
+    /// tag, never a primitive) and record their literal props by node.
+    ///
+    /// The classification is `runtime_macros_parse::split::is_literal_data`
+    /// — the one the build-time descriptor uses — so the props that get a
+    /// live cell are exactly the ones a patch can address.
+    fn collect_literals(nodes: &[UiNode], out: &mut HashMap<u32, Vec<String>>) {
+        for n in nodes {
+            match n {
+                UiNode::Component { name, props, children, node, .. } => {
+                    let is_primitive = runtime_macros_parse::primitives::canonical_primitive(
+                        &name.to_string(),
+                    )
+                    .is_some();
+                    if !is_primitive {
+                        let names: Vec<String> = props
+                            .iter()
+                            .filter(|p| p.arrow_target.is_none())
+                            .filter(|p| runtime_macros_parse::split::is_literal_data(&p.value))
+                            .map(|p| p.name.to_string())
+                            .collect();
+                        if !names.is_empty() {
+                            out.insert(*node, names);
+                        }
+                    }
+                    if let Some(kids) = children {
+                        collect_literals(kids, out);
+                    }
+                }
+                UiNode::If { then_body, else_body, .. } => {
+                    collect_literals(then_body, out);
+                    if let Some(e) = else_body {
+                        collect_literals(e, out);
+                    }
+                }
+                UiNode::For { body, .. } => collect_literals(body, out),
+                UiNode::Match { arms, .. } => {
+                    for a in arms {
+                        collect_literals(&a.body, out);
+                    }
+                }
+                UiNode::Expr(_) => {}
+            }
+        }
     }
 
     pub(crate) fn tag(body: TokenStream2, node: u32) -> TokenStream2 {
@@ -170,9 +238,18 @@ mod live {
         node: u32,
     ) -> TokenStream2 {
         let site = SITE.with(|s| s.get());
+        // A call site with literal props names them, so the component's
+        // generated `build` can make them live cells. `enter` otherwise:
+        // the common call site stays two integer arguments.
+        let literals = LITERALS.with(|l| l.borrow().get(&node).cloned()).unwrap_or_default();
+        let enter = if literals.is_empty() {
+            quote! { ::runtime_core::__overlay::enter(#site, #node); }
+        } else {
+            quote! { ::runtime_core::__overlay::enter_live(#site, #node, &[#(#literals),*]); }
+        };
         quote! {
             {
-                ::runtime_core::__overlay::enter(#site, #node);
+                #enter
                 ::runtime_core::__overlay::exit(
                     ::runtime_core::BuildElement::build(#body),
                 )

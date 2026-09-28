@@ -65,6 +65,13 @@ struct Script {
     /// Text on the page once the app has rendered.
     ready: &'static str,
     literal: Edit,
+    /// A literal passed as a `#[component]`'s prop, and the text it puts
+    /// on the page.
+    component_literal: Edit,
+    component_shows: &'static str,
+    /// A literal passed as a `#[prop(static)]` prop (materialized project
+    /// only), and the text it puts on the page.
+    static_literal: Option<(Edit, &'static str)>,
     body: Edit,
     /// Text the body edit puts on the page.
     body_shows: &'static str,
@@ -82,6 +89,13 @@ fn Badge(label: String) -> Element {
     ui! { view { text { "[ {label} ]" } } }
 }
 
+/// A `#[prop(static)]` prop: no live cell, so its literal edit is
+/// refused by the page and escalated to a hot patch.
+#[component]
+fn Stamp(#[prop(static)] label: String) -> Element {
+    ui! { view { text { label } } }
+}
+
 fn logic_line(n: i32) -> String {
     format!("logic v1 -> {}", n * 2)
 }
@@ -94,6 +108,7 @@ fn Root() -> Element {
         view {
             text { "a literal the overlay tier patches" }
             Badge(label = "draft".to_string())
+            Stamp(label = "stamp one".to_string())
             button(label = "+1".to_string(), on_click = bump)
             text { move || logic_line(count.get()) }
         }
@@ -179,6 +194,20 @@ targets = ["web"]
             from: "a literal the overlay tier patches",
             to: "an edited literal",
         },
+        component_literal: Edit {
+            file: "src/app.rs",
+            from: "Badge(label = \"draft\".to_string())",
+            to: "Badge(label = \"final\".to_string())",
+        },
+        component_shows: "[ final ]",
+        static_literal: Some((
+            Edit {
+                file: "src/app.rs",
+                from: "Stamp(label = \"stamp one\".to_string())",
+                to: "Stamp(label = \"stamp two\".to_string())",
+            },
+            "stamp two",
+        )),
         body: Edit { file: "src/app.rs", from: "logic v1 ->", to: "logic v2 ->" },
         body_shows: "logic v2 -> 0",
         broken: Edit {
@@ -256,6 +285,13 @@ fn copy_lab(src: &Path, dir: &Path, repo: &Path) -> Script {
             from: "1. Edit this sentence and save.",
             to: "1. Edited by the events e2e.",
         },
+        component_literal: Edit {
+            file: "src/app.rs",
+            from: "Pill(label = \"draft\".to_string())",
+            to: "Pill(label = \"final\".to_string())",
+        },
+        component_shows: "final",
+        static_literal: None,
         body: Edit { file: "src/app.rs", from: "logic v1 ->", to: "logic v2 ->" },
         body_shows: "logic v2 -> 0",
         broken: Edit {
@@ -664,6 +700,57 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
     );
     // The page's status overlay was fed the same facts.
     page.wait_dev_states(before, &["change_detected", "decided:overlay", "overlay_pushed"], Duration::from_secs(10));
+
+    // ── 1b. a component's literal prop → overlay, LIVE ───────────────
+    // Regression: `Badge(label = "…")` took the overlay tier and the page
+    // said "0 applied, 1 waiting for the next render" — a component's
+    // props are consumed when its body runs, and its props type is not
+    // `Clone`. The prop now reaches the component as a live cell, so the
+    // page shows the edit at once, without a reload (the marker survives).
+    page.eval("window.__e2e_no_reload = true");
+    let before = session.last_seq();
+    apply(&project, &script.component_literal);
+    let ack = session.wait_event(before, Duration::from_secs(60), "the component-prop overlay ack", |e| {
+        e["type"] == "page_ack" && e["ack"]["kind"] == "overlay"
+    });
+    assert!(ack["ack"]["applied"].as_u64().unwrap_or(0) >= 1, "applied live: {ack}");
+    assert_eq!(ack["ack"]["refused"].as_u64().unwrap_or(0), 0, "nothing waits for a render: {ack}");
+    assert!(
+        page.wait(
+            &format!("document.body.innerText.includes({:?})", script.component_shows),
+            Duration::from_secs(5)
+        ),
+        "the component's prop edit never reached the page: {:?}",
+        page.text()
+    );
+    assert_eq!(page.eval("window.__e2e_no_reload === true"), json!(true), "the page reloaded");
+
+    // ── 1c. a STATIC prop's literal → overlay refused → hot patch ─────
+    // Regression: "static props don't hot reload at all". The page cannot
+    // show a `#[prop(static)]` edit live and acks it `refused`; the dev
+    // loop must then carry the save with a hot patch, never leave it
+    // waiting for a render nothing will trigger.
+    if let Some((edit, shows)) = &script.static_literal {
+        let before = session.last_seq();
+        apply(&project, edit);
+        let ack = session.wait_event(before, Duration::from_secs(180), "the escalated hot patch", |e| {
+            e["type"] == "page_ack" && e["ack"]["kind"] == "hot_patch"
+        });
+        let k = kinds(&session.events(), before, ack["seq"].as_u64().unwrap());
+        assert!(
+            in_order(
+                &k,
+                &["decided:overlay", "page_ack:overlay", "decided:hot_patch", "patch_built", "page_ack:hot_patch"]
+            ),
+            "{k:?}"
+        );
+        assert!(
+            page.wait(&format!("document.body.innerText.includes({shows:?})"), Duration::from_secs(10)),
+            "the static prop's edit never reached the page: {:?}",
+            page.text()
+        );
+        assert_eq!(page.eval("window.__e2e_no_reload === true"), json!(true), "the page reloaded");
+    }
 
     // ── 2. body → hot patch ─────────────────────────────────────────
     let before = session.last_seq();

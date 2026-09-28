@@ -349,6 +349,66 @@ impl Workspace {
     /// overlay could have carried: the overlay patch would be addressed to
     /// the tree the hot patch is about to rebuild.
     pub fn decide(&self, saved: &[SavedFile], premint: bool) -> WorkspaceDecision {
+        self.decide_as(saved, premint, false)
+    }
+
+    /// What this save needs if its overlay patch turns out NOT to show:
+    /// [`Self::decide`] with every overlay-patchable file treated as a
+    /// body edit, so the answer is the hot patch that carries it (or the
+    /// rebuild a hot patch cannot stand in for — a library crate's edit
+    /// to a body its dependents compile themselves, say).
+    ///
+    /// Why it exists: the decision is made from SOURCE, and source does
+    /// not say whether a literal passed to a `#[component]` prop can be
+    /// shown live — that depends on the prop's type and on how the
+    /// component's body reads it, which live in another crate and in the
+    /// running program. The page knows, and reports what it could not
+    /// apply; this is what the dev loop then runs, so an edit is never
+    /// left waiting for a render that may not come (a `#[prop(static)]`
+    /// prop of a component nothing re-renders).
+    ///
+    /// Call it BEFORE [`Self::advance`]: a library crate's check compares
+    /// against the digests of the source the running build compiled, and
+    /// advancing moves them to the save.
+    pub fn escalate(&self, saved: &[SavedFile], premint: bool) -> WorkspaceDecision {
+        self.decide_as(saved, premint, true)
+    }
+
+    /// Combine two decisions into the one that carries both: a rebuild
+    /// wins, two hot patches become one over the union of their crates,
+    /// and a hot patch carries an overlay patch's literals (it re-emits
+    /// the crate from source).
+    pub fn merge(&self, a: WorkspaceDecision, b: WorkspaceDecision) -> WorkspaceDecision {
+        use WorkspaceDecision::*;
+        match (a, b) {
+            (Rebuild(why), _) | (_, Rebuild(why)) => Rebuild(why),
+            (HotPatch(a), HotPatch(b)) => {
+                let edited: BTreeSet<String> = a.edited.into_iter().chain(b.edited).collect();
+                let carried: BTreeSet<String> = edited.union(&self.patched).cloned().collect();
+                let mut files: Vec<String> = a.files.into_iter().chain(b.files).collect();
+                files.sort();
+                files.dedup();
+                let mut source_keys = a.source_keys;
+                // The later decision saw the later sources.
+                source_keys.extend(b.source_keys);
+                HotPatch(HotPatchPlan {
+                    edited: edited.into_iter().collect(),
+                    replay: self.replay_set(&carried),
+                    files,
+                    source_keys,
+                })
+            }
+            (HotPatch(p), _) | (_, HotPatch(p)) => HotPatch(p),
+            (Patch(mut a), Patch(b)) => {
+                a.extend(b);
+                Patch(a)
+            }
+            (Patch(p), Unchanged) | (Unchanged, Patch(p)) => Patch(p),
+            (Unchanged, Unchanged) => Unchanged,
+        }
+    }
+
+    fn decide_as(&self, saved: &[SavedFile], premint: bool, escalate: bool) -> WorkspaceDecision {
         let mut by_package: BTreeMap<&str, Vec<&SavedFile>> = BTreeMap::new();
         for s in saved {
             by_package.entry(s.package.as_str()).or_default().push(s);
@@ -374,6 +434,12 @@ impl Workspace {
                 .collect();
             match decide_with(Some(archive), &changed, premint) {
                 Decision::Unchanged => {}
+                // Escalated, a patchable file is a body edit: the hot
+                // patch re-emits it from source.
+                Decision::Patch(_) if escalate => {
+                    body_edited = true;
+                    touched.insert(package.to_string());
+                }
                 Decision::Patch(mut p) => {
                     patches.append(&mut p);
                     touched.insert(package.to_string());
@@ -827,6 +893,89 @@ pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
             }
             other => panic!("expected a hot patch, got {other:?}"),
         }
+    }
+
+    /// Regression (static component props parked on the overlay): a
+    /// literal edit is an overlay patch, but when the page cannot show it
+    /// (a `#[prop(static)]` prop of a component nothing re-renders) the
+    /// dev loop needs the tier that CAN — and it must be decided against
+    /// the build that is running, before the overlay advances the
+    /// archive. `escalate` answers the hot patch that re-emits the file.
+    #[test]
+    fn regression_static_prop_literal_edit_is_never_parked_on_overlay() {
+        let f = fixture();
+        let edit = APP.replace(r#""root""#, r#""root, edited""#);
+        let save = saved(&f, "src/lib.rs", edit);
+        assert!(
+            matches!(f.ws.decide(&save, false), WorkspaceDecision::Patch(_)),
+            "the save itself is an overlay patch"
+        );
+        match f.ws.escalate(&save, false) {
+            WorkspaceDecision::HotPatch(plan) => {
+                assert_eq!(plan.edited, vec!["app"]);
+                assert_eq!(plan.replay, vec!["app"]);
+                assert_eq!(plan.files, vec!["src/lib.rs"]);
+            }
+            other => panic!("an overlay-only save escalates to a hot patch, got {other:?}"),
+        }
+        // Escalating a library crate's literal carries its dependents, as
+        // any hot patch of that crate does.
+        let shared = SHARED.replace("shared {title}", "shared: {title}");
+        match f.ws.escalate(&saved(&f, "lab-shared/src/lib.rs", shared), false) {
+            WorkspaceDecision::HotPatch(plan) => {
+                assert_eq!(plan.replay, vec!["lab-shared", "app"]);
+            }
+            other => panic!("expected a hot patch, got {other:?}"),
+        }
+        // What a hot patch cannot carry still rebuilds when escalated.
+        let shape = APP.replace("fn Root()", "fn Root2()");
+        assert!(matches!(
+            f.ws.escalate(&saved(&f, "src/lib.rs", shape), false),
+            WorkspaceDecision::Rebuild(_)
+        ));
+    }
+
+    /// Two pending tiers fold into the one that carries both.
+    #[test]
+    fn merging_decisions_keeps_the_most_expensive_and_unions_hot_patches() {
+        let f = fixture();
+        let tip = match f.ws.escalate(&saved(&f, "src/lib.rs", APP.replace("root", "r2")), false) {
+            WorkspaceDecision::HotPatch(p) => p,
+            other => panic!("{other:?}"),
+        };
+        let lib = match f
+            .ws
+            .escalate(&saved(&f, "lab-shared/src/lib.rs", SHARED.replace("v1 {}", "v2 {}")), false)
+        {
+            WorkspaceDecision::HotPatch(p) => p,
+            other => panic!("{other:?}"),
+        };
+        match f.ws.merge(
+            WorkspaceDecision::HotPatch(tip.clone()),
+            WorkspaceDecision::HotPatch(lib),
+        ) {
+            WorkspaceDecision::HotPatch(plan) => {
+                assert_eq!(plan.edited, vec!["app", "lab-shared"]);
+                assert_eq!(plan.replay, vec!["lab-shared", "app"], "dependencies first");
+                assert_eq!(plan.files, vec!["lab-shared/src/lib.rs", "src/lib.rs"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            f.ws.merge(WorkspaceDecision::Unchanged, WorkspaceDecision::HotPatch(tip.clone())),
+            WorkspaceDecision::HotPatch(tip.clone())
+        );
+        assert_eq!(
+            f.ws.merge(WorkspaceDecision::Patch(vec![]), WorkspaceDecision::HotPatch(tip.clone())),
+            WorkspaceDecision::HotPatch(tip.clone())
+        );
+        assert!(matches!(
+            f.ws.merge(
+                WorkspaceDecision::HotPatch(tip),
+                WorkspaceDecision::Rebuild(Reason::NoArchive)
+            ),
+            WorkspaceDecision::Rebuild(Reason::NoArchive)
+        ));
     }
 
     /// A tip-only edit replays the tip alone: nothing depends on it.

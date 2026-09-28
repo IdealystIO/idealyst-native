@@ -627,6 +627,70 @@ fn SearchDialog() -> Element {{
         }
     }
 
+    /// A screen of idea-ui components, the shape the user edits most.
+    fn idea_ui_screen(content: &str, label: &str) -> String {
+        format!(
+            r#"
+use runtime_core::*;
+
+#[component]
+fn Screen() -> Element {{
+    ui! {{
+        view() {{
+            Typography(content = {content}, kind = TypographyKind::H1)
+            Button(label = {label}, on_click = move || save())
+        }}
+    }}
+}}
+"#
+        )
+    }
+
+    /// Regression: `Typography(content = "…")` / `Button(label = "…")`
+    /// literal edits decide as overlay patches addressed to the
+    /// COMPONENT node, by prop name — which is what the runtime's live
+    /// cells (`runtime_vocabulary::overlay::cells`) are registered under.
+    /// The decider needs no knowledge of the prop's type: a prop the
+    /// component declared `#[prop(static)]` gets the same patch, and the
+    /// runtime reports it as waiting instead of applying it.
+    #[test]
+    fn regression_component_prop_literal_edits_are_overlay_patches() {
+        let before = idea_ui_screen(r#""Hello""#, r#""Save""#);
+        let (_d, archive) = archive_of(&before);
+
+        let after = idea_ui_screen(r#""Hello, world""#, r#""Save changes""#);
+        match decide(Some(&archive), &changed(&after)) {
+            Decision::Patch(patches) => {
+                assert_eq!(patches.len(), 1, "{patches:?}");
+                assert_eq!(
+                    patches[0].edits,
+                    vec![
+                        runtime_template::Edit::SetProp {
+                            node: 1,
+                            name: "content".into(),
+                            value: runtime_template::LiteralValue::Str("Hello, world".into()),
+                        },
+                        runtime_template::Edit::SetProp {
+                            node: 2,
+                            name: "label".into(),
+                            value: runtime_template::LiteralValue::Str("Save changes".into()),
+                        },
+                    ]
+                );
+            }
+            other => panic!("expected an overlay patch, got {other:?}"),
+        }
+
+        // The wrapped spellings the cells convert too.
+        let before = idea_ui_screen(r#""a".to_string()"#, r#"String::from("b")"#);
+        let (_d, archive) = archive_of(&before);
+        let after = idea_ui_screen(r#""c".to_string()"#, r#"String::from("d")"#);
+        assert!(
+            matches!(decide(Some(&archive), &changed(&after)), Decision::Patch(p) if p[0].edits.len() == 2),
+            "a wrapped component-prop literal is an overlay patch"
+        );
+    }
+
     /// The same site with the WRAPPER changed is code: it goes to the
     /// compiler. And a real code change in the nested closure (outside
     /// the nested `ui!`) still counts against the outer site.

@@ -167,6 +167,32 @@ fn literal_target(ty: &Type) -> LitTarget {
     }
 }
 
+/// The literal a field accepts and how it becomes the field's value, as
+/// `(pattern over a &TemplateLiteral binding __v, value expression)`.
+///
+/// Shared by `__apply_literal`'s arms and the overlay's live-cell
+/// converters, so the two can never disagree about which literal fits a
+/// field or how it is converted. `None` for a field no literal can build.
+fn literal_conversion(target: &LitTarget) -> Option<(TokenStream2, TokenStream2)> {
+    let lit = quote! { ::runtime_core::__template::TemplateLiteral };
+    Some(match target {
+        LitTarget::Str => (quote! { #lit::Str(__v) }, quote! { (&**__v).into() }),
+        LitTarget::OptStr => (
+            quote! { #lit::Str(__v) },
+            quote! {
+                ::core::option::Option::Some(
+                    ::std::string::String::from(&**__v),
+                )
+                .into()
+            },
+        ),
+        LitTarget::Int(t) => (quote! { #lit::Int(__v) }, quote! { ((*__v) as #t).into() }),
+        LitTarget::Float(t) => (quote! { #lit::Float(__v) }, quote! { ((*__v) as #t).into() }),
+        LitTarget::Bool => (quote! { #lit::Bool(__v) }, quote! { (*__v).into() }),
+        LitTarget::None => return None,
+    })
+}
+
 /// The `T` in `Reactive<T>` (however the path is qualified).
 fn reactive_inner(ty: &Type) -> Option<&Type> {
     let Type::Path(tp) = ty else { return None };
@@ -233,42 +259,13 @@ pub(crate) fn apply_literal_impl(
 
     let arms = fields.iter().filter_map(|(name, field_ty)| {
         let key = name.to_string();
-        match literal_target(field_ty) {
-            LitTarget::Str => Some(quote! {
-                (#key, ::runtime_core::__template::TemplateLiteral::Str(__v)) => {
-                    self.#name = (&**__v).into();
-                    true
-                }
-            }),
-            LitTarget::OptStr => Some(quote! {
-                (#key, ::runtime_core::__template::TemplateLiteral::Str(__v)) => {
-                    self.#name = ::core::option::Option::Some(
-                        ::std::string::String::from(&**__v),
-                    )
-                    .into();
-                    true
-                }
-            }),
-            LitTarget::Int(t) => Some(quote! {
-                (#key, ::runtime_core::__template::TemplateLiteral::Int(__v)) => {
-                    self.#name = ((*__v) as #t).into();
-                    true
-                }
-            }),
-            LitTarget::Float(t) => Some(quote! {
-                (#key, ::runtime_core::__template::TemplateLiteral::Float(__v)) => {
-                    self.#name = ((*__v) as #t).into();
-                    true
-                }
-            }),
-            LitTarget::Bool => Some(quote! {
-                (#key, ::runtime_core::__template::TemplateLiteral::Bool(__v)) => {
-                    self.#name = (*__v).into();
-                    true
-                }
-            }),
-            LitTarget::None => None,
-        }
+        let (pattern, value) = literal_conversion(&literal_target(field_ty))?;
+        Some(quote! {
+            (#key, #pattern) => {
+                self.#name = #value;
+                true
+            }
+        })
     });
     // The overlay's two per-component entry points. Generated ONCE per
     // props TYPE, and emitted at a `ui!` call site as two short
@@ -281,7 +278,7 @@ pub(crate) fn apply_literal_impl(
     // call sites and each one was a fresh closure body to expand,
     // type-check and monomorphize. One body per component definition is
     // the same capability for a fraction of the front end.
-    let overlay_impl = overlay_hooks(ty, buildable);
+    let overlay_impl = overlay_hooks(ty, buildable, fields);
 
     quote! {
         #[automatically_derived]
@@ -337,7 +334,8 @@ pub(crate) fn apply_literal_impl(
 /// behind the same gate, so the two are never out of step within one
 /// build graph.
 #[cfg(feature = "ui-overlay")]
-fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
+fn overlay_hooks(ty: &syn::Ident, buildable: bool, fields: &[(syn::Ident, Type)]) -> TokenStream2 {
+    let liven = liven_method(fields);
     // A props type with a generated `BuildElement` can be CONSTRUCTED
     // from data; one without (a hand-rolled impl, or a bare `#[props]`
     // struct) falls back to the trait's "no", so the overlay refuses to
@@ -450,15 +448,20 @@ fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
                 // element, realize carries it to the mounted node, and
                 // a live prop edit runs the component again from it.
                 ::runtime_core::__overlay::set_rebuilder(self.__overlay_rebuilder());
-                let ::core::option::Option::Some((__site, __node)) =
-                    ::runtime_core::__overlay::take_current()
+                let ::core::option::Option::Some((__site, __node, __literals)) =
+                    ::runtime_core::__overlay::take_current_live()
                 else {
                     return;
                 };
                 for (__n, __v) in ::runtime_core::__overlay::staged_props(__site, __node) {
                     self.__apply_literal(&__n, &__v);
                 }
+                // AFTER the staged literals, so a cell starts from the
+                // value a patch already put on this node.
+                self.__overlay_liven(__site, __node, __literals);
             }
+
+            #liven
 
             #ctor
         }
@@ -468,8 +471,67 @@ fn overlay_hooks(ty: &syn::Ident, buildable: bool) -> TokenStream2 {
 }
 
 #[cfg(not(feature = "ui-overlay"))]
-fn overlay_hooks(_ty: &syn::Ident, _buildable: bool) -> TokenStream2 {
+fn overlay_hooks(
+    _ty: &syn::Ident,
+    _buildable: bool,
+    _fields: &[(syn::Ident, Type)],
+) -> TokenStream2 {
     TokenStream2::new()
+}
+
+/// `__overlay_liven`: turn the props a call site wrote as literals into
+/// the overlay's live cells (`runtime_vocabulary::overlay::cells`).
+///
+/// This is where the TYPE decides, at compile time, which literal props
+/// can apply live: an arm exists only for a field that is `Reactive<T>`
+/// (reactive-by-default, or declared so) with a `T` a literal can build.
+/// A `#[prop(static)]` field, a plain-typed one, a handler or children
+/// have no arm and keep their value untouched — their edits take the
+/// rebuild path or wait for the next render, as before. The converter is
+/// [`literal_conversion`], the same one `__apply_literal` uses, handed
+/// over as a non-capturing closure coerced to a `fn` pointer, so it adds
+/// no closure type per field.
+///
+/// One body per props TYPE, like the rest of the hooks: the call site
+/// only names which props were literals.
+#[cfg(feature = "ui-overlay")]
+fn liven_method(fields: &[(syn::Ident, Type)]) -> TokenStream2 {
+    let arms = fields.iter().filter_map(|(name, field_ty)| {
+        reactive_inner(field_ty)?;
+        let (pattern, value) = literal_conversion(&literal_target(field_ty))?;
+        let key = name.to_string();
+        Some(quote! {
+            #key => ::runtime_core::__overlay::cells::liven(
+                &mut self.#name,
+                __site,
+                __node,
+                #key,
+                |__l| match __l {
+                    #pattern => ::core::option::Option::Some(#value),
+                    _ => ::core::option::Option::None,
+                },
+            ),
+        })
+    });
+    quote! {
+        /// Make the call site's literal props live overlay cells.
+        /// Generated; see `runtime_macros::props_attr::liven_method`.
+        #[doc(hidden)]
+        #[allow(unused_variables, clippy::all)]
+        pub fn __overlay_liven(
+            &mut self,
+            __site: u64,
+            __node: u32,
+            __literals: &[&'static str],
+        ) {
+            for __name in __literals {
+                match *__name {
+                    #(#arms)*
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 /// The `OverlayProps` impl a rebuildable props type gets.
@@ -729,6 +791,47 @@ mod tests {
         let out = rendered(quote! { struct P { name: String } });
         assert!(out.contains("implP{"), "must be an inherent impl, not a trait impl: {out}");
         assert!(out.contains("pubfn__apply_literal(&mutself,name:&str,"), "{out}");
+    }
+
+    /// The TYPE picks which literal props can be live cells, at compile
+    /// time: a `Reactive` field a literal can build gets a `liven` arm;
+    /// a `#[prop(static)]` field, a path-typed one and a handler get
+    /// none, so their edits keep the rebuild / next-render path.
+    #[cfg(feature = "ui-overlay")]
+    #[test]
+    fn liven_arms_only_for_reactive_literal_capable_fields() {
+        let out = rendered(quote! {
+            struct P {
+                label: String,
+                placeholder: Option<String>,
+                count: i32,
+                on: bool,
+                #[prop(static)] fixed: String,
+                tone: ToneRef,
+                on_press: Rc<dyn Fn()>,
+            }
+        });
+        assert!(out.contains("pubfn__overlay_liven(&mutself,__site:u64,__node:u32,"), "{out}");
+        for live in ["label", "placeholder", "count", "on"] {
+            assert!(
+                out.contains(&format!(
+                    "\"{live}\"=>::runtime_core::__overlay::cells::liven(&mutself.{live},"
+                )),
+                "{live} must get a cell: {out}"
+            );
+        }
+        for not_live in ["fixed", "tone", "on_press"] {
+            assert!(
+                !out.contains(&format!("cells::liven(&mutself.{not_live},")),
+                "{not_live} must NOT get a cell: {out}"
+            );
+        }
+        // The same conversion `__apply_literal` uses, as a `fn` pointer.
+        assert!(out.contains("|__l|match__l{::runtime_core::__template::TemplateLiteral::Str(__v)=>::core::option::Option::Some((&**__v).into()),_=>::core::option::Option::None,}"), "{out}");
+        // Bound AFTER the staged literals are applied.
+        let staged = out.find("staged_props(__site,__node)").expect("staged");
+        let liven = out.find("self.__overlay_liven(__site,__node,__literals)").expect("liven call");
+        assert!(staged < liven, "{out}");
     }
 
     #[test]
