@@ -776,6 +776,39 @@ fn preminted_world_still_delivers_tokens() {
     );
 }
 
+/// FRAMEWORK-NOTES #112: two `install_tokens` calls before the first
+/// flush (a base theme, then an extension's own token block) must BOTH
+/// reach the backend. The pending install used to be a latest-wins slot,
+/// so the backend saw only the second set — `token_value` still answered
+/// for the first, but every `var(--…)` referencing it rendered unset.
+#[test]
+fn regression_second_install_tokens_before_flush_keeps_the_first() {
+    let h = harness();
+    let world = h.world.clone();
+    let _realized = world.enter(|| {
+        theme::install_tokens(&[surface("#111")]);
+        theme::install_tokens(&[TokenEntry {
+            name: "color-accent",
+            value: TokenValue::Color(runtime_shared::Color("#f00".into())),
+        }]);
+        realize(
+            &h.backend,
+            &h.registry,
+            view().style(StyleApplication::new(themed_sheet())).build(),
+        )
+    });
+    let installs: Vec<String> = h
+        .take_log()
+        .into_iter()
+        .filter(|l| l.starts_with("install_tokens"))
+        .collect();
+    assert_eq!(
+        installs,
+        vec!["install_tokens [\"color-surface\", \"color-accent\"]".to_string()],
+        "one delivery carrying both install batches, in install order"
+    );
+}
+
 /// A LIVE (non-preminted) world must publish the theme's default text
 /// font to the document, exactly like a preminted one.
 ///

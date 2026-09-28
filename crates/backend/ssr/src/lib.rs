@@ -1702,6 +1702,28 @@ mod tests {
         assert!(head.contains("--spacing-md:16px;"), "unchanged token should persist, got: {head}");
     }
 
+    /// A second `install_tokens` in a later flush adds to the `:root` set
+    /// (later value wins per name) — the live web backend `setProperty`s
+    /// onto its existing `:root` rule, so SSR must agree or the first
+    /// paint loses the first install's tokens. SSR used to REPLACE the set.
+    #[test]
+    fn regression_second_install_tokens_keeps_the_first_installs_tokens() {
+        use runtime_shared::{Length, TokenEntry, TokenValue};
+        let mut b = SsrBackend::new();
+        b.install_tokens(&[
+            TokenEntry { name: "color-text", value: TokenValue::Color(Color("#1a1a1f".into())) },
+            TokenEntry { name: "spacing-md", value: TokenValue::Length(Length::Px(16.0)) },
+        ]);
+        b.install_tokens(&[TokenEntry {
+            name: "spacing-md",
+            value: TokenValue::Length(Length::Px(20.0)),
+        }]);
+        let head = b.head_css();
+        assert!(head.contains("--color-text:#1a1a1f;"), "first install must survive, got: {head}");
+        assert!(head.contains("--spacing-md:20px;"), "later install wins per name, got: {head}");
+        assert!(!head.contains("--spacing-md:16px;"), "no stale duplicate, got: {head}");
+    }
+
     /// `set_app_background` + `set_scrollbar_theme` must emit the
     /// matching `<head>` CSS in `head_css`, and a `Tokenized::Token`
     /// must become `var(--<name>)` (not the resolved value) so the

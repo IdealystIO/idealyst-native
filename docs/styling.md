@@ -231,6 +231,11 @@ update_tokens(&[
 ]);
 ```
 
+`install_tokens` may be called more than once — a base theme, then an
+extension's own token block. Every install made before the backend next
+receives tokens is delivered together: the union of the sets, with a
+name installed twice carrying its later value.
+
 `TokenValue` is `Color`, `Length`, or `Number(f32)` — the variant must
 match the `Tokenized<T>` reading it (a mismatch warns in debug and
 falls back).

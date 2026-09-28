@@ -511,6 +511,33 @@ mod tests {
         assert!(!html.contains("var("), "no CSS variables in email: {html}");
     }
 
+    /// A second `install_tokens` (a base theme, then an extension's token
+    /// block, delivered in separate flushes) adds to the active set, the
+    /// later value winning per name — the web backend's `:root`
+    /// `setProperty` semantics. Email used to REPLACE the set, so a token
+    /// from the first install fell back to its literal default.
+    #[test]
+    fn regression_second_install_tokens_keeps_the_first_installs_tokens() {
+        let mut b = EmailBackend::new();
+        b.install_tokens(&[
+            TokenEntry { name: "color-brand", value: TokenValue::Color(Color("#6d28d9".into())) },
+            TokenEntry { name: "color-ink", value: TokenValue::Color(Color("#111111".into())) },
+        ]);
+        b.install_tokens(&[TokenEntry {
+            name: "color-ink",
+            value: TokenValue::Color(Color("#222222".into())),
+        }]);
+        let mut rules = StyleRules::default();
+        rules.background = Some(Tokenized::token("color-brand", Color("#000000".into())));
+        rules.color = Some(Tokenized::token("color-ink", Color("#000000".into())));
+        let v = b.create_view(&AccessibilityProps::default());
+        b.apply_style(&v, &Rc::new(rules));
+        b.finish(v);
+        let html = b.body_html();
+        assert!(html.contains("background: #6d28d9"), "first install's token must survive: {html}");
+        assert!(html.contains("#222222"), "later install wins per name: {html}");
+    }
+
     /// Styles resolve against the theme installed AFTER the style was applied
     /// (resolution is deferred to serialize time) — so token/style ordering
     /// during mount never matters.

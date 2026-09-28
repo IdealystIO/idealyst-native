@@ -1111,7 +1111,12 @@ impl caps::StyleOps for SsrBackend {
     }
 
     fn install_tokens(&mut self, tokens: &[runtime_shared::TokenEntry]) {
-        self.tokens = tokens.to_vec();
+        // Merge, never replace: the web backend `setProperty`s each token
+        // onto its existing `:root` rule, so a second install (a base
+        // theme, then an extension's token block, flushed in separate
+        // windows) ADDS to the active set there. Replacing here dropped
+        // the first install's tokens from the rendered output.
+        self.update_tokens(tokens);
     }
 
     /// Capture every declared palette; `head_css` turns them into the

@@ -91,8 +91,16 @@ use crate::caps::{AppEnvOps, AssetOps, StyleOps};
 pub(crate) struct CohortId(u32);
 
 struct ThemeState {
-    /// Latest full token install, pending backend delivery. Single slot
-    /// (latest wins) — same contract as the old `PENDING_TOKENS`.
+    /// Every token installed since the last flush, pending backend
+    /// delivery — MERGED by name (a later install's value wins, the
+    /// token keeps its first position). NOT a latest-wins slot: two
+    /// installs in one window (base theme + an extension's `tokens()`,
+    /// say) are both real, and a single slot delivered only the second
+    /// while `values` held both — the backend then rendered the first
+    /// set's `var(--…)` references unresolved. Merging (rather than
+    /// re-sending the whole `values` table) keeps the delivered order
+    /// the author's install order, so a static render's `:root` block
+    /// is deterministic.
     pending_install: Option<Vec<TokenEntry>>,
     /// Latest full palette declaration, pending backend delivery. Single
     /// slot, latest wins — the set is a complete description of what the
@@ -271,7 +279,13 @@ impl ThemeCtx {
             for t in tokens {
                 s.values.insert(t.name, t.value.clone());
             }
-            s.pending_install = Some(tokens.to_vec());
+            let pending = s.pending_install.get_or_insert_with(Vec::new);
+            for t in tokens {
+                match pending.iter_mut().find(|p| p.name == t.name) {
+                    Some(slot) => slot.value = t.value.clone(),
+                    None => pending.push(t.clone()),
+                }
+            }
         }
         self.version.update(|v| v + 1);
     }
@@ -362,8 +376,11 @@ impl ThemeCtx {
 
 /// Install the initial token set for the ambient world. Values are
 /// recorded per-world and queued for the backend; the next sheet attach
-/// or driver run delivers them (`StyleOps::install_tokens`). Re-install
-/// counts as a theme change (version bump) — same as the old core.
+/// or driver run delivers them (`StyleOps::install_tokens`). Several
+/// installs before that delivery accumulate — the backend receives one
+/// batch holding every installed token, a re-installed name carrying its
+/// latest value. Re-install counts as a theme change (version bump) —
+/// same as the old core.
 /// Ambient convenience — from an event handler, capture [`theme_ctx`]
 /// at build time and use [`ThemeCtx::install_tokens`].
 pub fn install_tokens(tokens: &[TokenEntry]) {
@@ -750,6 +767,29 @@ mod tests {
         let vb = b.enter(|| token_value("color-surface"));
         assert_eq!(va, Some(TokenValue::Color(Color("#111".into()))));
         assert_eq!(vb, Some(TokenValue::Color(Color("#fff".into()))));
+    }
+
+    /// FRAMEWORK-NOTES #112, the merge rule: installs pending in one
+    /// window accumulate by name — a re-installed token takes the LATER
+    /// value but keeps its first position; new names append.
+    #[test]
+    fn regression_pending_installs_merge_by_name_later_value_wins() {
+        let world = World::new();
+        world.enter(|| {
+            let n = |name, v| TokenEntry { name, value: TokenValue::Number(v) };
+            install_tokens(&[n("a", 1.0), n("b", 2.0)]);
+            install_tokens(&[n("c", 3.0), n("a", 10.0)]);
+            let pending = theme_ctx().state.borrow().pending_install.clone().expect("pending");
+            let got: Vec<_> = pending.iter().map(|t| (t.name, t.value.clone())).collect();
+            assert_eq!(
+                got,
+                vec![
+                    ("a", TokenValue::Number(10.0)),
+                    ("b", TokenValue::Number(2.0)),
+                    ("c", TokenValue::Number(3.0)),
+                ]
+            );
+        });
     }
 
     #[test]
