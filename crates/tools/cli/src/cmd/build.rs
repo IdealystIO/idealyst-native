@@ -241,7 +241,10 @@ pub struct Args {
     /// instead: measured on a large app, the post-cargo tail fell from
     /// 21-42 s to 6-10 s for a served module ~15% larger (79 MB vs 69 MB).
     /// This is the posture `idealyst dev` uses by default; here it stays
-    /// opt-in because a deploy bundle wants its chunks.
+    /// opt-in because a deploy bundle wants its chunks. Supported with
+    /// `--release` too — the shape for CI and e2e bundles that are never
+    /// deployed: it skips the splitter, the most memory-hungry pass that
+    /// runs inside the CLI, and wasm-opt still runs on the single module.
     #[arg(long)]
     pub no_split: bool,
 
@@ -575,9 +578,12 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             .unwrap_or_else(|| dir.join("dist").join(Target::Web.as_str())),
     );
 
+    let reporter = dev_events::Reporter::default();
+    let memory_budget_mb = crate::memory_limit::prepare_web_pipeline(&reporter);
     let artifact = build_web::build(
         dir,
         build_web::BuildOptions {
+            memory_budget_mb,
             primitives: args.primitives.clone(),
             premint_only: args.premint_only,
             premint_report: args.premint_report,
@@ -628,9 +634,13 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // runtime to mint them, and every styled node panics.
             premint: args.premint || args.premint_only || args.premint_report,
             // Plain lines on stderr, as this command always printed.
-            reporter: dev_events::Reporter::default(),
+            reporter,
         },
     )?;
+    let peaks = crate::memory_limit::format_stage_peaks(&crate::memory_limit::take_stage_peaks());
+    if !peaks.is_empty() {
+        eprintln!("[build web] peak RSS by stage (this process; child processes in parentheses): {peaks}");
+    }
     let bundle = artifact
         .bundle_dir
         .as_deref()

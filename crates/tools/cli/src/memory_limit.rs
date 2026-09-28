@@ -102,23 +102,59 @@
 //! growth). The override always wins, including over the hot-patch
 //! raise below.
 //!
-//! ## The hot-patch raise
+//! ## Sizing the cap to the machine
 //!
-//! A session that arms the wasm hot-patch tier (`idealyst dev --web
-//! --local`) does legitimately heavy work in THIS process: base prep
-//! parses the linked debug module with walrus, and on CrewForge (a
-//! ~220 MB debug wasm) that peaks at ~3.7 GB RSS — close enough to the
-//! 4096 MB default that sessions aborted. Users had to know to export
-//! `IDEALYST_MEMORY_LIMIT_MB=8192`. So `dev` calls
-//! [`raise_for_hot_patch`] once the tier is armed, which lifts the cap to
-//! `min(8192 MB, half of physical RAM)`, never below the default
-//! ([`select_limit_mb`] is the policy). Half of RAM keeps the cap's
-//! purpose — a leak aborts before it craters the host — on a small
-//! machine, where 8 GB would be all of it.
+//! A command that runs the web build pipeline (`build --web`, `run`
+//! on web, `docs`, and `dev` with a web target) does legitimately heavy
+//! work in THIS process: the command_export neutralize and wasm-split
+//! parse the linked module with walrus, and the hot-patch tier's base
+//! prep parses the debug module. On CrewForge that is 3.7 GB (base prep)
+//! to 4.0 GB (a one-worker split) — at or past the 4096 MB default, which
+//! is sized for catching leaks in `mcp`/`serve`, not for this work.
+//!
+//! So those commands call [`raise_for_web_pipeline`], which lifts the cap
+//! to half of the machine's memory, never below the default
+//! ([`select_limit_mb`] is the policy). "The machine's memory" is
+//! physical RAM, or the cgroup's memory limit when the process runs
+//! under a tighter one — in a container `_SC_PHYS_PAGES` reports the
+//! HOST's RAM, and a cap sized from that would let the kernel's OOM
+//! killer fire before the cap does.
+//!
+//! Half, rather than `MemAvailable`: what is free at startup depends on
+//! whatever else happens to be running, so a cap derived from it would
+//! change from one run to the next for the same build. Half of the
+//! machine keeps the cap's purpose — a leak aborts before it craters the
+//! host — and leaves the other half to the compiler children the cap
+//! never covers.
+//!
+//! There used to be a fixed 8192 MB ceiling on the raise. The app team
+//! it was written for raised their cap by hand four times in three weeks
+//! (4096 → 8192 → 12288 → 15360) as their module grew, and each value was
+//! stale within a week. The fix for that was on the other side: the
+//! splitter now sizes its worker count to fit whatever cap is in force
+//! (`build_web::split_emit_workers`), so its memory no longer grows with
+//! the core count.
 //!
 //! The cap is an atomic the monitor thread re-reads every poll, so the
 //! raise takes effect on the running monitor rather than spawning a
 //! second one.
+//!
+//! ## Saying which stage it was
+//!
+//! The build reports each stage it runs as a `StageStarted` /
+//! `StageFinished` event. [`track_stages`] subscribes a sink that records
+//! which stages are running and the peak RSS each one reached, so a
+//! tripped cap names the stage in its message, and a finished `build`
+//! prints the peak per stage ([`take_stage_peaks`]) — the trend is
+//! visible before it reaches the cap, and so is which stage to work on.
+//!
+//! A stage's peak is exact when that stage set a new high-water mark for
+//! the process (read from `getrusage` at the stage's end), which is the
+//! case for whichever stage matters. Otherwise it is the highest of the
+//! monitor's 3-second samples and the RSS at the stage's end. Child
+//! processes (cargo, wasm-bindgen, wasm-opt) are not capped; their
+//! high-water mark is reported beside the stage that ran them, from
+//! `RUSAGE_CHILDREN`, when it rose during that stage.
 
 /// Default cap. 4 GB is ~80× the steady-state RSS of an idle MCP
 /// server and ~20× a typical `dev` orchestrator, so a leak still
@@ -132,13 +168,8 @@ pub const DEFAULT_LIMIT_MB: u64 = 4096;
 /// Env var name for override. `0` disables.
 pub const ENV_OVERRIDE: &str = "IDEALYST_MEMORY_LIMIT_MB";
 
-/// The ceiling of the hot-patch raise (see the module docs): twice the
-/// ~3.7 GB peak measured on CrewForge's base prep, the largest app the
-/// tier runs on.
-pub const HOT_PATCH_CEILING_MB: u64 = 8192;
-
 /// The cap the monitor thread enforces, in megabytes. Written by
-/// [`apply`] and [`raise_for_hot_patch`], read on every poll.
+/// [`apply`] and [`raise_for_web_pipeline`], read on every poll.
 static LIMIT_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Whether the user set [`ENV_OVERRIDE`] to a number. Parsed the same
@@ -151,37 +182,38 @@ fn env_override(value: Option<&str>) -> Option<u64> {
 ///
 /// - `env` is [`ENV_OVERRIDE`]'s value: when it parses, it wins outright
 ///   (`0` included, which disables the cap).
-/// - Otherwise a session that has not armed the hot-patch tier gets
+/// - Otherwise a process that does not run the web pipeline gets
 ///   [`DEFAULT_LIMIT_MB`].
-/// - An armed session gets `min(HOT_PATCH_CEILING_MB, physical RAM / 2)`,
-///   and never less than the default. When physical RAM cannot be read the
-///   half-of-RAM guard cannot be honoured, so it stays at the default.
+/// - One that does gets half of `machine_mb`, never less than the
+///   default. When the machine's memory cannot be read the half-of-it
+///   guard cannot be honoured, so it stays at the default.
 ///
 /// Pure, so the policy is tested without touching the process's cap.
-pub fn select_limit_mb(env: Option<&str>, physical_ram_mb: Option<u64>, hot_patch_armed: bool) -> u64 {
+pub fn select_limit_mb(env: Option<&str>, machine_mb: Option<u64>, web_pipeline: bool) -> u64 {
     if let Some(mb) = env_override(env) {
         return mb;
     }
-    if !hot_patch_armed {
+    if !web_pipeline {
         return DEFAULT_LIMIT_MB;
     }
-    match physical_ram_mb {
-        Some(ram) => HOT_PATCH_CEILING_MB.min(ram / 2).max(DEFAULT_LIMIT_MB),
+    match machine_mb {
+        Some(mb) => (mb / 2).max(DEFAULT_LIMIT_MB),
         None => DEFAULT_LIMIT_MB,
     }
 }
 
-/// Raise the running cap for a session that armed the hot-patch tier.
+/// Raise the running cap for a command that runs the web build pipeline
+/// in this process. See the module docs.
 ///
 /// Returns the cap now in force, for the caller to log once, or `None`
 /// when [`ENV_OVERRIDE`] is set (it wins, and [`apply`] already said so
 /// at startup) or the cap is not being enforced at all.
-pub fn raise_for_hot_patch() -> Option<u64> {
+pub fn raise_for_web_pipeline() -> Option<u64> {
     let env = std::env::var(ENV_OVERRIDE).ok();
     if env_override(env.as_deref()).is_some() {
         return None;
     }
-    let mb = select_limit_mb(None, physical_ram_mb(), true);
+    let mb = select_limit_mb(None, machine_memory_mb(), true);
     // `0` means `apply` never started a monitor (or this platform has
     // none): there is no cap to raise.
     let current = LIMIT_MB.load(std::sync::atomic::Ordering::Relaxed);
@@ -192,6 +224,52 @@ pub fn raise_for_hot_patch() -> Option<u64> {
         LIMIT_MB.store(mb, std::sync::atomic::Ordering::Relaxed);
     }
     Some(mb.max(current))
+}
+
+/// Everything a command does before it runs the web build pipeline in
+/// this process: raise the cap to fit the machine, say so once through
+/// `reporter`, and track `reporter`'s stages so a tripped cap names the
+/// one running. Returns the cap in force, which the caller passes on as
+/// `build_web::BuildOptions::memory_budget_mb`.
+///
+/// Idempotent: a second call re-raises to the same value and logs
+/// nothing, but does subscribe a second tracker — call it once per
+/// reporter.
+pub fn prepare_web_pipeline(reporter: &dev_events::Reporter) -> Option<u64> {
+    let before = current_limit_mb();
+    if let Some(mb) = raise_for_web_pipeline() {
+        if Some(mb) != before {
+            reporter.log(
+                "idealyst",
+                format!(
+                    "memory cap: {mb} MB RSS for the web build (half of this machine's memory, \
+                     never below {DEFAULT_LIMIT_MB} MB; {ENV_OVERRIDE} overrides)",
+                ),
+            );
+        }
+    }
+    track_stages(reporter);
+    current_limit_mb()
+}
+
+/// The cap in force, in megabytes, or `None` when none is enforced. The
+/// web build sizes its in-process passes to it
+/// (`build_web::BuildOptions::memory_budget_mb`).
+pub fn current_limit_mb() -> Option<u64> {
+    match LIMIT_MB.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        mb => Some(mb),
+    }
+}
+
+/// The memory this process can actually have, in megabytes: physical
+/// RAM, or the cgroup limit when that is lower. See the module docs.
+fn machine_memory_mb() -> Option<u64> {
+    let physical = physical_ram_mb();
+    match (physical, cgroup_limit_mb()) {
+        (Some(p), Some(c)) => Some(p.min(c)),
+        (p, c) => p.or(c),
+    }
 }
 
 /// This machine's physical memory in megabytes, or `None` if it cannot be
@@ -210,6 +288,35 @@ fn physical_ram_mb() -> Option<u64> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn physical_ram_mb() -> Option<u64> {
     None
+}
+
+/// The memory limit of this process's cgroup, in megabytes, when it has
+/// one. v2 (`memory.max`) first, then v1 (`memory.limit_in_bytes`).
+#[cfg(target_os = "linux")]
+fn cgroup_limit_mb() -> Option<u64> {
+    [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ]
+    .iter()
+    .find_map(|path| parse_cgroup_limit(&std::fs::read_to_string(path).ok()?))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cgroup_limit_mb() -> Option<u64> {
+    None
+}
+
+/// A cgroup memory-limit file's contents as megabytes. `max` (v2) means
+/// no limit; so does v1's "unlimited", which it spells as a number near
+/// `i64::MAX` rounded down to the page size — anything past 2^60 bytes.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_cgroup_limit(text: &str) -> Option<u64> {
+    let bytes: u64 = text.trim().parse().ok()?;
+    if bytes >= 1 << 60 {
+        return None;
+    }
+    Some(bytes / (1024 * 1024))
 }
 
 /// RSS poll cadence. Long enough that overhead is invisible, short
@@ -427,6 +534,193 @@ pub fn kill_watched_pids() -> usize {
     killed
 }
 
+/// One stage's memory, as [`take_stage_peaks`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagePeak {
+    /// The build target the stage belongs to (`web`, `ios`, …).
+    pub target: String,
+    /// The stage name the build reported (`wasm-split`, `wasm-opt`, …).
+    pub stage: String,
+    /// This process's peak RSS while the stage ran, in bytes.
+    pub rss_bytes: u64,
+    /// The highest RSS any child process reached, when it rose during
+    /// this stage — the stage's own subprocess (wasm-opt, wasm-bindgen,
+    /// cargo) set a new high-water mark. Not covered by the cap.
+    pub child_rss_bytes: Option<u64>,
+}
+
+/// A stage that has started and not finished.
+struct OpenStage {
+    target: String,
+    stage: String,
+    peak: u64,
+    self_hwm_at_start: u64,
+    child_hwm_at_start: u64,
+}
+
+#[derive(Default)]
+struct StageLog {
+    open: Vec<OpenStage>,
+    done: Vec<StagePeak>,
+}
+
+static STAGES: std::sync::Mutex<StageLog> =
+    std::sync::Mutex::new(StageLog { open: Vec::new(), done: Vec::new() });
+
+/// The sink [`track_stages`] subscribes.
+struct StageTracker;
+
+impl dev_events::Sink for StageTracker {
+    fn emit(&self, envelope: &dev_events::Envelope) {
+        match &envelope.event {
+            dev_events::DevEvent::StageStarted { target, stage } => stage_started(target, stage),
+            dev_events::DevEvent::StageFinished { target, stage, .. } => {
+                stage_finished(target, stage)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Record the stages `reporter` reports, so a tripped cap can name the
+/// one running and [`take_stage_peaks`] can say what each one peaked at.
+pub fn track_stages(reporter: &dev_events::Reporter) {
+    reporter.subscribe(Box::new(StageTracker));
+}
+
+fn stage_started(target: &str, stage: &str) {
+    let (self_hwm, child_hwm) = high_water_marks();
+    let rss = current_rss_bytes().unwrap_or(0);
+    if let Ok(mut log) = STAGES.lock() {
+        log.open.push(OpenStage {
+            target: target.to_string(),
+            stage: stage.to_string(),
+            peak: rss,
+            self_hwm_at_start: self_hwm,
+            child_hwm_at_start: child_hwm,
+        });
+    }
+}
+
+fn stage_finished(target: &str, stage: &str) {
+    let (self_hwm, child_hwm) = high_water_marks();
+    let rss = current_rss_bytes().unwrap_or(0);
+    if let Ok(mut log) = STAGES.lock() {
+        let Some(i) = log.open.iter().rposition(|o| o.target == target && o.stage == stage) else {
+            return;
+        };
+        let open = log.open.remove(i);
+        let peak = close_stage_peak(open.peak, rss, open.self_hwm_at_start, self_hwm);
+        log.done.push(StagePeak {
+            target: open.target,
+            stage: open.stage,
+            rss_bytes: peak,
+            child_rss_bytes: (child_hwm > open.child_hwm_at_start).then_some(child_hwm),
+        });
+    }
+}
+
+/// A finished stage's peak: the highest sample seen while it ran, or the
+/// process high-water mark when that rose during the stage — it can only
+/// have risen because of work this stage did (or a stage running beside
+/// it), and it catches the spike a 3-second poll misses.
+fn close_stage_peak(sampled: u64, rss_at_end: u64, hwm_at_start: u64, hwm_at_end: u64) -> u64 {
+    let sampled = sampled.max(rss_at_end);
+    if hwm_at_end > hwm_at_start {
+        sampled.max(hwm_at_end)
+    } else {
+        sampled
+    }
+}
+
+/// Fold one poll's RSS into every stage still running.
+fn sample_open_stages(rss: u64) {
+    if let Ok(mut log) = STAGES.lock() {
+        for open in &mut log.open {
+            open.peak = open.peak.max(rss);
+        }
+    }
+}
+
+/// The stages running right now, as `target/stage`, for the cap's
+/// message. `try_lock`: this runs on the way to an abort, and a sink
+/// holding the lock must not strand it.
+fn running_stages() -> Vec<String> {
+    match STAGES.try_lock() {
+        Ok(log) => log.open.iter().map(|o| format!("{}/{}", o.target, o.stage)).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Every stage that has finished since the last call, in finishing order.
+pub fn take_stage_peaks() -> Vec<StagePeak> {
+    STAGES.lock().map(|mut log| std::mem::take(&mut log.done)).unwrap_or_default()
+}
+
+/// One line for a finished build: `stage 1.2 GB · stage 0.4 GB (child 3.1
+/// GB) · …`, heaviest stage first, stages under 1 MB left out. Empty
+/// when nothing was recorded.
+pub fn format_stage_peaks(peaks: &[StagePeak]) -> String {
+    let mut sorted: Vec<&StagePeak> = peaks.iter().collect();
+    sorted.sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes));
+    sorted
+        .iter()
+        .filter(|p| p.rss_bytes >= 1024 * 1024 || p.child_rss_bytes.is_some())
+        .map(|p| {
+            let child = p
+                .child_rss_bytes
+                .map(|c| format!(" (child {})", gb(c)))
+                .unwrap_or_default();
+            format!("{} {}{child}", p.stage, gb(p.rss_bytes))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
+/// `(this process, largest reaped child)` peak RSS in bytes, from
+/// `getrusage`. Both are high-water marks: they only ever rise.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn high_water_marks() -> (u64, u64) {
+    fn read(who: libc::c_int) -> u64 {
+        // SAFETY: getrusage writes into the struct we pass.
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(who, &mut ru) } != 0 {
+            return 0;
+        }
+        let v = ru.ru_maxrss.max(0) as u64;
+        // Linux reports kilobytes, macOS bytes.
+        if cfg!(target_os = "linux") { v * 1024 } else { v }
+    }
+    (read(libc::RUSAGE_SELF), read(libc::RUSAGE_CHILDREN))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn high_water_marks() -> (u64, u64) {
+    (0, 0)
+}
+
+/// The cap's message. Names the stage, so "which step" is on screen
+/// rather than inferred from the last log line.
+fn exceeded_message(rss_mb: u64, cap_mb: u64, stages: &[String], killed: usize) -> String {
+    let during = match stages {
+        [] => String::new(),
+        s => format!(" during {}", s.join(", ")),
+    };
+    let took = match killed {
+        0 => String::new(),
+        1 => " Took 1 child process with it.".to_string(),
+        n => format!(" Took {n} child processes with it."),
+    };
+    format!(
+        "[idealyst] memory cap exceeded{during}: RSS {rss_mb} MB > cap {cap_mb} MB; \
+         aborting to prevent host OOM. Override via {ENV_OVERRIDE}.{took}",
+    )
+}
+
 /// Apply the cap. Silent on default activation so short-lived
 /// commands don't gain a startup banner; logs only when the user
 /// has explicitly overridden the default (so they get confirmation
@@ -441,7 +735,7 @@ pub fn apply(default_mb: u64) {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // Only a platform with a monitor records a cap: `raise_for_hot_patch`
+        // Only a platform with a monitor records a cap: `raise_for_web_pipeline`
         // reads a zero as "nothing is enforced here".
         LIMIT_MB.store(mb, std::sync::atomic::Ordering::Relaxed);
         spawn_rss_monitor(mb, log);
@@ -468,27 +762,22 @@ fn spawn_rss_monitor(mb: u64, log: bool) {
         .name("idealyst-mem-monitor".to_string())
         .spawn(move || loop {
             std::thread::sleep(POLL_INTERVAL);
-            // Re-read each poll: `raise_for_hot_patch` moves it mid-session.
+            // Re-read each poll: `raise_for_web_pipeline` moves it mid-session.
             let mb = LIMIT_MB.load(std::sync::atomic::Ordering::Relaxed);
             let limit_bytes = mb.saturating_mul(1024 * 1024);
             if let Some(rss) = current_rss_bytes() {
                 if rss > limit_bytes {
+                    // Read before the kills: they can take a while, and
+                    // the stage is what the message is for.
+                    let stages = running_stages();
                     // Before the abort, not after: SIGABRT runs no
                     // teardown at all, so anything still alive here is
                     // an orphan holding a port.
                     let killed = kill_watched_processes();
-                    let took = match killed {
-                        0 => String::new(),
-                        1 => " Took 1 child process with it.".to_string(),
-                        n => format!(" Took {n} child processes with it."),
-                    };
-                    eprintln!(
-                        "[idealyst] memory cap exceeded: RSS {} MB > cap {mb} MB; \
-                         aborting to prevent host OOM. Override via {ENV_OVERRIDE}.{took}",
-                        rss / (1024 * 1024),
-                    );
+                    eprintln!("{}", exceeded_message(rss / (1024 * 1024), mb, &stages, killed));
                     std::process::abort();
                 }
+                sample_open_stages(rss);
             }
         });
 }
@@ -534,6 +823,11 @@ fn current_rss_bytes() -> Option<u64> {
     } else {
         None
     }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn current_rss_bytes() -> Option<u64> {
+    None
 }
 
 /// Lift the address-space cap for a child that legitimately reserves huge
@@ -766,41 +1060,111 @@ mod tests {
     /// A value that is not a number is ignored, as `apply` ignores it.
     #[test]
     fn an_unparseable_override_is_ignored() {
-        assert_eq!(select_limit_mb(Some("lots"), Some(64 * GB), true), HOT_PATCH_CEILING_MB);
+        assert_eq!(select_limit_mb(Some("lots"), Some(64 * GB), true), 32 * GB);
         assert_eq!(select_limit_mb(Some(""), None, false), DEFAULT_LIMIT_MB);
     }
 
     #[test]
-    fn an_unarmed_session_keeps_the_default() {
+    fn a_process_without_the_web_pipeline_keeps_the_default() {
         assert_eq!(select_limit_mb(None, Some(64 * GB), false), DEFAULT_LIMIT_MB);
     }
 
-    /// Regression: CrewForge's base prep peaks at ~3.7 GB, and an armed
-    /// session under the 4096 MB default aborted until the user exported
-    /// `IDEALYST_MEMORY_LIMIT_MB=8192` by hand.
+    /// Regression: CrewForge's release build aborted at every fixed cap
+    /// the app team set (4096 → 8192 → 12288), each stale within a week.
+    /// The cap for the pipeline now follows the machine: half of it, with
+    /// no fixed ceiling — on their 23 GB devcontainer, 11.5 GB.
     #[test]
-    fn regression_an_armed_session_on_a_big_machine_gets_8192() {
-        assert_eq!(select_limit_mb(None, Some(32 * GB), true), 8192);
-        assert_eq!(select_limit_mb(None, Some(128 * GB), true), 8192);
-    }
-
-    /// Half of RAM between the default and the ceiling.
-    #[test]
-    fn an_armed_session_gets_half_of_ram_below_the_ceiling() {
+    fn regression_the_web_pipeline_cap_follows_the_machine() {
+        assert_eq!(select_limit_mb(None, Some(23 * GB), true), 23 * GB / 2);
+        assert_eq!(select_limit_mb(None, Some(128 * GB), true), 64 * GB);
         assert_eq!(select_limit_mb(None, Some(12 * GB), true), 6 * GB);
     }
 
-    /// Never below the default, on a machine where half of RAM is less.
+    /// Never below the default, on a machine where half of it is less.
     #[test]
     fn the_raise_never_lowers_the_cap() {
         assert_eq!(select_limit_mb(None, Some(4 * GB), true), DEFAULT_LIMIT_MB);
         assert_eq!(select_limit_mb(None, Some(8 * GB), true), DEFAULT_LIMIT_MB);
     }
 
-    /// Unknown RAM: the half-of-RAM guard cannot hold, so no raise.
+    /// Unknown memory: the half-of-it guard cannot hold, so no raise.
     #[test]
-    fn unknown_ram_keeps_the_default() {
+    fn unknown_memory_keeps_the_default() {
         assert_eq!(select_limit_mb(None, None, true), DEFAULT_LIMIT_MB);
+    }
+
+    /// A container's cgroup limit is what the OOM killer enforces, so it
+    /// is the machine's memory when it is set. `max` and v1's
+    /// near-`i64::MAX` "unlimited" mean no limit.
+    #[test]
+    fn cgroup_limits_parse_and_unlimited_means_none() {
+        assert_eq!(parse_cgroup_limit("17179869184\n"), Some(16 * GB));
+        assert_eq!(parse_cgroup_limit("max\n"), None);
+        assert_eq!(parse_cgroup_limit("9223372036854771712\n"), None);
+        assert_eq!(parse_cgroup_limit(""), None);
+    }
+
+    /// Regression: the cap's message said only "memory cap exceeded", and
+    /// the app team worked out which step from the last log line.
+    #[test]
+    fn regression_the_cap_names_the_running_stage() {
+        let msg = exceeded_message(12518, 12288, &["web/wasm-split".to_string()], 0);
+        assert!(msg.contains("during web/wasm-split"), "{msg}");
+        assert!(msg.contains("RSS 12518 MB > cap 12288 MB"), "{msg}");
+        assert!(msg.contains(ENV_OVERRIDE), "{msg}");
+        let msg = exceeded_message(5000, 4096, &[], 2);
+        assert!(msg.starts_with("[idealyst] memory cap exceeded: RSS"), "{msg}");
+        assert!(msg.ends_with("Took 2 child processes with it."), "{msg}");
+    }
+
+    /// A stage that set the process's high-water mark reports it, even if
+    /// no poll landed on the spike; one that did not keeps its samples.
+    #[test]
+    fn a_stage_peak_takes_the_high_water_mark_only_when_it_rose() {
+        assert_eq!(close_stage_peak(100, 90, 500, 900), 900);
+        assert_eq!(close_stage_peak(100, 90, 900, 900), 100);
+        assert_eq!(close_stage_peak(100, 150, 900, 900), 150);
+    }
+
+    #[test]
+    fn stage_peaks_print_heaviest_first_and_name_child_peaks() {
+        let peaks = vec![
+            StagePeak { target: "web".into(), stage: "cargo".into(), rss_bytes: 1024, child_rss_bytes: Some(3 * GB * 1024 * 1024) },
+            StagePeak { target: "web".into(), stage: "wasm-split".into(), rss_bytes: 6 * GB * 1024 * 1024, child_rss_bytes: None },
+            StagePeak { target: "web".into(), stage: "stage+fingerprint".into(), rss_bytes: 1024, child_rss_bytes: None },
+        ];
+        assert_eq!(
+            format_stage_peaks(&peaks),
+            "wasm-split 6.0 GB · cargo 0.0 GB (child 3.0 GB)",
+        );
+    }
+
+    /// The whole loop through a real reporter: the tracker sees the stage
+    /// open (so a trip mid-stage names it) and records it on close.
+    /// One test, because `STAGES` is process-global.
+    #[test]
+    fn tracked_stages_are_named_while_running_and_recorded_when_done() {
+        let reporter = dev_events::Reporter::new();
+        track_stages(&reporter);
+        reporter.emit(dev_events::DevEvent::StageStarted {
+            target: "web".into(),
+            stage: "test-stage-probe".into(),
+        });
+        assert!(running_stages().contains(&"web/test-stage-probe".to_string()));
+        reporter.emit(dev_events::DevEvent::StageFinished {
+            target: "web".into(),
+            stage: "test-stage-probe".into(),
+            ms: 1,
+        });
+        assert!(!running_stages().contains(&"web/test-stage-probe".to_string()));
+        let peaks = take_stage_peaks();
+        let probe = peaks
+            .iter()
+            .find(|p| p.stage == "test-stage-probe")
+            .expect("the finished stage is recorded");
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(probe.rss_bytes > 1024 * 1024, "a test process is at least a few MB");
+        let _ = probe;
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

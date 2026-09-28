@@ -141,6 +141,13 @@ mounts and its `loading` state simply flashes by.
 chunks — and `--no-split` opts out there. (`--no-split` is still accepted on
 `dev`, where it is now the default and does nothing.) The target directory is
 keyed on the flag, so the two postures never share a build cache.
+
+`idealyst build --web --release --no-split` is supported, and is the shape for
+CI and end-to-end bundles that are never deployed: release codegen and
+`wasm-opt`, without the splitter. The splitter is the heaviest pass that runs
+inside the CLI process. It builds at most four chunks at a time, and fewer when
+the CLI's memory cap is lower, but each one still starts from a full parse of
+the module.
 Chunk-only **code** leaves `main.wasm` automatically. Chunk-only **data** (large
 `&'static` tables, an SDK's embedded payload) stays in `main.wasm` by default —
 dropping it requires the **experimental, opt-in** `--data-prune`:

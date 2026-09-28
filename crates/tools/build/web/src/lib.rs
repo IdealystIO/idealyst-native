@@ -220,6 +220,14 @@ pub struct BuildOptions {
     /// verified-safe floor on the website example; the CLI defaults
     /// to that for release web builds.
     pub prune_dead_data_min: Option<usize>,
+    /// The resident memory, in megabytes, this process may use for the
+    /// passes that run IN it (the command_export neutralize and
+    /// wasm-split; cargo, wasm-bindgen and wasm-opt are child processes
+    /// with their own budgets). The CLI passes its memory cap. The
+    /// splitter sizes its worker count to fit — see
+    /// [`split_emit_workers`]. `None` means no cap is enforced, and the
+    /// splitter uses as many workers as are fastest.
+    pub memory_budget_mb: Option<u64>,
     /// Preminted styles: run the ephemeral native style-dump build
     /// (every `stylesheet!` in the app graph emits its full variant
     /// space as CSS into `pkg/premint.css`) and compile the wasm with
@@ -808,6 +816,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                     &wrapper_pkg,
                     &manifest.lib_name,
                     opts.prune_dead_data_min,
+                    opts.memory_budget_mb,
                 )
             })
             .with_context(|| "wasm-split-cli post-build")?;
@@ -891,7 +900,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         );
     }
 
-    let stage_start = std::time::Instant::now();
+    let stage_start = timings.begin("stage+fingerprint");
     let (pkg_dir, bundle_dir, entry_js) = if let Some(out) = opts.bundle_out_dir.as_ref() {
         let default_index = default_index_html(&manifest.app.name, &manifest.lib_name);
         let staged = stage_bundle(
@@ -2024,14 +2033,23 @@ impl BuildTimings {
     /// starts and ends, so a status view can say what the build is doing
     /// now rather than only what it did.
     fn time<T>(&mut self, phase: &'static str, f: impl FnOnce() -> T) -> T {
+        let start = self.begin(phase);
+        let out = f();
+        self.record(phase, start.elapsed());
+        out
+    }
+
+    /// Report `phase` as started and return its start time, for a phase
+    /// too long to wrap in [`time`](Self::time); pair with
+    /// [`record`](Self::record). Without the start event, anything
+    /// watching the stream (the CLI's per-stage memory tracking) never
+    /// sees the phase open.
+    fn begin(&self, phase: &'static str) -> std::time::Instant {
         self.reporter.emit(dev_events::DevEvent::StageStarted {
             target: TARGET.into(),
             stage: phase.into(),
         });
-        let start = std::time::Instant::now();
-        let out = f();
-        self.record(phase, start.elapsed());
-        out
+        std::time::Instant::now()
     }
 
     /// Record a phase timed elsewhere.
@@ -3020,12 +3038,68 @@ fn neutralize_command_export_wrappers(
     Ok(())
 }
 
+const MB: usize = 1024 * 1024;
+
+/// Peak RSS of the in-process split, per byte of bindgened module, before
+/// any emit worker: the inputs, the splitter's own parse, and the
+/// transient parse of the rustc module that builds the call graph.
+/// Fitted on CrewForge (80 MB bindgened module, measured peaks 4.0 GB /
+/// 5.3 GB / 6.8 GB at 1 / 2 / 4 workers): `34 + 16·w` bytes per module
+/// byte. The fit comes from the steepest step (1 → 2 workers), so it
+/// over-predicts at 4 (7.9 GB projected vs 6.8 GB measured) — the safe
+/// direction.
+const SPLIT_BASE_BYTES_PER_MODULE_BYTE: u64 = 34;
+
+/// Peak RSS each concurrent emit worker adds, per byte of bindgened
+/// module: one full walrus parse, pruned down to the split module it is
+/// building. See [`SPLIT_BASE_BYTES_PER_MODULE_BYTE`] for the fit.
+const SPLIT_WORKER_BYTES_PER_MODULE_BYTE: u64 = 16;
+
+/// The most emit workers that still make the split faster. Measured on
+/// CrewForge on a 14-core machine: 20.5 s at 1 worker, 16.1 s at 3,
+/// 12.4 s at 4, 17.4 s at 6, 19.2 s at 8, 16.4 s at 14 — beyond 4 the
+/// parses compete for memory bandwidth and page faults (sys time 5 s at
+/// 4, 39 s at 14) and wall time goes back up while memory keeps rising.
+const MAX_SPLIT_EMIT_WORKERS: usize = 4;
+
+/// The RSS the in-process split is projected to peak at with `workers`
+/// emit workers on a `module_bytes` bindgened module.
+fn projected_split_peak_bytes(module_bytes: u64, workers: usize) -> u64 {
+    module_bytes.saturating_mul(
+        SPLIT_BASE_BYTES_PER_MODULE_BYTE + SPLIT_WORKER_BYTES_PER_MODULE_BYTE * workers as u64,
+    )
+}
+
+/// How many split modules wasm-split builds at once.
+///
+/// As many as fit `budget_mb` by [`projected_split_peak_bytes`], never more
+/// than the machine's cores or [`MAX_SPLIT_EMIT_WORKERS`], never fewer than
+/// one. The one-worker floor is deliberate: a budget too small for even
+/// that cannot be met by the splitter, and the memory cap reports it.
+///
+/// This is what keeps the split's memory tied to one module parse per
+/// worker instead of one per core. Unbounded, the splitter's peak on
+/// CrewForge went from 8.2 GB to 12.5 GB in a week as the app grew, and
+/// every raise of the CLI's cap went stale.
+pub fn split_emit_workers(module_bytes: u64, budget_mb: Option<u64>, cores: usize) -> usize {
+    let ceiling = cores.clamp(1, MAX_SPLIT_EMIT_WORKERS);
+    let Some(budget_mb) = budget_mb else {
+        return ceiling;
+    };
+    let budget = budget_mb.saturating_mul(MB as u64);
+    (1..=ceiling)
+        .rev()
+        .find(|w| projected_split_peak_bytes(module_bytes, *w) <= budget)
+        .unwrap_or(1)
+}
+
 fn run_wasm_split(
     reporter: &dev_events::Reporter,
     original_wasm: &Path,
     pkg_dir: &Path,
     lib_name: &str,
     prune_dead_data_min: Option<usize>,
+    memory_budget_mb: Option<u64>,
 ) -> Result<()> {
     let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
     if !bindgened_wasm.is_file() {
@@ -3050,9 +3124,22 @@ fn run_wasm_split(
     // Library API — calls into our vendored wasm-split-cli, so
     // patches we apply land automatically without users needing a
     // separate `cargo install`.
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let workers = split_emit_workers(bindgened.len() as u64, memory_budget_mb, cores);
+    reporter.log(
+        "build-web",
+        format!(
+            "wasm-split: {workers} emit worker(s) for a {} MB module (budget {}; \
+             projected peak ~{} MB)",
+            bindgened.len() / MB,
+            memory_budget_mb.map_or("uncapped".to_string(), |mb| format!("{mb} MB")),
+            projected_split_peak_bytes(bindgened.len() as u64, workers) / MB as u64,
+        ),
+    );
     let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
         .context("wasm-split: parse module")?
-        .with_data_pruning(prune_dead_data_min);
+        .with_data_pruning(prune_dead_data_min)
+        .with_emit_workers(Some(workers));
     let output = splitter.emit().context("wasm-split: emit chunks")?;
 
     // Replace the bindgened wasm with the split-extracted main.
@@ -3287,7 +3374,94 @@ mod regression_tests {
             runtime_server_url: None,
             bundle_out_dir: None,
             prune_dead_data_min: None,
+            memory_budget_mb: None,
             reporter: dev_events::Reporter::new(),
+        }
+    }
+
+    /// Regression: `stage+fingerprint` was recorded with a finish and no
+    /// start, so the CLI's per-stage memory tracking never saw it open —
+    /// and it is where brotli q11 runs. `begin` + `record` must report
+    /// both ends, like `time` does.
+    #[test]
+    fn regression_a_phase_timed_by_hand_reports_its_start() {
+        struct Collect(std::sync::Mutex<Vec<String>>);
+        impl dev_events::Sink for Collect {
+            fn emit(&self, envelope: &dev_events::Envelope) {
+                let line = match &envelope.event {
+                    dev_events::DevEvent::StageStarted { stage, .. } => format!("start {stage}"),
+                    dev_events::DevEvent::StageFinished { stage, .. } => format!("finish {stage}"),
+                    _ => return,
+                };
+                self.0.lock().unwrap().push(line);
+            }
+        }
+        let sink = std::sync::Arc::new(Collect(std::sync::Mutex::new(Vec::new())));
+        let reporter = dev_events::Reporter::new();
+        reporter.add_sink(sink.clone());
+        let mut timings = BuildTimings::new(&reporter);
+        let start = timings.begin("stage+fingerprint");
+        timings.record("stage+fingerprint", start.elapsed());
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            vec!["start stage+fingerprint".to_string(), "finish stage+fingerprint".to_string()],
+        );
+    }
+
+    const MODULE_MB: u64 = 80;
+    const CREWFORGE_MODULE: u64 = MODULE_MB * 1024 * 1024;
+
+    /// Regression: the splitter ran one full module parse per core, and
+    /// CrewForge's release build peaked at 12.5 GB — over a 12,288 MB cap
+    /// on an 8-core machine with 17 GB free. The caps it tripped are the
+    /// ones the app team actually set, in order; each must now fit.
+    #[test]
+    fn regression_split_workers_fit_every_cap_crewforge_tripped() {
+        for cap_mb in [4096u64, 8192, 12288, 15360] {
+            let w = split_emit_workers(CREWFORGE_MODULE, Some(cap_mb), 8);
+            let peak_mb = projected_split_peak_bytes(CREWFORGE_MODULE, w) / (1024 * 1024);
+            assert!(w >= 1);
+            if w > 1 {
+                assert!(peak_mb <= cap_mb, "{w} workers project {peak_mb} MB > cap {cap_mb} MB");
+            }
+        }
+        // The 12,288 MB cap that aborted on 2026-09-28 now runs 4 workers,
+        // projected (conservatively) at under 8 GB.
+        assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(12288), 8), 4);
+    }
+
+    /// Never more than the measured sweet spot, however many cores —
+    /// more workers were slower AND bigger.
+    #[test]
+    fn split_workers_stop_at_the_measured_ceiling() {
+        assert_eq!(split_emit_workers(CREWFORGE_MODULE, None, 64), MAX_SPLIT_EMIT_WORKERS);
+        assert_eq!(split_emit_workers(1024, Some(1 << 20), 64), MAX_SPLIT_EMIT_WORKERS);
+    }
+
+    #[test]
+    fn split_workers_never_exceed_the_cores() {
+        assert_eq!(split_emit_workers(1024, None, 2), 2);
+        assert_eq!(split_emit_workers(1024, None, 0), 1);
+    }
+
+    /// A budget that cannot hold even one worker still gets one: the
+    /// split cannot run on less, and the cap is what reports it.
+    #[test]
+    fn split_workers_floor_at_one() {
+        assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(512), 8), 1);
+    }
+
+    /// Fewer workers as the budget shrinks, one step per worker's worth.
+    #[test]
+    fn split_workers_track_the_budget() {
+        let per_worker_mb = MODULE_MB * SPLIT_WORKER_BYTES_PER_MODULE_BYTE;
+        let base_mb = MODULE_MB * SPLIT_BASE_BYTES_PER_MODULE_BYTE;
+        for w in 1..=MAX_SPLIT_EMIT_WORKERS as u64 {
+            let exact = base_mb + per_worker_mb * w;
+            assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(exact), 8), w as usize);
+            if w > 1 {
+                assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(exact - 1), 8), w as usize - 1);
+            }
         }
     }
 
@@ -3387,6 +3561,7 @@ mod regression_tests {
             |o: &mut BuildOptions| o.brotli = true,
             |o: &mut BuildOptions| o.bundle_out_dir = Some(PathBuf::from("/out")),
             |o: &mut BuildOptions| o.prune_dead_data_min = Some(64),
+            |o: &mut BuildOptions| o.memory_budget_mb = Some(8192),
         ] {
             let mut o = key_opts();
             f(&mut o);

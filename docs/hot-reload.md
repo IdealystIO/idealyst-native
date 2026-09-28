@@ -685,15 +685,18 @@ over a 223 MB module (320 MB linked), about 22 s on CrewForge.
 
 **Memory.** On CrewForge the CLI's peak RSS during base prep is about
 3.7 GB (one walrus parse of the module). The default memory cap is
-4096 MB, and sessions exceeded it. So a session that arms the tier raises
-its own cap to the smaller of 8192 MB and half the machine's RAM (never
-below 4096 MB), and says so once:
+4096 MB, and sessions exceeded it. So any session with a web target — the
+hot-patch tier, `--split`, or neither, since every rebuild parses the
+module once in-process — raises its own cap to half of the machine's
+memory (the cgroup limit, inside a container that has one), never below
+4096 MB, and says so once:
 
 ```text
-[idealyst] memory cap: 8192 MB RSS for the hot-patch tier (min(8192 MB, half of RAM), never below 4096 MB; IDEALYST_MEMORY_LIMIT_MB overrides)
+[idealyst] memory cap: 16384 MB RSS for the web build (half of this machine's memory, never below 4096 MB; IDEALYST_MEMORY_LIMIT_MB overrides)
 ```
 
 `IDEALYST_MEMORY_LIMIT_MB` still wins when set (`0` turns the cap off).
+If the cap trips, its message names the stage that was running.
 
 ### Workspace crates
 
@@ -1298,8 +1301,9 @@ terminal host's own `.idealyst/terminal.log`.
   browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
 - `IDEALYST_MEMORY_LIMIT_MB=<MB>` sets the CLI's memory cap outright
   (`0` disables it). Without it the cap is 4096 MB, raised automatically
-  to min(8192 MB, half of RAM) when the hot-patch tier is armed — a large
-  app's base prep needs more than the default.
+  to half of the machine's memory (never below 4096 MB) in any session
+  with a web target — a large app's base prep or split needs more than
+  the default.
 - `[hotpatch] …` lines from the web dev loop name each step of a patch
   build and, on failure, what it could not resolve; the rebuild it falls
   back to follows.

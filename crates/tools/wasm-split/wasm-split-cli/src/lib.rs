@@ -214,6 +214,11 @@ pub struct Splitter<'a> {
     /// starts misclassifying small vtables. Env-var
     /// `IDEALYST_WASM_SPLIT_PRUNE_DATA_MIN` still overrides if set.
     prune_dead_data_min: Option<usize>,
+
+    /// How many split modules [`Splitter::emit`] builds at once. `None`
+    /// uses rayon's global pool (one worker per core). See
+    /// [`Splitter::with_emit_workers`] for why a caller bounds it.
+    emit_workers: Option<usize>,
 }
 
 /// The results of splitting the wasm module with some additional metadata for later use.
@@ -270,6 +275,7 @@ impl<'a> Splitter<'a> {
             parent_graph: Default::default(),
             shared_symbols: Default::default(),
             prune_dead_data_min: None,
+            emit_workers: None,
         };
 
         module.build_call_graph()?;
@@ -290,6 +296,28 @@ impl<'a> Splitter<'a> {
         self
     }
 
+    /// Bound how many split modules [`emit`](Self::emit) builds at once.
+    ///
+    /// Every split module and chunk starts from a FULL walrus parse of the
+    /// bindgened module (`parse_module_with_ids`) and prunes down from
+    /// there, so each concurrent emit holds one whole module's IR. On the
+    /// default global pool that is one parse per core, and peak RSS grows
+    /// with the core count and the module size instead of with the
+    /// output. Measured on CrewForge (80 MB bindgened module, 17 split
+    /// points, 14-core machine): peak RSS 4.0 GB with 1 worker, 6.8 GB
+    /// with 4, 12.3 GB with 14. Wall time does not follow: 20.5 s with 1,
+    /// 12.4 s with 4, 16.4 s with 14 — past a few workers the parses fight
+    /// over memory bandwidth and page faults (sys time 1 s → 39 s).
+    ///
+    /// `None` keeps the global pool. `Some(n)` runs the emits — and the
+    /// walrus-internal parallelism nested inside them — on a dedicated
+    /// pool of `n` threads (`0` is treated as `1`). Output does not
+    /// depend on `n`.
+    pub fn with_emit_workers(mut self, workers: Option<usize>) -> Self {
+        self.emit_workers = workers;
+        self
+    }
+
     /// Split the module into multiple modules at the boundaries of split points.
     ///
     /// Note that the binaries might still be "large" at the end of this process. In practice, you
@@ -301,15 +329,18 @@ impl<'a> Splitter<'a> {
     pub fn emit(self) -> Result<OutputModules> {
         tracing::info!("Emitting split modules.");
 
-        let chunks = (0..self.chunks.len())
-            .into_par_iter()
-            .map(|idx| self.emit_split_chunk(idx))
-            .collect::<Result<Vec<SplitModule>>>()?;
+        let (chunks, modules) = in_emit_pool(self.emit_workers, || {
+            let chunks = (0..self.chunks.len())
+                .into_par_iter()
+                .map(|idx| self.emit_split_chunk(idx))
+                .collect::<Result<Vec<SplitModule>>>()?;
 
-        let modules = (0..self.split_points.len())
-            .into_par_iter()
-            .map(|idx| self.emit_split_module(idx))
-            .collect::<Result<Vec<SplitModule>>>()?;
+            let modules = (0..self.split_points.len())
+                .into_par_iter()
+                .map(|idx| self.emit_split_module(idx))
+                .collect::<Result<Vec<SplitModule>>>()?;
+            Ok::<_, anyhow::Error>((chunks, modules))
+        })??;
 
         // Emit the main module, consuming self since we're going to
         let main = self.emit_main_module()?;
@@ -2163,6 +2194,24 @@ fn next_synthetic_export_name(next_idx: &mut usize, used: &mut HashSet<String>) 
     }
 }
 
+/// Run `f` on a dedicated rayon pool of `workers` threads, or on the
+/// global pool when `workers` is `None`. Parallel iterators started inside
+/// `f` — including walrus's own, nested in each parse — run on that pool,
+/// which is what bounds how many module parses are alive at once.
+fn in_emit_pool<T: Send>(workers: Option<usize>, f: impl FnOnce() -> T + Send) -> Result<T> {
+    match workers {
+        None => Ok(f()),
+        Some(n) => {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n.max(1))
+                .thread_name(|i| format!("wasm-split-emit-{i}"))
+                .build()
+                .context("wasm-split: build the emit thread pool")?;
+            Ok(pool.install(f))
+        }
+    }
+}
+
 /// Parse a module and return the mapping of index to FunctionID.
 /// We'll use this mapping to remap ModuleIDs
 fn parse_module_with_ids(
@@ -2764,6 +2813,44 @@ fn parse_bytes_to_data_segment(bytes: &[u8]) -> Result<RawDataSection<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `emit` ran every split module on rayon's global pool,
+    /// one full walrus parse of the bindgened module per core at once —
+    /// 12.3 GB peak on CrewForge's 80 MB module on 14 cores, which tripped
+    /// the CLI's memory cap after cargo had finished. The bound has to
+    /// hold for the parallel iterators `emit` starts, not just the pool's
+    /// nominal size, so this counts how many run at once.
+    #[test]
+    fn regression_emit_pool_bounds_concurrent_emits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for workers in [1usize, 2] {
+            let live = AtomicUsize::new(0);
+            let most = AtomicUsize::new(0);
+            let threads = in_emit_pool(Some(workers), || {
+                (0..16).into_par_iter().for_each(|_| {
+                    let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    live.fetch_sub(1, Ordering::SeqCst);
+                });
+                rayon::current_num_threads()
+            })
+            .unwrap();
+            assert_eq!(threads, workers);
+            assert!(
+                most.load(Ordering::SeqCst) <= workers,
+                "{} emits ran at once on a {workers}-worker pool",
+                most.load(Ordering::SeqCst),
+            );
+        }
+    }
+
+    /// `Some(0)` must not build a zero-thread pool (rayon would size it
+    /// to the core count, which is the unbounded behaviour).
+    #[test]
+    fn emit_pool_treats_zero_workers_as_one() {
+        assert_eq!(in_emit_pool(Some(0), rayon::current_num_threads).unwrap(), 1);
+    }
 
     /// Build a module with two active data segments (mirroring rustc's
     /// `.rodata` at segment 0 and `.data` at segment 1) plus one passive

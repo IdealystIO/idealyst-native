@@ -356,6 +356,29 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A release web build's memory no longer grows with the core count**
+  (`wasm-split-cli`, `build-web`, `idealyst-cli`). wasm-split built every
+  split module at once, one per core, and each one starts from a full
+  parse of the module. On CrewForge (17 split points, an 80 MB module)
+  that peaked at 12.3 GB on 14 cores, and the CLI's cap aborted the build
+  after cargo had finished. The splitter now builds at most 4 at a time,
+  and fewer when the cap is lower: 5.5 GB on the same module, and 3.5 GB
+  with one worker. More than 4 workers was slower as well as larger.
+  `Splitter::with_emit_workers` and `BuildOptions::memory_budget_mb` are
+  new; `build_web::split_emit_workers` picks the count.
+
+- **The memory cap fits the machine for web builds, and names the stage
+  it stopped** (`idealyst-cli`). `build --web`, `run`, `docs` and `dev`
+  with a web target raise the cap to half of the machine's memory,
+  never below 4096 MB. "The machine's memory" is the cgroup limit when
+  one is lower than physical RAM, as it usually is in a container. The
+  hot-patch raise's fixed 8192 MB ceiling is gone. The abort message now
+  says which stage was running (`memory cap exceeded during
+  web/wasm-split: …`). `idealyst build --web` ends with each stage's
+  peak RSS (`[build web] peak RSS by stage: wasm-split 5.1 GB · …`), and
+  a child process's peak when that stage's subprocess set one.
+  `IDEALYST_MEMORY_LIMIT_MB` still wins when set.
+
 - **A freed effect never runs again in the same flush** (`runtime-world`).
   A structural driver freed during a flush — an `if` / `match` region
   re-keyed by a control inside it — let its subtree's already-queued

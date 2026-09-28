@@ -654,7 +654,6 @@ pub fn run(args: Args) -> Result<()> {
             .with_log_file(server_log.display().to_string())
     });
     let session_hot_tier = hot_tier(&args, &active_targets);
-    let hot_patch_armed = matches!(session_hot_tier, dev_events::HotTier::Armed);
     session.reporter.emit(dev_events::DevEvent::SessionStarted {
         app: manifest.app.name.clone(),
         targets: active_targets.iter().map(|t| t.as_str().to_string()).collect(),
@@ -663,23 +662,14 @@ pub fn run(args: Args) -> Result<()> {
         log_file: Some(log_path.display().to_string()),
         server: session_server,
     });
-    // The hot-patch tier's base prep parses the whole debug module in this
-    // process (~3.7 GB peak on CrewForge), past the 4096 MB default cap.
-    // Raised here, once the tier is known to be armed, rather than at
-    // startup where the tier is not known yet. See `memory_limit`.
-    if hot_patch_armed {
-        if let Some(mb) = crate::memory_limit::raise_for_hot_patch() {
-            session.reporter.log(
-                "idealyst",
-                format!(
-                    "memory cap: {mb} MB RSS for the hot-patch tier (min({} MB, half of RAM), \
-                     never below {} MB; {} overrides)",
-                    crate::memory_limit::HOT_PATCH_CEILING_MB,
-                    crate::memory_limit::DEFAULT_LIMIT_MB,
-                    crate::memory_limit::ENV_OVERRIDE,
-                ),
-            );
-        }
+    // A web target runs the post-link passes in this process — the
+    // command_export neutralize on every rebuild, wasm-split under
+    // `--split`, and the hot-patch tier's base prep (~3.7 GB on CrewForge)
+    // — all at or past the 4096 MB default cap. Raised here, after the
+    // session line, so the raise is reported inside the session. See
+    // `memory_limit`.
+    if active_targets.contains(&Target::Web) {
+        crate::memory_limit::prepare_web_pipeline(&session.reporter);
     }
     // After the session line: a late subscriber's snapshot starts at it.
     crate::dev_log::serve_events(&dir);
@@ -1725,6 +1715,7 @@ fn launch_web(
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
+                    memory_budget_mb: crate::memory_limit::current_limit_mb(),
                     source: source.clone(),
                     // One feature flipped on for the wasm build:
                     // `runtime-server` (bare, wrapper-local) switches
@@ -1842,6 +1833,7 @@ fn launch_web(
                 dir,
                 signal.clone(),
                 dev_reload::BuildOptions {
+                    memory_budget_mb: crate::memory_limit::current_limit_mb(),
                     source: source.clone(),
                     // Unlike the native wrappers, the web wrapper declares
                     // no `dev` feature of its own — it takes `runtime-core`
@@ -2147,6 +2139,7 @@ fn launch_ssr(
         let _ = build_web::build(
             dir,
             build_web::BuildOptions {
+                memory_budget_mb: crate::memory_limit::current_limit_mb(),
             // Dev/docs/run builds keep the full vocabulary: `--primitives`
             // is a release-bundle lever, and dropping one mid-session would
             // panic at mount rather than degrade.
@@ -2443,6 +2436,7 @@ fn full_stack_bundle_options(
         web_dev_features_with(args.no_robot, hot_patch_armed(args))
     };
     Ok(dev_reload::BuildOptions {
+        memory_budget_mb: crate::memory_limit::current_limit_mb(),
         source: source.clone(),
         // Robot-on-web, same as the static path — see
         // `web_dev_features`.

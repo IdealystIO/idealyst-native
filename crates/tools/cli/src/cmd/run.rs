@@ -553,9 +553,12 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
     if !args.no_build {
         let source = crate::framework_source::resolve(&args.dir)?;
         eprintln!("[idealyst run server] building web bundle → dist/web");
+        let reporter = dev_events::Reporter::default();
+        let memory_budget_mb = crate::memory_limit::prepare_web_pipeline(&reporter);
         build_web::build(
             &args.dir,
             build_web::BuildOptions {
+                memory_budget_mb,
             // Dev/docs/run builds keep the full vocabulary: `--primitives`
             // is a release-bundle lever, and dropping one mid-session would
             // panic at mount rather than degrade.
@@ -583,7 +586,7 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
                 debuginfo: build_web::DebugInfo::default(),
                 dev_opt: build_web::DevOpt::default(),
                 // Plain lines on stderr, as this command always printed.
-                reporter: dev_events::Reporter::default(),
+                reporter,
             },
         )
         .context("web bundle build for `run server` failed")?;
