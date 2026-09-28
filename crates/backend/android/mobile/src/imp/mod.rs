@@ -1713,31 +1713,13 @@ impl AndroidBackend {
 // impls below are the place to wire them.
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    /// Per-view `on_layout` callbacks, keyed by the JObject pointer (the
-    /// same `node_key` the animation state + `view_to_layout` use). Fired
-    /// from `run_layout_pass` after each view's frame is applied — the
-    /// Android analog of the web `ResizeObserver`, which is how a
-    /// `.container()` view's inline-size signal gets fed. The UI thread is
-    /// single-threaded, so a thread-local registry is safe.
-    static LAYOUT_SUBS: std::cell::RefCell<Vec<(usize, Rc<dyn Fn(f32, f32)>)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 /// Fire every `on_layout` callback registered for `view_key` with the
-/// view's resolved inline-size (`w`) and block-size (`h`) in dp. The
-/// callbacks change-guard, so re-firing at an unchanged size is a no-op.
+/// view's resolved inline-size (`w`) and block-size (`h`) in dp — the
+/// Android analog of the web `ResizeObserver`. The registry lives in the
+/// host-testable `crate::layout_subs`, which also schedules the new-core
+/// flush after the callbacks run (FRAMEWORK-NOTES #103).
 pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
-    let cbs: Vec<Rc<dyn Fn(f32, f32)>> = LAYOUT_SUBS.with(|m| {
-        m.borrow()
-            .iter()
-            .filter(|(k, _)| *k == view_key)
-            .map(|(_, c)| c.clone())
-            .collect()
-    });
-    for c in cbs {
-        c(w, h);
-    }
+    crate::layout_subs::fire(view_key, w, h);
 }
 
 pub(crate) struct AndroidViewOps;
@@ -1752,15 +1734,7 @@ impl runtime_shared::ViewOps for AndroidViewOps {
         };
         // Same key derivation as `node_key` / `view_to_layout`.
         let key = view.as_obj().as_raw() as usize;
-        let cb: Rc<dyn Fn(f32, f32)> = Rc::from(callback);
-        let cb_id = Rc::as_ptr(&cb) as *const () as usize;
-        LAYOUT_SUBS.with(|m| m.borrow_mut().push((key, cb)));
-        runtime_shared::LayoutSubscription::new(move || {
-            LAYOUT_SUBS.with(|m| {
-                m.borrow_mut()
-                    .retain(|(k, c)| !(*k == key && Rc::as_ptr(c) as *const () as usize == cb_id))
-            });
-        })
+        crate::layout_subs::subscribe(key, callback)
     }
 
     /// Node's rect in its parent's coordinate system, in dp. Mirrors

@@ -82,6 +82,12 @@ mod phase_timer;
 /// types, so there's no reason to make them target-gated.
 mod sticky_compute;
 
+/// Per-view `on_layout` subscriber registry (fire → post-dispatch hook,
+/// FRAMEWORK-NOTES #103). Un-gated so its regression test runs on the
+/// host; `imp`'s `subscribe_layout` / `run_layout_pass` consume it.
+#[allow(dead_code)]
+mod layout_subs;
+
 /// Pure layout-scheduling policy (when an `insert` must kick a layout pass),
 /// kept un-gated like `sticky_compute` so its regression coverage runs on the
 /// host. The JNI-driven insert path that consumes it lives in `imp`.

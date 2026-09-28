@@ -17,7 +17,10 @@
 //! - one-shot `after_animation_frame` callbacks and `raf_loop`
 //!   iterations (animation ticks that stage writes),
 //! - futures spawned through [`crate::install_async_executor`]
-//!   (resource/server-call completions that set signals).
+//!   (resource/server-call completions that set signals),
+//! - `ResizeObserver` deliveries behind `ViewHandle::on_layout`
+//!   (`subscribe_layout` in `lib.rs` — a measured height written into a
+//!   signal; FRAMEWORK-NOTES #103).
 //!
 //! Without this hook, a write staged from any of those would sit
 //! uncommitted until some unrelated DOM event happened to trigger a

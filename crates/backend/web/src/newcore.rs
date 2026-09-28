@@ -2147,6 +2147,135 @@ mod tests {
         stop();
     }
 
+    /// Regression (FRAMEWORK-NOTES #103): a signal written from a
+    /// `ViewHandle::on_layout` callback commits on its own. The web
+    /// `subscribe_layout` ResizeObserver closure called the author fn
+    /// without scheduling a flush — every other author-callback path
+    /// (DOM events via the `flushing*` wrappers, timers/rAF via the
+    /// dispatch hook) does — so the measured size sat STAGED until some
+    /// unrelated event happened to flush. Fails pre-fix: after the
+    /// resize the text still reads `h=0` because nothing else flushes.
+    #[wasm_bindgen_test]
+    async fn regression_on_layout_write_commits_without_other_event() {
+        let mount = setup_mount();
+        let sub_slot: Rc<RefCell<Option<runtime_shared::LayoutSubscription>>> =
+            Rc::new(RefCell::new(None));
+        let el_slot: Rc<RefCell<Option<web_sys::HtmlElement>>> = Rc::new(RefCell::new(None));
+        let (sub_for_build, el_for_build) = (sub_slot.clone(), el_slot.clone());
+        start(move || {
+            let height = signal(0i32);
+            let (sub_for_build, el_for_build) = (sub_for_build.clone(), el_for_build.clone());
+            view()
+                .child(
+                    view()
+                        .on_handle(move |h| {
+                            *el_for_build.borrow_mut() = h
+                                .as_any()
+                                .downcast_ref::<web_sys::Node>()
+                                .and_then(|n| n.clone().dyn_into::<web_sys::HtmlElement>().ok());
+                            *sub_for_build.borrow_mut() =
+                                Some(h.on_layout(move |_w, hh| height.set(hh.round() as i32)));
+                        })
+                        .build(),
+                )
+                .child(text().content(move || format!("h={}", height.get())))
+                .build()
+        });
+        let body_text = || mount.text_content().unwrap();
+        microtask().await;
+        // The observer's initial delivery (0-height box) lands a frame
+        // later; let it settle so the resize below is the one under test.
+        sleep_ms(50).await;
+        assert!(body_text().contains("h=0"), "boot mounted the tree: {}", body_text());
+
+        let el = el_slot.borrow().clone().expect("view handle filled at mount");
+        el.style().set_property("height", "37px").unwrap();
+        // ResizeObserver delivers in the next rendering step; no DOM
+        // event, timer body or other flush source runs in between.
+        sleep_ms(100).await;
+        assert!(
+            body_text().contains("h=37"),
+            "on_layout write committed without an unrelated event: {}",
+            body_text()
+        );
+        drop(sub_slot.borrow_mut().take());
+        stop();
+    }
+
+    /// Regression (FRAMEWORK-NOTES #61): a right-click on an overlay's
+    /// `Dismiss` backdrop dismisses it and swallows the native context
+    /// menu. The backdrop used to be only a `pressable`, whose DOM
+    /// `click` is primary-only — the secondary `pointerdown` was stopped
+    /// by the pressable's ancestor swallow and nothing called
+    /// `on_dismiss`, so a popover/menu stayed open under a right-click.
+    /// Drives the real stack end to end: `overlay()` lowering → portal →
+    /// the element the browser hit-tests at a point on the backdrop.
+    /// Fails pre-fix on the `dismissed` assertion.
+    #[wasm_bindgen_test]
+    async fn regression_right_click_on_dismiss_backdrop_dismisses() {
+        use runtime_shared::{Length, Position, StyleRules};
+        use runtime_vocabulary::overlay;
+
+        let _mount = setup_mount();
+        let dismissed: Rc<Cell<u32>> = Rc::new(Cell::new(0));
+        let d = dismissed.clone();
+        start(move || {
+            let d = d.clone();
+            let fill = StyleRules {
+                position: Some(Position::Absolute),
+                top: Some(Length::Px(0.0).into()),
+                right: Some(Length::Px(0.0).into()),
+                bottom: Some(Length::Px(0.0).into()),
+                left: Some(Length::Px(0.0).into()),
+                ..Default::default()
+            };
+            view()
+                .child(
+                    overlay()
+                        .placement(primitives::portal::ViewportPlacement::FullScreen)
+                        .backdrop(primitives::overlay::BackdropMode::Dismiss)
+                        .backdrop_style(fill)
+                        .trap_focus(false)
+                        .on_dismiss(move || d.set(d.get() + 1))
+                        .build(),
+                )
+                .build()
+        });
+        microtask().await;
+        sleep_ms(20).await;
+
+        // What the browser would deliver a real press to: the topmost
+        // element at a point on the (full-screen) backdrop.
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let hit = doc
+            .element_from_point(5.0, 5.0)
+            .expect("the full-screen backdrop is hit-testable");
+
+        // Right button: pointerdown(button=2) then contextmenu.
+        let init = web_sys::PointerEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_button(2);
+        init.set_pointer_type("mouse");
+        let down = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
+        hit.dispatch_event(&down).unwrap();
+        let minit = web_sys::MouseEventInit::new();
+        minit.set_bubbles(true);
+        minit.set_cancelable(true);
+        minit.set_button(2);
+        let ctx = web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &minit).unwrap();
+        hit.dispatch_event(&ctx).unwrap();
+
+        assert_eq!(dismissed.get(), 1, "a right-click on a Dismiss backdrop dismisses (once)");
+        assert!(ctx.default_prevented(), "the backdrop swallows the native context menu");
+
+        // Primary click still dismisses through the pressable's click.
+        let hit: web_sys::HtmlElement = hit.unchecked_into();
+        hit.click();
+        assert_eq!(dismissed.get(), 2, "a primary click on the backdrop still dismisses");
+        stop();
+    }
+
     /// Host's seven ops forward to the real DOM machinery: insert /
     /// insert_at (move semantics) / remove_child / clear_children /
     /// create_anchor, and web CSR reports splice support.

@@ -106,10 +106,13 @@ that code returns. Two mechanisms, present in every backend's
    `crates/backend/web/src/newcore.rs`).
 2. **Post-dispatch hook.** Author code also runs from non-event
    surfaces: `after_ms` timers, `after_animation_frame` one-shots,
-   `raf_loop` iterations, and executor-spawned future polls. The
-   scheduler and the async executor fire a thread-local
-   `dispatch_hook` after each such callback, and the boot entry
-   installs `schedule_flush` into that slot. Every backend's
+   `raf_loop` iterations, executor-spawned future polls, and
+   `ViewHandle::on_layout` deliveries (web's `ResizeObserver`, the
+   native frame-apply pass). The scheduler, the async executor and the
+   layout-subscriber registry fire a thread-local `dispatch_hook` after
+   each such callback, and the boot entry installs `schedule_flush`
+   into that slot. A signal set from `on_layout` therefore commits on
+   its own — it does not wait for the next unrelated event. Every backend's
    `newcore.rs` carries this pair — `web`, `macos`, `ios`, `android`,
    `terminal`, `cpu`, `linux`, `windows`.
 

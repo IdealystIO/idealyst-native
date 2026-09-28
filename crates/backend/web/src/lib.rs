@@ -3707,6 +3707,14 @@ impl runtime_shared::ViewOps for WebViewOps {
                 };
                 let rect = first.content_rect();
                 callback(rect.width() as f32, rect.height() as f32);
+                // A ResizeObserver delivery is an author-code entry point
+                // like a timer or a DOM event: `on_layout` bodies write
+                // signals (`natural_height.set(h)`), which the new core
+                // only STAGES. Without this the write sat uncommitted
+                // until some unrelated event flushed (FRAMEWORK-NOTES
+                // #103). Same post-dispatch hook the scheduler fires
+                // after `after_ms` / rAF bodies — a no-op before boot.
+                crate::dispatch_hook::fire_dispatch_hook();
             },
         )
             as Box<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>);

@@ -126,6 +126,12 @@ pub mod pointer_events_policy;
 /// backends compiles it on the host for its own unit tests.
 pub mod dispatch_hook;
 
+/// Per-view `on_layout` subscriber registry shared by the UIKit and
+/// AppKit backends (the Apple `ResizeObserver` analog). [`layout_subs::fire`]
+/// runs the callbacks then fires [`dispatch_hook`] so their staged
+/// writes commit. NOT OS-gated: pure `std` state, host-testable.
+pub mod layout_subs;
+
 /// Pre-commit runloop hook: run deferred work at the end of the current
 /// runloop turn but before CoreAnimation commits, so writes that must
 /// be visible in the next paint aren't a frame late. The iOS backend

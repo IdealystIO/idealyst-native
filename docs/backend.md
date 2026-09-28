@@ -332,9 +332,13 @@ pieces:
    key handler.
 2. **A post-dispatch hook** for author code that runs from non-event
    surfaces — `after_ms` timers, `after_animation_frame` one-shots,
-   `raf_loop` iterations, executor future polls. The scheduler and async
-   executor fire `dispatch_hook` after each; the boot entry installs
-   `schedule_flush` into it.
+   `raf_loop` iterations, executor future polls, and `on_layout`
+   deliveries from `ViewOps::subscribe_layout`. The scheduler, async
+   executor and layout-subscriber registry fire `dispatch_hook` after
+   each; the boot entry installs `schedule_flush` into it. A backend
+   that implements `subscribe_layout` owes the same fire after it runs
+   the callbacks (web: the `ResizeObserver` closure; Apple:
+   `backend_apple_core::layout_subs`; Android: `layout_subs`).
 
 Web schedules one deduped microtask; the native backends mirror the
 design (`crates/backend/{macos,ios/mobile,android/mobile,terminal,cpu,linux,windows}/src/newcore.rs`
