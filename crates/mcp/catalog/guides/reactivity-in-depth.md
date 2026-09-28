@@ -213,8 +213,11 @@ effect!({
 
 - Inside an effect: fires **before the next re-run** and **on disposal** —
   release timers/listeners/in-flight requests acquired last pass.
-- Inside a scope (no active effect): fires once when the scope drops.
-- Outside any reactive context: dropped immediately (a top-level no-op).
+- Anywhere else it **panics** ("on_cleanup called outside an effect …"),
+  including a `#[component]` body, which is not an effect body. For teardown
+  when a component or scope unmounts, use `on_scope_drop(f)`: it fires once
+  when the owning scope drops (inside an effect it behaves like `on_cleanup`;
+  outside any world it is inert).
 
 ## Out-of-tree reactivity — `watch` / `Subscription`
 

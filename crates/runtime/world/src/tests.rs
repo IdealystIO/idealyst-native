@@ -331,6 +331,18 @@ fn on_cleanup_runs_before_rerun_and_on_drop() {
     assert_eq!(cleaned.get(), 2);
 }
 
+/// The panic that a component-body `on_cleanup` hits must name the fix:
+/// authors land here from a `#[component]` body, and the legal hook for
+/// that position is `on_scope_drop`.
+#[test]
+#[should_panic(expected = "use `on_scope_drop(f)` instead")]
+fn on_cleanup_outside_an_effect_panic_points_at_on_scope_drop() {
+    let world = World::new();
+    world.enter(|| {
+        let ((), _owned) = collect_owned(|| on_cleanup(|| {}));
+    });
+}
+
 /// Regression: `on_cleanup` outside an effect is a PANIC, and the shapes
 /// that hit it are the everyday ones — a `#[component]` body, a registry
 /// mount handler, the initial `realize`. idea-ui's measured `Collapsible`
@@ -2672,4 +2684,185 @@ fn subscriber_count_of_a_stale_handle_is_zero_not_a_panic() {
     drop(owned);
     assert!(!sig.is_alive());
     assert_eq!(sig.subscriber_count(), 0);
+}
+
+// ============================================================================
+// Wave-43: a freed effect's closure must die with its slot, not with the
+// flush's dirty list.
+// ============================================================================
+
+/// Drop probe: counts its own drops, so a test can see exactly WHEN a
+/// closure that captured it was released.
+struct DropProbe(Rc<Cell<usize>>);
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        bump(&self.0);
+    }
+}
+
+/// The crash shape behind CrewForge's "pick a position, the app dies"
+/// (`idealyst[stale-signal-handle]` from a menu row's style effect):
+///
+/// outer driver (keyed on `key`) → scope { `filtered`, `open`,
+///   inner driver (keyed on `open`) → scope { row effect reads `filtered` } }
+///
+/// One flush dirties all three effects: the outer driver runs first and
+/// drops its previous scope, which frees `filtered` and the inner driver.
+/// The inner driver was ALSO queued in this flush, so the flush's held
+/// `Rc<EffectData>` used to keep its closure — and through it the row's
+/// `Owned` — alive. The row's slot therefore still looked live, it ran,
+/// and it read the freed `filtered`: stale-handle panic. The fix drops a
+/// freed effect's body inside `free_effect`, so the row's `Owned` is
+/// released (and the row freed) in the outer driver's own `drop(old)`.
+#[test]
+fn regression_freed_effect_queued_in_same_flush_never_runs() {
+    let world = World::new();
+    let key = world.enter(|| signal(0u32));
+    // Handles of the CURRENT inner scope's signals, so the test can dirty
+    // them from outside.
+    let current: Rc<Cell<Option<(Signal<bool>, Signal<u32>)>>> = Rc::new(Cell::new(None));
+    let row_runs = counter();
+    let outer_slot: Rc<RefCell<Option<Owned>>> = Rc::new(RefCell::new(None));
+    world.enter(|| {
+        let current = Rc::clone(&current);
+        let row_runs = Rc::clone(&row_runs);
+        let outer_slot = Rc::clone(&outer_slot);
+        effect(move || {
+            let _ = key.get();
+            let row_runs = Rc::clone(&row_runs);
+            let ((), owned) = collect_owned(|| {
+                let open = signal(true);
+                let filtered = signal(0u32);
+                current.set(Some((open, filtered)));
+                let inner_slot: Rc<RefCell<Option<Owned>>> = Rc::new(RefCell::new(None));
+                effect(move || {
+                    let _ = open.get();
+                    let row_runs = Rc::clone(&row_runs);
+                    let ((), rows) = collect_owned(|| {
+                        effect(move || {
+                            let _ = filtered.get(); // stale → panic pre-fix
+                            bump(&row_runs);
+                        });
+                    });
+                    let old = inner_slot.borrow_mut().replace(rows);
+                    drop(old);
+                });
+            });
+            // Take the previous scope out before dropping it, so its
+            // teardown runs with no borrow of `outer_slot` held.
+            let old = outer_slot.borrow_mut().replace(owned);
+            drop(old);
+        });
+    });
+    assert_eq!(row_runs.get(), 1);
+
+    // Reactions run in dirty order, which follows staging order. The key
+    // goes first (its driver runs first and frees the old scope); the row's
+    // input goes BEFORE the inner driver's, so the row's turn comes while
+    // the flush still holds the freed inner driver's `Rc` further down the
+    // list. (With the inner driver first, the flush would drop that `Rc` at
+    // the end of the driver's skipped turn and the row would be freed in
+    // time by accident — the window is exactly "a nested effect queued
+    // AHEAD of its freed owner".)
+    let (open, filtered) = current.get().unwrap();
+    key.set(1);
+    filtered.set(7);
+    open.set(false);
+    world.flush();
+
+    // Exactly one row run: the fresh row the rebuilt scope created. The old
+    // row, queued by `filtered.set`, was freed before its turn.
+    assert_eq!(row_runs.get(), 2, "the freed row never ran");
+    assert!(!filtered.is_alive() && !open.is_alive());
+}
+
+/// The mechanism behind the regression above, asserted directly: an effect
+/// freed while it sits queued in the running flush releases its closure
+/// (and everything the closure captured) AT FREE TIME — not when the flush
+/// finally lets go of its dirty-list `Rc`.
+#[test]
+fn regression_freed_effect_closure_drops_at_free_time_not_end_of_flush() {
+    let world = World::new();
+    let trigger = world.enter(|| signal(0u32));
+    let drops = counter();
+    let seen_at_free: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let child_slot: Rc<RefCell<Option<Owned>>> = Rc::new(RefCell::new(None));
+    // The victim: reads `trigger`, captures a probe.
+    let ((), owned) = world.enter(|| {
+        collect_owned(|| {
+            let probe = DropProbe(Rc::clone(&drops));
+            effect(move || {
+                let _ = trigger.get();
+                let _ = &probe;
+            });
+        })
+    });
+    *child_slot.borrow_mut() = Some(owned);
+    // The killer: frees the victim's scope when `kill` flips. It reads its
+    // own signal so the test controls run order by staging order.
+    let kill = world.enter(|| signal(false));
+    world.enter(|| {
+        let child_slot = Rc::clone(&child_slot);
+        let drops = Rc::clone(&drops);
+        let seen_at_free = Rc::clone(&seen_at_free);
+        effect(move || {
+            if kill.get() {
+                let old = child_slot.borrow_mut().take();
+                drop(old);
+                seen_at_free.set(Some(drops.get()));
+            }
+        });
+    });
+    // Stage `kill` first so the killer runs before the (also dirty) victim.
+    kill.set(true);
+    trigger.set(1);
+    world.flush();
+    assert_eq!(
+        seen_at_free.get(),
+        Some(1),
+        "the freed victim's closure was dropped inside free_effect, mid-flush"
+    );
+    assert_eq!(drops.get(), 1, "and exactly once");
+}
+
+/// Reentrancy guard for the fix: an effect whose own run drops the scope
+/// that owns it cannot have its body dropped from inside `free_effect` (the
+/// body is executing — its `RefCell` is borrowed). The body must instead be
+/// released as soon as that run returns, and the effect never runs again.
+#[test]
+fn effect_that_frees_itself_mid_run_drops_its_body_after_the_run() {
+    let world = World::new();
+    let s = world.enter(|| signal(0u32));
+    let drops = counter();
+    let runs = counter();
+    let self_slot: Rc<RefCell<Option<Owned>>> = Rc::new(RefCell::new(None));
+    let ((), owned) = world.enter(|| {
+        let self_slot = Rc::clone(&self_slot);
+        let runs = Rc::clone(&runs);
+        let probe = DropProbe(Rc::clone(&drops));
+        collect_owned(move || {
+            effect(move || {
+                let _ = &probe;
+                bump(&runs);
+                if s.get() == 1 {
+                    let me = self_slot.borrow_mut().take();
+                    drop(me); // frees THIS effect while it runs
+                }
+            });
+        })
+    });
+    *self_slot.borrow_mut() = Some(owned);
+    assert_eq!(runs.get(), 1);
+
+    s.set(1);
+    world.flush();
+    assert_eq!(runs.get(), 2);
+    assert_eq!(drops.get(), 1, "the body was released once its run returned");
+
+    s.set(2);
+    world.flush();
+    assert_eq!(runs.get(), 2, "a freed effect never runs again");
+    // The body captured `self_slot`; dropping the body released that clone.
+    assert_eq!(Rc::strong_count(&self_slot), 1, "no body-held cycle survives");
 }

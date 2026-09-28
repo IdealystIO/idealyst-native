@@ -782,7 +782,16 @@ struct EffectData {
     slot: u32,
     gen: u32,
     class: EffectClass,
-    f: RefCell<Box<dyn FnMut()>>,
+    /// The body. `None` once the effect is freed: `free_effect` takes it so
+    /// the closure — and everything it captures — dies WITH THE SLOT, not
+    /// whenever the last `Rc<EffectData>` lets go. A flush holds its own
+    /// `Rc` for every queued effect until that effect's turn, so without
+    /// the take a freed structural driver's closure kept its subtree's
+    /// `Owned` alive for the rest of the flush; the subtree's effects still
+    /// looked live to `effect_is_live`, ran, and read signals their parent
+    /// scope had already freed (Wave-43 stale-handle crash —
+    /// `regression_freed_effect_queued_in_same_flush_never_runs`).
+    f: RefCell<Option<Box<dyn FnMut()>>>,
     /// Dedup flag: already collected into the current flush round?
     queued: Cell<bool>,
     /// Reverse edges: every `(signal_slot, signal_gen)` (of this effect's
@@ -937,7 +946,7 @@ fn create_effect(arena: &Rc<WorldArena>, class: EffectClass, f: Box<dyn FnMut()>
             slot,
             gen,
             class,
-            f: RefCell::new(f),
+            f: RefCell::new(Some(f)),
             queued: Cell::new(false),
             deps: RefCell::new(Vec::new()),
             cleanups: RefCell::new(Vec::new()),
@@ -979,7 +988,7 @@ fn free_signal(arena: &WorldArena, slot: u32, gen: u32) {
 
 /// Free one effect slot: unlink its subscriptions eagerly (keeps subscriber
 /// lists tight), bump the generation, recycle the index, then run its
-/// cleanups with no arena borrows held.
+/// cleanups and drop its body with no arena borrows held.
 fn free_effect(arena: &WorldArena, slot: u32, gen: u32) {
     let data = {
         let mut effects = arena.effects.borrow_mut();
@@ -1006,6 +1015,14 @@ fn free_effect(arena: &WorldArena, slot: u32, gen: u32) {
         }
     }
     run_cleanups(&data);
+    // Drop the body NOW (see `EffectData::f`). Its captures' `Drop`s run
+    // here — typically a nested scope's `Owned`, which frees that subtree's
+    // effects before any of them can get a turn in the running flush. If
+    // the body is executing (the effect is freeing itself from inside its
+    // own run, e.g. a driver that drops the scope owning it), its `RefCell`
+    // is borrowed; `run_effect` drops it as soon as that run returns.
+    let body = data.f.try_borrow_mut().ok().and_then(|mut f| f.take());
+    drop(body);
 }
 
 // ============================================================================
@@ -1673,7 +1690,16 @@ fn run_effect(arena: &Rc<WorldArena>, data: &Rc<EffectData>) {
     // The body borrow is held across the run; a re-entrant run of the SAME
     // effect is impossible by construction (only flush runs effects, and a
     // world's flush cannot re-enter itself — see the reentrant-flush guard).
-    (data.f.borrow_mut())();
+    //
+    // A freed effect never gets here (`effect_is_live` gates every flush
+    // run, and creation runs the body before anything can free it), so a
+    // `None` body is unreachable in practice; skipping is the safe answer.
+    {
+        let mut body = data.f.borrow_mut();
+        if let Some(f) = body.as_mut() {
+            f();
+        }
+    }
     guard.completed = true;
     let new_deps = with_tls(|t| {
         t.enter_stack.pop();
@@ -1681,6 +1707,14 @@ fn run_effect(arena: &Rc<WorldArena>, data: &Rc<EffectData>) {
         t.untrack_depth = guard.saved_untrack;
         t.pending_deps.pop().expect("pending frame pushed above")
     });
+    if !effect_is_live(arena, data) {
+        // The body freed its own effect mid-run: `free_effect` could not
+        // take the (then-borrowed) body, so release it here, and do not
+        // subscribe a dead effect to what this last run read.
+        let body = data.f.borrow_mut().take();
+        drop(body);
+        return;
+    }
     reconcile_deps(arena, data, new_deps);
 }
 
@@ -1835,7 +1869,17 @@ pub fn hot_state_exempt<R>(f: impl FnOnce() -> R) -> R {
 pub fn on_cleanup(f: impl FnOnce() + 'static) {
     let top = TLS.with(|t| t.borrow().effect_stack.last().copied());
     let Some((world, slot, gen)) = top else {
-        panic!("on_cleanup called outside an effect");
+        // Keep the leading sentence stable: docs and downstream comments
+        // quote it. The rest names the fix for the everyday way to get
+        // here — a `#[component]` body or mount handler, which never runs
+        // inside an effect.
+        panic!(
+            "on_cleanup called outside an effect. It registers on the innermost \
+             RUNNING effect, and component bodies, mount handlers and the \
+             initial realize are not effect bodies. For teardown when a component \
+             or scope unmounts, use `on_scope_drop(f)` instead; inside an effect, \
+             `on_cleanup` (or returning the cleanup closure) is correct."
+        );
     };
     let Some(arena) = arena_of(world) else { return };
     let data = {

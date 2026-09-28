@@ -392,6 +392,22 @@ Three consumers of that mechanism:
    *private* scope, never the caller's, so `watch` is the right tool
    when the lifetime must be explicit.
 
+A freed effect is gone at once, even in the middle of a flush. Freeing
+it runs its cleanups and also drops its body closure, which releases
+everything the closure captured. For a structural driver that is its
+current subtree's `Owned`, so the nested effects are freed in the same
+step. None of them runs again, including ones already queued in the
+flush that freed them. Before this, the flush kept its own reference to
+every queued effect, so a freed driver's closure lived until the flush
+ended. Its subtree's effects still looked live, ran, and read signals
+the parent scope had already freed: the `stale-signal-handle` crash of a
+control that re-keys the `if` / `match` region containing it
+(`tests.rs::regression_freed_effect_queued_in_same_flush_never_runs`,
+`regression_freed_effect_closure_drops_at_free_time_not_end_of_flush`).
+An effect whose own run drops the scope that owns it keeps its body until
+that run returns, then releases it and never runs again
+(`effect_that_frees_itself_mid_run_drops_its_body_after_the_run`).
+
 ### Component bodies run once, untracked
 
 A component body runs exactly once. A bare `sig.get()` in a body is a
@@ -403,9 +419,10 @@ build-time snapshot that can never subscribe anything, even accidentally
 ### `on_cleanup` requires a running effect
 
 `on_cleanup(f)` registers a cleanup on the innermost **running effect**
-and panics with `"on_cleanup called outside an effect"` anywhere else,
-including a component body
-(`crates/runtime/world/src/lib.rs::on_cleanup`). Cleanups run before
+and panics anywhere else, including a component body. The message starts
+`"on_cleanup called outside an effect"` and points at `on_scope_drop`
+(`crates/runtime/world/src/lib.rs::on_cleanup`,
+`tests.rs::on_cleanup_outside_an_effect_panic_points_at_on_scope_drop`). Cleanups run before
 that effect's next re-run, or when its owning scope drops, in
 registration order (`tests.rs::on_cleanup_runs_before_rerun_and_on_drop`,
 `cleanups_run_in_registration_order`). Two shapes:
