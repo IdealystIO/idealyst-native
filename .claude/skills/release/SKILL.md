@@ -318,6 +318,15 @@ Do **not** add `Co-Authored-By: Claude` or any AI attribution trailer
   tarball.
 - **A published version is immutable.** Re-publishing the same version is a
   no-op when the bytes match and a hard error when they don't.
+- **Versioned dev-deps order the publish.** `cargo package` resolves an
+  internal dev-dependency that carries a version (e.g. `x = { workspace = true
+  }`) from the registry, so the tool packages its target first when both are in
+  the release — the 2026-09-24 run died packaging `wire` before the new
+  `runtime-macros` existed, back when only `[dependencies]` ordered it. No
+  `--only` pre-pass is needed any more. If `build`/`publish` refuses with
+  "dependency cycle … versioned dev-dependencies in the cycle: A -> B", make
+  that dev-dep path-only (no `version`, no `workspace = true`) — no order can
+  package either side first.
 - **Internal deps must name `registry = "idealyst"`.** Without it cargo resolves
   bare names like `css`, `net`, `table`, `wire` against crates.io, where they
   belong to unrelated packages. It fails loudly on a version mismatch and

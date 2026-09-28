@@ -129,6 +129,19 @@ as if it were already published, so a crate with internal deps cannot be
 packaged until those deps are actually retrievable from the registry. Staging
 all of them first and uploading at the end fails on the third crate.
 
+"Dependency order" means everything `cargo package` resolves from the
+registry, which is more than `[dependencies]`: normal and build dependencies,
+plus every internal **dev-dependency that carries a version** (usually
+inherited through `x = { workspace = true }`, including ones under
+`[target.'cfg(..)'.dev-dependencies]`). Cargo strips a path-only dev-dep from
+the packaged manifest but resolves a versioned one like any other. The
+2026-09-24 release ordered by `[dependencies]` alone, packaged `wire` (versioned
+dev-dep on `runtime-macros`) before the new `runtime-macros` was uploaded, and
+died mid-publish. A dev edge only orders the publish when its target is part
+of the same release — an untouched crate is already in the registry at the
+version the floor names. Dev edges never decide *what* is released: a
+sibling's major bump drags in its normal/build dependents only.
+
 A **major** bump republishes dependents too, because their requirement has to
 be rewritten. Minor and patch bumps deliberately do not, and that is exactly
 the reuse the migration buys.
@@ -212,12 +225,18 @@ entry and 404s on the download.
 
 ## Rules that are easy to trip over
 
-- **Internal `[dev-dependencies]` must not carry a version.** Cargo strips a
+- **Prefer internal `[dev-dependencies]` without a version.** Cargo strips a
   path-only dev-dep when packaging; one with a version requirement is kept and
-  resolved from the registry instead. That turns a legal dev-dependency cycle
-  into an unpublishable workspace — `wire` dev-depends on `dev-client`, which
-  depends on `wire`, and neither could be packaged first. `registry migrate`
-  de-links all 73 of them.
+  resolved from the registry instead. The publish order accounts for that (see
+  above), but a versioned dev-dep can close a cycle that no order solves —
+  `wire` dev-depends on `dev-client`, which depends on `wire`; with a version
+  on that dev-dep, and both crates in one release, each needs the other's new
+  version in the registry first. `build`/`publish` refuse such a release
+  before packaging anything and name the dev edge; the fix is to make it
+  path-only (`{ path = "…" }`, no `version`, no `workspace = true`).
+  `registry migrate` de-linked all 73 that existed then; `wire`'s
+  `runtime-macros`/`runtime-template` dev-deps were added later with
+  `workspace = true` and are versioned.
 - **Workspace-internal crates are `publish = false`** — 125 of them: tooling,
   the 31 runnable examples under `*/examples/`, smoke tests, benchmarks.
   Consumers never name them.

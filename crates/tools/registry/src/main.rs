@@ -808,7 +808,7 @@ fn build(
 
     let mut released = Vec::new();
     let mut state = ReleaseState::default();
-    for p in ws.publish_order()? {
+    for p in ws.publish_order(&|n| plan.contains_key(n))? {
         let Some(rel) = plan.get(&p.name) else { continue };
 
         let mut cmd = Command::new("cargo");
@@ -1049,6 +1049,7 @@ mod tests {
             publish: true,
             nested: vec![],
             deps: Default::default(),
+            dev_deps: Default::default(),
         };
         let ws = Workspace {
             root: d.clone(),
@@ -1106,6 +1107,7 @@ mod tests {
                             publish: true,
                             nested: vec![],
                             deps: Default::default(),
+                            dev_deps: Default::default(),
                         },
                     )
                 })
