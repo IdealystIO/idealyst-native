@@ -5,10 +5,11 @@ each entry links to its migration guide.
 
 ## Unreleased
 
-### Breaking
+### Behaviour changes — read before upgrading
 
-These change behaviour an app can observe, or stop code that compiled
-from compiling. Each names its migration.
+Shipped on the 1.x line as fixes and additions, but each changes
+behaviour an app can observe, and the `ui!` one stops code that compiled
+(and silently did nothing) from compiling. Each names its migration.
 
 - **`ui!` / `jsx!` reject props a primitive does not accept** (`runtime-macros`).
   A typo, a prop the primitive never had, a duplicate, a conflicting pair
