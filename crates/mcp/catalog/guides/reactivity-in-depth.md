@@ -69,8 +69,8 @@ unified `Signal<T>` stays the right type for genuinely two-way props
 `rx!(expr)` wraps a computed expression as a live `Reactive<T>` (it expands to
 `Reactive::derive(move || expr)`). It's the reactive-prop analog of an f-string text slot:
 reach for it when a component's `Reactive<T>` prop should track a *computed*
-expression rather than a bare signal (a bare `Signal` is already live via
-`IntoProp`, no `rx!` needed).
+expression rather than a bare signal (a bare `Signal` is already live — its
+`From<Signal<T>> for Reactive<T>` impl produces the `Dynamic` arm, no `rx!` needed).
 
 ```rust
 Typography(content = rx!(format!("clicked {}×", count.get())))

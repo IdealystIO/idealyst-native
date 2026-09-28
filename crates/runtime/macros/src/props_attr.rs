@@ -4,7 +4,7 @@
 //! `FooProps { bar: (x).into(), .. }`, so a prop's *liveness* is decided by
 //! the field's declared TYPE: a plain `T` flattens any value to a snapshot,
 //! while `Reactive<T>` carries a `Signal`/`rx!` through live (see
-//! `reactive_value.rs`). `#[props]` makes reactive the DEFAULT: it rewrites
+//! `runtime_vocabulary::glue::Reactive`). `#[props]` makes reactive the DEFAULT: it rewrites
 //! each scalar-data field `T` → `Reactive<T>` so the call site can pass a
 //! signal/`rx!` without the component author hand-wrapping every field.
 //!

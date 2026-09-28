@@ -1,7 +1,15 @@
-//! `Reactive<T>` — a prop value that is either a fixed snapshot or a
-//! live reactive source, plus the `IntoProp<T>` coercion shim that
-//! lets `ui!`/`jsx!` call sites pass a plain value, a `Signal<T>`, or
-//! an `rx!(...)` expression into the *same* prop field.
+//! `Reactive<T>` on the LEGACY reactive arena — a prop value that is
+//! either a fixed snapshot or a live reactive source.
+//!
+//! ## Not the author-facing props type
+//!
+//! Component props use `runtime_vocabulary::glue::Reactive` (re-exported
+//! as `runtime_core::Reactive`). That is what `#[component]` / `#[props]`
+//! wrap data fields in, and its live arm reads through the world kernel.
+//! This copy is the same API on the legacy arena (`crate::reactive`), kept
+//! for the shared substrate built on that arena, and for the
+//! [`rx!`](crate::rx) macro exported from this crate. The rest of this
+//! page describes the model both copies share.
 //!
 //! ## Why this exists
 //!
@@ -33,17 +41,16 @@
 //! an explicit, visible reactive boundary. You opt IN
 //! with one token rather than the framework guessing from a substring.
 //!
-//! ## The `IntoProp<T>` coercion shim
+//! ## Call-site coercion is plain `From`
 //!
-//! Invocation macros wrap every prop value in
-//! `IntoProp::into_prop(value)`. The reflexive blanket
-//! `impl<T> IntoProp<T> for T` makes this a no-op for every existing
-//! prop type — including call sites that already write `X.into()`
-//! (the field type pins the target, so there is no ambiguous middle
-//! type and no double conversion). The targeted reactive impls
-//! (`T`/`&str`/`Signal<T>` → `Reactive<T>`) are what make a reactive
-//! field accept a bare value, a signal, or an `rx!`. Net effect:
-//! reactive props with ZERO call-site churn.
+//! `ui!`/`jsx!` lower `Comp(prop = value)` to a props struct literal
+//! with each field written `prop: (value).into()`. The field's
+//! declared type pins the `.into()` target, so the `From` impls below
+//! pick the arm from the value's type alone: a bare `T` / `&str` →
+//! `Static`, a `Signal<T>` / `ReadSignal<T>` → `Dynamic`, an already
+//! built `Reactive<T>` (from `rx!`) passes through the reflexive
+//! `From<T> for T`. Authors never write `.into()` themselves — a
+//! second one leaves the middle type ambiguous (E0282/E0283).
 
 use std::rc::Rc;
 
