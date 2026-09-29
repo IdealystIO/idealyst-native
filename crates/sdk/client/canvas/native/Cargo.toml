@@ -41,11 +41,9 @@ runtime-scene = { workspace = true }
 runtime-shared = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-world = { workspace = true }
-# Outline glyphs from font bytes so a `DrawOp::Glyphs` run (a rendered PDF's
-# text) renders on the CPU backends with the SAME geometry the GPU (vello) path
-# produces — both outline at upem = 1000 with hinting off. Pure Rust, builds on
-# every target incl. wasm. Matches the version vello already pulls.
-skrifa = "0.42"
+# No font parser here: glyph runs are outlined by canvas-core's
+# `expand_glyph_run`, linked through `FontResource` — so an app drawing only
+# charts doesn't ship skrifa (~400 KB of wasm) through this renderer.
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }

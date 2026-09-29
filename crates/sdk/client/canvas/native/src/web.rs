@@ -424,7 +424,7 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
             // Canvas2D draws system fonts by family name, but a PDF's embedded
             // font has no system name — outline each glyph and fill it, matching
             // the GPU (vello) path's geometry (CLAUDE.md §7).
-            for op in crate::glyphs::expand_run(font, glyphs, paint) {
+            for op in canvas_core::expand_glyph_run(font, glyphs, paint) {
                 apply_op(ctx, &op);
             }
         }

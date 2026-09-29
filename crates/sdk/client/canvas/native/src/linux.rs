@@ -377,7 +377,7 @@ fn replay(ctx: &cairo::Context, ops: &[DrawOp], layers: &mut LayerCache, size: (
                 // Fill arm's colour/alpha/blend handling verbatim, and the
                 // per-glyph Transform composes on top of the context's current
                 // (accumulated) CTM exactly as the run's affine intends.
-                let ops = crate::glyphs::expand_run(font, glyphs, paint);
+                let ops = canvas_core::expand_glyph_run(font, glyphs, paint);
                 replay(ctx, &ops, layers, size);
             }
             // `DrawOp` is `#[non_exhaustive]`; any future op without a Cairo
@@ -547,7 +547,7 @@ mod tests {
     use skrifa::outline::{DrawSettings, OutlinePen};
     use skrifa::{FontRef, GlyphId, MetadataProvider};
 
-    /// The em a glyph run is normalized to — must match `glyphs::GLYPH_UPEM`.
+    /// The em a glyph run is normalized to — must match `canvas_core::glyph_outline::GLYPH_UPEM`.
     const UPEM: f32 = 1000.0;
 
     /// A real system font's bytes + face index, or `None` to skip on a CI box
@@ -586,7 +586,7 @@ mod tests {
     }
 
     /// A skrifa outline pen recording into a canvas `Path` (font-design units,
-    /// y-up), the same expansion `glyphs::expand_run` performs internally.
+    /// y-up), the same expansion `canvas_core::expand_glyph_run` performs internally.
     #[derive(Default)]
     struct PathPen(Path);
     impl OutlinePen for PathPen {

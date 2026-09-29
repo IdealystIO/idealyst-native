@@ -22,24 +22,10 @@ use runtime_scene::{Element, MountCx, Registry};
 use runtime_vocabulary::caps::ExternalOps;
 use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices};
 
-// Shared glyph-outline expansion for `DrawOp::Glyphs`, used by every CPU
-// backend (web / apple / android / linux). Gated to those targets so the
-// placeholder build (no native 2D engine) doesn't carry an unused skrifa
-// dependency. Linux is included: the GTK leaf rasterizes through Cairo,
-// which is a CPU 2D engine and needs the same outline expansion.
-#[cfg(any(
-    target_arch = "wasm32",
-    all(
-        any(
-            target_os = "ios",
-            target_os = "macos",
-            target_os = "android",
-            target_os = "linux"
-        ),
-        not(target_arch = "wasm32")
-    )
-))]
-mod glyphs;
+// Glyph runs (`DrawOp::Glyphs`) are outlined by `canvas_core::expand_glyph_run`,
+// which every CPU backend below calls. The font parser behind it is linked
+// through `FontResource`, not through this crate, so an app that draws only
+// charts ships none of it (see `canvas_core::glyph_outline`).
 
 // Web: the core-free Canvas2D rasterizer (`web`) + the
 // `WebBackend`-concrete mount handler that drives it (`web_scene`).

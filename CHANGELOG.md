@@ -446,6 +446,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   5.11 MB), the PDF area's module from 1.03 MB to 352 KB. Main is
   unchanged.
 
+- **Drawing a chart no longer ships a font parser** (`canvas-core`,
+  `canvas-native`). canvas-native's renderers outlined PDF glyph runs with
+  skrifa inside the same function that draws every canvas op, so any app
+  drawing a canvas — a chart — carried skrifa and read-fonts (~400 KB of
+  wasm) in its main bundle. The outliner now lives in canvas-core
+  (`canvas_core::expand_glyph_run`) and is linked through `FontResource`:
+  creating one (`FontResource::new`, or deserializing a scene) installs it.
+  An app that makes no font doesn't ship it; one whose glyph runs come from
+  a lazy component (a PDF viewer) ships it in that component's module. On
+  CrewForge the main bundle went from 1.25 MB to 1.14 MB brotli'd.
+  `canvas-native` no longer depends on skrifa. A `FontResource` built with
+  a struct literal (its fields are public) bypasses the install: its text
+  doesn't draw on the CPU renderers, with a one-time warning.
+
 - **Pruning never zeroes a live byte** (`wasm-carve`). Data symbols
   overlap — a constant nested inside a larger one — and pruning zeroed a
   dead symbol's whole range, live bytes inside it included: 317 KB of

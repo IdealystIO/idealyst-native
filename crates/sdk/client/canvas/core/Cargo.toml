@@ -28,6 +28,10 @@ runtime-vocabulary = { workspace = true }
 # the `Arc` only avoids a per-frame clone in-process — sharing isn't preserved
 # across the wire, which is fine).
 serde = { workspace = true, features = ["rc"] }
+# Outlines glyph runs for the renderers with no glyph engine (see
+# `glyph_outline`). Linked only through `FontResource`, so an app that makes
+# no font never ships it. Matches the version vello and hayro pull.
+skrifa = "0.42"
 serde_json = { workspace = true }
 # Self-capture currency: `CanvasProps.capture` is a `FrameWriter` the renderer
 # publishes rendered frames into, so the app can record the canvas's own output

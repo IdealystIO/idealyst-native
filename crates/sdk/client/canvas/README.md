@@ -57,7 +57,11 @@ stroked shapes, use individual `fill`/`stroke` calls.
 [`PositionedGlyph`](core/) is a glyph id plus the affine placing its
 **1000-units-per-em** outline in logical space. On `canvas-vello` the run drives
 vello's GPU glyph pipeline with one cached font upload; on `canvas-native` each
-glyph is outlined (skrifa) and filled, producing identical geometry. This is the
+glyph is outlined (skrifa, via `canvas_core::expand_glyph_run`) and filled,
+producing identical geometry. The font parser is linked through
+`FontResource::new`, so an app that never makes a font — charts only — doesn't
+ship it, and an app whose glyphs come from a lazy component ships it in that
+component's module. This is the
 primitive the [`pdf`](../pdf/) SDK builds text from — a rendered PDF page is a
 scene of glyph runs (text), fills/strokes (vectors), and image blits.
 

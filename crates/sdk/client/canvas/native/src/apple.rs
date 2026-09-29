@@ -344,7 +344,7 @@ impl ApplePainter {
             DrawOp::Glyphs { font, glyphs, paint } => {
                 // No glyph engine on CoreGraphics: outline each glyph and fill it,
                 // matching the GPU (vello) path's geometry (CLAUDE.md §7).
-                for op in crate::glyphs::expand_run(font, glyphs, paint) {
+                for op in canvas_core::expand_glyph_run(font, glyphs, paint) {
                     self.apply_op(ctx, &op);
                 }
             }

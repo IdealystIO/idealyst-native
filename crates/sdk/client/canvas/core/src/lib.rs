@@ -52,6 +52,9 @@
 mod scene;
 pub use scene::*;
 
+pub mod glyph_outline;
+pub use glyph_outline::expand_glyph_run;
+
 mod prim;
 pub use prim::{register_ssr, Canvas, CanvasBound, CanvasPrim};
 

@@ -2221,6 +2221,7 @@ dependencies = [
  "runtime-vocabulary",
  "serde",
  "serde_json",
+ "skrifa 0.42.1",
 ]
 
 [[package]]
@@ -2259,7 +2260,6 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "skrifa 0.42.1",
  "wasm-bindgen",
  "web-sys",
 ]

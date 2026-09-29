@@ -777,7 +777,12 @@ impl ShapeInstance {
 /// page — never re-parses the bytes. Two `FontResource`s sharing an `id` MUST
 /// carry identical `data`. For a rendered PDF this is the embedded font's
 /// content cache key.
+///
+/// Creating one — [`FontResource::new`], or deserializing a scene painted in
+/// another process — also links the glyph outliner CPU renderers draw glyph
+/// runs with; see [`crate::glyph_outline`] for why that is tied to the font.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "FontResourceFields")]
 pub struct FontResource {
     /// Stable identity for renderer-side font-handle caching.
     pub id: u64,
@@ -793,7 +798,24 @@ pub struct FontResource {
 impl FontResource {
     /// A font from raw bytes with face `index` and upload-cache `id`.
     pub fn new(id: u64, index: u32, data: impl Into<Arc<Vec<u8>>>) -> Self {
+        crate::glyph_outline::install();
         Self { id, index, data: data.into() }
+    }
+}
+
+/// [`FontResource`]'s wire shape: deserializing goes through
+/// [`FontResource::new`] so a font painted in another process installs the
+/// glyph outliner too.
+#[derive(Deserialize)]
+struct FontResourceFields {
+    id: u64,
+    index: u32,
+    data: Arc<Vec<u8>>,
+}
+
+impl From<FontResourceFields> for FontResource {
+    fn from(f: FontResourceFields) -> Self {
+        FontResource::new(f.id, f.index, f.data)
     }
 }
 
