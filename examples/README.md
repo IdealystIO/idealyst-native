@@ -42,7 +42,7 @@ on the registry internally, so one generic seam serves every target;
 | `nav-showcase` | Nested navigators (swap + stack) with `idea-ui-nav` chrome. | web, ios, android |
 | `login-demo` | Full-stack auth: `#[server]` login, httpOnly session cookie (BFF), bearer token in the OS keystore on native. | web, ios, android |
 | `whiteboard-demo` | Drawable canvas + camera + recording. See its module docs for the platform coverage: the canvas handler is real on web and an External placeholder on native. | web, macos, ios, android |
-| `inspector` | A robot-bridge client — a live debugging dashboard over the newline-JSON transport. | macos |
+| `inspector` | The Inspector's front end: a live debugging dashboard. Talks only to the Inspector server (`idealyst inspect`, which embeds and serves its web build); see [docs/inspector.md](../docs/inspector.md). | web, macos |
 | `baseline` | One text node. The framework's web bundle-size floor. | web |
 | `fiddle` | The online playground's compile server (not an idealyst app itself; `template/` is the project it compiles user snippets into). | — |
 

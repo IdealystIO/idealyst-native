@@ -95,7 +95,7 @@ pub trait TextOps: Host {
     /// the old core the arena's `Signal::set` fired the registered JS
     /// notifier itself; world signals have no write hook, so the text
     /// handler's per-signal notifier effect (see
-    /// `style_attach::ensure_signal_notifier_installed`) delivers
+    /// `style_attach::acquire_signal_notifier`) delivers
     /// commits through this method instead. Default no-op — only
     /// backends returning `true` from
     /// [`supports_js_text_bindings`](Self::supports_js_text_bindings)

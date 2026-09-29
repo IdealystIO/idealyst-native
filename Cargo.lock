@@ -6316,6 +6316,8 @@ dependencies = [
  "dotenvy",
  "icon-gen",
  "idealyst-config",
+ "inspector-protocol",
+ "inspector-server",
  "libc",
  "lint",
  "mcp-catalog",
@@ -6485,11 +6487,34 @@ dependencies = [
  "icons-lucide",
  "idea-ui",
  "idealyst",
+ "inspector-protocol",
+ "net",
  "runtime-core",
  "runtime-scene",
+ "runtime-shared",
  "runtime-vocabulary",
  "serde",
  "serde_json",
+ "web-sys",
+]
+
+[[package]]
+name = "inspector-protocol"
+version = "1.5.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "inspector-server"
+version = "1.5.2"
+dependencies = [
+ "inspector-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tungstenite 0.24.0",
 ]
 
 [[package]]

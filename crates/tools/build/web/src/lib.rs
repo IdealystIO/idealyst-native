@@ -88,8 +88,8 @@ pub struct BuildOptions {
     /// fingerprint of the resolved rules to locate it in source.
     pub premint_report: bool,
     /// How much debug information a DEV build's wasm carries
-    /// (`--debuginfo`). Ignored on release, which sets its own
-    /// `debug = "limited"` for wasm-split's benefit. See [`DebugInfo`].
+    /// (`--debuginfo`). Ignored on release, which builds with no debug
+    /// info at all (`debug = 0`). See [`DebugInfo`].
     pub debuginfo: DebugInfo,
     /// Optimization posture for DEV builds (`--dev-opt`). Ignored for
     /// `release`, which has its own fixed profile. See [`DevOpt`] for the
@@ -255,8 +255,8 @@ pub struct BuildOptions {
     ///
     /// The flag changes the whole pipeline, not just one pass. A
     /// splitting build emits relocations from rustc and runs wasm-bindgen
-    /// with `--keep-lld-exports --keep-debug --no-demangle` so the
-    /// splitter can match references — which also pins every export as a
+    /// with `--keep-lld-exports --no-demangle` so the splitter can match
+    /// references — which also pins every export as a
     /// GC root, so the splitter is then the only thing that compacts the
     /// module. A non-splitting build emits no relocations and lets
     /// wasm-bindgen's own dead-code pass and debug-strip do the
@@ -287,10 +287,9 @@ pub struct BuildOptions {
 /// wasm has no split-debuginfo: DWARF cannot live in a sidecar file, so
 /// every byte of it ships inside the module and every post-cargo pass
 /// (wasm-bindgen, wasm-split, staging, and the browser's own compile on
-/// reload) pays for it. Cargo's dev default is `debug = 2`, which makes a
-/// dev bundle carry MORE debug info than the release profile's
-/// `"limited"` — measured on `websites/website`, 173 MB of a 298 MB debug
-/// module, and 7.7s of a single wasm-bindgen run.
+/// reload) pays for it. Cargo's dev default is `debug = 2` — measured on
+/// `websites/website`, 173 MB of a 298 MB debug module, and 7.7s of a
+/// single wasm-bindgen run. Release carries none (`debug = 0`).
 ///
 /// Panic *messages* keep their `file:line` at every level here: those are
 /// `#[track_caller]` `Location` strings in live `.rodata`, not debug info
@@ -1969,9 +1968,14 @@ fn feature_spec(name: &str) -> String {
 /// * `codegen-units = 1` — fewer cross-unit indirections gives
 ///   wasm-split's reachability walker more precision (it is pessimistic
 ///   across CU boundaries).
-/// * `strip = "none"` / `debug = "limited"` — symbol names and line
-///   tables stay alive for wasm-split's call-graph matching; wasm-opt
-///   strips both as a final step.
+/// * `strip = "none"` — keeps the `name` section wasm-split's call-graph
+///   matching pairs functions by; wasm-opt strips it as a final step.
+/// * `debug = 0` — no DWARF. The splitter reads `name`, `linking` and
+///   `reloc.*` and never DWARF, so the `"limited"` this used to set only
+///   bought a bigger module for every post-cargo pass: on CrewForge
+///   146 MB of 232 MB, a 2.9 GB wasm-bindgen instead of 1.5 GB, and a
+///   cold release build of 306 s instead of 197 s, for byte-identical
+///   split output.
 ///
 /// `[profile.dev.package."*"] opt-level = 3` optimizes DEPENDENCIES
 /// only (the glob excludes the app crate, so app iteration stays fast to
@@ -1983,8 +1987,7 @@ fn feature_spec(name: &str) -> String {
 /// `--config` does — same as the opt-level line above):
 ///
 /// * `debug` — cargo defaults dev to `2`, which on wasm means a dev
-///   bundle carries MORE debug info than release's `"limited"`, with no
-///   sidecar to put it in. See [`DebugInfo`]; `--debuginfo full` restores
+///   bundle carries full DWARF with no sidecar to put it in. See [`DebugInfo`]; `--debuginfo full` restores
 ///   cargo's default for a debugging session.
 /// * `lto = "off"` — `false` (cargo's dev default) still runs thin-LOCAL
 ///   LTO across the crate's own codegen units. `-Ztime-passes` on the
@@ -2289,7 +2292,7 @@ fn profile_config_args(release: bool, debuginfo: DebugInfo, dev_opt: DevOpt) -> 
             "profile.release.lto=\"off\"",
             "profile.release.panic=\"abort\"",
             "profile.release.strip=\"none\"",
-            "profile.release.debug=\"limited\"",
+            "profile.release.debug=0",
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -2748,27 +2751,31 @@ fn cargo_build_wasm(
 ///   no-split module is larger than bindgen's own dead-code pass alone
 ///   would make it; that is the price of a working loader.
 ///
-/// The other two are the splitter's alone:
+/// The splitter adds one of its own:
 ///
-/// * `--keep-debug` gives wasm-split the symbol info it needs to match
-///   function references across the relocations; the splitter (or, on
-///   release, wasm-opt) strips it again, so the served module never
-///   carries it. Without a splitter it is bytes bindgen reads for
-///   nothing.
 /// * `--no-demangle` keeps the mangled names reloc records carry, so
 ///   the splitter's matching works — without it the website's lazy
 ///   hero-simulator chunk measured 469 bytes. A non-splitting build gets
 ///   demangled names, which is what a person wants in a stack trace.
 ///
-/// A hot-patch base build takes the splitter's set for its own reasons:
-/// the jump table is built by pairing the base's function names against
-/// the patch's, so the names have to be there (`--keep-debug` keeps the
-/// custom `name` section) and they have to be MANGLED on both sides
-/// (`--no-demangle`), since the patch is linked by wasm-ld and never
-/// sees wasm-bindgen at all. A demangled base pairs with nothing.
+/// It does NOT take `--keep-debug`, which it used to on the belief that
+/// the splitter's symbol matching needs it. wasm-bindgen 0.2.128 passes
+/// the `name`, `linking` and `reloc.*` sections through without it; what
+/// the flag keeps is DWARF, which the splitter never reads and the
+/// neutralize pass dropped anyway. On CrewForge it cost wasm-bindgen
+/// 2.9 GB / 7.7 s against 2.1 GB / 1.5 s without.
+///
+/// A hot-patch base build takes `--keep-debug` and `--no-demangle` for
+/// its own reasons: the jump table is built by pairing the base's
+/// function names against the patch's, and they have to be MANGLED on
+/// both sides, since the patch is linked by wasm-ld and never sees
+/// wasm-bindgen at all. A demangled base pairs with nothing. Whether the
+/// patch path still needs `--keep-debug` has not been re-measured.
 fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
-    if split || hot_patch {
+    if hot_patch {
         &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
+    } else if split {
+        &["--keep-lld-exports", "--no-demangle"]
     } else {
         &["--keep-lld-exports"]
     }
@@ -3041,25 +3048,30 @@ fn neutralize_command_export_wrappers(
 const MB: usize = 1024 * 1024;
 
 /// Peak RSS of the in-process split, per byte of bindgened module, before
-/// any emit worker: the inputs, the splitter's own parse, and the
-/// transient parse of the rustc module that builds the call graph.
-/// Fitted on CrewForge (80 MB bindgened module, measured peaks 4.0 GB /
-/// 5.3 GB / 6.8 GB at 1 / 2 / 4 workers): `34 + 16·w` bytes per module
-/// byte. The fit comes from the steepest step (1 → 2 workers), so it
-/// over-predicts at 4 (7.9 GB projected vs 6.8 GB measured) — the safe
-/// direction.
-const SPLIT_BASE_BYTES_PER_MODULE_BYTE: u64 = 34;
+/// any emit worker: the command-export neutralize before it (its freed
+/// heap stays resident and is reused), the splitter's long-lived parse of
+/// the bindgened module, and the largest single emit — the shared chunk,
+/// which owns every function two lazy modules both reach.
+///
+/// Fitted on CrewForge (a 69.7 MiB bindgened module, 17 split points,
+/// 14 cores): the splitter alone peaked at 3,241 / 3,069 / 3,381 MiB at
+/// 1 / 2 / 4 workers, and the whole `idealyst build --web --release`
+/// process at 3,559 MiB with 4. `50 + 1·w` bytes per module byte
+/// projects 3,555 / 3,625 / 3,764 MiB — at or above every one. An emit parses only its own function bodies, so workers
+/// barely move the peak; the fit before that change was `34 + 16·w`,
+/// when each worker held a parse of the whole program.
+const SPLIT_BASE_BYTES_PER_MODULE_BYTE: u64 = 50;
 
 /// Peak RSS each concurrent emit worker adds, per byte of bindgened
-/// module: one full walrus parse, pruned down to the split module it is
-/// building. See [`SPLIT_BASE_BYTES_PER_MODULE_BYTE`] for the fit.
-const SPLIT_WORKER_BYTES_PER_MODULE_BYTE: u64 = 16;
+/// module: one split module's own IR plus a body-stubbed copy of the
+/// module. See [`SPLIT_BASE_BYTES_PER_MODULE_BYTE`] for the fit.
+const SPLIT_WORKER_BYTES_PER_MODULE_BYTE: u64 = 1;
 
 /// The most emit workers that still make the split faster. Measured on
-/// CrewForge on a 14-core machine: 20.5 s at 1 worker, 16.1 s at 3,
-/// 12.4 s at 4, 17.4 s at 6, 19.2 s at 8, 16.4 s at 14 — beyond 4 the
-/// parses compete for memory bandwidth and page faults (sys time 5 s at
-/// 4, 39 s at 14) and wall time goes back up while memory keeps rising.
+/// CrewForge on a 14-core machine: 8.3 s at 1 worker, 7.6 s at 2, 7.0 s
+/// at 4, 7.9 s at 8 — past 4 the emits are too small to pay for more
+/// threads. (Before emits parsed only their own bodies the curve had the
+/// same shape at three times the cost: 20.5 s / 12.4 s / 19.2 s.)
 const MAX_SPLIT_EMIT_WORKERS: usize = 4;
 
 /// The RSS the in-process split is projected to peak at with `workers`
@@ -3077,10 +3089,13 @@ fn projected_split_peak_bytes(module_bytes: u64, workers: usize) -> u64 {
 /// one. The one-worker floor is deliberate: a budget too small for even
 /// that cannot be met by the splitter, and the memory cap reports it.
 ///
-/// This is what keeps the split's memory tied to one module parse per
-/// worker instead of one per core. Unbounded, the splitter's peak on
-/// CrewForge went from 8.2 GB to 12.5 GB in a week as the app grew, and
-/// every raise of the CLI's cap went stale.
+/// This bound is what first kept the split's memory from growing with the
+/// core count, when every worker held a parse of the whole program:
+/// unbounded, the splitter's peak on CrewForge went from 8.2 GB to
+/// 12.5 GB in a week as the app grew, and every raise of the CLI's cap
+/// went stale. Workers are cheap now (see
+/// [`SPLIT_WORKER_BYTES_PER_MODULE_BYTE`]); the bound stays so a tight
+/// budget still gets a single-worker split.
 pub fn split_emit_workers(module_bytes: u64, budget_mb: Option<u64>, cores: usize) -> usize {
     let ceiling = cores.clamp(1, MAX_SPLIT_EMIT_WORKERS);
     let Some(budget_mb) = budget_mb else {
@@ -3326,8 +3341,8 @@ mod regression_tests {
     }
 
     /// wasm-split needs `lto = "off"` (fat LTO inlines `#[wasm_split]`
-    /// bodies back into their callers, leaving stub chunks) plus live
-    /// symbols and line tables for call-graph matching. The wrapper
+    /// bodies back into their callers, leaving stub chunks) plus the
+    /// symbol names `strip = "none"` keeps for call-graph matching. The wrapper
     /// carried these in its own `[profile.release]`; they now have to be
     /// injected per-invocation rather than written into a manifest the
     /// framework doesn't own.
@@ -3337,7 +3352,7 @@ mod regression_tests {
         let joined = args.join(" ");
         assert!(joined.contains("profile.release.lto=\"off\""), "{joined}");
         assert!(joined.contains("profile.release.strip=\"none\""), "{joined}");
-        assert!(joined.contains("profile.release.debug=\"limited\""), "{joined}");
+        assert!(joined.contains("profile.release.debug=0"), "{joined}");
         assert!(joined.contains("profile.release.codegen-units=1"), "{joined}");
         assert_eq!(
             args.iter().filter(|a| *a == "--config").count(),
@@ -3426,7 +3441,7 @@ mod regression_tests {
             }
         }
         // The 12,288 MB cap that aborted on 2026-09-28 now runs 4 workers,
-        // projected (conservatively) at under 8 GB.
+        // projected (conservatively) at under 4.5 GB.
         assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(12288), 8), 4);
     }
 
@@ -3711,13 +3726,19 @@ mod regression_tests {
         assert!(none.contains("profile.dev.debug=0"), "{none}");
     }
 
-    /// Release owns its own debug posture (`"limited"`, which wasm-split's
-    /// call-graph matching needs); `--debuginfo` must not reach it.
+    /// Regression: release built with `debug = "limited"` on the belief
+    /// that wasm-split's call-graph matching reads it. It reads `name`,
+    /// `linking` and `reloc.*` — never DWARF — and the neutralize pass
+    /// dropped the DWARF before the splitter ran anyway. It cost CrewForge
+    /// 146 MB of a 232 MB module, a 2.9 GB wasm-bindgen, and 306 s → 197 s
+    /// of a cold release build; the split output is byte-identical
+    /// without it. `--debuginfo` (a dev knob) must not reach it either.
     #[test]
-    fn debuginfo_flag_does_not_touch_the_release_profile() {
+    fn regression_release_builds_carry_no_dwarf() {
         for level in [DebugInfo::LineTables, DebugInfo::Full, DebugInfo::None] {
             let joined = profile_config_args(true, level, DevOpt::default()).join(" ");
-            assert!(joined.contains("profile.release.debug=\"limited\""), "{joined}");
+            assert!(joined.contains("profile.release.debug=0"), "{joined}");
+            assert!(joined.contains("profile.release.strip=\"none\""), "{joined}");
             assert!(!joined.contains("profile.dev."), "{joined}");
         }
     }
@@ -4984,11 +5005,32 @@ mod wasm_bindgen_flag_tests {
         assert!(!flags.contains(&"--no-demangle"), "{flags:?}");
     }
 
-    /// The splitting path needs all three; losing any one silently
-    /// degrades to "everything stays in main" with empty chunks.
+    /// The splitting path needs both; losing either silently degrades to
+    /// "everything stays in main" with empty chunks.
     #[test]
-    fn split_carries_all_three() {
+    fn split_carries_the_lld_exports_and_mangled_names() {
         let flags = wasm_bindgen_flags(true, false);
+        for f in ["--keep-lld-exports", "--no-demangle"] {
+            assert!(flags.contains(&f), "missing {f} in {flags:?}");
+        }
+    }
+
+    /// Regression: the split path passed `--keep-debug`, which carries
+    /// DWARF through wasm-bindgen (and turns on walrus's per-instruction
+    /// offset tracking) only for the neutralize pass to drop it. On
+    /// CrewForge: wasm-bindgen 2.9 GB / 7.7 s with it, 2.1 GB / 1.5 s
+    /// without, and the `name`, `linking` and `reloc.*` sections the
+    /// splitter reads come through either way.
+    #[test]
+    fn regression_split_does_not_carry_dwarf_through_bindgen() {
+        assert!(!wasm_bindgen_flags(true, false).contains(&"--keep-debug"));
+    }
+
+    /// A hot-patch base keeps its full set: its jump table pairs the base's
+    /// names with the patch's, and that path was not re-measured without.
+    #[test]
+    fn hot_patch_keeps_its_own_flags() {
+        let flags = wasm_bindgen_flags(false, true);
         for f in ["--keep-lld-exports", "--keep-debug", "--no-demangle"] {
             assert!(flags.contains(&f), "missing {f} in {flags:?}");
         }

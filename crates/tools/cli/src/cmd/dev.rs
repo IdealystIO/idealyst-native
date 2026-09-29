@@ -365,6 +365,14 @@ pub struct Args {
     #[arg(long)]
     pub no_robot: bool,
 
+    /// Open the Inspector on this app in the browser. The Inspector server
+    /// (the same one `idealyst inspect` runs) is hosted in this process for
+    /// the session, unless one is already running on its port, in which
+    /// case that one is reused. With the robot relay active (`--local`) the
+    /// page opens straight on this app; otherwise it opens on the app list.
+    #[arg(long)]
+    pub inspect: bool,
+
     /// Build the project's server into the workspace's own `target/`
     /// instead of an isolated `target/idealyst-dev-server/`, so the dev
     /// server, `cargo test` and `cargo check` share one copy of every
@@ -746,6 +754,9 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         None
     };
+
+    // `--inspect`: held for the session, like the relay it points at.
+    let _inspector = if args.inspect { start_inspector(robot_relay.as_ref())? } else { None };
 
     // Child handles for cleanup-on-Ctrl-C. Each platform launcher
     // pushes any subprocesses it spawns here; the signal handler
@@ -1415,6 +1426,27 @@ fn web_dev_features(no_robot: bool) -> Vec<String> {
     // decided a save needs no rebuild.
     f.push("ui-overlay".to_string());
     f
+}
+
+/// `dev --inspect`: host (or reuse) the Inspector server and open the
+/// browser on this session's app. The app is named by the relay's
+/// registration id, which is how the server's discovery lists it; without
+/// a relay there is no id to name, so the page opens on the app list.
+fn start_inspector(relay: Option<&robot_relay::RelayHandle>) -> Result<Option<inspector_server::Server>> {
+    let port = inspector_protocol::DEFAULT_PORT;
+    let hosted = crate::cmd::inspect::ensure_server(port)?;
+    let app = relay.and_then(|r| r.app_id());
+    if app.is_none() {
+        crate::dlog!("dev", "--inspect: no robot relay in this mode (it runs with --local); pick the app in the Inspector");
+    }
+    let url = crate::cmd::inspect::page_url(&crate::cmd::inspect::base_url(port), app.as_deref());
+    crate::dlog!(
+        "dev",
+        "Inspector {url}{}",
+        if hosted.is_some() { "" } else { " (reusing the running Inspector server)" }
+    );
+    open_url_in_browser(&url);
+    Ok(hosted)
 }
 
 /// Whether to host the dev robot relay for this target set. Only in `--local`
@@ -3742,7 +3774,7 @@ fn spawn_browser_opener(host: &str, port: u16) {
     });
 }
 
-fn open_url_in_browser(url: &str) {
+pub(crate) fn open_url_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let (cmd, args): (&str, Vec<&str>) = ("open", vec![url]);
     #[cfg(target_os = "linux")]
@@ -4097,6 +4129,7 @@ impl Args {
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
+            inspect: false,
             shared_target: self.shared_target,
             stream_port: self.stream_port,
             headless_client: self.headless_client,

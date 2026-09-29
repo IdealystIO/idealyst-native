@@ -1,7 +1,6 @@
 //! Idealyst Inspector — a runtime debugging dashboard for idealyst apps.
 //!
-//! Connects to a running app's **robot bridge** (the TCP newline-JSON
-//! transport every `idealyst dev` build exposes) and shows, live:
+//! Shows, live, for any running app:
 //!
 //! - **Components** — every mounted `#[component]` in its rendered
 //!   hierarchy, optionally interleaved with the primitive elements; the
@@ -14,46 +13,45 @@
 //!   push / replace / reset / pop;
 //! - **Logs & perf** — the captured log stream and phase timers.
 //!
-//! The Inspector only displays what the bridge reports; everything it
-//! knows arrives through [`bridge`], which has no UI in it.
+//! ## Front end only
+//!
+//! This crate is the Inspector's front end. It never talks to an app.
+//! The **Inspector server** (`inspector-server`, hosted by `idealyst
+//! inspect`) discovers the running apps, holds each app's robot-bridge
+//! connection, polls and accumulates its state and runs the actions. The
+//! front end renders what the server pushes over one WebSocket and sends
+//! back what the user did ([`bridge::client`]). Because it needs nothing
+//! but that socket, the same front end runs in a browser. The CLI embeds
+//! its web build and serves it from the Inspector server.
 //!
 //! ## Run it
 //!
 //! ```text
-//! idealyst dev --macos --local crates/dev/robot-e2e/examples/conformance   # a target
-//! idealyst dev --macos --local examples/inspector                          # this app
+//! idealyst dev --web --local crates/dev/robot-e2e/examples/conformance --inspect
+//! #   builds + runs the target and opens the Inspector on it in the browser
+//! idealyst inspect
+//! #   just the Inspector: every running app, at http://127.0.0.1:9719
 //! ```
 //!
-//! Set `IDEALYST_INSPECT_ADDR=127.0.0.1:<port>` to skip the app picker
-//! and connect straight to one bridge — the hook a launcher (the CLI)
-//! uses to open the Inspector on the app it just started.
-//!
-//! macOS desktop is the host: raw TCP is trivial there, while wasm cannot
-//! open a TCP socket (a web build needs the bridge to speak WebSocket).
+//! The desktop build connects to the same server (`ws://127.0.0.1:9719/ws`
+//! unless `IDEALYST_INSPECT_URL` says otherwise; `IDEALYST_INSPECT_APP`
+//! names an app id to open on, as `?app=` does in the browser).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use idea_ui::{dark_theme, install_idea_theme};
-use runtime_core::{component, signal, ui, Element, Signal};
+use runtime_core::{component, effect, signal, ui, Element, Signal};
 use serde_json::Value;
 
 pub mod bridge;
 mod ui;
 
-use bridge::client::{BridgeClient, Focus};
-use bridge::discovery::AppInfo;
-use bridge::model::Snapshot;
+use bridge::client::{self, Focus, ServerLink, Sinks};
+use bridge::endpoint;
+use bridge::model::{AppInfo, Snapshot};
 use ui::connect::Connect;
 use ui::shell::Shell;
-
-/// How often the UI copies the client's latest snapshot into the
-/// reactive signal. The client refreshes on its own; this is only the
-/// render cadence.
-const POLL_MS: i32 = 250;
-
-/// The environment variable that skips the picker (see the crate docs).
-pub const ADDR_ENV: &str = "IDEALYST_INSPECT_ADDR";
 
 /// The connected target, as the sidebar names it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -87,40 +85,15 @@ pub fn platform_label(platform: &str) -> &str {
     }
 }
 
-thread_local! {
-    /// The one connected target. The UI reaches it through the functions
-    /// below rather than threading a non-`Default` handle through props.
-    static CLIENT: RefCell<Option<BridgeClient>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn connect(addr: String) {
-    CLIENT.with(|c| *c.borrow_mut() = Some(BridgeClient::connect(addr)));
-}
-
-pub(crate) fn disconnect() {
-    CLIENT.with(|c| *c.borrow_mut() = None);
-}
-
-fn client_snapshot() -> Option<Snapshot> {
-    CLIENT.with(|c| c.borrow().as_ref().map(|cl| cl.snapshot()))
-}
-
 /// What the per-item verbs fetch (the selected component / signal).
 pub(crate) fn set_focus(focus: Focus) {
-    CLIENT.with(|c| {
-        if let Some(cl) = c.borrow().as_ref() {
-            cl.set_focus(focus);
-        }
-    });
+    client::set_focus(focus);
 }
 
-/// Send an action verb; its outcome shows as `Snapshot::last_action`.
+/// Run an action verb on the attached app; its outcome shows as
+/// `Snapshot::last_action`.
 pub(crate) fn action(label: impl Into<String>, cmd: &str, args: Value) {
-    CLIENT.with(|c| {
-        if let Some(cl) = c.borrow().as_ref() {
-            cl.action(label, cmd, args);
-        }
-    });
+    client::action(label, cmd, args);
 }
 
 /// SDK-handler registration seam the CLI-generated wrapper calls after
@@ -132,28 +105,42 @@ pub fn app() -> Element {
     install_idea_theme(dark_theme());
 
     let snapshot: Signal<Snapshot> = signal(Snapshot::default());
+    let apps: Signal<Vec<AppInfo>> = signal(Vec::new());
+    let link: Signal<ServerLink> = signal(ServerLink::default());
     let target: Signal<Option<Target>> = signal(None);
-
-    if let Ok(addr) = std::env::var(ADDR_ENV) {
-        connect(addr.clone());
-        target.set(Some(Target::from_addr(&addr)));
-    }
-    schedule_poll(snapshot);
+    client::start(endpoint::server_url(), Sinks { link, apps, snapshot });
 
     // Plain closures over `Copy` signals are themselves `Copy`, so the
     // reactive branch below can wrap a fresh `Rc` on every rebuild.
     let on_connect = move |app: Option<AppInfo>, addr: String| {
-        connect(addr.clone());
         snapshot.set(Snapshot::default());
-        target.set(Some(match &app {
-            Some(app) => Target::from_app(app),
-            None => Target::from_addr(&addr),
-        }));
+        match app {
+            Some(app) => {
+                client::attach(app.id.clone());
+                target.set(Some(Target::from_app(&app)));
+            }
+            None => {
+                client::attach_addr(addr.clone());
+                target.set(Some(Target::from_addr(&addr)));
+            }
+        }
     };
     let on_disconnect = move || {
-        disconnect();
+        client::detach();
         target.set(None);
     };
+
+    // An app the launcher named opens as soon as the server lists it.
+    let pending = Rc::new(RefCell::new(endpoint::initial_app()));
+    effect(move || {
+        let listed = apps.get();
+        let Some(id) = pending.borrow().clone() else { return };
+        if let Some(app) = listed.into_iter().find(|a| a.id == id) {
+            pending.borrow_mut().take();
+            on_connect(Some(app), String::new());
+        }
+    });
+
     let connected = runtime_core::memo(move || target.get().is_some());
     let target_now = runtime_core::memo(move || target.get().unwrap_or_default());
 
@@ -166,19 +153,12 @@ pub fn app() -> Element {
                     on_disconnect = Rc::new(on_disconnect) as Rc<dyn Fn()>,
                 )
             } else {
-                Connect(on_connect = Rc::new(on_connect) as Rc<dyn Fn(Option<AppInfo>, String)>)
+                Connect(
+                    apps = apps.read_only(),
+                    link = link.read_only(),
+                    on_connect = Rc::new(on_connect) as Rc<dyn Fn(Option<AppInfo>, String)>,
+                )
             }
         }
     }
-}
-
-/// Copy the client's latest snapshot into `snapshot`. The write is
-/// equality-guarded, so an unchanged target wakes nothing.
-fn schedule_poll(snapshot: Signal<Snapshot>) {
-    runtime_core::after_ms_detached(POLL_MS, move || {
-        if let Some(snap) = client_snapshot() {
-            snapshot.set(snap);
-        }
-        schedule_poll(snapshot);
-    });
 }

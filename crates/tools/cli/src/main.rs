@@ -45,6 +45,9 @@ enum Command {
     Init(cmd::init::Args),
     /// Build and run with hot reload.
     Dev(cmd::dev::Args),
+    /// Open the Inspector: a live debugging dashboard for every running
+    /// idealyst app, served to the browser from this process.
+    Inspect(cmd::inspect::Args),
     /// Build and serve a catalog-driven documentation site for a project
     /// (every `#[component]`, primitive, utility, type, guide, and icon
     /// set in the project and its component-library dependencies).
@@ -153,6 +156,7 @@ fn main() -> anyhow::Result<()> {
         Command::New(args) => cmd::new::run(args),
         Command::Init(args) => cmd::init::run(args),
         Command::Dev(args) => cmd::dev::run(args),
+        Command::Inspect(args) => cmd::inspect::run(args),
         Command::Docs(args) => cmd::docs::run(args),
         Command::Serve(args) => cmd::serve::run(args),
         Command::Build(args) => cmd::build::run(args),

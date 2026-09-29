@@ -1,0 +1,20 @@
+[package]
+name = "inspector-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Idealyst Inspector's debug server, hosted by `idealyst inspect`. Discovers running apps (`~/.idealyst/apps`), holds one robot-bridge connection per inspected app, polls and accumulates its state, runs actions, and serves the Inspector front end — its static web bundle and a WebSocket speaking `inspector-protocol` — on one local HTTP port. The front end never talks to an app."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[dependencies]
+inspector-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Sync WebSocket server for the front end's socket — same version and
+# features as `robot-relay`. Plain threads, no async runtime.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+tempfile = "3"

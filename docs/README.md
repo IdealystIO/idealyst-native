@@ -94,6 +94,11 @@ If you're new to the codebase, read the docs in this order:
   linter into rust-analyzer (inline squiggles via a generated `ra-check.sh`).
   The surgical settings/extensions merge, the aspect model, the non-interactive
   flags, and the shared MCP `configure_vscode` tool.
+- [`inspector.md`](./inspector.md). The Inspector, a live debugging dashboard
+  for any running app, opened in the browser with `idealyst inspect` or
+  `idealyst dev --inspect`. The server owns all debug state and every app
+  connection; the front end only renders what the server pushes. Covers the
+  protocol, the Origin guard, and how the CLI embeds the front end.
 
 ## Migrating
 

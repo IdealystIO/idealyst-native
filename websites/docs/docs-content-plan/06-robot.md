@@ -181,7 +181,7 @@ also lets the bridge set it (the value type must be `Deserialize`).
 | `list_navigators` | Every navigator: active route and path, back stack, `controllable`. |
 | `navigate` | `{nav_id, action: push/replace/reset/pop, path}`. The path is a full path (the navigator's base included) and resolves the way a deep link does. |
 
-The [Inspector](#) is a desktop app built on exactly these tools.
+The [Inspector](#) is built on exactly these verbs. `idealyst inspect` opens it in the browser; its server drives them on each app it inspects.
 
 ## What a session looks like
 

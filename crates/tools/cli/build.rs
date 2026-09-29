@@ -21,6 +21,7 @@
 //! URL is overridable via `IDEALYST_FRAMEWORK_GIT_URL` at both build
 //! and runtime; defaults to the public idealyst-native repo.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DEFAULT_URL: &str = "https://github.com/IdealystIO/idealyst-native";
@@ -88,6 +89,189 @@ fn main() {
     println!("cargo:rustc-env=IDEALYST_REGISTRY_NAME_DEFAULT={}", reg_name);
     println!("cargo:rustc-env=IDEALYST_REGISTRY_INDEX_DEFAULT={}", reg_index);
     println!("cargo:rustc-env=IDEALYST_REGISTRY_VERSION_DEFAULT={}", reg_version);
+
+    embed_inspector();
+}
+
+// --- The Inspector front end ---------------------------------------------
+//
+// `idealyst inspect` serves the Inspector's web build from the binary, so
+// an installed CLI needs nothing else on disk. We build it HERE, with the
+// same pipeline `idealyst build --web --release` runs (`build_web::build`),
+// into OUT_DIR, and generate `inspector_bundle.rs`: a `FILES` table of
+// `include_bytes!` entries.
+//
+// The CLI installs from a git checkout of this workspace, so the
+// Inspector's source is always beside this crate. Building it needs the
+// wasm toolchain (wasm32-unknown-unknown, wasm-bindgen, wasm-opt), which
+// anyone building idealyst web apps already has. A missing tool must not
+// make the CLI uninstallable: the failure becomes a build warning plus
+// `SKIPPED`, which `idealyst inspect` reports when it starts.
+//
+// `IDEALYST_CLI_SKIP_INSPECTOR=1` skips the build outright, for CLI work
+// that doesn't touch the Inspector: every framework crate the front end
+// depends on is watched below, so without it a runtime edit re-runs the
+// (incremental) wasm build on the next CLI build.
+
+fn embed_inspector() {
+    println!("cargo:rerun-if-env-changed=IDEALYST_CLI_SKIP_INSPECTOR");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    let result = if std::env::var_os("IDEALYST_CLI_SKIP_INSPECTOR").is_some_and(|v| !v.is_empty()) {
+        Err("IDEALYST_CLI_SKIP_INSPECTOR is set".to_string())
+    } else {
+        build_inspector(&out_dir)
+    };
+    let mut gen = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
+    let skipped = match result {
+        Ok(files) => {
+            for (rel, abs) in &files {
+                gen.push_str(&format!("    ({rel:?}, include_bytes!({:?})),\n", abs.display().to_string()));
+            }
+            "None".to_string()
+        }
+        Err(why) => {
+            println!("cargo:warning=`idealyst inspect` will serve no page: the Inspector front end was not built ({why})");
+            format!("Some({why:?})")
+        }
+    };
+    gen.push_str("];\n");
+    gen.push_str(&format!("pub static SKIPPED: Option<&str> = {skipped};\n"));
+    std::fs::write(out_dir.join("inspector_bundle.rs"), gen).expect("write inspector_bundle.rs");
+}
+
+fn build_inspector(out_dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
+    let root = manifest_dir
+        .join("../../..")
+        .canonicalize()
+        .map_err(|e| format!("locating the workspace root: {e}"))?;
+    let project = root.join("examples/inspector");
+    if !project.join("Cargo.toml").is_file() {
+        return Err(format!("no Inspector source at {}", project.display()));
+    }
+    watch_local_deps(&project)?;
+
+    // The build script's environment describes THIS (host) build; the
+    // nested wasm build must not inherit it. Cargo hands build scripts
+    // the host's encoded RUSTFLAGS (which build-web would fold into the
+    // wasm flags), and `cargo clippy` a workspace wrapper.
+    std::env::remove_var("CARGO_ENCODED_RUSTFLAGS");
+    std::env::remove_var("RUSTC_WORKSPACE_WRAPPER");
+
+    let bundle = out_dir.join("inspector-web");
+    let _ = std::fs::remove_dir_all(&bundle);
+    build_web::build(
+        &project,
+        build_web::BuildOptions {
+            release: true,
+            source: build_ios::FrameworkSource::Workspace { root },
+            premint_only: false,
+            premint_report: false,
+            debuginfo: build_web::DebugInfo::default(),
+            dev_opt: build_web::DevOpt::default(),
+            primitives: None,
+            user_features: Vec::new(),
+            bundle_out_dir: Some(bundle.clone()),
+            robot_relay_url: None,
+            head_script: None,
+            runtime_server_url: None,
+            hot_patch: false,
+            gzip: false,
+            // The server serves originals; `.br` siblings would only
+            // double the embedded bytes.
+            brotli: false,
+            strip_panics: false,
+            hydrate: false,
+            prune_dead_data_min: None,
+            memory_budget_mb: None,
+            premint: false,
+            // One module: nothing in the Inspector is lazy, and it keeps
+            // the embedded file set small.
+            wasm_split: false,
+            reporter: dev_events::Reporter::plain_stderr(),
+        },
+    )
+    .map_err(|e| format!("{e:#}"))?;
+
+    let mut files = Vec::new();
+    collect(&bundle, &bundle, &mut files).map_err(|e| format!("reading the bundle: {e}"))?;
+    if !files.iter().any(|(rel, _)| rel == "index.html") {
+        return Err("the web build staged no index.html".to_string());
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn collect(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect(base, &path, out)?;
+        } else {
+            let rel = path.strip_prefix(base).expect("under base").to_string_lossy().replace('\\', "/");
+            out.push((rel, path));
+        }
+    }
+    Ok(())
+}
+
+/// Re-run when any workspace crate the Inspector compiles against
+/// changes: its local dependency closure for wasm32, from `cargo
+/// metadata`, each watched as a directory.
+fn watch_local_deps(project: &Path) -> Result<(), String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let out = Command::new(cargo)
+        .current_dir(project)
+        .args(["metadata", "--format-version", "1", "--filter-platform", "wasm32-unknown-unknown"])
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .output()
+        .map_err(|e| format!("cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("cargo metadata: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let meta: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata output: {e}"))?;
+    let local: std::collections::HashMap<&str, PathBuf> = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["source"].is_null())
+        .filter_map(|p| {
+            let dir = Path::new(p["manifest_path"].as_str()?).parent()?.to_path_buf();
+            Some((p["id"].as_str()?, dir))
+        })
+        .collect();
+    let nodes: std::collections::HashMap<&str, Vec<&str>> = meta["resolve"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let deps = n["dependencies"].as_array()?.iter().filter_map(|d| d.as_str()).collect();
+            Some((n["id"].as_str()?, deps))
+        })
+        .collect();
+    let start = local
+        .iter()
+        .find(|(_, dir)| dir.as_path() == project)
+        .map(|(id, _)| *id)
+        .ok_or("cargo metadata doesn't list the Inspector")?;
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![start];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(dir) = local.get(id) {
+            println!("cargo:rerun-if-changed={}", dir.join("src").display());
+            println!("cargo:rerun-if-changed={}", dir.join("Cargo.toml").display());
+            for dep in nodes.get(id).into_iter().flatten() {
+                if local.contains_key(dep) {
+                    stack.push(dep);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Returns `(refspec_kind, refspec_value)` where `refspec_kind` is

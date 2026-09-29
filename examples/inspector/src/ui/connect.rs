@@ -1,22 +1,25 @@
-//! The app picker: every running app with a robot bridge on this machine,
-//! and connect-by-address.
+//! The app picker: every running app the Inspector server found on this
+//! machine, and connect-by-address.
 
 use std::rc::Rc;
 
 use idea_ui::{tone, typography_kind, variant, Badge, Button, Field, FieldSize, Typography};
-use runtime_core::{component, memo, signal, ui, Element, Signal};
+use runtime_core::{component, memo, signal, ui, Element, ReadSignal};
 
 use super::styles::{AppRow, Caption, Column, ComponentName, ConnectColumn, Grow, MonoMuted, RowBetween, RowStart, TableBox};
-use crate::bridge::discovery::{self, AppInfo};
+use crate::bridge::client::{self, ServerLink};
+use crate::bridge::model::AppInfo;
 
 #[component]
 pub fn Connect(
+    apps: ReadSignal<Vec<AppInfo>>,
+    link: ReadSignal<ServerLink>,
     #[prop(default = Rc::new(|_, _| {}) as Rc<dyn Fn(Option<AppInfo>, String)>)]
     on_connect: Rc<dyn Fn(Option<AppInfo>, String)>,
 ) -> Element {
-    let apps: Signal<Vec<AppInfo>> = signal(discovery::list());
     let empty = memo(move || apps.get().is_empty());
-    let rescan = Rc::new(move || apps.set(discovery::list())) as Rc<dyn Fn()>;
+    let server_line = memo(move || server_line(&link.get()));
+    let rescan = Rc::new(client::rescan) as Rc<dyn Fn()>;
     let addr = signal(String::new());
     let on_addr = Rc::new(move |v: String| addr.set(v)) as Rc<dyn Fn(String)>;
     let by_addr = {
@@ -47,8 +50,9 @@ pub fn Connect(
                         leading_icon = Some(icons_lucide::REFRESH_CW),
                     )
                 }
+                text(style = Caption()) { server_line }
                 if empty {
-                    text(style = Caption()) { "No running apps found. Start one with idealyst dev, then Rescan." }
+                    text(style = Caption()) { "No running apps found. Start one with idealyst dev; it shows up here on its own." }
                 }
                 AppList(apps = apps, on_connect = on_connect)
             }
@@ -69,15 +73,28 @@ pub fn Connect(
     }
 }
 
+/// The Inspector server's state, as the picker says it.
+fn server_line(link: &ServerLink) -> String {
+    match link {
+        ServerLink::Connecting => "Connecting to the Inspector server…".to_string(),
+        ServerLink::Connected => "Connected to the Inspector server.".to_string(),
+        ServerLink::Down(why) => format!("{why}. Start it with idealyst inspect; this page reconnects on its own."),
+        ServerLink::Incompatible { server } => format!(
+            "The Inspector server speaks protocol {server}, this Inspector {}. Use the Inspector the server serves.",
+            inspector_protocol::PROTOCOL_VERSION
+        ),
+    }
+}
+
 #[component]
 fn AppList(
-    apps: Signal<Vec<AppInfo>>,
+    apps: ReadSignal<Vec<AppInfo>>,
     #[prop(default = Rc::new(|_, _| {}) as Rc<dyn Fn(Option<AppInfo>, String)>)]
     on_connect: Rc<dyn Fn(Option<AppInfo>, String)>,
 ) -> Element {
     ui! {
         view(style = TableBox()) {
-            for app in apps, key = format!("{}:{}", app.pid, app.port) {
+            for app in apps, key = app.id.clone() {
                 AppLine(app = app, on_connect = on_connect.clone())
             }
         }

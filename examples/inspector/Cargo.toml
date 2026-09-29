@@ -3,7 +3,7 @@ name = "inspector"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Idealyst Inspector — a runtime debugging dashboard. Connects to a running idealyst app's robot bridge (the single TCP newline-JSON transport) and shows, live: the rendered component tree with each instance's props (live/static, current values) and callable methods, watched signals with history, every navigator's back stack, captured logs and phase timers. Host: macOS desktop."
+description = "Idealyst Inspector — a runtime debugging dashboard's front end. Shows, live, for any running idealyst app: the rendered component tree with each instance's props (live/static, current values) and callable methods, watched signals with history, every navigator's back stack, captured logs and phase timers. It talks only to the Inspector server (`idealyst inspect`), which owns the apps' robot-bridge connections; the CLI embeds this crate's web build and serves it. Hosts: web, macOS desktop."
 # Not published to the idealyst registry: this crate is workspace-internal
 # (tooling, demo, smoke test, or benchmark). Consumers never name it.
 publish = false
@@ -12,9 +12,11 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
-# The inspector is a CLIENT of the robot bridge, not a robot target — it
-# does NOT enable the runtime's `robot` feature. It just renders an
-# idealyst UI and speaks the bridge's newline-JSON protocol over std::net.
+# The Inspector is a front end of the Inspector SERVER, not a robot target
+# and not a bridge client: it does NOT enable the runtime's `robot`
+# feature, and it never opens a connection to an app. Everything it
+# knows arrives over one WebSocket from `inspector-server`, typed by
+# `inspector-protocol` (shared with the server).
 #
 # `runtime-core` is aliased to `runtime_core` at the crate root (see
 # src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
@@ -27,20 +29,31 @@ runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
+inspector-protocol = { workspace = true }
+# The server socket: `web_sys::WebSocket` in a browser, sync tungstenite
+# on an I/O thread on desktop.
+net = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 
+# The browser build finds its server on the page's own host, and the app
+# to open in `?app=` (see `bridge::endpoint`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
 # No backend deps: this crate is a platform-agnostic app library (the
-# CLI-generated macOS wrapper brings `backend-macos` and calls
-# `host_appkit::newcore::run_with`), so it compiles on any host target.
+# CLI-generated wrappers bring the backend), so it compiles on any host
+# target.
 
 [dev-dependencies]
 # Screen mount tests (`src/ui/tests.rs`) realize the real screens against
 # the recording mock host.
 host-mock = { path = "../../crates/dev/host-mock" }
+# `StateBits`, to drive a pressable's hover/press state from a test.
+runtime-shared = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Inspector"
 bundle_id = "ai.truday.idealyst.inspector"
 version   = "0.0.1"
-targets   = ["macos"]
+targets   = ["web", "macos"]

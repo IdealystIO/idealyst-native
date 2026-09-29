@@ -798,65 +798,113 @@ fn noop_setter() -> Rc<dyn Fn(StateBits, bool)> {
 // `attach_style_signal_class`, world-notifier edition)
 // ===========================================================================
 
-/// Per-world dedup table for signal→JS notifier effects (world context,
-/// like `ThemeCtx`). One entry per signal id; entries live for the
-/// world's lifetime — the notifier effect is world-root-owned
-/// (`unscoped`), because it serves EVERY node ever bound to the signal,
-/// not the first node's subtree (a collected effect would die with that
-/// subtree while later-bound nodes lived on — the same regression class
-/// the theme driver documents).
+/// Per-world table of signal→JS notifier effects (world context, like
+/// `ThemeCtx`): at most ONE notifier per signal id, shared by every
+/// binding to that signal.
 ///
 /// SHARED between the class-binding path and the text-binding path: the
 /// old core allowed at most ONE JS notifier per signal (the first
 /// registrant's stringifier wins; both dispatchers tap the same
 /// `__idealystOnSignalChanged` value cache), and two notifier effects
 /// for one signal would double-ship every commit.
+///
+/// **Lifetime = the bindings'.** Each binding holds a [`NotifierLease`]
+/// until its teardown; the notifier lives in its own [`Owned`] (not the
+/// first binding's subtree, which could unmount while later-bound nodes
+/// live on) and is freed when the LAST lease drops. It used to be
+/// world-root-owned and never freed, which outlived the signal it reads:
+/// when one flush both changed a component's memo (queuing the notifier)
+/// and unmounted that component, the notifier still ran and read the
+/// freed memo (`stale-signal-handle`; the Inspector's Disconnect).
+/// A binding can't outlive its signal's scope, so neither can the
+/// notifier now, and a subtree's teardown frees it inside the same
+/// flush, before its turn (`effect_is_live` then skips it).
+///
+/// [`Owned`]: runtime_world::Owned
 #[derive(Clone, Default)]
-struct SignalNotifiers(Rc<RefCell<std::collections::HashSet<u64>>>);
+struct SignalNotifiers(Rc<RefCell<std::collections::HashMap<u64, NotifierEntry>>>);
 
-/// First-registrant-wins install seam for the per-signal JS notifier
-/// effect: if `signal_id` has no notifier in this world yet, run
-/// `install` (which must create the world-root effect); otherwise do
-/// nothing. The effect's FIRST run happens synchronously at creation —
-/// i.e. BEFORE the caller registers its binding — which seeds the
-/// JS-side signal-value cache so the binding's registration-time
-/// initial paint resolves (the old core relied on a prior
-/// `register_signal_for_js` write for that seed).
-pub(crate) fn ensure_signal_notifier_installed(signal_id: u64, install: impl FnOnce()) {
+struct NotifierEntry {
+    leases: usize,
+    _owned: runtime_world::Owned,
+}
+
+/// Keeps one signal's JS notifier alive. Dropping the last lease for a
+/// signal frees its notifier effect.
+pub(crate) struct NotifierLease {
+    registry: SignalNotifiers,
+    signal_id: u64,
+}
+
+impl Drop for NotifierLease {
+    fn drop(&mut self) {
+        let freed = {
+            let mut map = self.registry.0.borrow_mut();
+            match map.get_mut(&self.signal_id) {
+                Some(entry) if entry.leases > 1 => {
+                    entry.leases -= 1;
+                    None
+                }
+                Some(_) => map.remove(&self.signal_id),
+                None => None,
+            }
+        };
+        // Freed with no registry borrow held.
+        drop(freed);
+    }
+}
+
+/// Lease the per-signal JS notifier effect: if `signal_id` has none in
+/// this world, run `install`, which creates the effect, and own
+/// whatever it creates; otherwise share the existing one. `install` must
+/// NOT wrap its effect in `unscoped`: that would move it out of the
+/// notifier's own scope and back to the world root.
+///
+/// The effect's FIRST run happens synchronously at creation — i.e.
+/// BEFORE the caller registers its binding — which seeds the JS-side
+/// signal-value cache so the binding's registration-time initial paint
+/// resolves (the old core relied on a prior `register_signal_for_js`
+/// write for that seed).
+pub(crate) fn acquire_signal_notifier(signal_id: u64, install: impl FnOnce()) -> NotifierLease {
     let registry = match runtime_world::inject::<SignalNotifiers>() {
         Some(r) => r,
         None => {
             let r = SignalNotifiers::default();
-            runtime_world::provide(r.clone());
+            // A world-lifetime service: published from whatever scope first
+            // needs it, it must not stop being findable when that scope
+            // unmounts (see `runtime_world::unscoped`).
+            runtime_world::unscoped(|| runtime_world::provide(r.clone()));
             r
         }
     };
-    if !registry.0.borrow_mut().insert(signal_id) {
-        return;
+    let shared = registry.0.borrow_mut().get_mut(&signal_id).map(|e| e.leases += 1).is_some();
+    if !shared {
+        // Out of the caller's scope (the notifier outlives the first
+        // binding's subtree), into one of its own.
+        let ((), owned) = runtime_world::unscoped(|| runtime_world::collect_owned(install));
+        registry.0.borrow_mut().insert(signal_id, NotifierEntry { leases: 1, _owned: owned });
     }
-    install();
+    NotifierLease { registry, signal_id }
 }
 
 #[cfg(not(idealyst_premint_only))]
-/// Ensure ONE world-root effect exists for `signal_id` that ships the
-/// signal's committed value to the backend's JS CLASS dispatcher
+/// Lease ONE effect for `signal_id` that ships the signal's committed
+/// value to the backend's JS CLASS dispatcher
 /// (`StyleOps::notify_signal_value_js`).
 fn ensure_signal_notifier<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     signal_id: u64,
     read_value: Rc<dyn Fn() -> u32>,
-) {
-    ensure_signal_notifier_installed(signal_id, || {
+) -> NotifierLease {
+    acquire_signal_notifier(signal_id, || {
         let b = backend.clone();
-        runtime_world::unscoped(|| {
-            let _notifier = effect(move || {
-                // Tracked read: re-fires on every committed change of the
-                // signal; one FFI hop fans out to every JS-side subscriber.
-                let value = read_value();
-                b.borrow_mut().notify_signal_value_js(signal_id, value);
-            });
+        let _notifier = effect(move || {
+            // Tracked read: re-fires on every committed change of the
+            // signal; one FFI hop fans out to every JS-side subscriber.
+            let value = read_value();
+            b.borrow_mut().notify_signal_value_js(signal_id, value);
         });
-    });
+    })
 }
 
 #[cfg(not(idealyst_premint_only))]
@@ -886,7 +934,7 @@ fn attach_signal_class_js<H: StyleServices>(
 
     // Notifier BEFORE binding registration (seeds the JS value cache —
     // see ensure_signal_notifier).
-    ensure_signal_notifier(backend, spec.signal_id, spec.read_value.clone());
+    let lease = ensure_signal_notifier(backend, spec.signal_id, spec.read_value.clone());
 
     let class_refs: Vec<&str> = class_names.iter().map(|s| s.as_str()).collect();
     let binding_id = backend.borrow_mut().register_reactive_class_binding(
@@ -905,6 +953,7 @@ fn attach_signal_class_js<H: StyleServices>(
     on_teardown(move || {
         let _pin = &apps;
         b.borrow_mut().release_reactive_class_binding(binding_id);
+        drop(lease);
     });
 
     // Same no-op state setter the static path returns — state overlays
@@ -2018,6 +2067,40 @@ mod tests {
         drop(owned);
         let released = backend.borrow().released.clone();
         assert_eq!(released.len(), 3, "each node's binding released");
+    }
+
+    /// The class path holds the shared notifier by lease too: once every
+    /// class binding to a signal is torn down its notifier is freed (it
+    /// used to live on for the world's lifetime, shipping commits for
+    /// bindings that no longer existed and outliving signals owned by
+    /// the unmounted scope), and the next binding installs and seeds a
+    /// fresh one.
+    #[test]
+    fn signal_class_notifier_is_freed_with_its_last_binding() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(JsHost::default()));
+        let bind = |sig| {
+            let ((), owned) = collect_owned(|| {
+                let StyleProp::SignalClass(spec) = signal_class(sig, &[0, 1], test_app) else {
+                    panic!("signal_class builds a SignalClass prop")
+                };
+                let _setter = attach_style(&backend, &0u32, StyleProp::SignalClass(spec));
+            });
+            owned
+        };
+        let (sig, owned) = world.enter(|| {
+            let sig = runtime_world::signal(0u32);
+            (sig, bind(sig))
+        });
+        assert_eq!(backend.borrow().notified, vec![(sig.raw_id(), 0)]);
+
+        drop(owned);
+        world.enter(|| sig.set(1));
+        world.flush();
+        assert_eq!(backend.borrow().notified.len(), 1, "no binding left: nothing ships");
+
+        let _again = world.enter(|| bind(sig));
+        assert_eq!(backend.borrow().notified.last(), Some(&(sig.raw_id(), 1)), "a new binding re-seeds");
     }
 
     /// Host capturing the rules each apply path actually ships, so a

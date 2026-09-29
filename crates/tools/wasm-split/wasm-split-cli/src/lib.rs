@@ -197,6 +197,12 @@ pub struct Splitter<'a> {
     fns_to_ids: HashMap<FunctionId, usize>,
     _ids_to_fns: Vec<FunctionId>,
 
+    /// The bindgened module's code section, and each source-module local
+    /// function's position in it — what an emit needs to hand walrus a
+    /// copy with only its own bodies in it (see [`stub_function_bodies`]).
+    bindgened_layout: CodeLayout,
+    local_index: HashMap<FunctionId, usize>,
+
     shared_symbols: BTreeSet<Node>,
     split_points: Vec<SplitPoint>,
     chunks: Vec<HashSet<Node>>,
@@ -261,7 +267,17 @@ impl<'a> Splitter<'a> {
         // since that's not reliable after bindgening
         let raw_data = parse_bytes_to_data_segment(bindgened)?;
 
+        let bindgened_layout = code_layout(bindgened)?;
+        let local_index: HashMap<FunctionId, usize> = module
+            .funcs
+            .iter_local()
+            .enumerate()
+            .map(|(idx, (id, _))| (id, idx))
+            .collect();
+
         let mut module = Self {
+            bindgened_layout,
+            local_index,
             source_module: module,
             original,
             bindgened,
@@ -298,16 +314,16 @@ impl<'a> Splitter<'a> {
 
     /// Bound how many split modules [`emit`](Self::emit) builds at once.
     ///
-    /// Every split module and chunk starts from a FULL walrus parse of the
-    /// bindgened module (`parse_module_with_ids`) and prunes down from
-    /// there, so each concurrent emit holds one whole module's IR. On the
-    /// default global pool that is one parse per core, and peak RSS grows
-    /// with the core count and the module size instead of with the
-    /// output. Measured on CrewForge (80 MB bindgened module, 17 split
-    /// points, 14-core machine): peak RSS 4.0 GB with 1 worker, 6.8 GB
-    /// with 4, 12.3 GB with 14. Wall time does not follow: 20.5 s with 1,
-    /// 12.4 s with 4, 16.4 s with 14 — past a few workers the parses fight
-    /// over memory bandwidth and page faults (sys time 1 s → 39 s).
+    /// Each split module and chunk is built from a parse of the bindgened
+    /// module in which only its own function bodies are real (see
+    /// [`emit_with_own_bodies`](Self::emit_with_own_bodies)), so a worker
+    /// holds IR in proportion to what it emits. Before that, every emit
+    /// parsed the whole program and one parse ran per core: 12.3 GB peak
+    /// on CrewForge's 80 MB module on 14 cores. Measured after, on
+    /// CrewForge's 73 MB module (17 split points, 14 cores): peak RSS
+    /// 3.4 / 3.2 / 3.5 / 3.5 GB and 8.3 / 7.6 / 7.0 / 7.9 s at 1 / 2 / 4 /
+    /// 8 workers. The peak is the long-lived source parse plus the largest
+    /// single emit (the shared chunk), not the worker count.
     ///
     /// `None` keeps the global pool. `Some(n)` runs the emits — and the
     /// walrus-internal parallelism nested inside them — on a dedicated
@@ -461,9 +477,67 @@ impl<'a> Splitter<'a> {
         })
     }
 
+    /// Run one split-module or chunk emit against a copy of the bindgened
+    /// module in which every function outside `own` is stubbed.
+    ///
+    /// Every emit used to start from a full walrus parse of the whole
+    /// program (1.2 GB of IR on CrewForge) and prune it down to the few
+    /// percent it keeps. The pruning is exact: each main-graph function is
+    /// deleted or replaced by an import stub, and every other split's code
+    /// is unreachable and collected — so none of those bodies is ever
+    /// READ, only allocated. Stubbing them first makes an emit cost what
+    /// it keeps, which is what lets the emits run in parallel without the
+    /// peak growing by a whole program per worker.
+    ///
+    /// "Never read" rests on the call graph, so it is checked rather than
+    /// trusted: after GC, `emit` fails with [`StubbedBodyReached`] if any
+    /// stubbed function is still live with its stub body, and the emit is
+    /// redone from the full module. Output is identical either way — a
+    /// stubbed function is either gone or had its body replaced, and GC
+    /// only walks live bodies.
+    fn emit_with_own_bodies(
+        &self,
+        label: &str,
+        own: &HashSet<Node>,
+        emit: impl Fn(&[u8], &[usize]) -> Result<SplitModule>,
+    ) -> Result<SplitModule> {
+        let keep: HashSet<usize> = own
+            .iter()
+            .filter_map(|node| match node {
+                Node::Function(id) => self.local_index.get(id).copied(),
+                Node::DataSymbol(_) => None,
+            })
+            .collect();
+        let (bytes, stubbed) =
+            stub_function_bodies(self.bindgened, &self.bindgened_layout, |idx| {
+                !keep.contains(&idx)
+            });
+        match emit(&bytes, &stubbed) {
+            Err(err) if err.is::<StubbedBodyReached>() => {
+                // Printed, not traced: the CLI installs no subscriber, and
+                // a fallback is a call-graph gap worth seeing (it also
+                // costs this emit a whole-program parse).
+                eprintln!("[wasm-split] {label}: {err}; re-emitting from the full module");
+                drop(bytes);
+                emit(self.bindgened, &[])
+            }
+            result => result,
+        }
+    }
+
     /// Write the contents of the split modules to the output
     fn emit_split_module(&self, split_idx: usize) -> Result<SplitModule> {
-        let split = self.split_points[split_idx].clone();
+        let plan = self.split_module_plan(split_idx);
+        self.emit_with_own_bodies(
+            &format!("split module {split_idx}"),
+            &plan.bodies,
+            |bytes, stubbed| self.emit_split_module_from(split_idx, &plan, bytes, stubbed),
+        )
+    }
+
+    /// Which symbols split module `split_idx` owns, imports and deletes.
+    fn split_module_plan(&self, split_idx: usize) -> SplitModulePlan {
+        let split = &self.split_points[split_idx];
 
         // These are the symbols that will only exist in this module and not in the main module.
         let mut unique_symbols = split
@@ -486,6 +560,12 @@ impl<'a> Splitter<'a> {
             .cloned()
             .collect();
 
+        // Every body this module keeps, taken before the chunk extraction
+        // below: an extracted chunk function is only turned into an import
+        // stub when it is also in `shared_symbols`, and otherwise keeps its
+        // own body here.
+        let bodies = unique_symbols.clone();
+
         // Convert split chunk functions to imports
         let mut relies_on_chunks = HashSet::new();
         for (idx, chunk) in self.chunks.iter().enumerate() {
@@ -502,6 +582,32 @@ impl<'a> Splitter<'a> {
             }
         }
 
+        SplitModulePlan {
+            unique_symbols,
+            symbols_to_import,
+            symbols_to_delete,
+            relies_on_chunks,
+            bodies,
+        }
+    }
+
+    fn emit_split_module_from(
+        &self,
+        split_idx: usize,
+        plan: &SplitModulePlan,
+        bindgened: &[u8],
+        stubbed: &[usize],
+    ) -> Result<SplitModule> {
+        let split = self.split_points[split_idx].clone();
+        let SplitModulePlan {
+            unique_symbols,
+            symbols_to_import,
+            symbols_to_delete,
+            relies_on_chunks,
+            ..
+        } = plan;
+        let relies_on_chunks = relies_on_chunks.clone();
+
         tracing::info!(
             "Emitting module {}/{} {}: {:?}",
             split_idx,
@@ -510,7 +616,8 @@ impl<'a> Splitter<'a> {
             relies_on_chunks
         );
 
-        let (mut out, ids_to_fns, _fns_to_ids) = parse_module_with_ids(self.bindgened)?;
+        let (mut out, ids_to_fns, _fns_to_ids) = parse_module_with_ids(bindgened)?;
+        let stubbed = stubbed_ids(&out, stubbed);
 
         // Remap the graph to our module's IDs
         let shared_funcs = self
@@ -519,9 +626,9 @@ impl<'a> Splitter<'a> {
             .map(|f| self.remap_id(&ids_to_fns, f))
             .collect::<Vec<_>>();
 
-        let unique_symbols = self.remap_ids(&unique_symbols, &ids_to_fns);
-        let symbols_to_delete = self.remap_ids(&symbols_to_delete, &ids_to_fns);
-        let symbols_to_import = self.remap_ids(&symbols_to_import, &ids_to_fns);
+        let unique_symbols = self.remap_ids(unique_symbols, &ids_to_fns);
+        let symbols_to_delete = self.remap_ids(symbols_to_delete, &ids_to_fns);
+        let symbols_to_import = self.remap_ids(symbols_to_import, &ids_to_fns);
         let split_export_func = ids_to_fns[self.fns_to_ids[&split.export_func]];
 
         // Do some basic cleanup of the module to make it smaller
@@ -553,6 +660,7 @@ impl<'a> Splitter<'a> {
         // Run the gc to remove unused functions - also validates the module to ensure we can emit it properly
         // todo(jon): prefer to delete the items as we go so we don't need to run a gc pass. it/it's quite slow
         walrus::passes::gc::run(&mut out);
+        ensure_no_stub_survived(&out, &stubbed)?;
 
         Ok(SplitModule {
             bytes: out.emit_wasm(),
@@ -565,6 +673,19 @@ impl<'a> Splitter<'a> {
 
     /// Write a split chunk - this is a chunk with no special functions, just exports + initializers
     fn emit_split_chunk(&self, idx: usize) -> Result<SplitModule> {
+        self.emit_with_own_bodies(
+            &format!("chunk {idx}"),
+            &self.chunks[idx],
+            |bytes, stubbed| self.emit_split_chunk_from(idx, bytes, stubbed),
+        )
+    }
+
+    fn emit_split_chunk_from(
+        &self,
+        idx: usize,
+        bindgened: &[u8],
+        stubbed: &[usize],
+    ) -> Result<SplitModule> {
         tracing::info!("emitting chunk {}", idx);
 
         let unique_symbols = &self.chunks[idx];
@@ -601,7 +722,8 @@ impl<'a> Splitter<'a> {
             .collect();
 
         // Make sure to remap any ids from the main module to this module
-        let (mut out, ids_to_fns, _fns_to_ids) = parse_module_with_ids(self.bindgened)?;
+        let (mut out, ids_to_fns, _fns_to_ids) = parse_module_with_ids(bindgened)?;
+        let stubbed = stubbed_ids(&out, stubbed);
 
         // Remap the graph to our module's IDs
         let shared_funcs = self
@@ -642,6 +764,7 @@ impl<'a> Splitter<'a> {
 
         // Run the gc to remove unused functions - also validates the module to ensure we can emit it properly
         walrus::passes::gc::run(&mut out);
+        ensure_no_stub_survived(&out, &stubbed)?;
 
         Ok(SplitModule {
             bytes: out.emit_wasm(),
@@ -1017,17 +1140,11 @@ impl<'a> Splitter<'a> {
         let original = ModuleWithRelocations::new(self.original)?;
         let code_relocs = original.collect_relocations_from_section("reloc.CODE")?;
         let live_ranges: HashSet<Range<usize>> = original
-            .module
-            .funcs
-            .iter_local()
-            .filter_map(|(id, local)| {
-                let func = original.module.funcs.get(id);
-                let name = func.name.as_deref()?;
-                if live_bindgen_names.contains(name) {
-                    local.original_range.clone()
-                } else {
-                    None
-                }
+            .local_ranges
+            .iter()
+            .filter_map(|(id, range)| {
+                let name = original.module.funcs.get(*id).name.as_deref()?;
+                live_bindgen_names.contains(name).then(|| range.clone())
             })
             .collect();
 
@@ -1036,11 +1153,8 @@ impl<'a> Splitter<'a> {
         //    data-symbol targets. Anything NOT in this set is
         //    "safe-dead" (no live function code references it directly).
         let mut safe_live: HashSet<usize> = HashSet::new();
-        for (_, local) in original.module.funcs.iter_local() {
-            let Some(range) = local.original_range.clone() else {
-                continue;
-            };
-            if !live_ranges.contains(&range) {
+        for (_, range) in &original.local_ranges {
+            if !live_ranges.contains(range) {
                 continue;
             }
             for entry in &code_relocs {
@@ -1166,17 +1280,11 @@ impl<'a> Splitter<'a> {
         let code_relocs = original.collect_relocations_from_section("reloc.CODE")?;
         let data_relocs = original.collect_relocations_from_section("reloc.DATA")?;
         let live_ranges: HashSet<Range<usize>> = original
-            .module
-            .funcs
-            .iter_local()
-            .filter_map(|(id, local)| {
-                let func = original.module.funcs.get(id);
-                let name = func.name.as_deref()?;
-                if live_bindgen_names.contains(name) {
-                    local.original_range.clone()
-                } else {
-                    None
-                }
+            .local_ranges
+            .iter()
+            .filter_map(|(id, range)| {
+                let name = original.module.funcs.get(*id).name.as_deref()?;
+                live_bindgen_names.contains(name).then(|| range.clone())
             })
             .collect();
 
@@ -1186,11 +1294,8 @@ impl<'a> Splitter<'a> {
         //    address was patched into the code at this offset.
         let mut live_data: HashSet<usize> = HashSet::new();
         let mut queue: Vec<usize> = Vec::new();
-        for (_, local) in original.module.funcs.iter_local() {
-            let Some(range) = local.original_range.clone() else {
-                continue;
-            };
-            if !live_ranges.contains(&range) {
+        for (_, range) in &original.local_ranges {
+            if !live_ranges.contains(range) {
                 continue;
             }
             for entry in &code_relocs {
@@ -1387,69 +1492,7 @@ impl<'a> Splitter<'a> {
 
     /// Creates the jump points
     fn create_ifunc_initializers(&self, out: &mut Module, unique_symbols: &HashSet<Node>) {
-        let ifunc_table = self.load_funcref_table(out);
-
-        let mut initializers = HashMap::new();
-        for segment in out.elements.iter_mut() {
-            let ElementKind::Active { offset, .. } = &mut segment.kind else {
-                continue;
-            };
-
-            let ConstExpr::Value(ir::Value::I32(offset)) = offset else {
-                continue;
-            };
-
-            match &segment.items {
-                ElementItems::Functions(vec) => {
-                    for (idx, id) in vec.iter().enumerate() {
-                        if unique_symbols.contains(&Node::Function(*id)) {
-                            initializers
-                                .insert(*offset + idx as i32, ElementItems::Functions(vec![*id]));
-                        }
-                    }
-                }
-
-                ElementItems::Expressions(ref_type, const_exprs) => {
-                    for (idx, expr) in const_exprs.iter().enumerate() {
-                        if let ConstExpr::RefFunc(id) = expr {
-                            if unique_symbols.contains(&Node::Function(*id)) {
-                                initializers.insert(
-                                    *offset + idx as i32,
-                                    ElementItems::Expressions(
-                                        *ref_type,
-                                        vec![ConstExpr::RefFunc(*id)],
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Wipe away references to these segments
-        for table in out.tables.iter_mut() {
-            table.elem_segments.clear();
-        }
-
-        // Wipe away the element segments themselves
-        let segments_to_delete: Vec<_> = out.elements.iter().map(|e| e.id()).collect();
-        for id in segments_to_delete {
-            out.elements.delete(id);
-        }
-
-        // Add in our new segments
-        let ifunc_table_ = out.tables.get_mut(ifunc_table);
-        for (offset, items) in initializers {
-            let kind = ElementKind::Active {
-                table: ifunc_table,
-                offset: ConstExpr::Value(ir::Value::I32(offset)),
-            };
-
-            ifunc_table_
-                .elem_segments
-                .insert(out.elements.add(kind, items));
-        }
+        rebuild_ifunc_initializers(out, unique_symbols)
     }
 
     fn add_split_imports(
@@ -1575,17 +1618,7 @@ impl<'a> Splitter<'a> {
     /// Load the funcref table from the main module. This *should* exist for all modules created by
     /// Rustc or Wasm-Bindgen, but we create it if it doesn't exist.
     fn load_funcref_table(&self, out: &mut Module) -> TableId {
-        let ifunc_table = out
-            .tables
-            .iter()
-            .find(|t| t.element_ty == RefType::FUNCREF)
-            .map(|t| t.id());
-
-        if let Some(table) = ifunc_table {
-            table
-        } else {
-            out.tables.add_local(false, 0, None, RefType::FUNCREF)
-        }
+        funcref_table(out)
     }
 
     /// Convert the imported function to a local function that calls an indirect function from the table
@@ -2212,6 +2245,206 @@ fn in_emit_pool<T: Send>(workers: Option<usize>, f: impl FnOnce() -> T + Send) -
     }
 }
 
+/// Where the code section and each function body sit in a module's bytes.
+///
+/// Entries are in code-section order, which is DEFINED-function order:
+/// entry `i` is the `i`-th local function walrus parses (`iter_local`),
+/// whatever the import count. Keying by that position rather than by the
+/// global function index spares reading the import section, whose
+/// wasmparser API is not stable across the versions in the tree.
+struct CodeLayout {
+    /// The whole code section, header included.
+    section: Range<usize>,
+    /// Offset of the code section's payload (after its id and size), which
+    /// is what walrus and the `reloc.CODE` offsets count from.
+    payload_start: usize,
+    /// The section payload's leading function-count LEB.
+    count_prefix: Range<usize>,
+    /// Per function: the entry including its size prefix, and the body
+    /// alone (locals + instructions).
+    entries: Vec<(Range<usize>, Range<usize>)>,
+}
+
+fn read_leb_u32(bytes: &[u8], mut pos: usize) -> Result<(u32, usize)> {
+    let mut value: u64 = 0;
+    let mut shift = 0;
+    loop {
+        let byte = *bytes.get(pos).context("truncated LEB128")?;
+        pos += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return u32::try_from(value).map(|v| (v, pos)).context("LEB128 overflows u32");
+        }
+        shift += 7;
+        anyhow::ensure!(shift < 35, "LEB128 longer than 5 bytes");
+    }
+}
+
+fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn code_layout(bytes: &[u8]) -> Result<CodeLayout> {
+    anyhow::ensure!(bytes.len() >= 8 && &bytes[..4] == b"\0asm", "not a wasm module");
+    let mut pos = 8;
+    while pos < bytes.len() {
+        let id = bytes[pos];
+        let (size, payload_start) = read_leb_u32(bytes, pos + 1)?;
+        let end = payload_start + size as usize;
+        anyhow::ensure!(end <= bytes.len(), "section {id} overruns the module");
+        if id == 10 {
+            let (count, mut cursor) = read_leb_u32(bytes, payload_start)?;
+            let count_prefix = payload_start..cursor;
+            let mut entries = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                let (body_size, body_start) = read_leb_u32(bytes, cursor)?;
+                let body_end = body_start + body_size as usize;
+                anyhow::ensure!(body_end <= end, "function body overruns the code section");
+                entries.push((cursor..body_end, body_start..body_end));
+                cursor = body_end;
+            }
+            anyhow::ensure!(cursor == end, "code section has trailing bytes");
+            return Ok(CodeLayout { section: pos..end, payload_start, count_prefix, entries });
+        }
+        pos = end;
+    }
+    anyhow::bail!("module has no code section")
+}
+
+impl CodeLayout {
+    /// Each body's range exactly as walrus reports `original_range`:
+    /// relative to the code payload, and starting where a MINIMAL size
+    /// LEB would start (walrus recomputes the prefix length from the body
+    /// size rather than reading it). Same formula, so `reloc.CODE`
+    /// offsets land in the same function they did against walrus.
+    fn walrus_ranges(&self) -> Vec<Range<usize>> {
+        self.entries
+            .iter()
+            .map(|(_, body)| {
+                let size = body.end - body.start;
+                let prefix = (usize::BITS - size.leading_zeros() - 1) as usize / 7 + 1;
+                body.start - self.payload_start - prefix..body.end - self.payload_start
+            })
+            .collect()
+    }
+}
+
+/// The body every stubbed function gets: no locals, `unreachable`, `end`.
+/// Valid for any signature, since `unreachable` makes the rest of the
+/// block stack-polymorphic.
+const STUB_BODY: [u8; 3] = [0x00, 0x00, 0x0b];
+
+/// A copy of `bytes` whose defined functions `stub(i)` selects carry
+/// [`STUB_BODY`] instead of their code. Returns the copy and the defined
+/// indices it actually stubbed (a function whose body already IS the stub
+/// is left alone, so it can never be mistaken for one downstream).
+///
+/// The function index space, the types, and every other section are
+/// untouched, so walrus parses the copy into the same ids with the same
+/// names — it just builds no IR for the stubbed bodies. That IR is the
+/// cost: walrus holds ~60 bytes per byte of code (1.2 GB for CrewForge's
+/// 20 MB), and a split module keeps a few percent of the functions it
+/// parses.
+///
+/// Anything that reads code OFFSETS (`reloc.CODE`, DWARF) is stale in the
+/// copy; callers take body ranges from [`code_layout`] on the original.
+fn stub_function_bodies(
+    bytes: &[u8],
+    layout: &CodeLayout,
+    stub: impl Fn(usize) -> bool,
+) -> (Vec<u8>, Vec<usize>) {
+    let mut stubbed = Vec::new();
+    let mut payload = Vec::with_capacity(layout.section.end - layout.section.start);
+    payload.extend_from_slice(&bytes[layout.count_prefix.clone()]);
+    for (idx, (entry, body)) in layout.entries.iter().enumerate() {
+        if stub(idx) && bytes[body.clone()] != STUB_BODY {
+            write_leb_u32(&mut payload, STUB_BODY.len() as u32);
+            payload.extend_from_slice(&STUB_BODY);
+            stubbed.push(idx);
+        } else {
+            payload.extend_from_slice(&bytes[entry.clone()]);
+        }
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    out.extend_from_slice(&bytes[..layout.section.start]);
+    out.push(10);
+    write_leb_u32(&mut out, payload.len() as u32);
+    out.extend_from_slice(&payload);
+    out.extend_from_slice(&bytes[layout.section.end..]);
+    (out, stubbed)
+}
+
+/// Whether a function still has [`STUB_BODY`]'s shape: a lone
+/// `unreachable`. Used to prove no stubbed body survived into an output.
+fn is_stub_body(func: &walrus::Function) -> bool {
+    let FunctionKind::Local(local) = &func.kind else {
+        return false;
+    };
+    let entry = local.block(local.entry_block());
+    entry.instrs.len() == 1 && matches!(entry.instrs[0].0, ir::Instr::Unreachable(_))
+}
+
+/// A split output kept a function [`Splitter::emit_with_own_bodies`]
+/// stubbed: the call graph missed an edge into it. Never shipped — the
+/// emit is redone from the full module.
+#[derive(Debug)]
+struct StubbedBodyReached(String);
+
+impl std::fmt::Display for StubbedBodyReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "stubbed function {} is still live after GC", self.0)
+    }
+}
+
+impl std::error::Error for StubbedBodyReached {}
+
+/// What one split module owns, imports from main, and deletes.
+struct SplitModulePlan {
+    unique_symbols: HashSet<Node>,
+    symbols_to_import: HashSet<Node>,
+    symbols_to_delete: HashSet<Node>,
+    relies_on_chunks: HashSet<usize>,
+    /// The functions whose bodies survive into the module — what its emit
+    /// must parse (see [`Splitter::emit_with_own_bodies`]).
+    bodies: HashSet<Node>,
+}
+
+/// The ids, in `out`, of the defined functions at positions `stubbed`.
+/// Taken right after the parse, before any function is added or deleted.
+fn stubbed_ids(out: &Module, stubbed: &[usize]) -> Vec<FunctionId> {
+    if stubbed.is_empty() {
+        return Vec::new();
+    }
+    let locals: Vec<FunctionId> = out.funcs.iter_local().map(|(id, _)| id).collect();
+    stubbed.iter().map(|idx| locals[*idx]).collect()
+}
+
+fn ensure_no_stub_survived(out: &Module, stubbed: &[FunctionId]) -> Result<()> {
+    if stubbed.is_empty() {
+        return Ok(());
+    }
+    let live: HashSet<FunctionId> = out.funcs.iter().map(|f| f.id()).collect();
+    for id in stubbed {
+        if live.contains(id) {
+            let func = out.funcs.get(*id);
+            if is_stub_body(func) {
+                let name = func.name.clone().unwrap_or_else(|| format!("{id:?}"));
+                return Err(StubbedBodyReached(name).into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Parse a module and return the mapping of index to FunctionID.
 /// We'll use this mapping to remap ModuleIDs
 fn parse_module_with_ids(
@@ -2253,6 +2486,10 @@ struct ModuleWithRelocations<'a> {
     /// NOT unique: LLVM under opt-level=z emits distinct functions sharing
     /// one mangled name (see `next_synthetic_export_name`).
     index_to_funcs: Vec<FunctionId>,
+    /// Every local function with its body's range in the ORIGINAL bytes
+    /// (walrus's `original_range` convention), in code order — ascending,
+    /// which the relocation walks rely on.
+    local_ranges: Vec<(FunctionId, Range<usize>)>,
     call_graph: HashMap<Node, HashSet<Node>>,
     parents: HashMap<Node, HashSet<Node>>,
     relocation_map: HashMap<Node, Vec<RelocationEntry>>,
@@ -2262,11 +2499,31 @@ struct ModuleWithRelocations<'a> {
 
 impl<'a> ModuleWithRelocations<'a> {
     fn new(bytes: &'a [u8]) -> Result<Self> {
-        let (module, index_to_funcs, _) = parse_module_with_ids(bytes)?;
+        // Nothing here reads an instruction: the call graph comes from the
+        // relocation records, resolved against body RANGES, symbols and
+        // names. So walrus parses a copy with every body stubbed — names,
+        // ids and custom sections intact, no IR — and the ranges come from
+        // the real bytes. The full parse this replaces was the largest
+        // allocation in `Splitter::new` (1.5 GB on CrewForge's rustc
+        // module), held on top of the bindgened module's own parse.
+        let layout = code_layout(bytes)?;
+        let (stubbed, _) = stub_function_bodies(bytes, &layout, |_| true);
+        let (module, index_to_funcs, _) = parse_module_with_ids(&stubbed)?;
+        drop(stubbed);
+        let ranges = layout.walrus_ranges();
+        let local_ids: Vec<FunctionId> = module.funcs.iter_local().map(|(id, _)| id).collect();
+        anyhow::ensure!(
+            local_ids.len() == ranges.len(),
+            "walrus saw {} local functions, the code section has {}",
+            local_ids.len(),
+            ranges.len(),
+        );
+        let local_ranges = local_ids.into_iter().zip(ranges).collect();
         let raw_data = parse_bytes_to_data_segment(bytes)?;
 
         let mut module = Self {
             module,
+            local_ranges,
             data_symbols: raw_data.data_symbols,
             data_section_range: raw_data.data_range,
             symbols: raw_data.symbols,
@@ -2292,12 +2549,7 @@ impl<'a> ModuleWithRelocations<'a> {
         let codes_relocations = self.collect_relocations_from_section("reloc.CODE")?;
         let mut relocations = codes_relocations.iter().peekable();
 
-        for (func_id, local) in self.module.funcs.iter_local() {
-            let range = local
-                .original_range
-                .clone()
-                .context("local function has no range")?;
-
+        for (func_id, range) in self.local_ranges.iter().cloned() {
             // Walk with relocation
             while let Some(entry) =
                 relocations.next_if(|entry| entry.relocation_range().start < range.end)
@@ -2669,11 +2921,108 @@ fn zero_dead_data(
     stats
 }
 
+/// Replace every element segment with one single-slot segment per table
+/// slot that holds a function in `unique_symbols` — the initializers a
+/// split module runs to install its own functions into the shared table.
+fn rebuild_ifunc_initializers(out: &mut Module, unique_symbols: &HashSet<Node>) {
+    let ifunc_table = funcref_table(out);
+
+    // Ordered by table offset: the segments are emitted in insertion
+    // order, and a hash order made every split module's bytes differ
+    // between two builds of the same input.
+    let mut initializers = BTreeMap::new();
+    for segment in out.elements.iter_mut() {
+        let ElementKind::Active { offset, .. } = &mut segment.kind else {
+            continue;
+        };
+
+        let ConstExpr::Value(ir::Value::I32(offset)) = offset else {
+            continue;
+        };
+
+        match &segment.items {
+            ElementItems::Functions(vec) => {
+                for (idx, id) in vec.iter().enumerate() {
+                    if unique_symbols.contains(&Node::Function(*id)) {
+                        initializers
+                            .insert(*offset + idx as i32, ElementItems::Functions(vec![*id]));
+                    }
+                }
+            }
+
+            ElementItems::Expressions(ref_type, const_exprs) => {
+                for (idx, expr) in const_exprs.iter().enumerate() {
+                    if let ConstExpr::RefFunc(id) = expr {
+                        if unique_symbols.contains(&Node::Function(*id)) {
+                            initializers.insert(
+                                *offset + idx as i32,
+                                ElementItems::Expressions(*ref_type, vec![ConstExpr::RefFunc(*id)]),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Wipe away references to these segments
+    for table in out.tables.iter_mut() {
+        table.elem_segments.clear();
+    }
+
+    // Wipe away the element segments themselves
+    let segments_to_delete: Vec<_> = out.elements.iter().map(|e| e.id()).collect();
+    for id in segments_to_delete {
+        out.elements.delete(id);
+    }
+
+    // Add in our new segments
+    let ifunc_table_ = out.tables.get_mut(ifunc_table);
+    for (offset, items) in initializers {
+        let kind = ElementKind::Active {
+            table: ifunc_table,
+            offset: ConstExpr::Value(ir::Value::I32(offset)),
+        };
+
+        ifunc_table_
+            .elem_segments
+            .insert(out.elements.add(kind, items));
+    }
+}
+
+/// The module's funcref table. This *should* exist for all modules created
+/// by rustc or wasm-bindgen, but it is created if it doesn't.
+fn funcref_table(out: &mut Module) -> TableId {
+    let ifunc_table = out
+        .tables
+        .iter()
+        .find(|t| t.element_ty == RefType::FUNCREF)
+        .map(|t| t.id());
+
+    if let Some(table) = ifunc_table {
+        table
+    } else {
+        out.tables.add_local(false, 0, None, RefType::FUNCREF)
+    }
+}
+
 fn rematerialize_unique_data_segments(
     data_symbols: &BTreeMap<usize, DataSymbol>,
     out: &mut Module,
     unique_symbols: &HashSet<Node>,
 ) {
+    // Sorted so the re-materialized segments are emitted in symbol order,
+    // not `unique_symbols`' hash order — the same input must produce the
+    // same bytes, or every build re-fingerprints unchanged split modules.
+    let mut unique_data: Vec<usize> = unique_symbols
+        .iter()
+        .filter_map(|n| match n {
+            Node::DataSymbol(id) => Some(*id),
+            Node::Function(_) => None,
+        })
+        .collect();
+    unique_data.sort_unstable();
+
     let data_ids: Vec<_> = out.data.iter().map(|t| t.id()).collect();
     for (idx, data_id) in data_ids.into_iter().enumerate() {
         let data = out.data.get_mut(data_id);
@@ -2695,29 +3044,27 @@ fn rematerialize_unique_data_segments(
         let data_offset = *data_offset;
 
         // And then assign chunks of the data to new data entries that will override the individual slots
-        for unique in unique_symbols {
-            if let Node::DataSymbol(id) = unique {
-                if let Some(symbol) = data_symbols.get(id) {
-                    if symbol.which_data_segment == idx {
-                        let range =
-                            symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
-                        if range.end > contents.len() {
-                            tracing::warn!(
-                                "data symbol {id} range {range:?} exceeds segment {idx} len {} — skipping re-materialize",
-                                contents.len()
-                            );
-                            continue;
-                        }
-                        let offset = ConstExpr::Value(ir::Value::I32(
-                            data_offset + symbol.segment_offset as i32,
-                        ));
-                        out.data.add(
-                            DataKind::Active { memory, offset },
-                            contents[range].to_vec(),
-                        );
-                    }
-                }
+        for id in &unique_data {
+            let Some(symbol) = data_symbols.get(id) else {
+                continue;
+            };
+            if symbol.which_data_segment != idx {
+                continue;
             }
+            let range = symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
+            if range.end > contents.len() {
+                tracing::warn!(
+                    "data symbol {id} range {range:?} exceeds segment {idx} len {} — skipping re-materialize",
+                    contents.len()
+                );
+                continue;
+            }
+            let offset =
+                ConstExpr::Value(ir::Value::I32(data_offset + symbol.segment_offset as i32));
+            out.data.add(
+                DataKind::Active { memory, offset },
+                contents[range].to_vec(),
+            );
         }
     }
 }
@@ -3372,5 +3719,245 @@ mod tests {
             [8].into_iter().collect::<HashSet<u32>>(),
             "symbol 7 is in main and must stay there; only 8 is chunk-shared"
         );
+    }
+
+    /// A module with an imported function (so defined positions and global
+    /// indices differ), and local functions whose bodies straddle the
+    /// one-byte size-LEB boundary. Returns the bytes and each local's name.
+    fn body_fixture() -> (Vec<u8>, Vec<String>) {
+        use walrus::ValType;
+        let mut module = Module::default();
+        let ty = module.types.add(&[], &[]);
+        let (imported, _) = module.add_import_func("env", "host", ty);
+        module.funcs.get_mut(imported).name = Some("host".into());
+        let mut names = Vec::new();
+        let mut previous = None;
+        for (idx, consts) in [1usize, 40, 200, 3].into_iter().enumerate() {
+            let mut b = FunctionBuilder::new(&mut module.types, &[], &[ValType::I32]);
+            let name = format!("f{idx}");
+            let mut body = b.name(name.clone()).func_body();
+            if let Some(callee) = previous {
+                body.call(callee).drop();
+            }
+            for n in 0..consts {
+                body.i32_const(n as i32).drop();
+            }
+            body.i32_const(idx as i32);
+            let id = b.finish(vec![], &mut module.funcs);
+            module.exports.add(&name, id);
+            previous = Some(id);
+            names.push(name);
+        }
+        (module.emit_wasm(), names)
+    }
+
+    /// `reloc.CODE` offsets are resolved against body ranges; with the
+    /// call-graph parse no longer building IR, those ranges come from
+    /// [`code_layout`]. They must be exactly walrus's `original_range`, or
+    /// a relocation lands in the neighbouring function.
+    #[test]
+    fn code_layout_ranges_match_walrus_original_range() {
+        let (bytes, _) = body_fixture();
+        let layout = code_layout(&bytes).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let walrus: Vec<Range<usize>> = module
+            .funcs
+            .iter_local()
+            .map(|(_, local)| local.original_range.clone().unwrap())
+            .collect();
+        assert_eq!(layout.walrus_ranges(), walrus);
+        assert!(
+            layout
+                .entries
+                .iter()
+                .any(|(_, body)| body.end - body.start > 127),
+            "the fixture must exercise a multi-byte size prefix"
+        );
+    }
+
+    /// Stubbing changes bodies and nothing else: same function count, the
+    /// same names at the same indices, the same types, and the kept bodies
+    /// byte-for-byte — so ids taken from one parse remap onto the other.
+    #[test]
+    fn stubbing_keeps_the_index_space_names_and_kept_bodies() {
+        let (bytes, _) = body_fixture();
+        let layout = code_layout(&bytes).unwrap();
+        let keep = 2;
+        let (stubbed, which) = stub_function_bodies(&bytes, &layout, |idx| idx != keep);
+        assert_eq!(which, vec![0, 1, 3]);
+
+        let full = Module::from_buffer(&bytes).unwrap();
+        let cheap = Module::from_buffer(&stubbed).unwrap();
+        let shape =
+            |m: &Module| -> Vec<(Option<String>, Vec<walrus::ValType>, Vec<walrus::ValType>)> {
+                m.funcs
+                    .iter()
+                    .map(|f| {
+                        let ty = m.types.get(f.ty());
+                        (f.name.clone(), ty.params().to_vec(), ty.results().to_vec())
+                    })
+                    .collect()
+            };
+        assert_eq!(shape(&full), shape(&cheap));
+
+        let cheap_layout = code_layout(&stubbed).unwrap();
+        for (pos, (id, _)) in cheap.funcs.iter_local().enumerate() {
+            let body = |b: &[u8], l: &CodeLayout| b[l.entries[pos].1.clone()].to_vec();
+            let func = cheap.funcs.get(id);
+            if pos == keep {
+                assert!(!is_stub_body(func));
+                assert_eq!(body(&bytes, &layout), body(&stubbed, &cheap_layout));
+            } else {
+                assert!(is_stub_body(func));
+                assert_eq!(body(&stubbed, &cheap_layout), STUB_BODY);
+            }
+        }
+    }
+
+    /// A body that already IS the stub is left alone and not reported, so
+    /// the survivor check can never blame a function for its own code.
+    #[test]
+    fn a_body_that_is_already_the_stub_is_not_reported_as_stubbed() {
+        let mut module = Module::default();
+        let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+        b.name("trap".into()).func_body().unreachable();
+        let id = b.finish(vec![], &mut module.funcs);
+        module.exports.add("trap", id);
+        let bytes = module.emit_wasm();
+        let layout = code_layout(&bytes).unwrap();
+        let (stubbed, which) = stub_function_bodies(&bytes, &layout, |_| true);
+        assert!(which.is_empty());
+        assert_eq!(stubbed, bytes);
+    }
+
+    /// The survivor check is what makes emitting from a stubbed parse safe:
+    /// a stubbed function still live after GC with its stub body means the
+    /// call graph missed an edge, and the emit must be redone. Deleted
+    /// functions and ones whose body was replaced (import stubs) are fine.
+    #[test]
+    fn a_live_stubbed_body_fails_the_emit_and_a_gone_or_replaced_one_does_not() {
+        let (bytes, names) = body_fixture();
+        let layout = code_layout(&bytes).unwrap();
+        let (stubbed_bytes, which) = stub_function_bodies(&bytes, &layout, |_| true);
+
+        let parse = || {
+            let mut out = Module::from_buffer(&stubbed_bytes).unwrap();
+            let ids = stubbed_ids(&out, &which);
+            let exports: Vec<ExportId> = out.exports.iter().map(|e| e.id()).collect();
+            for e in exports {
+                out.exports.delete(e);
+            }
+            (out, ids)
+        };
+
+        // f3 is exported again and keeps its stub: must fail.
+        let (mut out, ids) = parse();
+        let f3 = out.funcs.by_name(&names[3]).unwrap();
+        out.exports.add("f3", f3);
+        walrus::passes::gc::run(&mut out);
+        let err = ensure_no_stub_survived(&out, &ids).unwrap_err();
+        assert!(err.is::<StubbedBodyReached>(), "{err}");
+
+        // Same export, but its body replaced first — the import-stub path.
+        let (mut out, ids) = parse();
+        let f3 = out.funcs.by_name(&names[3]).unwrap();
+        out.exports.add("f3", f3);
+        let ty = out.funcs.get(f3).ty();
+        let mut b = FunctionBuilder::new(&mut out.types, &[], &[walrus::ValType::I32]);
+        b.func_body().i32_const(7);
+        let replacement = b.finish(vec![], &mut out.funcs);
+        out.funcs.get_mut(f3).kind = std::mem::replace(
+            &mut out.funcs.get_mut(replacement).kind,
+            FunctionKind::Uninitialized(ty),
+        );
+        out.funcs.delete(replacement);
+        walrus::passes::gc::run(&mut out);
+        ensure_no_stub_survived(&out, &ids).unwrap();
+
+        // Nothing exported: GC collects every stub.
+        let (mut out, ids) = parse();
+        walrus::passes::gc::run(&mut out);
+        ensure_no_stub_survived(&out, &ids).unwrap();
+    }
+
+    /// Regression: two builds of the same module produced different split
+    /// modules — the re-materialized data segments came out in
+    /// `unique_symbols`' hash order. Same input, same bytes: the segments
+    /// follow symbol order however the set iterates.
+    #[test]
+    fn regression_rematerialized_segments_follow_symbol_order() {
+        let mut module = Module::default();
+        let memory = module.memories.add_local(false, false, 1, None, None);
+        module.data.add(
+            DataKind::Active {
+                memory,
+                offset: ConstExpr::Value(ir::Value::I32(0)),
+            },
+            (0u8..=255).collect(),
+        );
+        let mut data_symbols = BTreeMap::new();
+        for id in 0..64usize {
+            data_symbols.insert(
+                id,
+                DataSymbol {
+                    index: id,
+                    range: 0..0,
+                    segment_offset: id * 4,
+                    symbol_size: 4,
+                    which_data_segment: 0,
+                },
+            );
+        }
+        let unique: HashSet<Node> = (0..64).map(Node::DataSymbol).collect();
+        rematerialize_unique_data_segments(&data_symbols, &mut module, &unique);
+        let offsets: Vec<i32> = module
+            .data
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DataKind::Active {
+                    offset: ConstExpr::Value(ir::Value::I32(o)),
+                    ..
+                } if !d.value.is_empty() => Some(*o),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(offsets, (0..64).map(|i| i * 4).collect::<Vec<i32>>());
+    }
+
+    /// Regression, same bug: the table initializers were emitted in a
+    /// `HashMap`'s order. They must come out by table offset.
+    #[test]
+    fn regression_ifunc_initializers_follow_table_order() {
+        let mut module = Module::default();
+        let table = module.tables.add_local(false, 64, None, RefType::FUNCREF);
+        let mut funcs = Vec::new();
+        for _ in 0..64 {
+            let mut b = FunctionBuilder::new(&mut module.types, &[], &[]);
+            b.func_body();
+            funcs.push(b.finish(vec![], &mut module.funcs));
+        }
+        let segment = module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(0)),
+            },
+            ElementItems::Functions(funcs.clone()),
+        );
+        module.tables.get_mut(table).elem_segments.insert(segment);
+
+        let unique: HashSet<Node> = funcs.iter().map(|f| Node::Function(*f)).collect();
+        rebuild_ifunc_initializers(&mut module, &unique);
+        let offsets: Vec<i32> = module
+            .elements
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Active {
+                    offset: ConstExpr::Value(ir::Value::I32(o)),
+                    ..
+                } => Some(*o),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(offsets, (0..64).collect::<Vec<i32>>());
     }
 }

@@ -1,9 +1,13 @@
-//! Everything the Inspector knows about talking to a running app, with no
-//! UI in it: discovery (which apps are running), the bridge client (the
-//! connection and its refresh loop) and the model (typed replies plus the
-//! derivations the screens render). A front end other than this desktop
-//! app — the CLI, say — can drive the same three pieces.
+//! Everything the Inspector knows about talking to its server, with no UI
+//! in it: the client (one WebSocket to the Inspector server, speaking
+//! `inspector-protocol`) and the model (the typed state the server pushes,
+//! plus the derivations the screens render).
+//!
+//! The Inspector never talks to an app. The server (`idealyst inspect`)
+//! discovers apps, holds their robot-bridge connections and pushes each
+//! front end a snapshot; the client only renders and sends back what the
+//! user did. That's what lets the same front end run in a browser.
 
 pub mod client;
-pub mod discovery;
+pub mod endpoint;
 pub mod model;

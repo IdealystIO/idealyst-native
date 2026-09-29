@@ -380,6 +380,28 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `Splitter::with_emit_workers` and `BuildOptions::memory_budget_mb` are
   new; `build_web::split_emit_workers` picks the count.
 
+- **A release web build needs a third less memory and half the time**
+  (`wasm-split-cli`, `build-web`). On CrewForge the peak went from
+  5.0 GB to 3.7 GB, and a cold `idealyst build --web --release` from
+  306 s to 197 s. The bundle is byte-identical. Three changes:
+  - Each lazy module and the shared chunk is now built from a copy of
+    the module that holds only its own function bodies, so it no longer
+    parses the whole program. If a body it needed was left out, that
+    module is rebuilt from the full parse and a `[wasm-split]` line says
+    so. The rustc module the call graph is read from is parsed the same
+    way, since only the relocations are needed from it. On CrewForge the
+    split fell from 4.6 GB / 35 s to 3.5 GB / 10 s, and adding workers no
+    longer adds a whole program each.
+  - Release builds carry no DWARF (`debug = 0`; it was `"limited"`), and
+    the split path no longer passes wasm-bindgen `--keep-debug`. The
+    splitter never read DWARF, and the neutralize pass had been
+    dropping it. It was 146 MB of CrewForge's 232 MB rustc module.
+    Without it wasm-bindgen went from 2.5 GB / 7.4 s to 1.5 GB / 1.5 s,
+    and cargo from 167 s to 85 s.
+  - Split output is deterministic. A lazy module's data and table
+    segments followed hash order, so two builds of the same input
+    shipped different bytes and different content hashes.
+
 - **The memory cap fits the machine for web builds, and names the stage
   it stopped** (`idealyst-cli`). `build --web`, `run`, `docs` and `dev`
   with a web target raise the cap to half of the machine's memory,

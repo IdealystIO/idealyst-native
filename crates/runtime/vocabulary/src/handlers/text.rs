@@ -118,14 +118,15 @@ where
                     // Fast path: hand the structured binding to the
                     // backend's own fan-out — NO Rust effect per leaf.
                     // World signals have no `Signal::set` JS write hook
-                    // (the old delivery channel), so ensure ONE
-                    // world-root notifier effect per signal that ships
-                    // commits via `notify_signal_text_js` — the
-                    // signal-class notifier pattern, string edition.
-                    // First-registrant-wins across class+text bindings
-                    // (old single-notifier semantics); installed BEFORE
-                    // registration so the first fire seeds the JS-side
-                    // value cache.
+                    // (the old delivery channel), so lease ONE notifier
+                    // effect per signal that ships commits via
+                    // `notify_signal_text_js` — the signal-class notifier
+                    // pattern, string edition. First-registrant-wins across
+                    // class+text bindings (old single-notifier semantics);
+                    // leased BEFORE registration so the first fire seeds the
+                    // JS-side value cache, and held until this binding's
+                    // teardown (see `style_attach::SignalNotifiers`).
+                    let mut leases = Vec::with_capacity(binding.signal_ids.len());
                     for (sid, read) in binding
                         .signal_ids
                         .iter()
@@ -134,14 +135,12 @@ where
                         let sid = *sid;
                         let read = read.clone();
                         let b = backend.clone();
-                        crate::style_attach::ensure_signal_notifier_installed(sid, || {
-                            runtime_world::unscoped(|| {
-                                let _notifier = effect(move || {
-                                    let value = read();
-                                    b.borrow_mut().notify_signal_text_js(sid, &value);
-                                });
+                        leases.push(crate::style_attach::acquire_signal_notifier(sid, || {
+                            let _notifier = effect(move || {
+                                let value = read();
+                                b.borrow_mut().notify_signal_text_js(sid, &value);
                             });
-                        });
+                        }));
                     }
                     {
                         let parts: Vec<&str> =
@@ -157,12 +156,16 @@ where
                         );
                     }
                     // Release the JS-side binding AND the id slot on
-                    // teardown (the walker's on_cleanup, same order).
+                    // teardown (the walker's on_cleanup, same order), then
+                    // this binding's notifier leases.
                     let b = backend.clone();
                     on_teardown(move || {
-                        let mut bm = b.borrow_mut();
-                        bm.release_reactive_text_binding(text_id);
-                        bm.release_text_id(text_id);
+                        {
+                            let mut bm = b.borrow_mut();
+                            bm.release_reactive_text_binding(text_id);
+                            bm.release_text_id(text_id);
+                        }
+                        drop(leases);
                     });
                     node
                 }
@@ -490,6 +493,86 @@ mod tests {
         let b = backend.borrow();
         assert_eq!(b.released_bindings, vec![0, 1]);
         assert_eq!(b.released_ids, vec![0, 1]);
+    }
+
+    /// The per-signal notifier must die with the signal it reads. It was
+    /// world-root-owned, so when ONE flush both changed a memo (queuing
+    /// the notifier) and unmounted the subtree that owned the memo (the
+    /// Inspector's Disconnect while a snapshot frame landed), the
+    /// notifier still ran and read the freed memo: `stale-signal-handle`.
+    #[test]
+    fn regression_notifier_does_not_outlive_the_signal_it_reads() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(JsTextHost { supports_js: true, ..Default::default() }));
+        let registry = Rc::new(registry());
+        type Subtree = (runtime_scene::Realized<u32>, runtime_world::Owned);
+        let held: Rc<RefCell<Option<Subtree>>> = Rc::default();
+        let input = world.enter(|| {
+            let input = signal(1u32);
+            let (realized, owned) = runtime_world::collect_owned(|| {
+                let doubled = runtime_world::memo(move || input.get() * 2);
+                let assembled = __idealyst_text_from_parts(vec![
+                    TextSlotPart::Lit("d="),
+                    TextSlotPart::Slot(doubled.__idealyst_text_slot(|d| format!("{d}"))),
+                ]);
+                realize(&backend, &registry, builders::text().content(assembled).build())
+            });
+            *held.borrow_mut() = Some((realized, owned));
+            // Created after the subtree, so it's queued ahead of the
+            // notifier the memo's commit dirties: the unmount runs first
+            // in the flush, exactly as the `if` driver did.
+            let held = held.clone();
+            let _unmount = runtime_world::effect(move || {
+                if input.get() > 1 {
+                    held.borrow_mut().take();
+                }
+            });
+            input
+        });
+        assert_eq!(backend.borrow().notified.borrow().last().map(|(_, v)| v.clone()), Some("2".into()));
+
+        world.enter(|| input.set(5));
+        world.flush(); // panicked `stale-signal-handle` before the fix
+
+        assert!(held.borrow().is_none(), "the subtree unmounted");
+        assert_eq!(backend.borrow().released_bindings, vec![0]);
+        assert!(
+            backend.borrow().notified.borrow().iter().all(|(_, v)| v != "10"),
+            "the freed memo's notifier never ran"
+        );
+    }
+
+    /// The notifier is shared by every binding to its signal and lives
+    /// exactly as long as the LAST of them: unmounting one binding keeps
+    /// the others fed, unmounting all frees it, and a later binding
+    /// installs (and seeds) a fresh one.
+    #[test]
+    fn notifier_lives_while_any_binding_does() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(JsTextHost { supports_js: true, ..Default::default() }));
+        let registry = Rc::new(registry());
+        let notified = backend.borrow().notified.clone();
+        let (sig, first, second) = world.enter(|| {
+            let sig = signal(0u32);
+            (sig, realize(&backend, &registry, fstring_text(sig)), realize(&backend, &registry, fstring_text(sig)))
+        });
+        assert_eq!(notified.borrow().len(), 1, "one shared notifier, seeded once");
+
+        drop(first);
+        world.enter(|| sig.set(1));
+        world.flush();
+        assert_eq!(notified.borrow().last(), Some(&(sig.raw_id(), "1".to_string())), "the survivor is still fed");
+
+        drop(second);
+        world.enter(|| sig.set(2));
+        world.flush();
+        assert_eq!(notified.borrow().len(), 2, "no binding left: the notifier is gone");
+
+        let _third = world.enter(|| realize(&backend, &registry, fstring_text(sig)));
+        assert_eq!(notified.borrow().last(), Some(&(sig.raw_id(), "2".to_string())), "a new binding re-seeds");
+        world.enter(|| sig.set(3));
+        world.flush();
+        assert_eq!(notified.borrow().last(), Some(&(sig.raw_id(), "3".to_string())));
     }
 
     /// Without JS-binding support the SAME source lowers to the Bound

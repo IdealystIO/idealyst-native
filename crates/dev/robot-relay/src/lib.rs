@@ -124,6 +124,15 @@ pub struct RelayHandle {
     _inner: Arc<Inner>,
 }
 
+impl RelayHandle {
+    /// The app's id in discovery: its registration's file stem
+    /// (`<name>-<pid>`), which the Inspector attaches by. `None` when the
+    /// relay didn't register.
+    pub fn app_id(&self) -> Option<String> {
+        self.reg_path.as_ref()?.file_stem()?.to_str().map(str::to_string)
+    }
+}
+
 impl Drop for RelayHandle {
     fn drop(&mut self) {
         if let Some(p) = &self.reg_path {
@@ -456,5 +465,36 @@ fn patch_registration_platform(inner: &Arc<Inner>, platform: &str) {
     if let Some(obj) = v.as_object_mut() {
         obj.insert("platform".to_string(), Value::String(platform.to_string()));
         let _ = std::fs::write(&path, v.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Inspector opens `idealyst dev --inspect`'s app by this id, and
+    /// discovery names apps by their registration's file stem: the two
+    /// must agree.
+    #[test]
+    fn app_id_is_the_registration_file_stem() {
+        let handle = |reg_path| RelayHandle {
+            ws_addr: "127.0.0.1:1".parse().unwrap(),
+            tcp_addr: "127.0.0.1:2".parse().unwrap(),
+            reg_path,
+            _inner: Arc::new(Inner {
+                app_outbound: Mutex::new(None),
+                pending: Mutex::new(HashMap::new()),
+                subscribers: Mutex::new(Vec::new()),
+                next_id: AtomicU64::new(1),
+                app_subscribed: AtomicBool::new(false),
+                app_label: "app".into(),
+                screenshot_dir: None,
+                reg_path: Mutex::new(None),
+            }),
+        };
+        // Paths that don't exist: Drop's remove_file is a no-op.
+        let registered = handle(Some(PathBuf::from("/nonexistent/.idealyst/apps/My-App-4242.json")));
+        assert_eq!(registered.app_id().as_deref(), Some("My-App-4242"));
+        assert_eq!(handle(None).app_id(), None);
     }
 }

@@ -20,9 +20,10 @@ use crate::style_attach::StyleProp;
 /// pre-formatted into the adjacent parts), plus one new-core-only
 /// column: `tracked_reads`. Old-core web hooked delivery into
 /// `Signal::set` itself; world signals have no write hook, so the text
-/// handler installs ONE world-root notifier effect per signal (the
-/// signal-class pattern — see `style_attach::ensure_signal_notifier`),
-/// and that effect needs a TRACKED per-signal read to subscribe with.
+/// handler leases ONE notifier effect per signal, shared by every binding
+/// and freed with the last of them (the signal-class pattern — see
+/// `style_attach::SignalNotifiers`), and that effect needs a TRACKED
+/// per-signal read to subscribe with.
 pub struct JsTextBinding {
     pub signal_ids: Vec<u64>,
     pub template_parts: Vec<String>,

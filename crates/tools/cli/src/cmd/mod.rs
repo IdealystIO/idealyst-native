@@ -13,6 +13,7 @@ pub mod export;
 pub mod export_codegen;
 pub mod icon;
 pub mod init;
+pub mod inspect;
 pub mod lint;
 pub mod mcp;
 pub mod new;

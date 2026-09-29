@@ -57,6 +57,11 @@ dev-events = { workspace = true, features = ["schema"] }
 # Robot bridge relay for `dev --web --local --robot`: the dev process hosts a
 # relay the browser app dials, exposing its Robot bridge to the MCP server.
 robot-relay = { workspace = true }
+# `idealyst inspect` / `dev --inspect`: the Inspector's debug server (it
+# owns every app connection and all debug state) and the protocol it
+# speaks with the front end the CLI embeds (see build.rs).
+inspector-server = { workspace = true }
+inspector-protocol = { workspace = true }
 # Declarative cross-platform Robot test runner behind `idealyst test`.
 robot-test = { workspace = true }
 # Platform-specific build orchestration. Each platform's pipeline
@@ -129,6 +134,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # named explicitly because the CLI itself calls into it.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# build.rs compiles the Inspector front end (`examples/inspector`) for the
+# web with the same pipeline `idealyst build --web` runs, and embeds the
+# bundle so `idealyst inspect` serves it from the binary.
+[build-dependencies]
+build-web = { workspace = true }
+build-ios = { workspace = true }
+dev-events = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

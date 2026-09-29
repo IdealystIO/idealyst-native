@@ -105,6 +105,10 @@ members = [
     "crates/dev/headless-screenshot",
     "crates/dev/robot-e2e",
     "crates/dev/robot-relay",
+    # The Inspector's debug server (`idealyst inspect`) and the wire
+    # protocol it speaks with the Inspector front end.
+    "crates/dev/inspector-protocol",
+    "crates/dev/inspector-server",
     "crates/dev/robot-test",
     "crates/dev/robot-test-macros",
     "crates/dev/native-parity",
@@ -460,6 +464,8 @@ ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
 headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.2", registry = "idealyst" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
 robot-relay = { path = "crates/dev/robot-relay" }
+inspector-protocol = { path = "crates/dev/inspector-protocol" }
+inspector-server = { path = "crates/dev/inspector-server" }
 robot-test = { path = "crates/dev/robot-test" }
 robot-test-macros = { path = "crates/dev/robot-test-macros" }
 native-parity = { path = "crates/dev/native-parity" }

@@ -1,424 +1,178 @@
-//! Robot-bridge client — the single network mode the Inspector speaks.
+//! The Inspector's one connection: a WebSocket to the Inspector server
+//! (`idealyst inspect`), speaking `inspector-protocol`.
 //!
-//! A background `std::thread` owns the blocking `TcpStream` to the target
-//! app and the newline-JSON request/response loop (`{id,cmd,args}` ⇄
-//! `{id,ok|err}`, see `runtime_shared::robot::bridge`). It can't block the
-//! UI run loop, hence the thread. Each refresh re-issues the read verbs
-//! and stores the parsed result in an `Arc<Mutex<Snapshot>>`; the UI
-//! thread copies that into a signal on its own cadence.
+//! It runs on the UI thread as an async task (`net::WebSocket`: the
+//! browser's own socket on web, an I/O thread bridged into the
+//! framework's scheduler on desktop), so every inbound frame lands
+//! straight in the signals the screens read. There's no polling and no
+//! locks. The server decides when anything changes.
 //!
-//! A SECOND connection `subscribe`s and turns each `{"event":"changed"}`
-//! push into an immediate refresh, so the tree follows the app within
-//! tens of milliseconds instead of on the fallback cadence.
-//!
-//! **Focus.** The per-item verbs (`get_component`, the root element's
-//! frame and native read-back, `get_signal_history`) run only for what the
-//! user has selected — [`BridgeClient::set_focus`] — so a refresh costs
-//! the same whether the app has ten components or ten thousand.
+//! The server keeps no memory of a front end across connections, so the
+//! client remembers what it asked for (the attached app, the focus) and
+//! replays it whenever the socket reconnects.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::cell::RefCell;
 
-use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use inspector_protocol::{ClientMsg, ServerMsg, PROTOCOL_VERSION};
+use net::{WebSocket, WsMessage, WsSender};
+use runtime_core::Signal;
+use serde_json::Value;
 
-use super::model::{
-    ActionResult, ComponentDetail, ElementDetail, ElementNode, LogRow, Navigator, NativeNode, Perf,
-    PhaseRow, Rect, SignalHistory, SignalRow, Snapshot, Status,
-};
+pub use inspector_protocol::Focus;
 
-/// Fallback refresh cadence for state no push covers (signal values,
-/// phase timers). Pushes refresh sooner.
-const REFRESH_MS: u64 = 500;
-/// Per-request read timeout. A live bridge replies in <50 ms; this only
-/// bounds the wait on an unresponsive target (a suspended background app)
-/// so the UI can say so instead of hanging.
-const READ_TIMEOUT: Duration = Duration::from_secs(8);
-/// Backoff before retrying a failed connection.
-const RECONNECT_BACKOFF: Duration = Duration::from_millis(800);
-/// Log lines pulled per refresh.
-const LOG_LIMIT: u64 = 300;
+use super::model::{AppInfo, Snapshot, Status};
 
-/// What the per-item verbs fetch (see the module docs).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Focus {
-    pub component: Option<u64>,
-    pub signal: Option<u64>,
+/// Backoff before reconnecting to the server.
+const RECONNECT_MS: i32 = 1000;
+
+/// The connection to the Inspector server itself (the attached app's
+/// connection is `Snapshot::status`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ServerLink {
+    #[default]
+    Connecting,
+    Connected,
+    /// Unreachable; the client keeps retrying.
+    Down(String),
+    /// The server speaks another protocol version.
+    Incompatible { server: u32 },
 }
 
-enum ClientMsg {
-    Action { label: String, cmd: String, args: Value },
-    Refresh,
+/// Where inbound frames land.
+#[derive(Clone, Copy)]
+pub struct Sinks {
+    pub link: Signal<ServerLink>,
+    pub apps: Signal<Vec<AppInfo>>,
+    pub snapshot: Signal<Snapshot>,
 }
 
-/// A handle to a connected target. Dropping it stops the background
-/// threads.
-pub struct BridgeClient {
-    addr: String,
-    shared: Arc<Mutex<Snapshot>>,
-    focus: Arc<Mutex<Focus>>,
-    msgs: mpsc::Sender<ClientMsg>,
-    stop: Arc<AtomicBool>,
+#[derive(Default)]
+struct State {
+    sender: Option<WsSender>,
+    /// The attach to replay on reconnect, and the key snapshot frames
+    /// for it carry.
+    attached: Option<(ClientMsg, String)>,
+    focus: Focus,
 }
 
-impl Drop for BridgeClient {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
+thread_local! {
+    static STATE: RefCell<State> = RefCell::new(State::default());
 }
 
-impl BridgeClient {
-    /// Connect to `addr` (`127.0.0.1:53817`) and start the background
-    /// loops. Returns immediately; the first snapshot lands once the main
-    /// loop connects.
-    pub fn connect(addr: String) -> Self {
-        let shared = Arc::new(Mutex::new(Snapshot::default()));
-        let focus = Arc::new(Mutex::new(Focus::default()));
-        let (tx, rx) = mpsc::channel::<ClientMsg>();
-        let stop = Arc::new(AtomicBool::new(false));
-        // At most one push-triggered refresh in flight: a burst of pushes
-        // is one refresh.
-        let refresh_pending = Arc::new(AtomicBool::new(false));
-        {
-            let (shared, focus, stop, pending, addr) =
-                (shared.clone(), focus.clone(), stop.clone(), refresh_pending.clone(), addr.clone());
-            std::thread::spawn(move || run_loop(addr, shared, focus, rx, stop, pending));
-        }
-        {
-            let (tx, stop, addr) = (tx.clone(), stop.clone(), addr.clone());
-            std::thread::spawn(move || push_listener(addr, tx, stop, refresh_pending));
-        }
-        Self { addr, shared, focus, msgs: tx, stop }
-    }
-
-    pub fn addr(&self) -> &str {
-        &self.addr
-    }
-
-    /// A clone of the latest state.
-    pub fn snapshot(&self) -> Snapshot {
-        self.shared.lock().map(|s| s.clone()).unwrap_or_default()
-    }
-
-    /// Change what the per-item verbs fetch, and refresh now so the
-    /// detail pane fills without waiting for the next cadence.
-    pub fn set_focus(&self, focus: Focus) {
-        let changed = self.focus.lock().map(|mut f| std::mem::replace(&mut *f, focus) != focus).unwrap_or(false);
-        if changed {
-            let _ = self.msgs.send(ClientMsg::Refresh);
-        }
-    }
-
-    /// Send an action verb; its outcome lands in `Snapshot::last_action`
-    /// under `label`, followed by a refresh.
-    pub fn action(&self, label: impl Into<String>, cmd: &str, args: Value) {
-        let _ = self.msgs.send(ClientMsg::Action { label: label.into(), cmd: cmd.to_string(), args });
-    }
+/// Connect to `url` and keep reconnecting for the life of the app.
+pub fn start(url: String, sinks: Sinks) {
+    runtime_core::driver::spawn_async(run(url, sinks));
 }
 
-fn push_listener(
-    addr: String,
-    msgs: mpsc::Sender<ClientMsg>,
-    stop: Arc<AtomicBool>,
-    refresh_pending: Arc<AtomicBool>,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        let Ok(stream) = TcpStream::connect(&addr) else {
-            std::thread::sleep(RECONNECT_BACKOFF);
-            continue;
-        };
-        // A finite timeout so `stop` is noticed between pushes; partial
-        // bytes survive it in the BufReader.
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
-        let Ok(mut writer) = stream.try_clone() else { continue };
-        let mut reader = BufReader::new(stream);
-        if writer
-            .write_all(b"{\"id\":1,\"cmd\":\"subscribe\",\"args\":{}}\n")
-            .and_then(|_| writer.flush())
-            .is_err()
-        {
-            continue;
-        }
-        let mut line = String::new();
-        loop {
-            if stop.load(Ordering::Relaxed) {
-                return;
+async fn run(url: String, sinks: Sinks) {
+    match WebSocket::connect(&url).await {
+        Ok(mut ws) => {
+            let sender = ws.sender();
+            let (attach, focus) = STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                s.sender = Some(sender.clone());
+                (s.attached.as_ref().map(|(m, _)| m.clone()), s.focus)
+            });
+            if let Some(attach) = attach {
+                send_on(&sender, &focus_msg(focus));
+                send_on(&sender, &attach);
             }
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let is_change = serde_json::from_str::<Value>(line.trim())
-                        .ok()
-                        .is_some_and(|v| v.get("event").and_then(|e| e.as_str()) == Some("changed"));
-                    if is_change
-                        && !refresh_pending.swap(true, Ordering::AcqRel)
-                        && msgs.send(ClientMsg::Refresh).is_err()
-                    {
-                        return;
-                    }
-                }
-                Err(ref e)
-                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
-                {
-                    continue
-                }
-                Err(_) => break,
-            }
-        }
-        std::thread::sleep(RECONNECT_BACKOFF);
-    }
-}
-
-/// One open request/response connection.
-struct Conn {
-    writer: TcpStream,
-    reader: BufReader<TcpStream>,
-    next_id: u64,
-}
-
-impl Conn {
-    fn open(addr: &str) -> Result<Conn, String> {
-        let stream = TcpStream::connect(addr).map_err(|e| format!("connecting to {addr}: {e}"))?;
-        let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
-        let writer = stream.try_clone().map_err(|e| format!("socket clone: {e}"))?;
-        Ok(Conn { writer, reader: BufReader::new(stream), next_id: 1 })
-    }
-
-    /// One round trip. `Err(Io)` means the connection is gone; `Err(Verb)`
-    /// is the bridge refusing this one command.
-    fn call(&mut self, cmd: &str, args: Value) -> Result<Value, CallError> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let line = format!("{}\n", json!({ "id": id, "cmd": cmd, "args": args }));
-        self.writer
-            .write_all(line.as_bytes())
-            .and_then(|_| self.writer.flush())
-            .map_err(|e| CallError::Io(format!("write failed: {e}")))?;
-        let mut resp = String::new();
-        let n = self.reader.read_line(&mut resp).map_err(|e| {
-            if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) {
-                CallError::Io(
-                    "the app is not responding. A macOS app in the background can be suspended \
-                     by the OS; bring its window to the front."
-                        .to_string(),
-                )
-            } else {
-                CallError::Io(format!("read failed: {e}"))
-            }
-        })?;
-        if n == 0 {
-            return Err(CallError::Io("connection closed".into()));
-        }
-        let v: Value = serde_json::from_str(resp.trim()).map_err(|e| CallError::Io(format!("bad reply: {e}")))?;
-        if let Some(ok) = v.get("ok") {
-            Ok(ok.clone())
-        } else {
-            Err(CallError::Verb(v.get("err").and_then(|e| e.as_str()).unwrap_or("unspecified error").to_string()))
-        }
-    }
-
-    /// A call whose reply parses as `T`; a verb error or a shape mismatch
-    /// is an `Ok(Err)` (this command failed, the connection is fine).
-    fn call_as<T: DeserializeOwned>(&mut self, cmd: &str, args: Value) -> Result<Result<T, String>, String> {
-        match self.call(cmd, args) {
-            Ok(v) => Ok(serde_json::from_value(v).map_err(|e| format!("{cmd}: unexpected reply: {e}"))),
-            Err(CallError::Verb(e)) => Ok(Err(e)),
-            Err(CallError::Io(e)) => Err(e),
-        }
-    }
-}
-
-enum CallError {
-    Io(String),
-    Verb(String),
-}
-
-fn run_loop(
-    addr: String,
-    shared: Arc<Mutex<Snapshot>>,
-    focus: Arc<Mutex<Focus>>,
-    msgs: mpsc::Receiver<ClientMsg>,
-    stop: Arc<AtomicBool>,
-    refresh_pending: Arc<AtomicBool>,
-) {
-    let mut last_action: Option<ActionResult> = None;
-    // `get_perf_counters` DRAINS the target's counters on every read, so a
-    // refresh sees only the interval since the previous one. Summed here
-    // they read "since connect" (or since the user's Reset).
-    let mut perf_acc: std::collections::BTreeMap<String, PhaseRow> = Default::default();
-    while !stop.load(Ordering::Relaxed) {
-        let mut conn = match Conn::open(&addr) {
-            Ok(c) => c,
-            Err(e) => {
-                set_down(&shared, e);
-                std::thread::sleep(RECONNECT_BACKOFF);
-                continue;
-            }
-        };
-        'session: loop {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            let f = focus.lock().map(|f| *f).unwrap_or_default();
-            match refresh(&mut conn, f) {
-                Ok(mut snap) => {
-                    snap.last_action = last_action.clone();
-                    if let Perf::Rows(interval) = &snap.perf {
-                        for row in interval {
-                            let acc = perf_acc.entry(row.phase.clone()).or_insert_with(|| PhaseRow {
-                                phase: row.phase.clone(),
-                                call_count: 0,
-                                total_us: 0,
-                                max_us: 0,
-                            });
-                            acc.call_count += row.call_count;
-                            acc.total_us += row.total_us;
-                            acc.max_us = acc.max_us.max(row.max_us);
-                        }
-                        snap.perf = Perf::Rows(perf_acc.values().cloned().collect());
-                    }
-                    if let Ok(mut g) = shared.lock() {
-                        *g = snap;
-                    }
-                }
-                Err(e) => {
-                    set_down(&shared, e);
-                    break;
+            sinks.link.set(ServerLink::Connected);
+            while let Some(Ok(frame)) = ws.recv().await {
+                let text = match frame {
+                    WsMessage::Text(t) => t,
+                    WsMessage::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+                };
+                if let Ok(msg) = serde_json::from_str::<ServerMsg>(&text) {
+                    receive(msg, sinks);
                 }
             }
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    return;
-                }
-                match msgs.recv_timeout(Duration::from_millis(REFRESH_MS)) {
-                    Ok(ClientMsg::Action { label, cmd, args }) => {
-                        if cmd == "clear_perf_counters" {
-                            perf_acc.clear();
-                        }
-                        let started = Instant::now();
-                        let result = match conn.call(&cmd, args) {
-                            Ok(_) => Ok(()),
-                            Err(CallError::Verb(e)) => Err(e),
-                            Err(CallError::Io(e)) => {
-                                set_down(&shared, e);
-                                break 'session;
-                            }
-                        };
-                        last_action =
-                            Some(ActionResult { label, result, rtt_ms: started.elapsed().as_millis() as u64 });
-                        break; // refresh so the change shows
-                    }
-                    Ok(ClientMsg::Refresh) => {
-                        refresh_pending.store(false, Ordering::Release);
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                }
+            STATE.with(|s| s.borrow_mut().sender = None);
+            let reason = format!("lost the Inspector server at {url}");
+            sinks.link.set(ServerLink::Down(reason.clone()));
+            if STATE.with(|s| s.borrow().attached.is_some()) {
+                let mut snap = sinks.snapshot.get();
+                snap.status = Status::Down(reason);
+                sinks.snapshot.set(snap);
             }
         }
-        std::thread::sleep(RECONNECT_BACKOFF);
+        Err(e) => sinks.link.set(ServerLink::Down(format!("can't reach the Inspector server at {url}: {e}"))),
     }
+    runtime_core::after_ms_detached(RECONNECT_MS, move || start(url, sinks));
 }
 
-/// Pull every read surface into a fresh snapshot. A connection failure
-/// propagates (reconnect); a single verb the target doesn't serve just
-/// leaves its part empty — except `get_snapshot`. The tree is what the
-/// Inspector is for, and the bridge refusing it means there is no app to
-/// read: the CLI's relay answers "no app connected to the relay" until
-/// the app dials in. Defaulting that to an empty tree showed a Live
-/// status over a blank hierarchy; it reads as Not connected instead.
-fn refresh(conn: &mut Conn, focus: Focus) -> Result<Snapshot, String> {
-    let started = Instant::now();
-    let tree: Vec<ElementNode> =
-        conn.call_as("get_snapshot", json!({}))?.map_err(|e| format!("get_snapshot: {e}"))?;
-    let rtt_ms = started.elapsed().as_millis() as u64;
-    let component_count =
-        conn.call_as::<Vec<Value>>("list_components", json!({}))?.map(|v| v.len()).unwrap_or(0);
-    let signals: Vec<SignalRow> = conn.call_as("list_watched_signals", json!({}))?.unwrap_or_default();
-    let navigators: Vec<Navigator> = conn.call_as("list_navigators", json!({}))?.unwrap_or_default();
-    let logs: Vec<LogRow> = conn.call_as("get_logs", json!({ "limit": LOG_LIMIT }))?.unwrap_or_default();
-    let perf = match conn.call_as::<Vec<PhaseRow>>("get_perf_counters", json!({}))? {
-        Ok(rows) => Perf::Rows(rows),
-        Err(hint) => Perf::Unavailable(hint),
-    };
-
-    let component = match focus.component {
-        Some(id) => conn.call_as::<Option<ComponentDetail>>("get_component", json!({ "instance_id": id }))?.ok().flatten(),
-        None => None,
-    };
-    let element = match component.as_ref().and_then(|c| c.element_id) {
-        Some(element_id) => {
-            let args = json!({ "element_id": element_id });
-            let frame = conn.call_as::<Option<Rect>>("get_absolute_frame", args.clone())?.ok().flatten();
-            let native = conn.call_as::<Option<NativeNode>>("introspect_native", args)?.ok().flatten();
-            Some(ElementDetail { element_id, frame, native })
+/// Apply one server frame.
+pub fn receive(msg: ServerMsg, sinks: Sinks) {
+    match msg {
+        ServerMsg::Hello { protocol } if protocol != PROTOCOL_VERSION => {
+            sinks.link.set(ServerLink::Incompatible { server: protocol });
         }
-        None => None,
-    };
-    let signal_history = match focus.signal {
-        Some(id) => conn.call_as::<Option<SignalHistory>>("get_signal_history", json!({ "id": id }))?.ok().flatten(),
-        None => None,
-    };
-
-    Ok(Snapshot {
-        status: Status::Live { rtt_ms },
-        tree,
-        component_count,
-        component,
-        element,
-        signals,
-        signal_history,
-        navigators,
-        logs,
-        perf,
-        last_action: None,
-    })
-}
-
-fn set_down(shared: &Arc<Mutex<Snapshot>>, msg: String) {
-    if let Ok(mut g) = shared.lock() {
-        g.status = Status::Down(msg);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::TcpListener;
-
-    /// A bridge stand-in that refuses every verb with `err`, as the CLI's
-    /// relay does while no app is connected.
-    fn refusing_bridge(err: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr").to_string();
-        std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut writer = stream.try_clone().expect("clone");
-            for line in BufReader::new(stream).lines() {
-                let Ok(line) = line else { return };
-                let id = serde_json::from_str::<Value>(&line).map(|v| v["id"].clone()).unwrap_or(Value::Null);
-                let reply = format!("{}\n", json!({ "id": id, "err": err }));
-                if writer.write_all(reply.as_bytes()).is_err() {
-                    return;
-                }
+        ServerMsg::Hello { .. } => {}
+        ServerMsg::Apps { apps } => sinks.apps.set(apps),
+        ServerMsg::Snapshot { app, snapshot } => {
+            // A frame already in flight when the user switched apps (or
+            // disconnected) belongs to the previous app.
+            let current = STATE.with(|s| s.borrow().attached.as_ref().is_some_and(|(_, key)| *key == app));
+            if current {
+                sinks.snapshot.set(*snapshot);
             }
-        });
-        addr
+        }
     }
+}
 
-    #[test]
-    fn regression_relay_without_an_app_reads_as_not_connected() {
-        let addr = refusing_bridge("no app connected to the relay");
-        let mut conn = Conn::open(&addr).expect("open");
-        let err = refresh(&mut conn, Focus::default()).expect_err(
-            "a refused get_snapshot must fail the refresh, not render an empty tree as Live",
-        );
-        assert!(err.contains("no app connected to the relay"), "{err}");
+fn send_on(sender: &WsSender, msg: &ClientMsg) {
+    let _ = sender.send(WsMessage::Text(msg.to_json()));
+}
+
+fn send(msg: &ClientMsg) {
+    STATE.with(|s| {
+        if let Some(sender) = &s.borrow().sender {
+            send_on(sender, msg);
+        }
+    });
+}
+
+fn focus_msg(focus: Focus) -> ClientMsg {
+    ClientMsg::Focus { component: focus.component, signal: focus.signal }
+}
+
+/// Inspect a discovered app (by [`AppInfo::id`]).
+pub fn attach(app_id: String) {
+    let msg = ClientMsg::Attach { app: app_id.clone() };
+    STATE.with(|s| s.borrow_mut().attached = Some((msg.clone(), app_id)));
+    send(&msg);
+}
+
+/// Inspect the bridge at `addr`, which registered nowhere.
+pub fn attach_addr(addr: String) {
+    let msg = ClientMsg::AttachAddr { addr: addr.clone() };
+    STATE.with(|s| s.borrow_mut().attached = Some((msg.clone(), addr)));
+    send(&msg);
+}
+
+pub fn detach() {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        s.attached = None;
+        s.focus = Focus::default();
+    });
+    send(&ClientMsg::Detach);
+}
+
+/// Change what the per-item verbs fetch.
+pub fn set_focus(focus: Focus) {
+    let changed = STATE.with(|s| std::mem::replace(&mut s.borrow_mut().focus, focus) != focus);
+    if changed {
+        send(&focus_msg(focus));
     }
+}
+
+/// Run an action verb on the attached app; its outcome arrives as the
+/// next snapshot's `last_action`.
+pub fn action(label: impl Into<String>, cmd: &str, args: Value) {
+    send(&ClientMsg::Action { label: label.into(), cmd: cmd.to_string(), args });
+}
+
+pub fn rescan() {
+    send(&ClientMsg::Rescan);
 }
