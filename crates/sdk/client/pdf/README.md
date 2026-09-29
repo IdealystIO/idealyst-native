@@ -89,10 +89,13 @@ let viewer = pdf::PdfReactive(move || doc.get(), /*page*/ 0, /*w*/ 520.0, /*h*/ 
 The page is fit (aspect-preserved, centered) into the fixed `width × height` box.
 [`examples/pdf-demo`](./examples/pdf-demo/) wires this to the
 [`file-picker`](../file-picker/) SDK — **Open PDF…** loads a file from disk and
-renders it on the GPU. Run it with **`idealyst dev --macos --local`**: the canvas
-carries a `draw` closure in its external payload that can't cross the dev-server
-wire, so canvas-based SDKs need single-process local-render mode (else the client
-shows "Component not available: canvas_core::CanvasProps").
+renders it on the GPU, or on the CPU renderer where the GPU can't run vello. The
+app registers both renderers — `canvas_native::register` first, then
+`canvas_vello::register`, which steps aside when the GPU can't run it — because
+a canvas with no registered renderer panics at mount. Run it with
+**`idealyst dev --macos --local`**: the canvas carries a `draw` closure in its
+payload that can't cross the dev-server wire, so canvas-based SDKs need
+single-process local-render mode.
 
 ## Lower-level API
 
@@ -125,8 +128,10 @@ swaps the document when its signal changes with no remount.
   draw content unmasked.
 - [ ] **Android** — ⚠️ not yet device-confirmed (compile-checked). Vello on Vulkan on
   real devices; emulator uses the CPU fallback.
-- [ ] **Web** — ⚠️ not yet confirmed (compile-checked). Renders via the WebGPU canvas
-  renderer where available, Canvas2D CPU fallback otherwise.
+- [ ] **Web** — Canvas2D CPU fallback confirmed (2026-09-29, Chromium with WebGPU
+  hidden, release build with code splitting and data pruning): the built-in sample's
+  box, Type1 title and body text render. The WebGPU (vello) path and a real
+  multi-page PDF are not yet confirmed.
 - [ ] **Approximations** — confirm the documented gaps surface in `Warnings` and never
   panic: tiling patterns draw as nothing, `/Alpha` soft masks are approximate,
   encrypted PDFs are unsupported.

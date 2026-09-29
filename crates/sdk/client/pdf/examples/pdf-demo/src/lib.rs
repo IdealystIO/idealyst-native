@@ -11,49 +11,33 @@
 //! **Run with `--local`** (`idealyst dev --macos --local`). The canvas carries a
 //! `draw` closure in its scene payload, which can't be serialized
 //! across the default dev-server wire — so canvas-based SDKs (this one,
-//! `whiteboard-demo`, `canvas-demo`) need single-process local-render mode, or
-//! the client shows "Component not available: canvas_core::CanvasProps".
+//! `whiteboard-demo`, `canvas-demo`) need single-process local-render mode.
 
 use std::rc::Rc;
 
-// Link anchor: `canvas-native` self-registers its renderer via `inventory`; the
-// `as _` keeps it linked so it's the fallback when vello self-gates off.
-use canvas_native as _;
 use file_picker::{FilePicker, PickOutcome, PickRequest};
 use idea_ui::{install_idea_theme, light_theme, Stack, StackGap, StackPadding, Typography};
 use pdf::PdfReactive;
-use runtime_core::{driver::spawn_async, signal, text, ui, Element, IntoElement, Signal};
+use runtime_core::{driver::spawn_async, signal, ui, Element, IntoElement, Signal};
 
-/// SDK-handler registration seam, invoked by the CLI-generated wrappers
-/// after `runtime_vocabulary::register_builtins`.
+/// Register the canvas renderers, called by `idealyst::entry!` at boot.
 ///
-/// `canvas-vello` needs an explicit `register` (it self-gates on GPU
-/// capability); registering it last makes it win over `canvas-native` where the
-/// GPU can run vello, and step aside (leaving the native fallback) otherwise.
-/// Both install a handler for the same `canvas_core::CanvasPrim` payload, and
-/// last registration for a payload wins.
+/// Both install a handler for the same `canvas_core::CanvasPrim`, and the
+/// scene registry is `TypeId`-keyed with last write winning. So native goes
+/// first and vello second: vello takes over where the GPU can run it, and
+/// `canvas_vello::register` no-ops otherwise (no WebGPU in the browser, an
+/// emulator's Vulkan without f16), leaving the CPU renderer in place.
+///
+/// Registration is MANDATORY: an unregistered payload panics at realize.
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
-    H: runtime_vocabulary::caps::GraphicsOps
+    H: runtime_vocabulary::caps::ExternalOps
+        + runtime_vocabulary::caps::GraphicsOps
         + runtime_vocabulary::style_attach::StyleServices
         + 'static,
 {
-    #[cfg(any(
-        target_arch = "wasm32",
-        all(
-            any(target_os = "macos", target_os = "ios", target_os = "android"),
-            not(target_arch = "wasm32")
-        )
-    ))]
+    canvas_native::register(registry);
     canvas_vello::register(registry);
-    let _ = registry;
-}
-
-/// Recorder twin of [`register_scene_extensions`] for the dev-server
-/// sidecar. Gated by `sidecar` so device/web builds never pull `dev-server`.
-#[cfg(feature = "sidecar")]
-pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
-    register_scene_extensions(registry);
 }
 
 pub fn app() -> Element {
@@ -90,27 +74,26 @@ pub fn app() -> Element {
         });
     };
 
-    // Body assembled as a Vec so the pre-built reactive `viewer` Element splats
-    // in alongside the macro-authored children (the canvas-demo idiom).
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "PDF on the GPU".to_string(), kind = idea_ui::typography_kind::H1) },
-        ui! {
-            Typography(
-                content = "Open a PDF from your device — it's interpreted into a canvas \
-                    Scene and rendered by vello on the GPU. Text becomes glyph runs, \
-                    vectors become fills."
-                    .to_string(),
-                muted = true,
-            )
-        },
-        ui! { button(label = "Open PDF…".to_string(), on_click = on_open) },
-        text(move || status.get()).into_element(),
-        PdfReactive(move || doc.get(), 0, 520.0, 680.0).into_element(),
-    ];
+    // `PdfReactive` returns a canvas builder, not a component, so it is
+    // built here and splatted in as a child.
+    let viewer = PdfReactive(move || doc.get(), 0, 520.0, 680.0).into_element();
 
     ui! {
         scroll_view {
-            Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+                Typography(content = "PDF on the GPU".to_string(), kind = idea_ui::typography_kind::H1)
+                Typography(
+                    content = "Open a PDF from your device — it's interpreted into a canvas \
+                        Scene and rendered by vello on the GPU (or the CPU renderer where \
+                        the GPU can't run vello). Text becomes glyph runs, vectors become \
+                        fills."
+                        .to_string(),
+                    muted = true,
+                )
+                button(label = "Open PDF…".to_string(), on_click = on_open)
+                text { move || status.get() }
+                viewer
+            }
         }
     }
 }

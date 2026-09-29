@@ -8808,16 +8808,12 @@ dependencies = [
 name = "pdf-demo"
 version = "1.5.2"
 dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-web",
  "canvas",
  "canvas-native",
  "canvas-vello",
- "dev-server",
  "file-picker",
  "idea-ui",
+ "idealyst",
  "pdf",
  "runtime-core",
  "runtime-scene",
