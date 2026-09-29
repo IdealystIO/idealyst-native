@@ -131,9 +131,9 @@
 //! it was written for raised their cap by hand four times in three weeks
 //! (4096 → 8192 → 12288 → 15360) as their module grew, and each value was
 //! stale within a week. The fix for that was on the other side: the
-//! splitter now sizes its worker count to fit whatever cap is in force
-//! (`build_web::split_emit_workers`), so its memory no longer grows with
-//! the core count.
+//! splitter (`wasm-carve`) no longer builds an in-memory copy of the
+//! program per output, so its peak is a few hundred MB whatever the app's
+//! size or the core count.
 //!
 //! The cap is an atomic the monitor thread re-reads every poll, so the
 //! raise takes effect on the running monitor rather than spawning a
@@ -229,13 +229,12 @@ pub fn raise_for_web_pipeline() -> Option<u64> {
 /// Everything a command does before it runs the web build pipeline in
 /// this process: raise the cap to fit the machine, say so once through
 /// `reporter`, and track `reporter`'s stages so a tripped cap names the
-/// one running. Returns the cap in force, which the caller passes on as
-/// `build_web::BuildOptions::memory_budget_mb`.
+/// one running.
 ///
 /// Idempotent: a second call re-raises to the same value and logs
 /// nothing, but does subscribe a second tracker — call it once per
 /// reporter.
-pub fn prepare_web_pipeline(reporter: &dev_events::Reporter) -> Option<u64> {
+pub fn prepare_web_pipeline(reporter: &dev_events::Reporter) {
     let before = current_limit_mb();
     if let Some(mb) = raise_for_web_pipeline() {
         if Some(mb) != before {
@@ -249,12 +248,9 @@ pub fn prepare_web_pipeline(reporter: &dev_events::Reporter) -> Option<u64> {
         }
     }
     track_stages(reporter);
-    current_limit_mb()
 }
 
-/// The cap in force, in megabytes, or `None` when none is enforced. The
-/// web build sizes its in-process passes to it
-/// (`build_web::BuildOptions::memory_budget_mb`).
+/// The cap in force, in megabytes, or `None` when none is enforced.
 pub fn current_limit_mb() -> Option<u64> {
     match LIMIT_MB.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,

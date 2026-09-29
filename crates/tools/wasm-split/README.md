@@ -1,23 +1,48 @@
-# `wasm-split` — vendored code-splitting toolchain
+# `wasm-split` — code-splitting toolchain
 
-A snapshot of the wasm-split crates from DioxusLabs/dioxus (alpha-0.8.0),
-owned here so bugs can be fixed as they fire on this codebase without
-waiting on upstream. Four crates:
+How `#[component(lazy)]` becomes separately loaded wasm on the web. Three
+crates:
 
 | Crate | Role |
 | --- | --- |
-| `wasm-split` | The runtime side: the `LazyLoader` / `LazySplitLoader` that a split call site awaits. Re-exported to authors as `runtime_core::__wasm_split`. |
-| `wasm-split-macro` | The `#[wasm_split(module)]` attribute. `#[component(lazy)]` emits it around each lazy body on wasm32; native builds never see it. |
-| `wasm-split-cli` | The post-link pass `build-web` runs on the wasm-bindgen output: cuts the module at the split exports and writes one chunk per split module plus the loader JS. |
-| `wasm-used` | Liveness analysis the CLI uses to decide what each chunk must carry. |
+| `wasm-split` | The runtime side: the `LazyLoader` / `LazySplitLoader` that a split call site awaits. Re-exported to authors as `runtime_core::__wasm_split`. Vendored from DioxusLabs/dioxus (alpha-0.8.0). |
+| `wasm-split-macro` | The `#[wasm_split(module)]` attribute. `#[component(lazy)]` emits it around each lazy body on wasm32; native builds never see it. Vendored from DioxusLabs/dioxus. |
+| `wasm-carve` | The post-link pass `build-web` runs on the wasm-bindgen output: partitions the module at the split exports and writes main, one module per split point, the shared chunk, and the loader JS (`__wasm_split.js`). Ours; it replaced Dioxus's walrus-based `wasm-split-cli`. |
 
 ## How the pieces link up
 
 The macro emits, per split function, an export named
 `__wasm_split_00___<module>___00_export_<id>_<fn>` and a matching import
-`…00_import_<id>_<fn>`. The CLI pairs import to export by that exact
+`…00_import_<id>_<fn>`. The splitter pairs import to export by that exact
 name, so the `<id>` only has to be the same on both sides of one call
 site and different between call sites that share `<module>` and `<fn>`.
+
+## wasm-carve
+
+Inputs: the rustc/LLD module (linked with `--emit-relocs`) and the
+wasm-bindgen output. The partition — what main reaches, what each split
+point reaches, what more than one split reaches (the shared chunk) — comes
+from the rustc module's relocations (the only record of function pointers
+stored in DATA: vtables, closures) plus the bindgened module's direct
+`call` / `ref.func` operands, paired by function name.
+
+No output is built through an instruction IR. Every output keeps the
+source's type, table, memory and global numbering, so function bodies are
+copied as bytes; only calls inside kept bodies are renumbered, by a
+streaming re-encode. Main keeps what its exports, start function and
+table reach. A split module holds its own bodies plus a trampoline
+(`call_indirect` through a slot appended to the shared table) for every
+main function it calls; it imports main's memory, tables and globals and
+installs its functions into the table when it loads. Main's split-point
+imports become trampolines to the slot each module installs its entry at.
+
+Measured on CrewForge (73 MB bindgened module, 17 split points): 1.5 s and
+0.34 GB peak, where the walrus-based splitter took 9.5 s and 3.1 GB —
+walrus holds ~60 bytes of IR per byte of code, and the old splitter held
+one whole-program parse per output being built.
+
+`wasm-carve/examples/carve.rs` runs the splitter on a real app's modules
+outside the build, for measuring.
 
 ## Local changes from the upstream snapshot
 

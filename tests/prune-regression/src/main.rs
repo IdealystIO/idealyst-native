@@ -7,7 +7,7 @@
 //! assert DOM + console state.
 //!
 //! Build-only smoke (always runs) catches:
-//! - wasm-split-cli crashes during the post-build split pass
+//! - splitter (`wasm-carve`) crashes during the post-build split pass
 //! - linker errors from a chunk that lost a symbol it imported from main
 //! - wasm-bindgen failures on the post-split bundle
 //! - a missing `idealyst` install

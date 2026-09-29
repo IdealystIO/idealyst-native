@@ -183,7 +183,6 @@ fn build_inspector(out_dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
             strip_panics: false,
             hydrate: false,
             prune_dead_data_min: None,
-            memory_budget_mb: None,
             premint: false,
             // One module: nothing in the Inspector is lazy, and it keeps
             // the embedded file set small.

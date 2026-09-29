@@ -1747,7 +1747,6 @@ fn launch_web(
             dev_reload::build_once(
                 dir,
                 &dev_reload::BuildOptions {
-                    memory_budget_mb: crate::memory_limit::current_limit_mb(),
                     source: source.clone(),
                     // One feature flipped on for the wasm build:
                     // `runtime-server` (bare, wrapper-local) switches
@@ -1865,7 +1864,6 @@ fn launch_web(
                 dir,
                 signal.clone(),
                 dev_reload::BuildOptions {
-                    memory_budget_mb: crate::memory_limit::current_limit_mb(),
                     source: source.clone(),
                     // Unlike the native wrappers, the web wrapper declares
                     // no `dev` feature of its own — it takes `runtime-core`
@@ -2171,7 +2169,6 @@ fn launch_ssr(
         let _ = build_web::build(
             dir,
             build_web::BuildOptions {
-                memory_budget_mb: crate::memory_limit::current_limit_mb(),
             // Dev/docs/run builds keep the full vocabulary: `--primitives`
             // is a release-bundle lever, and dropping one mid-session would
             // panic at mount rather than degrade.
@@ -2468,7 +2465,6 @@ fn full_stack_bundle_options(
         web_dev_features_with(args.no_robot, hot_patch_armed(args))
     };
     Ok(dev_reload::BuildOptions {
-        memory_budget_mb: crate::memory_limit::current_limit_mb(),
         source: source.clone(),
         // Robot-on-web, same as the static path — see
         // `web_dev_features`.

@@ -2,7 +2,7 @@
 //! release-mode data pruning.
 //!
 //! The `lazy! { … }` block is hoisted into a `#[wasm_split]` async fn
-//! and post-processed by `wasm-split-cli` into a separate chunk. The
+//! and post-processed by the splitter (`wasm-carve`) into a separate chunk. The
 //! chunk doesn't carry its own copy of every dep — it imports shared
 //! code and DATA from the main bundle (idea_ui component vtables,
 //! `Signal<T>` static thread-local slots, panic-message strings, the

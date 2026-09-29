@@ -147,7 +147,7 @@ pub struct Args {
 
     /// **EXPERIMENTAL, off by default.** Web + release only: opt IN to
     /// chunk-only data pruning in the main wasm bundle. When enabled, release
-    /// builds zero data symbols (≥ 24 bytes) that wasm-split-cli classifies as
+    /// builds zero data symbols (≥ 24 bytes) that the splitter classifies as
     /// reachable only from lazy chunks — recovering ~25-50% of the gzipped
     /// main bundle on apps with a heavy lazy chunk.
     ///
@@ -579,11 +579,10 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     );
 
     let reporter = dev_events::Reporter::default();
-    let memory_budget_mb = crate::memory_limit::prepare_web_pipeline(&reporter);
+    crate::memory_limit::prepare_web_pipeline(&reporter);
     let artifact = build_web::build(
         dir,
         build_web::BuildOptions {
-            memory_budget_mb,
             primitives: args.primitives.clone(),
             premint_only: args.premint_only,
             premint_report: args.premint_report,
@@ -670,7 +669,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
 /// `Some(min_bytes)` to enable pruning, `None` to disable it.
 ///
 /// Pruning is **off by default** and opt-in via `--data-prune`. The
-/// `wasm-split-cli` chunk-only classification under-approximates what `main`
+/// splitter's chunk-only classification under-approximates what `main`
 /// reaches: it walks the symbol-level call graph but can't trace data reached
 /// through data→data pointers, `call_indirect` / the function table, or the
 /// deferred handler-registration queue (removed with the old core).

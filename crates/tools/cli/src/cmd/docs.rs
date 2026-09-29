@@ -117,11 +117,10 @@ pub fn run(args: Args) -> Result<()> {
         if injected { "project" } else { "framework fallback" },
     );
     let reporter = dev_events::Reporter::default();
-    let memory_budget_mb = crate::memory_limit::prepare_web_pipeline(&reporter);
+    crate::memory_limit::prepare_web_pipeline(&reporter);
     let artifact = build_web::build(
         &app_dir,
         build_web::BuildOptions {
-            memory_budget_mb,
         // Dev/docs/run builds keep the full vocabulary: `--primitives`
         // is a release-bundle lever, and dropping one mid-session would
         // panic at mount rather than degrade.

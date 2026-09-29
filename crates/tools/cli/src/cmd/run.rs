@@ -554,11 +554,10 @@ fn run_server(args: &Args) -> anyhow::Result<()> {
         let source = crate::framework_source::resolve(&args.dir)?;
         eprintln!("[idealyst run server] building web bundle → dist/web");
         let reporter = dev_events::Reporter::default();
-        let memory_budget_mb = crate::memory_limit::prepare_web_pipeline(&reporter);
+        crate::memory_limit::prepare_web_pipeline(&reporter);
         build_web::build(
             &args.dir,
             build_web::BuildOptions {
-                memory_budget_mb,
             // Dev/docs/run builds keep the full vocabulary: `--primitives`
             // is a release-bundle lever, and dropping one mid-session would
             // panic at mount rather than degrade.

@@ -1,14 +1,16 @@
 //! Split a linked, wasm-bindgen'd module at its `#[wasm_split]` boundaries
 //! without building an instruction IR.
 //!
-//! `wasm-split-cli` (vendored from Dioxus) parses the whole program into
-//! walrus IR — ~60 bytes per byte of code — once for its analysis and once
-//! more per output. This crate computes the same partition from streaming
+//! It replaced Dioxus's `wasm-split-cli`, which parsed the whole program
+//! into walrus IR — ~60 bytes per byte of code — once for its analysis and
+//! once more per output (3.1 GB and 9.5 s on CrewForge, against 0.34 GB and
+//! 1.5 s here). This crate computes the same partition from streaming
 //! parses (relocations of the rustc module, `call` operands of the
 //! bindgened one) and assembles every output from byte ranges of the
 //! bindgened module, keeping its index spaces so kept bodies never need
 //! rewriting. See `emit` for the output shapes.
 
+pub mod data;
 pub mod emit;
 pub mod graph;
 pub mod module;
@@ -24,8 +26,7 @@ use crate::{
     module::ModuleIndex,
 };
 
-/// One emitted module. Mirrors `wasm_split_cli::SplitModule` so the build
-/// pipeline can take either.
+/// One emitted module.
 #[derive(Debug, Clone)]
 pub struct SplitModule {
     pub module_name: String,
@@ -42,17 +43,31 @@ pub struct OutputModules {
     pub chunks: Vec<SplitModule>,
 }
 
-pub fn split(original: &[u8], bindgened: &[u8]) -> Result<OutputModules> {
+/// The `makeLoad` factory the generated `__wasm_split.js` is built on:
+/// fetches a split module (after the chunks it relies on), instantiates it
+/// against main's exports, and wakes the Rust future through main's table.
+pub const MAKE_LOAD_JS: &str = include_str!("./__wasm_split.js");
+
+#[derive(Debug, Clone, Default)]
+pub struct SplitOptions {
+    /// Zero main's copy of split-only data symbols at least this large
+    /// (`--data-prune`; 24 is the verified floor). `None` keeps main's data
+    /// whole.
+    pub prune_dead_data_min: Option<usize>,
+}
+
+pub fn split(original: &[u8], bindgened: &[u8], options: &SplitOptions) -> Result<OutputModules> {
     let source = ModuleIndex::parse(bindgened)?;
     let partition = Partition::compute(original, &source)?;
     let layout = Layout::new(&source, &partition)?;
 
-    let main = emit_main(&source, &partition, &layout)?;
+    let main = emit_main(&source, &partition, &layout, options.prune_dead_data_min)?;
 
     // Per split module: its own bodies (everything it reaches outside
     // main, taken before chunk extraction — an extracted chunk function
-    // that is not in `shared_symbols` keeps its own copy, as in
-    // wasm-split-cli), and what it installs (after extraction).
+    // that is not in `shared_symbols` keeps its own copy — a duplication
+    // inherited from the walrus splitter, kept so outputs stayed
+    // comparable), and what it installs (after extraction).
     let plans: Vec<(HashSet<Node>, HashSet<Node>, HashSet<usize>)> = partition
         .split_points
         .iter()

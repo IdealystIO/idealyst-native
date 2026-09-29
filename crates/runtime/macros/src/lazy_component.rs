@@ -166,7 +166,7 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
     // `__lazy_body` returns a **body thunk** (`LazyBodyThunk`) and the
     // vocabulary's mount handler invokes it inside its swap effect
     // (world entered, `component_scope`-collected). Same `#[wasm_split]`
-    // module + fn naming either way, so wasm-split-cli's chunk
+    // module + fn naming either way, so the post-link splitter's chunk
     // classification is identical across cores. The `::runtime_core::…`
     // paths below are retargeted to `runtime_vocabulary::glue::…` under
     // `new-core` (glue::primitives::lazy defines the thunk types).

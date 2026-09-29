@@ -2013,7 +2013,6 @@ dependencies = [
  "toml 0.8.23",
  "walrus",
  "wasm-carve",
- "wasm-split-cli",
  "wasmparser 0.224.1",
 ]
 
@@ -13421,7 +13420,6 @@ dependencies = [
  "anyhow",
  "libc",
  "wasm-encoder 0.245.1",
- "wasm-split-cli",
  "wasmparser 0.245.1",
 ]
 
@@ -13458,22 +13456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-split-cli"
-version = "1.5.2"
-dependencies = [
- "anyhow",
- "clap",
- "id-arena",
- "itertools 0.13.0",
- "rayon",
- "tracing",
- "tracing-subscriber",
- "walrus",
- "wasm-used",
- "wasmparser 0.224.1",
-]
-
-[[package]]
 name = "wasm-split-macro"
 version = "1.5.3"
 dependencies = [
@@ -13504,15 +13486,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "wasm-used"
-version = "1.5.2"
-dependencies = [
- "id-arena",
- "tracing",
- "walrus",
 ]
 
 [[package]]

@@ -220,14 +220,6 @@ pub struct BuildOptions {
     /// verified-safe floor on the website example; the CLI defaults
     /// to that for release web builds.
     pub prune_dead_data_min: Option<usize>,
-    /// The resident memory, in megabytes, this process may use for the
-    /// passes that run IN it (the command_export neutralize and
-    /// wasm-split; cargo, wasm-bindgen and wasm-opt are child processes
-    /// with their own budgets). The CLI passes its memory cap. The
-    /// splitter sizes its worker count to fit — see
-    /// [`split_emit_workers`]. `None` means no cap is enforced, and the
-    /// splitter uses as many workers as are fastest.
-    pub memory_budget_mb: Option<u64>,
     /// Preminted styles: run the ephemeral native style-dump build
     /// (every `stylesheet!` in the app graph emits its full variant
     /// space as CSS into `pkg/premint.css`) and compile the wasm with
@@ -642,7 +634,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     );
 
     // Direct pipeline (no wasm-pack), so we can hit the flag matrix
-    // wasm-split-cli needs to actually extract chunks:
+    // the splitter (`wasm-carve`) needs to actually extract chunks:
     //
     //   1. `cargo build` with `-C link-args=--emit-relocs` (passed via
     //      `CARGO_ENCODED_RUSTFLAGS`) so the rustc-emitted wasm has the
@@ -650,7 +642,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     //   2. `wasm-bindgen --keep-lld-exports` so wasm-bindgen preserves
     //      the LLD-emitted exports wasm-split's reachability walker
     //      uses to identify chunk-only code.
-    //   3. `wasm-split-cli split` rewrites the bindgened wasm into a
+    //   3. `wasm-carve` rewrites the bindgened wasm into a
     //      lean base + per-chunk wasms + a `__wasm_split.js` loader.
     //      Skippable with `--no-split`. Not skipped by default even
     //      when there is nothing to extract: outside release this is
@@ -815,10 +807,9 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                     &wrapper_pkg,
                     &manifest.lib_name,
                     opts.prune_dead_data_min,
-                    opts.memory_budget_mb,
                 )
             })
-            .with_context(|| "wasm-split-cli post-build")?;
+            .with_context(|| "wasm-split post-build")?;
         } else {
             // `--no-split` means "bundle it anyway", not "drop it": the module
             // still declares whatever imports `#[wasm_split]` emitted, and an
@@ -2378,7 +2369,7 @@ fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
 
 /// Run `cargo build --target wasm32-unknown-unknown` against the
 /// app crate. When splitting, `-C link-args=--emit-relocs` is set so the
-/// rustc-emitted wasm carries the relocation info wasm-split-cli needs
+/// rustc-emitted wasm carries the relocation info the splitter needs
 /// to identify indirect-call targets per chunk; a non-splitting build
 /// leaves them out, because nothing downstream reads them.
 ///
@@ -2744,8 +2735,8 @@ fn cargo_build_wasm(
 /// `--keep-lld-exports` rides BOTH paths, for two different reasons:
 ///
 /// * Splitting: without it wasm-bindgen strips the LLD-emitted exports
-///   wasm-split-cli uses to identify per-chunk reachable code, and the
-///   splitter conservatively keeps everything in main — which is what
+///   the splitter uses to identify per-chunk reachable code, and it
+///   conservatively keeps everything in main — which is what
 ///   was happening to the website's bundle in the wasm-pack pipeline.
 /// * Not splitting: the inline `__wasm_split.js` wakes each lazy future
 ///   through the main module's `__indirect_function_table`, which
@@ -2952,7 +2943,7 @@ fn wasm_split_imports(wasm: &[u8]) -> Result<Vec<String>> {
 ///
 /// * each `__wasm_split_load_*` resolves immediately — there is nothing
 ///   to fetch — by waking the Rust future through the main module's
-///   function table, exactly as [`wasm_split_cli::MAKE_LOAD_JS`] does;
+///   function table, exactly as [`wasm_carve::MAKE_LOAD_JS`] does;
 /// * each `…_import_…` forwards straight to its `…_export_…` twin.
 ///
 /// The lazy boundary therefore still *works* — `loading` shows for one
@@ -3042,13 +3033,13 @@ fn clear_wasm_split_artifacts(pkg_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run `wasm-split-cli split` against the wasm-pack output to extract
+/// Run the splitter (`wasm-carve`) against the wasm-bindgen output to extract
 /// `#[wasm_split]`-annotated functions into separate chunk wasms.
 ///
 /// Inputs:
 /// - `original_wasm`: the rustc-emitted wasm (in the wrapper's
 ///   `target/wasm32-unknown-unknown/<profile>/<lib>.wasm`). Carries
-///   the `linking` / `reloc.*` sections wasm-split-cli needs.
+///   the `linking` / `reloc.*` sections the splitter needs.
 /// - `pkg_dir`: the wasm-bindgen output directory. Contains
 ///   `<lib>_bg.wasm` (the bindgened binary) and `<lib>.js` (the JS
 ///   shim). After this fn returns, `<lib>_bg.wasm` is REPLACED by
@@ -3062,18 +3053,19 @@ fn clear_wasm_split_artifacts(pkg_dir: &Path) -> Result<()> {
 /// rewritten to `./<lib>.js` so it lands on the wasm-bindgen shim.
 ///
 /// Skips silently when the wasm has no `#[wasm_split]` annotations
-/// (wasm-split-cli will emit just `main.wasm` with no chunks; we
-/// detect that and leave the pkg dir alone).
+/// (the splitter emits just the main module with no chunks; we detect
+/// that and leave the pkg dir alone).
 /// Strip wasm-bindgen 0.2.122's `*.command_export` wrappers from the
 /// bindgened wasm in place — without this, every JS↔wasm round trip
 /// (string marshal, closure invoke) re-runs `__wasm_call_ctors`, which
 /// re-executes every `inventory::submit!`, double-submitting items into
 /// `inventory`'s global linked list and eventually trapping with
 /// `RuntimeError: memory access out of bounds` somewhere in the next
-/// list traversal. See [`wasm_split_cli::neutralize_command_export_wrappers`]
+/// list traversal. See [`wasm_carve::neutralize::neutralize_command_export_wrappers`]
 /// for the underlying patch (and regression tests). Runs between
-/// `wasm-bindgen` and `wasm-split`; `wasm-split`'s reachability walker
-/// drops the now-orphaned wrapper functions for free.
+/// `wasm-bindgen` and the splitter, whose reachability walk drops the
+/// now-orphaned wrapper functions for free. wasm-bindgen 0.2.128 emits no
+/// such wrappers; the pass then leaves the file untouched.
 fn neutralize_command_export_wrappers(
     reporter: &dev_events::Reporter,
     pkg_dir: &Path,
@@ -3083,17 +3075,11 @@ fn neutralize_command_export_wrappers(
     let bindgened = fs::read(&bindgened_path)
         .with_context(|| format!("read {}", bindgened_path.display()))?;
     let before_len = bindgened.len();
-    let patched: Vec<u8> = if use_wasm_carve() {
-        match wasm_carve::neutralize::neutralize_command_export_wrappers(&bindgened)
-            .with_context(|| "rewrite *.command_export exports → bare helpers")?
-        {
-            // Nothing to neutralize (wasm-bindgen ≥ 0.2.128): leave the file.
-            std::borrow::Cow::Borrowed(_) => return Ok(()),
-            std::borrow::Cow::Owned(bytes) => bytes,
-        }
-    } else {
-        wasm_split_cli::neutralize_command_export_wrappers(&bindgened)
-            .with_context(|| "walrus: rewrite *.command_export exports → bare helpers")?
+    let patched = match wasm_carve::neutralize::neutralize_command_export_wrappers(&bindgened)
+        .with_context(|| "rewrite *.command_export exports → bare helpers")?
+    {
+        std::borrow::Cow::Borrowed(_) => return Ok(()),
+        std::borrow::Cow::Owned(bytes) => bytes,
     };
     fs::write(&bindgened_path, &patched)
         .with_context(|| format!("write {}", bindgened_path.display()))?;
@@ -3109,82 +3095,12 @@ fn neutralize_command_export_wrappers(
     Ok(())
 }
 
-const MB: usize = 1024 * 1024;
-
-/// EXPERIMENT (branch `experiment/reloc-splitter`): split and neutralize
-/// with `wasm-carve` instead of the walrus-based `wasm-split-cli`.
-fn use_wasm_carve() -> bool {
-    std::env::var_os("IDEALYST_WASM_CARVE").is_some()
-}
-
-/// Peak RSS of the in-process split, per byte of bindgened module, before
-/// any emit worker: the command-export neutralize before it (its freed
-/// heap stays resident and is reused), the splitter's long-lived parse of
-/// the bindgened module, and the largest single emit — the shared chunk,
-/// which owns every function two lazy modules both reach.
-///
-/// Fitted on CrewForge (a 69.7 MiB bindgened module, 17 split points,
-/// 14 cores): the splitter alone peaked at 3,241 / 3,069 / 3,381 MiB at
-/// 1 / 2 / 4 workers, and the whole `idealyst build --web --release`
-/// process at 3,559 MiB with 4. `50 + 1·w` bytes per module byte
-/// projects 3,555 / 3,625 / 3,764 MiB — at or above every one. An emit parses only its own function bodies, so workers
-/// barely move the peak; the fit before that change was `34 + 16·w`,
-/// when each worker held a parse of the whole program.
-const SPLIT_BASE_BYTES_PER_MODULE_BYTE: u64 = 50;
-
-/// Peak RSS each concurrent emit worker adds, per byte of bindgened
-/// module: one split module's own IR plus a body-stubbed copy of the
-/// module. See [`SPLIT_BASE_BYTES_PER_MODULE_BYTE`] for the fit.
-const SPLIT_WORKER_BYTES_PER_MODULE_BYTE: u64 = 1;
-
-/// The most emit workers that still make the split faster. Measured on
-/// CrewForge on a 14-core machine: 8.3 s at 1 worker, 7.6 s at 2, 7.0 s
-/// at 4, 7.9 s at 8 — past 4 the emits are too small to pay for more
-/// threads. (Before emits parsed only their own bodies the curve had the
-/// same shape at three times the cost: 20.5 s / 12.4 s / 19.2 s.)
-const MAX_SPLIT_EMIT_WORKERS: usize = 4;
-
-/// The RSS the in-process split is projected to peak at with `workers`
-/// emit workers on a `module_bytes` bindgened module.
-fn projected_split_peak_bytes(module_bytes: u64, workers: usize) -> u64 {
-    module_bytes.saturating_mul(
-        SPLIT_BASE_BYTES_PER_MODULE_BYTE + SPLIT_WORKER_BYTES_PER_MODULE_BYTE * workers as u64,
-    )
-}
-
-/// How many split modules wasm-split builds at once.
-///
-/// As many as fit `budget_mb` by [`projected_split_peak_bytes`], never more
-/// than the machine's cores or [`MAX_SPLIT_EMIT_WORKERS`], never fewer than
-/// one. The one-worker floor is deliberate: a budget too small for even
-/// that cannot be met by the splitter, and the memory cap reports it.
-///
-/// This bound is what first kept the split's memory from growing with the
-/// core count, when every worker held a parse of the whole program:
-/// unbounded, the splitter's peak on CrewForge went from 8.2 GB to
-/// 12.5 GB in a week as the app grew, and every raise of the CLI's cap
-/// went stale. Workers are cheap now (see
-/// [`SPLIT_WORKER_BYTES_PER_MODULE_BYTE`]); the bound stays so a tight
-/// budget still gets a single-worker split.
-pub fn split_emit_workers(module_bytes: u64, budget_mb: Option<u64>, cores: usize) -> usize {
-    let ceiling = cores.clamp(1, MAX_SPLIT_EMIT_WORKERS);
-    let Some(budget_mb) = budget_mb else {
-        return ceiling;
-    };
-    let budget = budget_mb.saturating_mul(MB as u64);
-    (1..=ceiling)
-        .rev()
-        .find(|w| projected_split_peak_bytes(module_bytes, *w) <= budget)
-        .unwrap_or(1)
-}
-
 fn run_wasm_split(
     reporter: &dev_events::Reporter,
     original_wasm: &Path,
     pkg_dir: &Path,
     lib_name: &str,
     prune_dead_data_min: Option<usize>,
-    memory_budget_mb: Option<u64>,
 ) -> Result<()> {
     let bindgened_wasm = pkg_dir.join(format!("{lib_name}_bg.wasm"));
     if !bindgened_wasm.is_file() {
@@ -3206,46 +3122,12 @@ fn run_wasm_split(
     let bindgened =
         fs::read(&bindgened_wasm).with_context(|| format!("read {}", bindgened_wasm.display()))?;
 
-    // Library API — calls into our vendored wasm-split-cli, so
-    // patches we apply land automatically without users needing a
-    // separate `cargo install`.
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let workers = split_emit_workers(bindgened.len() as u64, memory_budget_mb, cores);
-    reporter.log(
-        "build-web",
-        format!(
-            "wasm-split: {workers} emit worker(s) for a {} MB module (budget {}; \
-             projected peak ~{} MB)",
-            bindgened.len() / MB,
-            memory_budget_mb.map_or("uncapped".to_string(), |mb| format!("{mb} MB")),
-            projected_split_peak_bytes(bindgened.len() as u64, workers) / MB as u64,
-        ),
-    );
-    let output = if use_wasm_carve() {
-        anyhow::ensure!(
-            prune_dead_data_min.is_none(),
-            "wasm-carve does not implement --data-prune yet"
-        );
-        wasm_carve::split(&original, &bindgened).context("wasm-carve: split")?
-    } else {
-        let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
-            .context("wasm-split: parse module")?
-            .with_data_pruning(prune_dead_data_min)
-            .with_emit_workers(Some(workers));
-        let output = splitter.emit().context("wasm-split: emit chunks")?;
-        let convert = |m: wasm_split_cli::SplitModule| wasm_carve::SplitModule {
-            module_name: m.module_name,
-            hash_id: m.hash_id,
-            component_name: m.component_name,
-            bytes: m.bytes,
-            relies_on_chunks: m.relies_on_chunks,
-        };
-        wasm_carve::OutputModules {
-            main: convert(output.main),
-            modules: output.modules.into_iter().map(convert).collect(),
-            chunks: output.chunks.into_iter().map(convert).collect(),
-        }
-    };
+    let output = wasm_carve::split(
+        &original,
+        &bindgened,
+        &wasm_carve::SplitOptions { prune_dead_data_min },
+    )
+    .context("wasm-split")?;
 
     // Replace the bindgened wasm with the split-extracted main.
     fs::write(&bindgened_wasm, &output.main.bytes)
@@ -3272,15 +3154,12 @@ fn run_wasm_split(
         chunk_count += 1;
     }
 
-    // JS loader shim. wasm-split-cli's MAKE_LOAD_JS is just the
-    // `makeLoad` factory; the per-chunk `export const
-    // __wasm_split_load_…` declarations are appended at runtime by
-    // the CLI binary. We replicate that here (build-web equivalent
-    // of wasm-split-cli's `emit_js`).
+    // JS loader shim: wasm-carve's `makeLoad` factory, then one
+    // `export const __wasm_split_load_…` per chunk and per split module.
     use std::fmt::Write as _;
     let mut shim = format!(
         "import {{ initSync }} from \"./{lib_name}.js\";\n{}",
-        wasm_split_cli::MAKE_LOAD_JS,
+        wasm_carve::MAKE_LOAD_JS,
     );
     for (idx, chunk) in output.chunks.iter().enumerate() {
         writeln!(
@@ -3479,7 +3358,6 @@ mod regression_tests {
             runtime_server_url: None,
             bundle_out_dir: None,
             prune_dead_data_min: None,
-            memory_budget_mb: None,
             reporter: dev_events::Reporter::new(),
         }
     }
@@ -3511,63 +3389,6 @@ mod regression_tests {
             *sink.0.lock().unwrap(),
             vec!["start stage+fingerprint".to_string(), "finish stage+fingerprint".to_string()],
         );
-    }
-
-    const MODULE_MB: u64 = 80;
-    const CREWFORGE_MODULE: u64 = MODULE_MB * 1024 * 1024;
-
-    /// Regression: the splitter ran one full module parse per core, and
-    /// CrewForge's release build peaked at 12.5 GB — over a 12,288 MB cap
-    /// on an 8-core machine with 17 GB free. The caps it tripped are the
-    /// ones the app team actually set, in order; each must now fit.
-    #[test]
-    fn regression_split_workers_fit_every_cap_crewforge_tripped() {
-        for cap_mb in [4096u64, 8192, 12288, 15360] {
-            let w = split_emit_workers(CREWFORGE_MODULE, Some(cap_mb), 8);
-            let peak_mb = projected_split_peak_bytes(CREWFORGE_MODULE, w) / (1024 * 1024);
-            assert!(w >= 1);
-            if w > 1 {
-                assert!(peak_mb <= cap_mb, "{w} workers project {peak_mb} MB > cap {cap_mb} MB");
-            }
-        }
-        // The 12,288 MB cap that aborted on 2026-09-28 now runs 4 workers,
-        // projected (conservatively) at under 4.5 GB.
-        assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(12288), 8), 4);
-    }
-
-    /// Never more than the measured sweet spot, however many cores —
-    /// more workers were slower AND bigger.
-    #[test]
-    fn split_workers_stop_at_the_measured_ceiling() {
-        assert_eq!(split_emit_workers(CREWFORGE_MODULE, None, 64), MAX_SPLIT_EMIT_WORKERS);
-        assert_eq!(split_emit_workers(1024, Some(1 << 20), 64), MAX_SPLIT_EMIT_WORKERS);
-    }
-
-    #[test]
-    fn split_workers_never_exceed_the_cores() {
-        assert_eq!(split_emit_workers(1024, None, 2), 2);
-        assert_eq!(split_emit_workers(1024, None, 0), 1);
-    }
-
-    /// A budget that cannot hold even one worker still gets one: the
-    /// split cannot run on less, and the cap is what reports it.
-    #[test]
-    fn split_workers_floor_at_one() {
-        assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(512), 8), 1);
-    }
-
-    /// Fewer workers as the budget shrinks, one step per worker's worth.
-    #[test]
-    fn split_workers_track_the_budget() {
-        let per_worker_mb = MODULE_MB * SPLIT_WORKER_BYTES_PER_MODULE_BYTE;
-        let base_mb = MODULE_MB * SPLIT_BASE_BYTES_PER_MODULE_BYTE;
-        for w in 1..=MAX_SPLIT_EMIT_WORKERS as u64 {
-            let exact = base_mb + per_worker_mb * w;
-            assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(exact), 8), w as usize);
-            if w > 1 {
-                assert_eq!(split_emit_workers(CREWFORGE_MODULE, Some(exact - 1), 8), w as usize - 1);
-            }
-        }
     }
 
     /// Regression guard for the thrash that made a dev rebuild look like
@@ -3666,7 +3487,6 @@ mod regression_tests {
             |o: &mut BuildOptions| o.brotli = true,
             |o: &mut BuildOptions| o.bundle_out_dir = Some(PathBuf::from("/out")),
             |o: &mut BuildOptions| o.prune_dead_data_min = Some(64),
-            |o: &mut BuildOptions| o.memory_budget_mb = Some(8192),
         ] {
             let mut o = key_opts();
             f(&mut o);
@@ -5225,5 +5045,77 @@ mod wasm_link_args_tests {
             "{args:?}"
         );
         assert!(has(&args, "--no-gc-sections"), "{args:?}");
+    }
+}
+
+#[cfg(test)]
+mod parallel_stage_tests {
+    use super::*;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn files(tag: &str, sizes: &[usize]) -> Vec<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("idealyst-parallel-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        sizes
+            .iter()
+            .enumerate()
+            .map(|(i, size)| {
+                let path = dir.join(format!("f{i}.wasm"));
+                fs::write(&path, vec![0u8; *size]).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    /// The largest file bounds the stage (CrewForge's main module: ~4 s
+    /// of wasm-opt, 12 s of brotli, against a second or two for any chunk),
+    /// so it starts first. With one job the order is exactly by size.
+    #[test]
+    fn runs_every_file_once_largest_first() {
+        let paths = files("order", &[10, 300, 20, 200]);
+        let seen = Mutex::new(Vec::new());
+        in_parallel_largest_first(paths, 1, |p| {
+            seen.lock().unwrap().push(fs::metadata(&p).unwrap().len());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.into_inner().unwrap(), vec![300, 200, 20, 10]);
+    }
+
+    /// The bound is what keeps memory flat: each wasm-opt or q11 brotli
+    /// stream holds its own state, so `jobs` of them must be the most alive.
+    #[test]
+    fn never_runs_more_than_jobs_at_once() {
+        let paths = files("bound", &[1; 12]);
+        let (live, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        in_parallel_largest_first(paths, 3, |_| {
+            let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            live.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        let most = most.into_inner();
+        assert!(most <= 3, "{most} ran at once with 3 jobs");
+    }
+
+    /// A failed wasm-opt fails the build rather than shipping the
+    /// unoptimized file.
+    #[test]
+    fn an_error_fails_the_stage() {
+        let paths = files("error", &[5, 6, 7]);
+        let err = in_parallel_largest_first(paths, 2, |p| {
+            if fs::metadata(&p).unwrap().len() == 6 {
+                anyhow::bail!("wasm-opt failed on {}", p.display());
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("wasm-opt failed"), "{err}");
     }
 }

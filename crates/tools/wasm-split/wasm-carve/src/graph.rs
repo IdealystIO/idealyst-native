@@ -1,8 +1,8 @@
 //! Who reaches what: the partition of a module into main, one module per
 //! split point, and the shared chunk.
 //!
-//! A port of `wasm-split-cli`'s analysis with the same results, minus the
-//! walrus IR. The edges come from two places:
+//! The same analysis as Dioxus's walrus-based `wasm-split-cli`, which this
+//! crate replaced, with the same results and no IR. The edges come from two places:
 //!
 //! * the rustc module's relocations (`reloc.CODE` / `reloc.DATA` against
 //!   the `linking` symbol table) — the only record of which DATA holds a
@@ -12,7 +12,10 @@
 //!
 //! The two modules are paired by function NAME, and every same-named copy
 //! inherits every copy's edges (LLVM under `opt-level=z` emits distinct
-//! functions sharing a mangled name; see `wasm-split-cli`'s `old_to_new`).
+//! functions sharing a mangled name. Keyed 1:1 by name, their edges landed
+//! on an arbitrary copy and the other was gutted from main while a
+//! main-resident vtable still pointed at it — "function signature
+//! mismatch" at boot; `tests/lazy-many-splits` is that shape).
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
@@ -483,4 +486,36 @@ pub fn parse_data_symbols(bytes: &[u8]) -> Result<RawData<'_>> {
         );
     }
     Ok(RawData { data_range, symbols, data_symbols })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(ids: &[u32]) -> HashSet<Node> {
+        ids.iter().map(|i| Node::Function(*i)).collect()
+    }
+
+    /// Regression: code more than one split reaches, and main does not,
+    /// goes to the shared chunk. The original tally loop was empty, so the
+    /// chunk was always empty and every module embedded the whole engine.
+    #[test]
+    fn shared_chunk_holds_only_multi_module_split_symbols() {
+        let main = set(&[0, 1]);
+        let (a, b) = (set(&[1, 2, 3]), set(&[1, 3, 4]));
+        assert_eq!(compute_shared_chunk([&a, &b].into_iter(), &main), set(&[3]));
+    }
+
+    #[test]
+    fn shared_chunk_is_empty_with_a_single_split_point() {
+        let a = set(&[1, 2, 3]);
+        assert!(compute_shared_chunk([&a].into_iter(), &set(&[0])).is_empty());
+    }
+
+    #[test]
+    fn shared_chunk_excludes_symbols_promoted_to_main() {
+        let main = set(&[7]);
+        let (a, b) = (set(&[7, 8]), set(&[7, 8]));
+        assert_eq!(compute_shared_chunk([&a, &b].into_iter(), &main), set(&[8]));
+    }
 }

@@ -13,5 +13,4 @@ wasmparser = { version = "0.245", default-features = false, features = ["std", "
 wasm-encoder = { version = "0.245", default-features = false, features = ["std", "wasmparser"] }
 
 [dev-dependencies]
-wasm-split-cli = { workspace = true }
 libc = "0.2"

@@ -240,7 +240,7 @@ fn partition_follows_calls_and_pointers_in_data() {
 #[test]
 fn every_output_validates() {
     let bytes = fixture();
-    let out = wasm_carve::split(&bytes, &bytes).unwrap();
+    let out = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
     validate(&out.main.bytes);
     for m in out.modules.iter().chain(&out.chunks) {
         validate(&m.bytes);
@@ -250,7 +250,7 @@ fn every_output_validates() {
 #[test]
 fn main_turns_the_split_import_into_a_trampoline_and_hands_over_its_slots() {
     let bytes = fixture();
-    let out = wasm_carve::split(&bytes, &bytes).unwrap();
+    let out = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
     let main = ModuleIndex::parse(&out.main.bytes).unwrap();
     assert!(main.imports.iter().any(|i| i.name == LOAD), "the loader stays an import");
     assert!(!main.imports.iter().any(|i| i.name == IMPORT), "the split import is a trampoline now");
@@ -274,7 +274,7 @@ fn main_turns_the_split_import_into_a_trampoline_and_hands_over_its_slots() {
 #[test]
 fn the_module_owns_its_code_and_installs_it_into_the_table() {
     let bytes = fixture();
-    let out = wasm_carve::split(&bytes, &bytes).unwrap();
+    let out = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
     let module = &out.modules[0];
     let m = ModuleIndex::parse(&module.bytes).unwrap();
     assert_eq!(m.func_imports, 0, "a split module imports no functions");
@@ -300,24 +300,237 @@ fn the_module_owns_its_code_and_installs_it_into_the_table() {
 #[test]
 fn splitting_is_deterministic() {
     let bytes = fixture();
-    let a = wasm_carve::split(&bytes, &bytes).unwrap();
-    let b = wasm_carve::split(&bytes, &bytes).unwrap();
+    let a = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
+    let b = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
     assert_eq!(a.main.bytes, b.main.bytes);
     for (x, y) in a.modules.iter().zip(&b.modules) {
         assert_eq!(x.bytes, y.bytes);
     }
 }
 
-/// Differential: the module keeps the same functions wasm-split-cli's
-/// does. (walrus names its trampolines `stub`; those are left out.)
-#[test]
-fn the_module_keeps_what_wasm_split_cli_keeps() {
-    let bytes = fixture();
-    let ours = wasm_carve::split(&bytes, &bytes).unwrap();
-    let theirs = wasm_split_cli::Splitter::new(&bytes, &bytes).unwrap().emit().unwrap();
-    assert_eq!(ours.modules.len(), theirs.modules.len());
-    let named = |b: &[u8]| -> HashSet<String> {
-        names(b).into_iter().filter(|n| n != "stub" && n != "dummy").collect()
+// --- carried over from the walrus-based splitter ----------------------
+
+/// Two active segments (rustc's `.rodata` at 1024 and `.data` at 4096) and
+/// a passive one, with one 32-byte symbol in each.
+fn two_segments() -> (Vec<u8>, std::collections::BTreeMap<usize, wasm_carve::graph::DataSymbol>) {
+    let mut m = Module::new();
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    m.section(&memories);
+    let mut data = DataSection::new();
+    data.active(0, &ConstExpr::i32_const(1024), 0u8..64);
+    data.active(0, &ConstExpr::i32_const(4096), 100u8..164);
+    data.passive(vec![7u8; 64]);
+    m.section(&data);
+    let symbol = |index: usize, segment: usize, offset: usize| wasm_carve::graph::DataSymbol {
+        index,
+        range: 0..0,
+        segment_offset: offset,
+        symbol_size: 32,
+        which_data_segment: segment,
     };
-    assert_eq!(named(&ours.modules[0].bytes), named(&theirs.modules[0].bytes));
+    let symbols = [(10, symbol(10, 0, 8)), (11, symbol(11, 1, 16)), (12, symbol(12, 2, 0))].into();
+    (m.finish(), symbols)
+}
+
+/// Regression for the `--data-prune` chunk corruption: a split-only
+/// mutable static in `.data` (segment 1) was zeroed in main but never
+/// re-added by the split output, which only walked segment 0 — the lazy
+/// component read zeros and silently rendered nothing.
+#[test]
+fn regression_rematerializes_non_rodata_segments() {
+    let (bytes, symbols) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let unique: HashSet<Node> = [Node::DataSymbol(10), Node::DataSymbol(11)].into();
+    let segments = wasm_carve::data::rematerialize(&source, &symbols, &unique);
+    let got: Vec<(i32, Vec<u8>)> = segments.iter().map(|(_, a, b)| (*a, b.to_vec())).collect();
+    assert_eq!(
+        got,
+        vec![(1024 + 8, (8u8..40).collect()), (4096 + 16, (116u8..148).collect())],
+        "both the .rodata and the .data symbol are re-materialized at their addresses"
+    );
+}
+
+/// Regression: a split module's re-materialized segments followed hash
+/// order, so two builds of one input shipped different bytes.
+#[test]
+fn regression_rematerialized_segments_follow_symbol_order() {
+    let (bytes, _) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let symbols: std::collections::BTreeMap<usize, wasm_carve::graph::DataSymbol> = (0..16)
+        .map(|i| {
+            (i, wasm_carve::graph::DataSymbol {
+                index: i,
+                range: 0..0,
+                segment_offset: i * 4,
+                symbol_size: 4,
+                which_data_segment: 0,
+            })
+        })
+        .collect();
+    let unique: HashSet<Node> = (0..16).map(Node::DataSymbol).collect();
+    let addrs: Vec<i32> =
+        wasm_carve::data::rematerialize(&source, &symbols, &unique).iter().map(|s| s.1).collect();
+    assert_eq!(addrs, (0..16).map(|i| 1024 + i * 4).collect::<Vec<i32>>());
+}
+
+fn data_bytes(section: &DataSection) -> Vec<Vec<u8>> {
+    let mut m = Module::new();
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+    m.section(&memories);
+    m.section(section);
+    let bytes = m.finish();
+    let index = ModuleIndex::parse(&bytes).unwrap();
+    index.data.iter().map(|d| bytes[d.data.clone()].to_vec()).collect()
+}
+
+/// Pruning zeroes split-only symbols in segments a split output can
+/// restore, and never one in a passive segment (nobody could put it back).
+#[test]
+fn regression_prune_skips_unrematerializable_segments() {
+    let (bytes, symbols) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let unused: HashSet<Node> = [10, 11, 12].into_iter().map(Node::DataSymbol).collect();
+    let (section, stats) = wasm_carve::data::prune_main_data(&source, &symbols, &unused, 24);
+    assert_eq!(stats.zeroed_bytes, 64);
+    assert_eq!(stats.skipped_unrematerializable, 1);
+    assert_eq!(stats.skipped_small, 0);
+    let segs = data_bytes(&section);
+    assert!(segs[0][8..40].iter().all(|b| *b == 0));
+    assert_eq!(segs[0][..8], (0u8..8).collect::<Vec<_>>()[..]);
+    assert!(segs[1][16..48].iter().all(|b| *b == 0));
+    assert_eq!(segs[1][..16], (100u8..116).collect::<Vec<_>>()[..]);
+    assert!(segs[2].iter().all(|b| *b == 7), "the passive segment is untouched");
+}
+
+#[test]
+fn prune_min_size_threshold_still_applies() {
+    let (bytes, symbols) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let unused: HashSet<Node> = [10, 11].into_iter().map(Node::DataSymbol).collect();
+    let (_, stats) = wasm_carve::data::prune_main_data(&source, &symbols, &unused, 64);
+    assert_eq!(stats.zeroed_bytes, 0);
+    assert_eq!(stats.skipped_small, 2);
+}
+
+/// With pruning on, main loses the split's data and the module restores it.
+#[test]
+fn data_prune_moves_split_only_data_out_of_main() {
+    let bytes = fixture();
+    let options = wasm_carve::SplitOptions { prune_dead_data_min: Some(4) };
+    let out = wasm_carve::split(&bytes, &bytes, &options).unwrap();
+    validate(&out.main.bytes);
+    let main = ModuleIndex::parse(&out.main.bytes).unwrap();
+    let vt = &out.main.bytes[main.data[0].data.clone()];
+    assert_eq!(vt, [0, 0, 0, 0], "VT is only the split's, so main's copy is zeroed");
+    let module = ModuleIndex::parse(&out.modules[0].bytes).unwrap();
+    let restored: Vec<(i32, Vec<u8>)> = module
+        .data
+        .iter()
+        .filter_map(|d| d.active_const.map(|(_, o)| (o, out.modules[0].bytes[d.data.clone()].to_vec())))
+        .filter(|(_, b)| !b.is_empty())
+        .collect();
+    assert_eq!(restored, vec![(VT_ADDR as i32, 1u32.to_le_bytes().to_vec())]);
+}
+
+/// Regression: the DCE-root exports use short `s{n}` names, never the
+/// mangled symbol (~300 KB of export names on the website), and never
+/// collide with an existing export.
+#[test]
+fn synthetic_export_names_are_short_and_dodge_collisions() {
+    let mut used: HashSet<String> =
+        ["main", "memory", "__wbindgen_malloc", "s1"].into_iter().map(String::from).collect();
+    let mut next = 0;
+    let names: Vec<String> =
+        (0..3).map(|_| wasm_carve::emit::next_synthetic_export_name(&mut next, &mut used)).collect();
+    assert_eq!(names, ["s0", "s2", "s3"]);
+}
+
+/// Regression: a failed split-module fetch must wake the Rust future with
+/// `false`. The old glue logged and returned, so `load()` awaited forever.
+#[test]
+fn make_load_glue_signals_callback_on_failure() {
+    let glue = wasm_carve::MAKE_LOAD_JS;
+    let after = glue.split_once("Failed to load wasm-split module").expect("failure log").1;
+    let before_signal = after.split_once("signal(false)").expect("failure signals false").0;
+    assert!(!before_signal.contains("return;"), "no early return before signalling");
+    assert!(glue.contains("signal(true)"));
+}
+
+/// wasm-bindgen 0.2.122's helper shape: `__wbindgen_malloc.command_export`
+/// calls `__wasm_call_ctors`, then forwards to the bare helper, and is
+/// exported under `export_name`.
+fn wrapper_fixture(export_name: &str) -> Vec<u8> {
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    types.ty().function([ValType::I32, ValType::I32], [ValType::I32]);
+    m.section(&types);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0).function(1).function(1);
+    m.section(&funcs);
+    let mut exports = ExportSection::new();
+    exports.export(export_name, ExportKind::Func, 2);
+    m.section(&exports);
+    let mut code = wasm_encoder::CodeSection::new();
+    let mut ctors = wasm_encoder::Function::new([]);
+    ctors.instructions().end();
+    code.function(&ctors);
+    let mut bare = wasm_encoder::Function::new([]);
+    bare.instructions().i32_const(0).end();
+    code.function(&bare);
+    let mut wrapper = wasm_encoder::Function::new([]);
+    wrapper.instructions().call(0).local_get(0).local_get(1).call(1).end();
+    code.function(&wrapper);
+    m.section(&code);
+    let mut names = NameMap::new();
+    names.append(0, "__wasm_call_ctors");
+    names.append(1, "__wbindgen_malloc");
+    names.append(2, "__wbindgen_malloc.command_export");
+    let mut section = NameSection::new();
+    section.functions(&names);
+    m.section(&section);
+    m.finish()
+}
+
+fn export_target(bytes: &[u8], export: &str) -> String {
+    let m = ModuleIndex::parse(bytes).unwrap();
+    let e = m.exports.iter().find(|e| e.name == export).unwrap();
+    m.func_names[&e.index].to_string()
+}
+
+fn calls_ctors_first(bytes: &[u8], func: &str) -> bool {
+    let m = ModuleIndex::parse(bytes).unwrap();
+    let f = *m.func_names.iter().find(|(_, n)| **n == func).unwrap().0;
+    let mut refs = Vec::new();
+    m.direct_refs(f, &mut refs).unwrap();
+    refs.first() == Some(&0)
+}
+
+/// Regression (wasm-bindgen 0.2.122): the suffixed export re-ran
+/// `__wasm_call_ctors` on every JS↔wasm round trip, double-submitting
+/// `inventory` items until a list traversal trapped. The export must land
+/// on the bare helper, and the wrapper must stop calling the ctors (the
+/// externref closure shim reaches it without the export).
+#[test]
+fn neutralize_repoints_the_export_and_strips_the_ctor_call() {
+    let pre = wrapper_fixture("__wbindgen_malloc_command_export");
+    assert_eq!(export_target(&pre, "__wbindgen_malloc_command_export"), "__wbindgen_malloc.command_export");
+    assert!(calls_ctors_first(&pre, "__wbindgen_malloc.command_export"));
+    let post = wasm_carve::neutralize::neutralize_command_export_wrappers(&pre).unwrap();
+    validate(&post);
+    assert_eq!(export_target(&post, "__wbindgen_malloc_command_export"), "__wbindgen_malloc");
+    assert!(!calls_ctors_first(&post, "__wbindgen_malloc.command_export"));
+}
+
+/// A wrapper exported under a bare name (`main`) is the legitimate
+/// one-time init and keeps its ctor call — and with nothing else to do the
+/// pass hands the input back untouched.
+#[test]
+fn neutralize_leaves_the_main_wrapper_alone() {
+    let pre = wrapper_fixture("main");
+    let post = wasm_carve::neutralize::neutralize_command_export_wrappers(&pre).unwrap();
+    assert!(matches!(post, std::borrow::Cow::Borrowed(_)));
+    assert!(calls_ctors_first(&post, "__wbindgen_malloc.command_export"));
 }

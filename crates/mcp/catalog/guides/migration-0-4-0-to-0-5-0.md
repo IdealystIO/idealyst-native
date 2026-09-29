@@ -185,7 +185,7 @@ to load).
 instability can re-enable it. Verify the app still renders with pruning on,
 as the guide has always advised.
 
-**Status:** landed. Regression coverage in `wasm-split-cli`
+**Status:** landed. Regression coverage in `wasm-carve`
 (`regression_rematerializes_non_rodata_segments`,
 `regression_prune_skips_unrematerializable_segments`).
 

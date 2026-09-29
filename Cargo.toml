@@ -282,10 +282,8 @@ members = [
     # — we own the snapshot, fix bugs as they fire on our codebase).
     # See `crates/tools/wasm-split/README.md`.
     "crates/tools/wasm-split/wasm-split",
-    "crates/tools/wasm-split/wasm-split-cli",
     "crates/tools/wasm-split/wasm-carve",
     "crates/tools/wasm-split/wasm-split-macro",
-    "crates/tools/wasm-split/wasm-used",
     "crates/tools/icon-gen",
     "crates/tools/build/runtime-server",
     "crates/tools/build/android",
@@ -629,11 +627,12 @@ ios-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/ios", ver
 # it as a direct dep of build-web doesn't widen the workspace.
 flate2 = "1"
 
-# Code-splitting toolchain — vendored from DioxusLabs/dioxus into
-# `crates/tools/wasm-split/`. The published-crate equivalents
-# (`wasm-splitter`, `wasm-split-macro`, `wasm-split-cli`, `wasm-used`)
-# fall over on idealyst-shaped wasm — heavy generics, deep trait
-# dispatch — so we own the source and patch as bugs surface.
+# Code-splitting toolchain in `crates/tools/wasm-split/`. The runtime and
+# macro are vendored from DioxusLabs/dioxus (their published equivalents
+# fall over on idealyst-shaped wasm — heavy generics, deep trait dispatch
+# — so we own the source and patch as bugs surface). The post-link
+# splitter is our own, `wasm-carve`, which replaced Dioxus's walrus-based
+# `wasm-split-cli`.
 #
 # The runtime crate's published name is `wasm-splitter` (because
 # Google owns `wasm-split` on crates.io). We keep the alias via
@@ -641,21 +640,13 @@ flate2 = "1"
 # paths resolve to our vendored copy.
 wasm-split = { path = "crates/tools/wasm-split/wasm-split", package = "wasm-splitter", version = "1.5.2", registry = "idealyst" }
 wasm-split-macro = { path = "crates/tools/wasm-split/wasm-split-macro", version = "1.5.3", registry = "idealyst" }
-wasm-split-cli = { path = "crates/tools/wasm-split/wasm-split-cli" }
 wasm-carve = { path = "crates/tools/wasm-split/wasm-carve" }
-wasm-used = { path = "crates/tools/wasm-split/wasm-used" }
 
-# Third-party deps the vendored wasm-split crates need from the
-# workspace. Keep these in one place so version bumps land
-# atomically across all four.
+# Third-party deps shared by the web build tooling. Keep these in one
+# place so version bumps land atomically.
 anyhow = "1"
-itertools = "0.13"
 walrus = { version = "0.26", features = ["parallel"] }
 wasmparser = "0.224"
-id-arena = "2"
-rayon = "1.10"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 clap = { version = "4", features = ["derive"] }
 async-once-cell = { version = "0.5", features = ["std"] }
 base16 = "0.2"

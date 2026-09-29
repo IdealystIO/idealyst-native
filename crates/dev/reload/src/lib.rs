@@ -624,9 +624,6 @@ pub struct BuildOptions {
     /// verbatim: `true` is the default, and clearing it trades a larger
     /// served wasm for a shorter packaging pass.
     pub wasm_split: bool,
-    /// Passed through to [`build_web::BuildOptions::memory_budget_mb`]
-    /// verbatim: the in-process memory the post-link passes may use.
-    pub memory_budget_mb: Option<u64>,
     /// Debug-info level for each rebuild's wasm (`--debuginfo`). Passed
     /// through to [`build_web::BuildOptions::debuginfo`]; the default
     /// trims DWARF that every post-cargo pass — and the browser, on every
@@ -696,7 +693,6 @@ pub fn start(
             premint_only: false,
             premint_report: false,
             wasm_split: true,
-            memory_budget_mb: None,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
             reporter: dev_events::Reporter::default(),
@@ -2115,7 +2111,6 @@ fn to_build_web_options(opts: &BuildOptions) -> build_web::BuildOptions {
         // beats bundle size, and the heuristic adds a pass per
         // rebuild.
         prune_dead_data_min: None,
-        memory_budget_mb: opts.memory_budget_mb,
         premint,
         reporter: opts.reporter.clone(),
     }
@@ -3024,7 +3019,6 @@ mod tests {
             premint_only: only,
             premint_report: report,
             wasm_split: true,
-            memory_budget_mb: None,
             debuginfo: build_web::DebugInfo::default(),
             dev_opt: build_web::DevOpt::default(),
             reporter: dev_events::Reporter::new(),
@@ -3034,16 +3028,6 @@ mod tests {
     /// The dev loop passes the split choice straight through — a
     /// `--no-split` session must not silently start splitting again on
     /// the second rebuild.
-    /// The dev loop runs wasm-split in the CLI process too (`--split`),
-    /// so it must size the splitter to the same cap `build` does.
-    #[test]
-    fn memory_budget_reaches_the_web_build() {
-        let mut o = opts(false, false, false);
-        assert_eq!(to_build_web_options(&o).memory_budget_mb, None);
-        o.memory_budget_mb = Some(8192);
-        assert_eq!(to_build_web_options(&o).memory_budget_mb, Some(8192));
-    }
-
     #[test]
     fn wasm_split_choice_reaches_the_web_build() {
         let mut o = opts(false, false, false);

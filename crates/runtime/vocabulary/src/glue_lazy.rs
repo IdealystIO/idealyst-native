@@ -12,7 +12,7 @@
 //! not in a naked executor poll). The `#[component(lazy)]` macro's
 //! new-core emission branch generates the thunk-returning
 //! `__lazy_body`; both shapes ride the SAME `#[wasm_split]` boundary,
-//! so wasm-split-cli's chunk classification (the
+//! so the post-link splitter's chunk classification (the
 //! `__wasm_split_00___<module>___00_…` export/import naming) is
 //! identical across cores.
 //!

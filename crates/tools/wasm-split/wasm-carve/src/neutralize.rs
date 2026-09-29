@@ -1,6 +1,8 @@
 //! wasm-bindgen 0.2.122's `*.command_export` wrappers, neutralized without
-//! an IR. Same two edits as `wasm_split_cli::neutralize_command_export_wrappers`
-//! (which documents the inventory double-submit they cause):
+//! an IR. The bug: each wrapper's body is `call __wasm_call_ctors; <forward
+//! args>; call <bare>`, and JS calls the wrapper on every JS↔wasm round
+//! trip, so every `inventory::submit!` re-runs and double-submits into the
+//! global list until a traversal traps out of bounds. Two edits:
 //!
 //! * a wrapper whose body starts with `call __wasm_call_ctors` loses that
 //!   call — unless it is exported under a bare name (`main`), which is the

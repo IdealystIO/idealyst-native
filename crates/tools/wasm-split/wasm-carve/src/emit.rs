@@ -148,10 +148,16 @@ pub struct Emitted {
 /// appended to the table, main's memory, tables and globals exported for
 /// the splits, the split exports gone, and each split-point import turned
 /// into a trampoline to its module's entry slot.
-pub fn emit_main(source: &ModuleIndex<'_>, partition: &Partition, layout: &Layout) -> Result<Emitted> {
-    let unused: HashSet<u32> = partition
-        .unused_main_symbols(source)
-        .into_iter()
+pub fn emit_main(
+    source: &ModuleIndex<'_>,
+    partition: &Partition,
+    layout: &Layout,
+    prune_dead_data_min: Option<usize>,
+) -> Result<Emitted> {
+    let unused_symbols = partition.unused_main_symbols(source);
+    let unused: HashSet<u32> = unused_symbols
+        .iter()
+        .copied()
         .filter_map(|n| match n {
             Node::Function(f) => Some(f),
             Node::DataSymbol(_) => None,
@@ -329,19 +335,13 @@ pub fn emit_main(source: &ModuleIndex<'_>, partition: &Partition, layout: &Layou
                 // Keep main's copy of every shared function alive through
                 // wasm-opt: the splits reach it through the table, which
                 // binaryen cannot see across modules. Short names — see
-                // `wasm-split-cli`'s `next_synthetic_export_name`.
+                // `next_synthetic_export_name`.
                 let mut next = 0usize;
                 for f in &layout.shared_funcs {
                     if exported_funcs.contains(f) {
                         continue;
                     }
-                    let name = loop {
-                        let name = format!("s{next}");
-                        next += 1;
-                        if used.insert(name.clone()) {
-                            break name;
-                        }
-                    };
+                    let name = next_synthetic_export_name(&mut next, &mut used);
                     exports.export(&name, ExportKind::Func, ni(*f));
                 }
                 module.section(&exports);
@@ -402,6 +402,28 @@ pub fn emit_main(source: &ModuleIndex<'_>, partition: &Partition, layout: &Layou
                 }
                 _ => {}
             },
+            11 if prune_dead_data_min.is_some() => {
+                let min = prune_dead_data_min.unwrap_or_default();
+                let (data, stats) =
+                    crate::data::prune_main_data(source, &partition.data_symbols, &unused_symbols, min);
+                if stats.skipped_small > 0 {
+                    eprintln!(
+                        "[wasm-split prune-data] skipped {} split-only symbols smaller than {min} bytes (safety threshold)",
+                        stats.skipped_small,
+                    );
+                }
+                if stats.skipped_unrematerializable > 0 {
+                    eprintln!(
+                        "[wasm-split prune-data] kept {} split-only symbols in non-rematerializable segments (passive / non-const offset)",
+                        stats.skipped_unrematerializable,
+                    );
+                }
+                eprintln!(
+                    "[wasm-split prune-data] zeroed {} of {} split-only data bytes",
+                    stats.zeroed_bytes, stats.dead_bytes_total,
+                );
+                module.section(&data);
+            }
             id => {
                 module.section(&RawSection { id, data: payload(source, section)? });
             }
@@ -571,31 +593,7 @@ pub fn emit_split(
 
     // Data: every source segment emptied (their indices hold), then this
     // output's own data symbols re-materialized at their addresses.
-    let mut data_segments: Vec<(u32, i32, &[u8])> = Vec::new();
-    let mut unique_data: Vec<usize> = split
-        .unique
-        .iter()
-        .filter_map(|n| match n {
-            Node::DataSymbol(s) => Some(*s),
-            Node::Function(_) => None,
-        })
-        .collect();
-    unique_data.sort_unstable();
-    for (seg_idx, seg) in source.data.iter().enumerate() {
-        let Some((memory, base)) = seg.active_const else { continue };
-        let bytes = &source.bytes[seg.data.clone()];
-        for id in &unique_data {
-            let Some(symbol) = partition.data_symbols.get(id) else { continue };
-            if symbol.which_data_segment != seg_idx {
-                continue;
-            }
-            let range = symbol.segment_offset..symbol.segment_offset + symbol.symbol_size;
-            if range.end > bytes.len() {
-                continue;
-            }
-            data_segments.push((memory, base + symbol.segment_offset as i32, &bytes[range]));
-        }
-    }
+    let data_segments = crate::data::rematerialize(source, &partition.data_symbols, split.unique);
     if source.data_count.is_some() {
         module.section(&DataCountSection { count: (source.data.len() + data_segments.len()) as u32 });
     }
@@ -664,6 +662,24 @@ pub fn emit_split(
         module.section(&CustomSection { name: Cow::Borrowed("target_features"), data: Cow::Borrowed(payload) });
     }
     Ok(Emitted { bytes: module.finish() })
+}
+
+/// The next free short export name (`s0`, `s1`, …) for a shared-function
+/// DCE-root export, skipping any name already in `used`.
+///
+/// These exports only keep main's copy of a function alive through
+/// wasm-opt — the splits reach it through the table, not by name — so the
+/// name is arbitrary, and short: mangled names made main's export section
+/// ~300 KB on the website (~2800 exports). Export names must be unique,
+/// and `s{n}` may already be taken, so it bumps until free.
+pub fn next_synthetic_export_name(next: &mut usize, used: &mut HashSet<String>) -> String {
+    loop {
+        let name = format!("s{}", *next);
+        *next += 1;
+        if used.insert(name.clone()) {
+            return name;
+        }
+    }
 }
 
 /// Re-encodes a body with its function references renumbered; every other

@@ -3,7 +3,7 @@
 //! `Box<dyn Trait>` dispatch reads the impl's vtable — a static byte
 //! blob in the wasm data segment laid out as
 //! `[drop_fn, size, align, method_0, method_1, …]`. The pruning pass in
-//! `wasm-split-cli` zeroes data symbols it can't prove are reachable;
+//! the splitter zeroes data symbols it can't prove are reachable;
 //! a vtable is never named by a direct `call` instruction (dispatch
 //! goes through `call_indirect`), so the conservative heuristic is at
 //! risk of clearing it. When that happens the first dispatched method

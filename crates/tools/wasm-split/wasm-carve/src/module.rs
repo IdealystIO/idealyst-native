@@ -69,6 +69,8 @@ pub struct DataSegment {
     pub passive: bool,
     /// The segment's bytes.
     pub data: Range<usize>,
+    /// The whole encoded segment, for copying it unchanged.
+    pub entry: Range<usize>,
 }
 
 pub struct ModuleIndex<'a> {
@@ -208,7 +210,12 @@ impl<'a> ModuleIndex<'a> {
                             }
                         };
                         let start = data.range.end - data.data.len();
-                        m.data.push(DataSegment { active_const, passive, data: start..data.range.end });
+                        m.data.push(DataSegment {
+                            active_const,
+                            passive,
+                            data: start..data.range.end,
+                            entry: data.range.clone(),
+                        });
                     }
                 }
                 Payload::CodeSectionStart { range, .. } => m.code_payload_start = range.start,

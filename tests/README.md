@@ -87,7 +87,7 @@ each app at `--web --release --data-prune` and asserts the expected dist
 artifacts exist. In order, it performs:
 
 1. **Build smoke** — `idealyst build --web --release --data-prune` must
-   exit 0 for every app. Catches wasm-split-cli crashes, linker errors
+   exit 0 for every app. Catches splitter (`wasm-carve`) crashes, linker errors
    from a chunk that lost a symbol it imports from main, and
    wasm-bindgen failures on the post-split bundle.
 2. **Artifact shape** — `index.html`, a > 1 KiB `{stem}_bg[.hash].wasm`,

@@ -54,7 +54,6 @@ subsecond-types = "0.7"
 # Vendored wasm-split toolchain. Called as a library (not a
 # subprocess) so our patches apply automatically without users
 # needing to install a separate binary on PATH.
-wasm-split-cli = { workspace = true }
 wasm-carve = { workspace = true }
 # Generates the favicon set (favicon.ico bundle + 192/512/180 PNGs)
 # from `[package.metadata.idealyst.app.icon].source` during bundle

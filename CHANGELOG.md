@@ -402,6 +402,25 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
     segments followed hash order, so two builds of the same input
     shipped different bytes and different content hashes.
 
+- **The splitter is our own, and a release web build's tail is less than
+  half** (`wasm-carve`, `build-web`, `idealyst-cli`, `dev-reload`). The
+  post-link splitter is now `wasm-carve`, replacing Dioxus's walrus-based
+  `wasm-split-cli` (removed, with `wasm-used`). It computes the same
+  partition from the rustc module's relocations and the bindgened
+  module's call operands, and builds every output by copying byte ranges
+  instead of parsing the program into walrus IR once per output. The
+  command-export neutralize pass is byte-level too, and leaves the file
+  untouched on wasm-bindgen 0.2.128, which emits no such wrappers.
+  wasm-opt and brotli now run on up to 6 files at once, largest first.
+  On CrewForge (17 split points): the split 9.5 s / 3.1 GB → 1.5 s /
+  0.34 GB, neutralize 1.3 s / 1.4 GB → 0.04 s, everything after cargo
+  77.6 s → 35.6 s, and the whole build's peak 3.7 GB → 1.55 GB, which is
+  now wasm-bindgen's own. The shipped bundle is within 0.01% of the old
+  splitter's per file after wasm-opt. `--data-prune` behaves as before.
+  `BuildOptions::memory_budget_mb` (and its `dev-reload` twin) and
+  `build_web::split_emit_workers` are gone: they sized the old
+  splitter's worker pool, and the new one's peak does not depend on it.
+
 - **The memory cap fits the machine for web builds, and names the stage
   it stopped** (`idealyst-cli`). `build --web`, `run`, `docs` and `dev`
   with a web target raise the cap to half of the machine's memory,
