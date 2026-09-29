@@ -424,7 +424,7 @@ runtime-core = { path = "crates/runtime/core", version = "1.7.0", registry = "id
 runtime-shared = { path = "crates/runtime/shared", version = "1.11.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.7.1", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.7.0", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.15.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.16.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.0", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -449,7 +449,7 @@ linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.6.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.11.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.9.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.11.1", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.12.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
@@ -562,10 +562,10 @@ webview = { path = "crates/sdk/client/webview", version = "1.5.2", registry = "i
 video = { path = "crates/sdk/client/video", version = "1.5.2", registry = "idealyst" }
 svg = { path = "crates/sdk/client/svg", version = "1.5.2", registry = "idealyst" }
 canvas = { path = "crates/sdk/client/canvas", version = "1.5.2", registry = "idealyst" }
-canvas-core = { path = "crates/sdk/client/canvas/core", version = "1.5.2", registry = "idealyst" }
+canvas-core = { path = "crates/sdk/client/canvas/core", version = "1.6.0", registry = "idealyst" }
 charts-core = { path = "crates/sdk/client/charts/core", version = "1.5.2", registry = "idealyst" }
 charts = { path = "crates/sdk/client/charts", version = "1.5.3", registry = "idealyst" }
-canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.5.2", registry = "idealyst" }
+canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.5.3", registry = "idealyst" }
 canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.5.3", registry = "idealyst" }
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.2", registry = "idealyst" }
