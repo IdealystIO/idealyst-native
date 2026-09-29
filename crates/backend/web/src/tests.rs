@@ -2755,6 +2755,99 @@ fn web_contextmenu_consumed_secondary_does_not_leak_to_ancestor() {
     );
 }
 
+/// Two sibling `on_touch` elements, the second standing in for what a
+/// secondary press typically MOUNTS: an overlay's outside-click catcher,
+/// which the browser then hit-tests the press's `contextmenu` onto. Returns
+/// `(row, catcher, row Began count, catcher Began count)`.
+fn row_and_catcher() -> (
+    web_sys::Element,
+    web_sys::Element,
+    std::rc::Rc<std::cell::Cell<u32>>,
+    std::rc::Rc<std::cell::Cell<u32>>,
+) {
+    use runtime_shared::TouchResponse;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let row = doc.create_element("div").unwrap();
+    let catcher = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&row).unwrap();
+    doc.body().unwrap().append_child(&catcher).unwrap();
+
+    let row_fired = Rc::new(Cell::new(0u32));
+    let catcher_fired = Rc::new(Cell::new(0u32));
+    let rf = row_fired.clone();
+    backend.install_touch_handler_impl(
+        &row.clone().unchecked_into(),
+        Rc::new(move |_| {
+            rf.set(rf.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+    let cf = catcher_fired.clone();
+    backend.install_touch_handler_impl(
+        &catcher.clone().unchecked_into(),
+        Rc::new(move |_| {
+            cf.set(cf.get() + 1);
+            TouchResponse::CONSUMED
+        }),
+    );
+    (row, catcher, row_fired, catcher_fired)
+}
+
+/// REGRESSION TEST (every right-click menu opened and closed in one click).
+///
+/// A right-click's `pointerdown` opened a context menu; the menu mounted its
+/// outside-click catcher; the browser hit-tested the same click's
+/// `contextmenu` onto that catcher. The "did pointerdown already deliver
+/// this press" note lived on each ELEMENT, so the catcher's was empty, and
+/// its listener synthesized a second Secondary `Began` for a press the row
+/// had already handled — which a `Dismiss` backdrop answers by dismissing.
+/// The note is now the page's, so the catcher sees the press as delivered.
+#[wasm_bindgen_test]
+fn regression_web_contextmenu_on_an_element_the_press_did_not_hit_is_not_redelivered() {
+    let (row, catcher, row_fired, catcher_fired) = row_and_catcher();
+
+    dispatch_bubbling_secondary_pointerdown(&row);
+    let ev = dispatch_bubbling_contextmenu(&catcher, false);
+
+    assert_eq!(row_fired.get(), 1, "the row gets the press's one Began");
+    assert_eq!(
+        catcher_fired.get(),
+        0,
+        "the contextmenu of a press the row already received must not be \
+         re-synthesized on whatever element it lands on",
+    );
+    assert!(ev.default_prevented(), "the native menu must still be suppressed");
+}
+
+/// REGRESSION TEST (the note left behind by the case above).
+///
+/// With a per-element note, the row's `pointerdown` recorded "delivered"
+/// and the `contextmenu` that would have taken it went to the catcher — so
+/// the row's note outlived its press, and the row's NEXT pointerdown-less
+/// Ctrl-click (the Chrome/macOS shape) read it and was dropped. A note now
+/// serves exactly one `contextmenu`, wherever it lands.
+#[wasm_bindgen_test]
+fn regression_web_press_note_does_not_outlive_its_contextmenu() {
+    let (row, catcher, row_fired, _catcher_fired) = row_and_catcher();
+
+    dispatch_bubbling_secondary_pointerdown(&row);
+    dispatch_bubbling_contextmenu(&catcher, false);
+    assert_eq!(row_fired.get(), 1);
+
+    // A fresh Ctrl-click on the row, Chrome/macOS shape: no pointerdown.
+    dispatch_bubbling_contextmenu(&row, true);
+    assert_eq!(
+        row_fired.get(),
+        2,
+        "a later pointerdown-less Ctrl-click on the row must be delivered",
+    );
+}
+
 /// REGRESSION TEST (the clickable-row context menu).
 ///
 /// The reported failure, end to end: a table cell made clickable by

@@ -110,16 +110,11 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // dropped on up/cancel.
     let origins: Rc<RefCell<SmallIdMap<i32, (f64, f64)>>> = Rc::new(RefCell::new(SmallIdMap::new()));
 
-    // Whether `pointerdown` delivered a Secondary `Began` for the press whose
-    // `contextmenu` is about to fire, and whether the handler consumed it.
-    // Browsers disagree on how a secondary press surfaces (see the
-    // `contextmenu` listener below), so the two listeners share this note:
-    // `pointerdown` writes it, `contextmenu` takes it. `None` means the press
-    // never reached app code through `pointerdown` and `contextmenu` must
-    // deliver it itself. Written on EVERY pointerdown (cleared for
-    // non-secondary buttons) so one anomalous unpaired secondary press can't
-    // leave a stale entry that eats the next Ctrl-click.
-    let secondary_delivered: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+    // Whether `pointerdown` already delivered this press's Secondary `Began`
+    // is a PAGE-level fact, kept in [`PRESS_NOTE`] — see that item for why a
+    // per-element note re-delivered the press. The window listeners that
+    // keep it must exist before the first press this element can hear.
+    ensure_press_note();
 
     // Ending a gesture — `Ended` / `Cancelled` — is reachable by two routes:
     // this element's own `pointerup` / `pointercancel` listener, and the shared
@@ -167,7 +162,6 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
         let captured = captured.clone();
         let origins = origins.clone();
         let finish = finish.clone();
-        let secondary_delivered = secondary_delivered.clone();
         let element_for_capture = element.clone();
         let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
             // `button` is 0 for touch + pen contact + primary mouse; 2 is the
@@ -178,7 +172,7 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
             // Ctrl-modified primary click (e.g. toggling a selection) right
             // before the context-menu press it actually is. So the backend
             // folds it here, and the press rides the normal secondary path:
-            // `Began`-only, `secondary_delivered` recorded, `contextmenu`
+            // `Began`-only, recorded in `PRESS_NOTE`, `contextmenu`
             // suppress-only. The stray `button == 0` pointerup is already
             // ignored — a secondary press never enters `active`. Mouse only:
             // a Ctrl-held *touch* (iPad with hardware keyboard reports
@@ -224,13 +218,12 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
             let response = (handler)(&te);
             // Leave the note for the `contextmenu` listener, which fires next
             // for a secondary press: the `Began` already reached app code, so
-            // it must only suppress the native menu, not re-deliver. Cleared
-            // (not skipped) for other buttons so it can never go stale.
-            secondary_delivered.set(if button == PointerButton::Secondary {
-                Some(response.consumed)
-            } else {
-                None
-            });
+            // it must only suppress the native menu, not re-deliver. Other
+            // buttons leave the note as the window's capture listener reset
+            // it for this press: empty.
+            if button == PointerButton::Secondary {
+                note_secondary_delivered(response.consumed);
+            }
             if response.consumed {
                 // Honor the responder model: whichever ancestor consumes
                 // the Began keeps every subsequent event for this TouchId.
@@ -296,8 +289,10 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     //     below.
     //
     // So `pointerdown` records whether it already delivered the Secondary
-    // `Began` (and whether the handler consumed it) and this listener takes
-    // that note. Present → only the menu needs suppressing; propagation
+    // `Began` (and whether a handler consumed it) and this listener reads
+    // that note — the PAGE's note for this press, not this element's (see
+    // [`PRESS_NOTE`]: the `contextmenu` can land on an element the press
+    // itself just mounted). Present → only the menu needs suppressing; propagation
     // mirrors the pointerdown outcome (consumed → stop), so an ancestor's own
     // `contextmenu` listener neither re-delivers a press its descendant
     // consumed nor misses one it ignored. Absent → the press never surfaced
@@ -307,10 +302,9 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // synthetic event needs no active/capture/up bookkeeping.
     {
         let handler = handler.clone();
-        let secondary_delivered = secondary_delivered.clone();
         let closure = Closure::<dyn FnMut(MouseEvent)>::new(move |ev: MouseEvent| {
             ev.prevent_default();
-            if let Some(consumed) = secondary_delivered.take() {
+            if let Some(consumed) = contextmenu_press_note() {
                 if consumed {
                     ev.stop_propagation();
                 }
@@ -628,6 +622,123 @@ fn ensure_window_net() {
         // nothing. `window` roots the JS function.
         closure.forget();
     }
+}
+
+/// What the page knows about the secondary press in flight. See
+/// [`PRESS_NOTE`].
+struct PressNote {
+    /// Have the two capture listeners been attached to `window`?
+    installed: bool,
+    /// Written by element `pointerdown` listeners during the CURRENT press:
+    /// `Some(consumed)` once any of them delivered it as a Secondary `Began`.
+    /// Reset to `None` by the capture `pointerdown` that opens every press.
+    pending: Option<bool>,
+    /// What element `contextmenu` listeners read for the event being
+    /// dispatched right now: `pending`, moved here by the capture
+    /// `contextmenu` listener before any element hears it.
+    current: Option<bool>,
+}
+
+thread_local! {
+    /// Whether the press a `contextmenu` belongs to already reached app code
+    /// through `pointerdown` — kept for the PAGE, never per element.
+    ///
+    /// It used to be a note on each subscribed element, written by that
+    /// element's `pointerdown` and taken by its own `contextmenu`. That holds
+    /// only while both events hit the same element, and the most common
+    /// thing a secondary press does breaks it: it OPENS something. A context
+    /// menu mounted from the `pointerdown` brings its outside-click catcher —
+    /// a full-screen `on_touch` backdrop — and the browser hit-tests the
+    /// `contextmenu` that follows the same click onto that catcher, not onto
+    /// the row that was pressed. The catcher had heard no `pointerdown`, so
+    /// its note was empty; it concluded the browser had withheld the press
+    /// (the Chrome/macOS shape) and synthesized a second Secondary `Began` —
+    /// which a `Dismiss` backdrop answers by dismissing. Every right-click
+    /// menu on the page opened and closed within one click. The row's own
+    /// note, meanwhile, was left behind to eat that row's next pointerdown-
+    /// less Ctrl-click.
+    ///
+    /// The lifecycle is bracketed by two CAPTURE listeners on `window`, which
+    /// run before any element's bubble-phase listener for the same event:
+    /// `pointerdown` empties `pending` (a new press, of any button, anywhere
+    /// on the page), and `contextmenu` moves `pending` into `current` for
+    /// that one event, so a note can serve at most one `contextmenu` and
+    /// cannot outlive its press. Element listeners READ `current`: a press
+    /// that bubbles through nested `on_touch` elements is judged the same way
+    /// by each of them, which is what the responder model needs (a
+    /// consumed press stops at the first listener; an ignored one bubbles on
+    /// and is re-delivered by nobody).
+    ///
+    /// Remaining gap, by construction: a delivered secondary press whose
+    /// `contextmenu` never fires, followed by a pointerdown-less Chrome
+    /// Ctrl-click with no press of any kind in between, reads the first
+    /// press's note. No browser is known to produce that sequence.
+    static PRESS_NOTE: RefCell<PressNote> = const {
+        RefCell::new(PressNote {
+            installed: false,
+            pending: None,
+            current: None,
+        })
+    };
+}
+
+/// Record that the current press was delivered as a Secondary `Began` by a
+/// `pointerdown` listener, and whether that handler consumed it. Several
+/// listeners can deliver one press as it bubbles; consumed by any of them
+/// is consumed.
+fn note_secondary_delivered(consumed: bool) {
+    PRESS_NOTE.with(|note| {
+        let mut note = note.borrow_mut();
+        note.pending = Some(note.pending.unwrap_or(false) || consumed);
+    });
+}
+
+/// The note for the `contextmenu` being dispatched. `None` means no
+/// `pointerdown` delivered this press, so the listener must.
+fn contextmenu_press_note() -> Option<bool> {
+    PRESS_NOTE.with(|note| note.borrow().current)
+}
+
+/// Attach the two capture listeners that bracket [`PRESS_NOTE`], once per
+/// page. Called from [`install`], so they exist before the first press any
+/// subscribed element can hear.
+fn ensure_press_note() {
+    let first = PRESS_NOTE.with(|note| {
+        let mut note = note.borrow_mut();
+        let first = !note.installed;
+        note.installed = true;
+        first
+    });
+    if !first {
+        return;
+    }
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let down = Closure::<dyn FnMut(PointerEvent)>::new(move |_ev: PointerEvent| {
+        PRESS_NOTE.with(|note| note.borrow_mut().pending = None);
+    });
+    // `true` = capture phase: `window` hears it before any element does.
+    let _ = win.add_event_listener_with_callback_and_bool(
+        "pointerdown",
+        down.as_ref().unchecked_ref(),
+        true,
+    );
+    let menu = Closure::<dyn FnMut(MouseEvent)>::new(move |_ev: MouseEvent| {
+        PRESS_NOTE.with(|note| {
+            let mut note = note.borrow_mut();
+            note.current = note.pending.take();
+        });
+    });
+    let _ = win.add_event_listener_with_callback_and_bool(
+        "contextmenu",
+        menu.as_ref().unchecked_ref(),
+        true,
+    );
+    // Permanent for the same reason as `WINDOW_NET`'s pair: two listeners
+    // for the life of the page, sized by nothing. `window` roots them.
+    down.forget();
+    menu.forget();
 }
 
 /// Test hook: `(window listeners installed, gestures currently armed)`.

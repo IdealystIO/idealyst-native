@@ -256,7 +256,9 @@ pub fn pointer_modifiers() -> PointerModifiers {
 /// device.
 ///
 /// Backends that deliver non-primary presses to `on_touch`: web (pointer
-/// events, plus `contextmenu` where a browser withholds the `pointerdown`),
+/// events, plus `contextmenu` where a browser withholds the `pointerdown` —
+/// one press is one `Began` even when its `contextmenu` lands on another
+/// element, e.g. an overlay the press itself opened),
 /// macOS (`rightMouseDown:` / `otherMouseDown:` / Ctrl-click) and the wgpu
 /// desktop engine. iOS and Android are touch-first and report every contact
 /// as `Primary`. The GTK (Linux) backend's `GestureDrag` delivery is

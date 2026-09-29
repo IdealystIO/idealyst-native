@@ -356,6 +356,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A right-click menu no longer closes the instant it opens on web**
+  (`backend-web`). Since `Dismiss` backdrops answer right-clicks (above),
+  every menu opened from a secondary press dismissed itself: the press's
+  `pointerdown` opened the menu, the browser hit-tested the same click's
+  `contextmenu` onto the menu's new outside-click catcher, and that
+  element — which had heard no `pointerdown` — synthesized a second
+  Secondary `Began` for it (the path meant for browsers that withhold the
+  `pointerdown`). Whether a press was already delivered is now tracked
+  for the page rather than per element, so one press is one `Began`
+  wherever its `contextmenu` lands. The same change stops a row's note
+  from outliving its press and eating the row's next pointerdown-less
+  Ctrl-click.
+
 - **A release web build's memory no longer grows with the core count**
   (`wasm-split-cli`, `build-web`, `idealyst-cli`). wasm-split built every
   split module at once, one per core, and each one starts from a full
