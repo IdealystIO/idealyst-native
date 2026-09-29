@@ -421,6 +421,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `build_web::split_emit_workers` are gone: they sized the old
   splitter's worker pool, and the new one's peak does not depend on it.
 
+- **Lazy modules no longer ship a second copy of main's data**
+  (`wasm-carve`). Every split module and the shared chunk re-wrote its
+  own data symbols (strings, constants, tables) into memory on load —
+  bytes main had already shipped and initialized. They now carry data
+  only under `--data-prune`, the one case where main's copy was zeroed
+  and has to be put back. On CrewForge the lazy side of the bundle went
+  from 4.11 MB to 3.17 MB brotli'd (−23%; the whole bundle 6.05 MB →
+  5.11 MB), the PDF area's module from 1.03 MB to 352 KB. Main is
+  unchanged.
+
 - **The memory cap fits the machine for web builds, and names the stage
   it stopped** (`idealyst-cli`). `build --web`, `run`, `docs` and `dev`
   with a web target raise the cap to half of the machine's memory,

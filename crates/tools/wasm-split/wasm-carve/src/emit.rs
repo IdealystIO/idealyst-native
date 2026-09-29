@@ -499,6 +499,9 @@ pub struct SplitBody<'p> {
     pub unique: &'p HashSet<Node>,
     /// A split module's entry: `(export name, function, split index)`.
     pub entry: Option<(&'p str, u32, usize)>,
+    /// Whether it re-initializes its data symbols at their addresses —
+    /// only needed when main's copy was pruned (see `data`).
+    pub rematerialize_data: bool,
 }
 
 pub fn emit_split(
@@ -591,9 +594,17 @@ pub fn emit_split(
         module.section(&elems);
     }
 
-    // Data: every source segment emptied (their indices hold), then this
-    // output's own data symbols re-materialized at their addresses.
-    let data_segments = crate::data::rematerialize(source, &partition.data_symbols, split.unique);
+    // Data: every source segment emptied — their indices hold, so a body's
+    // `memory.init` / `data.drop` still names the right one. When main's
+    // copy of this output's data was pruned, the data symbols are
+    // re-initialized here at their addresses; otherwise main already
+    // wrote every byte and a second copy is only download size (2 MB of
+    // CrewForge's split modules before this was conditional).
+    let data_segments = if split.rematerialize_data {
+        crate::data::rematerialize(source, &partition.data_symbols, split.unique)
+    } else {
+        Vec::new()
+    };
     if source.data_count.is_some() {
         module.section(&DataCountSection { count: (source.data.len() + data_segments.len()) as u32 });
     }

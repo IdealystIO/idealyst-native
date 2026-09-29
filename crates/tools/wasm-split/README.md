@@ -33,7 +33,9 @@ streaming re-encode. Main keeps what its exports, start function and
 table reach. A split module holds its own bodies plus a trampoline
 (`call_indirect` through a slot appended to the shared table) for every
 main function it calls; it imports main's memory, tables and globals and
-installs its functions into the table when it loads. Main's split-point
+installs its functions into the table when it loads. It carries no data:
+main initializes every data segment, so a split module only re-writes its
+own data symbols when `--data-prune` zeroed main's copy of them. Main's split-point
 imports become trampolines to the slot each module installs its entry at.
 
 Measured on CrewForge (73 MB bindgened module, 17 split points): 1.5 s and

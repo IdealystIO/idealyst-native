@@ -1,11 +1,12 @@
 //! Data: what a split output re-materializes, and what `--data-prune`
 //! zeroes in main.
 //!
-//! All outputs share main's memory. Main initializes every data segment;
-//! a split output re-initializes the bytes of its own data symbols at their
-//! addresses when it loads. That is redundant unless main's copy was
-//! pruned — which is exactly what makes pruning safe: a symbol is only
-//! zeroed in main when a split output will put it back.
+//! All outputs share main's memory, and main initializes every data
+//! segment. So a split output carries no data of its own — unless
+//! `--data-prune` zeroed main's copy of its data symbols, in which case it
+//! re-initializes them at their addresses when it loads. That pairing is
+//! what makes pruning safe: a symbol is only zeroed in main when a split
+//! output will put it back.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 

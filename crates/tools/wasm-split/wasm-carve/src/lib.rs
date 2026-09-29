@@ -62,6 +62,9 @@ pub fn split(original: &[u8], bindgened: &[u8], options: &SplitOptions) -> Resul
     let layout = Layout::new(&source, &partition)?;
 
     let main = emit_main(&source, &partition, &layout, options.prune_dead_data_min)?;
+    // Main initializes all data unless it was pruned; only then do the
+    // split outputs need to carry theirs.
+    let rematerialize_data = options.prune_dead_data_min.is_some();
 
     // Per split module: its own bodies (everything it reaches outside
     // main, taken before chunk extraction — an extracted chunk function
@@ -103,6 +106,7 @@ pub fn split(original: &[u8], bindgened: &[u8], options: &SplitOptions) -> Resul
                             bodies,
                             unique,
                             entry: Some((&split.export_name, split.export_func, split.index)),
+                            rematerialize_data,
                         },
                     )?;
                     Ok(SplitModule {
@@ -124,7 +128,7 @@ pub fn split(original: &[u8], bindgened: &[u8], options: &SplitOptions) -> Resul
             &source,
             &partition,
             &layout,
-            SplitBody { bodies: chunk, unique: chunk, entry: None },
+            SplitBody { bodies: chunk, unique: chunk, entry: None, rematerialize_data },
         )?;
         chunks.push(SplitModule {
             module_name: "split".to_string(),

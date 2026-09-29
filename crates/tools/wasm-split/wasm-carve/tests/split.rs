@@ -534,3 +534,29 @@ fn neutralize_leaves_the_main_wrapper_alone() {
     assert!(matches!(post, std::borrow::Cow::Borrowed(_)));
     assert!(calls_ctors_first(&post, "__wbindgen_malloc.command_export"));
 }
+
+fn data_payload_bytes(bytes: &[u8]) -> usize {
+    let m = ModuleIndex::parse(bytes).unwrap();
+    m.data.iter().map(|d| d.data.len()).sum()
+}
+
+/// Regression: every split output re-wrote its own data symbols on load
+/// even with `--data-prune` off, when main had already shipped and
+/// initialized those bytes — 2 MB of CrewForge's split modules were a
+/// second copy of main's data. Without pruning they carry none; main keeps
+/// all of it.
+#[test]
+fn regression_split_outputs_do_not_duplicate_mains_data() {
+    let bytes = fixture();
+    let out = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
+    for m in out.modules.iter().chain(&out.chunks) {
+        validate(&m.bytes);
+        assert_eq!(data_payload_bytes(&m.bytes), 0, "{} carries data main already has", m.module_name);
+    }
+    let main = ModuleIndex::parse(&out.main.bytes).unwrap();
+    assert_eq!(
+        &out.main.bytes[main.data[0].data.clone()],
+        1u32.to_le_bytes(),
+        "main still initializes VT"
+    );
+}
