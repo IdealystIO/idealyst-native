@@ -1833,16 +1833,24 @@ fn brotli_precompress_bundle(bundle_dir: &Path) -> Result<()> {
         }
         Ok(())
     }
-    let mut emitted = 0usize;
-    let mut saved: u64 = 0;
+    let mut files = Vec::new();
     walk(bundle_dir, &mut |path| {
         // Skip already-compressed formats AND any `.br` from a previous
         // run (re-staging syncs over the old bundle dir).
-        if is_already_compressed(path)
-            || path.extension().and_then(|s| s.to_str()) == Some("br")
-        {
-            return Ok(());
+        if !is_already_compressed(path) && path.extension().and_then(|s| s.to_str()) != Some("br") {
+            files.push(path.to_path_buf());
         }
+        Ok(())
+    })?;
+    // Quality 11 is single-threaded per stream and is most of a release
+    // build's staging: on CrewForge the wasm files alone took 36 s one
+    // after another, 12 s of it the main module. Side by side the stage is
+    // bound by main's 12 s. (Dropping to quality 9 would take 1.5 s total
+    // but ships a 12% larger main — the bytes every visitor downloads.)
+    let emitted = std::sync::atomic::AtomicUsize::new(0);
+    let saved = std::sync::atomic::AtomicU64::new(0);
+    in_parallel_largest_first(files, BROTLI_JOBS, |path| {
+        let path = path.as_path();
         let bytes =
             fs::read(path).with_context(|| format!("read {} for brotli", path.display()))?;
         let mut out = Vec::with_capacity(bytes.len() / 2);
@@ -1861,10 +1869,11 @@ fn brotli_precompress_bundle(bundle_dir: &Path) -> Result<()> {
         let sibling = PathBuf::from(sibling);
         fs::write(&sibling, &out)
             .with_context(|| format!("write {}", sibling.display()))?;
-        emitted += 1;
-        saved += (bytes.len() - out.len()) as u64;
+        emitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        saved.fetch_add((bytes.len() - out.len()) as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     })?;
+    let (emitted, saved) = (emitted.into_inner(), saved.into_inner());
     if emitted > 0 {
         println!(
             "[build-web] brotli: {emitted} precompressed .br sibling(s) emitted ({} KB smaller than the originals); hosts with `brotli_static` / `precompressed` serve them automatically",
@@ -2826,12 +2835,21 @@ fn wasm_bindgen_build(
 /// optimizer doesn't strip the symbols / reloc info wasm-split
 /// needed. Per-chunk optimization keeps chunks lean independently.
 fn wasm_opt_pkg(reporter: &dev_events::Reporter, pkg_dir: &Path) -> Result<()> {
+    let mut wasms = Vec::new();
     for entry in fs::read_dir(pkg_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
-            continue;
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            wasms.push(path);
         }
+    }
+    // Every file is independent, so they run side by side, largest first:
+    // the main module is the long pole, and a split build has a dozen or
+    // more small chunks that finish while it runs. On CrewForge (19
+    // files) one after another took ~20 s; together the stage is bound by
+    // main's own ~4 s. Each wasm-opt is itself multi-threaded, so the
+    // bound is on processes, not cores: memory stays at main's ~0.4 GB
+    // plus the small ones.
+    in_parallel_largest_first(wasms, WASM_OPT_JOBS, |path| {
         let tmp = path.with_extension("wasm.opt");
         let status = dev_events::process::run_lines(
             Command::new("wasm-opt")
@@ -2854,8 +2872,44 @@ fn wasm_opt_pkg(reporter: &dev_events::Reporter, pkg_dir: &Path) -> Result<()> {
         }
         fs::rename(&tmp, &path)?;
         reporter.log("build-web", format!("wasm-opt → {}", path.display()));
-    }
-    Ok(())
+        Ok(())
+    })
+}
+
+/// How many quality-11 brotli streams run at once. Each holds ~60 MB of
+/// encoder state; 14 at once put a release build's staging at 0.9 GB on
+/// CrewForge, and six still finish every other file inside the main
+/// module's 12 s.
+const BROTLI_JOBS: usize = 6;
+
+/// How many wasm-opt processes run at once. See [`wasm_opt_pkg`].
+const WASM_OPT_JOBS: usize = 6;
+
+/// Run `job` on every item, at most `jobs` at a time, starting with the
+/// largest file — the one that bounds the stage's wall time. Stops at the
+/// first error.
+fn in_parallel_largest_first(
+    mut items: Vec<PathBuf>,
+    jobs: usize,
+    job: impl Fn(PathBuf) -> Result<()> + Sync,
+) -> Result<()> {
+    items.sort_by_key(|p| std::cmp::Reverse(fs::metadata(p).map(|m| m.len()).unwrap_or(0)));
+    let queue = std::sync::Mutex::new(items.into_iter());
+    let jobs = jobs.clamp(1, std::thread::available_parallelism().map_or(1, |n| n.get()));
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..jobs)
+            .map(|_| {
+                scope.spawn(|| -> Result<()> {
+                    loop {
+                        let next = queue.lock().expect("job queue").next();
+                        let Some(item) = next else { return Ok(()) };
+                        job(item)?;
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().try_for_each(|w| w.join().expect("job thread panicked"))
+    })
 }
 
 /// Every `./__wasm_split.js` import the bindgened module declares.
@@ -3029,8 +3083,18 @@ fn neutralize_command_export_wrappers(
     let bindgened = fs::read(&bindgened_path)
         .with_context(|| format!("read {}", bindgened_path.display()))?;
     let before_len = bindgened.len();
-    let patched = wasm_split_cli::neutralize_command_export_wrappers(&bindgened)
-        .with_context(|| "walrus: rewrite *.command_export exports → bare helpers")?;
+    let patched: Vec<u8> = if use_wasm_carve() {
+        match wasm_carve::neutralize::neutralize_command_export_wrappers(&bindgened)
+            .with_context(|| "rewrite *.command_export exports → bare helpers")?
+        {
+            // Nothing to neutralize (wasm-bindgen ≥ 0.2.128): leave the file.
+            std::borrow::Cow::Borrowed(_) => return Ok(()),
+            std::borrow::Cow::Owned(bytes) => bytes,
+        }
+    } else {
+        wasm_split_cli::neutralize_command_export_wrappers(&bindgened)
+            .with_context(|| "walrus: rewrite *.command_export exports → bare helpers")?
+    };
     fs::write(&bindgened_path, &patched)
         .with_context(|| format!("write {}", bindgened_path.display()))?;
     reporter.log(
@@ -3046,6 +3110,12 @@ fn neutralize_command_export_wrappers(
 }
 
 const MB: usize = 1024 * 1024;
+
+/// EXPERIMENT (branch `experiment/reloc-splitter`): split and neutralize
+/// with `wasm-carve` instead of the walrus-based `wasm-split-cli`.
+fn use_wasm_carve() -> bool {
+    std::env::var_os("IDEALYST_WASM_CARVE").is_some()
+}
 
 /// Peak RSS of the in-process split, per byte of bindgened module, before
 /// any emit worker: the command-export neutralize before it (its freed
@@ -3151,11 +3221,31 @@ fn run_wasm_split(
             projected_split_peak_bytes(bindgened.len() as u64, workers) / MB as u64,
         ),
     );
-    let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
-        .context("wasm-split: parse module")?
-        .with_data_pruning(prune_dead_data_min)
-        .with_emit_workers(Some(workers));
-    let output = splitter.emit().context("wasm-split: emit chunks")?;
+    let output = if use_wasm_carve() {
+        anyhow::ensure!(
+            prune_dead_data_min.is_none(),
+            "wasm-carve does not implement --data-prune yet"
+        );
+        wasm_carve::split(&original, &bindgened).context("wasm-carve: split")?
+    } else {
+        let splitter = wasm_split_cli::Splitter::new(&original, &bindgened)
+            .context("wasm-split: parse module")?
+            .with_data_pruning(prune_dead_data_min)
+            .with_emit_workers(Some(workers));
+        let output = splitter.emit().context("wasm-split: emit chunks")?;
+        let convert = |m: wasm_split_cli::SplitModule| wasm_carve::SplitModule {
+            module_name: m.module_name,
+            hash_id: m.hash_id,
+            component_name: m.component_name,
+            bytes: m.bytes,
+            relies_on_chunks: m.relies_on_chunks,
+        };
+        wasm_carve::OutputModules {
+            main: convert(output.main),
+            modules: output.modules.into_iter().map(convert).collect(),
+            chunks: output.chunks.into_iter().map(convert).collect(),
+        }
+    };
 
     // Replace the bindgened wasm with the split-extracted main.
     fs::write(&bindgened_wasm, &output.main.bytes)

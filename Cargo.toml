@@ -283,6 +283,7 @@ members = [
     # See `crates/tools/wasm-split/README.md`.
     "crates/tools/wasm-split/wasm-split",
     "crates/tools/wasm-split/wasm-split-cli",
+    "crates/tools/wasm-split/wasm-carve",
     "crates/tools/wasm-split/wasm-split-macro",
     "crates/tools/wasm-split/wasm-used",
     "crates/tools/icon-gen",
@@ -641,6 +642,7 @@ flate2 = "1"
 wasm-split = { path = "crates/tools/wasm-split/wasm-split", package = "wasm-splitter", version = "1.5.2", registry = "idealyst" }
 wasm-split-macro = { path = "crates/tools/wasm-split/wasm-split-macro", version = "1.5.3", registry = "idealyst" }
 wasm-split-cli = { path = "crates/tools/wasm-split/wasm-split-cli" }
+wasm-carve = { path = "crates/tools/wasm-split/wasm-carve" }
 wasm-used = { path = "crates/tools/wasm-split/wasm-used" }
 
 # Third-party deps the vendored wasm-split crates need from the

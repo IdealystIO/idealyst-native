@@ -2012,6 +2012,7 @@ dependencies = [
  "tempfile",
  "toml 0.8.23",
  "walrus",
+ "wasm-carve",
  "wasm-split-cli",
  "wasmparser 0.224.1",
 ]
@@ -13412,6 +13413,17 @@ name = "wasm-bindgen-test-shared"
 version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f37b4f992cebe528ef34964ae69681ac0fe7080071e7298e46008f9d380302af"
+
+[[package]]
+name = "wasm-carve"
+version = "1.5.2"
+dependencies = [
+ "anyhow",
+ "libc",
+ "wasm-encoder 0.245.1",
+ "wasm-split-cli",
+ "wasmparser 0.245.1",
+]
 
 [[package]]
 name = "wasm-encoder"

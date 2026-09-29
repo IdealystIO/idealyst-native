@@ -1,0 +1,17 @@
+[package]
+name = "wasm-carve"
+edition = "2024"
+version = { workspace = true }
+description = "Split a linked, wasm-bindgen'd module at #[wasm_split] boundaries without building an IR"
+license = "MIT OR Apache-2.0"
+# Workspace-internal build tooling; consumers never name it.
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+wasmparser = { version = "0.245", default-features = false, features = ["std", "validate"] }
+wasm-encoder = { version = "0.245", default-features = false, features = ["std", "wasmparser"] }
+
+[dev-dependencies]
+wasm-split-cli = { workspace = true }
+libc = "0.2"
