@@ -73,6 +73,9 @@ pub struct Partition {
     pub shared_symbols: BTreeSet<Node>,
     pub call_graph: HashMap<Node, HashSet<Node>>,
     pub data_symbols: BTreeMap<usize, DataSymbol>,
+    /// The rustc module's reference graph, for exact data liveness.
+    pub original: OriginalGraph,
+    pub names: NameMap,
 }
 
 impl Partition {
@@ -80,7 +83,7 @@ impl Partition {
         let split_points = accumulate_split_points(source)?;
         let data_symbols = parse_data_symbols(source.bytes)?.data_symbols;
 
-        let mut call_graph = build_call_graph(original, source)?;
+        let (mut call_graph, original_graph, names) = build_call_graph(original, source)?;
 
         let mut split_points = split_points;
         for split in &mut split_points {
@@ -105,7 +108,16 @@ impl Partition {
 
         // Keep the graph only for callers that want to walk it again.
         call_graph.shrink_to_fit();
-        Ok(Partition { split_points, main_graph, chunks, shared_symbols, call_graph, data_symbols })
+        Ok(Partition {
+            split_points,
+            main_graph,
+            chunks,
+            shared_symbols,
+            call_graph,
+            data_symbols,
+            original: original_graph,
+            names,
+        })
     }
 
     /// Split-reached symbols main neither reaches nor exports: the table
@@ -240,12 +252,22 @@ fn compute_shared_chunk<'a>(
 /// A node of the ORIGINAL (rustc) module: function by its own index, or
 /// data symbol.
 #[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
-enum OldNode {
+pub enum OldNode {
     Function(u32),
     DataSymbol(usize),
 }
 
-fn build_call_graph(original: &[u8], source: &ModuleIndex<'_>) -> Result<HashMap<Node, HashSet<Node>>> {
+/// Pairs each bindgened function with every same-named function of the
+/// rustc module, and back.
+pub struct NameMap {
+    pub new_to_old: HashMap<u32, Vec<u32>>,
+    pub old_to_new: HashMap<u32, Vec<u32>>,
+}
+
+fn build_call_graph(
+    original: &[u8],
+    source: &ModuleIndex<'_>,
+) -> Result<(HashMap<Node, HashSet<Node>>, OriginalGraph, NameMap)> {
     let old = ModuleIndex::parse(original)?;
     let old_graph = OriginalGraph::build(&old)?;
 
@@ -354,12 +376,27 @@ fn build_call_graph(original: &[u8], source: &ModuleIndex<'_>) -> Result<HashMap
             .or_default()
             .extend(refs.iter().map(|r| Node::Function(*r)));
     }
-    Ok(graph)
+    let mut new_to_old: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (old_f, new_fs) in &old_to_new {
+        for new_f in new_fs {
+            new_to_old.entry(*new_f).or_default().push(*old_f);
+        }
+    }
+    Ok((graph, old_graph, NameMap { new_to_old, old_to_new }))
 }
 
-/// The rustc module's own graph, from its relocations.
-struct OriginalGraph {
-    call_graph: HashMap<OldNode, HashSet<OldNode>>,
+/// The rustc module's own graph, from its relocations: every function or
+/// data symbol each function body and each data symbol refers to.
+pub struct OriginalGraph {
+    pub call_graph: HashMap<OldNode, HashSet<OldNode>>,
+    /// Function pointers taken in CODE (`TABLE_INDEX_*` relocations): the
+    /// functions whose table slot a function's body can produce. Kept apart
+    /// from `call_graph`, which mixes them with direct calls.
+    pub code_fn_ptrs: HashMap<u32, Vec<u32>>,
+    /// Why the relocations cannot be trusted as a complete record of data
+    /// references, if they cannot — a memory-address relocation against
+    /// anything but a defined data symbol. Pruning is refused then.
+    pub unsound: Option<String>,
 }
 
 impl OriginalGraph {
@@ -378,6 +415,18 @@ impl OriginalGraph {
         };
 
         let mut call_graph: HashMap<OldNode, HashSet<OldNode>> = HashMap::new();
+        let mut code_fn_ptrs: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut unsound: Option<String> = None;
+        let mut check = |entry: &RelocationEntry| {
+            if unsound.is_none() && format!("{:?}", entry.ty).starts_with("MemoryAddr") {
+                match raw.symbols.get(entry.index as usize) {
+                    Some(SymbolInfo::Data { symbol: Some(_), .. }) => {}
+                    other => {
+                        unsound = Some(format!("{:?} relocation against {other:?}", entry.ty));
+                    }
+                }
+            }
+        };
 
         // Code: each relocation lands in exactly one body, walked in order.
         let mut relocs = code_relocs.iter().peekable();
@@ -387,7 +436,13 @@ impl OriginalGraph {
             while let Some(entry) = relocs.next_if(|e| e.relocation_range().start < range.end) {
                 let r = entry.relocation_range();
                 anyhow::ensure!(r.start >= range.start && r.end <= range.end, "reloc outside its body");
+                check(entry);
                 if let Some(target) = dep(entry.index) {
+                    if let (OldNode::Function(f), true) =
+                        (target, format!("{:?}", entry.ty).starts_with("TableIndex"))
+                    {
+                        code_fn_ptrs.entry(old.func_imports + pos as u32).or_default().push(f);
+                    }
                     call_graph.entry(func).or_default().insert(target);
                 }
             }
@@ -404,13 +459,14 @@ impl OriginalGraph {
             while let Some(entry) = relocs.next_if(|e| e.relocation_range().start < end) {
                 let r = entry.relocation_range();
                 anyhow::ensure!(r.start >= start && r.end <= end, "reloc outside its data symbol");
+                check(entry);
                 if let Some(target) = dep(entry.index) {
                     call_graph.entry(OldNode::DataSymbol(symbol.index)).or_default().insert(target);
                 }
             }
         }
         anyhow::ensure!(relocs.next().is_none(), "reloc.DATA entries past the last symbol");
-        Ok(OriginalGraph { call_graph })
+        Ok(OriginalGraph { call_graph, code_fn_ptrs, unsound })
     }
 }
 

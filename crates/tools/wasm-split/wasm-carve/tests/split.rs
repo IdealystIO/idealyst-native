@@ -40,7 +40,7 @@ const IMPORT: &str = "__wasm_split_00___mod___00_import_abc_body";
 const EXPORT: &str = "__wasm_split_00___mod___00_export_abc_body";
 const NAMES: [&str; 8] =
     [LOAD, IMPORT, "main", "helper_main", EXPORT, "split_only", "split_leaf", "vtable_target"];
-const VT_ADDR: u32 = 16;
+const VT_ADDR: u32 = DATA_BASE;
 
 fn padded(mut v: u32) -> [u8; 5] {
     let mut out = [0u8; 5];
@@ -63,139 +63,264 @@ fn leb(out: &mut Vec<u8>, mut v: u32) {
     }
 }
 
-/// The fixture: `(module bytes)`. Used as both the rustc and the
-/// bindgened module — the splitter pairs them by name.
-fn fixture() -> Vec<u8> {
-    // Symbols: 0 helper_main, 1 split_only, 2 split_leaf, 3 the split
-    // import (undefined), 4 VT (data), 5 vtable_target.
-    enum Op {
-        Call(u32, u32), // function index, symbol
-        Addr(u32),      // symbol
-    }
-    let bodies: [Vec<Op>; 6] = [
-        vec![Op::Call(1, 3), Op::Call(3, 0)], // main
-        vec![],                               // helper_main
-        vec![Op::Call(5, 1), Op::Call(3, 0)], // split entry
-        vec![Op::Call(6, 2), Op::Addr(4)],    // split_only
-        vec![],                               // split_leaf
-        vec![],                               // vtable_target
-    ];
+#[derive(Clone)]
+enum Op {
+    /// `call f` (FUNCTION_INDEX_LEB relocation).
+    Call(u32),
+    /// `i32.const &sym; drop` (MEMORY_ADDR_SLEB relocation).
+    Addr(&'static str),
+    /// `i32.const &sym; drop` with NO relocation — what a function
+    /// wasm-bindgen wrote looks like.
+    RawAddr(&'static str),
+    /// `i32.const 0; drop` with a MEMORY_ADDR relocation against the first
+    /// function import — an address relocation the analysis cannot account
+    /// for.
+    UntrackedAddr,
+}
 
-    let mut code = Vec::new();
-    let mut code_relocs: Vec<(u8, u32, u32, bool)> = Vec::new(); // (type, offset, symbol, addend?)
-    leb(&mut code, bodies.len() as u32);
-    for ops in &bodies {
-        let mut body = vec![0u8]; // no locals
-        let mut sites = Vec::new();
-        for op in ops {
-            match op {
-                Op::Call(f, sym) => {
-                    body.push(0x10);
-                    sites.push((0u8, body.len(), *sym, false));
-                    body.extend_from_slice(&padded(*f));
-                }
-                Op::Addr(sym) => {
-                    body.push(0x41);
-                    sites.push((4u8, body.len(), *sym, true));
-                    body.extend_from_slice(&padded(VT_ADDR));
-                    body.push(0x1a); // drop
+/// What a data symbol's first word holds, with its `reloc.DATA` entry.
+#[derive(Clone)]
+enum Word {
+    /// The table slot of a function (TABLE_INDEX_I32) — a vtable entry.
+    FnPtr(u32),
+    /// The address of another data symbol (MEMORY_ADDR_I32).
+    DataPtr(&'static str),
+    Plain,
+}
+
+#[derive(Clone)]
+struct Spec {
+    /// Function imports, from `./__wasm_split.js`.
+    imports: Vec<&'static str>,
+    /// Defined functions, numbered after the imports.
+    funcs: Vec<(&'static str, Vec<Op>)>,
+    exports: Vec<(&'static str, u32)>,
+    /// Table slots from 1.
+    elem: Vec<u32>,
+    /// Data symbols, laid out back to back from `DATA_BASE`, 8 bytes each.
+    data: Vec<(&'static str, Word)>,
+    /// Functions with no symbol and no relocations — what wasm-bindgen
+    /// adds. wasm-bindgen passes the rustc module's symbol table through
+    /// untouched, so these must not shift anyone's symbol index.
+    unlinked: Vec<&'static str>,
+}
+
+const DATA_BASE: u32 = 16;
+const DATA_SIZE: u32 = 8;
+
+struct Built {
+    bytes: Vec<u8>,
+    sym: std::collections::HashMap<&'static str, u32>,
+}
+
+impl Spec {
+    fn addr(&self, name: &str) -> u32 {
+        DATA_BASE + DATA_SIZE * self.data.iter().position(|(n, _)| *n == name).unwrap() as u32
+    }
+
+    fn build(&self) -> Built {
+        use std::collections::HashMap;
+        let nimports = self.imports.len() as u32;
+        // Symbols: imports (undefined), defined functions, data.
+        let mut sym: HashMap<&'static str, u32> = HashMap::new();
+        let mut symbols = SymbolTable::new();
+        let mut next = 0u32;
+        for (i, _) in self.imports.iter().enumerate() {
+            symbols.function(SymbolTable::WASM_SYM_UNDEFINED, i as u32, None);
+            next += 1;
+        }
+        for (i, (name, _)) in self.funcs.iter().enumerate() {
+            if self.unlinked.contains(name) {
+                continue;
+            }
+            symbols.function(0, nimports + i as u32, Some(name));
+            sym.insert(name, next);
+            next += 1;
+        }
+        for (i, (name, _)) in self.data.iter().enumerate() {
+            symbols.data(0, name, Some(DataSymbolDefinition { index: 0, offset: i as u32 * DATA_SIZE, size: DATA_SIZE }));
+            sym.insert(name, next);
+            next += 1;
+        }
+        let func_sym = |f: u32| -> u32 {
+            if f < nimports { f } else { sym[self.funcs[(f - nimports) as usize].0] }
+        };
+
+        let mut code = Vec::new();
+        let mut code_relocs: Vec<(u8, u32, u32, bool)> = Vec::new();
+        leb(&mut code, self.funcs.len() as u32);
+        for (_, ops) in &self.funcs {
+            let mut body = vec![0u8];
+            let mut sites = Vec::new();
+            for op in ops {
+                match op {
+                    Op::Call(f) => {
+                        body.push(0x10);
+                        sites.push((0u8, body.len(), func_sym(*f), false));
+                        body.extend_from_slice(&padded(*f));
+                    }
+                    Op::Addr(name) => {
+                        body.push(0x41);
+                        sites.push((4u8, body.len(), sym[name], true));
+                        body.extend_from_slice(&padded(self.addr(name)));
+                        body.push(0x1a);
+                    }
+                    Op::RawAddr(name) => {
+                        body.push(0x41);
+                        body.extend_from_slice(&padded(self.addr(name)));
+                        body.push(0x1a);
+                    }
+                    Op::UntrackedAddr => {
+                        body.push(0x41);
+                        sites.push((4u8, body.len(), 0, true));
+                        body.extend_from_slice(&padded(0));
+                        body.push(0x1a);
+                    }
                 }
             }
+            body.push(0x0b);
+            assert!(body.len() < 128);
+            code.push(body.len() as u8);
+            let body_start = code.len();
+            code.extend_from_slice(&body);
+            for (ty, at, s, addend) in sites {
+                code_relocs.push((ty, (body_start + at) as u32, s, addend));
+            }
         }
-        body.push(0x0b);
-        assert!(body.len() < 128);
-        code.push(body.len() as u8);
-        let body_start = code.len();
-        code.extend_from_slice(&body);
-        for (ty, at, sym, addend) in sites {
-            code_relocs.push((ty, (body_start + at) as u32, sym, addend));
+
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function([], []);
+        m.section(&types);
+        let mut imports = ImportSection::new();
+        for name in &self.imports {
+            imports.import("./__wasm_split.js", name, EntityType::Function(0));
         }
-    }
-
-    let mut m = Module::new();
-    let mut types = TypeSection::new();
-    types.ty().function([], []);
-    m.section(&types);
-    let mut imports = ImportSection::new();
-    imports.import("./__wasm_split.js", LOAD, EntityType::Function(0));
-    imports.import("./__wasm_split.js", IMPORT, EntityType::Function(0));
-    m.section(&imports);
-    let mut funcs = FunctionSection::new();
-    for _ in 0..6 {
-        funcs.function(0);
-    }
-    m.section(&funcs);
-    let mut tables = TableSection::new();
-    tables.table(TableType {
-        element_type: RefType::FUNCREF,
-        table64: false,
-        minimum: 2,
-        maximum: Some(2),
-        shared: false,
-    });
-    m.section(&tables);
-    let mut memories = MemorySection::new();
-    memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
-    m.section(&memories);
-    let mut globals = GlobalSection::new();
-    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(1024));
-    m.section(&globals);
-    let mut exports = ExportSection::new();
-    exports.export("main", ExportKind::Func, 2);
-    exports.export(EXPORT, ExportKind::Func, 4);
-    exports.export("memory", ExportKind::Memory, 0);
-    m.section(&exports);
-    let mut elems = ElementSection::new();
-    elems.active(None, &ConstExpr::i32_const(1), Elements::Functions([7u32][..].into()));
-    m.section(&elems);
-    m.section(&RawSection { id: 10, data: &code });
-    let mut data = DataSection::new();
-    data.active(0, &ConstExpr::i32_const(VT_ADDR as i32), 1u32.to_le_bytes());
-    m.section(&data);
-
-    let mut names = NameMap::new();
-    for (i, n) in NAMES.iter().enumerate() {
-        names.append(i as u32, n);
-    }
-    let mut name_section = NameSection::new();
-    name_section.functions(&names);
-    m.section(&name_section);
-
-    let mut symbols = SymbolTable::new();
-    symbols.function(0, 3, Some("helper_main"));
-    symbols.function(0, 5, Some("split_only"));
-    symbols.function(0, 6, Some("split_leaf"));
-    symbols.function(SymbolTable::WASM_SYM_UNDEFINED, 1, None);
-    symbols.data(0, "VT", Some(DataSymbolDefinition { index: 0, offset: 0, size: 4 }));
-    symbols.function(0, 7, Some("vtable_target"));
-    let mut linking = LinkingSection::new();
-    linking.symbol_table(&symbols);
-    m.section(&linking);
-
-    // Sections in order: type 0, import 1, function 2, table 3, memory 4,
-    // global 5, export 6, elem 7, code 8, data 9.
-    let mut reloc_code = Vec::new();
-    leb(&mut reloc_code, 8);
-    leb(&mut reloc_code, code_relocs.len() as u32);
-    for (ty, offset, sym, addend) in code_relocs {
-        reloc_code.push(ty);
-        leb(&mut reloc_code, offset);
-        leb(&mut reloc_code, sym);
-        if addend {
-            reloc_code.push(0);
+        m.section(&imports);
+        let mut funcs = FunctionSection::new();
+        for _ in &self.funcs {
+            funcs.function(0);
         }
+        m.section(&funcs);
+        let slots = 1 + self.elem.len() as u64;
+        let mut tables = TableSection::new();
+        tables.table(TableType { element_type: RefType::FUNCREF, table64: false, minimum: slots, maximum: Some(slots), shared: false });
+        m.section(&tables);
+        let mut memories = MemorySection::new();
+        memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        m.section(&memories);
+        let mut globals = GlobalSection::new();
+        globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(1024));
+        m.section(&globals);
+        let mut exports = ExportSection::new();
+        for (name, f) in &self.exports {
+            exports.export(name, ExportKind::Func, *f);
+        }
+        exports.export("memory", ExportKind::Memory, 0);
+        m.section(&exports);
+        let mut elems = ElementSection::new();
+        elems.active(None, &ConstExpr::i32_const(1), Elements::Functions(self.elem.clone().into()));
+        m.section(&elems);
+        m.section(&RawSection { id: 10, data: &code });
+
+        // One segment; each symbol's first word per `Word`, the rest zero.
+        let mut bytes = Vec::new();
+        let mut data_relocs: Vec<(u8, u32, u32)> = Vec::new();
+        // Payload prefix: count, flags, `i32.const DATA_BASE end`, size LEB.
+        let payload_prefix = 1 + 1 + 3 + 1;
+        for (i, (_, word)) in self.data.iter().enumerate() {
+            let at = payload_prefix + i as u32 * DATA_SIZE;
+            let value = match word {
+                Word::FnPtr(f) => {
+                    data_relocs.push((2, at, func_sym(*f)));
+                    1 + self.elem.iter().position(|e| e == f).unwrap() as u32
+                }
+                Word::DataPtr(name) => {
+                    data_relocs.push((5, at, sym[name]));
+                    self.addr(name)
+                }
+                Word::Plain => 0xAB00 + i as u32,
+            };
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes.extend_from_slice(&[0xCD; 4]);
+        }
+        assert!(bytes.len() < 128 && DATA_BASE < 64);
+        let mut data = DataSection::new();
+        data.active(0, &ConstExpr::i32_const(DATA_BASE as i32), bytes);
+        m.section(&data);
+
+        let mut names = NameMap::new();
+        for (i, n) in self.imports.iter().enumerate() {
+            names.append(i as u32, n);
+        }
+        for (i, (n, _)) in self.funcs.iter().enumerate() {
+            names.append(nimports + i as u32, n);
+        }
+        let mut name_section = NameSection::new();
+        name_section.functions(&names);
+        m.section(&name_section);
+        let mut linking = LinkingSection::new();
+        linking.symbol_table(&symbols);
+        m.section(&linking);
+
+        // Sections: type 0, import 1, function 2, table 3, memory 4,
+        // global 5, export 6, elem 7, code 8, data 9.
+        let mut reloc_code = Vec::new();
+        leb(&mut reloc_code, 8);
+        leb(&mut reloc_code, code_relocs.len() as u32);
+        for (ty, offset, s, addend) in code_relocs {
+            reloc_code.push(ty);
+            leb(&mut reloc_code, offset);
+            leb(&mut reloc_code, s);
+            if addend {
+                reloc_code.push(0);
+            }
+        }
+        m.section(&CustomSection { name: "reloc.CODE".into(), data: reloc_code.into() });
+        let mut reloc_data = Vec::new();
+        leb(&mut reloc_data, 9);
+        leb(&mut reloc_data, data_relocs.len() as u32);
+        for (ty, offset, s) in data_relocs {
+            reloc_data.push(ty);
+            leb(&mut reloc_data, offset);
+            leb(&mut reloc_data, s);
+            if ty == 5 {
+                reloc_data.push(0);
+            }
+        }
+        m.section(&CustomSection { name: "reloc.DATA".into(), data: reloc_data.into() });
+        Built { bytes: m.finish(), sym }
     }
-    m.section(&CustomSection { name: "reloc.CODE".into(), data: reloc_code.into() });
-    // The data section payload: count, flags, `i32.const 16 end`, size —
-    // six bytes before VT's word, which holds f7's table index.
-    let mut reloc_data = Vec::new();
-    leb(&mut reloc_data, 9);
-    leb(&mut reloc_data, 1);
-    reloc_data.push(2); // R_WASM_TABLE_INDEX_I32
-    leb(&mut reloc_data, 6);
-    leb(&mut reloc_data, 5);
-    m.section(&CustomSection { name: "reloc.DATA".into(), data: reloc_data.into() });
-    m.finish()
+}
+
+/// The fixture the module docs draw.
+fn spec() -> Spec {
+    Spec {
+        imports: vec![LOAD, IMPORT],
+        funcs: vec![
+            ("main", vec![Op::Call(1), Op::Call(3)]),
+            ("helper_main", vec![]),
+            (EXPORT, vec![Op::Call(5), Op::Call(3)]),
+            ("split_only", vec![Op::Call(6), Op::Addr("VT")]),
+            ("split_leaf", vec![]),
+            ("vtable_target", vec![]),
+        ],
+        exports: vec![("main", 2), (EXPORT, 4)],
+        elem: vec![7],
+        data: vec![("VT", Word::FnPtr(7))],
+        unlinked: vec![],
+    }
+}
+
+fn fixture() -> Vec<u8> {
+    spec().build().bytes
+}
+
+/// VT's bytes: table slot 1, then filler.
+fn vt_word() -> Vec<u8> {
+    let mut w = 1u32.to_le_bytes().to_vec();
+    w.extend_from_slice(&[0xCD; 4]);
+    w
 }
 
 fn f(i: u32) -> Node {
@@ -227,7 +352,8 @@ fn partition_follows_calls_and_pointers_in_data() {
         assert!(split.reachable.contains(&n), "{n:?} reachable from the split");
     }
     // vtable_target is reached only through VT's relocation.
-    assert!(split.reachable.contains(&Node::DataSymbol(4)));
+    let vt = spec().build().sym["VT"] as usize;
+    assert!(split.reachable.contains(&Node::DataSymbol(vt)));
     for n in [f(2), f(3)] {
         assert!(p.main_graph.contains(&n), "{n:?} in main");
     }
@@ -341,9 +467,8 @@ fn two_segments() -> (Vec<u8>, std::collections::BTreeMap<usize, wasm_carve::gra
 fn regression_rematerializes_non_rodata_segments() {
     let (bytes, symbols) = two_segments();
     let source = ModuleIndex::parse(&bytes).unwrap();
-    let unique: HashSet<Node> = [Node::DataSymbol(10), Node::DataSymbol(11)].into();
-    let segments = wasm_carve::data::rematerialize(&source, &symbols, &unique);
-    let got: Vec<(i32, Vec<u8>)> = segments.iter().map(|(_, a, b)| (*a, b.to_vec())).collect();
+    let segments = wasm_carve::data::rematerialize(&source, &symbols, &[10, 11], &zeroed(&symbols, &[10, 11], &[]));
+    let got: Vec<(i32, Vec<u8>)> = segments.into_iter().map(|(_, a, b)| (a, b)).collect();
     assert_eq!(
         got,
         vec![(1024 + 8, (8u8..40).collect()), (4096 + 16, (116u8..148).collect())],
@@ -351,27 +476,95 @@ fn regression_rematerializes_non_rodata_segments() {
     );
 }
 
-/// Regression: a split module's re-materialized segments followed hash
-/// order, so two builds of one input shipped different bytes.
+fn zeroed(
+    symbols: &std::collections::BTreeMap<usize, wasm_carve::graph::DataSymbol>,
+    pruned: &[usize],
+    live: &[usize],
+) -> std::collections::BTreeMap<usize, Vec<std::ops::Range<usize>>> {
+    wasm_carve::data::zeroed_ranges(
+        symbols,
+        &pruned.iter().copied().collect(),
+        &live.iter().copied().collect(),
+    )
+}
+
+/// Regression: symbols overlap (a constant nested inside a larger one), and
+/// zeroing a dead symbol whole zeroed the live one inside it — on CrewForge
+/// 317 KB of live bytes, on the website the `@font-face` URL table, so
+/// every custom font failed to load. Only bytes no live symbol covers are
+/// zeroed, and a split output restores only those — never a live byte main
+/// may already have written.
 #[test]
-fn regression_rematerialized_segments_follow_symbol_order() {
+fn regression_pruning_never_zeroes_a_live_symbol_nested_in_a_dead_one() {
     let (bytes, _) = two_segments();
     let source = ModuleIndex::parse(&bytes).unwrap();
-    let symbols: std::collections::BTreeMap<usize, wasm_carve::graph::DataSymbol> = (0..16)
+    let sym = |index: usize, offset: usize, size: usize| wasm_carve::graph::DataSymbol {
+        index,
+        range: 0..0,
+        segment_offset: offset,
+        symbol_size: size,
+        which_data_segment: 0,
+    };
+    // DEAD spans bytes 0..32; LIVE is bytes 8..16 inside it.
+    let symbols: std::collections::BTreeMap<_, _> = [(1, sym(1, 0, 32)), (2, sym(2, 8, 8))].into();
+    let z = zeroed(&symbols, &[1], &[2]);
+    assert_eq!(z[&0], vec![0..8, 16..32]);
+    let segs = data_bytes(&wasm_carve::data::prune_main_data(&source, &z));
+    assert!(segs[0][..8].iter().all(|b| *b == 0));
+    assert_eq!(segs[0][8..16], (8u8..16).collect::<Vec<_>>()[..], "the live symbol survives");
+    assert!(segs[0][16..32].iter().all(|b| *b == 0));
+    let restored: Vec<(i32, Vec<u8>)> = wasm_carve::data::rematerialize(&source, &symbols, &[1], &z)
+        .into_iter()
+        .map(|(_, a, b)| (a, b))
+        .collect();
+    assert_eq!(
+        restored,
+        vec![(1024, (0u8..8).collect()), (1024 + 16, (16u8..32).collect())],
+        "only the zeroed bytes come back"
+    );
+}
+
+fn symbols_every(stride: usize, count: usize) -> std::collections::BTreeMap<usize, wasm_carve::graph::DataSymbol> {
+    (0..count)
         .map(|i| {
             (i, wasm_carve::graph::DataSymbol {
                 index: i,
                 range: 0..0,
-                segment_offset: i * 4,
+                segment_offset: i * stride,
                 symbol_size: 4,
                 which_data_segment: 0,
             })
         })
+        .collect()
+}
+
+/// Regression: re-materialized segments followed hash order, so two builds
+/// of one input shipped different bytes. They come out in address order
+/// whatever order they are asked for in.
+#[test]
+fn regression_rematerialized_segments_follow_address_order() {
+    let (bytes, _) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let symbols = symbols_every(8, 8);
+    let ids: Vec<usize> = vec![5, 1, 7, 3, 0];
+    let addrs: Vec<i32> = wasm_carve::data::rematerialize(&source, &symbols, &ids, &zeroed(&symbols, &ids, &[]))
+        .iter()
+        .map(|s| s.1)
         .collect();
-    let unique: HashSet<Node> = (0..16).map(Node::DataSymbol).collect();
-    let addrs: Vec<i32> =
-        wasm_carve::data::rematerialize(&source, &symbols, &unique).iter().map(|s| s.1).collect();
-    assert_eq!(addrs, (0..16).map(|i| 1024 + i * 4).collect::<Vec<i32>>());
+    assert_eq!(addrs, vec![1024, 1024 + 8, 1024 + 24, 1024 + 40, 1024 + 56]);
+}
+
+/// Symbols that sit back to back become one segment: a segment header per
+/// symbol would cost more than many small symbols are worth.
+#[test]
+fn adjacent_symbols_are_restored_as_one_segment() {
+    let (bytes, _) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let symbols = symbols_every(4, 16);
+    let ids: Vec<usize> = (0..16).collect();
+    let segments = wasm_carve::data::rematerialize(&source, &symbols, &ids, &zeroed(&symbols, &ids, &[]));
+    assert_eq!(segments.len(), 1);
+    assert_eq!((segments[0].1, segments[0].2.clone()), (1024, (0u8..64).collect::<Vec<u8>>()));
 }
 
 fn data_bytes(section: &DataSection) -> Vec<Vec<u8>> {
@@ -385,18 +578,20 @@ fn data_bytes(section: &DataSection) -> Vec<Vec<u8>> {
     index.data.iter().map(|d| bytes[d.data.clone()].to_vec()).collect()
 }
 
-/// Pruning zeroes split-only symbols in segments a split output can
-/// restore, and never one in a passive segment (nobody could put it back).
+/// Only symbols with a fixed address a split output could restore them at
+/// are selected; a passive segment's are kept however dead.
 #[test]
 fn regression_prune_skips_unrematerializable_segments() {
     let (bytes, symbols) = two_segments();
     let source = ModuleIndex::parse(&bytes).unwrap();
-    let unused: HashSet<Node> = [10, 11, 12].into_iter().map(Node::DataSymbol).collect();
-    let (section, stats) = wasm_carve::data::prune_main_data(&source, &symbols, &unused, 24);
-    assert_eq!(stats.zeroed_bytes, 64);
-    assert_eq!(stats.skipped_unrematerializable, 1);
-    assert_eq!(stats.skipped_small, 0);
-    let segs = data_bytes(&section);
+    let (pruned, sel) =
+        wasm_carve::liveness::select_prunable(&source, &symbols, &Default::default(), 24);
+    assert_eq!(pruned.iter().copied().collect::<Vec<_>>(), vec![10, 11]);
+    assert_eq!((sel.pruned_bytes, sel.skipped_unrestorable, sel.skipped_small), (64, 1, 0));
+    let segs = data_bytes(&wasm_carve::data::prune_main_data(
+        &source,
+        &wasm_carve::data::zeroed_ranges(&symbols, &pruned, &Default::default()),
+    ));
     assert!(segs[0][8..40].iter().all(|b| *b == 0));
     assert_eq!(segs[0][..8], (0u8..8).collect::<Vec<_>>()[..]);
     assert!(segs[1][16..48].iter().all(|b| *b == 0));
@@ -408,10 +603,20 @@ fn regression_prune_skips_unrematerializable_segments() {
 fn prune_min_size_threshold_still_applies() {
     let (bytes, symbols) = two_segments();
     let source = ModuleIndex::parse(&bytes).unwrap();
-    let unused: HashSet<Node> = [10, 11].into_iter().map(Node::DataSymbol).collect();
-    let (_, stats) = wasm_carve::data::prune_main_data(&source, &symbols, &unused, 64);
-    assert_eq!(stats.zeroed_bytes, 0);
-    assert_eq!(stats.skipped_small, 2);
+    let (pruned, sel) =
+        wasm_carve::liveness::select_prunable(&source, &symbols, &Default::default(), 64);
+    assert!(pruned.is_empty());
+    assert_eq!(sel.skipped_small, 2);
+}
+
+/// Live data is never selected, whatever its size.
+#[test]
+fn prune_never_selects_live_data() {
+    let (bytes, symbols) = two_segments();
+    let source = ModuleIndex::parse(&bytes).unwrap();
+    let live: HashSet<usize> = [10].into();
+    let (pruned, _) = wasm_carve::liveness::select_prunable(&source, &symbols, &live, 1);
+    assert_eq!(pruned.iter().copied().collect::<Vec<_>>(), vec![11]);
 }
 
 /// With pruning on, main loses the split's data and the module restores it.
@@ -423,7 +628,7 @@ fn data_prune_moves_split_only_data_out_of_main() {
     validate(&out.main.bytes);
     let main = ModuleIndex::parse(&out.main.bytes).unwrap();
     let vt = &out.main.bytes[main.data[0].data.clone()];
-    assert_eq!(vt, [0, 0, 0, 0], "VT is only the split's, so main's copy is zeroed");
+    assert_eq!(vt, [0; 8], "VT is only the split's, so main's copy is zeroed");
     let module = ModuleIndex::parse(&out.modules[0].bytes).unwrap();
     let restored: Vec<(i32, Vec<u8>)> = module
         .data
@@ -431,7 +636,7 @@ fn data_prune_moves_split_only_data_out_of_main() {
         .filter_map(|d| d.active_const.map(|(_, o)| (o, out.modules[0].bytes[d.data.clone()].to_vec())))
         .filter(|(_, b)| !b.is_empty())
         .collect();
-    assert_eq!(restored, vec![(VT_ADDR as i32, 1u32.to_le_bytes().to_vec())]);
+    assert_eq!(restored, vec![(VT_ADDR as i32, vt_word())]);
 }
 
 /// Regression: the DCE-root exports use short `s{n}` names, never the
@@ -554,9 +759,130 @@ fn regression_split_outputs_do_not_duplicate_mains_data() {
         assert_eq!(data_payload_bytes(&m.bytes), 0, "{} carries data main already has", m.module_name);
     }
     let main = ModuleIndex::parse(&out.main.bytes).unwrap();
-    assert_eq!(
-        &out.main.bytes[main.data[0].data.clone()],
-        1u32.to_le_bytes(),
-        "main still initializes VT"
-    );
+    assert_eq!(out.main.bytes[main.data[0].data.clone()], vt_word()[..], "main still initializes VT");
 }
+
+// --- exact data liveness ---------------------------------------------
+
+fn prune(min: usize) -> wasm_carve::SplitOptions {
+    wasm_carve::SplitOptions { prune_dead_data_min: Some(min) }
+}
+
+fn main_data_at(out: &wasm_carve::OutputModules, addr: u32) -> Vec<u8> {
+    let main = ModuleIndex::parse(&out.main.bytes).unwrap();
+    let seg = &main.data[0];
+    let base = seg.active_const.unwrap().1 as u32;
+    let bytes = &out.main.bytes[seg.data.clone()];
+    let at = (addr - base) as usize;
+    bytes[at..at + DATA_SIZE as usize].to_vec()
+}
+
+fn restored(m: &wasm_carve::SplitModule) -> Vec<(i32, Vec<u8>)> {
+    let idx = ModuleIndex::parse(&m.bytes).unwrap();
+    idx.data
+        .iter()
+        .filter_map(|d| d.active_const.map(|(_, o)| (o, m.bytes[d.data.clone()].to_vec())))
+        .filter(|(_, b)| !b.is_empty())
+        .collect()
+}
+
+/// Data main reaches only through another symbol's pointer is live: main
+/// reads PTR, PTR holds &VT. Zeroing VT would corrupt what main loads.
+#[test]
+fn main_keeps_data_it_reaches_only_through_data() {
+    let mut s = spec();
+    s.data = vec![("PTR", Word::DataPtr("VT")), ("VT", Word::FnPtr(7))];
+    s.funcs[0].1.push(Op::Addr("PTR"));
+    let b = s.build().bytes;
+    let out = wasm_carve::split(&b, &b, &prune(1)).unwrap();
+    validate(&out.main.bytes);
+    assert_ne!(main_data_at(&out, s.addr("VT")), vec![0; 8], "VT is live through PTR");
+    assert_ne!(main_data_at(&out, s.addr("PTR")), vec![0; 8]);
+}
+
+/// Regression guard for the corruption this analysis exists to prevent. A
+/// function wasm-bindgen wrote has no relocations, so the partition's graph
+/// never sees what it references: here a shim main exports holds &PTR,
+/// PTR holds &VT, VT holds vtable_target's table slot — and the partition
+/// hands that slot to the split module. Main must keep PTR and VT AND take
+/// the slot back, or calling through it before the module loads traps.
+#[test]
+fn a_pointer_main_holds_keeps_its_data_and_takes_the_function_back() {
+    let mut s = spec();
+    s.data = vec![("PTR", Word::DataPtr("VT")), ("VT", Word::FnPtr(7))];
+    let original = s.build().bytes;
+    let mut bindgened_spec = s.clone();
+    bindgened_spec.funcs.push(("__wbg_shim", vec![Op::RawAddr("PTR")]));
+    bindgened_spec.unlinked.push("__wbg_shim");
+    bindgened_spec.exports.push(("shim", 2 + bindgened_spec.funcs.len() as u32 - 1));
+    let bindgened = bindgened_spec.build().bytes;
+
+    // Without the shim's reference, the partition gives the slot away.
+    let plain = wasm_carve::split(&original, &original, &prune(1)).unwrap();
+    assert!(!names(&plain.main.bytes).contains("vtable_target"));
+
+    let out = wasm_carve::split(&original, &bindgened, &prune(1)).unwrap();
+    validate(&out.main.bytes);
+    assert_ne!(main_data_at(&out, s.addr("VT")), vec![0; 8], "the shim reaches VT through PTR");
+    assert_ne!(main_data_at(&out, s.addr("PTR")), vec![0; 8]);
+    let main = ModuleIndex::parse(&out.main.bytes).unwrap();
+    let slot1 = main.elems.iter().find(|e| e.active == Some((0, 1))).unwrap();
+    let wasm_carve::module::ElemItem::Func(f) = slot1.items[0] else { panic!() };
+    assert_eq!(main.func_names.get(&f).copied(), Some("vtable_target"), "main keeps the slot");
+}
+
+const LOAD_B: &str = "__wasm_split_load_modb_bbb_body";
+const IMPORT_B: &str = "__wasm_split_00___modb___00_import_bbb_body";
+const EXPORT_B: &str = "__wasm_split_00___modb___00_export_bbb_body";
+
+/// Two split points reading one pruned symbol: it is restored ONCE, by the
+/// shared chunk — a second restore when the other module loads would reset
+/// a static the first had written — and both modules load the chunk first.
+/// A symbol only one module reads is that module's to restore.
+#[test]
+fn shared_data_is_restored_once_by_the_chunk() {
+    let s = Spec {
+        imports: vec![LOAD, IMPORT, LOAD_B, IMPORT_B],
+        funcs: vec![
+            ("main", vec![Op::Call(1), Op::Call(3)]),                 // 4
+            (EXPORT, vec![Op::Call(7), Op::Call(8)]),                 // 5
+            (EXPORT_B, vec![Op::Call(7)]),                            // 6
+            ("common", vec![Op::Addr("SHARED")]),                     // 7
+            ("a_only", vec![Op::Addr("A_ONLY")]),                     // 8
+        ],
+        exports: vec![("main", 4), (EXPORT, 5), (EXPORT_B, 6)],
+        elem: vec![],
+        data: vec![("SHARED", Word::Plain), ("A_ONLY", Word::Plain)],
+        unlinked: vec![],
+    };
+    let b = s.build().bytes;
+    let out = wasm_carve::split(&b, &b, &prune(1)).unwrap();
+    for m in std::iter::once(&out.main).chain(&out.modules).chain(&out.chunks) {
+        validate(&m.bytes);
+    }
+    assert_eq!(main_data_at(&out, s.addr("SHARED")), vec![0; 8]);
+    assert_eq!(main_data_at(&out, s.addr("A_ONLY")), vec![0; 8]);
+    let addr = |n: &str| s.addr(n) as i32;
+    assert_eq!(restored(&out.chunks[0]).iter().map(|r| r.0).collect::<Vec<_>>(), vec![addr("SHARED")]);
+    let by_entry = |export: &str| {
+        out.modules.iter().find(|m| ModuleIndex::parse(&m.bytes).unwrap().exports.iter().any(|e| e.name == export)).unwrap()
+    };
+    let (a, bmod) = (by_entry(EXPORT), by_entry(EXPORT_B));
+    assert_eq!(restored(a).iter().map(|r| r.0).collect::<Vec<_>>(), vec![addr("A_ONLY")]);
+    assert!(restored(bmod).is_empty());
+    assert!(a.relies_on_chunks.contains(&0) && bmod.relies_on_chunks.contains(&0));
+}
+
+/// A memory-address relocation against something that is not a defined
+/// data symbol means the relocations are not the whole story: prune
+/// nothing rather than guess.
+#[test]
+fn pruning_is_refused_when_an_address_relocation_is_unaccounted_for() {
+    let mut s = spec();
+    s.funcs[1].1.push(Op::UntrackedAddr);
+    let b = s.build().bytes;
+    let out = wasm_carve::split(&b, &b, &prune(1)).unwrap();
+    assert_eq!(main_data_at(&out, s.addr("VT")), vt_word(), "main keeps all its data");
+    assert!(out.modules.iter().all(|m| restored(m).is_empty()));
+}
+

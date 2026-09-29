@@ -33,9 +33,19 @@ streaming re-encode. Main keeps what its exports, start function and
 table reach. A split module holds its own bodies plus a trampoline
 (`call_indirect` through a slot appended to the shared table) for every
 main function it calls; it imports main's memory, tables and globals and
-installs its functions into the table when it loads. It carries no data:
-main initializes every data segment, so a split module only re-writes its
-own data symbols when `--data-prune` zeroed main's copy of them. Main's split-point
+installs its functions into the table when it loads.
+
+Data: main initializes every data segment. A release build then zeroes, in
+main, every data byte main's code cannot reach (`liveness.rs`): the data
+symbols the kept functions reference per the rustc module's relocations,
+closed over data→data references, plus constant addresses in the functions
+wasm-bindgen wrote (they have no relocations) and in global initializers.
+A function main's live code or data holds a table index for keeps its slot
+in main. Only bytes no live symbol covers are zeroed — symbols nest. Each
+split module puts back the zeroed bytes its own code reads; bytes several
+read go to the shared chunk, loaded once before them. A module whose
+address relocations point at anything but defined data symbols is not
+pruned. Main's split-point
 imports become trampolines to the slot each module installs its entry at.
 
 Measured on CrewForge (73 MB bindgened module, 17 split points): 1.5 s and

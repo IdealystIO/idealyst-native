@@ -145,33 +145,21 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub out_dir: Option<PathBuf>,
 
-    /// **EXPERIMENTAL, off by default.** Web + release only: opt IN to
-    /// chunk-only data pruning in the main wasm bundle. When enabled, release
-    /// builds zero data symbols (≥ 24 bytes) that the splitter classifies as
-    /// reachable only from lazy chunks — recovering ~25-50% of the gzipped
-    /// main bundle on apps with a heavy lazy chunk.
-    ///
-    /// Every pruned symbol is re-materialized by the chunk that owns it, from
-    /// any active const-offset data segment (`.rodata`, `.data`, `.bss`), and
-    /// symbols in segments a chunk can't restore are never pruned — so a
-    /// chunk-only symbol always has exactly one shipper.
-    ///
-    /// This is still OFF by default because the classification
-    /// **under-approximates what `main` reaches**: it can't trace data reached
-    /// via data→data pointers, `call_indirect` / the function table, or the
-    /// deferred handler-registration queue (removed with the old core;
-    /// see docs/proposals/lazy-primitive.md). Data that `main`
-    /// actually reads BEFORE the owning chunk loads gets misclassified
-    /// "chunk-only" and zeroed, silently corrupting `main.wasm` (no wasm
-    /// trap): fonts fail to register, a `#[component(lazy)]` route renders
-    /// nothing. Only enable it after verifying your app renders correctly
-    /// with it, and re-verify when your static data changes.
+    /// Accepted for compatibility: data pruning is on by default for
+    /// release web builds (see `--no-data-prune`).
     #[arg(long)]
     pub data_prune: bool,
 
-    /// Deprecated no-op: data pruning is now off by default (see
-    /// `--data-prune`). Accepted so existing invocations keep working; if both
-    /// are passed, pruning stays off.
+    /// Web + release: keep every data symbol in the main wasm bundle.
+    ///
+    /// By default a release build zeroes main's copy of every data symbol
+    /// (≥ 24 bytes) that main's code cannot reach — an SDK's embedded
+    /// tables, a lazy area's constants — and the lazy modules whose code
+    /// reads them put them back when they load. What main can reach is
+    /// computed exactly from the linker's relocation records (see
+    /// `wasm-carve`'s `liveness`), not guessed, and the build refuses to
+    /// prune a module whose relocations don't account for every address.
+    /// On CrewForge it takes 36% off the main bundle's download.
     #[arg(long)]
     pub no_data_prune: bool,
 
@@ -614,9 +602,7 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
             // the emitted HTML expects the wasm to adopt it on boot.
             // Pure SPA builds drop the machinery for a smaller wasm.
             hydrate: args.ssg || args.ssr,
-            // Chunk-only data pruning is OFF by default and opt-in via
-            // `--data-prune` — the classification under-approximates main's
-            // reachability and silently corrupts main.wasm otherwise. See
+            // Data pruning is on for release unless `--no-data-prune`. See
             // `resolve_prune_data_min`.
             prune_dead_data_min: resolve_prune_data_min(
                 args.release,
@@ -665,30 +651,20 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     Ok(artifact.entry_js)
 }
 
-/// Resolve the chunk-only data-prune threshold for a web build. Returns
-/// `Some(min_bytes)` to enable pruning, `None` to disable it.
+/// Resolve the data-prune threshold for a web build: `Some(min_bytes)` to
+/// prune, `None` to keep main's data whole.
 ///
-/// Pruning is **off by default** and opt-in via `--data-prune`. The
-/// splitter's chunk-only classification under-approximates what `main`
-/// reaches: it walks the symbol-level call graph but can't trace data reached
-/// through data→data pointers, `call_indirect` / the function table, or the
-/// deferred handler-registration queue (removed with the old core).
-/// Data `main` reads through
-/// those edges gets misclassified "chunk-only" and zeroed — silently corrupting
-/// `main.wasm` with no wasm trap (observed: fonts fail to register via
-/// `typeface!`, and a `#[component(lazy)]` route mounts nothing, not even its
-/// `loading` placeholder). The 24-byte floor only guards small vtables; larger
-/// misclassified statics slip through. So the safe default is to not prune;
-/// `--data-prune` is an explicit, per-app opt-in for those who verify it.
-///
-/// `--no-data-prune` is now redundant (kept as a no-op); if both flags are
-/// passed, pruning stays off.
-fn resolve_prune_data_min(release: bool, data_prune: bool, no_data_prune: bool) -> Option<usize> {
-    if release && data_prune && !no_data_prune {
-        Some(24)
-    } else {
-        None
-    }
+/// On for release, off with `--no-data-prune`, never outside release (a dev
+/// build's split is an iteration aid). It was off by default for a while:
+/// the walrus splitter chose what to zero from its partition graph, which
+/// mis-classified data main reads through pointers and silently corrupted
+/// main (fonts stopped registering, lazy routes mounted nothing). The
+/// choice is now `wasm-carve`'s exact liveness, which only zeroes what no
+/// path from main's code reaches. `--data-prune` is accepted and changes
+/// nothing. The 24-byte floor is about size, not safety: each restored
+/// symbol costs its module a segment header.
+fn resolve_prune_data_min(release: bool, _data_prune: bool, no_data_prune: bool) -> Option<usize> {
+    (release && !no_data_prune).then_some(24)
 }
 
 fn build_ios_target(dir: &std::path::Path, args: &Args) -> Result<()> {
@@ -936,27 +912,19 @@ fn build_runtime_server_host(dir: &std::path::Path, args: &Args) -> Result<()> {
 mod tests {
     use super::resolve_prune_data_min;
 
-    /// Regression for the release `data-prune` corruption: the unsound
-    /// chunk-only classification must NOT run by default. It corrupted
-    /// `main.wasm` (zeroed main-reachable fonts / lazy-dispatch data) because
-    /// its reachability walk misses data→data / call_indirect / deferred-
-    /// registration edges. Off unless the app explicitly opts in.
-    ///
-    /// A tighter end-to-end test would need to build a wasm fixture with
-    /// indirect main→data reachability and diff the pruned bytes — not
-    /// reachable from a CLI unit test — so this pins the default/opt-in gate,
-    /// the layer the fix actually changed.
+    /// Pruning is on for release builds and `--no-data-prune` turns it
+    /// off. It was off by default while the splitter's choice of what to
+    /// zero was a guess from its partition (it corrupted main by zeroing
+    /// data main reads through pointers); `wasm-carve` computes it exactly,
+    /// and its tests hold that
+    /// (`a_pointer_main_holds_keeps_its_data_and_takes_the_function_back`,
+    /// `main_keeps_data_it_reaches_only_through_data`).
     #[test]
-    fn data_prune_is_off_by_default_and_opt_in() {
-        // release, no flags → OFF (the fix: was Some(24), which corrupted main)
-        assert_eq!(resolve_prune_data_min(true, false, false), None);
-        // explicit opt-in → ON
-        assert_eq!(resolve_prune_data_min(true, true, false), Some(24));
-        // opt-in but also --no-data-prune → OFF (no-prune wins)
-        assert_eq!(resolve_prune_data_min(true, true, true), None);
-        // debug never prunes, even with the opt-in
-        assert_eq!(resolve_prune_data_min(false, true, false), None);
-        // the deprecated --no-data-prune alone is a harmless no-op (already off)
+    fn data_prune_is_on_for_release_unless_opted_out() {
+        assert_eq!(resolve_prune_data_min(true, false, false), Some(24));
+        assert_eq!(resolve_prune_data_min(true, true, false), Some(24), "--data-prune is a no-op");
         assert_eq!(resolve_prune_data_min(true, false, true), None);
+        assert_eq!(resolve_prune_data_min(true, true, true), None, "opting out wins");
+        assert_eq!(resolve_prune_data_min(false, false, false), None, "never outside release");
     }
 }

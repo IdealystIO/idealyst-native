@@ -668,7 +668,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     // Everything after `cargo` is O(module size) and blind to whether
     // cargo actually produced a new module — see [`passes_skippable`].
     let stamp_file = build_dir.join(format!(".wasm-stamp-{key}"));
-    let before = WasmStamp::of(&original_wasm);
+    let passes = passes_key(&opts);
+    let before = WasmStamp::of(&original_wasm, passes);
     let mut timings = BuildTimings::new(&reporter);
     timings.time("cargo", || {
         cargo_build_wasm(
@@ -691,7 +692,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             &project_dir,
         )
     })?;
-    let after = WasmStamp::of(&original_wasm);
+    let after = WasmStamp::of(&original_wasm, passes);
     let outputs_present = wrapper_pkg
         .join(format!("{}_bg.wasm", manifest.lib_name))
         .is_file()
@@ -2097,17 +2098,36 @@ impl BuildTimings {
 /// `version` pins the stamp to the build tooling that wrote it: a CLI
 /// upgrade that changes what bindgen or split emit must not inherit a
 /// `pkg/` produced by the old one.
+///
+/// `passes` pins it to the options that shape what the passes emit (see
+/// [`passes_key`]): the same module split with `--data-prune` and without is
+/// two different bundles, and a stamp recorded under one must not let the
+/// other skip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WasmStamp {
     len: u64,
     mtime_secs: u64,
     mtime_nanos: u32,
+    passes: u64,
+}
+
+/// The post-cargo options that change what wasm-bindgen, the splitter and
+/// wasm-opt produce from one module. Options that only shape cargo's build
+/// are in [`config_key`] (and its target dir) instead; staging reruns every
+/// build anyway.
+fn passes_key(opts: &BuildOptions) -> u64 {
+    let key = format!(
+        "split={} prune={:?} release={} hot_patch={}",
+        opts.wasm_split, opts.prune_dead_data_min, opts.release, opts.hot_patch,
+    );
+    // FNV-1a: stable across runs and toolchains, unlike `DefaultHasher`.
+    key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
 impl WasmStamp {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
-    fn of(path: &Path) -> Option<Self> {
+    fn of(path: &Path, passes: u64) -> Option<Self> {
         let md = fs::metadata(path).ok()?;
         let mtime = md.modified().ok()?;
         let since = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -2115,16 +2135,18 @@ impl WasmStamp {
             len: md.len(),
             mtime_secs: since.as_secs(),
             mtime_nanos: since.subsec_nanos(),
+            passes,
         })
     }
 
     fn encode(&self) -> String {
         format!(
-            "{}\n{}\n{}.{:09}\n",
+            "{}\n{}\n{}.{:09}\n{:016x}\n",
             Self::VERSION,
             self.len,
             self.mtime_secs,
-            self.mtime_nanos
+            self.mtime_nanos,
+            self.passes,
         )
     }
 
@@ -2136,10 +2158,12 @@ impl WasmStamp {
         }
         let len = lines.next()?.trim().parse().ok()?;
         let (secs, nanos) = lines.next()?.trim().split_once('.')?;
+        let passes = u64::from_str_radix(lines.next()?.trim(), 16).ok()?;
         Some(Self {
             len,
             mtime_secs: secs.parse().ok()?,
             mtime_nanos: nanos.parse().ok()?,
+            passes,
         })
     }
 
@@ -3255,8 +3279,8 @@ mod regression_tests {
 
     #[test]
     fn passes_skip_only_when_cargo_left_the_module_and_the_passes_finished() {
-        let a = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 2 };
-        let b = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 3 };
+        let a = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 2, passes: 7 };
+        let b = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 3, passes: 7 };
         // The one shape that skips.
         assert!(passes_skippable(Some(&a), Some(&a), Some(&a), true));
         // cargo rewrote the module (mtime moved).
@@ -3271,9 +3295,29 @@ mod regression_tests {
         assert!(!passes_skippable(None, None, None, true));
     }
 
+    /// Regression: toggling `--no-data-prune` (or `--no-split`) between two
+    /// builds of an unchanged module skipped the passes and restaged the
+    /// PREVIOUS bundle — the flag silently did nothing. Found while
+    /// comparing pruned and unpruned website builds: the "pruned" one was
+    /// the unpruned bundle. The stamp now carries the pass options, and a
+    /// stamp recorded under other options does not allow a skip.
+    #[test]
+    fn regression_changing_a_pass_option_reruns_the_passes() {
+        let base = BuildOptions { release: true, wasm_split: true, ..key_opts() };
+        let pruned = BuildOptions { prune_dead_data_min: Some(24), ..base.clone() };
+        let unsplit = BuildOptions { wasm_split: false, ..base.clone() };
+        assert_ne!(passes_key(&base), passes_key(&pruned));
+        assert_ne!(passes_key(&base), passes_key(&unsplit));
+        assert_eq!(passes_key(&base), passes_key(&base.clone()), "stable for the same options");
+        let recorded = WasmStamp { len: 10, mtime_secs: 1, mtime_nanos: 2, passes: passes_key(&base) };
+        let now = WasmStamp { passes: passes_key(&pruned), ..recorded };
+        assert!(!passes_skippable(Some(&now), Some(&now), Some(&recorded), true));
+        assert!(passes_skippable(Some(&recorded), Some(&recorded), Some(&recorded), true));
+    }
+
     #[test]
     fn wasm_stamp_round_trips_and_refuses_another_tooling_version() {
-        let s = WasmStamp { len: 217_610_466, mtime_secs: 1_788_970_000, mtime_nanos: 123 };
+        let s = WasmStamp { len: 217_610_466, mtime_secs: 1_788_970_000, mtime_nanos: 123, passes: 0xfeed };
         assert_eq!(WasmStamp::decode(&s.encode()), Some(s));
         let foreign = s.encode().replacen(WasmStamp::VERSION, "0.0.0-other", 1);
         assert_eq!(WasmStamp::decode(&foreign), None);

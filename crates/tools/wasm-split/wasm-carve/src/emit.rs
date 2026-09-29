@@ -55,6 +55,11 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Functions shared through the table, in slot order.
+    pub fn shared_funcs(&self) -> &[u32] {
+        &self.shared_funcs
+    }
+
     /// The table slot a split module installs its entry at, which main's
     /// split-point import forwards to.
     pub fn entry_slot(&self, split_index: usize) -> u32 {
@@ -152,19 +157,11 @@ pub fn emit_main(
     source: &ModuleIndex<'_>,
     partition: &Partition,
     layout: &Layout,
-    prune_dead_data_min: Option<usize>,
+    plan: &crate::liveness::MainPlan,
 ) -> Result<Emitted> {
-    let unused_symbols = partition.unused_main_symbols(source);
-    let unused: HashSet<u32> = unused_symbols
-        .iter()
-        .copied()
-        .filter_map(|n| match n {
-            Node::Function(f) => Some(f),
-            Node::DataSymbol(_) => None,
-        })
-        .collect();
     let split_exports: HashSet<&str> =
         partition.split_points.iter().map(|s| s.export_name.as_str()).collect();
+    let live = &plan.live;
 
     // Table slots after the splits' are emptied: `None` is a hole the
     // dummy fills.
@@ -175,54 +172,13 @@ pub fn emit_main(
             elem.items
                 .iter()
                 .map(|item| match item {
-                    ElemItem::Func(f) if unused.contains(f) => Ok(None),
+                    ElemItem::Func(f) if plan.holes.contains(f) => Ok(None),
                     ElemItem::Func(f) => Ok(Some(*f)),
                     ElemItem::Null => bail!("ref.null in an element segment"),
                 })
                 .collect::<Result<_>>()
         })
         .collect::<Result<_>>()?;
-
-    // What main keeps: everything reachable from its exports (the split
-    // exports removed, every shared function added), its start function
-    // and its table — the same roots walrus's GC used. Bodies are walked
-    // for direct references only; nothing reached through data needs
-    // one, because such a function is in the table.
-    let mut live = vec![false; source.total_funcs() as usize];
-    let mut stack: Vec<u32> = Vec::new();
-    let root = |f: u32, live: &mut Vec<bool>, stack: &mut Vec<u32>| {
-        if !std::mem::replace(&mut live[f as usize], true) {
-            stack.push(f);
-        }
-    };
-    for f in 0..source.func_imports {
-        root(f, &mut live, &mut stack);
-    }
-    for e in &source.exports {
-        if e.kind == ExternalKind::Func && !split_exports.contains(e.name) {
-            root(e.index, &mut live, &mut stack);
-        }
-    }
-    for f in &layout.shared_funcs {
-        root(*f, &mut live, &mut stack);
-    }
-    if let Some(start) = source.start {
-        root(start, &mut live, &mut stack);
-    }
-    for f in elem_items.iter().flatten().flatten() {
-        root(*f, &mut live, &mut stack);
-    }
-    let mut refs = Vec::new();
-    while let Some(f) = stack.pop() {
-        if f < source.func_imports {
-            continue;
-        }
-        refs.clear();
-        source.direct_refs(f, &mut refs)?;
-        for r in &refs {
-            root(*r, &mut live, &mut stack);
-        }
-    }
 
     // Renumber. Imports first, minus the split-point imports: each of
     // those becomes a defined trampoline to the table slot its module
@@ -402,26 +358,8 @@ pub fn emit_main(
                 }
                 _ => {}
             },
-            11 if prune_dead_data_min.is_some() => {
-                let min = prune_dead_data_min.unwrap_or_default();
-                let (data, stats) =
-                    crate::data::prune_main_data(source, &partition.data_symbols, &unused_symbols, min);
-                if stats.skipped_small > 0 {
-                    eprintln!(
-                        "[wasm-split prune-data] skipped {} split-only symbols smaller than {min} bytes (safety threshold)",
-                        stats.skipped_small,
-                    );
-                }
-                if stats.skipped_unrematerializable > 0 {
-                    eprintln!(
-                        "[wasm-split prune-data] kept {} split-only symbols in non-rematerializable segments (passive / non-const offset)",
-                        stats.skipped_unrematerializable,
-                    );
-                }
-                eprintln!(
-                    "[wasm-split prune-data] zeroed {} of {} split-only data bytes",
-                    stats.zeroed_bytes, stats.dead_bytes_total,
-                );
+            11 if !plan.pruned.is_empty() => {
+                let data = crate::data::prune_main_data(source, &plan.zeroed);
                 module.section(&data);
             }
             id => {
@@ -495,13 +433,15 @@ fn payload<'a>(source: &ModuleIndex<'a>, section: &crate::module::Section) -> Re
 pub struct SplitBody<'p> {
     /// Functions whose bodies it keeps.
     pub bodies: &'p HashSet<Node>,
-    /// Symbols it installs: its functions' table slots and its data.
+    /// Functions it installs into their source table slots.
     pub unique: &'p HashSet<Node>,
     /// A split module's entry: `(export name, function, split index)`.
     pub entry: Option<(&'p str, u32, usize)>,
-    /// Whether it re-initializes its data symbols at their addresses —
-    /// only needed when main's copy was pruned (see `data`).
-    pub rematerialize_data: bool,
+    /// Data symbols main's copy of was pruned that this output puts back
+    /// (see `liveness::assign_restores`).
+    pub restore: &'p [usize],
+    /// The bytes main zeroed; an output restores only these.
+    pub zeroed: &'p BTreeMap<usize, Vec<std::ops::Range<usize>>>,
 }
 
 pub fn emit_split(
@@ -595,16 +535,11 @@ pub fn emit_split(
     }
 
     // Data: every source segment emptied — their indices hold, so a body's
-    // `memory.init` / `data.drop` still names the right one. When main's
-    // copy of this output's data was pruned, the data symbols are
-    // re-initialized here at their addresses; otherwise main already
-    // wrote every byte and a second copy is only download size (2 MB of
-    // CrewForge's split modules before this was conditional).
-    let data_segments = if split.rematerialize_data {
-        crate::data::rematerialize(source, &partition.data_symbols, split.unique)
-    } else {
-        Vec::new()
-    };
+    // `memory.init` / `data.drop` still names the right one. Main
+    // initializes all data, so an output carries only what `--data-prune`
+    // zeroed in main and this output was assigned to put back.
+    let data_segments =
+        crate::data::rematerialize(source, &partition.data_symbols, split.restore, split.zeroed);
     if source.data_count.is_some() {
         module.section(&DataCountSection { count: (source.data.len() + data_segments.len()) as u32 });
     }

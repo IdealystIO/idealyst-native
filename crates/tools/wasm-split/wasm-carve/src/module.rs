@@ -102,6 +102,8 @@ pub struct ModuleIndex<'a> {
     pub bodies: Vec<(Range<usize>, Range<usize>)>,
     /// Function index → name, from the `name` section.
     pub func_names: HashMap<u32, &'a str>,
+    /// Every `i32.const` a global is initialized to.
+    pub global_init_consts: Vec<i32>,
 }
 
 impl<'a> ModuleIndex<'a> {
@@ -127,6 +129,7 @@ impl<'a> ModuleIndex<'a> {
             code_payload_start: 0,
             bodies: Vec::new(),
             func_names: HashMap::new(),
+            global_init_consts: Vec::new(),
         };
         m.sections = top_level_sections(bytes)?;
 
@@ -184,7 +187,11 @@ impl<'a> ModuleIndex<'a> {
                 }
                 Payload::GlobalSection(reader) => {
                     for global in reader {
-                        m.global_types.push(global?.ty);
+                        let global = global?;
+                        if let Some(c) = const_i32(&global.init_expr) {
+                            m.global_init_consts.push(c);
+                        }
+                        m.global_types.push(global.ty);
                     }
                 }
                 Payload::ExportSection(reader) => {
@@ -308,6 +315,39 @@ impl<'a> ModuleIndex<'a> {
                 Operator::Call { function_index }
                 | Operator::ReturnCall { function_index }
                 | Operator::RefFunc { function_index } => out.push(function_index),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> ModuleIndex<'a> {
+    /// Every address a defined function's body names as a constant: each
+    /// `i32.const` and each load/store `offset` (LLVM folds a static's
+    /// address into the offset immediate). Used where no relocation
+    /// records the references — functions wasm-bindgen wrote.
+    pub fn const_addresses(&self, index: u32, out: &mut Vec<u32>) -> Result<()> {
+        let (_, body) = &self.bodies[(index - self.func_imports) as usize];
+        let fb = wasmparser::FunctionBody::new(wasmparser::BinaryReader::new(
+            &self.bytes[body.clone()],
+            body.start,
+        ));
+        let mut ops = fb.get_operators_reader()?;
+        while !ops.eof() {
+            use Operator::*;
+            match ops.read()? {
+                I32Const { value } => out.push(value as u32),
+                I32Load { memarg } | I64Load { memarg } | F32Load { memarg } | F64Load { memarg }
+                | I32Load8S { memarg } | I32Load8U { memarg } | I32Load16S { memarg }
+                | I32Load16U { memarg } | I64Load8S { memarg } | I64Load8U { memarg }
+                | I64Load16S { memarg } | I64Load16U { memarg } | I64Load32S { memarg }
+                | I64Load32U { memarg } | I32Store { memarg } | I64Store { memarg }
+                | F32Store { memarg } | F64Store { memarg } | I32Store8 { memarg }
+                | I32Store16 { memarg } | I64Store8 { memarg } | I64Store16 { memarg }
+                | I64Store32 { memarg } | V128Load { memarg } | V128Store { memarg } => {
+                    out.push(memarg.offset as u32)
+                }
                 _ => {}
             }
         }

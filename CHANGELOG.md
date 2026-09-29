@@ -11,6 +11,21 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Release web builds move lazy-only data out of the main bundle**
+  (`wasm-carve`, `build-web`, `idealyst-cli`). Data only lazy code reads —
+  an SDK's embedded tables, a lazy area's constants — is zeroed in
+  `main.wasm` and put back by the lazy module that reads it when it loads,
+  or once by the shared chunk when several modules read it. This was
+  `--data-prune`, off by default since the walrus splitter's guess at what
+  main reads corrupted apps. The choice is now exact: everything main's
+  own code can reach, per the linker's relocation records, stays; a module
+  whose relocations don't account for every address it holds is not
+  pruned at all; and a function main holds a pointer to keeps its table
+  slot in main. On CrewForge the main bundle went from 1.94 MB to 1.25 MB
+  brotli'd (−36%), the PDF area's module growing by the PDF data it
+  alone reads. *Migration:* none needed; `idealyst build --web --release
+  --no-data-prune` keeps all data in main, and `--data-prune` is accepted
+  and does nothing.
 - **`ui!` / `jsx!` reject props a primitive does not accept** (`runtime-macros`).
   A typo, a prop the primitive never had, a duplicate, a conflicting pair
   (`image` `src`+`asset`, `icon` `animate`+`draw_in`, `link`
@@ -430,6 +445,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   from 4.11 MB to 3.17 MB brotli'd (−23%; the whole bundle 6.05 MB →
   5.11 MB), the PDF area's module from 1.03 MB to 352 KB. Main is
   unchanged.
+
+- **Pruning never zeroes a live byte** (`wasm-carve`). Data symbols
+  overlap — a constant nested inside a larger one — and pruning zeroed a
+  dead symbol's whole range, live bytes inside it included: 317 KB of
+  them on CrewForge, and on the website the `@font-face` URL table, so
+  every custom font failed to load. Only bytes no live symbol covers are
+  zeroed now, and a lazy module restores only those, never a live byte
+  main may already have written. This affected every `--data-prune` build
+  before this release.
+
+- **Changing `--no-data-prune` or `--no-split` rebuilds the bundle**
+  (`build-web`). With the app's wasm unchanged since the last build, the
+  post-link passes were skipped and the previous bundle restaged, so
+  toggling either flag silently did nothing. The skip now also requires
+  the same pass options.
 
 - **The memory cap fits the machine for web builds, and names the stage
   it stopped** (`idealyst-cli`). `build --web`, `run`, `docs` and `dev`

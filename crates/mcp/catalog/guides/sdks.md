@@ -254,9 +254,8 @@ Practical consequences:
   work (a rasterizer, a font stack, an embedded payload) should live behind a
   function the *chunk* calls, not behind one the handler calls at
   registration time.
-- Static **data** never leaves `main.wasm` by default regardless of chunking;
-  dropping it needs the experimental opt-in `idealyst build --web --release
-  --data-prune` (see [[lazy-loading]]).
+- Static **data** only the chunk's code reads leaves `main.wasm` with it in a
+  release build (see [[lazy-loading]]; `--no-data-prune` keeps it in main).
 - Register only the SDKs you actually render. An unused `register` line costs
   its handler's whole reachable graph in the main bundle — and now that
   registration is explicit everywhere, that list is entirely under your

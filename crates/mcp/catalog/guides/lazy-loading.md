@@ -143,29 +143,24 @@ keyed on the flag, so the two postures never share a build cache.
 
 `idealyst build --web --release --no-split` is supported, and is the shape for
 CI and end-to-end bundles that are never deployed: release codegen and
-`wasm-opt`, without the splitter. The splitter is the heaviest pass that runs
-inside the CLI process. It builds at most four chunks at a time, and fewer when
-the CLI's memory cap is lower, but each one still starts from a full parse of
-the module.
-Chunk-only **code** leaves `main.wasm` automatically. Chunk-only **data** (large
-`&'static` tables, an SDK's embedded payload) stays in `main.wasm` by default —
-dropping it requires the **experimental, opt-in** `--data-prune`:
+`wasm-opt`, without the splitter. The splitter itself is cheap: on a large
+app (17 split points, a 73 MB module) it takes about 1.5 s and 0.3 GB.
+
+Chunk-only **code** leaves `main.wasm` automatically, and so does chunk-only
+**data** (large `&'static` tables, an SDK's embedded payload) in a release
+build. Main keeps every data byte its own code can reach; the rest is zeroed
+in `main.wasm` and put back by the lazy module that reads it when that module
+loads — or, for data several modules read, once by the shared chunk they all
+load first. What main can reach is computed from the linker's relocation
+records rather than guessed, and a module whose relocations don't account for
+every address it holds is not pruned at all. On a large app this took a third
+off the main bundle. To keep all data in main:
 
 ```bash
-idealyst build --web --release --data-prune   # verify your app still renders!
+idealyst build --web --release --no-data-prune
 ```
 
-Every pruned symbol is shipped by exactly one artifact: the owning chunk
-re-materializes it (from any active data segment — `.rodata`, `.data`, `.bss`)
-when it instantiates, and symbols no chunk could restore are never pruned.
-`--data-prune` is still off by default because its chunk-only classification
-under-approximates what `main` reaches (it can't trace data reached via
-data→data pointers or `call_indirect`), so it can silently zero a
-main-reachable static that
-`main` reads *before* the owning chunk loads — corrupting `main.wasm` with no
-error (fonts stop registering, a lazy route renders nothing). Only enable it
-after confirming the built app renders correctly, and re-check when your
-static data changes.
+(`--data-prune` is still accepted; it changes nothing.)
 
 ## Lazy-loading a heavy SDK (extension primitives)
 
@@ -196,7 +191,7 @@ successor to the pre-v2 core's `defer_external_registration`:
 
 `main` only ever names the type-erased closure in the drain path, so the
 handler and whatever it reaches are constructed only inside the chunk:
-wasm-split confines them there and `--data-prune` can then evict their statics
+the splitter confines them there and release data pruning then evicts their statics
 from main. `tests/lazy-payload-split` measures precisely this — the same app
 built two ways, differing only in that one line, with the gate requiring the
 deferred variant's `main.wasm` to be at least 400 KiB smaller.
@@ -225,8 +220,8 @@ The practical recipe:
    main. Since registration is explicit on every target now, that list is
    entirely under your control — an unused line is pure main-bundle cost.
 
-5. **Data needs `--data-prune`.** Even a chunk-only static stays in
-   `main.wasm` unless you opt into the experimental pass above.
+5. **Data follows the code in release builds.** A chunk-only static leaves
+   `main.wasm` as its code does (see above; `--no-data-prune` keeps it).
 
 ```rust
 // Boot: declare the payload kind late-bound. `main.wasm` never names the

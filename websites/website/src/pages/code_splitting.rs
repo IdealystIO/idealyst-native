@@ -162,9 +162,10 @@ fn how_the_split_works() -> Element {
                  through the split function into a chunk wasm, and emits the loader \
                  glue that fetches and links the chunk against the live main \
                  instance.".to_string(),
-                "Chunk-only code leaves the main bundle automatically. Chunk-only \
-                 static data follows under the experimental `--data-prune` flag; \
-                 verify the app still renders when enabling it.".to_string(),
+                "Chunk-only code leaves the main bundle automatically, and in a \
+                 release build so does static data only chunk code reads: main \
+                 keeps every byte its own code can reach, and the chunk that reads \
+                 the rest puts it back when it loads.".to_string(),
                 "`--no-split` skips the pass without removing your lazy boundaries: \
                  the bodies ship inside the main bundle and their loaders resolve \
                  immediately, so a lazy component still mounts and its `loading` \
