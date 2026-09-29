@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "css",
  "dev-client",
@@ -7362,7 +7362,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "inventory",
  "runtime-core",
