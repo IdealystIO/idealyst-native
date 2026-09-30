@@ -17,6 +17,13 @@
 //! only ever one instance, so `SharedPartition` is just an owner with no
 //! coordination.
 //!
+//! **Lifetime.** A follower's handle is the only thing keeping it alive:
+//! dropping the last [`SharedPartition`] clone closes its channel and
+//! withdraws its queued leadership request, so it stops mirroring and can
+//! no longer be promoted. A leader outlives its handles on purpose — its
+//! owner [`Partition`] lives in the engine, and the other tabs rely on it
+//! to broadcast state and apply their writes until the tab closes.
+//!
 //! [`SharedPartition::open`] is synchronous and creates every signal the
 //! handle will ever expose, for the reason in the `partition` module docs:
 //! a tab becomes leader from the Web Lock callback, and nothing reactive
@@ -78,6 +85,10 @@ struct SharedInner<T> {
     /// The cross-tab bus (web only); `None` on native.
     #[cfg(target_arch = "wasm32")]
     bus: RefCell<Option<web::TabBus>>,
+    /// This tab's Web Lock request (web only). Dropping it withdraws a
+    /// request that is still queued behind another tab's lock.
+    #[cfg(target_arch = "wasm32")]
+    leadership: RefCell<Option<web::LeaderRequest>>,
 }
 
 impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedInner<T> {
@@ -95,6 +106,8 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
             transport,
             #[cfg(target_arch = "wasm32")]
             bus: RefCell::new(None),
+            #[cfg(target_arch = "wasm32")]
+            leadership: RefCell::new(None),
         }
     }
 
@@ -290,10 +303,19 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
         let inner = Rc::new(SharedInner::new(engine, name, transport));
 
         // Wire the cross-tab bus: dispatch incoming messages.
-        let inner_for_bus = inner.clone();
+        //
+        // Both callbacks below hold a `Weak`, never an `Rc`: `inner` OWNS
+        // the bus and the lock request, so a strong reference from their
+        // closures back to `inner` is a cycle — a dropped follower
+        // partition then never freed and kept mirroring every broadcast
+        // (regression: `tests::regression_dropped_follower_is_freed_and_stops_handling`).
+        // A LEADER is kept alive on purpose, by the publish listener its
+        // engine-owned partition holds (see `become_owner`).
+        let inner_for_bus = Rc::downgrade(&inner);
         let bus = web::TabBus::new(&format!("sync-coord:{name}"), move |json| {
+            let Some(inner) = inner_for_bus.upgrade() else { return };
             if let Ok(msg) = serde_json::from_str::<CoordMsg>(&json) {
-                handle_msg(&inner_for_bus, msg);
+                handle_msg(&inner, msg);
             }
         });
         *inner.bus.borrow_mut() = Some(bus);
@@ -302,13 +324,14 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
         inner.post(&CoordMsg::RequestState);
 
         // Request leadership; when granted, build the owner.
-        let inner_for_lock = inner.clone();
-        web::request_leadership(&format!("sync-leader:{name}"), move || {
-            let inner = inner_for_lock.clone();
+        let inner_for_lock = Rc::downgrade(&inner);
+        let request = web::request_leadership(&format!("sync-leader:{name}"), move || {
+            let Some(inner) = inner_for_lock.upgrade() else { return };
             runtime_core::driver::spawn_async(async move {
                 let _ = become_owner(inner).await;
             });
         });
+        *inner.leadership.borrow_mut() = request;
 
         SharedPartition { inner }
     }
@@ -353,8 +376,11 @@ async fn become_owner<T: Clone + PartialEq + Serialize + DeserializeOwned + Merg
     inner.leader_sig.set(true);
 
     // The listener keeps `inner` alive through the partition the engine
-    // holds: both live as long as the app, which is the lifetime of the
-    // mirror too.
+    // holds, ON PURPOSE: a leader's owner partition lives in the engine for
+    // the app's lifetime, and other tabs depend on this one to broadcast
+    // its state and apply their proxied writes, so the bus in `inner` must
+    // live exactly as long. (A follower has no such anchor and is freed
+    // when its last handle drops — see `open`.)
     let for_listener = inner.clone();
     partition.add_publish_listener(Rc::new(move |entries: &[Entry<T>]| {
         if !publishes_here {
@@ -489,18 +515,26 @@ mod web {
         fn js_message_str(e: u32, out: usize) -> u32 =
             "(e, o) => { const d = G.get(e).data; if (typeof d !== 'string') return 0; \
                G.retStr(d, o); return 1; }";
-        // `navigator.locks.request(name, cb)`. The lock callback is wrapped
-        // in JS so it can RETURN a never-resolving Promise — that is what
-        // holds the lock until the tab closes; the Rust callback itself
-        // returns nothing. 0 (no-op) without a window or the Web Locks API.
+        // `navigator.locks.request(name, { signal }, cb)` → a control object
+        // (0, a no-op, without a window or the Web Locks API). The lock
+        // callback is wrapped in JS so it can RETURN a never-resolving
+        // Promise — that is what holds the lock until the tab closes; the
+        // Rust callback itself returns nothing. `withdraw()` aborts a
+        // still-queued request and makes a racing grant return at once
+        // (releasing the lock) without calling into Rust.
         #[catch]
         fn js_request_lock(p: usize, l: usize, f: u32) -> u32 =
             "(p, l, f) => { if (typeof window === 'undefined') return 0; \
                const locks = window.navigator.locks; \
                if (locks == null || typeof locks.request !== 'function') return 0; \
-               const cb = G.get(f); \
-               locks.request(G.str(p, l), (lock) => { cb(lock); return new Promise(() => {}); }); \
-               return 1; }";
+               const cb = G.get(f); const ac = new AbortController(); \
+               const ctl = { granted: false, withdrawn: false, \
+                 withdraw() { this.withdrawn = true; if (!this.granted) ac.abort(); } }; \
+               locks.request(G.str(p, l), { signal: ac.signal }, (lock) => { \
+                 if (ctl.withdrawn) return; ctl.granted = true; cb(lock); \
+                 return new Promise(() => {}); }).catch(() => {}); \
+               return G.add(ctl); }";
+        fn js_withdraw_lock(c: u32) = "(c) => { G.get(c).withdraw(); }";
     }
 
     /// A `BroadcastChannel` wrapper. The message callback is retained in the
@@ -552,14 +586,41 @@ mod web {
     /// named lock; `on_acquire` fires when this tab becomes leader (the
     /// initial holder, or a promotion when the previous leader's tab
     /// closes). The lock is held until the tab closes (the callback returns
-    /// a never-resolving promise). A no-op where the browser lacks the Web
-    /// Locks API (no leader election).
-    pub(super) fn request_leadership(name: &str, on_acquire: impl FnOnce() + 'static) {
-        // The lock callback: announce acquisition. Its JS wrapper (in
-        // `js_request_lock`) returns the never-resolving Promise.
-        let cb = Closure::once_into_js(move |_lock: JsValue| on_acquire());
+    /// a never-resolving promise). `None` — no leader election — where the
+    /// browser lacks the Web Locks API.
+    ///
+    /// Dropping the returned [`LeaderRequest`] withdraws the request while
+    /// it is still queued; once granted it changes nothing (the lock stays
+    /// held — see [`LeaderRequest`]).
+    pub(super) fn request_leadership(
+        name: &str,
+        on_acquire: impl FnOnce() + 'static,
+    ) -> Option<LeaderRequest> {
+        let cb = Closure::once(move |_lock: JsValue| on_acquire());
         let (p, l) = string::abi(name);
-        let _ = unsafe { js_request_lock(p, l, cb.raw()) };
+        match unsafe { js_request_lock(p, l, cb.as_js().raw()) } {
+            // SAFETY: a fresh `G.add` slot the snippet minted for us.
+            Ok(h) if h != 0 => Some(LeaderRequest { control: unsafe { JsValue::from_raw(h) }, _cb: cb }),
+            _ => None,
+        }
+    }
+
+    /// A Web Lock request this tab made. Drop withdraws it if it has not
+    /// been granted yet (an `AbortSignal` on the request), and makes a grant
+    /// that races the drop a no-op. A GRANTED lock is not released: the
+    /// leader's engine-owned partition outlives any one handle, and
+    /// releasing would let a second tab start writing the same storage.
+    pub(super) struct LeaderRequest {
+        control: JsValue,
+        _cb: Closure,
+    }
+
+    impl Drop for LeaderRequest {
+        fn drop(&mut self) {
+            // Runs before `_cb` drops, so the wrapper's `withdrawn` check
+            // is set before the Rust callback is revoked.
+            unsafe { js_withdraw_lock(self.control.raw()) }
+        }
     }
 
     #[cfg(test)]
@@ -624,13 +685,124 @@ mod web {
             assert_eq!(n, Some(0.0), "a message after drop reached a dead handler: {joined:?}");
         }
 
+        // ---- a follower partition's lifetime ----------------------------
+
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        struct Item {
+            text: String,
+        }
+
+        impl crate::Merge for Item {
+            fn merge(_: crate::MergeCtx<'_, Self>) -> crate::Resolution<Self> {
+                crate::Resolution::TakeIncoming
+            }
+        }
+
+        /// A follower never reaches its transport; a call would hang.
+        struct Unreached;
+
+        impl crate::Transport<Item> for Unreached {
+            fn pull(
+                &self,
+                _: crate::PullRequest,
+            ) -> crate::TransportFuture<'_, crate::PullResponse<Item>> {
+                Box::pin(std::future::pending())
+            }
+            fn push(
+                &self,
+                _: crate::PushRequest<Item>,
+            ) -> crate::TransportFuture<'_, crate::PushResponse<Item>> {
+                Box::pin(std::future::pending())
+            }
+        }
+
+        /// A leader's `State` broadcast of `texts`, as another tab sends it.
+        fn state_msg(texts: &[&str]) -> String {
+            let entries: Vec<crate::Entry<Item>> = texts
+                .iter()
+                .map(|t| crate::Entry {
+                    id: crate::Id(t.to_string()),
+                    value: Item { text: t.to_string() },
+                    status: crate::EntryStatus::Synced,
+                })
+                .collect();
+            let msg = super::super::CoordMsg::State {
+                entries: serde_json::to_string(&entries).unwrap(),
+            };
+            serde_json::to_string(&msg).unwrap()
+        }
+
+        /// Queued requests for the named lock (`navigator.locks.query()`).
+        async fn pending_lock_requests(name: &str) -> f64 {
+            let p = eval(&format!(
+                "return navigator.locks.query().then((s) => \
+                   s.pending.filter((r) => r.name === '{name}').length);"
+            ));
+            JsFuture::new(&p).await.unwrap().as_f64().unwrap()
+        }
+
+        /// Regression: `SharedInner` owned the `TabBus` whose closure held an
+        /// `Rc` back to it (and the lock callback held another), so a dropped
+        /// follower partition was never freed and kept handling every
+        /// cross-tab message. Dropping the last handle must (a) free the
+        /// inner, (b) stop handling messages, and (c) withdraw the queued
+        /// leadership request.
+        #[wasm_bindgen_test]
+        async fn regression_dropped_follower_is_freed_and_stops_handling() {
+            use runtime_core::__World as World;
+
+            const NAME: &str = "leak-test";
+            // Another "tab" holds leadership, so this partition stays a
+            // follower with its lock request queued.
+            eval("navigator.locks.request('sync-leader:leak-test', () => new Promise(() => {}));");
+            settle().await;
+
+            let world = World::new();
+            let engine = crate::SyncEngine::with_kv(
+                std::sync::Arc::new(storage::MemoryStorage::new()),
+                "device-follower",
+            );
+            let partition = world.enter(|| {
+                super::super::SharedPartition::<Item>::open(engine, NAME, Rc::new(Unreached))
+            });
+            let entries = partition.entries();
+            let inner = Rc::downgrade(&partition.inner);
+            let leader = TabBus::new(&format!("sync-coord:{NAME}"), |_| {});
+            settle().await;
+            assert_eq!(pending_lock_requests("sync-leader:leak-test").await, 1.0);
+
+            // While alive, the follower mirrors the leader's broadcast.
+            leader.post(&state_msg(&["a"]));
+            settle().await;
+            world.flush();
+            assert_eq!(entries.get().len(), 1, "a live follower mirrors state");
+
+            drop(partition);
+            // (a) Nothing else holds the inner.
+            assert!(inner.upgrade().is_none(), "the dropped partition's inner is still alive");
+            // (c) The queued Web Lock request was withdrawn.
+            settle().await;
+            assert_eq!(pending_lock_requests("sync-leader:leak-test").await, 0.0);
+
+            // (b) A later broadcast is not handled (and throws nowhere).
+            eval("globalThis.__errs = []; globalThis.__spy = (e) => __errs.push(e.message); \
+                  window.addEventListener('error', __spy);");
+            leader.post(&state_msg(&["a", "b"]));
+            settle().await;
+            world.flush();
+            eval("window.removeEventListener('error', __spy);");
+            assert_eq!(entries.get().len(), 1, "a dropped follower still handled a broadcast");
+            let errs = JsValue::global().get("__errs").unwrap().get("length").unwrap().as_f64();
+            assert_eq!(errs, Some(0.0));
+        }
+
         #[wasm_bindgen_test]
         async fn the_first_requester_acquires_the_lock() {
             let acquired = Rc::new(RefCell::new(0));
             let (a1, a2) = (acquired.clone(), acquired.clone());
-            request_leadership("sync-test-lock", move || *a1.borrow_mut() += 1);
+            let _r1 = request_leadership("sync-test-lock", move || *a1.borrow_mut() += 1);
             // Same name: queued behind the held (never-released) lock.
-            request_leadership("sync-test-lock", move || *a2.borrow_mut() += 1);
+            let _r2 = request_leadership("sync-test-lock", move || *a2.borrow_mut() += 1);
             // The lock manager answers over IPC; give it up to ~2 s.
             for _ in 0..40 {
                 if *acquired.borrow() != 0 {
