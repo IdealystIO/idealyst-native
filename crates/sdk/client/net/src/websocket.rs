@@ -88,8 +88,17 @@ pub struct WebSocket {
 }
 
 impl WebSocket {
-    /// Open a connection to `url` (`ws://…`; `wss://` once the TLS feature
-    /// lands). Resolves once the handshake completes.
+    /// Open a connection to `url` and resolve once the handshake
+    /// completes.
+    ///
+    /// `ws://` works on every target, and `wss://` on web, iOS, macOS,
+    /// desktop and terminal. **Android is `ws://` only:** its native arm is
+    /// tungstenite with no TLS stack (see `Cargo.toml` for why), so a
+    /// `wss://` URL — a presigned AWS Transcribe URL, say — fails here with
+    /// [`Error::InvalidUrl`] ("TLS support not compiled in") rather than
+    /// connecting. The planned fix is an OkHttp `WebSocket` arm through
+    /// JNI, which also brings the OS proxy and certificate store; tracked
+    /// in `docs/web-platform-coverage.md` under open gaps.
     pub async fn connect(url: &str) -> Result<WebSocket, Error> {
         Ok(WebSocket {
             inner: imp::connect(url).await?,
@@ -319,7 +328,10 @@ mod imp {
         // A locally-initiated close sends a close frame with no status
         // code, which is what a browser reports for it too (1005).
         let local_close = || WsClose::new(WsClose::NO_STATUS, "");
-        // Blocking handshake.
+        // Blocking handshake. On Android tungstenite is built without TLS,
+        // so a `wss://` URL fails right here with `Url(TlsFeatureNotEnabled)`
+        // → `Error::InvalidUrl` — the known Android gap documented on
+        // `WebSocket::connect`, not a transport fault.
         let mut socket = match tungstenite::connect(&url) {
             Ok((socket, _resp)) => socket,
             Err(e) => {
