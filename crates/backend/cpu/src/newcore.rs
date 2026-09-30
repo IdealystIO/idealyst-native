@@ -1130,6 +1130,7 @@ impl caps::StyleOps for CpuBackend {
             }
             data.border_widths = bw;
             data.border_colors = bc;
+            data.border_style = style.border_style.unwrap_or_default();
             data.corner_radii = radii;
             data.font_size_px = font_size_px;
             data.static_translate_x = static_tx;

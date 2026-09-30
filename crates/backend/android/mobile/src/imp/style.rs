@@ -419,7 +419,14 @@ pub(crate) fn apply_rules(
         || rules.border_bottom_right_radius.is_some();
     let has_gradient = rules.background_gradient.is_some();
 
-    if has_border || has_radius || has_gradient {
+    // `state.border_drawable` keeps a view on the drawable path for the
+    // one apply that removes its last border — see `needs_drawable_path`.
+    if crate::border_dash_policy::needs_drawable_path(
+        has_border,
+        has_radius,
+        has_gradient,
+        state.border_drawable.is_some(),
+    ) {
         let _t = crate::phase_timer::PhaseTimer::start("apply_drawable_path");
         apply_drawable_path(env, node, state, rules);
     } else if let Some(c) = rules.background.as_ref().map(|t| t.resolve()) {
@@ -1054,6 +1061,9 @@ fn apply_drawable_path(
                         &[JValue::Object(&g.as_obj())],
                     );
                     state.border_drawable = Some(g.clone());
+                    // A fresh drawable starts solid; force the style
+                    // push below even if the rule did not change.
+                    state.last_border_style = None;
                     g
                 }
             };
@@ -1108,11 +1118,36 @@ fn apply_drawable_path(
             // All four sides cleared and we previously had borders —
             // detach the foreground so the view doesn't keep
             // referencing the drawable (and the GC can collect it).
+            // Its dash style goes with it: the next border gets a new
+            // drawable and a fresh style push.
+            cancel_animator(env, state.anim_border.take());
+            state.last_border_style = None;
             let _ = env.call_method(
                 &view,
                 "setForeground",
                 "(Landroid/graphics/drawable/Drawable;)V",
                 &[JValue::Object(&JObject::null())],
+            );
+        }
+    }
+
+    // --- Line pattern (`border_style`). Pushed separately from the
+    //     widths/colours above because it can change on its own
+    //     (dashed ↔ solid at the same width), which `state_changed`
+    //     does not see. The drawable fits the dash to its live bounds
+    //     at draw time — see `border_dash_policy` for why the fitting
+    //     is not done here. Switching back to solid sends
+    //     `STYLE_SOLID`, which drops the drawable's path effect, so no
+    //     stale dash survives the reapply.
+    if let Some(border_drawable) = state.border_drawable.clone() {
+        let want = rules.border_style.unwrap_or_default();
+        if state.last_border_style != Some(want) {
+            state.last_border_style = Some(want);
+            let _ = env.call_method(
+                border_drawable.as_obj(),
+                "setBorderStyle",
+                "(I)V",
+                &[JValue::Int(crate::border_dash_policy::style_code(Some(want)))],
             );
         }
     }

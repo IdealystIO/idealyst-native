@@ -102,6 +102,11 @@ object Animators {
      * allow different timings per side) get collapsed to a single
      * timing at the Rust caller — same simplification iOS does by
      * snap-transitioning borders.
+     *
+     * Dashed / dotted borders need nothing extra here: every tick's
+     * `update` marks the drawable's geometry dirty, so the next draw
+     * re-fits the dash pattern to the interpolated width (dash lengths
+     * are multiples of the width) instead of stretching a stale one.
      */
     @JvmStatic
     fun animateBorder(

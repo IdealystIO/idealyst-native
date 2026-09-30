@@ -246,6 +246,11 @@ pub(crate) struct NodeAnim {
     /// Running ValueAnimator driving per-side border interpolation.
     /// Cancelled + restarted on each transitionable border change.
     pub(crate) anim_border: Option<GlobalRef>,
+    /// Line pattern last pushed to `border_drawable` via
+    /// `setBorderStyle`. `None` = nothing pushed to the current
+    /// drawable yet (reset whenever the drawable is created or
+    /// detached), so the first apply always sends it.
+    pub(crate) last_border_style: Option<runtime_shared::BorderStyle>,
 
     /// Per-stop sRGB colors for the node's `background_gradient`.
     /// Stashed by `apply_gradient_to_drawable` so the per-frame

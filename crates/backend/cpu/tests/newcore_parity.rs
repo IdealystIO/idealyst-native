@@ -700,3 +700,96 @@ fn newcore_set_viewport_forwards_into_world() {
     );
     app.stop();
 }
+
+// ===========================================================================
+// Patterned borders (dashed / dotted)
+// ===========================================================================
+//
+// No frozen golden exists for these — the old core never drew a pattern —
+// so they assert the pattern's structure on the real framebuffer instead.
+
+/// A 60×30 box at the origin with a uniform 2px white border in `style`.
+fn patterned_border_frame(style: Option<runtime_shared::BorderStyle>) -> Vec<u8> {
+    fn root_rules() -> StyleRules {
+        sized(W as f32, H as f32, "#000000")
+    }
+    let boxed = rules(|s| {
+        *s = sized(60.0, 30.0, "#000000");
+        s.border_top_width = Some(Tokenized::Literal(2.0));
+        s.border_right_width = Some(Tokenized::Literal(2.0));
+        s.border_bottom_width = Some(Tokenized::Literal(2.0));
+        s.border_left_width = Some(Tokenized::Literal(2.0));
+        for c in [
+            &mut s.border_top_color,
+            &mut s.border_right_color,
+            &mut s.border_bottom_color,
+            &mut s.border_left_color,
+        ] {
+            *c = Some(Tokenized::Literal(Color("#ffffff".into())));
+        }
+        s.border_style = style;
+    });
+    render_new(move || {
+        use runtime_vocabulary::builders::view;
+        view().style(root_rules()).child(view().style(boxed)).build()
+    })
+}
+
+fn inked(pixels: &[u8], x: u32, y: u32) -> bool {
+    let i = ((y * W + x) * 4) as usize;
+    pixels[i..i + 3] == [255, 255, 255]
+}
+
+/// The top edge's row 0, x in 0..60, as ink flags.
+fn top_edge(pixels: &[u8]) -> Vec<bool> {
+    (0..60).map(|x| inked(pixels, x, 0)).collect()
+}
+
+/// Lengths of the maximal inked runs in `row`.
+fn ink_runs(row: &[bool]) -> Vec<usize> {
+    row.split(|on| !on).filter(|r| !r.is_empty()).map(<[bool]>::len).collect()
+}
+
+/// Bug: `border_style: Dashed` was ignored by the CPU rasterizer and the
+/// box painted the same unbroken bars as a solid border. A dashed edge
+/// must have gaps where the solid edge is fully inked.
+#[test]
+fn regression_cpu_dashed_border_has_gaps() {
+    let solid = patterned_border_frame(None);
+    assert!(top_edge(&solid).iter().all(|&on| on), "solid top edge is fully inked");
+
+    let dashed = patterned_border_frame(Some(runtime_shared::BorderStyle::Dashed));
+    let row = top_edge(&dashed);
+    assert!(row.iter().any(|&on| on), "dashed edge has ink");
+    assert!(row.iter().any(|&on| !on), "dashed edge has gaps: {row:?}");
+    // 2px border → 6px dashes (`border_dash::DASH_ON` × width), and the
+    // open fit starts AND ends the side on a dash.
+    let runs = ink_runs(&row);
+    assert!(runs.iter().all(|&n| n == 6), "every dash is 6px: {runs:?}");
+    assert!(row[0] && row[59], "the side starts and ends on a dash: {row:?}");
+    // Dashes are the border's full thickness and no thicker.
+    assert!(inked(&dashed, 4, 1) && !inked(&dashed, 4, 2), "dash is 2px thick");
+    // The left side is dashed too (column 0).
+    let col: Vec<bool> = (0..30).map(|y| inked(&dashed, 0, y)).collect();
+    assert!(col.iter().any(|&on| !on), "left edge has gaps: {col:?}");
+}
+
+/// Dotted: 2px dots (one border-width square at this size) with gaps.
+#[test]
+fn regression_cpu_dotted_border_is_dots() {
+    let dotted = patterned_border_frame(Some(runtime_shared::BorderStyle::Dotted));
+    let row = top_edge(&dotted);
+    let runs = ink_runs(&row);
+    assert!(runs.len() > 10, "a 60px side holds many dots: {runs:?}");
+    assert!(runs.iter().all(|&n| n == 2), "every dot is one border-width across: {runs:?}");
+    assert!(row.iter().any(|&on| !on), "dots are separated: {row:?}");
+}
+
+/// `Some(Solid)` is exactly the default border — the patterned path is
+/// never taken for it, so solid frames stay byte-identical.
+#[test]
+fn explicit_solid_border_style_paints_the_default_border() {
+    let default = patterned_border_frame(None);
+    let solid = patterned_border_frame(Some(runtime_shared::BorderStyle::Solid));
+    assert_pixels_identical("explicit_solid_border", &default, &solid);
+}

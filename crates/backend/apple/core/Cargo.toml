@@ -34,6 +34,13 @@ async-driver = ["runtime-shared/async-driver"]
 name = "shadow_layer_calayer"
 harness = false
 
+# Live-CALayer coverage for dashed/dotted borders (`border_dash_layer`): real
+# CAShapeLayers rasterized through `renderInContext:`. `harness = false` for the
+# same main-thread reason as above.
+[[test]]
+name = "border_dash_calayer"
+harness = false
+
 [dependencies]
 # `embed-font-bytes`: CoreText registers fonts from their raw bytes
 # (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the

@@ -196,7 +196,7 @@ Every `stylesheet!` rule body sets fields of `runtime_core::StyleRules`. All fie
 
 **Padding / margin** (per-side; shorthands `padding`, `padding_horizontal`, `padding_vertical` etc. fan out in the macro): `padding_top`, `padding_right`, `padding_bottom`, `padding_left`; `margin_top`, `margin_right`, `margin_bottom`, `margin_left`.
 
-**Border** (shorthands `border_radius`, `border_width`, `border_color`): `border_top_left_radius`, `border_top_right_radius`, `border_bottom_left_radius`, `border_bottom_right_radius`; `border_top_width`/`_right_`/`_bottom_`/`_left_` (f32); `border_top_color`/`_right_`/`_bottom_`/`_left_`.
+**Border** (shorthands `border_radius`, `border_width`, `border_color`): `border_top_left_radius`, `border_top_right_radius`, `border_bottom_left_radius`, `border_bottom_right_radius`; `border_top_width`/`_right_`/`_bottom_`/`_left_` (f32); `border_top_color`/`_right_`/`_bottom_`/`_left_`; `border_style` (`BorderStyle`, one value for all four sides — widths and colours stay per-side).
 
 **Position**: `position` (`Position::{Relative, Absolute, Sticky}`), `top`, `right`, `bottom`, `left`.
 
@@ -228,5 +228,6 @@ Key enums (defaults marked):
 - `Cursor`: **Auto**, Default, Pointer, Text, Wait, Progress, Help, NotAllowed, Move, Grab, Grabbing, Crosshair, ColResize, RowResize, EwResize, NsResize.
 - `UserSelect`: **Auto**, None, Text, All.
 - `PointerEvents`: **Auto**, None.
+- `BorderStyle`: **Solid**, Dashed, Dotted. Draws nothing until a side has a width. Dash and dot lengths scale with the border width (a dash is 3× the width, a dot is one width round) and are the same on every backend.
 - `Easing` (transitions): Linear, **Ease**, EaseIn, EaseOut, EaseInOut, CubicBezier(x1, y1, x2, y2).
 - `Transform`: TranslateX(Length), TranslateY(Length), Scale(f32), ScaleXY { x, y }, Rotate(f32 deg), SkewX(f32), SkewY(f32).

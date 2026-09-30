@@ -114,6 +114,10 @@ fn read_element(el: &Element) -> NativeNode {
         if bw > 0.0 {
             node.set(keys::BORDER_WIDTH, Some(NativeValue::Length(bw)));
             node.set(keys::BORDER_COLOR, parse_color(&get("border-top-color")).map(NativeValue::Color));
+            let style = get("border-top-style");
+            if !style.is_empty() {
+                node.set(keys::BORDER_STYLE, Some(NativeValue::Text(style)));
+            }
         }
     }
 

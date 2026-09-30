@@ -11,6 +11,12 @@
 //!     the `TabButton`/`SegmentedControl` active marker) can't be a
 //!     uniform layer stroke, so each non-zero side is a thin `NSView`
 //!     bar pinned to that edge.
+//!   * A **dashed / dotted** border (`border_style`) fits neither — a
+//!     CALayer stroke can't dash and a bar is a filled rect — so it is
+//!     stroked by `CAShapeLayer`s (one loop, or one line per side) through
+//!     the shared `backend_apple_core::border_dash_layer`. Unlike the bars
+//!     it DOES need a layout-pass re-trace (`sync_border_dash`): a shape
+//!     layer's path is fixed geometry, not an Auto Layout constraint.
 //!
 //! ## Why per-side bars are `NSView` + Auto Layout, not CALayer sublayers
 //!
@@ -35,6 +41,8 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGRect, CGFloat, MainThreadMarker, NSObject, NSString};
+use backend_apple_core::border::{route_border, BorderRoute};
+use backend_apple_core::border_dash_layer::{self, Piece};
 use runtime_shared::{Color, StyleRules};
 
 use super::{color_to_nscolor, CGColorRef};
@@ -67,7 +75,9 @@ fn is_border_id(s: &str) -> bool {
 
 /// Apply the four CSS border sides to `view` (whose backing `layer` the
 /// caller has already created). Routes uniform→CALayer stroke,
-/// asymmetric→per-side `NSView` bars, none→clear — exactly the iOS shape.
+/// asymmetric→per-side `NSView` bars, dashed/dotted→`CAShapeLayer` strokes
+/// (`backend_apple_core::border_dash_layer`), none→clear — exactly the iOS
+/// shape, via the shared `route_border` decision.
 pub(crate) fn apply_border(view: &NSView, layer: &NSObject, style: &StyleRules) {
     let widths = [
         style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
@@ -75,19 +85,6 @@ pub(crate) fn apply_border(view: &NSView, layer: &NSObject, style: &StyleRules) 
         style.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
         style.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
     ];
-
-    // Tear down any previous per-side bars so reapplies (state overlays,
-    // theme swap) replace rather than stack them.
-    remove_existing_bars(view, layer);
-
-    let any_width = widths.iter().any(|w| *w > 0.0);
-    if !any_width {
-        // No border requested — clear any CALayer stroke a prior uniform
-        // apply (or a direct-layer SDK call) may have left.
-        let _: () = unsafe { msg_send![layer, setBorderWidth: 0.0_f64] };
-        return;
-    }
-
     let colors: [Option<Color>; 4] = [
         style.border_top_color.as_ref().map(|t| t.resolve()),
         style.border_right_color.as_ref().map(|t| t.resolve()),
@@ -95,28 +92,90 @@ pub(crate) fn apply_border(view: &NSView, layer: &NSObject, style: &StyleRules) 
         style.border_left_color.as_ref().map(|t| t.resolve()),
     ];
 
-    if let Some((width, color)) = backend_apple_core::border::uniform_border(widths, &colors) {
-        // Uniform → CALayer stroke (follows cornerRadius cleanly).
-        let ns_color = color_to_nscolor(&color);
-        let cg: CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
-        if !cg.0.is_null() {
-            let _: () = unsafe { msg_send![layer, setBorderColor: cg] };
+    // Tear down any previous per-side bars so reapplies (state overlays,
+    // theme swap) replace rather than stack them.
+    remove_existing_bars(view, layer);
+
+    let route = route_border(style.border_style, widths, &colors);
+    // Each route owns exactly one mechanism and clears the others, so a
+    // reapply that flips dashed ↔ solid ↔ none leaves no ghost stroke: the
+    // CALayer stroke is zeroed unless the route is `Layer`, the dash host is
+    // removed unless the route is patterned, and the bars went above.
+    if !matches!(route, BorderRoute::DashedLoop { .. } | BorderRoute::DashedSides { .. }) {
+        border_dash_layer::remove(layer);
+    }
+    // The dash path is traced in the backing layer's own coordinates, whose
+    // y-direction follows the view's `isFlipped` (see `shadow`'s module doc).
+    // The framework's containers are flipped (y-down, like UIKit); a native
+    // control is not, and gets the path mirrored so its TOP edge is still
+    // the visual top.
+    let y_down: bool = unsafe { msg_send![view, isFlipped] };
+    match route {
+        BorderRoute::None => {
+            // No border requested — clear any CALayer stroke a prior uniform
+            // apply (or a direct-layer SDK call) may have left.
+            let _: () = unsafe { msg_send![layer, setBorderWidth: 0.0_f64] };
         }
-        let _: () = unsafe { msg_send![layer, setBorderWidth: width as f64] };
-    } else {
-        // Asymmetric → per-side bars. Clear any uniform stroke a prior
-        // apply left, then paint each non-zero side.
-        let _: () = unsafe { msg_send![layer, setBorderWidth: 0.0_f64] };
-        let fallback_color = colors.iter().find_map(|c| c.clone());
-        for (idx, &w) in widths.iter().enumerate() {
-            if w <= 0.0 {
-                continue;
+        BorderRoute::Layer { width, color } => {
+            // Uniform → CALayer stroke (follows cornerRadius cleanly).
+            let ns_color = color_to_nscolor(&color);
+            let cg: CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
+            if !cg.0.is_null() {
+                let _: () = unsafe { msg_send![layer, setBorderColor: cg] };
             }
-            let Some(color) = colors[idx].clone().or_else(|| fallback_color.clone()) else {
-                continue;
-            };
-            install_border_side(view, layer, idx, w as CGFloat, &color);
+            let _: () = unsafe { msg_send![layer, setBorderWidth: width as f64] };
         }
+        BorderRoute::Bars(sides) => {
+            // Asymmetric → per-side bars. Clear any uniform stroke a prior
+            // apply left, then paint each non-zero side.
+            let _: () = unsafe { msg_send![layer, setBorderWidth: 0.0_f64] };
+            for (idx, side) in sides.iter().enumerate() {
+                let Some((w, color)) = side else { continue };
+                install_border_side(view, layer, idx, *w as CGFloat, color);
+            }
+        }
+        BorderRoute::DashedLoop { style: pattern, width, color } => {
+            // The patterned loop replaces the CALayer stroke — a leftover
+            // `borderWidth` would paint a solid border under the dashes.
+            let _: () = unsafe { msg_send![layer, setBorderWidth: 0.0_f64] };
+            let ns_color = color_to_nscolor(&color);
+            let cg: CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
+            // Traced now against live bounds + the `cornerRadius` resolved
+            // just before this call; a still-0×0 view is re-traced by the
+            // layout pass (`sync_border_dash`).
+            border_dash_layer::install(layer, pattern, &[(Piece::Loop, width, cg)], y_down);
+        }
+        BorderRoute::DashedSides { style: pattern, sides } => {
+            let _: () = unsafe { msg_send![layer, setBorderWidth: 0.0_f64] };
+            // Keep the NSColors alive until `install` has handed their
+            // CGColors to the shape layers (which retain them): a `CGColor`
+            // borrowed from an NSColor is only valid while the NSColor lives.
+            let ns_colors: Vec<(usize, f32, Retained<objc2_app_kit::NSColor>)> = sides
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.as_ref().map(|(w, c)| (i, *w, color_to_nscolor(c))))
+                .collect();
+            let pieces: Vec<(Piece, f32, CGColorRef)> = ns_colors
+                .iter()
+                .map(|(i, w, ns)| {
+                    let cg: CGColorRef = unsafe { msg_send![&**ns, CGColor] };
+                    (Piece::Side(*i), *w, cg)
+                })
+                .collect();
+            border_dash_layer::install(layer, pattern, &pieces, y_down);
+        }
+    }
+}
+
+/// Re-trace a dashed / dotted border against the view's current bounds and
+/// corner radius. Call from the post-frame hook AFTER `sync_corner_radius`
+/// (the `shadow::sync_shadow_path` slot) so a percent / pill radius is traced
+/// at its final value; the dash pattern is fitted to the perimeter, so it is
+/// re-fitted here too. No-op for a view without one (or without a layer).
+pub(crate) fn sync_border_dash(view: &NSView) {
+    let ptr: *mut NSObject = unsafe { msg_send![view, layer] };
+    if !ptr.is_null() {
+        border_dash_layer::sync(unsafe { &*ptr });
     }
 }
 

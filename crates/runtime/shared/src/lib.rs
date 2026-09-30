@@ -113,6 +113,7 @@ pub mod time;
 pub mod sources;
 #[doc(hidden)]
 pub mod sticky;
+pub mod border_dash;
 pub mod style;
 pub mod styled_text;
 pub mod text_defaults;
@@ -395,7 +396,7 @@ pub use style::{
     set_app_key_handler, take_pending_app_key_handler, EMPTY_ABSOLUTE_CLASS,
     PREMINT_FONT_INHERIT_CLASS,
     set_default_text_font, set_scrollbar_theme, take_pending_token_updates, update_tokens,
-    AlignContent, AlignItems, AlignSelf, Color, Cursor, Derive, DisplayKind, Easing, FlexDirection, FlexWrap,
+    AlignContent, AlignItems, AlignSelf, BorderStyle, Color, Cursor, Derive, DisplayKind, Easing, FlexDirection, FlexWrap,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, GridPlacement, TrackSize,
     IntoOverrideSource, IntoVariantSource, JustifyContent, Length, ObjectFit, RadialExtent, Overflow,
     OverscrollBehavior,

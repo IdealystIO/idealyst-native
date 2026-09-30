@@ -285,11 +285,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     color.a = color.a * fill_alpha;
 
     // Border ring: pixels within `border_width` of the outer edge
-    // get the border color blended in. `inner_d` is the SD against
-    // the inset rect; positive between the two = on the ring.
+    // get the border color blended in. Ring coverage = coverage of
+    // the outer shape (`d`) minus coverage of the shape inset by
+    // `border_width` (`d + border_width`), both with the same 1px AA
+    // ramp as `fill_alpha`. `d` is NEGATIVE inside — this used to be
+    // written with `-d`, which put the ring outside the quad and
+    // painted no border at all except slivers at rounded corners.
     if border_width > 0.0 {
-        let on_ring = clamp(0.5 - (-d - 0.0) / aa, 0.0, 1.0)
-                    - clamp(0.5 - (-d + border_width) / aa, 0.0, 1.0);
+        let on_ring = clamp(0.5 - d / aa, 0.0, 1.0)
+                    - clamp(0.5 - (d + border_width) / aa, 0.0, 1.0);
         let bw = in.border_color.a * on_ring;
         color = mix(color, vec4(in.border_color.rgb, 1.0), bw);
     }

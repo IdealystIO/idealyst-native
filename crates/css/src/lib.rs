@@ -1099,6 +1099,16 @@ pub fn cursor_css(v: runtime_shared::Cursor) -> &'static str {
     }
 }
 
+/// CSS `border-style` keyword for a [`runtime_shared::BorderStyle`].
+pub fn border_style_css(v: runtime_shared::BorderStyle) -> &'static str {
+    use runtime_shared::BorderStyle;
+    match v {
+        BorderStyle::Solid => "solid",
+        BorderStyle::Dashed => "dashed",
+        BorderStyle::Dotted => "dotted",
+    }
+}
+
 /// CSS `user-select` keyword for a [`runtime_shared::UserSelect`].
 pub fn user_select_css(v: runtime_shared::UserSelect) -> &'static str {
     use runtime_shared::UserSelect;
@@ -1277,8 +1287,9 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         /// `Option<Tokenized<f32>>` px-suffixed → [`tokenized_px_f32_css`].
         Px(&'a Option<Tokenized<f32>>),
         /// Border width: px-suffixed value plus a paired
-        /// `border-<side>-style: solid` (second field is that property
-        /// name) so the browser actually paints the line.
+        /// `border-<side>-style` (second field is that property name) so
+        /// the browser actually paints the line — `solid` unless the rules
+        /// carry a `border_style`.
         PxSolid(&'a Option<Tokenized<f32>>, &'static str),
         /// Pre-resolved keyword (fieldless-enum properties).
         Kw(Option<&'static str>),
@@ -1341,6 +1352,20 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         None
     };
 
+    // Each side that sets a width also sets its `border-<side>-style`,
+    // so this keyword rides along with it. A rule that sets ONLY the
+    // pattern (a state overlay switching an existing border to dashed)
+    // has no width to ride on and emits the `border-style` shorthand.
+    let border_style_kw = border_style_css(rules.border_style.unwrap_or_default());
+    let sets_border_width = rules.border_top_width.is_some()
+        || rules.border_right_width.is_some()
+        || rules.border_bottom_width.is_some()
+        || rules.border_left_width.is_some();
+    let lone_border_style = rules
+        .border_style
+        .filter(|_| !sets_border_width)
+        .map(border_style_css);
+
     // Every remaining property in emission order. `Typeface`
     // family-names are quoted so the CSS engine never confuses them with
     // generic keywords; `System` strings pass through verbatim (they
@@ -1393,6 +1418,7 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         ("border-right-color", V::Col(&rules.border_right_color)),
         ("border-bottom-color", V::Col(&rules.border_bottom_color)),
         ("border-left-color", V::Col(&rules.border_left_color)),
+        ("border-style", V::Kw(lone_border_style)),
         ("position", V::Kw(rules.position.map(position_css))),
         ("top", V::Len(&rules.top)),
         ("right", V::Len(&rules.right)),
@@ -1454,7 +1480,7 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
             V::PxSolid(t, style_prop) => {
                 if let Some(t) = t {
                     push_decl(&mut out, name, &tokenized_border_width_css(t));
-                    push_decl(&mut out, style_prop, "solid");
+                    push_decl(&mut out, style_prop, border_style_kw);
                 }
             }
             V::Kw(v) => {
@@ -2046,6 +2072,45 @@ mod tests {
         });
         assert!(css.contains("box-shadow: 1px 2px 3px #000000"), "got: {css}");
         assert!(css.contains("text-shadow: 4px 5px 6px #111111"), "got: {css}");
+    }
+
+    // The gap this closes: a dashed border was unexpressible — every
+    // width emitted a hard-coded `border-<side>-style: solid`. The pattern
+    // has to reach each side that sets a width, and an unset
+    // `border_style` must keep the old `solid` output byte for byte.
+    #[test]
+    fn regression_dashed_border_reaches_every_bordered_side() {
+        use runtime_shared::{BorderStyle, StyleRules, Tokenized};
+        let css = rules_to_css(&StyleRules {
+            border_top_width: Some(Tokenized::Literal(1.0)),
+            border_left_width: Some(Tokenized::Literal(1.0)),
+            border_style: Some(BorderStyle::Dashed),
+            ..Default::default()
+        });
+        assert!(css.contains("border-top-style: dashed"), "got: {css}");
+        assert!(css.contains("border-left-style: dashed"), "got: {css}");
+        assert!(!css.contains("solid"), "got: {css}");
+        assert!(!css.contains("border-right-style"), "unbordered sides stay unset: {css}");
+        assert!(!css.contains("border-style:"), "no shorthand when widths carry it: {css}");
+
+        let solid = rules_to_css(&StyleRules {
+            border_top_width: Some(Tokenized::Literal(1.0)),
+            ..Default::default()
+        });
+        assert!(solid.contains("border-top-style: solid"), "got: {solid}");
+    }
+
+    // A state overlay that only switches the pattern carries no width,
+    // so it must still say something the browser applies.
+    #[test]
+    fn border_style_without_a_width_emits_the_shorthand() {
+        use runtime_shared::{BorderStyle, StyleRules};
+        let css = rules_to_css(&StyleRules {
+            border_style: Some(BorderStyle::Dotted),
+            ..Default::default()
+        });
+        assert!(css.contains("border-style: dotted"), "got: {css}");
+        assert!(!rules_to_css(&StyleRules::default()).contains("border-style"));
     }
 
     #[test]

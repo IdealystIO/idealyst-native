@@ -49,6 +49,10 @@ use crate::gradient::{self, GradientPaint};
 pub struct BorderPaint {
     pub widths: [f32; 4],
     pub colors: [[f32; 4]; 4],
+    /// Line pattern for every side. `Solid` is drawn by
+    /// `append_border` exactly as before; dashed / dotted by
+    /// [`crate::border_stroke`].
+    pub style: runtime_shared::BorderStyle,
 }
 
 impl BorderPaint {
@@ -155,8 +159,12 @@ pub(crate) fn paint_box(
         }
     }
     content(snapshot);
-    if let Some(b) = &model.border {
-        if b.any() {
+    if let Some(b) = model.border.as_ref().filter(|b| b.any()) {
+        if let Some(marks) = crate::border_stroke::plan(b, w, h, radius) {
+            // Dashed / dotted. `None` = solid, which stays on
+            // `append_border` below exactly as before.
+            append_patterned_border(snapshot, &marks, bounds);
+        } else {
             let colors = [
                 color::to_gdk(b.colors[0]),
                 color::to_gdk(b.colors[1]),
@@ -169,6 +177,85 @@ pub(crate) fn paint_box(
     if clips {
         snapshot.pop();
     }
+}
+
+/// Draw a dashed / dotted border's [`Mark`](crate::border_stroke::Mark)s,
+/// which are in the box's own space, onto `bounds`.
+fn append_patterned_border(
+    snapshot: &gtk4::Snapshot,
+    marks: &[crate::border_stroke::Mark],
+    bounds: &graphene::Rect,
+) {
+    use crate::border_stroke::Mark;
+    snapshot.save();
+    snapshot.translate(&graphene::Point::new(bounds.x(), bounds.y()));
+    for mark in marks {
+        match mark {
+            Mark::DashedLoop { path, array, phase, width, color } => {
+                let stroke = dashed_stroke(*width, array, *phase);
+                snapshot.append_stroke(&loop_path(path), &stroke, &color::to_gdk(*color));
+            }
+            Mark::DashedLine { from, to, array, phase, width, color } => {
+                let builder = gsk::PathBuilder::new();
+                builder.move_to(from.0, from.1);
+                builder.line_to(to.0, to.1);
+                let stroke = dashed_stroke(*width, array, *phase);
+                snapshot.append_stroke(&builder.to_path(), &stroke, &color::to_gdk(*color));
+            }
+            Mark::Dots { centres, radius, color } => {
+                let builder = gsk::PathBuilder::new();
+                for (x, y) in centres {
+                    builder.add_circle(&graphene::Point::new(*x, *y), *radius);
+                }
+                snapshot.append_fill(&builder.to_path(), gsk::FillRule::Winding, &color::to_gdk(*color));
+            }
+        }
+    }
+    snapshot.restore();
+}
+
+/// A butt-capped dashed stroke. Butt, not round: a dash's visible
+/// length must be exactly `array[0]` — a round or square cap would add
+/// half the line width at each end.
+fn dashed_stroke(width: f32, array: &[f32; 2], phase: f32) -> gsk::Stroke {
+    let stroke = gsk::Stroke::new(width);
+    stroke.set_line_cap(gsk::LineCap::Butt);
+    stroke.set_dash(array);
+    stroke.set_dash_offset(phase);
+    stroke
+}
+
+/// The border centreline as a GSK path, built by hand rather than with
+/// `PathBuilder::add_rounded_rect` so its START POINT is pinned to the
+/// one `border_dash::LoopPath` walks from (the left end of the top edge)
+/// and its direction to clockwise. The dash phase is measured from that
+/// point; if GSK chose a different start, every dash would sit shifted
+/// against the other backends'. Each corner is a conic with weight
+/// `cos 45° = 1/√2`, which is an exact quarter circle.
+fn loop_path(p: &runtime_shared::border_dash::LoopPath) -> gsk::Path {
+    const QUARTER: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    let [tl, tr, br, bl] = p.radii;
+    let (x0, y0, x1, y1) = (p.x, p.y, p.x + p.w, p.y + p.h);
+    let b = gsk::PathBuilder::new();
+    b.move_to(x0 + tl, y0);
+    b.line_to(x1 - tr, y0);
+    if tr > 0.0 {
+        b.conic_to(x1, y0, x1, y0 + tr, QUARTER);
+    }
+    b.line_to(x1, y1 - br);
+    if br > 0.0 {
+        b.conic_to(x1, y1, x1 - br, y1, QUARTER);
+    }
+    b.line_to(x0 + bl, y1);
+    if bl > 0.0 {
+        b.conic_to(x0, y1, x0, y1 - bl, QUARTER);
+    }
+    b.line_to(x0, y0 + tl);
+    if tl > 0.0 {
+        b.conic_to(x0, y0, x0 + tl, y0, QUARTER);
+    }
+    b.close();
+    b.to_path()
 }
 
 mod imp {
@@ -731,3 +818,77 @@ mod input_transparency_tests {
     }
 }
 
+
+/// Dashed / dotted borders rasterized by GSK itself (the Cairo renderer,
+/// offscreen). The planning in `border_stroke` is unit-tested without
+/// GTK; this proves the GSK calls it drives — `set_dash` / dash offset /
+/// butt caps, the hand-built loop path, the filled dots — put ink where
+/// the plan says and leave the gaps clear.
+///
+/// Not a `#[test]` of its own: GTK must be used from the ONE thread that
+/// ran `gtk::init` (a second thread's `gtk4::init` panics), and cargo
+/// gives every `#[test]` its own thread. So this is a section of
+/// `layout_tests::regression_gtk_layout_behaviors`, the crate's single
+/// live-GTK test, which calls [`check_gsk_patterned_borders`].
+#[cfg(test)]
+pub(crate) mod patterned_border_render_tests {
+    use super::*;
+    use runtime_shared::BorderStyle;
+
+    /// Paint a box with a red border of `width` / `style` and return each
+    /// pixel's alpha, row-major.
+    fn render(renderer: &gsk::Renderer, w: i32, h: i32, width: f32, style: BorderStyle) -> Vec<u8> {
+        let model = PaintModel {
+            border: Some(BorderPaint { widths: [width; 4], colors: [[1.0, 0.0, 0.0, 1.0]; 4], style }),
+            ..Default::default()
+        };
+        let snapshot = gtk4::Snapshot::new();
+        let bounds = graphene::Rect::new(0.0, 0.0, w as f32, h as f32);
+        paint_box(&snapshot, &model, &bounds, |_| {});
+        let node = snapshot.to_node().expect("a bordered box paints");
+        // Render exactly the box, so texture (0, 0) is the box's (0, 0).
+        let texture = renderer.render_texture(&node, Some(&bounds));
+        assert_eq!((texture.width(), texture.height()), (w, h));
+        let stride = w as usize * 4;
+        let mut bytes = vec![0u8; stride * h as usize];
+        // `download` writes CAIRO_FORMAT_ARGB32 — native-endian 0xAARRGGBB,
+        // so alpha is byte 3 of each pixel on little-endian.
+        texture.download(&mut bytes, stride);
+        bytes.chunks(4).map(|px| px[3]).collect()
+    }
+
+    fn alpha(px: &[u8], w: i32, x: i32, y: i32) -> u8 {
+        px[(y * w + x) as usize]
+    }
+
+    /// Call on the thread that ran `gtk::init`.
+    pub(crate) fn check_gsk_patterned_borders() {
+        let display = gtk4::gdk::Display::default().expect("gtk::init opened a display");
+        let renderer: gsk::Renderer = gsk::CairoRenderer::new().upcast();
+        renderer.realize_for_display(&display).expect("realize the Cairo renderer");
+
+        // Dashed, 60×30, 2px: centreline loop 2·(58 + 28) = 172 → 14 fitted
+        // dashes (period ≈ 12.29). The first is centred on (1, 1), so the
+        // top edge is inked on x ∈ [0, 4] and [10.3, 16.3], clear between.
+        let (w, h) = (60, 30);
+        let dashed = render(&renderer, w, h, 2.0, BorderStyle::Dashed);
+        assert!(alpha(&dashed, w, 13, 0) > 200, "inside the second dash");
+        assert!(alpha(&dashed, w, 2, 0) > 200, "inside the first dash");
+        assert!(alpha(&dashed, w, 7, 0) < 30, "the gap between them");
+        assert!(alpha(&dashed, w, 30, 15) < 30, "the interior stays clear");
+
+        // Solid is still `append_border`: the same gap pixel is inked.
+        let solid = render(&renderer, w, h, 2.0, BorderStyle::Solid);
+        assert!(alpha(&solid, w, 7, 0) > 200, "solid inks the gap pixel");
+
+        // Dotted, 60×40, 4px: loop 2·(56 + 36) = 184, period 8 → 23 dots
+        // centred on the top centreline (y = 2) at x = 2, 10, 18, …
+        let (w, h) = (60, 40);
+        let dotted = render(&renderer, w, h, 4.0, BorderStyle::Dotted);
+        assert!(alpha(&dotted, w, 9, 2) > 200 && alpha(&dotted, w, 10, 1) > 200, "dot at x = 10");
+        assert!(alpha(&dotted, w, 5, 2) < 30 && alpha(&dotted, w, 6, 2) < 30, "gap between dots");
+        assert!(alpha(&dotted, w, 8, 0) < 128, "round, not square: corner cut");
+
+        renderer.unrealize();
+    }
+}

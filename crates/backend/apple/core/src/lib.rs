@@ -112,6 +112,13 @@ pub mod implicit_animations;
 
 pub mod shadow_layer;
 
+/// The CALayer half of dashed / dotted borders: a `CAShapeLayer` host that
+/// strokes the [`border`] module's dash plans (`CALayer.borderWidth` cannot
+/// dash), its paint-order slot, and the per-layout re-trace. Shared verbatim by
+/// iOS and macOS, like [`shadow_layer`].
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod border_dash_layer;
+
 /// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
 /// hit-test overrides. NOT OS-gated — pure `runtime_shared` logic,
 /// host-testable, so both backends decline/allow hits identically

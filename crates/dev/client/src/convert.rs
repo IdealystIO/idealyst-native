@@ -302,8 +302,19 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
     s.cursor = w.cursor.map(wire_cursor);
     s.line_height = w.line_height.map(Tokenized::Literal);
     s.letter_spacing = w.letter_spacing.map(Tokenized::Literal);
+    s.border_style = w.border_style.map(wire_border_style);
 
     s
+}
+
+pub fn wire_border_style(b: wire::WireBorderStyle) -> runtime_shared::style::BorderStyle {
+    use runtime_shared::style::BorderStyle as B;
+    use wire::WireBorderStyle as W;
+    match b {
+        W::Solid => B::Solid,
+        W::Dashed => B::Dashed,
+        W::Dotted => B::Dotted,
+    }
 }
 
 pub fn wire_shadow(s: wire::WireShadow) -> runtime_shared::style::Shadow {
@@ -678,9 +689,11 @@ mod definition_tests {
             cursor: Some(wire::WireCursor::Pointer),
             line_height: Some(1.5),
             letter_spacing: Some(0.4),
+            border_style: Some(wire::WireBorderStyle::Dashed),
             ..Default::default()
         };
         let s = wire_style_to_rules(w);
+        assert_eq!(s.border_style, Some(runtime_shared::style::BorderStyle::Dashed));
 
         assert_eq!(s.border_top_width.map(|t| *t.value()), Some(2.0));
         assert_eq!(s.border_right_width.map(|t| *t.value()), Some(3.0));
@@ -740,5 +753,23 @@ mod definition_tests {
             "opacity":null,"font_weight":null,"font_family":null,"text_align":null}"#;
         let w: wire::WireStyleRules = serde_json::from_str(json).expect("v18 style decodes");
         assert!(w.cursor.is_none() && w.shadow.is_none() && w.border_top_width.is_none());
+        assert!(w.border_style.is_none());
+    }
+
+    /// A pattern a newer peer knows and this one doesn't draws solid —
+    /// what this peer would have drawn anyway — instead of failing the frame.
+    #[test]
+    fn an_unknown_border_style_decodes_as_solid() {
+        let b: wire::WireBorderStyle = serde_json::from_str("\"Double\"").unwrap();
+        assert_eq!(b, wire::WireBorderStyle::Solid);
+    }
+
+    #[test]
+    fn every_border_style_maps_to_its_twin() {
+        use runtime_shared::style::BorderStyle as B;
+        use wire::WireBorderStyle as W;
+        for (w, b) in [(W::Solid, B::Solid), (W::Dashed, B::Dashed), (W::Dotted, B::Dotted)] {
+            assert_eq!(wire_border_style(w), b, "{w:?} mapped wrong");
+        }
     }
 }

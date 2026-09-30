@@ -206,7 +206,14 @@ pub use payload_serde::{
 /// `flex_wrap`, `align_self`, `align_content`, the row/column gaps,
 /// text decoration and transform, `user_select`, `pointer_events` and
 /// `caret_color`. See `docs/hot-reload.md`.
-pub const PROTOCOL_VERSION: u32 = 19;
+///
+/// **Bumped to 20 for `border_style`.** Same shape as the v19 block: one
+/// `#[serde(default)]` field, so a v19 peer still decodes and draws the
+/// border solid. Without it a dashed border crossed the wire as a solid
+/// one — the exact "renders differently from `--local`" drift v19 closed.
+/// `WireBorderStyle` falls back to `Solid` for a pattern it hasn't
+/// learned, which is what an older peer draws anyway.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -1321,6 +1328,22 @@ pub struct WireStyleRules {
     pub line_height: Option<f32>,
     #[serde(default)]
     pub letter_spacing: Option<f32>,
+    /// Line pattern for every side's border (PROTOCOL_VERSION 20).
+    #[serde(default)]
+    pub border_style: Option<WireBorderStyle>,
+}
+
+/// Wire mirror of `runtime_shared::style::BorderStyle`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireBorderStyle {
+    Dashed,
+    Dotted,
+    /// Also the catch-all: a pattern this peer hasn't learned draws
+    /// solid, which is what an older peer draws anyway. Must stay last —
+    /// `#[serde(other)]` requires it.
+    #[default]
+    #[serde(other)]
+    Solid,
 }
 
 /// Wire mirror of `runtime_shared::style::Shadow`. The colour is

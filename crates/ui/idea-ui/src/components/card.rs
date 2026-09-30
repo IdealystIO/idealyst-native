@@ -8,10 +8,23 @@
 //! }
 //! ```
 //!
-//! Two built-in variants: [`variant::Flat`] (surface bg) and
-//! [`variant::Elevated`] (surface-alt bg + drop shadow). They read the
-//! theme's surface colors directly — no intent palette — so they ignore
-//! the `tone` field of `ResolutionCtx`.
+//! Four built-in variants:
+//!
+//! - [`variant::Regular`] (default) — page-surface fill + 1px border.
+//! - [`variant::Outline`] — the border alone, no fill. The base for a
+//!   dashed or dotted frame: override `border_style` and nothing else
+//!   competes with the stroke.
+//! - [`variant::Flat`] — secondary (`surface_alt`) fill, no border.
+//! - [`variant::Elevated`] — surface-alt fill + drop shadow.
+//!
+//! They read the theme's surface colors directly — no intent palette — so
+//! they ignore the `tone` field of `ResolutionCtx`.
+//!
+//! ```ignore
+//! // A dashed drop-zone frame:
+//! Card(variant = card::variant::Outline, style = dashed_sheet) { … }
+//! // where dashed_sheet sets `border_style: Some(BorderStyle::Dashed)`.
+//! ```
 //!
 //! The Card stylesheet is built programmatically (variant × padding
 //! axes) and installed lazily on first use. Apps with custom Card
@@ -59,7 +72,50 @@ pub mod variant {
         )* };
     }
 
-    /// Flat — page-surface background, no shadow.
+    /// Regular — page-surface background framed by the sheet's 1px
+    /// border. The default.
+    #[derive(Copy, Clone, Default, IdealystSchema)]
+    #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
+    pub struct Regular;
+
+    impl Variant for Regular {
+        fn key(&self) -> &'static str {
+            "regular"
+        }
+        fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
+            StyleRules {
+                background: Some(ctx.theme.colors().surface.clone()),
+                ..Default::default()
+            }
+        }
+    }
+
+    /// Outline — the border with no fill, so whatever is behind the card
+    /// shows through. Set `border_style` in a `style` override for a
+    /// dashed or dotted frame (drop zones, placeholders, "add" tiles).
+    ///
+    /// The background is an explicit `transparent`, not unset: a card
+    /// whose variant switches live from Regular to Outline must CLEAR the
+    /// fill, and a native backend leaves an unset background as it was.
+    #[derive(Copy, Clone, Default, IdealystSchema)]
+    #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
+    pub struct Outline;
+
+    impl Variant for Outline {
+        fn key(&self) -> &'static str {
+            "outline"
+        }
+        fn render(&self, _ctx: &ResolutionCtx) -> StyleRules {
+            StyleRules {
+                background: Some(Color("transparent".into()).into()),
+                ..Default::default()
+            }
+        }
+    }
+
+    /// Flat — the secondary (`surface_alt`) fill with NO border: a panel
+    /// set apart by its tone alone. Widths are zeroed explicitly rather
+    /// than left unset for the same live-switch reason as [`Outline`].
     #[derive(Copy, Clone, Default, IdealystSchema)]
     #[schema(value_of = "VariantRef", via = "idea_ui::components::{card::variant}")]
     pub struct Flat;
@@ -69,8 +125,13 @@ pub mod variant {
             "flat"
         }
         fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
+            let none = || Some(runtime_core::Tokenized::Literal(0.0));
             StyleRules {
-                background: Some(ctx.theme.colors().surface.clone()),
+                background: Some(ctx.theme.colors().surface_alt.clone()),
+                border_top_width: none(),
+                border_right_width: none(),
+                border_bottom_width: none(),
+                border_left_width: none(),
                 ..Default::default()
             }
         }
@@ -101,7 +162,7 @@ pub mod variant {
         }
     }
 
-    card_variant_reactive!(Flat, Elevated);
+    card_variant_reactive!(Regular, Outline, Flat, Elevated);
 }
 
 thread_local! {
@@ -110,7 +171,7 @@ thread_local! {
 
 /// Install a custom Card stylesheet (e.g. with app-defined variants).
 /// Call before the first Card mounts. If never called, the default
-/// sheet (Flat + Elevated variants) is installed lazily on first use.
+/// sheet (all four built-in variants) is installed lazily on first use.
 pub fn install_card_sheet(sheet: Rc<StyleSheet>) {
     CARD_SHEET.with(|s| *s.borrow_mut() = Some(sheet));
 }
@@ -119,8 +180,15 @@ fn card_sheet() -> Rc<StyleSheet> {
     CARD_SHEET.with(|s| {
         if s.borrow().is_none() {
             let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
-            let built =
-                build_card_sheet(vec![variant::Flat.into(), variant::Elevated.into()], tones);
+            let built = build_card_sheet(
+                vec![
+                    variant::Regular.into(),
+                    variant::Outline.into(),
+                    variant::Flat.into(),
+                    variant::Elevated.into(),
+                ],
+                tones,
+            );
             *s.borrow_mut() = Some(built);
         }
         s.borrow().as_ref().cloned().unwrap()
@@ -199,14 +267,14 @@ pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<St
             padding_right: Some(tokens().spacing.xl()),
             ..Default::default()
         })
-        .variant_default("variant", "flat")
+        .variant_default("variant", "regular")
         .variant_default("padding", "md");
 
     // NOTE: the intent tint deliberately does NOT live on a `tone` axis here,
     // even though every sibling sheet enumerates its tones. `StyleSheet`
     // stores axes in a `BTreeMap`, so per-axis arms merge in ALPHABETICAL axis
     // order — `"tone"` merges before `"variant"`, and Card's `variant` arms
-    // set `background` (the Flat/Elevated surface), which would overwrite the
+    // set `background` (the variant's surface), which would overwrite the
     // tint. The tint has to resolve after the surface, and the computed layer
     // is the only slot that does (base → axes → computed → overrides).
     //
@@ -234,9 +302,11 @@ pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<St
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct CardProps {
-    /// Surface skeleton: built-in [`variant::Flat`] (page surface) or
-    /// [`variant::Elevated`] (raised surface + shadow), or an
-    /// app-installed custom variant. Default Flat.
+    /// Surface skeleton: built-in [`variant::Regular`] (page surface +
+    /// border), [`variant::Outline`] (border only), [`variant::Flat`]
+    /// (secondary fill, no border) or [`variant::Elevated`] (raised
+    /// surface + shadow), or an app-installed custom variant. Default
+    /// Regular.
     pub variant: VariantRef,
     /// Inner padding scale (None/Sm/Md/Lg → theme spacing tokens).
     /// Default Md.
@@ -245,7 +315,7 @@ pub struct CardProps {
     /// tone-tinted background and matching border (the same "Soft"
     /// treatment Alert uses) instead of the variant's surface color —
     /// for support/crisis/info panels that need to read as intent-colored.
-    /// When `None` (the default), Flat/Elevated keep their surface look.
+    /// When `None` (the default), the variant keeps its surface look.
     pub tone: Option<ToneRef>,
     /// Style override for the card surface (background, border, radius, shadow,
     /// …), layered on top of the resolved variant/padding/tone style — the top
@@ -272,7 +342,7 @@ pub struct CardProps {
 impl Default for CardProps {
     fn default() -> Self {
         Self {
-            variant: variant::Flat.into(),
+            variant: variant::Regular.into(),
             padding: Reactive::Static(CardPadding::default()),
             tone: Reactive::Static(None),
             style: None,
@@ -375,7 +445,7 @@ mod tests {
     }
 
     // D7: a toned Card paints the tone's Soft tint as its background,
-    // distinct from the surface bg a tone-less Flat card renders.
+    // distinct from the surface bg a tone-less Regular card renders.
     #[test]
     fn tone_tints_background_distinct_from_surface() {
         with_test_world(|| {
@@ -393,7 +463,7 @@ mod tests {
             let plain_bg = resolve_style(&view_style(Card(plain)))
                 .background
                 .clone()
-                .expect("Flat card sets a surface background");
+                .expect("Regular card sets a surface background");
 
             assert_ne!(
                 toned_bg, plain_bg,
@@ -408,7 +478,7 @@ mod tests {
     });
     }
 
-    // D7: with no tone, Flat/Elevated keep their surface look unchanged —
+    // D7: with no tone, every variant keeps its surface look unchanged —
     // the tint layer is absent entirely.
     #[test]
     fn no_tone_keeps_surface_look() {
@@ -502,5 +572,99 @@ mod tests {
                 "style override sets the card background over the variant surface",
             );
     });
+    }
+
+    fn resolved(variant: VariantRef, style: Option<Rc<StyleSheet>>) -> StyleRules {
+        let props = CardProps { variant: Reactive::Static(variant), style, ..Default::default() };
+        resolve_style(&view_style(Card(props))).as_ref().clone()
+    }
+
+    fn widths(r: &StyleRules) -> [Option<f32>; 4] {
+        [&r.border_top_width, &r.border_right_width, &r.border_bottom_width, &r.border_left_width]
+            .map(|w| w.as_ref().map(|t| t.resolve()))
+    }
+
+    fn surface(pick: fn(&idea_theme::theme::Colors) -> &Tokenized<runtime_core::Color>)
+        -> Tokenized<runtime_core::Color>
+    {
+        use idea_theme::theme::IdeaTheme;
+        let theme_rc = active_theme();
+        let theme = theme_rc.downcast_ref::<IdeaThemeRef>().unwrap();
+        pick(theme.colors()).clone()
+    }
+
+    // The default is Regular: the page surface inside the 1px frame — the
+    // look every unannotated `Card(...)` had before the variants split.
+    #[test]
+    fn default_card_is_regular_surface_with_border() {
+        with_test_world(|| {
+            theme();
+            let r = resolve_style(&view_style(Card(CardProps::default()))).as_ref().clone();
+            assert_eq!(r.background, Some(surface(|c| &c.surface)));
+            assert_eq!(widths(&r), [Some(1.0); 4]);
+        });
+    }
+
+    // Outline is the frame alone. The fill is an explicit transparent
+    // (not unset) so a live Regular → Outline switch clears it.
+    #[test]
+    fn outline_has_border_and_transparent_fill() {
+        with_test_world(|| {
+            theme();
+            let r = resolved(variant::Outline.into(), None);
+            assert_eq!(widths(&r), [Some(1.0); 4]);
+            let bg = r.background.as_ref().map(|c| c.resolve().0);
+            assert_eq!(bg.as_deref(), Some("transparent"));
+        });
+    }
+
+    // Outline is the intended base for a dashed frame: an override that
+    // sets only `border_style` keeps the variant's border and gains the
+    // pattern.
+    #[test]
+    fn outline_takes_a_dashed_border_from_a_style_override() {
+        with_test_world(|| {
+            theme();
+            let dashed = Rc::new(StyleSheet::r#static(StyleRules {
+                border_style: Some(runtime_core::BorderStyle::Dashed),
+                ..Default::default()
+            }));
+            let r = resolved(variant::Outline.into(), Some(dashed));
+            assert_eq!(r.border_style, Some(runtime_core::BorderStyle::Dashed));
+            assert_eq!(widths(&r), [Some(1.0); 4], "the frame survives the override");
+        });
+    }
+
+    // Flat is the secondary fill with the border explicitly zeroed.
+    #[test]
+    fn flat_is_secondary_fill_without_border() {
+        with_test_world(|| {
+            theme();
+            let r = resolved(variant::Flat.into(), None);
+            assert_eq!(r.background, Some(surface(|c| &c.surface_alt)));
+            assert_eq!(widths(&r), [Some(0.0); 4]);
+        });
+    }
+
+    // Each built-in variant must be a real arm on the default sheet — an
+    // unregistered key silently resolves to the base (no fill at all).
+    #[test]
+    fn every_builtin_variant_resolves_distinctly() {
+        with_test_world(|| {
+            theme();
+            let all: [VariantRef; 4] = [
+                variant::Regular.into(),
+                variant::Outline.into(),
+                variant::Flat.into(),
+                variant::Elevated.into(),
+            ];
+            let keys: Vec<String> =
+                all.iter().map(|v| resolved(v.clone(), None).content_key()).collect();
+            for i in 0..keys.len() {
+                for j in (i + 1)..keys.len() {
+                    assert_ne!(keys[i], keys[j], "variants {i} and {j} resolve the same");
+                }
+            }
+        });
     }
 }

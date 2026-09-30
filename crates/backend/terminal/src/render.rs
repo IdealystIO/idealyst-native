@@ -3,7 +3,7 @@
 //! escaped bytes and dumps it to stdout.
 
 use runtime_shared::color::Rgba;
-use runtime_shared::{GradientKind, Length, RadialExtent};
+use runtime_shared::{BorderStyle, GradientKind, Length, RadialExtent};
 
 use crate::node::{NodeData, NodeKind, ResolvedGradient};
 use crate::TerminalBackend;
@@ -206,7 +206,12 @@ impl TerminalBackend {
         if border_requested(data) {
             let mut color = effective_fg.unwrap_or(Rgba::new(180, 180, 180, 255));
             color.a = ((color.a as f32) * effective_opacity).round() as u8;
-            paint_border(grid, x, y, w, h, color, effective_bg, clip);
+            let style = data
+                .style
+                .as_ref()
+                .and_then(|s| s.border_style)
+                .unwrap_or_default();
+            paint_border(grid, x, y, w, h, color, effective_bg, clip, style);
         }
 
         // 3. Paint content. Views and Pressables don't carry content
@@ -677,6 +682,27 @@ fn paint_rect_bg(
     }
 }
 
+/// The `(horizontal, vertical)` edge glyphs for a border style.
+///
+/// A cell is the smallest unit this medium has, so the dash geometry in
+/// `runtime_shared::border_dash` (lengths in multiples of the border
+/// width) cannot be reproduced; the box-drawing block's own dashed
+/// glyphs carry the pattern instead. Dashed takes the DOUBLE-dash pair
+/// (`╌` / `╎`, the longest segments Unicode offers) and dotted the
+/// QUADRUPLE-dash pair (`┈` / `┊`, the finest — at terminal font sizes
+/// its segments read as dots). Using the two ends of the range keeps
+/// dashed and dotted distinguishable; the triple-dash pair in between
+/// (`┄` / `┆`) is too close to either. Corners stay the ordinary
+/// rounded corner glyphs — Unicode has no dashed corners, and a solid
+/// corner joining dashed edges is what a browser draws at a corner too.
+fn edge_glyphs(style: BorderStyle) -> (char, char) {
+    match style {
+        BorderStyle::Solid => ('─', '│'),
+        BorderStyle::Dashed => ('╌', '╎'),
+        BorderStyle::Dotted => ('┈', '┊'),
+    }
+}
+
 fn paint_border(
     grid: &mut Grid,
     x: f32,
@@ -686,6 +712,7 @@ fn paint_border(
     fg: Rgba,
     bg: Option<Rgba>,
     clip: Option<ClipRect>,
+    style: BorderStyle,
 ) {
     // Same `floor(x) + ceil(w)` snap as paint_rect_bg / paint_text
     // to keep the border's footprint matched with the bg's.
@@ -714,15 +741,16 @@ fn paint_border(
         }
     };
 
+    let (horizontal, vertical) = edge_glyphs(style);
     // Horizontal edges
     for col in (x0 + 1)..x1 {
-        put(grid, col, y0, '─');
-        put(grid, col, y1, '─');
+        put(grid, col, y0, horizontal);
+        put(grid, col, y1, horizontal);
     }
     // Vertical edges
     for row in (y0 + 1)..y1 {
-        put(grid, x0, row, '│');
-        put(grid, x1, row, '│');
+        put(grid, x0, row, vertical);
+        put(grid, x1, row, vertical);
     }
     // Corners
     put(grid, x0, y0, '╭');
@@ -902,5 +930,52 @@ fn paint_text(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod border_style_tests {
+    use super::*;
+
+    fn painted(style: BorderStyle) -> Grid {
+        let mut grid = Grid::new(6, 4);
+        paint_border(&mut grid, 0.0, 0.0, 6.0, 4.0, Rgba::new(255, 0, 0, 255), None, None, style);
+        grid
+    }
+
+    fn glyph(grid: &Grid, col: u16, row: u16) -> char {
+        grid.cell(col, row).unwrap().glyph
+    }
+
+    /// Every edge cell (corners excluded) and every corner of a 6×4 box.
+    fn edges(grid: &Grid) -> (Vec<char>, Vec<char>, [char; 4]) {
+        let horizontal = (1..5).flat_map(|c| [glyph(grid, c, 0), glyph(grid, c, 3)]).collect();
+        let vertical = (1..3).flat_map(|r| [glyph(grid, 0, r), glyph(grid, 5, r)]).collect();
+        let corners = [glyph(grid, 0, 0), glyph(grid, 5, 0), glyph(grid, 0, 3), glyph(grid, 5, 3)];
+        (horizontal, vertical, corners)
+    }
+
+    #[test]
+    fn dashed_border_paints_dashed_box_glyphs() {
+        let (h, v, corners) = edges(&painted(BorderStyle::Dashed));
+        assert!(h.iter().all(|c| *c == '╌'), "horizontal edges: {h:?}");
+        assert!(v.iter().all(|c| *c == '╎'), "vertical edges: {v:?}");
+        assert_eq!(corners, ['╭', '╮', '╰', '╯'], "corners stay the ordinary corners");
+    }
+
+    #[test]
+    fn dotted_border_paints_dotted_box_glyphs() {
+        let (h, v, corners) = edges(&painted(BorderStyle::Dotted));
+        assert!(h.iter().all(|c| *c == '┈'), "horizontal edges: {h:?}");
+        assert!(v.iter().all(|c| *c == '┊'), "vertical edges: {v:?}");
+        assert_eq!(corners, ['╭', '╮', '╰', '╯']);
+    }
+
+    #[test]
+    fn solid_border_is_unchanged() {
+        let (h, v, corners) = edges(&painted(BorderStyle::Solid));
+        assert!(h.iter().all(|c| *c == '─'), "horizontal edges: {h:?}");
+        assert!(v.iter().all(|c| *c == '│'), "vertical edges: {v:?}");
+        assert_eq!(corners, ['╭', '╮', '╰', '╯']);
     }
 }

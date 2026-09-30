@@ -244,6 +244,93 @@ pub fn stroke_border<S: Surface>(
     }
 }
 
+/// [`stroke_border`] with a dash pattern: each side's bar — the exact
+/// band the solid path fills — is broken into the marks
+/// `runtime_shared::border_dash` fits to that side.
+///
+/// Uses the SAME four-bar model as the solid border (corner radii are
+/// not followed; the solid CPU border doesn't follow them either), so
+/// switching `border_style` never moves where the border sits. Each
+/// side is an open line fitted with `fit_open`, walked clockwise like
+/// `border_dash::side_line` (top L→R, right T→B, bottom R→L, left
+/// B→T), so every side starts and ends on a mark and a corner is inked
+/// by both of its sides — what browsers draw for a square dashed box.
+///
+/// Pixel snapping: the rasterizer has no anti-aliasing, so a mark is
+/// snapped to whole pixels. A dash covers `[round(start), round(end))`
+/// along the bar; a dot is a `d × d` cell (`d` = the bar's thickness)
+/// at `round(mid - d/2)`, with the disc test applied only when
+/// `d > 2` — at 1–2px a "round" dot IS the square cell, and a disc
+/// test on a pixel-centred 1px dot is a tie that would drop or double
+/// it depending on float noise.
+pub fn stroke_border_patterned<S: Surface>(
+    surface: &mut S,
+    rect: Rect,
+    widths: [f32; 4],
+    colors: [Option<[u8; 4]>; 4],
+    style: runtime_shared::BorderStyle,
+    clip: Rect,
+    dst_sampler: impl Fn(&S, u32, u32) -> [u8; 4],
+) {
+    use runtime_shared::border_dash;
+    for side in 0..4 {
+        let (Some(color), w) = (colors[side], widths[side]) else { continue };
+        let thick = w.round() as i32;
+        if thick <= 0 {
+            continue;
+        }
+        let Some(base) = border_dash::base(style, w) else {
+            // Solid never reaches here; a non-positive width draws nothing.
+            continue;
+        };
+        // Bar geometry — identical to `stroke_border`'s rects.
+        // `len` = along the bar, `(ox, oy)` = the bar's top-left.
+        let (len, horizontal) = match side {
+            0 | 2 => (rect.w as i32, true),
+            _ => (rect.h as i32, false),
+        };
+        let (ox, oy) = match side {
+            0 => (rect.x, rect.y),
+            1 => (rect.x + rect.w as i32 - thick, rect.y),
+            2 => (rect.x, rect.y + rect.h as i32 - thick),
+            _ => (rect.x, rect.y),
+        };
+        // Top and right run forward from the bar's origin; bottom and
+        // left run BACKWARDS (clockwise), so their distances are
+        // mirrored. `fit_open` is symmetric, so this only decides which
+        // way a half-pixel rounding tie falls — kept for parity with
+        // `side_line`, which the GPU engine walks.
+        let reversed = matches!(side, 2 | 3);
+        let fitted = border_dash::fit_open(base, len as f32);
+        for run in border_dash::dash_runs(fitted, len as f32, false) {
+            // [a, b) along the bar in pixels, in the bar's forward axis.
+            let (a, b) = if base.round {
+                let d = thick;
+                let a = (run.mid() - d as f32 / 2.0).round() as i32;
+                (a, a + d)
+            } else {
+                (run.start.round() as i32, run.end.round() as i32)
+            };
+            let (a, b) = if reversed { (len - b, len - a) } else { (a, b) };
+            let (a, b) = (a.max(0), b.min(len));
+            if b <= a {
+                continue;
+            }
+            let cell = if horizontal {
+                Rect::new(ox + a, oy, (b - a) as u32, thick as u32)
+            } else {
+                Rect::new(ox, oy + a, thick as u32, (b - a) as u32)
+            };
+            if base.round && thick > 2 {
+                let r = thick as f32 / 2.0;
+                fill_rounded_rect_blended(surface, cell, [r; 4], color, clip, &dst_sampler);
+            } else {
+                fill_rect_blended(surface, cell, color, clip, &dst_sampler);
+            }
+        }
+    }
+}
+
 /// Public-to-the-crate alias for the private inclusion test —
 /// callers in `lib.rs` (the gradient painter) use this to share the
 /// same shape predicate the solid-fill path uses.
@@ -394,6 +481,28 @@ mod tests {
         let a = Rect::new(0, 0, 10, 10);
         let b = Rect::new(5, 5, 10, 10);
         assert_eq!(a.intersect(b), Some(Rect::new(5, 5, 5, 5)));
+    }
+
+    /// A dot wider than 2px is a disc: the corner pixels of its cell stay
+    /// clear. Only the top side is bordered so nothing else overlaps.
+    #[test]
+    fn wide_dotted_border_dots_are_round() {
+        use crate::surface::MemSurface;
+        let mut s = MemSurface::new(40, 10);
+        let white = [255, 255, 255, 255];
+        stroke_border_patterned(
+            &mut s,
+            Rect::new(0, 0, 40, 10),
+            [6.0, 0.0, 0.0, 0.0],
+            [Some(white), None, None, None],
+            runtime_shared::BorderStyle::Dotted,
+            Rect::surface(40, 10),
+            |s: &MemSurface, x, y| s.get_pixel(x, y),
+        );
+        // First dot's cell is x 0..6, y 0..6 (open fit starts on a mark).
+        assert_eq!(s.get_pixel(3, 3)[..3], [255, 255, 255], "dot centre inked");
+        assert_ne!(s.get_pixel(0, 0)[..3], [255, 255, 255], "cell corner clear");
+        assert_ne!(s.get_pixel(5, 5)[..3], [255, 255, 255], "cell corner clear");
     }
 
     #[test]

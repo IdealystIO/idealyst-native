@@ -6,7 +6,7 @@
 //! node so the per-frame walk is cheap (just read fields).
 
 use runtime_shared::{
-    Color, FontFamily, FontStyle, FontWeight, Gradient, GradientKind, Length, ObjectFit,
+    BorderStyle, Color, FontFamily, FontStyle, FontWeight, Gradient, GradientKind, Length, ObjectFit,
     RadialExtent, StyleRules, TextAlign, Tokenized, Transform,
 };
 
@@ -23,6 +23,10 @@ pub struct RenderStyle {
     pub border_width: [f32; 4],
     /// Per-side border color. Defaults to transparent if unset.
     pub border_color: [[f32; 4]; 4],
+    /// Line pattern for every side (`StyleRules::border_style`, `None`
+    /// → solid). Dashed / dotted borders are staged as extra mark
+    /// instances by `border_marks`; the shader's ring only draws solid.
+    pub border_style: BorderStyle,
 
     pub font_size: f32,
     pub opacity: f32,
@@ -158,6 +162,7 @@ impl Default for RenderStyle {
             corner_radius: [0.0; 4],
             border_width: [0.0; 4],
             border_color: [[0.0, 0.0, 0.0, 0.0]; 4],
+            border_style: BorderStyle::Solid,
             font_size: 14.0,
             opacity: 1.0,
             object_fit: ObjectFit::Contain,
@@ -263,6 +268,9 @@ impl RenderStyle {
         }
         if let Some(c) = rules.border_left_color.as_ref() {
             self.border_color[3] = parse_color(&c.resolve());
+        }
+        if let Some(bs) = rules.border_style {
+            self.border_style = bs;
         }
 
         // Drop shadow — author sets `Shadow { x, y, blur, color }`

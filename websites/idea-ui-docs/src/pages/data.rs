@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use runtime_core::{rx, signal, ui, Element, Signal};
+use runtime_core::{rx, signal, ui, BorderStyle, Element, Signal, StyleRules, StyleSheet};
 use icons_lucide::{PENCIL, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Tag,
@@ -21,8 +21,8 @@ pub fn card() -> Element {
     crate::pages::body(vec![
         ui! {
             Section(title = "Composition".to_string()) {
-                P(content = "A Card is a themed surface with rounded corners, a hairline border, \
-                    and one of two background tokens. Compose the inner anatomy yourself — header, \
+                P(content = "A Card is a themed surface with rounded corners and one of four \
+                    variants: Regular, Outline, Flat and Elevated. Compose the inner anatomy yourself — header, \
                     body, and footer are just Typography and actions inside the card.".to_string())
                 DemoSurface {
                     Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
@@ -33,8 +33,25 @@ pub fn card() -> Element {
             }
         },
         ui! {
+            Section(title = "Variants".to_string()) {
+                P(content = "Outline is the base for a dashed or dotted frame: the fill is gone, so \
+                    a `border_style` override is the whole look.".to_string())
+                DemoSurface {
+                    variant_gallery()
+                }
+                CodePanel(src = r##"let dashed = Rc::new(StyleSheet::r#static(StyleRules {
+    border_style: Some(BorderStyle::Dashed),
+    ..Default::default()
+}));
+Card(variant = card::variant::Outline, style = Some(dashed)) { … }"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Anatomy".to_string()) {
-                P(content = "The variant determines the background — Flat reads `color-surface`, \
+                P(content = "The variant determines the surface. Regular (the default) reads \
+                    `color-surface` inside a 1px border. Outline keeps the border and drops the fill, \
+                    so it is the one to start from for a dashed or dotted frame — set `border_style` \
+                    in the card's `style` override. Flat reads `color-surface-alt` with no border. \
                     Elevated reads `color-surface-alt` and adds a drop shadow so the card reads as \
                     a layer above the page even on platforms that don't render shadows.".to_string())
                 CodePanel(src = r##"Card(variant = card::variant::Elevated, padding = CardPadding::Md) {
@@ -50,7 +67,7 @@ pub fn card() -> Element {
                     Prop {
                         name: "variant",
                         ty: "VariantRef",
-                        desc: "card::variant::Flat (default, page surface) or card::variant::Elevated (raised surface + shadow).",
+                        desc: "card::variant::Regular (default, page surface + border), Outline (border only, no fill), Flat (secondary surface, no border) or Elevated (raised surface + shadow).",
                     },
                     Prop {
                         name: "padding",
@@ -101,6 +118,37 @@ fn media_card() -> Element {
                     tone = tone::Neutral,
                     variant = variant::Soft,
                 )
+            }
+        }
+    }
+}
+
+fn variant_gallery() -> Element {
+    let dashed = Rc::new(StyleSheet::r#static(StyleRules {
+        border_style: Some(BorderStyle::Dashed),
+        ..Default::default()
+    }));
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
+            Card(variant = card_variant::Regular) {
+                Typography(content = "Regular".to_string(), kind = typography_kind::H3)
+                Typography(content = "Surface fill, hairline border.".to_string(), muted = true)
+            }
+            Card(variant = card_variant::Outline) {
+                Typography(content = "Outline".to_string(), kind = typography_kind::H3)
+                Typography(content = "Border only.".to_string(), muted = true)
+            }
+            Card(variant = card_variant::Outline, style = Some(dashed)) {
+                Typography(content = "Outline, dashed".to_string(), kind = typography_kind::H3)
+                Typography(content = "border_style: Dashed.".to_string(), muted = true)
+            }
+            Card(variant = card_variant::Flat) {
+                Typography(content = "Flat".to_string(), kind = typography_kind::H3)
+                Typography(content = "Secondary fill, no border.".to_string(), muted = true)
+            }
+            Card(variant = card_variant::Elevated) {
+                Typography(content = "Elevated".to_string(), kind = typography_kind::H3)
+                Typography(content = "Raised with a shadow.".to_string(), muted = true)
             }
         }
     }

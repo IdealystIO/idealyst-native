@@ -100,6 +100,12 @@ mod layout_policy;
 /// half lives in `imp/style.rs`.
 mod transform_transition_policy;
 
+/// Dashed / dotted border geometry handed to `RustBorderDrawable.kt`
+/// over JNI (fitted from `runtime_shared::border_dash`), plus the
+/// style wire codes. Un-gated like `sticky_compute` so its tests run
+/// on the host; the JNI exports live in `imp/jni_exports.rs`.
+mod border_dash_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

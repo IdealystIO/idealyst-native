@@ -93,6 +93,7 @@ use runtime_shared::{Length, Overflow, Tokenized};
 use runtime_shared::{Action, Color, ColorScheme, Platform, PointerEvents, StyleRules};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 
+mod border_stroke;
 mod color;
 mod cursor;
 mod file_drop;
@@ -354,6 +355,7 @@ fn build_border(s: &StyleRules) -> Option<BorderPaint> {
             color_of(&s.border_bottom_color),
             color_of(&s.border_left_color),
         ],
+        style: s.border_style.unwrap_or_default(),
     })
 }
 
@@ -4336,6 +4338,12 @@ mod layout_tests {
                  the order the framework uses, so the box never drew at all"
             );
         }
+
+        // --- 20. DASHED / DOTTED borders reach GSK as a real pattern:
+        // rasterized offscreen, the gaps between dashes and dots are clear
+        // and the marks inked, while a solid border still inks the gap
+        // pixel. Lives here because it needs this thread's GTK.
+        crate::view::patterned_border_render_tests::check_gsk_patterned_borders();
     }
 }
 

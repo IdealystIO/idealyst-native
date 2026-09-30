@@ -23,6 +23,8 @@ pub use backend_apple_core::cg::{CGColorRef, CGPathRef};
 // contributes only the UIKit half — `view.layer` and `Color → CGColor`.
 use backend_apple_core::shadow::{shadow_placement, ShadowPlacement};
 use backend_apple_core::shadow_layer;
+use backend_apple_core::border::BorderRoute;
+use backend_apple_core::border_dash_layer::{self, Piece};
 
 // `parse_color` lives in `backend_apple_core::color` now — same
 // signature, same semantics. Re-exported here so the iOS-core
@@ -447,6 +449,20 @@ pub fn sync_shadow_path(view: &UIView) {
     shadow_layer::sync_sibling(&layer);
 }
 
+/// Re-trace a dashed / dotted border against the view's current bounds and
+/// corner radius. No-op for a view without one, so the layout pass calls it
+/// blindly.
+///
+/// Same slot and same reason as [`sync_shadow_path`]: the `CAShapeLayer` path
+/// is in layer coordinates and does not follow a resize, the dash pattern is
+/// fitted to the perimeter so it must be re-fitted too, and a percent /
+/// `Length::Full` radius only has its final value after [`sync_corner_radius`]
+/// — which must run FIRST.
+pub fn sync_border_dash(view: &UIView) {
+    let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+    border_dash_layer::sync(&layer);
+}
+
 /// Unparent a view's sibling shadow layer as the view leaves its parent.
 ///
 /// **Required on every removal path.** A clipped view's drop shadow lives on a
@@ -772,24 +788,45 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // both simpler and the only path that renders rounded corners
     // cleanly. Fall back to per-side bars only for the genuinely
     // asymmetric case that CALayer can't represent.
+    //
+    // A dashed / dotted `border_style` can ride neither: `CALayer.borderWidth`
+    // has no dash pattern and a bar is a filled rect. Those strokes go through
+    // `backend_apple_core::border_dash_layer` (`CAShapeLayer`s along the
+    // shared `runtime_shared::border_dash` geometry), keeping the same
+    // uniform-loop / per-side split. The whole routing is the shared
+    // `route_border` decision, so iOS and macOS cannot disagree (Rule #7).
     let widths = [
         style.border_top_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
         style.border_right_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
         style.border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
         style.border_left_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0),
     ];
+    let colors: [Option<Color>; 4] = [
+        style.border_top_color.as_ref().map(|t| t.resolve()),
+        style.border_right_color.as_ref().map(|t| t.resolve()),
+        style.border_bottom_color.as_ref().map(|t| t.resolve()),
+        style.border_left_color.as_ref().map(|t| t.resolve()),
+    ];
     // Tear down any previous per-side border subviews so reapplies
     // (state overlays, theme swap) replace rather than stack them.
     remove_border_subviews(view);
-    let any_width = widths.iter().any(|w| *w > 0.0);
-    if any_width {
-        let colors: [Option<Color>; 4] = [
-            style.border_top_color.as_ref().map(|t| t.resolve()),
-            style.border_right_color.as_ref().map(|t| t.resolve()),
-            style.border_bottom_color.as_ref().map(|t| t.resolve()),
-            style.border_left_color.as_ref().map(|t| t.resolve()),
-        ];
-        if let Some((width, color)) = crate::border::uniform_border(widths, &colors) {
+    let route = backend_apple_core::border::route_border(style.border_style, widths, &colors);
+    // Every route owns exactly one mechanism and clears the others, so a
+    // reapply that switches dashed ↔ solid ↔ none leaves no ghost stroke:
+    // the CALayer stroke is zeroed unless the route is `Layer`, the dash host
+    // is removed unless the route is patterned, and the bars were torn down
+    // above.
+    if !matches!(route, BorderRoute::DashedLoop { .. } | BorderRoute::DashedSides { .. }) {
+        border_dash_layer::remove(&layer);
+    }
+    match route {
+        BorderRoute::None => {
+            // No border requested — clear any CALayer stroke a prior apply
+            // (or a `Card` SDK call touching the layer directly) may have
+            // left, so it doesn't paint a ghost frame.
+            let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
+        }
+        BorderRoute::Layer { width, color } => {
             // Uniform border → CALayer stroke. Follows `cornerRadius`
             // (set above, or synced later for percent-sized views)
             // with no corner seams.
@@ -800,7 +837,8 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             }
             let _: () =
                 unsafe { msg_send![&layer, setBorderWidth: width as f64] };
-        } else {
+        }
+        BorderRoute::Bars(sides) => {
             // Asymmetric border → per-side bars. Clear any CALayer
             // stroke a prior uniform apply may have left, then paint
             // each non-zero side. (Rounded corners with an asymmetric
@@ -808,24 +846,42 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             // this case has no clean UIKit primitive and is vanishingly
             // rare; the common uniform card takes the branch above.)
             let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
-            let fallback_color = colors.iter().find_map(|c| c.clone());
             let parent_bounds: CGRect = unsafe { msg_send![view, bounds] };
-            for (idx, &w) in widths.iter().enumerate() {
-                if w <= 0.0 {
-                    continue;
-                }
-                let Some(color) = colors[idx].clone().or_else(|| fallback_color.clone())
-                else {
-                    continue;
-                };
-                install_border_side(view, idx, w as CGFloat, &color, parent_bounds);
+            for (idx, side) in sides.iter().enumerate() {
+                let Some((w, color)) = side else { continue };
+                install_border_side(view, idx, *w as CGFloat, color, parent_bounds);
             }
         }
-    } else {
-        // No border requested — clear any CALayer stroke a prior apply
-        // (or a `Card` SDK call touching the layer directly) may have
-        // left, so it doesn't paint a ghost frame.
-        let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
+        BorderRoute::DashedLoop { style: pattern, width, color } => {
+            // The patterned loop replaces the CALayer stroke — leaving
+            // `borderWidth` set would paint a solid border under the dashes.
+            let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
+            let ui_color = color_to_uicolor(&color);
+            let cg: CGColorRef = unsafe { msg_send![&ui_color, CGColor] };
+            // UIKit is always y-down. `install` traces against the live
+            // bounds + the `cornerRadius` resolved just above; a view that is
+            // still 0×0 is re-traced by the layout pass (`sync_border_dash`).
+            border_dash_layer::install(&layer, pattern, &[(Piece::Loop, width, cg)], true);
+        }
+        BorderRoute::DashedSides { style: pattern, sides } => {
+            let _: () = unsafe { msg_send![&layer, setBorderWidth: 0.0_f64] };
+            // Hold the UIColors until `install` has handed their CGColors to
+            // the shape layers (which retain them): a `CGColor` borrowed from
+            // a UIColor is only valid while that UIColor lives.
+            let ui_colors: Vec<(usize, f32, Retained<UIColor>)> = sides
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| s.as_ref().map(|(w, c)| (i, *w, color_to_uicolor(c))))
+                .collect();
+            let pieces: Vec<(Piece, f32, CGColorRef)> = ui_colors
+                .iter()
+                .map(|(i, w, ui)| {
+                    let cg: CGColorRef = unsafe { msg_send![&**ui, CGColor] };
+                    (Piece::Side(*i), *w, cg)
+                })
+                .collect();
+            border_dash_layer::install(&layer, pattern, &pieces, true);
+        }
     }
 
     // Box shadow (`StyleRules.shadow`). Where it gets painted is the shared

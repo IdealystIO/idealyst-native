@@ -2517,6 +2517,9 @@ impl MacosBackend {
         // case above) would never get a path at all, silently falling back to
         // CoreAnimation's offscreen alpha-channel derivation.
         shadow::sync_shadow_path(view);
+        // Same for a dashed / dotted border's `CAShapeLayer` path and its
+        // perimeter-fitted dash pattern — also after `sync_corner_radius`.
+        border::sync_border_dash(view);
         // Re-resolve percent transforms against the real bounds.
         animated::sync_transform_after_layout(view, &self.animated_states);
         // Feed `.container()` inline-size subscribers (container queries).

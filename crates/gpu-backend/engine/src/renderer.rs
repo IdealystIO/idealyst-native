@@ -1533,14 +1533,21 @@ fn walk<'a>(
             } else {
                 bg
             };
-            let bw = r.border_width[0];
+            // A dashed / dotted border can't be the shader's ring (it
+            // has no pattern and no attribute left to carry one): the
+            // node's rect is staged fill-only and the marks follow it
+            // as their own instances — see `border_marks`.
+            let patterned = r.border_style != runtime_shared::BorderStyle::Solid;
+            let bw = if patterned { 0.0 } else { r.border_width[0] };
             let bc = backend.animator.sample_color(
                 TweenKey::new(data.layout, AnimProperty::BorderTopColor),
                 r.border_color[0],
                 now,
             );
             let bg_lin = srgb_rgba_to_linear([bg[0], bg[1], bg[2], bg[3] * node_opacity]);
-            let bc_lin = srgb_rgba_to_linear(bc);
+            // The ring fades with the node like its fill does (the
+            // shader mixes the ring in by `border_color.a`).
+            let bc_lin = srgb_rgba_to_linear([bc[0], bc[1], bc[2], bc[3] * node_opacity]);
             // Gradient takes over the fill when present. The
             // gradient's per-stop alpha already encodes the
             // author's intent; we still multiply by `node_opacity`
@@ -1578,6 +1585,40 @@ fn walk<'a>(
                 gradient_stop3: sg.stops[3],
                 gradient_stop4: sg.stops[4],
             });
+            if patterned && any_border {
+                // Same per-side colour tweens the style diff drives
+                // (`backend_impl::maybe_animate_color`), then the
+                // node's opacity and the sRGB→linear step the fill and
+                // the solid ring get.
+                let props = [
+                    AnimProperty::BorderTopColor,
+                    AnimProperty::BorderRightColor,
+                    AnimProperty::BorderBottomColor,
+                    AnimProperty::BorderLeftColor,
+                ];
+                let mut srgb = [[0.0f32; 4]; 4];
+                for side in 0..4 {
+                    srgb[side] = if side == 0 {
+                        bc
+                    } else {
+                        backend.animator.sample_color(
+                            TweenKey::new(data.layout, props[side]),
+                            r.border_color[side],
+                            now,
+                        )
+                    };
+                }
+                let marks = crate::border_marks::border_marks(
+                    w,
+                    h,
+                    r.border_width,
+                    srgb,
+                    r.corner_radius,
+                    r.border_style,
+                );
+                let lin = srgb.map(|[cr, cg, cb, ca]| srgb_rgba_to_linear([cr, cg, cb, ca * node_opacity]));
+                rects.extend(crate::border_marks::mark_instances(&marks, [x, y, w, h], local_rot, lin));
+            }
         }
     }
 

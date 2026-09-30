@@ -194,8 +194,9 @@ recipe!(
     Card,
     /// A surface container that wraps its children in a themed, rounded,
     /// bordered panel. Use `variant = card::variant::Elevated` for a
-    /// raised look (surface-alt background + shadow); `padding` sets the
-    /// inner spacing.
+    /// raised look (surface-alt background + shadow), `Outline` for the
+    /// border alone, or `Flat` for a borderless surface-alt panel;
+    /// `padding` sets the inner spacing.
     pub fn card_elevated() -> ::runtime_core::Element {
         use crate::components::card::variant;
         use crate::{typography_kind, Card, CardPadding, Typography};

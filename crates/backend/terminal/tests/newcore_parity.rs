@@ -475,3 +475,53 @@ fn newcore_set_viewport_forwards_into_world() {
     );
     app.stop();
 }
+
+// ===========================================================================
+// Border style (dashed / dotted) end to end
+// ===========================================================================
+
+/// A bordered box with `border_style` set, rendered through the real
+/// `apply_style` → `render_to_grid` path. Guards the READ of
+/// `StyleRules::border_style` at the paint call site, which the
+/// `render.rs` unit tests (they call `paint_border` directly) cannot see.
+fn bordered_box_rows(style: Option<runtime_shared::BorderStyle>) -> String {
+    let rows = grid_rows(&render_new(move || {
+        use runtime_vocabulary::builders::view;
+        let edge = Some(Tokenized::Literal(1.0));
+        view()
+            .style(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(12.0))),
+                height: Some(Tokenized::Literal(Length::Px(4.0))),
+                border_top_width: edge.clone(),
+                border_right_width: edge.clone(),
+                border_bottom_width: edge.clone(),
+                border_left_width: edge,
+                border_style: style,
+                ..Default::default()
+            })
+            .build()
+    }));
+    rows.join("\n")
+}
+
+#[test]
+fn dashed_border_style_reaches_the_terminal_grid() {
+    let rows = bordered_box_rows(Some(runtime_shared::BorderStyle::Dashed));
+    assert!(rows.contains('╌') && rows.contains('╎'), "dashed edges painted:\n{rows}");
+    assert!(!rows.contains('─') && !rows.contains('│'), "no solid edge left:\n{rows}");
+    assert!(rows.contains('╭') && rows.contains('╯'), "corners painted:\n{rows}");
+}
+
+#[test]
+fn dotted_border_style_reaches_the_terminal_grid() {
+    let rows = bordered_box_rows(Some(runtime_shared::BorderStyle::Dotted));
+    assert!(rows.contains('┈') && rows.contains('┊'), "dotted edges painted:\n{rows}");
+    assert!(!rows.contains('─') && !rows.contains('│'), "no solid edge left:\n{rows}");
+}
+
+#[test]
+fn unset_border_style_stays_solid_in_the_terminal_grid() {
+    let rows = bordered_box_rows(None);
+    assert!(rows.contains('─') && rows.contains('│'), "solid edges painted:\n{rows}");
+    assert!(!rows.contains('╌') && !rows.contains('┈'), "no pattern glyphs:\n{rows}");
+}

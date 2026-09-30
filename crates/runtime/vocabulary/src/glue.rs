@@ -277,7 +277,7 @@ pub use runtime_shared::premint;
 // destructures `StyleRules` exhaustively through that path, so a new
 // field whose type is missing here fails to compile there.
 pub use runtime_shared::{
-    AlignContent, AlignItems, AlignSelf, Cursor, Derive, DisplayKind, FlexDirection, FlexWrap,
+    AlignContent, AlignItems, AlignSelf, BorderStyle, Cursor, Derive, DisplayKind, FlexDirection, FlexWrap,
     FontFamily, FontStyle, FontWeight, Gradient, GradientKind, GradientStop, GridPlacement,
     JustifyContent, ObjectFit, Overflow, OverscrollBehavior, PointerEvents, Position,
     RadialExtent, ScrollbarVisibility, Shadow, TextAlign, TextTransform, TrackSize, Transform,

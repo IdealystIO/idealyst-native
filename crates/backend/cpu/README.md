@@ -29,7 +29,7 @@ system the renderer paints with.
 
 | Element            | Status                | Notes                                  |
 |----------------------|-----------------------|----------------------------------------|
-| View                 | Full                  | Backgrounds, borders, opacity, rounded corners |
+| View                 | Full                  | Backgrounds, borders (solid / dashed / dotted, per-side bars — corner radii round the fill, not the border), opacity, rounded corners |
 | Text                 | Full                  | 8×8 bitmap font, multi-line wrap       |
 | Button               | Full                  | Label + on_click; same chrome as iOS   |
 | Pressable            | Full                  | Hit-testing, no built-in chrome        |

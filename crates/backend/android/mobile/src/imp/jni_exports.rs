@@ -20,7 +20,7 @@ use super::callbacks::{
     SliderChangeCallback, StateCallback, TextChangeCallback, ToggleChangeCallback, TouchCallback,
 };
 use jni::objects::{JObject, JValue};
-use jni::sys::{jboolean, jfloat, jint, jlong};
+use jni::sys::{jboolean, jfloat, jfloatArray, jint, jlong};
 use jni::JNIEnv;
 
 /// Crash-loud wrapper for void JNI callbacks: run `f` inside
@@ -904,4 +904,76 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeDro
     if ptr != 0 {
         drop(Box::from_raw(ptr as *mut AndroidVirtCallbacks));
     }
+}
+
+// ---------------------------------------------------------------------------
+// RustBorderDrawable — dashed / dotted border geometry
+// ---------------------------------------------------------------------------
+
+/// Hand a fitted geometry array back as a Java `float[]`, or `null`
+/// when the style draws solid (the drawable then keeps its solid path).
+fn border_geometry_to_java(env: &mut JNIEnv, values: Option<&[f32]>) -> jfloatArray {
+    let Some(values) = values else {
+        return std::ptr::null_mut();
+    };
+    let arr = match env.new_float_array(values.len() as jint) {
+        Ok(a) => a,
+        Err(e) => {
+            log::error!("RustBorderDrawable: new float[] failed: {e:?}");
+            return std::ptr::null_mut();
+        }
+    };
+    if let Err(e) = env.set_float_array_region(&arr, 0, values) {
+        log::error!("RustBorderDrawable: float[] fill failed: {e:?}");
+        return std::ptr::null_mut();
+    }
+    arr.into_raw()
+}
+
+/// `RustBorderDrawable.nativeLoopDash` — uniform patterned border: the
+/// centreline loop + the `DashPathEffect` fitted to its length, for the
+/// drawable's CURRENT bounds. Layout documented on
+/// `border_dash_policy::loop_geometry`. Called from `draw` only when the
+/// drawable's geometry is dirty, never per frame for a static border.
+///
+/// Crash-loud like every other export: the maths cannot panic on finite
+/// input, and a panic here would otherwise unwind into the JVM (UB).
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustBorderDrawable_nativeLoopDash(
+    mut env: JNIEnv,
+    _this: JObject,
+    style: jint,
+    width: jfloat,
+    box_w: jfloat,
+    box_h: jfloat,
+    r_tl: jfloat,
+    r_tr: jfloat,
+    r_br: jfloat,
+    r_bl: jfloat,
+) -> jfloatArray {
+    use crate::border_dash_policy::{loop_geometry, style_from_code};
+    let g = run_returning_callback("border-loop-dash", || {
+        loop_geometry(style_from_code(style), width, box_w, box_h, [r_tl, r_tr, r_br, r_bl])
+    });
+    border_geometry_to_java(&mut env, g.as_ref().map(|a| &a[..]))
+}
+
+/// `RustBorderDrawable.nativeSideDash` — one side (`0..4` = top, right,
+/// bottom, left) of an asymmetric patterned border. Layout documented on
+/// `border_dash_policy::side_geometry`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustBorderDrawable_nativeSideDash(
+    mut env: JNIEnv,
+    _this: JObject,
+    style: jint,
+    side: jint,
+    width: jfloat,
+    box_w: jfloat,
+    box_h: jfloat,
+) -> jfloatArray {
+    use crate::border_dash_policy::{side_geometry, style_from_code};
+    let g = run_returning_callback("border-side-dash", || {
+        side_geometry(style_from_code(style), side.clamp(0, 3) as usize, width, box_w, box_h)
+    });
+    border_geometry_to_java(&mut env, g.as_ref().map(|a| &a[..]))
 }

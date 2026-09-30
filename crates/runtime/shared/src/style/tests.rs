@@ -54,6 +54,36 @@ fn content_key_distinguishes_cursor_and_user_select() {
     assert_ne!(no_sel.content_key(), none.content_key());
 }
 
+// ----- border_style: merge + content_key ---------------------------------
+
+// `border_style` overlays like any other property, and an overlay that
+// only changes a WIDTH (a hover/focus state thickening the edge) must
+// keep the base's pattern rather than silently reverting to solid.
+#[test]
+fn merge_keeps_border_style_under_a_width_only_overlay() {
+    let base = StyleRules {
+        border_style: Some(BorderStyle::Dashed),
+        border_top_width: Some(Tokenized::Literal(1.0)),
+        ..Default::default()
+    };
+    let hover = StyleRules { border_top_width: Some(Tokenized::Literal(2.0)), ..Default::default() };
+    assert_eq!(base.clone().merge(&hover).border_style, Some(BorderStyle::Dashed));
+    let dotted = StyleRules { border_style: Some(BorderStyle::Dotted), ..Default::default() };
+    assert_eq!(base.merge(&dotted).border_style, Some(BorderStyle::Dotted));
+}
+
+// A dashed and a solid border with the same width/colour must mint
+// different classes on web — a shared class would draw one of them wrong.
+#[test]
+fn content_key_distinguishes_border_style() {
+    let solid = StyleRules { border_style: Some(BorderStyle::Solid), ..Default::default() };
+    let dashed = StyleRules { border_style: Some(BorderStyle::Dashed), ..Default::default() };
+    let dotted = StyleRules { border_style: Some(BorderStyle::Dotted), ..Default::default() };
+    assert_ne!(solid.content_key(), dashed.content_key());
+    assert_ne!(dashed.content_key(), dotted.content_key());
+    assert_ne!(dashed.content_key(), StyleRules::default().content_key());
+}
+
 // ----- object_fit: default + merge + content_key ------------------------
 
 /// A bare `StyleRules` leaves `object_fit` unset; backends read that as
@@ -1759,6 +1789,7 @@ fn clone_round_trips_a_fully_populated_struct() {
         cursor: Some(Cursor::Help),
         user_select: Some(UserSelect::Text),
         pointer_events: Some(PointerEvents::None),
+        border_style: Some(BorderStyle::Dotted),
     };
     assert_eq!(rules.clone(), rules);
 }

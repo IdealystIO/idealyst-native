@@ -143,6 +143,11 @@ pub mod keys {
     pub const BORDER_WIDTH: &str = "border_width";
     /// Border color (`NativeValue::Color`).
     pub const BORDER_COLOR: &str = "border_color";
+    /// Border line pattern as its CSS keyword — `"solid"`, `"dashed"` or
+    /// `"dotted"` (`NativeValue::Text`). Read back from what the platform
+    /// actually strokes (a dash pattern on the layer, the computed
+    /// `border-style`), not from the author's rules.
+    pub const BORDER_STYLE: &str = "border_style";
     /// Foreground/text color (`NativeValue::Color`).
     pub const TEXT_COLOR: &str = "text_color";
     /// Resolved font family name (`NativeValue::Text`).

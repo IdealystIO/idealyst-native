@@ -263,6 +263,18 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
         cursor: r.cursor.map(cursor_to_wire),
         line_height: r.line_height.as_ref().map(tokenized_f32),
         letter_spacing: r.letter_spacing.as_ref().map(tokenized_f32),
+        border_style: r.border_style.map(border_style_to_wire),
+    }
+}
+
+/// `BorderStyle` → its wire mirror. Exhaustive, like [`cursor_to_wire`].
+fn border_style_to_wire(b: runtime_shared::style::BorderStyle) -> wire::WireBorderStyle {
+    use runtime_shared::style::BorderStyle as B;
+    use wire::WireBorderStyle as W;
+    match b {
+        B::Solid => W::Solid,
+        B::Dashed => W::Dashed,
+        B::Dotted => W::Dotted,
     }
 }
 
@@ -619,8 +631,10 @@ mod definition_tests {
         r.cursor = Some(Cursor::Pointer);
         r.line_height = Some(Tokenized::Literal(1.5));
         r.letter_spacing = Some(Tokenized::Literal(0.4));
+        r.border_style = Some(runtime_shared::style::BorderStyle::Dotted);
 
         let w = style_rules_to_wire(&r);
+        assert_eq!(w.border_style, Some(wire::WireBorderStyle::Dotted));
         assert_eq!(w.border_top_width, Some(2.0));
         assert_eq!(w.border_left_width, Some(5.0));
         assert!(w.border_top_color.is_some());
@@ -640,5 +654,6 @@ mod definition_tests {
         assert!(w.shadow.is_none());
         assert!(w.cursor.is_none());
         assert!(w.line_height.is_none());
+        assert!(w.border_style.is_none());
     }
 }

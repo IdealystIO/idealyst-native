@@ -89,6 +89,7 @@ pub mod dispatch_hook;
 /// [`WindowsBackend`], plus the boot entry and flush driver.
 pub mod newcore;
 
+mod border_pattern;
 mod code;
 mod dcomp;
 mod font;
@@ -321,6 +322,10 @@ pub(crate) struct ViewVisual {
     pub gradient: Option<GradientPaint>,
     /// `[top, right, bottom, left]`.
     pub borders: [BorderSide; 4],
+    /// Line pattern for every side (`StyleRules::border_style`). Solid
+    /// takes the original paint path; dashed / dotted are planned by
+    /// [`border_pattern`].
+    pub border_style: runtime_shared::BorderStyle,
     /// `[top-left, top-right, bottom-right, bottom-left]` corner radii.
     pub radii: [f32; 4],
     /// Pressable click handler; fired by the host's hit-tested
@@ -2265,6 +2270,7 @@ impl WindowsBackend {
                             color: resolve_color(&style.border_left_color),
                         },
                     ];
+                    v.border_style = style.border_style.unwrap_or_default();
                     v.radii = [
                         resolve_radius(&style.border_top_left_radius),
                         resolve_radius(&style.border_top_right_radius),

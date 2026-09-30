@@ -112,6 +112,9 @@ pub(crate) struct NodeData {
     /// Border colors per side `[top, right, bottom, left]`. `None`
     /// means "inherit text color" or "no border" depending on width.
     pub border_colors: [Option<Rgba>; 4],
+    /// `style.border_style` (`None` → solid). Dashed / dotted borders
+    /// paint through `raster::stroke_border_patterned`.
+    pub border_style: runtime_shared::BorderStyle,
     /// Cached corner radii `[tl, tr, br, bl]` in px. Zeros = sharp
     /// corners. Used by the rounded-rect rasterizer.
     pub corner_radii: [f32; 4],
@@ -172,6 +175,7 @@ impl NodeData {
             scroll_y: 0.0,
             border_widths: [0.0; 4],
             border_colors: [None; 4],
+            border_style: runtime_shared::BorderStyle::Solid,
             corner_radii: [0.0; 4],
             font_size_px: None,
             static_translate_x: None,

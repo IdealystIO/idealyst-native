@@ -246,6 +246,12 @@ fn report_paint_model(
         if b.widths[0] > 0.0 {
             node.set(keys::BORDER_WIDTH, Some(NativeValue::Length(b.widths[0])));
             node.set(keys::BORDER_COLOR, Some(NativeValue::Color(b.colors[0])));
+            // The pattern `paint_box` actually draws — decided by the same
+            // `border_stroke::plan` call the snapshot makes (against the same
+            // clamped radii), so a style the plan falls back to solid for is
+            // reported solid, not as the author's intent.
+            let style = crate::border_stroke::painted_keyword(b, w, h, radius);
+            node.set(keys::BORDER_STYLE, Some(NativeValue::Text(style.to_string())));
         }
     }
 }
@@ -307,6 +313,8 @@ fn read_paint_from_gsk(w: &gtk4::Widget, node: &mut NativeNode) {
         if width > 0.0 {
             node.set(keys::BORDER_WIDTH, Some(NativeValue::Length(width)));
             node.set(keys::BORDER_COLOR, Some(NativeValue::Color(color)));
+            // A `GskBorderNode` can only draw a solid line.
+            node.set(keys::BORDER_STYLE, Some(NativeValue::Text("solid".to_string())));
         }
     }
 }

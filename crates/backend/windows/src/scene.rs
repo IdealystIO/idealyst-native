@@ -61,9 +61,10 @@ use windows::Win32::Graphics::GdiPlus::{
 };
 
 use crate::font;
+use crate::border_pattern::{self, BorderMark};
 use crate::{
     icon, image, uniform_border, AnimTransform, BorderSide, GradKind, GradientPaint, NodeKind,
-    WindowsBackend,
+    ViewVisual, WindowsBackend,
 };
 
 // =========================================================================
@@ -334,6 +335,82 @@ unsafe fn paint_gradient(
     }
 }
 
+/// Paint a view's border. Solid borders take the original path
+/// unchanged — a uniform border strokes the rounded path, anything else
+/// draws straight per-side bars. Dashed / dotted borders draw the marks
+/// [`border_pattern::plan`] lays out (see that module for why they are
+/// explicit marks rather than a GDI+ dashed pen).
+pub(crate) unsafe fn paint_border(g: *mut GpGraphics, v: &ViewVisual, w: f32, h: f32, alpha: f32) {
+    if let Some(marks) = border_pattern::plan(&v.borders, v.radii, v.border_style, w, h) {
+        paint_border_marks(g, &marks, alpha);
+        return;
+    }
+    match uniform_border(&v.borders) {
+        Some((width, color)) => {
+            let mut stroke: *mut GpPath = std::ptr::null_mut();
+            if GdipCreatePath(FillModeWinding, &mut stroke).0 == 0 && !stroke.is_null() {
+                build_round_rect_path(stroke, w, h, v.radii, width / 2.0);
+                let mut pen: *mut GpPen = std::ptr::null_mut();
+                if GdipCreatePen1(
+                    argb_with_alpha(color.to_argb_u32(), alpha),
+                    width,
+                    UnitPixel,
+                    &mut pen,
+                )
+                .0 == 0
+                {
+                    let _ = GdipDrawPath(g, pen, stroke);
+                    let _ = GdipDeletePen(pen);
+                }
+                let _ = GdipDeletePath(stroke);
+            }
+        }
+        None if v.borders.iter().any(|s| s.width > 0.5) => {
+            paint_side_borders(g, &v.borders, w, h, alpha);
+        }
+        None => {}
+    }
+}
+
+/// Draw [`BorderMark`]s: each dash an open polyline under a flat-capped
+/// pen (flat so a dash's visible length is exactly its run — a round or
+/// square cap would add half the width at each end), each dot a filled
+/// circle.
+unsafe fn paint_border_marks(g: *mut GpGraphics, marks: &[BorderMark], alpha: f32) {
+    use windows::Win32::Graphics::GdiPlus::{
+        GdipDrawLines, GdipFillEllipse, GdipSetPenLineJoin, LineJoinRound, PointF,
+    };
+    for mark in marks {
+        match mark {
+            BorderMark::Dash { points, width, color } => {
+                if points.len() < 2 {
+                    continue;
+                }
+                let pts: Vec<PointF> = points.iter().map(|(x, y)| PointF { X: *x, Y: *y }).collect();
+                let mut pen: *mut GpPen = std::ptr::null_mut();
+                if GdipCreatePen1(argb_with_alpha(color.to_argb_u32(), alpha), *width, UnitPixel, &mut pen).0 == 0
+                    && !pen.is_null()
+                {
+                    // Round joins: a dash sampled round a rounded corner
+                    // has many shallow joins, and a miter at each would
+                    // spike outward. GDI+'s default caps are already flat.
+                    let _ = GdipSetPenLineJoin(pen, LineJoinRound);
+                    let _ = GdipDrawLines(g, pen, pts.as_ptr(), pts.len() as i32);
+                    let _ = GdipDeletePen(pen);
+                }
+            }
+            BorderMark::Dot { cx, cy, radius, color } => {
+                let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+                if GdipCreateSolidFill(argb_with_alpha(color.to_argb_u32(), alpha), &mut brush).0 == 0 {
+                    let d = radius * 2.0;
+                    let _ = GdipFillEllipse(g, brush as *mut GpBrush, cx - radius, cy - radius, d, d);
+                    let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                }
+            }
+        }
+    }
+}
+
 /// Draw asymmetric borders as straight per-side bars (`[top, right,
 /// bottom, left]`), each a filled rectangle of its own width + color. A
 /// side with no explicit color falls back to the first side that has
@@ -580,31 +657,7 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
                     let _ = GdipDeletePath(fill_path);
                 }
             }
-            match uniform_border(&v.borders) {
-                Some((width, color)) => {
-                    let mut stroke: *mut GpPath = std::ptr::null_mut();
-                    if GdipCreatePath(FillModeWinding, &mut stroke).0 == 0 && !stroke.is_null() {
-                        build_round_rect_path(stroke, w, h, v.radii, width / 2.0);
-                        let mut pen: *mut GpPen = std::ptr::null_mut();
-                        if GdipCreatePen1(
-                            argb_with_alpha(color.to_argb_u32(), alpha),
-                            width,
-                            UnitPixel,
-                            &mut pen,
-                        )
-                        .0 == 0
-                        {
-                            let _ = GdipDrawPath(g, pen, stroke);
-                            let _ = GdipDeletePen(pen);
-                        }
-                        let _ = GdipDeletePath(stroke);
-                    }
-                }
-                None if v.borders.iter().any(|s| s.width > 0.5) => {
-                    paint_side_borders(g, &v.borders, w, h, alpha);
-                }
-                None => {}
-            }
+            paint_border(g, v, w, h, alpha);
         }
         NodeKind::Text(t) => {
             if !t.content.is_empty() {
@@ -1188,5 +1241,92 @@ mod tests {
             v.scroll.as_mut().unwrap().offset_y = 200.0;
         }
         assert!(pressable_at(&b, 50.0, 275.0).is_some(), "scrolled-in content hits");
+    }
+}
+
+/// Border painting through REAL GDI+ calls into an offscreen bitmap.
+///
+/// These need `gdiplus.dll`, so they run only where the Windows test
+/// binary runs (the crate is gated on `target_os = "windows"`).
+#[cfg(test)]
+mod border_render_tests {
+    use super::*;
+    use runtime_shared::color::Rgba;
+    use runtime_shared::BorderStyle;
+    use windows::Win32::Graphics::GdiPlus::{
+        GdipBitmapGetPixel, GdipCreateBitmapFromScan0, GdipDisposeImage,
+        GdipGetImageGraphicsContext, GpBitmap, GpImage,
+    };
+
+    /// `PixelFormat32bppARGB` from `gdipluspixelformats.h` — a `#define`,
+    /// so the `windows` crate carries no constant for it.
+    const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200A;
+
+    /// Paint `v`'s border on a transparent `w × h` bitmap (anti-aliased,
+    /// as the scene paints) and return each pixel's alpha, row-major.
+    fn render(v: &ViewVisual, w: i32, h: i32) -> Vec<u8> {
+        crate::ensure_gdiplus();
+        unsafe {
+            let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+            assert_eq!(
+                GdipCreateBitmapFromScan0(w, h, 0, PIXEL_FORMAT_32BPP_ARGB, None, &mut bmp).0,
+                0
+            );
+            let mut g: *mut GpGraphics = std::ptr::null_mut();
+            assert_eq!(GdipGetImageGraphicsContext(bmp as *mut GpImage, &mut g).0, 0);
+            let _ = GdipGraphicsClear(g, 0);
+            let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+            paint_border(g, v, w as f32, h as f32, 1.0);
+            let _ = GdipDeleteGraphics(g);
+            let mut out = Vec::with_capacity((w * h) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let mut argb = 0u32;
+                    let _ = GdipBitmapGetPixel(bmp, x, y, &mut argb);
+                    out.push((argb >> 24) as u8);
+                }
+            }
+            let _ = GdipDisposeImage(bmp as *mut GpImage);
+            out
+        }
+    }
+
+    fn bordered(width: f32, style: BorderStyle) -> ViewVisual {
+        let side = BorderSide { width, color: Some(Rgba::new(255, 0, 0, 255)) };
+        ViewVisual { borders: [side; 4], border_style: style, ..Default::default() }
+    }
+
+    fn alpha(px: &[u8], w: i32, x: i32, y: i32) -> u8 {
+        px[(y * w + x) as usize]
+    }
+
+    #[test]
+    fn dashed_border_leaves_gaps_where_solid_is_inked() {
+        // 60×30, 2px: centreline loop 2·(58 + 28) = 172 → 14 fitted dashes
+        // (period 172/14 ≈ 12.29). The first is centred on (1, 1), so the
+        // top edge is inked on x ∈ [0, 4] and [10.3, 16.3] and clear
+        // between.
+        let (w, h) = (60, 30);
+        let dashed = render(&bordered(2.0, BorderStyle::Dashed), w, h);
+        assert!(alpha(&dashed, w, 13, 0) > 200, "inside the second dash");
+        assert!(alpha(&dashed, w, 2, 0) > 200, "inside the first dash");
+        assert!(alpha(&dashed, w, 7, 0) < 30, "the gap between them");
+        assert!(alpha(&dashed, w, 30, 15) < 30, "the interior stays clear");
+
+        let solid = render(&bordered(2.0, BorderStyle::Solid), w, h);
+        assert!(alpha(&solid, w, 7, 0) > 200, "solid inks the same pixel");
+    }
+
+    #[test]
+    fn dotted_border_draws_round_dots_one_width_across() {
+        // 60×40, 4px: loop 2·(56 + 36) = 184, dot period 8 → 23 dots,
+        // centred on the top edge's centreline (y = 2) at x = 2, 10, 18…
+        let (w, h) = (60, 40);
+        let px = render(&bordered(4.0, BorderStyle::Dotted), w, h);
+        assert!(alpha(&px, w, 9, 2) > 200 && alpha(&px, w, 10, 1) > 200, "dot at x = 10");
+        assert!(alpha(&px, w, 5, 2) < 30 && alpha(&px, w, 6, 2) < 30, "gap between dots");
+        // Round, not square: the dot's bounding-box corner is outside the
+        // circle.
+        assert!(alpha(&px, w, 8, 0) < 128, "dot corner is cut: {}", alpha(&px, w, 8, 0));
     }
 }

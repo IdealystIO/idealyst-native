@@ -1053,6 +1053,39 @@ pub enum UserSelect {
     All,
 }
 
+/// How a border's stroke is drawn. Applies to all four sides at once —
+/// widths and colours stay per-side, the line pattern does not (a box
+/// dashed on one edge and dotted on the next is not something any
+/// design asks for, and one value keeps the native stroke to one path).
+///
+/// `None` / [`BorderStyle::Solid`] is the unbroken border every backend
+/// has always drawn. The dash and dot lengths are NOT per-backend
+/// constants: web draws with CSS `border-style`, and every native
+/// backend takes its pattern from [`crate::border_dash`], which mirrors
+/// the browser's proportions so the same author tree shows the same
+/// dashes everywhere (CLAUDE.md §7).
+///
+/// - Web / SSR / email: CSS `border-style: dashed | dotted`.
+/// - iOS / macOS: a `CAShapeLayer` stroke with `lineDashPattern`
+///   (`CALayer.borderWidth` cannot dash).
+/// - Android: a `DashPathEffect` on the border drawable's stroke.
+/// - GTK: a GSK dashed stroke; dots are filled circles.
+/// - GPU engine / Win32 / CPU: each mark drawn individually from
+///   [`crate::border_dash::dash_runs`] (rotated rects / polylines, round
+///   dots).
+/// - Terminal: the dashed (`╌`/`╎`) / dotted (`┈`/`┊`) box-drawing
+///   characters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BorderStyle {
+    /// One unbroken line (CSS `solid`).
+    #[default]
+    Solid,
+    /// Short dashes (CSS `dashed`).
+    Dashed,
+    /// Round dots, one border-width across (CSS `dotted`).
+    Dotted,
+}
+
 /// Whether an element participates in pointer hit-testing.
 ///
 /// The canonical use is [`PointerEvents::None`] on a purely *decorative* overlay
@@ -1369,6 +1402,10 @@ pub struct StyleRules {
     pub border_bottom_color: Option<Tokenized<Color>>,
     pub border_left_color: Option<Tokenized<Color>>,
 
+    /// Line pattern for every side's border. See [`BorderStyle`].
+    /// `None` = solid. Has no effect until some side has a width.
+    pub border_style: Option<BorderStyle>,
+
     // --- Position ---
     pub position: Option<Position>,
     pub top: Option<Tokenized<Length>>,
@@ -1543,6 +1580,7 @@ impl Clone for StyleRules {
             border_right_color: self.border_right_color.clone(),
             border_bottom_color: self.border_bottom_color.clone(),
             border_left_color: self.border_left_color.clone(),
+            border_style: self.border_style,
             position: self.position.clone(),
             top: self.top.clone(),
             right: self.right.clone(),
@@ -1635,6 +1673,7 @@ impl StyleRules {
             border_bottom_left_radius, border_bottom_right_radius,
             border_top_width, border_right_width, border_bottom_width, border_left_width,
             border_top_color, border_right_color, border_bottom_color, border_left_color,
+            border_style,
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
             text_align, underline, strikethrough, text_transform,
@@ -1757,6 +1796,7 @@ impl StyleRules {
         write_tokenized_color(&mut s, "bcr", &self.border_right_color);
         write_tokenized_color(&mut s, "bcb", &self.border_bottom_color);
         write_tokenized_color(&mut s, "bcl", &self.border_left_color);
+        write_enum(&mut s, "bst", self.border_style.map(|x| x as u8));
 
         write_enum(&mut s, "pos", self.position.map(|x| x as u8));
         write_tokenized_length(&mut s, "top", &self.top);

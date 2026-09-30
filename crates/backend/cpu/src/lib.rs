@@ -81,7 +81,7 @@ use runtime_shared::{GradientKind, Length, RadialExtent};
 use runtime_layout::LayoutTree;
 
 use node::{NodeData, ResolvedGradient};
-use raster::{blend_over, fill_rounded_rect_blended, premultiply_alpha, stroke_border, Rect};
+use raster::{blend_over, fill_rounded_rect_blended, premultiply_alpha, stroke_border, stroke_border_patterned, Rect};
 
 // ---------------------------------------------------------------------------
 // ClickOutcome — same shape as the terminal backend
@@ -365,14 +365,26 @@ impl CpuBackend {
             data.border_colors[3].map(|c| premultiply_alpha([c.r, c.g, c.b, c.a], opacity)),
         ];
         if data.border_widths.iter().any(|w| *w > 0.0) {
-            stroke_border(
-                surface,
-                rect,
-                data.border_widths,
-                border_colors,
-                clip,
-                dst_sampler,
-            );
+            if data.border_style == runtime_shared::BorderStyle::Solid {
+                stroke_border(
+                    surface,
+                    rect,
+                    data.border_widths,
+                    border_colors,
+                    clip,
+                    dst_sampler,
+                );
+            } else {
+                stroke_border_patterned(
+                    surface,
+                    rect,
+                    data.border_widths,
+                    border_colors,
+                    data.border_style,
+                    clip,
+                    dst_sampler,
+                );
+            }
         }
 
         // -----------------------------------------------------------------

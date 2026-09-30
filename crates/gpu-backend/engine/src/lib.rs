@@ -30,6 +30,7 @@
 
 mod animation;
 mod backend_impl;
+mod border_marks;
 mod device_frame_pipeline;
 /// Post-dispatch hook for the new-core flush driver. Unconditional
 /// (not `new-core`-gated) because the fire sites live in `host-winit`,

@@ -4722,6 +4722,10 @@ impl IosBackend {
             // render pass on every composite — the dominant GPU cost when
             // scrolling a page of shadowed cards.
             backend_ios_core::style::sync_shadow_path(view);
+            // Same for a dashed / dotted border's `CAShapeLayer` path (and its
+            // perimeter-fitted dash pattern) — also after `sync_corner_radius`
+            // so a percent / pill radius is traced at its final value.
+            backend_ios_core::style::sync_border_dash(view);
             // Resolve any percent-valued static `transform: translate`
             // requests now that the box has real pixel dimensions.
             // CSS spec: translate-% is BOX-relative, so the shift
