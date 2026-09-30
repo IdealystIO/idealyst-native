@@ -8,8 +8,9 @@
 # build pass (`wasm_carve::glue` + `build_web::own_glue`) that never walks a
 # function body.
 #
-# Zero dependencies on purpose: it sits under every web crate that will be
-# ported onto it, and it must not drag wasm-bindgen back in.
+# Zero dependencies on purpose (the one optional dep is the temporary
+# hybrid bridge): it sits under every web crate that will be ported onto
+# it, and it must not drag wasm-bindgen back in.
 
 [package]
 name = "web-glue"
@@ -17,7 +18,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Framework-owned wasm <-> JS bindings: handles, strings, callbacks, futures, exceptions, with the JS shipped inside the wasm."
-# Phase 1 PoC: not published until backend-web is ported onto it (phase 2).
-publish = false
+
+[features]
+# HYBRID-BRIDGE (temporary, phase 3 deletes it): `web_glue::bridge`, the
+# crossing between web-glue handles and wasm-bindgen values for a page that
+# still links both (backend-web on web-glue, SDKs on web-sys). Own-mode
+# builds never enable it, so their graph stays free of wasm-bindgen.
+wasm-bindgen-bridge = ["dep:wasm-bindgen"]
 
 [dependencies]
+wasm-bindgen = { version = "0.2", optional = true }

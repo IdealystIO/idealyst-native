@@ -357,7 +357,7 @@ fn own_glue_demo_runs_in_chrome_without_wasm_bindgen() {
     assert_eq!(page.text("exception"), "caught RangeError: bad value ✓");
     assert_eq!(page.text("async"), "timer 30ms; rejection nope ✓");
     let selftest = page.text("selftest");
-    for check in ["strings", "growth", "handles", "callbacks", "module", "reflect"] {
+    for check in ["strings", "growth", "handles", "callbacks", "module", "reflect", "casts", "listener"] {
         assert!(selftest.contains(&format!("{check}=ok")), "self-check {check} failed: {selftest}");
     }
 

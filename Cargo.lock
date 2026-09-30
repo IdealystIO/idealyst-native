@@ -13730,6 +13730,9 @@ dependencies = [
 [[package]]
 name = "web-glue"
 version = "1.5.2"
+dependencies = [
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "web-sys"

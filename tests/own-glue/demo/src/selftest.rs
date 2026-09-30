@@ -32,6 +32,8 @@ pub fn run(body: &JsValue) {
     check(&mut results, "callbacks", callbacks(body));
     check(&mut results, "module", module(body));
     check(&mut results, "reflect", reflect());
+    check(&mut results, "casts", casts());
+    check(&mut results, "listener", listener());
 
     let out = dom::child(body, "pre", "selftest");
     dom::set_text(&out, &results.join(" "));
@@ -170,4 +172,71 @@ fn reflect() -> Result<(), String> {
         Err(e) => Err(format!("wrong error {}", e.message())),
         Ok(_) => Err("null.x did not throw".into()),
     }
+}
+
+/// Typed handles: `instanceof`-checked casts, the deref chain, and a
+/// failed cast handing the value back.
+fn casts() -> Result<(), String> {
+    use web_glue::dom::{self, Element, HtmlElement, HtmlInputElement, Node};
+    use web_glue::JsCast;
+    let doc = dom::window().ok_or("no window")?.document();
+    let body = doc.body().ok_or("no body")?;
+    if body.tag_name() != "BODY" {
+        return Err(format!("tag {}", body.tag_name()));
+    }
+    let as_node: Node = body.clone().into();
+    let back = as_node.dyn_into::<HtmlElement>().map_err(|_| "Node -> HtmlElement refused")?;
+    if !back.is_same_node(&body) {
+        return Err("round trip is a different node".into());
+    }
+    let not_input = back.dyn_into::<HtmlInputElement>();
+    let Err(returned) = not_input else { return Err("body cast to HtmlInputElement".into()) };
+    if returned.dyn_ref::<Element>().is_none() {
+        return Err("the refused value came back unusable".into());
+    }
+    let n = web_glue::JsValue::from_f64(1.0);
+    if n.dyn_ref::<Node>().is_some() {
+        return Err("a number is a Node".into());
+    }
+    Ok(())
+}
+
+/// `dom::Listener` detaches on drop (so the dropped closure is never
+/// reached), and `into_target_owned` keeps firing after its owner is gone.
+fn listener() -> Result<(), String> {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use web_glue::dom::{self, EventTarget, Listener, ListenerOptions};
+    use web_glue::JsCast;
+    let doc = dom::window().ok_or("no window")?.document();
+    let body = doc.body().ok_or("no body")?;
+    let host = crate::dom::child(&web_glue::JsValue::from(body), "button", "listener-target");
+    let target: EventTarget = host.clone().unchecked_into();
+    let hits = Rc::new(Cell::new(0));
+    let kinds = Rc::new(std::cell::RefCell::new(String::new()));
+    let (h, k) = (hits.clone(), kinds.clone());
+    let owned = Listener::new(target.clone(), "click", ListenerOptions::default(), move |ev| {
+        h.set(h.get() + 1);
+        *k.borrow_mut() = ev.type_();
+    });
+    host.call_method("click", &[]).map_err(|e| e.message())?;
+    drop(owned);
+    // Detached, so this click reaches nothing (a revoked-but-attached
+    // function would throw out of `click()`).
+    host.call_method("click", &[]).map_err(|e| e.message())?;
+    if hits.get() != 1 || *kinds.borrow() != "click" {
+        return Err(format!("owned listener fired {} times ({})", hits.get(), kinds.borrow()));
+    }
+    let before = web_glue::Closure::live_count();
+    let h2 = hits.clone();
+    Listener::new(target, "click", ListenerOptions::default(), move |_| h2.set(h2.get() + 10))
+        .into_target_owned();
+    host.call_method("click", &[]).map_err(|e| e.message())?;
+    if hits.get() != 11 {
+        return Err(format!("target-owned listener: {} hits", hits.get()));
+    }
+    if web_glue::Closure::live_count() != before + 1 {
+        return Err("target-owned closure not registered".into());
+    }
+    Ok(())
 }

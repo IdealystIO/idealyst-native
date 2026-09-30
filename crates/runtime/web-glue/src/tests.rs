@@ -191,6 +191,38 @@ fn once_into_js_frees_its_entry_after_the_single_call() {
 }
 
 #[test]
+fn regression_a_gc_owned_closure_keeps_running_then_is_released_when_js_collects_it() {
+    // The leak `into_js_value` exists to prevent: an element-lifetime
+    // listener's Rust closure pinned for the life of the page after the
+    // element (and so the function) was discarded.
+    struct Captured(Rc<Cell<bool>>);
+    impl Drop for Captured {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    let dropped = Rc::new(Cell::new(false));
+    let calls = Rc::new(Cell::new(0));
+    let (c2, cap) = (calls.clone(), Captured(dropped.clone()));
+    let before = Closure::live_count();
+    let js = Closure::new(move |_| {
+        let _ = &cap;
+        c2.set(c2.get() + 1);
+    })
+    .into_js_value();
+    let func = mock::val(js.raw());
+    drop(js); // the slab slot, not the function's lifetime
+    mock::call_js_fn(&func, V::Undefined).unwrap();
+    mock::call_js_fn(&func, V::Undefined).unwrap();
+    assert_eq!(calls.get(), 2, "still callable after its handle dropped");
+    assert_eq!(Closure::live_count(), before + 1);
+    assert!(!dropped.get());
+    mock::collect_garbage();
+    assert_eq!(Closure::live_count(), before, "released once JS collected it");
+    assert!(dropped.get(), "the closure's captures dropped with it");
+}
+
+#[test]
 fn a_closure_may_drop_itself_while_running() {
     let holder: Rc<RefCell<Option<Closure>>> = Rc::new(RefCell::new(None));
     let h = holder.clone();

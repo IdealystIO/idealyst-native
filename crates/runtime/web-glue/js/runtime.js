@@ -54,6 +54,7 @@ const dec = new TextDecoder("utf-8", { ignoreBOM: true, fatal: true });
 const enc = new TextEncoder();
 const fnState = new WeakMap();
 const modules = new Map();
+let finalizer = null;
 
 // Callback flags — must match `callback::FLAG_*` in Rust.
 const ONCE = 1;
@@ -229,6 +230,20 @@ const G = {
     };
     fnState.set(f, st);
     return G.add(f);
+  },
+  // `Closure::into_js_value`: the JS garbage collector owns the Rust
+  // closure from here on. When the function is collected, release its
+  // registry entry. (A registry that was never created — no
+  // FinalizationRegistry in this engine — degrades to keeping the entry
+  // for the page's lifetime, the pre-2021 wasm-bindgen behaviour.)
+  gcOwn(h) {
+    if (finalizer === null && typeof FinalizationRegistry === "function") {
+      finalizer = new FinalizationRegistry((id) => {
+        if (ex !== null || lazy !== null) attached().__glue_release(id);
+      });
+    }
+    const st = fnState.get(G.get(h));
+    if (finalizer !== null && st !== undefined) finalizer.register(G.get(h), st.id);
   },
   revokeFn(h) {
     const f = G.take(h);

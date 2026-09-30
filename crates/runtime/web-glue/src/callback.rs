@@ -21,6 +21,14 @@
 //!   `invoked recursively` error, as wasm-bindgen does.
 //! * [`Closure::once_into_js`] is the fire-and-forget form: no Rust owner,
 //!   the entry frees itself after the single call.
+//! * [`Closure::into_js_value`] hands the Rust closure to the JS garbage
+//!   collector: the runtime registers the function in a
+//!   `FinalizationRegistry`, and when JS collects it the runtime calls the
+//!   exported [`__glue_release`], which unregisters the closure. That is
+//!   `wasm_bindgen::Closure::into_js_value`'s contract, and it is what an
+//!   element-lifetime listener needs — the element is the keepalive, and a
+//!   discarded element must not pin its listeners' closures for the life of
+//!   the page (see `backend_web::primitives::own_listener`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -116,6 +124,21 @@ impl Closure {
         unsafe { JsValue::from_raw(ffi::make_fn(id, FLAG_ONCE)) }
     }
 
+    /// Give the Rust closure to JS: it lives as long as the returned
+    /// function is reachable from JS, and is unregistered (via
+    /// [`__glue_release`]) once the function is garbage-collected. The
+    /// returned handle may be dropped freely — it is one slab slot, not the
+    /// function's lifetime. Calling the function keeps working until then.
+    pub fn into_js_value(self) -> JsValue {
+        let me = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `me` is never dropped, and `js` is read exactly once, so
+        // ownership of the slot moves to `js` — the registry entry now
+        // belongs to the finalizer instead of to a Rust owner.
+        let js = unsafe { std::ptr::read(&me.js) };
+        unsafe { ffi::gc_own_fn(js.raw()) };
+        js
+    }
+
     pub(crate) fn once_silent(f: impl FnOnce(JsValue) + 'static) -> Closure {
         Closure::with_flags(Kind::Once(Box::new(f)), FLAG_ONCE | FLAG_SILENT)
     }
@@ -154,6 +177,15 @@ impl std::fmt::Debug for Closure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Closure(#{})", self.id)
     }
+}
+
+/// The runtime's `FinalizationRegistry` callback for a function minted by
+/// [`Closure::into_js_value`]: JS collected it, so nothing can call it any
+/// more — drop the Rust closure. A no-op for an id already gone (a once
+/// callback that ran).
+#[unsafe(no_mangle)]
+pub extern "C" fn __glue_release(id: u32) {
+    unregister(id);
 }
 
 /// The one entry point JS calls callbacks through. Takes ownership of the

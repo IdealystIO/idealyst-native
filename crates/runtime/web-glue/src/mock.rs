@@ -313,6 +313,22 @@ pub(crate) unsafe fn revoke_fn(h: u32) {
     }
     unsafe { drop_ref(h) }
 }
+// Functions handed to the (mock) garbage collector by `gc_own_fn`.
+thread_local! {
+    static GC_OWNED: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+pub(crate) unsafe fn gc_own_fn(h: u32) {
+    if let V::Func(st) = val(h) {
+        GC_OWNED.with(|g| g.borrow_mut().push(st.id));
+    }
+}
+/// What the runtime's `FinalizationRegistry` does once JS collected every
+/// function handed over with `gc_own_fn`.
+pub(crate) fn collect_garbage() {
+    for id in GC_OWNED.with(|g| std::mem::take(&mut *g.borrow_mut())) {
+        crate::callback::__glue_release(id);
+    }
+}
 pub(crate) unsafe fn queue_microtask() {
     HEAP.with(|h| h.borrow_mut().microtasks_requested += 1);
 }

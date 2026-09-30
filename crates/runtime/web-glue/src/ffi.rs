@@ -55,6 +55,7 @@ crate::import! {
 
     pub(crate) fn make_fn(id: u32, flags: u32) -> u32 = "(i, f) => G.fn(i, f)";
     pub(crate) fn revoke_fn(h: u32) = "(h) => G.revokeFn(h)";
+    pub(crate) fn gc_own_fn(h: u32) = "(h) => G.gcOwn(h)";
     pub(crate) fn queue_microtask() = "() => G.queueMicrotask()";
     pub(crate) fn promise_then(p: u32, ok: u32, err: u32) =
         "(p, a, b) => { G.get(p).then(G.get(a), G.get(b)); }";

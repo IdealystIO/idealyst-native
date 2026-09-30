@@ -461,6 +461,7 @@ mcp-catalog = { path = "crates/mcp/catalog", version = "1.13.1", registry = "ide
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
+web-glue = { path = "crates/runtime/web-glue", version = "1.5.2", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.7.0", registry = "idealyst" }
 dev-client = { path = "crates/dev/client", version = "1.7.0", registry = "idealyst" }
 dev-server = { path = "crates/dev/server", version = "1.7.0", registry = "idealyst" }

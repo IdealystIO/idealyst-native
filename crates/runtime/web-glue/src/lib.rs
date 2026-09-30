@@ -14,6 +14,7 @@
 //! | exceptions               | `#[catch]` imports → [`JsError`]       |
 //! | promises / executor      | [`JsFuture`], [`spawn_local`]          |
 //! | microtasks               | [`queue_microtask`]                    |
+//! | typed DOM handles, casts | [`dom`], [`JsCast`], [`js_class!`]     |
 //!
 //! # How the JS gets to the page
 //!
@@ -35,7 +36,11 @@
 //! the generated loader then runs constructors exactly once, before `main`.
 //! `build_web::own_glue::link_args()` supplies the flag.
 
+#[cfg(feature = "wasm-bindgen-bridge")]
+pub mod bridge;
 pub mod callback;
+pub mod cast;
+pub mod dom;
 pub mod error;
 mod ffi;
 mod macros;
@@ -47,6 +52,7 @@ pub mod task;
 pub mod value;
 
 pub use callback::Closure;
+pub use cast::JsCast;
 pub use error::JsError;
 pub use task::{queue_microtask, spawn_local, JsFuture};
 pub use value::{JsType, JsValue};
