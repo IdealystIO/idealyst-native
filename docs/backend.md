@@ -159,6 +159,15 @@ Three consequences:
   (`crates/runtime/scene/src/realize.rs::mount_item`). A missed
   registration fails loud; the old core rendered a placeholder box.
 
+**`H::Node` on the web is `web_glue::dom::Node`**, the framework-owned
+JS boundary's handle — not `web_sys::Node` (own-web-bindings phase 2b,
+[`proposals/own-web-bindings.md`](proposals/own-web-bindings.md)). A web
+handler written against web-sys crosses once at each seam through
+`backend_web::bridge` (HYBRID-BRIDGE, until phase 3 ports the SDKs):
+`node_from_web_sys` for the node it returns, `node_to_web_sys` for the
+host node its ops receive as `&dyn Any`. Downcasting that `&dyn Any` to
+`web_sys::Node` directly compiles and silently yields `None`.
+
 The framework's own handlers install through one call —
 `runtime_vocabulary::handlers::register_builtins(&mut registry)`: the
 leaf primitives (`view`, `text`, `button`, `pressable`, `image`, `icon`,

@@ -7,8 +7,9 @@ turns it into the page's JS without post-processing the whole module.
 Apps may keep using wasm-bindgen themselves; the framework stops relying
 on it.
 
-> **Status: phase 2a done (backend-web's foundation on web-glue, hybrid
-> mode, in every web build).** Phase 1 (the proof of concept) is
+> **Status: phase 2 done — backend-web runs entirely on web-glue
+> (2a: foundation; 2b: the DOM-operation surface, `Host::Node`, the dev
+> tooling). The page is still hybrid because the SDKs are (phase 3).** Phase 1 (the proof of concept) is
 > `crates/runtime/web-glue`, the passes `wasm_carve::{glue, glue_js,
 > command_exports}` and `build_web::own_glue`, and the demos under
 > `tests/own-glue/`, driven in headless Chrome by
@@ -347,16 +348,19 @@ learn glue imports (see risks).
      (`TrackedListener` semantics kept); the eight shims as
      `js_module!`s (no run-time eval); boot; the hybrid pass in every
      build; hot-patch glue imports; the wasm32 test runner.
-   - **2b (next):** the DOM-operation surface (element creation,
-     attribute / style / class / text writes, measurement) as `import!`s
-     over the typed handles; the shim CALL sites (`window.__idealyst*`
-     via js-sys) and the virtualizer / virtual-grid callbacks those take;
-     ResizeObserver; `Host::Node` becoming a glue handle — which is where
-     SDK mount handlers, still receiving `web_sys::Node`, need the
-     HYBRID-BRIDGE until phase 3; the dev-only transports, robot, overlay
-     entry and hot-patch loader. `Host::Node` did NOT move in 2a: SDK
-     mount handlers take it (phase 3 scope), so changing it meant either
-     editing every SDK or bridging on every node creation.
+   - **2b (done):** every remaining DOM operation (creation, attribute /
+     style / class / text writes, tree edits, measurement, CSSOM, history,
+     ResizeObserver); the shim call sites and the virtualizer /
+     virtual-grid callbacks (glue closures that take every argument and
+     return a value); `Host::Node` = `web_glue::dom::Node`; the dev-only
+     WebSocket transports, robot relay + DOM screenshot, overlay entry and
+     hot-patch loader. backend-web names web-sys / wasm-bindgen ONLY in
+     `src/bridge.rs` (HYBRID-BRIDGE): an un-ported SDK hands its web-sys
+     element to the host (`node_from_web_sys`) and recovers one from the
+     host node it receives as `&dyn Any` (`node_to_web_sys`); a dropped
+     file still reaches the file-picker SDK as a `web_sys::File`. The
+     SDK side of those seams (svg, video, maps, form, webview,
+     canvas-native) changed only at the seam.
    - An own-mode switch in `BuildOptions` comes when a framework-only app
      links no wasm-bindgen at all (after phases 3–4).
 3. **SDKs** (the 35 crates' remaining web-sys/js-sys use), each onto
@@ -481,6 +485,45 @@ shows (it fails with the runner's `IDEALYST_GLUE_KEEP_WRAPPERS=1`).
   tempdir but falls back to serving its working directory, so a thin
   wrapper supplies `__idealyst_glue.js` there. `wasm-pack test` bypasses
   it; `cargo test --target wasm32-unknown-unknown` is the supported way.
+
+## Phase 2b results
+
+**How the port was done.** `web_glue::dom` and `web_glue::js` bind
+exactly what backend-web calls, with **web-sys's and js-sys's names and
+signatures** (`Node::append_child -> Result<Node, _>`,
+`Window::document -> Option<Document>`, `Reflect::get`,
+`Uint32Array::from(&[u32])`, …), errors as `JsError` — which derefs to
+its `JsValue`, as a wasm-bindgen error IS one. The port of ~19k lines was
+then a path rewrite plus the compiler's list of missing members (541
+errors → 0), and the phase-3 SDK ports get the same shape. Hot
+operations (create / append / insert / remove, attributes, text, inline
+style, classList, measurement) each have their own snippet; the long tail
+of property reads and writes goes through generic accessors.
+
+**web-glue additions:** `js` (Object, Array, Function, Reflect, Promise,
+typed arrays, Set, Map, Date); the DOM classes above plus CSSOM, History,
+Location, Navigator, ResizeObserver, WebSocket, XMLSerializer, XHR, the
+2D canvas context, and event-init dictionaries; `Closure::new_with_args`
+(every argument in, a value out — the return rides in `__glue_invoke`'s
+status, `3 + handle`, so it costs no second call); `null` is a permanent
+slot (1) next to `undefined` (0), so `JsValue::NULL` / `UNDEFINED` are
+constants; every class derefs down to `JsValue`.
+
+**Public API changes to web-glue (within this milestone):** to match
+web-sys, `Window::document` returns `Option<Document>`,
+`Window::inner_width/height` return `Result<JsValue, _>`,
+`Window::match_media` returns `Result<Option<_>, _>`, and
+`Node::contains` / `is_same_node` take `Option<&Node>`. The `Closure`
+invoke protocol changed (runtime and Rust together; invisible to users).
+
+**Found on the way:** backend-web used to enable ~60 web-sys features
+for every crate in the graph. With it down to `Node` + `File` (bridge
+only), crates that used web-sys types without declaring the features
+stopped building alone (the stack navigator's hydration test used
+`web_sys::window()` with only `History` enabled); each now declares its
+own. The runtime-server transport attached a new window `resize`
+listener (and leaked its closure) on every reconnect; it is now one
+listener, replaced per connect.
 
 ## Open questions
 
