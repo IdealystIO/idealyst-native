@@ -457,7 +457,7 @@ linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.12.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.9.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.13.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.13.1", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
@@ -518,7 +518,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.6.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.6.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "1.8.0", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "1.8.1", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.4", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.3", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.6.0", registry = "idealyst" }
@@ -564,7 +564,7 @@ maps = { path = "crates/sdk/client/maps", version = "1.5.2", registry = "idealys
 maps-core = { path = "crates/sdk/client/maps/core", version = "1.5.2", registry = "idealyst" }
 maps-web = { path = "crates/sdk/client/maps/web", version = "1.5.2", registry = "idealyst" }
 maps-ios = { path = "crates/sdk/client/maps/ios", version = "1.5.2", registry = "idealyst" }
-codeblock = { path = "crates/sdk/client/codeblock", version = "1.5.3", registry = "idealyst" }
+codeblock = { path = "crates/sdk/client/codeblock", version = "1.6.0", registry = "idealyst" }
 markdown = { path = "crates/sdk/client/markdown", version = "1.5.2", registry = "idealyst" }
 webview = { path = "crates/sdk/client/webview", version = "1.5.2", registry = "idealyst" }
 video = { path = "crates/sdk/client/video", version = "1.5.2", registry = "idealyst" }
@@ -582,8 +582,8 @@ table = { path = "crates/sdk/client/table", version = "1.6.0", registry = "ideal
 virtualized = { path = "crates/sdk/client/virtualized", version = "1.5.2", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "1.5.3", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "1.5.2", registry = "idealyst" }
-net = { path = "crates/sdk/client/net", version = "1.5.3", registry = "idealyst" }
-storage = { path = "crates/sdk/client/storage", version = "1.5.2", registry = "idealyst" }
+net = { path = "crates/sdk/client/net", version = "1.6.0", registry = "idealyst" }
+storage = { path = "crates/sdk/client/storage", version = "1.6.0", registry = "idealyst" }
 sync = { path = "crates/sdk/client/sync", version = "2.0.0", registry = "idealyst" }
 graphql = { path = "crates/sdk/client/graphql", version = "1.5.2", registry = "idealyst" }
 microphone = { path = "crates/sdk/client/microphone", version = "1.5.2", registry = "idealyst" }
@@ -611,7 +611,7 @@ notifications = { path = "crates/sdk/client/notifications", version = "1.5.2", r
 clipboard = { path = "crates/sdk/client/clipboard", version = "1.5.2", registry = "idealyst" }
 location = { path = "crates/sdk/client/location", version = "1.5.2", registry = "idealyst" }
 share = { path = "crates/sdk/client/share", version = "1.5.2", registry = "idealyst" }
-deep-link = { path = "crates/sdk/client/deep-link", version = "1.5.2", registry = "idealyst" }
+deep-link = { path = "crates/sdk/client/deep-link", version = "1.6.0", registry = "idealyst" }
 connectivity = { path = "crates/sdk/client/connectivity", version = "1.5.2", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "1.5.2", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "1.5.2", registry = "idealyst" }

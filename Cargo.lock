@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "css",
  "dev-client",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -3219,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "deep-link"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "runtime-core",
  "runtime-vocabulary",
@@ -7408,7 +7408,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -7896,7 +7896,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -11542,7 +11542,7 @@ checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
 
 [[package]]
 name = "storage"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
