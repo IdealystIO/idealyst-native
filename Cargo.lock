@@ -2250,7 +2250,7 @@ dependencies = [
  "host-mock",
  "inventory",
  "jni 0.21.1",
- "js-sys",
+ "media-stream",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
@@ -2260,6 +2260,8 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen",
+ "wasm-bindgen-test",
+ "web-glue",
  "web-sys",
 ]
 

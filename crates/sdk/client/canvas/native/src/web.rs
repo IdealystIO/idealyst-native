@@ -7,6 +7,17 @@
 //! WebGPU-unavailable fallback, so both paths produce identical output
 //! (CLAUDE.md §7).
 //!
+//! Every DOM and Canvas2D call goes through web-glue ([`crate::web_ctx`]).
+//! Two things still cross to web-sys, at the crate's seams only:
+//!
+//! * the public entry points [`make_2d_rasterizer`] / [`publish_capture_stream`]
+//!   take a `web_sys::HtmlCanvasElement`, because `canvas-vello` (on
+//!   wgpu, hence wasm-bindgen) calls them with one — changing that is a
+//!   public API change, so the element crosses in with `web_glue::bridge`;
+//! * a texture layer's / the self-capture's `native_source` is a
+//!   `web_sys::MediaStream` (`HYBRID-BRIDGE: native_source MediaStream` —
+//!   it switches with the media SDKs in one change).
+//!
 //! [`Scene`]: canvas_core::Scene
 
 use canvas_core::{
@@ -16,12 +27,14 @@ use canvas_core::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{Clamped, JsCast};
-use web_sys::{
-    CanvasCaptureMediaStreamTrack, CanvasGradient, CanvasRenderingContext2d, CanvasWindingRule,
-    Document, HtmlCanvasElement, HtmlVideoElement, ImageData, MediaStream, ResizeObserver,
-};
+use web_glue::dom::{Document, HtmlCanvasElement, ResizeObserver};
+use web_glue::{Closure, JsValue};
+
+use crate::web_ctx::{capture_stream, context_2d, new_canvas, CaptureTrack, Ctx2d, Gradient, Video};
+
+/// HYBRID-BRIDGE: native_source MediaStream — switches with the media SDKs.
+/// The stream type every producer publishes and every consumer downcasts.
+type NativeMediaStream = web_sys::MediaStream;
 
 /// Disconnects the `ResizeObserver` and frees its `Closure` on scope
 /// teardown, so a callback the browser has already queued can't fire
@@ -30,7 +43,7 @@ use web_sys::{
 /// resize/teardown contract.
 pub(crate) struct ObserverGuard {
     pub(crate) observer: ResizeObserver,
-    pub(crate) _cb: Closure<dyn FnMut()>,
+    pub(crate) _cb: Closure,
 }
 
 impl Drop for ObserverGuard {
@@ -51,19 +64,25 @@ impl Drop for ObserverGuard {
 /// is the canvas's first and only context (a `<canvas>` is permanently bound to
 /// its first context type on the web). Output is identical to the native-on-web
 /// path (CLAUDE.md §7).
+///
+/// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
+/// holds; the element crosses into web-glue once, here.
 pub fn make_2d_rasterizer(
+    canvas: web_sys::HtmlCanvasElement,
+    props: &Rc<CanvasProps>,
+) -> Box<dyn FnMut(&Scene)> {
+    rasterizer_2d(web_glue::bridge::from_bindgen(canvas.as_ref()), props)
+}
+
+/// [`make_2d_rasterizer`] on a web-glue canvas — what this crate's own
+/// handler calls (its `<canvas>` never exists as a web-sys value).
+pub(crate) fn rasterizer_2d(
     canvas: HtmlCanvasElement,
     props: &Rc<CanvasProps>,
 ) -> Box<dyn FnMut(&Scene)> {
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .ok()
-        .flatten()
-        .expect("2d context unavailable")
-        .dyn_into()
-        .expect("2d context cast");
+    let ctx: Ctx2d = context_2d(&canvas).expect("2d context unavailable");
 
-    let document = web_sys::window()
+    let document = web_glue::dom::window()
         .expect("no window")
         .document()
         .expect("no document");
@@ -74,7 +93,7 @@ pub fn make_2d_rasterizer(
     let layers = props.layers.clone();
     let layer_videos: Rc<RefCell<Vec<LayerVideo>>> = Rc::new(RefCell::new(Vec::new()));
 
-    let capture = publish_capture_stream(&canvas, props);
+    let capture = capture_stream_of(&canvas, props);
 
     Box::new(move |scene: &Scene| {
         render_scene(&canvas, &ctx, scene);
@@ -107,15 +126,26 @@ pub fn make_2d_rasterizer(
 /// at full speed. Driving `requestFrame()` per present pins one captured frame to
 /// each render (paced by [`CaptureFrameDriver`]). The returned driver is `None`
 /// when there's no capture sink; otherwise the caller MUST `tick()` it each frame.
+///
+/// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
+/// holds; the element crosses into web-glue once, here.
 #[must_use]
 pub fn publish_capture_stream(
-    canvas: &HtmlCanvasElement,
+    canvas: &web_sys::HtmlCanvasElement,
     props: &CanvasProps,
 ) -> Option<CaptureFrameDriver> {
+    capture_stream_of(&web_glue::bridge::from_bindgen(canvas.as_ref()), props)
+}
+
+/// [`publish_capture_stream`] on a web-glue canvas.
+fn capture_stream_of(canvas: &HtmlCanvasElement, props: &CanvasProps) -> Option<CaptureFrameDriver> {
     let capture = props.capture.as_ref()?;
-    let stream = canvas.capture_stream_with_frame_request_rate(0.0).ok()?;
-    let track: CanvasCaptureMediaStreamTrack =
-        stream.get_video_tracks().get(0).dyn_into().ok()?;
+    let (stream, track) = capture_stream(canvas)?;
+    // HYBRID-BRIDGE: native_source MediaStream — switches with the media
+    // SDKs. Consumers (media-writer, media-stream's screenshot, video)
+    // downcast a `web_sys::MediaStream`; the glue stream crosses out once.
+    let stream: NativeMediaStream =
+        wasm_bindgen::JsCast::unchecked_into(web_glue::bridge::to_bindgen(&stream));
     capture.publish_native_source(Rc::new(stream));
     Some(CaptureFrameDriver { track, last_ms: std::cell::Cell::new(f64::NEG_INFINITY) })
 }
@@ -124,7 +154,7 @@ pub fn publish_capture_stream(
 /// each render/present and it issues a `requestFrame()`, throttled to
 /// [`CAPTURE_FPS`] so a 120 Hz render loop doesn't over-encode.
 pub struct CaptureFrameDriver {
-    track: CanvasCaptureMediaStreamTrack,
+    track: CaptureTrack,
     last_ms: std::cell::Cell<f64>,
 }
 
@@ -132,7 +162,7 @@ impl CaptureFrameDriver {
     /// Capture the just-presented frame, unless less than one [`CAPTURE_FPS`]
     /// interval has elapsed since the last capture.
     pub fn tick(&self) {
-        let now = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
+        let now = web_glue::dom::performance_now();
         if now - self.last_ms.get() < CAPTURE_MIN_INTERVAL_MS {
             return;
         }
@@ -149,7 +179,7 @@ const CAPTURE_MIN_INTERVAL_MS: f64 = 1000.0 / CAPTURE_FPS;
 /// A hidden `<video>` element playing one layer's stream, reused across frames
 /// (creating + attaching a stream per frame would stutter).
 struct LayerVideo {
-    el: HtmlVideoElement,
+    el: Video,
     /// The web `MediaStream.id` currently attached — only re-`set_src_object`
     /// when it changes (camera opened / swapped).
     stream_id: Option<String>,
@@ -157,24 +187,18 @@ struct LayerVideo {
 
 impl LayerVideo {
     fn new(document: &Document) -> Self {
-        let el: HtmlVideoElement = document
-            .create_element("video")
-            .expect("create_element(video)")
-            .dyn_into()
-            .expect("video element cast");
         // Muted + autoplay so a detached element plays without user gesture;
         // playsinline avoids iOS Safari fullscreen takeover.
-        el.set_muted(true);
-        el.set_autoplay(true);
-        let _ = el.set_attribute("playsinline", "");
-        Self { el, stream_id: None }
+        Self { el: Video::new_layer(document), stream_id: None }
     }
 
-    fn ensure(&mut self, ms: &MediaStream) {
+    fn ensure(&mut self, ms: &NativeMediaStream) {
         let id = ms.id();
         if self.stream_id.as_deref() != Some(id.as_str()) {
-            self.el.set_src_object(Some(ms));
-            let _ = self.el.play(); // Promise; ignore
+            // HYBRID-BRIDGE: native_source MediaStream — crosses into the
+            // glue slab to become the hidden player's srcObject.
+            let stream: JsValue = web_glue::bridge::from_bindgen(ms.as_ref());
+            self.el.attach(&stream);
             self.stream_id = Some(id);
         }
     }
@@ -186,7 +210,7 @@ impl LayerVideo {
 /// matching the macOS GPU `LayerCompositor`.
 fn draw_layers(
     document: &Document,
-    ctx: &CanvasRenderingContext2d,
+    ctx: &Ctx2d,
     layers: &[TextureLayer],
     videos: &Rc<RefCell<Vec<LayerVideo>>>,
 ) {
@@ -204,7 +228,7 @@ fn draw_layers(
                 let Some(stream) = f() else { continue };
                 let Some(ms) = stream
                     .native_source()
-                    .and_then(|rc| rc.downcast::<MediaStream>().ok())
+                    .and_then(|rc| rc.downcast::<NativeMediaStream>().ok())
                 else {
                     continue;
                 };
@@ -242,22 +266,20 @@ fn draw_layers(
         ctx.save();
         ctx.set_global_alpha(layer.opacity.clamp(0.0, 1.0) as f64);
         ctx.begin_path();
-        let _ = ctx.round_rect_with_f64(ox as f64, oy as f64, ow as f64, oh as f64, r);
-        ctx.clip();
+        let _ = ctx.round_rect(ox as f64, oy as f64, ow as f64, oh as f64, r);
+        ctx.clip(false);
         match &src {
             LayerSrc::Video(idx) => {
-                let _ = ctx
-                    .draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-                        &vids[*idx].el, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64,
-                        oy as f64, ow as f64, oh as f64,
-                    );
+                let _ = ctx.draw_image_src_dst(
+                    vids[*idx].el.as_js(), sx as f64, sy as f64, sw as f64, sh as f64, ox as f64,
+                    oy as f64, ow as f64, oh as f64,
+                );
             }
             LayerSrc::Image(canvas) => {
-                let _ = ctx
-                    .draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-                        canvas, sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64,
-                        ow as f64, oh as f64,
-                    );
+                let _ = ctx.draw_image_src_dst(
+                    canvas.as_js(), sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64,
+                    ow as f64, oh as f64,
+                );
             }
         }
         // Border frame, composited WITH the image (stays locked to the moving
@@ -267,7 +289,7 @@ fn draw_layers(
             let inset = bw * 0.5;
             let br = (r - inset).max(0.0);
             ctx.begin_path();
-            let _ = ctx.round_rect_with_f64(
+            let _ = ctx.round_rect(
                 ox as f64 + inset,
                 oy as f64 + inset,
                 ow as f64 - bw,
@@ -292,8 +314,8 @@ fn draw_layers(
 const MAX_BACKING_DIM: f64 = 16384.0;
 
 /// Resize the backing store and replay `scene` into `ctx`.
-fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scene: &Scene) {
-    let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+fn render_scene(canvas: &HtmlCanvasElement, ctx: &Ctx2d, scene: &Scene) {
+    let dpr = web_glue::dom::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
     let css_w = canvas.client_width() as f64;
     let css_h = canvas.client_height() as f64;
     // Not laid out yet (handler runs before insertion). The ResizeObserver
@@ -311,10 +333,10 @@ fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scen
         canvas.set_height(bh);
     }
 
-    let _ = ctx.reset_transform();
+    ctx.reset_transform();
     ctx.clear_rect(0.0, 0.0, bw as f64, bh as f64);
     // Author coordinates are logical pixels; map them to device pixels.
-    let _ = ctx.scale(dpr, dpr);
+    ctx.scale(dpr, dpr);
     // Protect the dpr base transform from an unbalanced author `restore`.
     ctx.save();
     for op in scene.ops() {
@@ -323,12 +345,12 @@ fn render_scene(canvas: &HtmlCanvasElement, ctx: &CanvasRenderingContext2d, scen
     ctx.restore();
 }
 
-fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
+fn apply_op(ctx: &Ctx2d, op: &DrawOp) {
     match op {
         DrawOp::Save => ctx.save(),
         DrawOp::Restore => ctx.restore(),
         DrawOp::Transform(t) => {
-            let _ = ctx.transform(
+            ctx.transform(
                 t.a as f64,
                 t.b as f64,
                 t.c as f64,
@@ -341,10 +363,7 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
             build_path(ctx, path);
             apply_fill_paint(ctx, paint);
             apply_blend(ctx, paint.blend);
-            match fill_rule {
-                FillRule::NonZero => ctx.fill(),
-                FillRule::EvenOdd => ctx.fill_with_canvas_winding_rule(CanvasWindingRule::Evenodd),
-            }
+            ctx.fill(matches!(fill_rule, FillRule::EvenOdd));
             clear_blend(ctx, paint.blend);
         }
         DrawOp::Stroke { path, paint, stroke } => {
@@ -364,27 +383,21 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
             ctx.set_miter_limit(stroke.miter_limit as f64);
             // Dash pattern via setLineDash (a JS number array); reset after.
             if !stroke.dash.is_empty() {
-                let arr = js_sys::Array::new();
-                for &d in &stroke.dash {
-                    arr.push(&wasm_bindgen::JsValue::from_f64(d as f64));
-                }
-                let _ = ctx.set_line_dash(&arr);
+                let dash: Vec<f64> = stroke.dash.iter().map(|&d| d as f64).collect();
+                ctx.set_line_dash(&dash);
                 ctx.set_line_dash_offset(stroke.dash_offset as f64);
             }
             apply_blend(ctx, paint.blend);
             ctx.stroke();
             clear_blend(ctx, paint.blend);
             if !stroke.dash.is_empty() {
-                let _ = ctx.set_line_dash(&js_sys::Array::new());
+                ctx.set_line_dash(&[]);
                 ctx.set_line_dash_offset(0.0);
             }
         }
         DrawOp::Clip { path, fill_rule } => {
             build_path(ctx, path);
-            ctx.clip_with_canvas_winding_rule(match fill_rule {
-                FillRule::NonZero => CanvasWindingRule::Nonzero,
-                FillRule::EvenOdd => CanvasWindingRule::Evenodd,
-            });
+            ctx.clip(matches!(fill_rule, FillRule::EvenOdd));
         }
         DrawOp::Layer { id, clear, ops: nested, alpha, blend } => {
             draw_layer(ctx, *id, *clear, nested, *alpha, *blend);
@@ -410,8 +423,8 @@ fn apply_op(ctx: &CanvasRenderingContext2d, op: &DrawOp) {
                 ctx.save();
                 ctx.set_global_alpha(*alpha as f64);
                 apply_blend(ctx, *blend);
-                let _ = ctx.draw_image_with_html_canvas_element_and_dw_and_dh(
-                    &src_canvas,
+                let _ = ctx.draw_image_dw_dh(
+                    src_canvas.as_js(),
                     dst.x as f64,
                     dst.y as f64,
                     dst.w as f64,
@@ -472,7 +485,7 @@ thread_local! {
 /// the CPU-raster counterpart of the vello retained-op-log layer — same
 /// observable pixels (CLAUDE.md §7).
 fn draw_layer(
-    ctx: &CanvasRenderingContext2d,
+    ctx: &Ctx2d,
     id: u32,
     clear: bool,
     nested: &[DrawOp],
@@ -485,28 +498,26 @@ fn draw_layer(
         return;
     }
     let Some(layer_canvas) = layer_canvas_cached(id, bw, bh) else { return };
-    let Ok(Some(obj)) = layer_canvas.get_context("2d") else { return };
-    let Ok(octx) = obj.dyn_into::<CanvasRenderingContext2d>() else { return };
+    let Some(octx) = context_2d(&layer_canvas) else { return };
 
     if clear {
-        let _ = octx.reset_transform();
+        octx.reset_transform();
         octx.clear_rect(0.0, 0.0, bw as f64, bh as f64);
     }
     // Mirror the main context's transform so nested ops (logical coords) land
     // at the same device pixels they would in the main canvas.
-    if let Ok(m) = ctx.get_transform() {
-        let _ = octx.set_transform(m.a(), m.b(), m.c(), m.d(), m.e(), m.f());
-    }
+    let [a, b, c, d, e, f] = ctx.get_transform();
+    octx.set_transform(a, b, c, d, e, f);
     for op in nested {
         apply_op(&octx, op);
     }
 
     // Composite the layer device-for-device under alpha + blend.
     ctx.save();
-    let _ = ctx.reset_transform();
+    ctx.reset_transform();
     ctx.set_global_alpha(alpha as f64);
     apply_blend(ctx, blend);
-    let _ = ctx.draw_image_with_html_canvas_element(&layer_canvas, 0.0, 0.0);
+    let _ = ctx.draw_image(layer_canvas.as_js(), 0.0, 0.0);
     ctx.restore();
 }
 
@@ -524,7 +535,7 @@ fn draw_layer(
 /// skips the bake and just re-composites the retained raster — the cheap
 /// per-frame pan/zoom path.
 fn draw_cached_layer(
-    ctx: &CanvasRenderingContext2d,
+    ctx: &Ctx2d,
     id: u32,
     dirty: bool,
     transform: &Transform,
@@ -540,15 +551,13 @@ fn draw_cached_layer(
     let Some(layer_canvas) = cached_layer_canvas_cached(id, bw, bh) else { return };
 
     if dirty {
-        let Ok(Some(obj)) = layer_canvas.get_context("2d") else { return };
-        let Ok(octx) = obj.dyn_into::<CanvasRenderingContext2d>() else { return };
-        let _ = octx.reset_transform();
+        let Some(octx) = context_2d(&layer_canvas) else { return };
+        octx.reset_transform();
         octx.clear_rect(0.0, 0.0, bw as f64, bh as f64);
         // Bake at the main context's current transform (the dpr base for a
         // leading cached layer), so nested logical ops land at device resolution.
-        if let Ok(m) = ctx.get_transform() {
-            let _ = octx.set_transform(m.a(), m.b(), m.c(), m.d(), m.e(), m.f());
-        }
+        let [a, b, c, d, e, f] = ctx.get_transform();
+        octx.set_transform(a, b, c, d, e, f);
         for op in nested {
             apply_op(&octx, op);
         }
@@ -558,9 +567,9 @@ fn draw_cached_layer(
     // offscreen is already device-space). `setTransform` is absolute, replacing
     // the dpr base — correct because a cached layer leads its scene (no author
     // transform is active above it), matching the GPU fast path's plan gate.
-    let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+    let dpr = web_glue::dom::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
     ctx.save();
-    let _ = ctx.set_transform(
+    ctx.set_transform(
         transform.a as f64,
         transform.b as f64,
         transform.c as f64,
@@ -570,7 +579,7 @@ fn draw_cached_layer(
     );
     ctx.set_global_alpha(alpha as f64);
     apply_blend(ctx, blend);
-    let _ = ctx.draw_image_with_html_canvas_element(&layer_canvas, 0.0, 0.0);
+    let _ = ctx.draw_image(layer_canvas.as_js(), 0.0, 0.0);
     ctx.restore();
 }
 
@@ -586,9 +595,8 @@ fn cached_layer_canvas_cached(id: u32, bw: u32, bh: u32) -> Option<HtmlCanvasEle
             }
             return Some(existing.clone());
         }
-        let document = web_sys::window()?.document()?;
-        let canvas: HtmlCanvasElement =
-            document.create_element("canvas").ok()?.dyn_into().ok()?;
+        let document = web_glue::dom::window()?.document()?;
+        let canvas = new_canvas(&document)?;
         canvas.set_width(bw);
         canvas.set_height(bh);
         c.borrow_mut().insert(id, canvas.clone());
@@ -609,9 +617,8 @@ fn layer_canvas_cached(id: u32, bw: u32, bh: u32) -> Option<HtmlCanvasElement> {
             }
             return Some(existing.clone());
         }
-        let document = web_sys::window()?.document()?;
-        let canvas: HtmlCanvasElement =
-            document.create_element("canvas").ok()?.dyn_into().ok()?;
+        let document = web_glue::dom::window()?.document()?;
+        let canvas = new_canvas(&document)?;
         canvas.set_width(bw);
         canvas.set_height(bh);
         c.borrow_mut().insert(id, canvas.clone());
@@ -633,20 +640,12 @@ fn image_canvas_cached(src: &ImageSource) -> Option<HtmlCanvasElement> {
 
 /// Paint `src`'s raw RGBA into a fresh offscreen `<canvas>` via `ImageData`.
 fn build_image_canvas(src: &ImageSource) -> Option<HtmlCanvasElement> {
-    let document = web_sys::window()?.document()?;
-    let canvas: HtmlCanvasElement =
-        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    let document = web_glue::dom::window()?.document()?;
+    let canvas = new_canvas(&document)?;
     canvas.set_width(src.width);
     canvas.set_height(src.height);
-    let ctx: CanvasRenderingContext2d =
-        canvas.get_context("2d").ok()??.dyn_into().ok()?;
-    let data = ImageData::new_with_u8_clamped_array_and_sh(
-        Clamped(src.rgba.as_slice()),
-        src.width,
-        src.height,
-    )
-    .ok()?;
-    ctx.put_image_data(&data, 0.0, 0.0).ok()?;
+    let ctx = context_2d(&canvas)?;
+    ctx.put_rgba(src.rgba.as_slice(), src.width, src.height).ok()?;
     Some(canvas)
 }
 
@@ -680,21 +679,21 @@ fn blend_css(blend: BlendMode) -> Option<&'static str> {
 }
 
 /// Set the composite op for a blended paint. No-op for `Normal`.
-fn apply_blend(ctx: &CanvasRenderingContext2d, blend: BlendMode) {
+fn apply_blend(ctx: &Ctx2d, blend: BlendMode) {
     if let Some(css) = blend_css(blend) {
-        let _ = ctx.set_global_composite_operation(css);
+        ctx.set_global_composite_operation(css);
     }
 }
 
 /// Restore source-over after a blended paint, so the next op isn't
 /// silently affected. No-op when `apply_blend` did nothing.
-fn clear_blend(ctx: &CanvasRenderingContext2d, blend: BlendMode) {
+fn clear_blend(ctx: &Ctx2d, blend: BlendMode) {
     if blend_css(blend).is_some() {
-        let _ = ctx.set_global_composite_operation("source-over");
+        ctx.set_global_composite_operation("source-over");
     }
 }
 
-fn build_path(ctx: &CanvasRenderingContext2d, path: &Path) {
+fn build_path(ctx: &Ctx2d, path: &Path) {
     ctx.begin_path();
     for seg in &path.segs {
         match seg {
@@ -716,13 +715,13 @@ fn build_path(ctx: &CanvasRenderingContext2d, path: &Path) {
     }
 }
 
-fn apply_fill_paint(ctx: &CanvasRenderingContext2d, paint: &Paint) {
+fn apply_fill_paint(ctx: &Ctx2d, paint: &Paint) {
     match &paint.kind {
         PaintKind::Solid(c) => ctx.set_fill_style_str(&rgba_css(*c)),
-        PaintKind::Linear(g) => ctx.set_fill_style_canvas_gradient(&linear_gradient(ctx, g)),
+        PaintKind::Linear(g) => ctx.set_fill_style_gradient(&linear_gradient(ctx, g)),
         PaintKind::Radial(g) => {
             if let Some(grad) = radial_gradient(ctx, g) {
-                ctx.set_fill_style_canvas_gradient(&grad);
+                ctx.set_fill_style_gradient(&grad);
             }
         }
         // `PaintKind` is `#[non_exhaustive]`; unknown paints draw nothing.
@@ -730,20 +729,20 @@ fn apply_fill_paint(ctx: &CanvasRenderingContext2d, paint: &Paint) {
     }
 }
 
-fn apply_stroke_paint(ctx: &CanvasRenderingContext2d, paint: &Paint) {
+fn apply_stroke_paint(ctx: &Ctx2d, paint: &Paint) {
     match &paint.kind {
         PaintKind::Solid(c) => ctx.set_stroke_style_str(&rgba_css(*c)),
-        PaintKind::Linear(g) => ctx.set_stroke_style_canvas_gradient(&linear_gradient(ctx, g)),
+        PaintKind::Linear(g) => ctx.set_stroke_style_gradient(&linear_gradient(ctx, g)),
         PaintKind::Radial(g) => {
             if let Some(grad) = radial_gradient(ctx, g) {
-                ctx.set_stroke_style_canvas_gradient(&grad);
+                ctx.set_stroke_style_gradient(&grad);
             }
         }
         _ => ctx.set_stroke_style_str("rgba(0,0,0,0)"),
     }
 }
 
-fn linear_gradient(ctx: &CanvasRenderingContext2d, g: &LinearGradient) -> CanvasGradient {
+fn linear_gradient(ctx: &Ctx2d, g: &LinearGradient) -> Gradient {
     let grad =
         ctx.create_linear_gradient(g.x0 as f64, g.y0 as f64, g.x1 as f64, g.y1 as f64);
     for s in &g.stops {
@@ -752,7 +751,7 @@ fn linear_gradient(ctx: &CanvasRenderingContext2d, g: &LinearGradient) -> Canvas
     grad
 }
 
-fn radial_gradient(ctx: &CanvasRenderingContext2d, g: &RadialGradient) -> Option<CanvasGradient> {
+fn radial_gradient(ctx: &Ctx2d, g: &RadialGradient) -> Option<Gradient> {
     let grad = ctx
         .create_radial_gradient(g.cx as f64, g.cy as f64, 0.0, g.cx as f64, g.cy as f64, g.r as f64)
         .ok()?;

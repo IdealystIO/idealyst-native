@@ -20,19 +20,18 @@ use std::rc::Rc;
 use backend_web::WebBackend;
 use canvas_core::{paint_scene, CanvasPrim, Scene};
 use runtime_scene::{Element, MountCx};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
-use web_sys::{HtmlCanvasElement, ResizeObserver};
+use web_glue::dom::{HtmlCanvasElement, ResizeObserver};
+use web_glue::{Closure, JsCast};
 
-use crate::web::{make_2d_rasterizer, ObserverGuard};
+use crate::web::{rasterizer_2d, ObserverGuard};
 
 pub(crate) fn mount_canvas(
     cx: &mut MountCx<'_, WebBackend>,
     prim: &Rc<CanvasPrim>,
     _children: Vec<Element>,
-) -> backend_web::bridge::HostNode {
+) -> web_glue::dom::Node {
     let backend = cx.backend().clone();
-    let document = web_sys::window()
+    let document = web_glue::dom::window()
         .expect("no window")
         .document()
         .expect("no document");
@@ -50,14 +49,14 @@ pub(crate) fn mount_canvas(
     // Per-frame rasterizer (2d ctx + texture layers + captureStream) —
     // the shared function `canvas-vello` also uses as its Canvas2D
     // fallback, so both paths produce identical output.
-    let rasterize = Rc::new(RefCell::new(make_2d_rasterizer(canvas, &prim.props)));
+    let rasterize = Rc::new(RefCell::new(rasterizer_2d(canvas, &prim.props)));
 
-    let cb = Closure::<dyn FnMut()>::new({
+    let cb = Closure::new({
         let rasterize = rasterize.clone();
         let cell = cell.clone();
-        move || (rasterize.borrow_mut())(&cell.borrow())
+        move |_entries| (rasterize.borrow_mut())(&cell.borrow())
     });
-    let observer = ResizeObserver::new(cb.as_ref().unchecked_ref()).expect("ResizeObserver::new");
+    let observer = ResizeObserver::new(cb.as_js().unchecked_ref()).expect("ResizeObserver::new");
     observer.observe(&el);
     let guard = ObserverGuard { observer, _cb: cb };
 
@@ -74,8 +73,7 @@ pub(crate) fn mount_canvas(
         (rasterize.borrow_mut())(&cell.borrow());
     });
 
-    // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
-    let node = backend_web::bridge::node_from_web_sys(&el.into());
+    let node: web_glue::dom::Node = el.into();
     crate::finish_mount(&backend, &node, prim);
     node
 }

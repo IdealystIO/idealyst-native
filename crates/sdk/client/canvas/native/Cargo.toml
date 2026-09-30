@@ -47,38 +47,28 @@ runtime-world = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
+# The `<canvas>`, the Canvas2D replay, texture-layer `<video>`s, the
+# ResizeObserver and `captureStream` all go through web-glue, the
+# framework-owned JS boundary (docs/proposals/own-web-bindings.md). The
+# bridge feature is for the two seams below.
+web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
+# web-sys / wasm-bindgen remain for two seams only:
+# - `HtmlCanvasElement`: the public `make_2d_rasterizer` /
+#   `publish_capture_stream` take one, because `canvas-vello` (wgpu, hence
+#   wasm-bindgen) calls them with its graphics canvas. Changing that is a
+#   public API change.
+# - `MediaStream`: HYBRID-BRIDGE: native_source MediaStream — the texture
+#   layers' streams and the self-capture stream are `web_sys::MediaStream`
+#   native sources, which switch with the media SDKs in one change.
 wasm-bindgen = "0.2"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Document",
-    "Element",
-    "Node",
-    "HtmlCanvasElement",
-    "CanvasRenderingContext2d",
-    "CanvasGradient",
-    "CanvasWindingRule",
-    "ResizeObserver",
-    # Self-capture: `HtmlCanvasElement::capture_stream_with_frame_request_rate`
-    # → `MediaStream`, published as the canvas stream's native source. Capture
-    # runs in MANUAL mode (rate 0) and we drive `requestFrame()` per render via
-    # the `CanvasCaptureMediaStreamTrack`, paced by `performance.now()`.
-    "MediaStream",
-    "MediaStreamTrack",
-    "CanvasCaptureMediaStreamTrack",
-    "Performance",
-    # Texture layers (camera): a hidden <video> per layer is drawImage'd into the
-    # canvas so captureStream records it (web parity for camera-in-canvas).
-    "HtmlVideoElement",
-    "HtmlMediaElement",
-    # Static-image blit (`DrawOp::Image`): raw RGBA → `ImageData` → an offscreen
-    # `<canvas>` (`put_image_data`), drawImage'd into the scene
-    # (`draw_image_with_html_canvas_element_and_dw_dh`).
-    "ImageData",
-    # Persistent layer (`DrawOp::Layer`): `get_transform()` returns a `DomMatrix`
-    # used to mirror the main context's transform onto the offscreen layer.
-    "DomMatrix",
-] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "MediaStream"] }
+
+# Browser tests (`tests/web_canvas.rs`) — run with
+# `cargo test -p canvas-native --target wasm32-unknown-unknown` (the
+# workspace runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+media-stream = { workspace = true }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }

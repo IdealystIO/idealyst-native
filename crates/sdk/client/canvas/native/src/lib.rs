@@ -27,10 +27,13 @@ use runtime_vocabulary::style_attach::{attach_style, on_teardown, StyleServices}
 // through `FontResource`, not through this crate, so an app that draws only
 // charts ships none of it (see `canvas_core::glyph_outline`).
 
-// Web: the core-free Canvas2D rasterizer (`web`) + the
-// `WebBackend`-concrete mount handler that drives it (`web_scene`).
+// Web: the core-free Canvas2D rasterizer (`web`) over its web-glue
+// bindings (`web_ctx`) + the `WebBackend`-concrete mount handler that
+// drives it (`web_scene`).
 #[cfg(target_arch = "wasm32")]
 mod web;
+#[cfg(target_arch = "wasm32")]
+mod web_ctx;
 #[cfg(target_arch = "wasm32")]
 mod web_scene;
 // Reusable Canvas2D rasterizer + capture helper — `canvas-vello`'s web renderer
