@@ -36,11 +36,6 @@ sha2 = { workspace = true }
 # cheap; a full `walrus` parse of a multi-hundred-MB debug wasm is the
 # cost `--no-split` exists to avoid.
 wasmparser = { workspace = true }
-# Rewriting the base module before wasm-bindgen sees it needs a MUTABLE
-# module — appending element-segment entries and building trampolines —
-# which the read-only `wasmparser` cannot give. Paid only on a hot-patch
-# dev build; a release build never calls into it.
-walrus = { workspace = true }
 # The rustc-invocation capture and replay the native hot-patch pipeline
 # already owns. The wasm patch build replays the same captures for the
 # same reason — cargo folds RUSTFLAGS into `-Cmetadata`, `-Cmetadata`
@@ -62,6 +57,11 @@ icon-gen = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Tests build their fixtures with it. Nothing on the build path uses it:
+# base prep, the stranded-import pass and the base index are streaming
+# wasmparser / wasm-carve passes (a walrus parse of CrewForge's base was
+# 4–9 s and ~3.7 GB each).
+walrus = { workspace = true }
 toml = "0.8"
 # The two-crate roundtrip writes rustc captures in the replay's real
 # on-disk format (`replay::CapturedInvocation`, JSON).

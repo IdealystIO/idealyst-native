@@ -46,9 +46,11 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
-use walrus::{
-    ir, ElementItems, ElementKind, FunctionBuilder, FunctionId, FunctionKind, ImportKind, Module,
+use wasm_carve::{
+    append::{Additions, Forwarder},
+    module::{ElemItem, ModuleIndex},
 };
+use wasm_carve::wasmparser::TypeRef;
 
 /// What one run of [`prepare_base_module`] did, in the four numbers
 /// that decide whether a patch can link.
@@ -77,12 +79,11 @@ pub struct BasePrep {
     /// (`wbg_cast::breaks_if_inlined<…>`), rooted on top of `promoted`.
     /// See [`cast_trampoline_name`].
     pub cast_trampolines: usize,
-    /// Slots in the emitted module's element segments. Lower than
-    /// `already_indirect + promoted` means walrus's emit-time GC
-    /// dropped something we rooted.
+    /// Slots in the emitted module's element segments: the slots it had
+    /// plus every one this pass appended.
     pub slots_emitted: usize,
-    /// Local functions in the emitted module. Lower than `locals` is
-    /// the same GC, seen from the other side.
+    /// Local functions in the emitted module: `locals` plus the
+    /// trampolines. Nothing is dropped — the pass only appends.
     pub locals_emitted: usize,
 }
 
@@ -110,11 +111,22 @@ impl BasePrep {
 /// Must run BEFORE wasm-bindgen: the whole point is to be holding the
 /// GC roots when wasm-bindgen's pass runs.
 pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
-    let mut module = Module::from_buffer(wasm).context("parsing the linked base module")?;
+    let source = ModuleIndex::parse(wasm).context("parsing the linked base module")?;
     let mut report = BasePrep::default();
+    let total = source.total_funcs();
+    let name_of = |f: u32| source.func_names.get(&f).copied();
 
-    let already_indirect = functions_in_the_table(&module);
-    let mut promote: Vec<FunctionId> = Vec::new();
+    let already_indirect: HashSet<u32> = source
+        .elems
+        .iter()
+        .filter(|e| e.active.is_some())
+        .flat_map(|e| e.items.iter())
+        .filter_map(|item| match item {
+            ElemItem::Func(f) => Some(*f),
+            ElemItem::Null => None,
+        })
+        .collect();
+    let mut forwarders: Vec<Forwarder> = Vec::new();
 
     // A JS shim — what an `extern "C"` block under `#[wasm_bindgen]`
     // becomes — is an IMPORT in the base, not a function, so it has no
@@ -133,24 +145,20 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     // `__saved_wbg_<name>`, and wasm-bindgen then generated its JS
     // accessors against OUR export name (see below). A table slot is a
     // GC root without being a name wasm-bindgen can find.
-    let shims: Vec<(FunctionId, String)> = module
-        .imports
-        .iter()
-        .filter(|i| {
-            i.module != "env"
-                && i.module != "__wbindgen_externref_xform__"
-                && !is_bindgen_internal(&i.name)
-        })
-        .filter_map(|i| match i.kind {
-            ImportKind::Function(f) => Some((f, i.name.clone())),
-            _ => None,
-        })
-        .collect();
-    let mut trampolines: HashSet<FunctionId> = HashSet::new();
-    for (import, name) in shims {
-        let trampoline = call_through(&mut module, import, &shim_trampoline_name(&name));
-        promote.push(trampoline);
-        trampolines.insert(trampoline);
+    let mut func_import = 0u32;
+    for import in &source.imports {
+        if !matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+            continue;
+        }
+        let index = func_import;
+        func_import += 1;
+        if import.module == "env"
+            || import.module == "__wbindgen_externref_xform__"
+            || is_bindgen_internal(import.name)
+        {
+            continue;
+        }
+        forwarders.push(Forwarder { name: shim_trampoline_name(import.name), target: index });
         report.shim_trampolines += 1;
     }
 
@@ -169,17 +177,11 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     // body's call at the import it generates (it replaces the callee,
     // not the call sites), and `BaseIndex` resolves the mangled name to
     // the forwarder's slot.
-    let casts: Vec<(FunctionId, String)> = module
-        .funcs
-        .iter()
-        .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
-        .filter_map(|f| f.name.as_deref().filter(|n| is_bindgen_cast(n)).map(|n| (f.id(), n.to_string())))
-        .collect();
-    for (cast, name) in casts {
-        let trampoline = call_through(&mut module, cast, &cast_trampoline_name(&name));
-        promote.push(trampoline);
-        trampolines.insert(trampoline);
-        report.cast_trampolines += 1;
+    for f in source.func_imports..total {
+        if let Some(name) = name_of(f).filter(|n| is_bindgen_cast(n)) {
+            forwarders.push(Forwarder { name: cast_trampoline_name(name), target: f });
+            report.cast_trampolines += 1;
+        }
     }
 
     // NOTE: no `__saved_wbg_` alias exports. An earlier version added
@@ -197,6 +199,9 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     // the function's own name, with no second name for wasm-bindgen to
     // trip over.
 
+    // Every forwarder is rooted first, at the indices `append` gives it.
+    let mut root: Vec<u32> = (0..forwarders.len() as u32).map(|i| total + i).collect();
+
     // And now the main event: every local function that is not already
     // reachable through the table gets a slot, so wasm-bindgen's GC
     // treats it as live and a patch can call it by index.
@@ -205,97 +210,52 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     // exist for wasm-bindgen's own descriptor interpreter, which runs
     // over them and then expects them gone. Rooting one keeps it alive
     // into the output where it has no meaning.
-    let mut candidates: Vec<FunctionId> = Vec::new();
-    for f in module.funcs.iter() {
-        if !matches!(f.kind, FunctionKind::Local(_)) {
-            continue;
-        }
-        // Already queued above.
-        if trampolines.contains(&f.id()) {
-            continue;
-        }
+    for f in source.func_imports..total {
         report.locals += 1;
-        if already_indirect.contains(&f.id()) {
+        if already_indirect.contains(&f) {
             report.already_indirect += 1;
             continue;
         }
-        if f.name.as_deref().is_some_and(is_bindgen_internal) {
+        if name_of(f).is_some_and(is_bindgen_internal) {
             report.bindgen_internal += 1;
             continue;
         }
-        candidates.push(f.id());
-    }
-    report.promoted = candidates.len();
-    promote.extend(candidates);
-
-    if promote.is_empty() {
-        let out = module.emit_wasm();
-        drop(module);
-        let report = census(&out, report);
-        return Ok((out, report));
-    }
-    let added = promote.len() as u64;
-
-    // Append to the LAST active segment rather than adding a new one.
-    // A new segment would need its own offset, and the only offset that
-    // is certainly free is the one just past the existing entries —
-    // which is what appending gives us for nothing.
-    let last_active = module
-        .elements
-        .iter()
-        .filter(|e| matches!(e.kind, ElementKind::Active { .. }))
-        .map(|e| e.id())
-        .last()
-        .context(
-            "the base module has no active element segment to grow — \
-             was it linked without `--export-table`?",
-        )?;
-    let segment = module.elements.get_mut(last_active);
-    let (table, offset) = match &segment.kind {
-        ElementKind::Active { table, offset } => (*table, const_offset(offset)),
-        _ => unreachable!("filtered to active segments"),
-    };
-    let ElementItems::Functions(entries) = &mut segment.items else {
-        anyhow::bail!("the base module's element segment is not a function table");
-    };
-    entries.extend(promote);
-    let needed = offset + entries.len() as u64;
-
-    // The table has to actually be big enough to hold what the segment
-    // now writes into it. A `maximum` left where it was turns this into
-    // an instantiation failure in the browser rather than a build error
-    // — a long way from the cause.
-    //
-    // `initial + added` is what a normally-linked module wants, since
-    // LLD already sized it for the entries it emitted. `needed` is the
-    // floor the segment itself imposes. Taking the larger is correct
-    // either way and does not assume LLD's arithmetic.
-    let table = module.tables.get_mut(table);
-    table.initial = (table.initial + added).max(needed);
-    if let Some(max) = table.maximum {
-        table.maximum = Some(max.max(table.initial));
+        report.promoted += 1;
+        root.push(f);
     }
 
-    let out = module.emit_wasm();
-    drop(module);
+    let out = wasm_carve::append::append(
+        &source,
+        &Additions { forwarders: &forwarders, root: &root, keep_custom: &keep_custom_section },
+    )
+    .context("emitting the prepared base module")?;
     let report = census(&out, report);
     Ok((out, report))
 }
 
+/// Which custom sections the prepared base keeps: all but `linking`,
+/// every `reloc.*`, and DWARF (`.debug_*`).
+///
+/// LLD writes `linking` and `reloc.*` under `--emit-relocs` for the passes
+/// that read the LINKED module — the alias map and the data-symbol
+/// addresses, both taken before this runs (`hotpatch_aliases`). Nothing
+/// reads them from the served base, and on CrewForge they were ~150 MB of
+/// a ~300 MB base that wasm-bindgen, the stranded-import pass, the base
+/// index and every page reload each paid for. DWARF never reached the page
+/// either: the walrus pass this replaced did not re-emit it, and
+/// wasm-bindgen runs without `--keep-debug`.
+fn keep_custom_section(name: &str) -> bool {
+    name != "linking" && !name.starts_with("reloc.") && !name.starts_with(".debug_")
+}
+
 /// Fill in the two after-the-fact numbers by re-reading what we emitted.
 ///
-/// walrus runs a GC on `emit_wasm`, and its roots are the exports, the
-/// start function and the element segments of IMPORTED tables — a
-/// locally-defined table's segments are reached only through the table,
-/// and only if the table itself is rooted (walrus 0.26
-/// `passes/used.rs`). A base linked without `--export-table` therefore
-/// loses every slot this pass just added, silently. Counting the output
-/// is how that shows up as a number instead of as an unresolved import
-/// three minutes later.
-///
-/// Streams the sections with wasmparser rather than parsing a second
-/// walrus module: on CrewForge the emitted module is 223 MB, and a
-/// second walrus parse of it pushed the CLI over its 4 GB memory cap.
+/// The walrus pass this replaced garbage-collected on emit and could drop
+/// every slot it had just added (a base linked without `--export-table`
+/// has no root for its table); counting the output is what made that a
+/// number instead of an unresolved import three minutes later. `append`
+/// drops nothing, so the counts now only confirm the census adds up —
+/// cheap, one streaming pass over the sections.
 fn census(out: &[u8], mut report: BasePrep) -> BasePrep {
     use wasmparser::{Parser, Payload};
     for payload in Parser::new(0).parse_all(out) {
@@ -315,18 +275,6 @@ fn census(out: &[u8], mut report: BasePrep) -> BasePrep {
         }
     }
     report
-}
-
-/// The constant an active segment's offset folds to. A base module is
-/// linked non-PIC, so this is always an `i32.const`; anything else
-/// means we are looking at a module we were not handed, and zero is the
-/// conservative floor (it can only make the table larger).
-fn const_offset(expr: &walrus::ConstExpr) -> u64 {
-    match expr {
-        walrus::ConstExpr::Value(ir::Value::I32(v)) => (*v).max(0) as u64,
-        walrus::ConstExpr::Value(ir::Value::I64(v)) => (*v).max(0) as u64,
-        _ => 0,
-    }
 }
 
 /// Give every import wasm-bindgen's generated JS will not supply a local
@@ -378,22 +326,6 @@ pub fn neutralize_unsupplied_imports(wasm: &[u8]) -> Result<Option<Vec<u8>>> {
         .context("replacing the imports wasm-bindgen did not supply")
 }
 
-/// Every function already reachable through an active element segment.
-/// Promoting one of these again would give it two slots — two valid
-/// pointers to one body — and inflate the table for nothing.
-fn functions_in_the_table(module: &Module) -> HashSet<FunctionId> {
-    let mut out = HashSet::new();
-    for element in module.elements.iter() {
-        if !matches!(element.kind, ElementKind::Active { .. }) {
-            continue;
-        }
-        if let ElementItems::Functions(ids) = &element.items {
-            out.extend(ids.iter().copied());
-        }
-    }
-    out
-}
-
 /// The name the base's forwarding body for JS-shim import `import` goes
 /// by. `hotpatch_patch` resolves a patch's `__wbindgen_placeholder__`
 /// import through the table slot of this name, so the two sides share
@@ -419,25 +351,6 @@ pub(crate) fn is_bindgen_cast(name: &str) -> bool {
     name.contains("wbg_cast") && name.contains("breaks_if_inlined")
 }
 
-/// Build a local function with the same type as `target` that forwards
-/// its arguments and calls it.
-fn call_through(module: &mut Module, target: FunctionId, name: &str) -> FunctionId {
-    let ty_id = module.funcs.get(target).ty();
-    let ty = module.types.get(ty_id);
-    let params = ty.params().to_vec();
-    let results = ty.results().to_vec();
-
-    let locals: Vec<_> = params.iter().map(|t| module.locals.add(*t)).collect();
-    let mut builder = FunctionBuilder::new(&mut module.types, &params, &results);
-    let mut body = builder.name(name.to_string()).func_body();
-    for local in &locals {
-        body.local_get(*local);
-    }
-    body.instr(ir::Instr::Call(ir::Call { func: target }));
-
-    module.funcs.add_local(builder.local_func(locals))
-}
-
 /// A symbol that exists only for wasm-bindgen's own descriptor pass.
 ///
 /// These are interpreted at bindgen time and are expected to be gone
@@ -458,7 +371,10 @@ pub(crate) fn is_bindgen_internal(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use walrus::{ConstExpr, ValType};
+    use walrus::{
+        ir, ConstExpr, ElementItems, ElementKind, FunctionBuilder, FunctionId, FunctionKind,
+        Module, ValType,
+    };
 
     /// A module with `n` local functions, `in_table` of which start out
     /// in an active element segment.
@@ -835,6 +751,36 @@ mod tests {
         assert!(neutralize_unsupplied_imports(&module.emit_wasm())
             .unwrap()
             .is_none());
+    }
+
+    /// Regression: the served base carried the linked module's `linking`
+    /// and `reloc.*` sections — stale once functions are renumbered, read
+    /// by nothing (the alias map and data symbols come from the LINKED
+    /// module), and ~150 MB of CrewForge's ~300 MB base that wasm-bindgen,
+    /// every later pass and every page reload paid for.
+    #[test]
+    fn regression_the_prepared_base_carries_no_linker_metadata() {
+        let mut module = Module::default();
+        let table = module.tables.add_local(false, 1, Some(1), walrus::RefType::FUNCREF);
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder.name("f".to_string()).func_body();
+        let f = module.funcs.add_local(builder.local_func(vec![]));
+        module.elements.add(
+            ElementKind::Active { table, offset: walrus::ConstExpr::Value(ir::Value::I32(0)) },
+            ElementItems::Functions(vec![f]),
+        );
+        for name in ["linking", "reloc.CODE", "reloc..debug_info", "producers_kept"] {
+            module.customs.add(walrus::RawCustomSection { name: name.to_string(), data: vec![0] });
+        }
+        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let customs: Vec<String> = Module::from_buffer(&out)
+            .unwrap()
+            .customs
+            .iter()
+            .map(|(_, c)| c.name().to_string())
+            .collect();
+        assert!(!customs.iter().any(|n| n == "linking" || n.starts_with("reloc.")), "{customs:?}");
+        assert!(customs.iter().any(|n| n == "producers_kept"), "other sections stay: {customs:?}");
     }
 
     /// A module linked without `--export-table` has no segment to grow,

@@ -10,6 +10,7 @@
 //! bindgened module, keeping its index spaces so kept bodies never need
 //! rewriting. See `emit` for the output shapes.
 
+pub mod append;
 pub mod data;
 pub mod emit;
 pub mod graph;
@@ -17,6 +18,10 @@ pub mod liveness;
 pub mod module;
 pub mod neutralize;
 pub mod strand;
+
+/// The wasmparser this crate's types are built on ([`module::Import::ty`]
+/// is its `TypeRef`), for callers on a different version.
+pub use wasmparser;
 
 use std::collections::HashSet;
 

@@ -165,7 +165,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     run(
         Command::new(&tools.wasm_bindgen)
             .args(["--target", "web"])
-            .args(["--keep-lld-exports", "--keep-debug", "--no-demangle"])
+            .args(["--keep-lld-exports", "--no-demangle"])
             .args(["--out-name", "probe"])
             .arg("--out-dir")
             .arg(dir.join("pkg"))
@@ -202,7 +202,12 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
              two symbols on wasm32; if that pair is gone the fixture stopped formatting both",
         );
 
-    let base = BaseIndex::of(&served, &aliases).expect("indexing the served base");
+    // Data symbols come from the LINKED module too: base prep drops the
+    // `linking` section the served base would otherwise carry.
+    let data = hotpatch_aliases::read_data_symbols_from_linked(&std::fs::read(&linked).unwrap()).unwrap();
+    assert!(!data.is_empty(), "no data symbols read from the linked base");
+    assert_no_linker_metadata(&served);
+    let base = BaseIndex::of(&served, &aliases, &data).expect("indexing the served base");
     let hot_impl = base
         .ifunc
         .keys()
@@ -283,7 +288,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     // the tier shipped in before `hotpatch_aliases` — every ordinary body
     // edit fell back to a rebuild over `<usize as Display>::fmt`.
     let (alias_name, canonical_name) = &display_alias;
-    let blind = BaseIndex::of(&served, &Default::default()).unwrap();
+    let blind = BaseIndex::of(&served, &Default::default(), &data).unwrap();
     assert!(
         blind.ifunc.contains_key(canonical_name),
         "the canonical spelling must be in the table either way: {canonical_name}"
@@ -595,12 +600,15 @@ fn a_library_crates_patch_carries_its_dependents() {
     let aliases = hotpatch_aliases::read_from_linked(&linked_bytes).unwrap();
     let alias_path = dir.join("rt_app.aliases.tsv");
     hotpatch_aliases::write(&alias_path, &aliases).unwrap();
+    let data = hotpatch_aliases::read_data_symbols_from_linked(&linked_bytes).unwrap();
+    let data_path = dir.join("rt_app.datasyms.tsv");
+    hotpatch_aliases::write_data_symbols(&data_path, &data).unwrap();
     let (prepared, _) = prepare_base_module(&linked_bytes).unwrap();
     let prepared_path = dir.join("base.prepared.wasm");
     std::fs::write(&prepared_path, &prepared).unwrap();
     run(
         Command::new(&tools.wasm_bindgen)
-            .args(["--target", "web", "--keep-lld-exports", "--keep-debug", "--no-demangle"])
+            .args(["--target", "web", "--keep-lld-exports", "--no-demangle"])
             .args(["--out-name", "app"])
             .arg("--out-dir")
             .arg(dir.join("pkg"))
@@ -609,7 +617,8 @@ fn a_library_crates_patch_carries_its_dependents() {
     );
     let served_path = dir.join("pkg/app_bg.wasm");
     let served = std::fs::read(&served_path).unwrap();
-    let base = BaseIndex::of(&served, &aliases).unwrap();
+    assert_no_linker_metadata(&served);
+    let base = BaseIndex::of(&served, &aliases, &data).unwrap();
     let slot = |needle: &str| -> u64 {
         *base
             .ifunc
@@ -626,6 +635,7 @@ fn a_library_crates_patch_carries_its_dependents() {
     let builder = WasmPatchBuilder::new(
         &served_path,
         Some(&alias_path),
+        Some(&data_path),
         &captures,
         "rt_app",
         dir.join("patches"),
@@ -753,4 +763,20 @@ fn scratch_dir(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// The served base carries neither `linking` nor any `reloc.*` section:
+/// both are stale once base prep renumbers the functions, and on
+/// CrewForge they were half the module every later pass and every page
+/// reload paid for.
+fn assert_no_linker_metadata(served: &[u8]) {
+    for payload in wasmparser::Parser::new(0).parse_all(served) {
+        if let wasmparser::Payload::CustomSection(c) = payload.unwrap() {
+            assert!(
+                c.name() != "linking" && !c.name().starts_with("reloc."),
+                "the served base still carries `{}`",
+                c.name()
+            );
+        }
+    }
 }

@@ -457,9 +457,13 @@ pub struct BuildArtifact {
     /// hot-patch tier was armed. `None` otherwise.
     ///
     /// Written during base prep and not recoverable later: it comes from
-    /// the `linking` section's function indices, which walrus and
-    /// wasm-bindgen both renumber. See [`hotpatch_aliases`].
+    /// the `linking` section's function indices, which wasm-bindgen
+    /// renumbers and base prep drops. See [`hotpatch_aliases`].
     pub symbol_aliases: Option<PathBuf>,
+    /// The base's data-symbol addresses, read from the LINKED module
+    /// beside [`Self::symbol_aliases`], when the hot-patch tier was armed.
+    /// The served base has no `linking` section left to read them from.
+    pub data_symbols: Option<PathBuf>,
 }
 
 /// The primitives `--primitives` accepts — one per method on
@@ -734,17 +738,22 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         if opts.hot_patch {
             let prepared_path = original_wasm.with_extension("hotbase.wasm");
             let alias_path = original_wasm.with_extension("aliases.tsv");
+            let data_path = original_wasm.with_extension("datasyms.tsv");
             timings.time("hotpatch-base-prep", || {
                 let linked = fs::read(&original_wasm).with_context(|| {
                     format!("read {} for hot-patch prep", original_wasm.display())
                 })?;
-                // Read BEFORE the prep rewrites the module: the map is
-                // built from the `linking` section's function indices,
-                // and walrus re-emits functions in arena order, so after
-                // this point those indices name different functions.
+                // Read BEFORE the prep: the map is built from the
+                // `linking` section, which the prep drops, and whose
+                // function indices wasm-bindgen renumbers anyway.
                 let aliases = hotpatch_aliases::read_from_linked(&linked)
                     .context("reading the base module's symbol aliases")?;
                 hotpatch_aliases::write(&alias_path, &aliases)?;
+                // The only other thing anything reads from `linking`;
+                // the prep drops that section from the served base.
+                let data = hotpatch_aliases::read_data_symbols_from_linked(&linked)
+                    .context("reading the base module's data symbols")?;
+                hotpatch_aliases::write_data_symbols(&data_path, &data)?;
                 let (prepared, census) = hotpatch_base::prepare_base_module(&linked)
                     .context("preparing the base module for hot patching")?;
                 reporter.log(
@@ -1030,6 +1039,9 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         symbol_aliases: opts
             .hot_patch
             .then(|| original_wasm.with_extension("aliases.tsv")),
+        data_symbols: opts
+            .hot_patch
+            .then(|| original_wasm.with_extension("datasyms.tsv")),
         pkg_dir,
         // No longer a generated crate — the per-app staging dir that
         // holds `pkg/` and the premint dump. Field name kept so the
@@ -2790,15 +2802,18 @@ fn cargo_build_wasm(
 /// neutralize pass dropped anyway. On CrewForge it cost wasm-bindgen
 /// 2.9 GB / 7.7 s against 2.1 GB / 1.5 s without.
 ///
-/// A hot-patch base build takes `--keep-debug` and `--no-demangle` for
-/// its own reasons: the jump table is built by pairing the base's
-/// function names against the patch's, and they have to be MANGLED on
-/// both sides, since the patch is linked by wasm-ld and never sees
-/// wasm-bindgen at all. A demangled base pairs with nothing. Whether the
-/// patch path still needs `--keep-debug` has not been re-measured.
+/// A hot-patch base build takes `--no-demangle` for its own reason: the
+/// jump table is built by pairing the base's function names against the
+/// patch's, and they have to be MANGLED on both sides, since the patch is
+/// linked by wasm-ld and never sees wasm-bindgen at all. A demangled base
+/// pairs with nothing. It used to take `--keep-debug` too, unmeasured;
+/// base prep already drops the DWARF, so the flag kept
+/// nothing and only switched on walrus's per-instruction offset tracking
+/// — measured on CrewForge's base, 11.7 s / 6.2 GB with it and 5.7 s /
+/// 5.6 GB without, byte-identical output.
 fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
     if hot_patch {
-        &["--keep-lld-exports", "--keep-debug", "--no-demangle"]
+        &["--keep-lld-exports", "--no-demangle"]
     } else if split {
         &["--keep-lld-exports", "--no-demangle"]
     } else {
@@ -5029,14 +5044,22 @@ mod wasm_bindgen_flag_tests {
         assert!(!wasm_bindgen_flags(true, false).contains(&"--keep-debug"));
     }
 
-    /// A hot-patch base keeps its full set: its jump table pairs the base's
-    /// names with the patch's, and that path was not re-measured without.
+    /// A hot-patch base keeps its names mangled — its jump table pairs
+    /// them with the patch's — and the table exported.
     #[test]
     fn hot_patch_keeps_its_own_flags() {
         let flags = wasm_bindgen_flags(false, true);
-        for f in ["--keep-lld-exports", "--keep-debug", "--no-demangle"] {
+        for f in ["--keep-lld-exports", "--no-demangle"] {
             assert!(flags.contains(&f), "missing {f} in {flags:?}");
         }
+    }
+
+    /// Regression: the hot-patch base passed `--keep-debug` though base
+    /// prep had already dropped the DWARF, costing wasm-bindgen 6 s on
+    /// CrewForge (11.7 s vs 5.7 s) for byte-identical output.
+    #[test]
+    fn regression_hot_patch_does_not_ask_bindgen_to_keep_dwarf() {
+        assert!(!wasm_bindgen_flags(false, true).contains(&"--keep-debug"));
     }
 }
 

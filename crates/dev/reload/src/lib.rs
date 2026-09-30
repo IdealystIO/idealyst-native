@@ -1012,6 +1012,7 @@ impl HotPatchBase {
             match build_web::hotpatch_build::WasmPatchBuilder::new(
                 &self.artifact.served_wasm,
                 self.artifact.symbol_aliases.as_deref(),
+                self.artifact.data_symbols.as_deref(),
                 captures,
                 self.crate_name.clone(),
                 build_web::patches_dir(&self.serve_root),
@@ -2253,6 +2254,7 @@ mod tests {
                 served_wasm: tiny_served_base(dir),
                 captures_dir: Some(dir.join("caps")),
                 symbol_aliases: None,
+                data_symbols: None,
             },
             builder: None,
             retired: None,

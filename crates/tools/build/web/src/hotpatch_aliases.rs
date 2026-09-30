@@ -37,10 +37,10 @@
 //! it resolved to. Grouping symbols by index and pairing them against
 //! the name section gives `alias -> canonical` — a name-to-name map with
 //! no index in it, which matters because the index is the one part that
-//! does not survive: walrus re-emits functions in arena order and
-//! wasm-bindgen renumbers again, so by the time the page is running the
-//! `linking` section's indices name different functions. The map is read
-//! once, from the LINKED module, before either pass touches it.
+//! does not survive: wasm-bindgen's GC renumbers every function, so by
+//! the time the page is running the `linking` section's indices name
+//! different functions. The map is read once, from the LINKED module,
+//! before base prep drops that section and wasm-bindgen runs.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -155,6 +155,106 @@ pub fn read(path: &Path) -> Result<AliasMap> {
     Ok(out)
 }
 
+/// Data symbol name -> its absolute address in the base's memory.
+pub type DataSymbols = BTreeMap<String, u32>;
+
+/// Read every DEFINED data symbol's address out of a freshly LINKED base
+/// module: its `linking` symbol table (segment index + offset) against
+/// its data section (each segment's constant offset).
+///
+/// A patch imports the base's statics as `GOT.mem` globals, and this is
+/// the only place their addresses are written down. Read here, alongside
+/// the alias map, so the base the page loads need not carry `linking` at
+/// all: with the `reloc.*` sections that ride along with it that is
+/// ~150 MB of CrewForge's ~300 MB base, which wasm-bindgen, every later
+/// pass and every page reload otherwise paid for, and which nothing reads
+/// once the functions have been renumbered.
+pub fn read_data_symbols_from_linked(linked: &[u8]) -> Result<DataSymbols> {
+    // Segment index -> the segment's own offset in linear memory.
+    let mut segment_offsets: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut out = DataSymbols::new();
+    for payload in Parser::new(0).parse_all(linked) {
+        match payload.context("parsing the linked module's sections")? {
+            Payload::DataSection(reader) => {
+                for (index, data) in reader.into_iter().enumerate() {
+                    let data = data.context("parsing a data segment")?;
+                    if let wasmparser::DataKind::Active { offset_expr, .. } = data.kind {
+                        let mut ops = offset_expr.get_operators_reader();
+                        if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
+                            segment_offsets.insert(index as u32, value.max(0) as u32);
+                        }
+                    }
+                }
+            }
+            Payload::CustomSection(c) if c.name() == "linking" => {
+                let reader = wasmparser::LinkingSectionReader::new(wasmparser::BinaryReader::new(
+                    c.data(),
+                    c.data_offset(),
+                ))
+                .context("parsing the linking section")?;
+                for subsection in reader.subsections() {
+                    let wasmparser::Linking::SymbolTable(symbols) =
+                        subsection.context("parsing a linking subsection")?
+                    else {
+                        continue;
+                    };
+                    for symbol in symbols {
+                        // Only a DEFINED data symbol has a location. An
+                        // undefined one is a reference to somewhere else
+                        // and has no address to hand out.
+                        if let SymbolInfo::Data { name, symbol: Some(def), .. } =
+                            symbol.context("parsing a linking symbol")?
+                        {
+                            // The data section precedes the custom
+                            // sections, so every offset is known here.
+                            let at = segment_offsets.get(&def.index).copied().unwrap_or(0);
+                            out.insert(name.to_string(), def.offset.saturating_add(at));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Serialize the data symbols next to the base module: `name<TAB>address`
+/// per line, like [`write`].
+pub fn write_data_symbols(path: &Path, data: &DataSymbols) -> Result<()> {
+    let mut out = String::with_capacity(data.len() * 64);
+    for (name, addr) in data {
+        out.push_str(name);
+        out.push('\t');
+        out.push_str(&addr.to_string());
+        out.push('\n');
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(path, out).with_context(|| format!("write {}", path.display()))
+}
+
+/// Read what [`write_data_symbols`] wrote. A missing file is an empty
+/// map: every `GOT.mem` import then goes unresolved and the patch falls
+/// back to a rebuild naming the symbol, which is the loud failure.
+pub fn read_data_symbols(path: &Path) -> Result<DataSymbols> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DataSymbols::new()),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    let mut out = DataSymbols::new();
+    for line in text.lines() {
+        let Some((name, addr)) = line.split_once('\t') else { continue };
+        let addr = addr
+            .parse()
+            .with_context(|| format!("{}: bad address in `{line}`", path.display()))?;
+        out.insert(name.to_string(), addr);
+    }
+    Ok(out)
+}
+
 /// function index -> name, from the custom `name` section's function
 /// subsection.
 fn function_names(wasm: &[u8]) -> Result<BTreeMap<u32, String>> {
@@ -259,6 +359,86 @@ mod tests {
         b.name("f".to_string()).func_body();
         module.funcs.add_local(b.local_func(vec![]));
         assert!(read_from_linked(&module.emit_wasm()).unwrap().is_empty());
+    }
+
+    /// A patch's `GOT.mem` import is answered with this address, so it
+    /// must be the segment's own offset PLUS the symbol's offset in it —
+    /// and only for DEFINED symbols.
+    #[test]
+    fn a_data_symbol_resolves_to_its_segment_offset_plus_its_own() {
+        let wasm = data_fixture();
+        let data = read_data_symbols_from_linked(&wasm).unwrap();
+        assert_eq!(data.get("A").copied(), Some(1024 + 8));
+        assert_eq!(data.get("B").copied(), Some(4096 + 16));
+        assert!(!data.contains_key("C"), "an undefined symbol has no address: {data:?}");
+    }
+
+    #[test]
+    fn data_symbols_round_trip_through_their_file() {
+        let data = read_data_symbols_from_linked(&data_fixture()).unwrap();
+        let path = std::env::temp_dir().join("idealyst-datasyms-roundtrip").join("datasyms.tsv");
+        write_data_symbols(&path, &data).unwrap();
+        assert_eq!(read_data_symbols(&path).unwrap(), data);
+        let missing = std::env::temp_dir().join("idealyst-datasyms-does-not-exist.tsv");
+        let _ = std::fs::remove_file(&missing);
+        assert!(read_data_symbols(&missing).unwrap().is_empty());
+    }
+
+    /// Two segments (at 1024 and 4096) and a symbol table with a defined
+    /// symbol in each and one undefined.
+    fn data_fixture() -> Vec<u8> {
+        let mut module = walrus::Module::default();
+        let memory = module.memories.add_local(false, false, 1, None, None);
+        for at in [1024, 4096] {
+            module.data.add(
+                walrus::DataKind::Active {
+                    memory,
+                    offset: walrus::ConstExpr::Value(walrus::ir::Value::I32(at)),
+                },
+                vec![0; 32],
+            );
+        }
+        let mut wasm = module.emit_wasm();
+
+        fn leb(out: &mut Vec<u8>, mut v: u32) {
+            loop {
+                let byte = (v & 0x7f) as u8;
+                v >>= 7;
+                if v == 0 {
+                    out.push(byte);
+                    return;
+                }
+                out.push(byte | 0x80);
+            }
+        }
+        // Data symbol: kind 1, flags, name; a defined one then carries
+        // (segment, offset, size).
+        let mut table = Vec::new();
+        leb(&mut table, 3);
+        for (name, def) in [("A", Some((0, 8))), ("B", Some((1, 16))), ("C", None)] {
+            table.push(1);
+            leb(&mut table, if def.is_some() { 0 } else { 0x10 });
+            leb(&mut table, name.len() as u32);
+            table.extend_from_slice(name.as_bytes());
+            if let Some((segment, offset)) = def {
+                leb(&mut table, segment);
+                leb(&mut table, offset);
+                leb(&mut table, 4);
+            }
+        }
+        let mut body = Vec::new();
+        leb(&mut body, 2);
+        body.push(8);
+        leb(&mut body, table.len() as u32);
+        body.extend_from_slice(&table);
+        let mut payload = Vec::new();
+        leb(&mut payload, "linking".len() as u32);
+        payload.extend_from_slice(b"linking");
+        payload.extend_from_slice(&body);
+        wasm.push(0);
+        leb(&mut wasm, payload.len() as u32);
+        wasm.extend_from_slice(&payload);
+        wasm
     }
 
     /// Build a module whose name section names one function and whose

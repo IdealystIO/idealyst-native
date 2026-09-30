@@ -306,10 +306,21 @@ fails on an unresolved import:
 ```
 
 "bindgen-internal" are wasm-bindgen's descriptor functions, left out on
-purpose. "emitted" lower than the sum would mean walrus dropped something
-it should not have. It does not: walrus 0.26 reaches a locally defined
-table's segments through the table itself, and `--export-table` roots
-the table.
+purpose. The prep only ever ADDS (`wasm_carve::append`): forwarders go
+after the last function and new slots after the last active segment's
+last entry, so no existing index moves, every original body is copied as
+bytes, and "emitted" is exactly the sum. It replaced a walrus pass that
+parsed the whole module into IR and re-emitted it (7–11 s of every warm
+CrewForge rebuild; 1.6–2.6 s now, same census) and whose emit-time GC
+could silently drop the slots it had just added.
+
+The prepared base also leaves out LLD's `linking` and `reloc.*`
+sections and any DWARF. Everything that reads `linking` reads it from
+the LINKED module first — the alias map and the data-symbol addresses
+below — and past this point its indices name other functions anyway. On
+CrewForge that was ~150 MB of a ~310 MB served base, which wasm-bindgen,
+the later passes and every page reload each paid for (the page now
+fetches 156 MB).
 
 The prepared module is written to a sibling file rather than over
 cargo's artifact. Cargo's freshness check is on mtime and does not hash
@@ -360,11 +371,13 @@ name for this function" to generate its JS, found the alias, and emitted
 function. Every handled error threw, during boot. The table is the single
 mechanism; a patch reaches these through their slot.
 
-**walrus 0.26.** wasm-bindgen's catch-wrapper transform emits real
-exception handling once its machinery is kept alive, and walrus 0.23's
-parser has no `EXCEPTIONS` feature — the next pass could not read the
-module at all. 0.26 parses with `WasmFeatures::default()`, and is the
-version wasm-bindgen itself uses.
+**Exception handling.** wasm-bindgen's catch-wrapper transform emits
+real exception handling once its machinery is kept alive, and walrus
+0.23's parser had no `EXCEPTIONS` feature — the next pass could not read
+the module at all. The passes after wasm-bindgen are wasmparser /
+wasm-carve streaming passes now, parsing with the default features, which
+include exceptions; wasm-bindgen 0.2.128 also imports `WebAssembly.JSTag`
+as a tag, which wasm-carve reads and splits.
 
 **One function, several symbol names.** A patch resolves everything it
 did not recompile by mangled name, and the base's names come from the
@@ -386,10 +399,14 @@ ordinary body edit was refused. `build_web::hotpatch_aliases` reads
 `alias → canonical` out of the `linking` section's symbol table (this is
 what `--emit-relocs` on the base is for) and writes it next to the base as
 `<app>.aliases.tsv`. It has to be read from the LINKED module, before base
-prep: walrus and wasm-bindgen renumber functions, and the `linking`
-section they carry forward keeps the old indices. The map is name to name,
-so renumbering cannot make it stale. `BaseIndex` and the jump table both
-consult it.
+prep: base prep drops the `linking` section, and wasm-bindgen renumbers
+functions anyway. The map is name to name, so renumbering cannot make it
+stale. `BaseIndex` and the jump table both consult it.
+
+The base's statics are read the same way, into `<app>.datasyms.tsv`
+(name → address: the symbol's segment offset plus its offset in it). A
+patch imports a static as a `GOT.mem` global, and this file is where its
+address comes from.
 
 An import that still cannot be resolved is reported with which of the two
 opposite fixes applies: "the base HAS this function but it is not in the
@@ -729,10 +746,10 @@ The patch itself is linked `--strip-debug`, since the served module
 never carried DWARF.
 
 **The served patch has no names.** A patch's `name` section is more than
-half of it (33 of 60 MB on CrewForge; walrus already drops the DWARF on
-emit). The jump table pairs BY NAME, so it is built first, and then the
-`name` and any `.debug_*` sections are cut out of the bytes (3 ms; no
-second walrus pass). The page fetches 26.6 MB instead of 59.7 MB: fetch
+half of it (33 of 60 MB on CrewForge; it carries no DWARF). The jump
+table pairs BY NAME, so it is built first, and then the `name` and any
+`.debug_*` sections are cut out of the bytes (3 ms; nothing is parsed
+and re-emitted). The page fetches 26.6 MB instead of 59.7 MB: fetch
 38 ms instead of 111–228 ms, compile 28 ms instead of 36–45 ms, and the
 time from a built patch to the pixels drops from ~0.92 s to ~0.73 s.
 Only the newest two served patches are kept (the older ones filled the
@@ -757,17 +774,23 @@ differ, so a shared directory made each compile cold after the other.
 Replay objects go to a private directory emptied first, because with many
 units their names are hashed and would otherwise accumulate.
 
-The rebuild with the tier armed is still slower than an ordinary one
-because base prep and the base index each parse a 223 MB module (320 MB
-linked) with walrus. The stranded-import pass was a third walrus parse
-and re-emit (6.5 s on a Mac, 19–25 s in the container) until it moved to
-`wasm_carve::strand`, which renumbers the function index space from a
-streaming parse and re-encodes the code on every core (0.7 s on the same
-module).
+The rebuild with the tier armed costs more than an ordinary one: base
+prep, a larger wasm-bindgen run (every function is rooted), the
+stranded-import pass and the base index. None of them builds walrus IR
+any more. On CrewForge (430 MB linked, 156 MB served) they were, as
+walrus passes, base prep 7–11 s, the stranded-import pass 5.4–6.5 s
+(19–25 s in the container) and the base index 4–6.5 s in the background;
+as streaming passes, base prep 1.6–2.6 s and the stranded-import pass
+~1 s (`wasm_carve::strand` renumbers the function index space and
+re-encodes the code on every core), base index 1.5 s. wasm-bindgen also ran with
+`--keep-debug`, which kept nothing — base prep had already dropped the
+DWARF — and cost it 6 s (11.7 s vs 5.7 s, byte-identical output).
 
-**Memory.** On CrewForge the CLI's peak RSS during base prep is about
-3.7 GB (one walrus parse of the module). The default memory cap is
-4096 MB, and sessions exceeded it. So any session with a web target — the
+**Memory.** On CrewForge the CLI's peak RSS during base prep was about
+3.7–5 GB while base prep was a walrus parse of the module; the streaming
+passes that replaced it hold the module's bytes and one output instead of
+an IR of every body. The default memory cap is 4096 MB, and sessions
+exceeded it. So any session with a web target — the
 hot-patch tier, `--split`, or neither, since every rebuild parses the
 module once in-process — raises its own cap to half of the machine's
 memory (the cgroup limit, inside a container that has one), never below

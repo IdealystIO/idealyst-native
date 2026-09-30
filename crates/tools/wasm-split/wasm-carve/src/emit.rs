@@ -671,7 +671,7 @@ fn trampoline(source: &ModuleIndex<'_>, f: u32, slot: u32, table: u32) -> Result
     Ok(func)
 }
 
-fn push_active_funcs(
+pub(crate) fn push_active_funcs(
     elems: &mut ElementSection,
     table: u32,
     offset: i32,
@@ -710,7 +710,7 @@ fn tag_type(t: &wasmparser::TagType) -> wasm_encoder::TagType {
     }
 }
 
-fn table_type(t: &wasmparser::TableType) -> Result<TableType> {
+pub(crate) fn table_type(t: &wasmparser::TableType) -> Result<TableType> {
     Ok(TableType {
         element_type: ref_type(t.element_type)?,
         table64: t.table64,

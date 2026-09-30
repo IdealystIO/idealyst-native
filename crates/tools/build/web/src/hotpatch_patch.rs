@@ -16,10 +16,9 @@
 //! (`backend_web::hot_patch`), so nothing is rewritten; see
 //! `hotpatch_prepare` for what replaced it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
-use walrus::{ir, ConstExpr, ElementKind, Module};
 
 /// Everything a patch needs to know about the base module it will be
 /// instantiated alongside.
@@ -62,43 +61,38 @@ impl BaseIndex {
     /// its data symbols.
     ///
     /// `aliases` is [`crate::hotpatch_aliases`]'s name-to-name map, read
-    /// from the module BEFORE walrus and wasm-bindgen renumbered it.
+    /// from the module BEFORE wasm-bindgen renumbered it.
     /// Without it every symbol the linker knew by a second name — 4,060
     /// of them on the hot-reload lab, `<usize as Display>::fmt` among
     /// them — looks absent, and the patch is refused over functions that
     /// are right there in the table under another spelling.
-    pub fn of(wasm: &[u8], aliases: &crate::hotpatch_aliases::AliasMap) -> Result<Self> {
-        let module = Module::from_buffer(wasm).context("parsing the base module")?;
-
+    ///
+    /// `data` is [`crate::hotpatch_aliases::read_data_symbols_from_linked`]'s
+    /// map, also read from the LINKED module: the served base carries no
+    /// `linking` section to read it from.
+    pub fn of(
+        wasm: &[u8],
+        aliases: &crate::hotpatch_aliases::AliasMap,
+        data: &crate::hotpatch_aliases::DataSymbols,
+    ) -> Result<Self> {
+        // One streaming pass. The walrus parse this replaced built IR for
+        // every function body only to read the table, the names and the
+        // types: 4–6.5 s on CrewForge's base, in the background after
+        // every rebuild but in front of any save made during it.
+        let parsed = scan(wasm).context("parsing the base module")?;
         let mut ifunc = HashMap::new();
         let mut slot_sigs = HashMap::new();
-        for element in module.elements.iter() {
-            let ElementKind::Active { offset, .. } = &element.kind else {
-                continue;
-            };
-            // A base is linked non-PIC, so its segment offset is a
-            // constant. Anything else and the indices we would compute
-            // are guesses, and a guessed index is a silent mis-dispatch.
-            let Some(base) = const_u32(offset) else {
-                continue;
-            };
-            let walrus::ElementItems::Functions(ids) = &element.items else {
-                continue;
-            };
-            for (i, id) in ids.iter().enumerate() {
-                let ty = module.types.get(module.funcs.get(*id).ty());
-                slot_sigs.entry(base + i as u32).or_insert_with(|| {
-                    crate::hotpatch_prepare::sig_string(&(
-                        ty.params().iter().map(walrus_val_char).collect(),
-                        ty.results().iter().map(walrus_val_char).collect(),
-                    ))
-                });
-                if let Some(name) = module.funcs.get(*id).name.as_deref() {
-                    // First slot wins: a function listed twice is two
-                    // valid pointers to one body, and either redirects
-                    // correctly.
-                    ifunc.entry(name.to_string()).or_insert(base + i as u32);
-                }
+        for (slot, func) in &parsed.slots {
+            let sig = parsed
+                .func_types
+                .get(*func as usize)
+                .and_then(|ty| parsed.sigs.get(*ty as usize))
+                .with_context(|| format!("table slot {slot} holds function {func}, which has no type"))?;
+            slot_sigs.entry(*slot).or_insert_with(|| sig.clone());
+            if let Some(name) = parsed.names.get(func) {
+                // First slot wins: a function listed twice is two valid
+                // pointers to one body, and either redirects correctly.
+                ifunc.entry(name.clone()).or_insert(*slot);
             }
         }
 
@@ -116,10 +110,9 @@ impl BaseIndex {
             ifunc.entry(symbol).or_insert(slot);
         }
 
-        let exports = module.exports.iter().map(|e| e.name.clone()).collect();
-        let data = data_symbol_addresses(wasm).context("reading the base's data symbols")?;
-        let mut all_funcs: HashSet<String> =
-            module.funcs.iter().filter_map(|f| f.name.clone()).collect();
+        let exports = parsed.exports;
+        let data = data.iter().map(|(name, addr)| (name.clone(), *addr)).collect();
+        let mut all_funcs: HashSet<String> = parsed.names.into_values().collect();
 
         // An alias resolves to whatever slot its canonical name got.
         // `or_insert` rather than `insert`: a name that is BOTH a
@@ -222,87 +215,107 @@ fn section_start(wasm: &[u8], contents: usize, len: usize) -> Result<usize> {
     bail!("could not find the start of the custom section at byte {contents}")
 }
 
-/// `hotpatch_prepare`'s value-type alphabet, for walrus's types.
-fn walrus_val_char(v: &walrus::ValType) -> char {
-    match v {
-        walrus::ValType::I32 => 'i',
-        walrus::ValType::I64 => 'I',
-        walrus::ValType::F32 => 'f',
-        walrus::ValType::F64 => 'F',
-        walrus::ValType::V128 => 'v',
-        walrus::ValType::Ref(r) if *r == walrus::RefType::EXTERNREF => 'x',
-        walrus::ValType::Ref(r) if *r == walrus::RefType::FUNCREF => 'r',
-        walrus::ValType::Ref(_) => '?',
-    }
+/// What [`BaseIndex::of`] reads from the base, in one pass.
+struct Scanned {
+    /// Type index → `params>results` ([`crate::hotpatch_prepare::sig_string`]).
+    sigs: Vec<String>,
+    /// Function index → type index, imports first.
+    func_types: Vec<u32>,
+    /// `(table slot, function index)` for every entry of every active
+    /// segment with a constant offset, in segment order.
+    slots: Vec<(u32, u32)>,
+    names: HashMap<u32, String>,
+    exports: HashSet<String>,
 }
 
-fn const_u32(expr: &ConstExpr) -> Option<u32> {
-    match expr {
-        ConstExpr::Value(ir::Value::I32(v)) => Some((*v).max(0) as u32),
-        ConstExpr::Value(ir::Value::I64(v)) => Some((*v).max(0) as u32),
-        _ => None,
-    }
-}
-
-/// Data symbol name → absolute address in the base's linear memory.
-///
-/// Read straight from the bytes rather than through walrus, which keeps
-/// a data segment's contents but not the offsets the `linking` section's
-/// symbol table indexes them by. An address is a segment's own offset
-/// plus the symbol's offset inside it.
-///
-/// This is the only consumer of `--emit-relocs` on the base build: a
-/// module linked without it has no `linking` section, every `GOT.mem`
-/// import goes unresolved, and the caller falls back to a rebuild with
-/// that named as the reason.
-fn data_symbol_addresses(wasm: &[u8]) -> Result<HashMap<String, u32>> {
-    use wasmparser::{Payload, SymbolInfo};
-
-    // Segment index → the segment's own offset in linear memory.
-    let mut segment_offsets: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut out = HashMap::new();
-
-    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
-        match payload.context("parsing the base module's sections")? {
-            Payload::DataSection(reader) => {
-                for (index, data) in reader.into_iter().enumerate() {
-                    let data = data.context("parsing a data segment")?;
-                    if let wasmparser::DataKind::Active { offset_expr, .. } = data.kind {
-                        let mut ops = offset_expr.get_operators_reader();
-                        if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
-                            segment_offsets.insert(index as u32, value.max(0) as u32);
+fn scan(wasm: &[u8]) -> Result<Scanned> {
+    use wasmparser::{
+        CompositeInnerType, ElementItems, ElementKind, KnownCustom, Name, Operator, Parser,
+        Payload, TypeRef,
+    };
+    let sig = |ft: &wasmparser::FuncType| {
+        crate::hotpatch_prepare::sig_string(&(
+            ft.params().iter().map(crate::hotpatch_prepare::val_char).collect(),
+            ft.results().iter().map(crate::hotpatch_prepare::val_char).collect(),
+        ))
+    };
+    let mut out = Scanned {
+        sigs: Vec::new(),
+        func_types: Vec::new(),
+        slots: Vec::new(),
+        names: HashMap::new(),
+        exports: HashSet::new(),
+    };
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload? {
+            Payload::TypeSection(reader) => {
+                for rec in reader {
+                    for sub in rec?.into_types() {
+                        out.sigs.push(match &sub.composite_type.inner {
+                            CompositeInnerType::Func(ft) => sig(ft),
+                            _ => String::new(),
+                        });
+                    }
+                }
+            }
+            Payload::ImportSection(reader) => {
+                for import in reader {
+                    if let TypeRef::Func(ty) = import?.ty {
+                        out.func_types.push(ty);
+                    }
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                for ty in reader {
+                    out.func_types.push(ty?);
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for export in reader {
+                    out.exports.insert(export?.name.to_string());
+                }
+            }
+            Payload::ElementSection(reader) => {
+                for element in reader {
+                    let element = element?;
+                    // A base is linked non-PIC, so its segment offset is a
+                    // constant. Anything else and the indices we would
+                    // compute are guesses, and a guessed index is a silent
+                    // mis-dispatch.
+                    let ElementKind::Active { offset_expr, .. } = &element.kind else {
+                        continue;
+                    };
+                    let base = match offset_expr.get_operators_reader().read()? {
+                        Operator::I32Const { value } => value.max(0) as u32,
+                        Operator::I64Const { value } => value.max(0) as u32,
+                        _ => continue,
+                    };
+                    match element.items {
+                        ElementItems::Functions(funcs) => {
+                            for (i, f) in funcs.into_iter().enumerate() {
+                                out.slots.push((base + i as u32, f?));
+                            }
+                        }
+                        ElementItems::Expressions(_, exprs) => {
+                            for (i, expr) in exprs.into_iter().enumerate() {
+                                if let Operator::RefFunc { function_index } =
+                                    expr?.get_operators_reader().read()?
+                                {
+                                    out.slots.push((base + i as u32, function_index));
+                                }
+                            }
                         }
                     }
                 }
             }
-            Payload::CustomSection(c) if c.name() == "linking" => {
-                let reader = wasmparser::LinkingSectionReader::new(wasmparser::BinaryReader::new(
-                    c.data(),
-                    c.data_offset(),
-                ))
-                .context("parsing the linking section")?;
-                for subsection in reader.subsections() {
-                    let subsection = subsection.context("parsing a linking subsection")?;
-                    let wasmparser::Linking::SymbolTable(symbols) = subsection else {
-                        continue;
-                    };
-                    for symbol in symbols {
-                        let symbol = symbol.context("parsing a linking symbol")?;
-                        // Only a DEFINED data symbol has a location. An
-                        // undefined one is a reference to somewhere
-                        // else and has no address to hand out.
-                        if let SymbolInfo::Data {
-                            name,
-                            symbol: Some(definition),
-                            ..
-                        } = symbol
-                        {
-                            out.insert(
-                                name.to_string(),
-                                definition.offset.saturating_add(
-                                    segment_offsets.get(&definition.index).copied().unwrap_or(0),
-                                ),
-                            );
+            Payload::CustomSection(c) => {
+                if let KnownCustom::Name(names) = c.as_known() {
+                    for sub in names {
+                        if let Name::Function(map) = sub? {
+                            for naming in map {
+                                let naming = naming?;
+                                out.names.insert(naming.index, naming.name.to_string());
+                            }
                         }
                     }
                 }
@@ -310,15 +323,13 @@ fn data_symbol_addresses(wasm: &[u8]) -> Result<HashMap<String, u32>> {
             _ => {}
         }
     }
-
     Ok(out)
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use walrus::{ir, ElementItems, FunctionBuilder, RefType, ValType};
+    use walrus::{ir, ConstExpr, ElementItems, ElementKind, FunctionBuilder, Module, RefType, ValType};
 
     const CAST: &str = "_RINvNvNtCs8e_12wasm_bindgen4___rt8wbg_cast17breaks_if_inlinedReNtB6_7JsValueEB6_";
 
@@ -387,7 +398,7 @@ mod tests {
     #[test]
     fn regression_a_cast_intrinsic_resolves_to_its_forwarders_slot() {
         let served = served_base_with(&crate::hotpatch_base::cast_trampoline_name(CAST));
-        let base = BaseIndex::of(&served, &Default::default()).unwrap();
+        let base = BaseIndex::of(&served, &Default::default(), &Default::default()).unwrap();
         let slot = base.ifunc[&crate::hotpatch_base::cast_trampoline_name(CAST)];
         assert_eq!(base.ifunc.get(CAST), Some(&slot));
     }
@@ -397,7 +408,7 @@ mod tests {
     /// passes the base's function as that import.
     #[test]
     fn the_index_records_each_slots_signature() {
-        let base = BaseIndex::of(&served_base_with("f"), &Default::default()).unwrap();
+        let base = BaseIndex::of(&served_base_with("f"), &Default::default(), &Default::default()).unwrap();
         assert_eq!(base.slot_sigs.get(&1).map(String::as_str), Some("i>I"));
     }
 
@@ -418,13 +429,13 @@ mod tests {
         let patch = patch_importing(&[("env", alias), ("GOT.func", alias)]);
 
         // Without the map: refused, and NOT mislabelled as a rooting bug.
-        let blind = BaseIndex::of(&served, &Default::default()).unwrap();
+        let blind = BaseIndex::of(&served, &Default::default(), &Default::default()).unwrap();
         let message = format!("{:#}", prepare(&patch, &blind).unwrap_err());
         assert!(message.contains(alias), "{message}");
 
         let mut aliases = crate::hotpatch_aliases::AliasMap::new();
         aliases.insert(alias.to_string(), canonical.to_string());
-        let base = BaseIndex::of(&served, &aliases).unwrap();
+        let base = BaseIndex::of(&served, &aliases, &Default::default()).unwrap();
         assert_eq!(base.ifunc.get(alias), Some(&1));
         assert_eq!(base.ifunc.get(canonical), Some(&1));
         let prepared = prepare(&patch, &base).unwrap_or_else(|e| panic!("the alias should resolve: {e:#}"));
@@ -443,7 +454,7 @@ mod tests {
         let served = served_base_with("own");
         let mut aliases = crate::hotpatch_aliases::AliasMap::new();
         aliases.insert("own".to_string(), "somebody_else".to_string());
-        let base = BaseIndex::of(&served, &aliases).unwrap();
+        let base = BaseIndex::of(&served, &aliases, &Default::default()).unwrap();
         assert_eq!(base.ifunc.get("own"), Some(&1));
     }
 

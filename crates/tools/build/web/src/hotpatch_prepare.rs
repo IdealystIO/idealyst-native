@@ -738,7 +738,7 @@ fn sections(wasm: &[u8]) -> Result<Vec<Section>> {
 
 /// One character per value type, so two signatures compare as strings
 /// ([`BaseIndex::slot_sigs`] uses the same alphabet).
-fn val_char(v: &wasmparser::ValType) -> char {
+pub(crate) fn val_char(v: &wasmparser::ValType) -> char {
     match v {
         wasmparser::ValType::I32 => 'i',
         wasmparser::ValType::I64 => 'I',

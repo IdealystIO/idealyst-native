@@ -240,10 +240,9 @@ impl SeedSlot {
 /// Everything that does not change between patches, resolved once so a
 /// save only pays for the four steps.
 ///
-/// The base index in particular is the expensive part — parsing a
-/// debug-profile wasm module with every function in its table is tens of
-/// megabytes of walrus work — and it is valid for the life of one base
-/// build.
+/// The base index in particular is the expensive part — a pass over a
+/// debug-profile wasm module with every function in its table — and it
+/// is valid for the life of one base build.
 pub struct WasmPatchBuilder {
     captures_dir: PathBuf,
     aliases: crate::hotpatch_aliases::AliasMap,
@@ -282,10 +281,14 @@ impl WasmPatchBuilder {
     /// `symbol_aliases` is the file the base build wrote from the LINKED
     /// module (see [`crate::hotpatch_aliases`]). A base built without one
     /// still patches; it just cannot resolve a symbol the linker knew by
-    /// a second name.
+    /// a second name. `data_symbols` is its sibling, the base's static
+    /// addresses (see [`crate::hotpatch_aliases::read_data_symbols_from_linked`]);
+    /// without it every `GOT.mem` import is unresolved and a patch that
+    /// touches a static falls back to a rebuild.
     pub fn new(
         served_wasm: &Path,
         symbol_aliases: Option<&Path>,
+        data_symbols: Option<&Path>,
         captures_dir: impl Into<PathBuf>,
         crate_name: impl Into<String>,
         out_dir: impl Into<PathBuf>,
@@ -296,7 +299,11 @@ impl WasmPatchBuilder {
             Some(path) => crate::hotpatch_aliases::read(path)?,
             None => Default::default(),
         };
-        let base = BaseIndex::of(&base_wasm, &aliases).with_context(|| {
+        let data = match data_symbols {
+            Some(path) => crate::hotpatch_aliases::read_data_symbols(path)?,
+            None => Default::default(),
+        };
+        let base = BaseIndex::of(&base_wasm, &aliases, &data).with_context(|| {
             format!("indexing the served base module {}", served_wasm.display())
         })?;
         let base_slots = base_slots(&base_wasm)?;
