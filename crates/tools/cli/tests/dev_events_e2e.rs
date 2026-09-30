@@ -147,8 +147,24 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </html>
 "#;
 
+/// Start the materialized app from the framework's own `Cargo.lock`.
+///
+/// Without one the app resolved fresh and floated to the newest
+/// `wasm-bindgen` on crates.io (0.2.129) while the CLI on `PATH` matched
+/// the repo's lock (0.2.128): wasm-bindgen refused the module ("failed to
+/// instrument module for JSPI"), the first build never finished, and the
+/// test sat out its 20-minute wait for the livereload server. Seeded from
+/// the repo's lock, the app builds the versions the framework is tested
+/// with (cargo prunes the entries it does not use). `wasm_hot_patch_e2e`
+/// seeds its app the same way.
+fn seed_lockfile(dir: &Path, repo: &Path) {
+    std::fs::copy(repo.join("Cargo.lock"), dir.join("Cargo.lock"))
+        .expect("copy the framework's Cargo.lock into the materialized app");
+}
+
 fn materialize(dir: &Path, repo: &Path) -> Script {
     std::fs::create_dir_all(dir.join("src")).unwrap();
+    seed_lockfile(dir, repo);
     let dep = |p: &str| repo.join(p).display().to_string();
     std::fs::write(
         dir.join("Cargo.toml"),

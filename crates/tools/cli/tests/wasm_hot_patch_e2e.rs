@@ -134,11 +134,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 /// Start the materialized app from the framework's own `Cargo.lock`.
 ///
 /// Without one, every run resolved its dependencies fresh and floated to
-/// the newest `wasm-bindgen` on crates.io. 0.2.129 (Sept 2026) emits
-/// exception-tag imports the base build's walrus passes cannot read, and
-/// the test failed at the initial build — nowhere near the hot patch it
-/// exists to check — while needing a `wasm-bindgen` CLI of whatever
-/// version happened to be newest. Seeded from the repo's lock, the app
+/// the newest `wasm-bindgen` on crates.io, and needed a `wasm-bindgen`
+/// CLI of whatever version happened to be newest — a new release could
+/// fail the initial build, nowhere near the hot patch this exists to
+/// check (0.2.128's `WebAssembly.JSTag` tag import did, until wasm-carve
+/// learned tags). Seeded from the repo's lock, the app
 /// builds the versions the framework is tested with, and the CLI on
 /// `PATH` has to match those (cargo prunes the entries it does not use).
 fn seed_lockfile(dir: &Path, repo: &Path) {

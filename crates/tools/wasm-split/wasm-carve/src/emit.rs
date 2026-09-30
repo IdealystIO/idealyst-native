@@ -11,8 +11,8 @@
 //! In a split module the index space is kept by giving it NO function
 //! imports: index `i` below the source's import count becomes a defined
 //! trampoline to main's import, and every defined function stays at its
-//! index. Memory, tables and globals are imported from main in their
-//! original order, so their indices hold too.
+//! index. Memory, tables, globals and exception tags are imported from
+//! main in their original order, so their indices hold too.
 
 use std::{
     borrow::Cow,
@@ -47,6 +47,11 @@ pub struct Layout {
     table_names: Vec<String>,
     memory_names: Vec<String>,
     global_names: Vec<String>,
+    /// One per exception tag. A split body that throws or catches names
+    /// its tag by index, and a tag is an identity, not a value: the split
+    /// must import MAIN's tag, or its `catch` would never match what main
+    /// (or JS, for `WebAssembly.JSTag`) throws.
+    tag_names: Vec<String>,
     /// Function index → its slot in the appended range.
     shared_slot: BTreeMap<u32, u32>,
     shared_funcs: Vec<u32>,
@@ -109,6 +114,7 @@ impl Layout {
         }
         let global_names =
             (0..source.global_types.len()).map(|idx| format!("__global__{idx}")).collect();
+        let tag_names = (0..source.tag_types.len()).map(|idx| format!("__tag__{idx}")).collect();
 
         let shared_base = segment_start + partition.split_points.len() as u32;
         let shared_slot = shared_funcs
@@ -137,6 +143,7 @@ impl Layout {
             table_names,
             memory_names,
             global_names,
+            tag_names,
             shared_slot,
             shared_funcs,
             table_slots,
@@ -286,6 +293,11 @@ pub fn emit_main(
                 for (idx, name) in layout.global_names.iter().enumerate() {
                     if used.insert(name.clone()) {
                         exports.export(name, ExportKind::Global, idx as u32);
+                    }
+                }
+                for (idx, name) in layout.tag_names.iter().enumerate() {
+                    if used.insert(name.clone()) {
+                        exports.export(name, ExportKind::Tag, idx as u32);
                     }
                 }
                 // Keep main's copy of every shared function alive through
@@ -457,7 +469,7 @@ pub fn emit_split(
         module.section(&RawSection { id: 1, data: payload(source, types)? });
     }
 
-    // Imports: main's tables, memories and globals, in index order.
+    // Imports: main's tables, memories, globals and tags, in index order.
     let mut imports = ImportSection::new();
     for (idx, name) in layout.table_names.iter().enumerate() {
         let ty = if idx as u32 == layout.funcref_table {
@@ -472,6 +484,9 @@ pub fn emit_split(
     }
     for (idx, name) in layout.global_names.iter().enumerate() {
         imports.import("__wasm_split", name, EntityType::Global(global_type(&source.global_types[idx])?));
+    }
+    for (idx, name) in layout.tag_names.iter().enumerate() {
+        imports.import("__wasm_split", name, EntityType::Tag(tag_type(&source.tag_types[idx])));
     }
     module.section(&imports);
 
@@ -682,8 +697,17 @@ fn entity_type(ty: &TypeRef) -> Result<EntityType> {
         TypeRef::Table(t) => EntityType::Table(table_type(t)?),
         TypeRef::Memory(m) => EntityType::Memory(memory_type(m)),
         TypeRef::Global(g) => EntityType::Global(global_type(g)?),
-        TypeRef::Tag(_) => bail!("tag imports are not supported"),
+        TypeRef::Tag(t) => EntityType::Tag(tag_type(t)),
     })
+}
+
+fn tag_type(t: &wasmparser::TagType) -> wasm_encoder::TagType {
+    wasm_encoder::TagType {
+        kind: match t.kind {
+            wasmparser::TagKind::Exception => wasm_encoder::TagKind::Exception,
+        },
+        func_type_idx: t.func_type_idx,
+    }
 }
 
 fn table_type(t: &wasmparser::TableType) -> Result<TableType> {

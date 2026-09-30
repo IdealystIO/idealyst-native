@@ -76,6 +76,8 @@ enum Op {
     /// function import — an address relocation the analysis cannot account
     /// for.
     UntrackedAddr,
+    /// `throw 0` — needs `Spec::jstag`.
+    Throw,
 }
 
 /// What a data symbol's first word holds, with its `reloc.DATA` entry.
@@ -103,6 +105,9 @@ struct Spec {
     /// adds. wasm-bindgen passes the rustc module's symbol table through
     /// untouched, so these must not shift anyone's symbol index.
     unlinked: Vec<&'static str>,
+    /// Import tag 0 the way wasm-bindgen ≥ 0.2.128 imports
+    /// `WebAssembly.JSTag`.
+    jstag: bool,
 }
 
 const DATA_BASE: u32 = 16;
@@ -176,6 +181,7 @@ impl Spec {
                         body.extend_from_slice(&padded(0));
                         body.push(0x1a);
                     }
+                    Op::Throw => body.extend_from_slice(&[0x08, 0x00]),
                 }
             }
             body.push(0x0b);
@@ -195,6 +201,13 @@ impl Spec {
         let mut imports = ImportSection::new();
         for name in &self.imports {
             imports.import("./__wasm_split.js", name, EntityType::Function(0));
+        }
+        if self.jstag {
+            imports.import(
+                "__wbindgen_placeholder__",
+                "__wbindgen_jstag",
+                EntityType::Tag(wasm_encoder::TagType { kind: wasm_encoder::TagKind::Exception, func_type_idx: 0 }),
+            );
         }
         m.section(&imports);
         let mut funcs = FunctionSection::new();
@@ -309,6 +322,7 @@ fn spec() -> Spec {
         elem: vec![7],
         data: vec![("VT", Word::FnPtr(7))],
         unlinked: vec![],
+        jstag: false,
     }
 }
 
@@ -854,6 +868,7 @@ fn shared_data_is_restored_once_by_the_chunk() {
         elem: vec![],
         data: vec![("SHARED", Word::Plain), ("A_ONLY", Word::Plain)],
         unlinked: vec![],
+        jstag: false,
     };
     let b = s.build().bytes;
     let out = wasm_carve::split(&b, &b, &prune(1)).unwrap();
@@ -886,3 +901,54 @@ fn pruning_is_refused_when_an_address_relocation_is_unaccounted_for() {
     assert!(out.modules.iter().all(|m| restored(m).is_empty()));
 }
 
+
+/// A split whose code throws against wasm-bindgen's imported JSTag.
+fn jstag_fixture() -> Vec<u8> {
+    let mut s = spec();
+    s.jstag = true;
+    s.funcs[4].1.push(Op::Throw); // split_leaf
+    s.build().bytes
+}
+
+/// Regression (wasm-bindgen 0.2.128): its hot-reload and release bases
+/// import `WebAssembly.JSTag` as an exception tag, and wasm-carve bailed
+/// with "tag imports are not supported" — both in the `command_export`
+/// neutralize pass every web build runs and in the splitter, so
+/// `idealyst dev --web` could not produce a first build at all.
+#[test]
+fn regression_a_jstag_import_neutralizes_and_splits() {
+    let bytes = jstag_fixture();
+    validate(&bytes);
+    let m = ModuleIndex::parse(&bytes).unwrap();
+    assert_eq!((m.tag_imports, m.tag_types.len()), (1, 1));
+    let post = wasm_carve::neutralize::neutralize_command_export_wrappers(&bytes).unwrap();
+    assert!(matches!(post, std::borrow::Cow::Borrowed(_)), "nothing to neutralize");
+
+    let out = wasm_carve::split(&bytes, &bytes, &Default::default()).unwrap();
+    validate(&out.main.bytes);
+    let main = ModuleIndex::parse(&out.main.bytes).unwrap();
+    assert!(
+        main.imports.iter().any(|i| i.name == "__wbindgen_jstag"),
+        "main keeps importing the tag from JS"
+    );
+    let export = main
+        .exports
+        .iter()
+        .find(|e| e.kind == wasmparser::ExternalKind::Tag)
+        .expect("main exports the tag for the splits");
+    assert_eq!(export.index, 0);
+
+    // The split that throws imports MAIN's tag, under the name main
+    // exported it as, so a throw in one module is caught in the other.
+    let split = &out.modules[0];
+    validate(&split.bytes);
+    let sm = ModuleIndex::parse(&split.bytes).unwrap();
+    assert!(names(&split.bytes).contains("split_leaf"));
+    let tag_imports: Vec<_> = sm
+        .imports
+        .iter()
+        .filter(|i| matches!(i.ty, wasmparser::TypeRef::Tag(_)))
+        .map(|i| (i.module, i.name))
+        .collect();
+    assert_eq!(tag_imports, vec![("__wasm_split", export.name)]);
+}

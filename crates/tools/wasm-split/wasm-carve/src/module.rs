@@ -10,7 +10,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use wasmparser::{
     ConstExpr, DataKind, ElementItems, ElementKind, ExternalKind, KnownCustom, Name, Operator,
     Parser, Payload, TypeRef,
@@ -89,6 +89,11 @@ pub struct ModuleIndex<'a> {
     pub memory_imports: u32,
     pub global_types: Vec<wasmparser::GlobalType>,
     pub global_imports: u32,
+    /// Exception tags, imports first. wasm-bindgen ≥ 0.2.128 imports
+    /// `WebAssembly.JSTag` as one (`__wbindgen_jstag`) and catches JS
+    /// exceptions against it.
+    pub tag_types: Vec<wasmparser::TagType>,
+    pub tag_imports: u32,
     pub exports: Vec<Export<'a>>,
     pub start: Option<u32>,
     pub elems: Vec<Elem>,
@@ -121,6 +126,8 @@ impl<'a> ModuleIndex<'a> {
             memory_imports: 0,
             global_types: Vec::new(),
             global_imports: 0,
+            tag_types: Vec::new(),
+            tag_imports: 0,
             exports: Vec::new(),
             start: None,
             elems: Vec::new(),
@@ -165,7 +172,10 @@ impl<'a> ModuleIndex<'a> {
                                 m.global_types.push(t);
                                 m.global_imports += 1;
                             }
-                            TypeRef::Tag(_) => bail!("tag imports are not supported"),
+                            TypeRef::Tag(t) => {
+                                m.tag_types.push(t);
+                                m.tag_imports += 1;
+                            }
                         }
                         m.imports.push(Import { module: import.module, name: import.name, ty: import.ty });
                     }
@@ -192,6 +202,11 @@ impl<'a> ModuleIndex<'a> {
                             m.global_init_consts.push(c);
                         }
                         m.global_types.push(global.ty);
+                    }
+                }
+                Payload::TagSection(reader) => {
+                    for tag in reader {
+                        m.tag_types.push(tag?);
                     }
                 }
                 Payload::ExportSection(reader) => {
