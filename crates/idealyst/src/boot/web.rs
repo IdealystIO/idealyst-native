@@ -36,11 +36,11 @@ pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     // callable there. A Worker has no `Window` and no DOM, so boot must
     // NOT install the UI backend or mount — just return, leaving the
     // module instantiated and the job exports reachable.
-    if web_sys::window().is_none() {
+    if web_glue::dom::window().is_none() {
         return;
     }
 
-    console_error_panic_hook::set_once();
+    backend_web::install_panic_hook();
 
     // Host services, before anything can reach for them.
     //
@@ -213,6 +213,5 @@ fn start_local<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
 /// Read a string off `window`, for the dev server's injected globals.
 #[cfg(any(feature = "robot", feature = "runtime-server"))]
 fn read_global_string(key: &str) -> Option<String> {
-    let window = web_sys::window()?;
-    js_sys::Reflect::get(&window, &key.into()).ok()?.as_string()
+    web_glue::JsValue::global().get(key).ok()?.as_string()
 }

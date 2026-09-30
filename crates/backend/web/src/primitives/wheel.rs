@@ -18,9 +18,9 @@
 //! doesn't also scroll or trigger the browser's own pinch-zoom.
 
 use runtime_shared::{TouchPoint, WheelEvent as FwWheelEvent, WheelHandler, WheelKind};
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::{Element, Node, WheelEvent};
+use web_glue::dom::WheelEvent as GlueWheelEvent;
+use web_sys::{Element, Node};
 
 /// Maps one unit of `WheelEvent.deltaY` (under `ctrlKey`) to a fraction of
 /// zoom. `scale = exp(-deltaY * k)`: negative deltaY (pinch open / scroll up)
@@ -41,16 +41,19 @@ const ZOOM_PER_WHEEL_UNIT: f32 = 0.01;
 /// untouched, so zooming feels continuous on both input devices.
 const MAX_ZOOM_WHEEL_DELTA: f32 = 12.0;
 
-/// Install the `wheel` listener on `node`. The element owns the closure (see
-/// [`super::own_listener`]), so it is released with the element.
+/// Install the `wheel` listener on `node`. The element owns the listener, so
+/// its closure is released with the element
+/// (`glue_dom::listen_for_element_lifetime`).
 pub(crate) fn install(node: &Node, handler: WheelHandler) {
     let element: Element = match node.clone().dyn_into::<Element>() {
         Ok(e) => e,
         Err(_) => return,
     };
 
-    let closure = Closure::<dyn FnMut(WheelEvent)>::new(move |ev: WheelEvent| {
-        let local = local_position(&ev);
+    let el_for_rect = element.clone();
+    crate::glue_dom::listen_for_element_lifetime(&element, "wheel", Default::default(), move |ev| {
+        let ev: GlueWheelEvent = web_glue::JsCast::unchecked_into(ev);
+        let local = local_position(&el_for_rect, &ev);
         let zoom = ev.ctrl_key();
         let (kind, delta_x, delta_y, scale) = if zoom {
             // Pinch / ctrl+scroll → zoom. deltaY drives the factor; deltaX is
@@ -91,9 +94,10 @@ pub(crate) fn install(node: &Node, handler: WheelHandler) {
         let response = (handler)(&we);
         if response.consumed || response.claim {
             // Stop the page from also scrolling / browser-zooming. Must be a
-            // non-passive listener (the default for `addEventListener` without
-            // `{passive:true}`, which is what `add_event_listener_with_callback`
-            // gives us) for preventDefault to take effect on `wheel`.
+            // non-passive listener (the default for `addEventListener` on an
+            // element without `{passive:true}`, which is what
+            // `ListenerOptions::default()` passes) for preventDefault to take
+            // effect on `wheel`.
             //
             // `claim` is honored alongside `consumed` because on wheel the two
             // asks are the same ask. `claim` means "preempt any competing
@@ -113,20 +117,11 @@ pub(crate) fn install(node: &Node, handler: WheelHandler) {
             ev.prevent_default();
         }
     });
-    let _ = element.add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref());
-    super::own_listener(closure);
 }
 
 /// Element-local cursor coordinates: `client` minus the element's rect.
-fn local_position(ev: &WheelEvent) -> (f32, f32) {
-    let target = match ev.current_target() {
-        Some(t) => t,
-        None => return (ev.client_x() as f32, ev.client_y() as f32),
-    };
-    let el: Element = match target.dyn_into() {
-        Ok(e) => e,
-        Err(_) => return (ev.client_x() as f32, ev.client_y() as f32),
-    };
+/// `el` is the element the listener is on — the event's `currentTarget`.
+fn local_position(el: &Element, ev: &GlueWheelEvent) -> (f32, f32) {
     let rect = el.get_bounding_client_rect();
     (
         ev.client_x() as f32 - rect.x() as f32,

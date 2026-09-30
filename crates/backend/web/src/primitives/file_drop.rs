@@ -21,12 +21,12 @@
 
 use runtime_shared::{DroppedFile, FileDropEvent, FileDropPhase, FileDropHandler, TouchPoint};
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::{DragEvent, Element, Node};
+use web_glue::dom::DragEvent;
+use web_sys::{Element, Node};
 
 /// Install the drag-and-drop listeners on `node`. The element owns the
-/// closures (see [`super::own_listener`]), so they are released with it.
+/// closures (`glue_dom::listen_for_element_lifetime`), so they are released with it.
 pub(crate) fn install(node: &Node, handler: FileDropHandler) {
     let element: Element = match node.clone().dyn_into::<Element>() {
         Ok(e) => e,
@@ -38,13 +38,15 @@ pub(crate) fn install(node: &Node, handler: FileDropHandler) {
     // keeps the accept decision live as the pointer moves in.
     for event_name in ["dragenter", "dragover"] {
         let h = handler.clone();
-        let closure = Closure::<dyn FnMut(DragEvent)>::new(move |ev: DragEvent| {
+        let el_for_rect = element.clone();
+        crate::glue_dom::listen_for_element_lifetime(&element, event_name, Default::default(), move |ev| {
+            let ev: web_glue::dom::DragEvent = web_glue::JsCast::unchecked_into(ev);
             if !is_file_drag(&ev) {
                 return;
             }
             let ev_out = FileDropEvent {
                 phase: FileDropPhase::Entered,
-                position: local_position(&ev),
+                position: local_position(&el_for_rect, &ev),
             };
             let response = (h)(&ev_out);
             if response.consumed {
@@ -53,33 +55,31 @@ pub(crate) fn install(node: &Node, handler: FileDropHandler) {
                 ev.prevent_default();
             }
         });
-        let _ =
-            element.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 
     // `dragleave` → Exited.
     {
         let h = handler.clone();
-        let closure = Closure::<dyn FnMut(DragEvent)>::new(move |ev: DragEvent| {
+        let el_for_rect = element.clone();
+        crate::glue_dom::listen_for_element_lifetime(&element, "dragleave", Default::default(), move |ev| {
+            let ev: web_glue::dom::DragEvent = web_glue::JsCast::unchecked_into(ev);
             if !is_file_drag(&ev) {
                 return;
             }
             let ev_out = FileDropEvent {
                 phase: FileDropPhase::Exited,
-                position: local_position(&ev),
+                position: local_position(&el_for_rect, &ev),
             };
             let _ = (h)(&ev_out);
         });
-        let _ =
-            element.add_event_listener_with_callback("dragleave", closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 
     // `drop` → Dropped(files).
     {
         let h = handler.clone();
-        let closure = Closure::<dyn FnMut(DragEvent)>::new(move |ev: DragEvent| {
+        let el_for_rect = element.clone();
+        crate::glue_dom::listen_for_element_lifetime(&element, "drop", Default::default(), move |ev| {
+            let ev: web_glue::dom::DragEvent = web_glue::JsCast::unchecked_into(ev);
             if !is_file_drag(&ev) {
                 return;
             }
@@ -88,12 +88,10 @@ pub(crate) fn install(node: &Node, handler: FileDropHandler) {
             let files = collect_files(&ev);
             let ev_out = FileDropEvent {
                 phase: FileDropPhase::Dropped(files),
-                position: local_position(&ev),
+                position: local_position(&el_for_rect, &ev),
             };
             let _ = (h)(&ev_out);
         });
-        let _ = element.add_event_listener_with_callback("drop", closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 }
 
@@ -103,17 +101,13 @@ fn is_file_drag(ev: &DragEvent) -> bool {
     let Some(dt) = ev.data_transfer() else {
         return false;
     };
-    let types = dt.types();
-    for i in 0..types.length() {
-        if types.get(i).as_string().as_deref() == Some("Files") {
-            return true;
-        }
-    }
-    false
+    dt.types().iter().any(|t| t == "Files")
 }
 
 /// Pull the dropped `File`s out of the event into neutral [`DroppedFile`]s.
-/// The raw `web_sys::File` rides along in `source` for the SDK to stream.
+/// The raw `web_sys::File` rides along in `source` for the SDK to stream —
+/// crossed back through the HYBRID-BRIDGE, since that is the type the
+/// file-picker SDK downcasts to until phase 3 ports it.
 fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
     let Some(dt) = ev.data_transfer() else {
         return Vec::new();
@@ -139,22 +133,15 @@ fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
             mime,
             size,
             path: None,
-            source: Some(Rc::new(file) as Rc<dyn std::any::Any>),
+            source: Some(Rc::new(crate::glue_dom::to_web_sys::<web_sys::File>(&file)) as Rc<dyn std::any::Any>),
         });
     }
     out
 }
 
-/// Element-local pointer coordinates: `client` minus the element's rect.
-fn local_position(ev: &DragEvent) -> TouchPoint {
-    let fallback = || TouchPoint::new(ev.client_x() as f32, ev.client_y() as f32);
-    let Some(target) = ev.current_target() else {
-        return fallback();
-    };
-    let el: Element = match target.dyn_into() {
-        Ok(e) => e,
-        Err(_) => return fallback(),
-    };
+/// Element-local pointer coordinates: `client` minus the rect of `el`, the
+/// element the listener is on (the event's `currentTarget`).
+fn local_position(el: &Element, ev: &DragEvent) -> TouchPoint {
     let rect = el.get_bounding_client_rect();
     TouchPoint::new(
         ev.client_x() as f32 - rect.x() as f32,

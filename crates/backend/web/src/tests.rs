@@ -2175,10 +2175,7 @@ fn regression_web_node_teardown_detaches_listeners_before_dropping_them() {
 
     let fired = Rc::new(Cell::new(0));
     let counter = fired.clone();
-    let closure = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
-        move |_e: web_sys::Event| counter.set(counter.get() + 1),
-    );
-    backend.track_listener(id, &input, "blur", false, closure);
+    backend.track_listener(id, &input, "blur", false, move |_| counter.set(counter.get() + 1));
 
     let ev = web_sys::Event::new("blur").expect("construct blur");
     input.dispatch_event(&ev).expect("dispatch blur");

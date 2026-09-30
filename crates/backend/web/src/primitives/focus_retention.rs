@@ -38,7 +38,6 @@
 //! protect.
 
 use crate::WebBackend;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -47,13 +46,13 @@ const TEXT_ENTRY: &str = "input,textarea,select,[contenteditable=''],[contentedi
 
 /// Did this press land on (or inside) a text-entry control? `closest` walks
 /// up from the target, so a press on a control's inner chrome counts too.
-pub(crate) fn lands_on_text_entry(ev: &web_sys::Event) -> bool {
+pub(crate) fn lands_on_text_entry(ev: &web_glue::dom::Event) -> bool {
+    use web_glue::JsCast as _;
     let Some(target) = ev.target() else {
         return false;
     };
-    let el: web_sys::Element = match target.dyn_into() {
-        Ok(e) => e,
-        Err(_) => return false,
+    let Ok(el) = target.dyn_into::<web_glue::dom::Element>() else {
+        return false;
     };
     matches!(el.closest(TEXT_ENTRY), Ok(Some(_)))
 }
@@ -64,14 +63,13 @@ pub(crate) fn mark(b: &mut WebBackend, node: &Node) {
         Err(_) => return,
     };
     let id = b.node_id(node);
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+    // `capture = true`: pressables install a bubble-phase `pointerdown`
+    // listener that calls `stopPropagation`, so a bubble listener here would
+    // never see a press that starts on a row.
+    b.track_listener(id, &el, "pointerdown", true, move |ev| {
         if lands_on_text_entry(&ev) {
             return;
         }
         ev.prevent_default();
     });
-    // `capture = true`: pressables install a bubble-phase `pointerdown`
-    // listener that calls `stopPropagation`, so a bubble listener here would
-    // never see a press that starts on a row.
-    b.track_listener(id, &el, "pointerdown", true, closure);
 }

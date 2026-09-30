@@ -6,9 +6,8 @@
 //! carry the platform entry point, the web target builds the app crate
 //! *itself*. The app owns a `src/main.rs` holding one
 //! `idealyst::entry!(<lib>)` line, and the `idealyst` facade carries the
-//! wasm-only deps (`backend-web`, `wasm-bindgen`,
-//! `console_error_panic_hook`, `lol_alloc`) the author used to have to
-//! name. See [`ensure_entry_point`], which reports a missing one in the
+//! wasm-only deps (`backend-web`, `web-glue`, `lol_alloc`) the author
+//! used to have to name. See [`ensure_entry_point`], which reports a missing one in the
 //! author's terms.
 //!
 //! That removes the failure mode the wrapper existed to create: the
@@ -18,7 +17,9 @@
 //!
 //! What's left here is packaging, which `cargo build` does not do:
 //! `cargo build --target wasm32-unknown-unknown` against the app,
-//! then `wasm-bindgen` over the resulting `.wasm`, then `wasm-split`
+//! then the web-glue extraction (`own_glue::hybrid_extract` — backend-web's
+//! own bindings ride inside the wasm), then `wasm-bindgen` over the
+//! stripped `.wasm` plus `pkg/__idealyst_glue.js`, then `wasm-split`
 //! (unless `--no-split`, which is refused when the app has lazy
 //! boundaries — see [`BuildOptions::wasm_split`]), then (release)
 //! `wasm-opt`, then staging `pkg/` + `index.html` + assets into

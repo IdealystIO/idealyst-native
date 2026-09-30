@@ -8,7 +8,6 @@ use crate::WebBackend;
 // is ample for range-input attributes and values.
 use css::css_num;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -38,15 +37,14 @@ pub(crate) fn create(
 
     // Fire on every `input` event (continuous drag).
     let input_clone = input.clone();
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+    let id = b.node_id(&input.clone().unchecked_into::<Node>());
+    b.track_listener(id, &input, "input", false, move |_| {
         // Parse the string value back to f32; bail on parse error
         // (shouldn't happen with a range input).
         if let Ok(v) = input_clone.value().parse::<f32>() {
             on_change(v);
         }
     });
-    let id = b.node_id(&input.clone().unchecked_into::<Node>());
-    b.track_listener(id, &input, "input", false, closure);
     input.unchecked_into::<Node>()
 }
 

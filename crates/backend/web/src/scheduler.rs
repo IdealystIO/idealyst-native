@@ -1,17 +1,18 @@
-//! Web `Scheduler`: `Promise.then` for microtasks, `requestAnimationFrame`
-//! for one-shot frames + the recurring loop, `setTimeout` for delayed
-//! callbacks. Each cancellable variant owns both the browser handle
-//! and the wasm-bindgen `Closure` so `Drop` cancels the browser-side
-//! dispatch *before* releasing the closure — avoiding the
-//! "closure invoked after being dropped" panic.
+//! Web `Scheduler` on web-glue: `web_glue::queue_microtask` for
+//! microtasks (one JS `queueMicrotask` per burst, drained in order),
+//! `requestAnimationFrame` for one-shot frames + the recurring loop,
+//! `setTimeout` for delayed callbacks. Each cancellable variant owns both
+//! the browser handle and the glue `Closure` so `Drop` cancels the
+//! browser-side dispatch *before* releasing the closure — a revoked
+//! function the browser still calls throws "called after its Rust owner
+//! dropped it".
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
 use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
+use web_glue::Closure;
 
 #[cfg(feature = "hydrate")]
 thread_local! {
@@ -72,16 +73,7 @@ fn drain_hydration_buffer() {
 }
 
 fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
-    let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
-    let cb: Closure<dyn FnMut(wasm_bindgen::JsValue)> =
-        Closure::new(move |_: wasm_bindgen::JsValue| {
-            if let Some(g) = once.take() {
-                g();
-            }
-        });
-    let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED);
-    let _ = promise.then(&cb);
-    cb.forget();
+    web_glue::queue_microtask(f);
 }
 
 /// Register this backend's scheduler with `runtime-core`. Idempotent —
@@ -130,32 +122,26 @@ impl Scheduler for WebScheduler {
         &self,
         f: Box<dyn FnOnce() + 'static>,
     ) -> Box<dyn ScheduleHandle> {
-        let Some(window) = web_sys::window() else {
+        let Some(window) = web_glue::dom::window() else {
             f();
             crate::dispatch_hook::fire_dispatch_hook();
             return Box::new(InertHandle);
         };
-        let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
-        let closure: Closure<dyn FnMut()> = Closure::new(move || {
-            if let Some(g) = once.take() {
-                g();
-                // One-shot frame callbacks can run author code that
-                // stages new-core writes (animation ticks). See
-                // `dispatch_hook` module docs.
-                crate::dispatch_hook::fire_dispatch_hook();
-            }
+        let closure = Closure::once(move |_| {
+            f();
+            // One-shot frame callbacks can run author code that
+            // stages new-core writes (animation ticks). See
+            // `dispatch_hook` module docs.
+            crate::dispatch_hook::fire_dispatch_hook();
         });
-        let handle = match window.request_animation_frame(closure.as_ref().unchecked_ref())
-        {
-            Ok(h) => h,
-            Err(_) => return Box::new(InertHandle),
-        };
+        let handle = window.request_animation_frame(&closure);
         Box::new(OneShotHandle {
-            inner: Some(Rc::new(RefCell::new(OneShotInner {
+            inner: Some(OneShotInner {
+                window,
                 handle,
                 kind: ScheduledKind::AnimationFrame,
                 _closure: closure,
-            }))),
+            }),
         })
     }
 
@@ -164,50 +150,43 @@ impl Scheduler for WebScheduler {
         delay_ms: i32,
         f: Box<dyn FnOnce() + 'static>,
     ) -> Box<dyn ScheduleHandle> {
-        let Some(window) = web_sys::window() else {
+        let Some(window) = web_glue::dom::window() else {
             f();
             crate::dispatch_hook::fire_dispatch_hook();
             return Box::new(InertHandle);
         };
-        let mut once: Option<Box<dyn FnOnce() + 'static>> = Some(f);
-        let closure: Closure<dyn FnMut()> = Closure::new(move || {
-            if let Some(g) = once.take() {
-                g();
-                // Timer callbacks are a primary author-code surface
-                // (`after_ms` bodies that set signals) — the flush hook
-                // is what commits those writes on the new core. See
-                // `dispatch_hook` module docs.
-                crate::dispatch_hook::fire_dispatch_hook();
-            }
+        let closure = Closure::once(move |_| {
+            f();
+            // Timer callbacks are a primary author-code surface
+            // (`after_ms` bodies that set signals) — the flush hook
+            // is what commits those writes on the new core. See
+            // `dispatch_hook` module docs.
+            crate::dispatch_hook::fire_dispatch_hook();
         });
-        let handle = match window.set_timeout_with_callback_and_timeout_and_arguments_0(
-            closure.as_ref().unchecked_ref(),
-            delay_ms,
-        ) {
-            Ok(h) => h,
-            Err(_) => return Box::new(InertHandle),
-        };
+        let handle = window.set_timeout(&closure, delay_ms);
         Box::new(OneShotHandle {
-            inner: Some(Rc::new(RefCell::new(OneShotInner {
+            inner: Some(OneShotInner {
+                window,
                 handle,
                 kind: ScheduledKind::Timeout,
                 _closure: closure,
-            }))),
+            }),
         })
     }
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
-        let Some(window) = web_sys::window() else {
+        let Some(window) = web_glue::dom::window() else {
             return Box::new(InertHandle);
         };
         let state = Rc::new(RefCell::new(RafLoopInner {
+            window: window.clone(),
             pending: None,
             closure: None,
             cancelled: false,
         }));
         let weak_state = Rc::downgrade(&state);
-        let user_fn = Rc::new(RefCell::new(f));
-        let closure: Closure<dyn FnMut()> = Closure::new(move || {
+        let mut user_fn = f;
+        let closure = Closure::new(move |_| {
             let Some(state) = weak_state.upgrade() else {
                 return;
             };
@@ -219,11 +198,10 @@ impl Scheduler for WebScheduler {
             state.borrow_mut().pending = None;
             // Invoke the user function outside any borrow on `state`
             // so the user is free to drop the handle from inside
-            // their own frame body.
-            {
-                let mut f_borrow = user_fn.borrow_mut();
-                (&mut *f_borrow)();
-            }
+            // their own frame body. (The glue registry takes this
+            // closure out while it runs, so dropping the handle here
+            // only defers the closure's own release to the return.)
+            user_fn();
             // rAF-loop iterations can run author code that stages
             // new-core writes (frame-paced drag/scroll state). See
             // `dispatch_hook` module docs.
@@ -232,25 +210,16 @@ impl Scheduler for WebScheduler {
             if s.cancelled {
                 return;
             }
-            if let Some(window) = web_sys::window() {
-                if let Some(c) = s.closure.as_ref() {
-                    if let Ok(h) =
-                        window.request_animation_frame(c.as_ref().unchecked_ref())
-                    {
-                        s.pending = Some(h);
-                    }
-                }
+            if let Some(c) = s.closure.as_ref() {
+                let h = s.window.request_animation_frame(c);
+                s.pending = Some(h);
             }
         });
-        state.borrow_mut().closure = Some(closure);
-        // Kick off the first frame. Pull the JS function ref out
-        // into a local so the immutable borrow drops before we hit
-        // the borrow_mut below.
-        let raf_fn = state.borrow().closure.as_ref().map(|c| c.as_ref().clone());
-        if let Some(raf_fn) = raf_fn {
-            if let Ok(h) = window.request_animation_frame(raf_fn.unchecked_ref()) {
-                state.borrow_mut().pending = Some(h);
-            }
+        let h = window.request_animation_frame(&closure);
+        {
+            let mut s = state.borrow_mut();
+            s.closure = Some(closure);
+            s.pending = Some(h);
         }
         Box::new(RafLoopHandle { inner: Some(state) })
     }
@@ -261,16 +230,17 @@ impl Scheduler for WebScheduler {
 // ---------------------------------------------------------------------------
 
 struct OneShotHandle {
-    inner: Option<Rc<RefCell<OneShotInner>>>,
+    inner: Option<OneShotInner>,
 }
 
 struct OneShotInner {
+    window: web_glue::dom::Window,
     handle: i32,
     kind: ScheduledKind,
-    /// The Closure must outlive its scheduled dispatch. We hold it
-    /// here so Drop can release it *after* the browser has been
-    /// told to cancel.
-    _closure: Closure<dyn FnMut()>,
+    /// The Closure must outlive its scheduled dispatch. Held here so
+    /// Drop can release it *after* the browser has been told to cancel
+    /// (fields drop after `Drop::drop` runs).
+    _closure: Closure,
 }
 
 enum ScheduledKind {
@@ -280,15 +250,9 @@ enum ScheduledKind {
 
 impl Drop for OneShotInner {
     fn drop(&mut self) {
-        if let Some(window) = web_sys::window() {
-            match self.kind {
-                ScheduledKind::AnimationFrame => {
-                    let _ = window.cancel_animation_frame(self.handle);
-                }
-                ScheduledKind::Timeout => {
-                    window.clear_timeout_with_handle(self.handle);
-                }
-            }
+        match self.kind {
+            ScheduledKind::AnimationFrame => self.window.cancel_animation_frame(self.handle),
+            ScheduledKind::Timeout => self.window.clear_timeout(self.handle),
         }
     }
 }
@@ -308,16 +272,17 @@ struct RafLoopHandle {
 }
 
 struct RafLoopInner {
+    window: web_glue::dom::Window,
     pending: Option<i32>,
-    closure: Option<Closure<dyn FnMut()>>,
+    closure: Option<Closure>,
     cancelled: bool,
 }
 
 impl Drop for RafLoopInner {
     fn drop(&mut self) {
         self.cancelled = true;
-        if let (Some(h), Some(window)) = (self.pending.take(), web_sys::window()) {
-            let _ = window.cancel_animation_frame(h);
+        if let Some(h) = self.pending.take() {
+            self.window.cancel_animation_frame(h);
         }
     }
 }

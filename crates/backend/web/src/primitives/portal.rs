@@ -37,7 +37,6 @@ use runtime_shared::primitives::portal::{
 use std::cell::RefCell;
 use runtime_shared::FxHashMap;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -59,7 +58,7 @@ pub(crate) struct PortalInstance {
     /// `release_portal`. Only populated when the portal has an
     /// `on_dismiss` callback.
     #[allow(dead_code)]
-    escape_handler: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
+    escape_handler: Option<web_glue::dom::Listener>,
     /// Scroll + resize handlers that re-measure the anchor target
     /// and rewrite the content's inline `top`/`left` so the portal
     /// keeps tracking the trigger as the page scrolls or the
@@ -68,14 +67,14 @@ pub(crate) struct PortalInstance {
     /// `transform` already.
     ///
     /// `scroll` is registered with `capture: true` because scroll
-    /// events from nested scroll containers don't bubble. Held here
-    /// so `release` can `removeEventListener` with the same closure
-    /// references — otherwise the browser keeps firing them against
-    /// freed Rust state.
+    /// events from nested scroll containers don't bubble. Each is a
+    /// `web_glue::dom::Listener`, which DETACHES as it drops, so
+    /// dropping the instance in `release` removes them — the browser
+    /// never fires a listener whose closure is gone.
     #[allow(dead_code)]
-    reposition_scroll_handler: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    reposition_scroll_handler: Option<web_glue::dom::Listener>,
     #[allow(dead_code)]
-    reposition_resize_handler: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    reposition_resize_handler: Option<web_glue::dom::Listener>,
     /// First-paint reposition task. The walker calls
     /// `create_portal` *before* it inserts the portal's children,
     /// so the content element has no size when we install the
@@ -91,13 +90,13 @@ pub(crate) struct PortalInstance {
     ///
     /// `Fn`, not `FnMut`: the handler's own `.focus()` call
     /// synchronously re-dispatches `focusin`, re-entering this very
-    /// closure. wasm-bindgen's exclusive-borrow guard would throw
-    /// "closure invoked recursively or after being dropped" on a
-    /// `FnMut`; an `Fn` closure is re-entry-safe, so the inner call
-    /// runs the body and the `in_progress` flag short-circuits it.
+    /// closure. A `FnMut` glue closure refuses re-entry ("invoked
+    /// recursively"); an `Fn` one (`Closure::new_fn`) is re-entry-safe,
+    /// so the inner call runs the body and the `in_progress` flag
+    /// short-circuits it.
     /// See [`install_focus_trap`].
     #[allow(dead_code)]
-    focus_trap_handler: Option<Closure<dyn Fn(web_sys::Event)>>,
+    focus_trap_handler: Option<web_glue::dom::Listener>,
 }
 
 /// All live portal instances, keyed by `data-portal-id`.
@@ -171,16 +170,12 @@ pub(crate) fn create(
         }
         let window = web_sys::window()?;
         let dismiss = dismiss.clone();
-        let closure = Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
+        Some(crate::glue_dom::listen(&window, "keydown", Default::default(), move |ev| {
+            let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
             if ev.key() == "Escape" {
                 (dismiss)();
             }
-        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-        let _ = window.add_event_listener_with_callback(
-            "keydown",
-            closure.as_ref().unchecked_ref(),
-        );
-        Some(closure)
+        }))
     });
 
     // ---- Scroll / resize reposition for anchored portals ----
@@ -250,52 +245,16 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
         .unwrap_or_default();
     let id: u32 = id_str.parse().unwrap_or(u32::MAX);
 
-    // Detach from <body>. Browsers automatically remove the
-    // element's event listeners as part of GC once nothing else
-    // holds a reference, but our wasm-bindgen Closure handles are
-    // kept alive by the PortalInstance entry — dropping that
-    // entry below is what actually frees them.
+    // Detach from <body>.
     if let Some(body) = b.doc.body() {
         let _ = body.remove_child(portal_root.unchecked_ref());
     }
 
     // Every document- or window-level listener installed during
-    // `create` has to be explicitly removed here. Dropping the
-    // PortalInstance below frees the wasm-bindgen `Closure` handle,
-    // which destroys the JS-side wrapper — but the EventTarget (the
-    // `document` / `window`) still has the wrapper registered as a
-    // listener. The next matching event will invoke a freed closure
-    // and throw "closure invoked recursively or after being dropped".
+    // `create` is a `web_glue::dom::Listener` held by the instance:
+    // dropping the instance DETACHES each one before its closure goes,
+    // so `document` / `window` never keep a dead listener registered.
     if id != u32::MAX {
-        if let Some(inst) = b.portal_instances.get(&id) {
-            if let Some(window) = web_sys::window() {
-                if let Some(closure) = inst.escape_handler.as_ref() {
-                    let _ = window.remove_event_listener_with_callback(
-                        "keydown",
-                        closure.as_ref().unchecked_ref(),
-                    );
-                }
-                if let Some(closure) = inst.reposition_scroll_handler.as_ref() {
-                    let _ = window.remove_event_listener_with_callback_and_bool(
-                        "scroll",
-                        closure.as_ref().unchecked_ref(),
-                        true,
-                    );
-                }
-                if let Some(closure) = inst.reposition_resize_handler.as_ref() {
-                    let _ = window.remove_event_listener_with_callback(
-                        "resize",
-                        closure.as_ref().unchecked_ref(),
-                    );
-                }
-            }
-            if let Some(closure) = inst.focus_trap_handler.as_ref() {
-                let _ = b.doc.remove_event_listener_with_callback(
-                    "focusin",
-                    closure.as_ref().unchecked_ref(),
-                );
-            }
-        }
         b.portal_instances.remove(&id);
     }
 }
@@ -443,8 +402,8 @@ fn install_anchor_reposition(
     align: ElementAlign,
     offset: f32,
 ) -> (
-    Option<Closure<dyn FnMut(web_sys::Event)>>,
-    Option<Closure<dyn FnMut(web_sys::Event)>>,
+    Option<web_glue::dom::Listener>,
+    Option<web_glue::dom::Listener>,
     Option<runtime_shared::ScheduledTask>,
 ) {
     let window = match web_sys::window() {
@@ -478,25 +437,16 @@ fn install_anchor_reposition(
     });
 
     let reposition_scroll = reposition.clone();
-    let scroll_closure: Closure<dyn FnMut(web_sys::Event)> =
-        Closure::wrap(Box::new(move |_ev: web_sys::Event| {
+    // useCapture — catch nested scroll containers.
+    let scroll_listener =
+        crate::glue_dom::listen(&window, "scroll", crate::glue_dom::capture(true), move |_| {
             (reposition_scroll)();
-        }) as Box<dyn FnMut(web_sys::Event)>);
-    let _ = window.add_event_listener_with_callback_and_bool(
-        "scroll",
-        scroll_closure.as_ref().unchecked_ref(),
-        true, // useCapture — catch nested scroll containers
-    );
+        });
 
     let reposition_resize = reposition.clone();
-    let resize_closure: Closure<dyn FnMut(web_sys::Event)> =
-        Closure::wrap(Box::new(move |_ev: web_sys::Event| {
-            (reposition_resize)();
-        }) as Box<dyn FnMut(web_sys::Event)>);
-    let _ = window.add_event_listener_with_callback(
-        "resize",
-        resize_closure.as_ref().unchecked_ref(),
-    );
+    let resize_listener = crate::glue_dom::listen(&window, "resize", Default::default(), move |_| {
+        (reposition_resize)();
+    });
 
     // First-paint reposition: the walker hasn't inserted our
     // children yet, so the portal element has no measurable size
@@ -508,7 +458,7 @@ fn install_anchor_reposition(
         (reposition_initial)();
     });
 
-    (Some(scroll_closure), Some(resize_closure), Some(initial_measure_task))
+    (Some(scroll_listener), Some(resize_listener), Some(initial_measure_task))
 }
 
 /// Read the portal content's NATURAL rendered `(width, height)` from
@@ -605,18 +555,24 @@ const FOCUSABLE_SELECTOR: &str = concat!(
 pub(crate) fn install_focus_trap(
     doc: &web_sys::Document,
     portal_root: web_sys::Element,
-) -> Option<Closure<dyn Fn(web_sys::Event)>> {
+) -> Option<web_glue::dom::Listener> {
     let in_progress: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let portal_root_for_listener = portal_root.clone();
-    let closure: Closure<dyn Fn(web_sys::Event)> =
-        Closure::wrap(Box::new(move |ev: web_sys::Event| {
+    // `tabindex="-1"` lets the portal root itself receive focus
+    // programmatically (so the fallback `portal_root.focus()` works)
+    // without inserting it into the natural Tab order.
+    let _ = portal_root.set_attribute("tabindex", "-1");
+
+    Some(crate::glue_dom::listen_fn(doc, "focusin", Default::default(), move |ev| {
             // Re-entry guard: our own `.focus()` triggers another
             // `focusin`. Bail without recursing.
             if *in_progress.borrow() {
                 return;
             }
-            let target_node: Option<web_sys::Node> =
-                ev.target().and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+            let target_node: Option<web_sys::Node> = ev.target().and_then(|t| {
+                web_glue::JsCast::dyn_ref::<web_glue::dom::Node>(&t)
+                    .map(crate::glue_dom::to_web_sys::<web_sys::Node>)
+            });
             let Some(target_node) = target_node else {
                 return;
             };
@@ -645,18 +601,7 @@ pub(crate) fn install_focus_trap(
                 let _ = h.focus();
             }
             *in_progress.borrow_mut() = false;
-        }) as Box<dyn Fn(web_sys::Event)>);
-
-    // `tabindex="-1"` lets the portal root itself receive focus
-    // programmatically (so the fallback `portal_root.focus()` works)
-    // without inserting it into the natural Tab order.
-    let _ = portal_root.set_attribute("tabindex", "-1");
-
-    let _ = doc.add_event_listener_with_callback(
-        "focusin",
-        closure.as_ref().unchecked_ref(),
-    );
-    Some(closure)
+    }))
 }
 
 // ---------------------------------------------------------------------------

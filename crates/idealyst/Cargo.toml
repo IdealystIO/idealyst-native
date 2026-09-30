@@ -2,8 +2,7 @@
 # target needs.
 #
 # This crate exists so an app's Cargo.toml doesn't have to name
-# `backend-web` + `wasm-bindgen` + `console_error_panic_hook` +
-# `lol_alloc` + `js-sys` + `web-sys` on wasm, `host-terminal` on a TTY,
+# `backend-web` + `web-glue` + `lol_alloc` + `js-sys` + `web-sys` on wasm, `host-terminal` on a TTY,
 # `host-macos` on desktop, and so on — the per-target dependency blocks
 # below do that. Previously those lines lived in a CLI-generated wrapper
 # crate, which is what made the app crate un-buildable by plain `cargo
@@ -102,12 +101,15 @@ runtime-scene = { path = "../runtime/scene", version = "1.6.0", registry = "idea
 # --- Web --------------------------------------------------------------
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `async-driver` compiles in the rAF render-loop driver and the
-# `wasm_bindgen_futures` executor, and is what makes
+# web-glue executor, and is what makes
 # `install_render_loop()` / `install_async_executor()` exist at all.
 # Without it the app renders and then panics at the first `spawn_async`
 # — i.e. the first server-fn call or resource fetch.
 backend-web = { path = "../backend/web", features = ["async-driver"], version = "1.7.0", registry = "idealyst" }
-console_error_panic_hook = "0.1"
+# The framework-owned JS boundary: boot's window check. The panic hook
+# is backend-web's (`install_panic_hook`), replacing
+# `console_error_panic_hook`.
+web-glue = { path = "../runtime/web-glue", version = "1.5.2", registry = "idealyst" }
 # Backs `alloc::Small`, the opt-in small-bundle allocator. NOT optional
 # and NOT the default: the type is only instantiated by the
 # `#[global_allocator]` `entry!` emits for `allocator = "small"`, so an
@@ -117,6 +119,7 @@ console_error_panic_hook = "0.1"
 # the dep deleted outright — byte-identical. Selecting it drops that to
 # 1,575,878 (dlmalloc out, free list in).
 lol_alloc = "0.4"
+# The runtime-server (dev) client path only: its console diagnostics.
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Navigator", "console"] }
 dev-client = { path = "../dev/client", optional = true, version = "1.6.0", registry = "idealyst" }

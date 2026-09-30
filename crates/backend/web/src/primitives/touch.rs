@@ -60,12 +60,13 @@ use runtime_shared::{
 use std::cell::{Cell, RefCell};
 use runtime_shared::collections::{SmallIdMap, SmallIdSet};
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::{Element, MouseEvent, Node, PointerEvent};
+use web_glue::dom::{MouseEvent, PointerEvent};
+use web_glue::JsCast as _;
+use web_sys::{Element, Node};
 
-/// Install the pointer listeners on `node`. The element owns the resulting
-/// [`Closure`]s (see [`super::own_listener`]), so they are released with it.
+/// Install the pointer listeners on `node`. The element owns them, so their
+/// closures are released with it (`glue_dom::listen_for_element_lifetime`).
 pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // The framework only installs a touch handler on primitives that
     // map to real DOM elements; if the downcast fails we'd be
@@ -163,7 +164,8 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
         let origins = origins.clone();
         let finish = finish.clone();
         let element_for_capture = element.clone();
-        let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        crate::glue_dom::listen_for_element_lifetime(&element, "pointerdown", Default::default(), move |ev| {
+            let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
             // `button` is 0 for touch + pen contact + primary mouse; 2 is the
             // secondary press. On macOS, Ctrl-click IS the OS's secondary
             // press, but only Safari does that folding for us (`button == 2`
@@ -257,11 +259,6 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
                 }
             }
         });
-        let _ = element.add_event_listener_with_callback(
-            "pointerdown",
-            closure.as_ref().unchecked_ref(),
-        );
-        super::own_listener(closure);
     }
 
     // contextmenu — native-menu suppression AND, in some browsers, the only
@@ -302,7 +299,8 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // synthetic event needs no active/capture/up bookkeeping.
     {
         let handler = handler.clone();
-        let closure = Closure::<dyn FnMut(MouseEvent)>::new(move |ev: MouseEvent| {
+        crate::glue_dom::listen_for_element_lifetime(&element, "contextmenu", Default::default(), move |ev| {
+            let ev: web_glue::dom::MouseEvent = web_glue::JsCast::unchecked_into(ev);
             ev.prevent_default();
             if let Some(consumed) = contextmenu_press_note() {
                 if consumed {
@@ -350,9 +348,6 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
                 ev.stop_propagation();
             }
         });
-        let _ = element
-            .add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 
     // pointermove — Moved for pointers in `active`; `Hovered` for unpressed
@@ -370,7 +365,8 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
         let captured = captured.clone();
         let origins = origins.clone();
         let element_for_capture = element.clone();
-        let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        crate::glue_dom::listen_for_element_lifetime(&element, "pointermove", Default::default(), move |ev| {
+            let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
             let pid = ev.pointer_id();
             if !active.borrow().contains(&pid) {
                 let ptype = ev.pointer_type();
@@ -439,11 +435,6 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
                 capture_pointer(&element_for_capture, pid, &captured);
             }
         });
-        let _ = element.add_event_listener_with_callback(
-            "pointermove",
-            closure.as_ref().unchecked_ref(),
-        );
-        super::own_listener(closure);
     }
 
     // selectstart — suppress the native text selection a gesture press would
@@ -478,15 +469,12 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // opt-in.
     {
         let active = active.clone();
-        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        crate::glue_dom::listen_for_element_lifetime(&element, "selectstart", Default::default(), move |ev| {
             if active.borrow().is_empty() || target_owns_its_selection(&ev) {
                 return;
             }
             ev.prevent_default();
         });
-        let _ = element
-            .add_event_listener_with_callback("selectstart", closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 
     // pointerup — Ended. pointercancel — Cancelled. Both are pure delegations
@@ -497,11 +485,10 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
         ("pointercancel", TouchPhase::Cancelled),
     ] {
         let finish = finish.clone();
-        let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        crate::glue_dom::listen_for_element_lifetime(&element, event, Default::default(), move |ev| {
+            let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
             finish(&ev, phase);
         });
-        let _ = element.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 }
 
@@ -601,7 +588,12 @@ fn ensure_window_net() {
         ("pointerup", TouchPhase::Ended),
         ("pointercancel", TouchPhase::Cancelled),
     ] {
-        let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        // Deliberately permanent, and the one place in this module where that
+        // is correct: two listeners for the lifetime of the page, sized by
+        // nothing. `window` roots the JS function (and is never collected, so
+        // neither is the closure).
+        crate::glue_dom::listen_for_element_lifetime(&win, event, Default::default(), move |ev| {
+            let ev: PointerEvent = ev.unchecked_into();
             // Clone the finisher OUT of the map before calling it: `finish`
             // re-enters `unregister_gesture`, which needs the same `RefCell`
             // mutably, so the read borrow must be released first.
@@ -611,16 +603,7 @@ fn ensure_window_net() {
                 finish(&ev, phase);
             }
         });
-        if win
-            .add_event_listener_with_callback(event, closure.as_ref().unchecked_ref())
-            .is_ok()
-        {
-            WINDOW_NET.with(|net| net.borrow_mut().listener_count += 1);
-        }
-        // Deliberately permanent, and the one place in this module where that
-        // is correct: two listeners for the lifetime of the page, sized by
-        // nothing. `window` roots the JS function.
-        closure.forget();
+        WINDOW_NET.with(|net| net.borrow_mut().listener_count += 1);
     }
 }
 
@@ -715,30 +698,19 @@ fn ensure_press_note() {
     let Some(win) = web_sys::window() else {
         return;
     };
-    let down = Closure::<dyn FnMut(PointerEvent)>::new(move |_ev: PointerEvent| {
+    // Permanent for the same reason as `WINDOW_NET`'s pair: two listeners
+    // for the life of the page, sized by nothing. `window` roots them.
+    // Capture phase: `window` hears each before any element does.
+    let capture = crate::glue_dom::capture(true);
+    crate::glue_dom::listen_for_element_lifetime(&win, "pointerdown", capture, move |_| {
         PRESS_NOTE.with(|note| note.borrow_mut().pending = None);
     });
-    // `true` = capture phase: `window` hears it before any element does.
-    let _ = win.add_event_listener_with_callback_and_bool(
-        "pointerdown",
-        down.as_ref().unchecked_ref(),
-        true,
-    );
-    let menu = Closure::<dyn FnMut(MouseEvent)>::new(move |_ev: MouseEvent| {
+    crate::glue_dom::listen_for_element_lifetime(&win, "contextmenu", capture, move |_| {
         PRESS_NOTE.with(|note| {
             let mut note = note.borrow_mut();
             note.current = note.pending.take();
         });
     });
-    let _ = win.add_event_listener_with_callback_and_bool(
-        "contextmenu",
-        menu.as_ref().unchecked_ref(),
-        true,
-    );
-    // Permanent for the same reason as `WINDOW_NET`'s pair: two listeners
-    // for the life of the page, sized by nothing. `window` roots them.
-    down.forget();
-    menu.forget();
 }
 
 /// Test hook: `(window listeners installed, gestures currently armed)`.
@@ -771,11 +743,10 @@ pub(crate) fn window_net_stats() -> (usize, usize) {
 /// recognized. The control's OWN `click` is untouched — `stop_propagation`
 /// halts bubbling, not the browser's click synthesis.
 pub(crate) fn swallow_ancestor_touch(el: &web_sys::Element) {
-    let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+    crate::glue_dom::listen_for_element_lifetime(&el, "pointerdown", Default::default(), move |ev| {
+        let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
         ev.stop_propagation();
     });
-    let _ = el.add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
-    super::own_listener(closure);
 
     // The swallow must extend to `contextmenu`: an ancestor `on_touch`
     // element's contextmenu listener SYNTHESIZES a Secondary `Began` when no
@@ -787,12 +758,11 @@ pub(crate) fn swallow_ancestor_touch(el: &web_sys::Element) {
     // the ancestor's listener used to suppress the native menu over the
     // control via the bubbled event, and stopping propagation here would
     // otherwise re-enable it.
-    let closure = Closure::<dyn FnMut(MouseEvent)>::new(move |ev: MouseEvent| {
+    crate::glue_dom::listen_for_element_lifetime(&el, "contextmenu", Default::default(), move |ev| {
+        let ev: web_glue::dom::MouseEvent = web_glue::JsCast::unchecked_into(ev);
         ev.prevent_default();
         ev.stop_propagation();
     });
-    let _ = el.add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref());
-    super::own_listener(closure);
 }
 
 /// Implementation of [`runtime_shared::Backend::claim_touch`] —
@@ -863,10 +833,11 @@ fn element_origin(ev: &MouseEvent) -> (f64, f64) {
     let Some(target) = ev.current_target() else {
         return (0.0, 0.0);
     };
-    let el: web_sys::Element = match target.dyn_into() {
-        Ok(e) => e,
-        Err(_) => return (0.0, 0.0),
+    let Some(el) = target.dyn_ref::<web_glue::dom::Element>() else {
+        return (0.0, 0.0);
     };
+    // The rect read is a DOM operation, still web-sys until phase 2b.
+    let el: web_sys::Element = crate::glue_dom::to_web_sys(el);
     let rect = el.get_bounding_client_rect();
     (rect.x(), rect.y())
 }
@@ -884,7 +855,7 @@ fn local_from(ev: &MouseEvent, origin: (f64, f64)) -> (f32, f32) {
 /// fractional precision) to nanoseconds. Web exposes only ms-with-
 /// fractions; the conversion preserves the fractional part by
 /// multiplying before casting.
-fn timestamp_ns(ev: &web_sys::Event) -> u64 {
+fn timestamp_ns(ev: &web_glue::dom::Event) -> u64 {
     (ev.time_stamp() * 1_000_000.0) as u64
 }
 
@@ -913,13 +884,16 @@ fn pressure_to_force(pressure: f32) -> Option<f32> {
 ///
 /// `getComputedStyle` forces a style recalc, which is why this runs on
 /// `selectstart` (once per press) and never on the `pointermove` hot path.
-fn target_owns_its_selection(ev: &web_sys::Event) -> bool {
+fn target_owns_its_selection(ev: &web_glue::dom::Event) -> bool {
     let Some(target) = ev.target() else {
         return false;
     };
-    let Ok(el) = target.dyn_into::<Element>() else {
+    let Some(el) = target.dyn_ref::<web_glue::dom::Element>() else {
         return false;
     };
+    // The editability / computed-style reads are DOM operations, still
+    // web-sys until phase 2b.
+    let el: Element = crate::glue_dom::to_web_sys(el);
     if let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() {
         if html.is_content_editable() {
             return true;

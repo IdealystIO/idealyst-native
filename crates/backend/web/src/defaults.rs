@@ -1,13 +1,60 @@
 //! Global stylesheet baselines: the `.ui-default` class every node
-//! gets, the spinner keyframes, the virtualizer JS shim, and the
+//! gets, the spinner keyframes, the JS runtime shims, and the
 //! per-node dynamic-slot teardown helper.
+//!
+//! # The JS shims
+//!
+//! The eight hand-written shims in `runtime/js/` (batch executor, text
+//! and class batching/bindings, node ids, the two virtualizers) ship as
+//! web-glue JS modules (`web_glue::js_module!`): their source travels in
+//! the wasm's `__idealyst_glue` section and the build writes it into
+//! `pkg/__idealyst_glue.js` as ordinary code. Each `ensure_*_shim`
+//! evaluates its module once (`G.m(name)`), which runs the shim's IIFE and
+//! installs its `window.__idealyst*` globals — the surface the call sites
+//! still read in phase 2a (they become `import!`s in 2b).
+//!
+//! This replaced evaluating the source at run time with
+//! `js_sys::Function::new_no_args(src).call0()`: no `eval`-class call (a
+//! CSP with no `unsafe-eval` now runs every shim), and the shim text is no
+//! longer a data-section string in the shipped wasm. The embedded copies
+//! are still build.rs-minified (`OUT_DIR/js-min/`).
 //!
 //! These live in their own `impl WebBackend` block so they're separate
 //! from per-primitive create code and from the CSS converter helpers
 //! in [`crate::style`].
 
 use crate::WebBackend;
-use wasm_bindgen::prelude::*;
+
+/// Declare each shim as a glue module and give it an `ensure` that
+/// evaluates it. The anchor call keeps the module's record linked (see
+/// `web_glue::js_module!`'s anchor rule) exactly when its `ensure` is.
+macro_rules! shim_modules {
+    ($($anchor:ident / $eval:ident = $name:literal, $file:literal;)*) => {
+        $(
+            web_glue::js_module!(fn $anchor = $name, include_str!(concat!(env!("OUT_DIR"), "/js-min/", $file)));
+            fn $eval() {
+                $anchor();
+                let (p, l) = web_glue::string::abi($name);
+                unsafe { js_eval_module(p, l) }
+            }
+        )*
+    };
+}
+
+web_glue::import! {
+    fn js_eval_module(p: usize, l: usize) = "(p, l) => { G.m(G.str(p, l)); }";
+}
+
+shim_modules! {
+    virtualizer_module / eval_virtualizer = "backend-web/virtualizer", "virtualizer.js";
+    virtual_grid_module / eval_virtual_grid = "backend-web/virtual_grid", "virtual_grid.js";
+    batch_module / eval_batch = "backend-web/batch", "batch.js";
+    text_batch_module / eval_text_batch = "backend-web/text_batch", "text_batch.js";
+    text_bindings_module / eval_text_bindings = "backend-web/text_bindings", "text_bindings.js";
+    class_batch_module / eval_class_batch = "backend-web/class_batch", "class_batch.js";
+    class_bindings_module / eval_class_bindings = "backend-web/class_bindings", "class_bindings.js";
+    node_ids_module / eval_node_ids = "backend-web/node_ids", "node_ids.js";
+}
 
 impl WebBackend {
     // The framework used to stamp every framework-created element
@@ -19,18 +66,9 @@ impl WebBackend {
     // `rules_to_css` auto-promotes a style to `display: flex`
     // when the rules use any flex-container property.
 
-    /// Inject the virtualizer JS shim into the document on first
-    /// use. The shim defines `window.__idealystVirtualizer` (the
-    /// recycler class the backend then constructs). Inlined via
-    /// `include_str!` so consumers don't need to ship a separate
-    /// JS file or set up a build pipeline.
-    ///
-    /// We use `Function::new_no_args(src).call0()` (which evals the
-    /// source in the global scope) rather than appending a `<script>`
-    /// element — the latter has subtle browser-specific quirks
-    /// around when dynamically-inserted scripts execute, and some
-    /// configurations (CSP, certain WASM hosts) don't run them at
-    /// all. Eval-via-Function is unambiguous and reliable.
+    /// Evaluate the virtualizer JS shim on first use. The shim defines
+    /// `window.__idealystVirtualizer` (the recycler class the backend
+    /// then constructs). See the module docs for how it ships.
     pub(crate) fn ensure_virtualizer_shim(&mut self) {
         if self.virtualizer_shim_injected {
             return;
@@ -39,41 +77,29 @@ impl WebBackend {
         // `runtime/js/*.js` — comments/indentation stripped so the shim
         // source doesn't ship inside the wasm (~33-54 KB of commentary).
         // Edit the originals under `runtime/js/`; build.rs re-emits.
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/virtualizer.js"));
-        // Wrap in a function that returns nothing and call it. The
-        // shim's body is wrapped in an IIFE itself; this outer
-        // Function::new_no_args is just our way of executing it.
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_virtualizer();
         self.virtualizer_shim_injected = true;
     }
 
     /// Inject the two-axis grid shim (`window.__idealystVirtualGrid`)
-    /// on first use. Same evaluation strategy and same laziness as
+    /// on first use. Same strategy and same laziness as
     /// [`ensure_virtualizer_shim`]: an app that never mounts a
     /// `virtual_grid` never pays the injection.
     pub(crate) fn ensure_virtual_grid_shim(&mut self) {
         if self.virtual_grid_shim_injected {
             return;
         }
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/virtual_grid.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_virtual_grid();
         self.virtual_grid_shim_injected = true;
     }
 
     /// Inject the local-render batch executor (`__idealystExecuteBatch`)
-    /// into the document on first use. Same evaluation strategy as
-    /// [`ensure_virtualizer_shim`] — bundle the JS via
-    /// `include_str!` and run it inside a `Function::new_no_args`
-    /// call so we don't depend on `<script>` injection semantics.
+    /// on first use. Same strategy as [`ensure_virtualizer_shim`].
     pub(crate) fn ensure_batch_shim(&mut self) {
         if self.batch_shim_injected {
             return;
         }
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/batch.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_batch();
         self.batch_shim_injected = true;
     }
 
@@ -87,9 +113,7 @@ impl WebBackend {
         if self.text_batch_shim_injected {
             return;
         }
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/text_batch.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_text_batch();
         self.text_batch_shim_injected = true;
     }
 
@@ -104,9 +128,7 @@ impl WebBackend {
         if self.text_bindings_shim_injected {
             return;
         }
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/text_bindings.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_text_bindings();
         self.text_bindings_shim_injected = true;
     }
 
@@ -120,9 +142,7 @@ impl WebBackend {
         if self.class_batch_shim_injected {
             return;
         }
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/class_batch.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_class_batch();
         self.class_batch_shim_injected = true;
     }
 
@@ -145,9 +165,7 @@ impl WebBackend {
         // for node lookups.
         self.ensure_text_bindings_shim();
         self.ensure_class_batch_shim();
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/class_bindings.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_class_bindings();
         self.class_bindings_shim_injected = true;
         // The shim just WRAPPED `window.__idealystOnSignalChanged`
         // (text_bindings' handler) with the class dispatcher. Drop any
@@ -169,9 +187,7 @@ impl WebBackend {
         if self.node_id_shim_injected {
             return;
         }
-        let src = include_str!(concat!(env!("OUT_DIR"), "/js-min/node_ids.js"));
-        let f = js_sys::Function::new_no_args(src);
-        let _ = f.call0(&JsValue::NULL);
+        eval_node_ids();
         self.node_id_shim_injected = true;
     }
 

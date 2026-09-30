@@ -1,11 +1,10 @@
 //! `Element::Button` — a `<button>` element plus a click closure
-//! kept alive in `WebBackend::_click_closures`.
+//! the element owns (`glue_dom::set_onclick`).
 
 use crate::WebBackend;
 use runtime_shared::{ButtonHandle, ButtonOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -26,9 +25,7 @@ pub(crate) fn create(
     // the cursor treats it as one node — we skip the content-build branch.
     if let Some(adopted) = b.hydrate_next("button") {
         let button: web_sys::HtmlElement = adopted.unchecked_into();
-        let closure = Closure::<dyn FnMut()>::new(move || on_click());
-        button.set_onclick(Some(closure.as_ref().unchecked_ref()));
-        b._click_closures.push(closure);
+        crate::glue_dom::set_onclick(&button, move || on_click());
         // See the fresh-create path below.
         super::touch::swallow_ancestor_touch(button.as_ref());
         return button.unchecked_into::<Node>();
@@ -63,9 +60,7 @@ pub(crate) fn create(
         button.set_text_content(Some(label));
     }
 
-    let closure = Closure::<dyn FnMut()>::new(move || on_click());
-    button.set_onclick(Some(closure.as_ref().unchecked_ref()));
-    b._click_closures.push(closure);
+    crate::glue_dom::set_onclick(&button, move || on_click());
     // Consume the press from ancestor `on_touch` recognizers so a button
     // inside a clickable row / tappable card doesn't ALSO trigger the
     // ancestor — matching native's single-view touch delivery. See

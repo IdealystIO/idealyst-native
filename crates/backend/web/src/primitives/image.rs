@@ -2,9 +2,8 @@
 
 use crate::WebBackend;
 use runtime_shared::{AssetId, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler};
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::{Event, HtmlImageElement, Node};
+use web_sys::{HtmlImageElement, Node};
 
 /// Sentinel URL the framework emits for asset-backed images.
 /// The shape is `asset://<u64-id>` — see `runtime_shared::image_asset`.
@@ -91,14 +90,12 @@ pub(crate) fn install_load(node: &Node, handler: ImageLoadHandler) {
         // bitmap and re-fires `load`, which should re-notify.
     }
     let img_for_cb = img.clone();
-    let closure = Closure::<dyn FnMut(Event)>::new(move |_ev: Event| {
+    crate::glue_dom::listen_for_element_lifetime(&img, "load", Default::default(), move |_| {
         handler(&ImageLoadEvent {
             width: img_for_cb.natural_width() as f32,
             height: img_for_cb.natural_height() as f32,
         });
     });
-    let _ = img.add_event_listener_with_callback("load", closure.as_ref().unchecked_ref());
-    super::own_listener(closure);
 }
 
 /// Install an `on_error` handler: fire the framework's
@@ -117,11 +114,9 @@ pub(crate) fn install_error(node: &Node, handler: ImageErrorHandler) {
         let handler = handler.clone();
         runtime_shared::schedule_microtask(move || handler());
     }
-    let closure = Closure::<dyn FnMut(Event)>::new(move |_ev: Event| {
+    crate::glue_dom::listen_for_element_lifetime(&img, "error", Default::default(), move |_| {
         handler();
     });
-    let _ = img.add_event_listener_with_callback("error", closure.as_ref().unchecked_ref());
-    super::own_listener(closure);
 }
 
 /// Swap the `<img alt>` in place when a reactive `alt` source fires.

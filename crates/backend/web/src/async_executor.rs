@@ -1,5 +1,9 @@
-//! Web `AsyncExecutor`: routes `spawn` to
-//! `wasm_bindgen_futures::spawn_local` (the JS event loop).
+//! Web `AsyncExecutor`: routes `spawn` to `web_glue::spawn_local`, the
+//! single-threaded executor web-glue drains on one JS microtask per burst.
+//!
+//! Futures from wasm-bindgen crates (an SDK awaiting a
+//! `wasm_bindgen_futures::JsFuture`) run here unchanged: a `Waker` is
+//! executor-agnostic, and web-glue's wakes by re-queueing the task.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -17,7 +21,7 @@ struct WasmAsyncExecutor;
 
 impl AsyncExecutor for WasmAsyncExecutor {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
-        wasm_bindgen_futures::spawn_local(HookedFuture(future));
+        web_glue::spawn_local(HookedFuture(future));
     }
 }
 

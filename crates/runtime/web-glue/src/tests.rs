@@ -223,6 +223,32 @@ fn regression_a_gc_owned_closure_keeps_running_then_is_released_when_js_collects
 }
 
 #[test]
+fn regression_an_fn_closure_may_be_reentered_where_fn_mut_is_refused() {
+    // A `scroll` handler whose body re-fires `scroll` synchronously: the
+    // backend used `Closure<dyn Fn>` on wasm-bindgen for exactly this.
+    let depth = Rc::new(Cell::new(0));
+    let max = Rc::new(Cell::new(0));
+    let slot: Rc<std::cell::RefCell<Option<V>>> = Rc::new(std::cell::RefCell::new(None));
+    let (d, m, sl) = (depth.clone(), max.clone(), slot.clone());
+    let c = Closure::new_fn(move |_| {
+        d.set(d.get() + 1);
+        m.set(m.get().max(d.get()));
+        if d.get() < 3 {
+            let f = sl.borrow().clone().unwrap();
+            mock::call_js_fn(&f, V::Undefined).expect("re-entry allowed");
+        }
+        d.set(d.get() - 1);
+    });
+    *slot.borrow_mut() = Some(mock::val(c.as_js().raw()));
+    fire(&c, V::Undefined).unwrap();
+    assert_eq!(max.get(), 3, "entered three levels deep");
+    drop(slot.borrow_mut().take());
+    let before = Closure::live_count();
+    drop(c);
+    assert_eq!(Closure::live_count(), before - 1);
+}
+
+#[test]
 fn a_closure_may_drop_itself_while_running() {
     let holder: Rc<RefCell<Option<Closure>>> = Rc::new(RefCell::new(None));
     let h = holder.clone();

@@ -2,7 +2,6 @@
 
 use crate::WebBackend;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -38,11 +37,10 @@ pub(crate) fn create(
     let _ = input.set_attribute("role", "switch");
     input.set_checked(initial_value);
     let input_clone = input.clone();
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+    let id = b.node_id(&input.clone().unchecked_into::<Node>());
+    b.track_listener(id, &input, "change", false, move |_| {
         on_change(input_clone.checked());
     });
-    let id = b.node_id(&input.clone().unchecked_into::<Node>());
-    b.track_listener(id, &input, "change", false, closure);
     // Consume the press from ancestor `on_touch` recognizers, exactly as
     // `button` / `link` / `pressable` do — a toggle inside a clickable row
     // must not ALSO trigger the row, which is native's single-view delivery.

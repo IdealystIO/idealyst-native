@@ -107,6 +107,9 @@ crate::import! {
     fn js_is_same_node(a: u32, b: u32) -> u32 = "(a, b) => G.get(a) === G.get(b) ? 1 : 0";
     fn js_contains(a: u32, b: u32) -> u32 = "(a, b) => G.get(a).contains(G.get(b)) ? 1 : 0";
     fn js_tag_name(e: u32, out: usize) = "(e, o) => G.retStr(G.get(e).tagName, o)";
+    #[catch]
+    fn js_closest(e: u32, p: usize, l: usize) -> u32 =
+        "(e, p, l) => { const c = G.get(e).closest(G.str(p, l)); return c == null ? 0 : G.add(c); }";
     fn js_class_name(e: u32, out: usize) =
         "(e, o) => { const c = G.get(e).className; G.retStr(typeof c === 'string' ? c : (c && c.baseVal) || '', o); }";
     fn js_get_attribute(e: u32, p: usize, l: usize, out: usize) -> u32 =
@@ -129,6 +132,8 @@ crate::import! {
         "(e, p, l) => { const v = G.get(e)[G.str(p, l)]; return v == null ? 0 : G.add(v); }";
 
     // ---- FileList ----------------------------------------------------------------
+    fn js_dt_types(d: u32, out: usize) =
+        "(d, o) => G.retStr(Array.from(G.get(d).types).join('\\n'), o)";
     fn js_file_item(f: u32, i: u32) -> u32 = "(f, i) => { const v = G.get(f).item(i); return v == null ? 0 : G.add(v); }";
 }
 
@@ -277,6 +282,19 @@ impl Listener {
         Listener { target, ty, capture: options.capture, closure }
     }
 
+    /// Like [`Listener::new`], but `f` may be re-entered (a `scroll`
+    /// handler whose body re-fires `scroll`) — see [`Closure::new_fn`].
+    pub fn new_fn(
+        target: EventTarget,
+        ty: &'static str,
+        options: ListenerOptions,
+        f: impl Fn(Event) + 'static,
+    ) -> Listener {
+        let closure = Closure::new_fn(move |v: JsValue| f(Event::unchecked_from_js(v)));
+        target.add_event_listener(ty, &closure, options);
+        Listener { target, ty, capture: options.capture, closure }
+    }
+
     /// Hand the listener to its target for good: the target keeps the JS
     /// function alive, and the Rust closure is released when JS collects
     /// the function (with the target) — see
@@ -330,6 +348,12 @@ impl Element {
     /// The `class` attribute (an SVG element's `className.baseVal`).
     pub fn class_name(&self) -> String {
         string::receive(|o| unsafe { js_class_name(self.0.raw(), o) })
+    }
+
+    /// `closest(selector)` — `Err` for an invalid selector.
+    pub fn closest(&self, selector: &str) -> Result<Option<Element>, crate::JsError> {
+        let (p, l) = string::abi(selector);
+        unsafe { js_closest(self.0.raw(), p, l) }.map(opt)
     }
 
     pub fn get_attribute(&self, name: &str) -> Option<String> {
@@ -478,6 +502,15 @@ impl KeyboardEvent {
 impl DataTransfer {
     pub fn files(&self) -> Option<FileList> {
         obj(&self.0, "files")
+    }
+    /// `types` — the drag's data formats (`"Files"` for an OS file drag).
+    pub fn types(&self) -> Vec<String> {
+        let joined = string::receive(|o| unsafe { js_dt_types(self.0.raw(), o) });
+        if joined.is_empty() {
+            Vec::new()
+        } else {
+            joined.split('\n').map(str::to_owned).collect()
+        }
     }
 }
 

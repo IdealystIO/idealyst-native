@@ -15,7 +15,6 @@ use crate::WebBackend;
 use runtime_shared::{PressableHandle, PressableOps, ViewportRect};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -50,9 +49,7 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     }
 
     let on_click_for_mouse = on_click.clone();
-    let click_closure = Closure::<dyn FnMut()>::new(move || (on_click_for_mouse)());
-    el.set_onclick(Some(click_closure.as_ref().unchecked_ref()));
-    b._click_closures.push(click_closure);
+    crate::glue_dom::set_onclick(&el, move || (on_click_for_mouse)());
 
     // Keyboard activation. Enter and Space both trigger the press
     // when the element has focus — matching what a real `<button>`
@@ -67,33 +64,24 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     // submit. See `regression_web_pressable_ignores_descendant_key`.
     let on_click_for_key = on_click.clone();
     let el_for_key: Node = el.clone().unchecked_into();
-    let key_closure: Closure<dyn FnMut(web_sys::KeyboardEvent)> =
-        Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
-            let is_self = ev
-                .target()
-                .map(|t| {
-                    let node: Node = t.unchecked_into();
-                    node.is_same_node(Some(&el_for_key))
-                })
-                .unwrap_or(false);
-            if !is_self {
-                return;
-            }
-            let k = ev.key();
-            if k == "Enter" || k == " " {
-                ev.prevent_default();
-                (on_click_for_key)();
-            }
-        }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-    let _ = el.add_event_listener_with_callback(
-        "keydown",
-        key_closure.as_ref().unchecked_ref(),
-    );
-    // Keep the closure alive for the element's lifetime. We piggy-
-    // back on `_click_closures` since it has the same disposal
-    // posture (cleared on backend drop) — different type but
-    // erased the same way through wasm-bindgen's handle table.
-    b._pressable_key_closures.push(key_closure);
+    let el_for_key = crate::glue_dom::target(&el_for_key);
+    // Element-lifetime: the element owns the listener, and its closure is
+    // released when JS collects the element.
+    crate::glue_dom::listen_for_element_lifetime(&el, "keydown", Default::default(), move |ev| {
+        let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
+        let is_self = ev
+            .target()
+            .map(|t| t.as_js().strict_eq(el_for_key.as_js()))
+            .unwrap_or(false);
+        if !is_self {
+            return;
+        }
+        let k = ev.key();
+        if k == "Enter" || k == " " {
+            ev.prevent_default();
+            (on_click_for_key)();
+        }
+    });
 
     // Consume the press from ancestor `on_touch` recognizers so a pressable
     // inside a clickable row / tappable card doesn't ALSO trigger the

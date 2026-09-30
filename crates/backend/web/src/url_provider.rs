@@ -18,13 +18,11 @@
 
 use runtime_shared::primitives::navigator::{self as nav, UrlProvider};
 use std::cell::Cell;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
 
 thread_local! {
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// Keeps the popstate listener alive for the page's lifetime.
-    static POPSTATE_LISTENER: std::cell::RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>> =
+    static POPSTATE_LISTENER: std::cell::RefCell<Option<web_glue::dom::Listener>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -87,11 +85,9 @@ pub fn install_url_provider() {
     });
 
     // popstate → substrate reconciler with the (already-changed) path.
-    let listener = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+    let listener = crate::glue_dom::listen(&window, "popstate", web_glue::dom::ListenerOptions::default(), move |_| {
         nav::handle_popstate(&pathname());
-    }) as Box<dyn FnMut(web_sys::Event)>);
-    let _ = window
-        .add_event_listener_with_callback("popstate", listener.as_ref().unchecked_ref());
+    });
     POPSTATE_LISTENER.with(|slot| *slot.borrow_mut() = Some(listener));
 
     // Cold-start deep-link seed for the walker's initial resolution.

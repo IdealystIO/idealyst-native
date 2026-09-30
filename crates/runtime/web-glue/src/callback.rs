@@ -18,7 +18,10 @@
 //!   or drop ITSELF (the entry is then discarded when the call returns). A
 //!   recursive call of the same closure — JS re-entering it from inside
 //!   itself — is refused with status 2, which JS turns into a thrown
-//!   `invoked recursively` error, as wasm-bindgen does.
+//!   `invoked recursively` error, as wasm-bindgen does for `FnMut`.
+//!   [`Closure::new_fn`] (an `Fn`) is the exception: it may be re-entered,
+//!   as wasm-bindgen's `Closure<dyn Fn>` may — a `scroll` handler whose
+//!   body synchronously re-fires `scroll` needs exactly that.
 //! * [`Closure::once_into_js`] is the fire-and-forget form: no Rust owner,
 //!   the entry frees itself after the single call.
 //! * [`Closure::into_js_value`] hands the Rust closure to the JS garbage
@@ -49,6 +52,9 @@ pub const INVOKE_RECURSIVE: u32 = 2;
 enum Kind {
     Mut(Box<dyn FnMut(JsValue)>),
     Once(Box<dyn FnOnce(JsValue)>),
+    /// Stays in the registry while it runs (a clone of the `Rc` is what
+    /// runs), so a re-entrant call finds it `Idle` and runs too.
+    Shared(std::rc::Rc<dyn Fn(JsValue)>),
 }
 
 enum Slot {
@@ -107,6 +113,14 @@ impl Closure {
     /// (missing arguments arrive as `undefined`).
     pub fn new(f: impl FnMut(JsValue) + 'static) -> Closure {
         Closure::with_flags(Kind::Mut(Box::new(f)), 0)
+    }
+
+    /// A callback JS may call any number of times — INCLUDING from inside
+    /// itself (a `scroll` listener whose body re-fires `scroll`). Use it
+    /// only where that re-entry is expected; [`Closure::new`] refuses it
+    /// loudly, which catches accidental recursion.
+    pub fn new_fn(f: impl Fn(JsValue) + 'static) -> Closure {
+        Closure::with_flags(Kind::Shared(std::rc::Rc::new(f)), 0)
     }
 
     /// A callback JS may call at most once; the JS function is dead after
@@ -198,6 +212,9 @@ pub extern "C" fn __glue_invoke(id: u32, arg: u32) -> u32 {
     let taken = REGISTRY.with(|r| {
         let mut r = r.borrow_mut();
         let Some(slot) = r.map.get_mut(&id) else { return Err(INVOKE_UNKNOWN) };
+        if let Slot::Idle(Kind::Shared(f)) = slot {
+            return Ok(Kind::Shared(f.clone()));
+        }
         match std::mem::replace(slot, Slot::Running) {
             Slot::Idle(Kind::Once(f)) => {
                 r.map.remove(&id);
@@ -213,6 +230,12 @@ pub extern "C" fn __glue_invoke(id: u32, arg: u32) -> u32 {
     match taken {
         Err(status) => status,
         Ok(Kind::Once(f)) => {
+            f(arg);
+            INVOKE_OK
+        }
+        // The registry keeps its own `Rc`; this clone is dropped here, so
+        // an owner that dropped the closure mid-call frees it now.
+        Ok(Kind::Shared(f)) => {
             f(arg);
             INVOKE_OK
         }

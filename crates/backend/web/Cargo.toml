@@ -35,11 +35,11 @@ ui-overlay = ["runtime-vocabulary/ui-overlay", "dep:wire", "wire/runtime-patch",
 # hot paths can be profiled from JS via `dump_debug_events`.
 debug-stats = ["runtime-shared/debug-stats"]
 # Compile in this backend's `requestAnimationFrame`-based
-# `RenderLoopDriver` and `wasm_bindgen_futures`-based `AsyncExecutor`.
-# Forwards to `runtime-shared/async-driver` so `render_loop` /
-# `spawn_async` resolve. Host calls `install_render_loop()` and
-# `install_async_executor()` once at init.
-async-driver = ["runtime-shared/async-driver", "dep:wasm-bindgen-futures"]
+# `RenderLoopDriver` and web-glue-based `AsyncExecutor`. Forwards to
+# `runtime-shared/async-driver` so `render_loop` / `spawn_async` resolve.
+# Host calls `install_render_loop()` and `install_async_executor()` once
+# at init.
+async-driver = ["runtime-shared/async-driver"]
 # Compile in the runtime-server-client browser transport (`connect_web` +
 # `WebClientHandle`). Forwards to `dev-client/dev-hot-reload` so the
 # `WireBackend` replay engine is available. Off by default — the
@@ -102,6 +102,12 @@ runtime-vocabulary = { workspace = true }
 runtime-template = { workspace = true, optional = true }
 css = { workspace = true }
 inventory = "0.3"
+# The framework-owned JS boundary (docs/proposals/own-web-bindings.md).
+# Phase 2a: the backend's scheduler, executor, time source, listeners and
+# JS shims run on it; the DOM-operation surface and the SDKs are still on
+# web-sys, so the page is HYBRID and the bridge feature (HYBRID-BRIDGE,
+# deleted in phase 3) crosses between the two handle spaces.
+web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde_json = { workspace = true }

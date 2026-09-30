@@ -16,9 +16,8 @@
 //! same pattern as touch/wheel.
 
 use runtime_shared::HoverHandler;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
-use web_sys::{Element, Node, PointerEvent};
+use web_sys::{Element, Node};
 
 /// Install `pointerenter` (→ `true`) and `pointerleave` (→ `false`)
 /// listeners on `node`.
@@ -33,7 +32,8 @@ pub(crate) fn install(node: &Node, handler: HoverHandler) {
     // pointerenter → entering = true
     {
         let handler = handler.clone();
-        let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        crate::glue_dom::listen_for_element_lifetime(&element, "pointerenter", Default::default(), move |ev| {
+            let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
             // Hover is a MOUSE/PEN concept — never touch. On a touch device
             // `pointerenter` fires on touch-DOWN (the finger "enters" the
             // element as it lands), so firing the hover handler here would
@@ -47,21 +47,16 @@ pub(crate) fn install(node: &Node, handler: HoverHandler) {
             // Born batched via the core `on_hover` cycle wrapper.
             (handler)(true);
         });
-        let _ = element
-            .add_event_listener_with_callback("pointerenter", closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 
     // pointerleave → entering = false
     {
-        let closure = Closure::<dyn FnMut(PointerEvent)>::new(move |ev: PointerEvent| {
+        crate::glue_dom::listen_for_element_lifetime(&element, "pointerleave", Default::default(), move |ev| {
+            let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
             if ev.pointer_type() == "touch" {
                 return;
             }
             (handler)(false);
         });
-        let _ = element
-            .add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref());
-        super::own_listener(closure);
     }
 }

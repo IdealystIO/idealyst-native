@@ -2,13 +2,12 @@
 //! value signal and a per-keystroke `on_change` callback.
 
 use crate::WebBackend;
-use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
+use runtime_shared::primitives::key::{KeyDownHandler, KeyOutcome};
 use runtime_shared::primitives::text_input::{
     BlurHandler, BlurOutcome, TextInputHandle, TextInputOps,
 };
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -48,14 +47,12 @@ pub(crate) fn create(
     // matching the controlled-component "single source of truth"
     // expectation.
     let input_clone = input.clone();
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+    // Tracked under the node id so it lives as long as the node does and
+    // detaches at teardown (`state_listeners`).
+    let id = b.node_id(&input.clone().unchecked_into::<Node>());
+    b.track_listener(id, &input, "input", false, move |_| {
         on_change(input_clone.value());
     });
-    // Stash closure under a fresh node id so it lives as long as
-    // the node does. Reuse `state_listeners` map since it's the
-    // existing per-node closure holder.
-    let id = b.node_id(&input.clone().unchecked_into::<Node>());
-    b.track_listener(id, &input, "input", false, closure);
     if let Some(handler) = on_key_down {
         attach_key_listener_input(&input, id, b, handler);
     }
@@ -64,12 +61,11 @@ pub(crate) fn create(
     // of flicker — the honest platform limitation; iOS/macOS veto natively).
     if let Some(blur_handler) = on_blur {
         let input_for_blur = input.clone();
-        let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+        b.track_listener(id, &input, "blur", false, move |_| {
             if blur_handler() == BlurOutcome::Keep {
                 let _ = input_for_blur.focus();
             }
         });
-        b.track_listener(id, &input, "blur", false, closure);
     }
     input.unchecked_into::<Node>()
 }
@@ -87,15 +83,8 @@ pub(crate) fn set_focus_handler(b: &mut WebBackend, node: &Node, handler: Rc<dyn
     };
     let id = b.node_id(node);
     let on_focus = handler.clone();
-    let focus_cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
-        on_focus(true);
-    });
-    b.track_listener(id, &el, "focus", false, focus_cb);
-
-    let blur_cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
-        handler(false);
-    });
-    b.track_listener(id, &el, "blur", false, blur_cb);
+    b.track_listener(id, &el, "focus", false, move |_| on_focus(true));
+    b.track_listener(id, &el, "blur", false, move |_| handler(false));
 }
 
 /// Wire a DOM `keydown` listener that calls the Rust `KeyDownHandler`
@@ -105,9 +94,8 @@ pub(crate) fn set_focus_handler(b: &mut WebBackend, node: &Node, handler: Rc<dyn
 /// `text_input::create` and `text_area::create` can call it without
 /// monomorphising over the element type.
 ///
-/// The closure stored under `state_listeners` is typed
-/// `FnMut(web_sys::Event)` to match the existing map's value type;
-/// we `dyn_into` to `KeyboardEvent` inside.
+/// The listener receives a plain glue `Event`; it is checked into a
+/// `KeyboardEvent` inside.
 pub(crate) fn attach_key_listener_input(
     input: &web_sys::HtmlInputElement,
     id: u32,
@@ -115,8 +103,8 @@ pub(crate) fn attach_key_listener_input(
     handler: KeyDownHandler,
 ) {
     let input_clone = input.clone();
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
-        if let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() {
+    b.track_listener(id, input, "keydown", false, move |e: web_glue::dom::Event| {
+        if let Ok(ke) = web_glue::JsCast::dyn_into::<web_glue::dom::KeyboardEvent>(e) {
             let sel_start = input_clone.selection_start().ok().flatten().unwrap_or(0) as usize;
             let sel_end = input_clone.selection_end().ok().flatten().unwrap_or(0) as usize;
             let event = key_event_from(&ke, sel_start, sel_end);
@@ -125,7 +113,6 @@ pub(crate) fn attach_key_listener_input(
             }
         }
     });
-    b.track_listener(id, input, "keydown", false, closure);
 }
 
 pub(crate) use super::keyboard::key_event_from;

@@ -170,7 +170,7 @@ thread_local! {
     /// signal HANDLE only; after `stop` a straggler event would stage
     /// into a dead world (silent kernel no-op), so removal is hygiene,
     /// not correctness.
-    static VIEWPORT_SOURCE: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>>> =
+    static VIEWPORT_SOURCE: RefCell<Option<web_glue::dom::Listener>> =
         const { RefCell::new(None) };
     /// The world the flush driver commits. Separate from `APP` so
     /// [`schedule_flush`] never touches the app slot (a flush can run
@@ -733,11 +733,8 @@ pub(crate) fn install_viewport_source(
 ) {
     remove_viewport_source();
     let Some(win) = web_sys::window() else { return };
-    let closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)> =
-        wasm_bindgen::closure::Closure::new(move |_: web_sys::Event| push_viewport(sig));
-    use wasm_bindgen::JsCast;
-    let _ = win.add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
-    VIEWPORT_SOURCE.with(|s| *s.borrow_mut() = Some(closure));
+    let listener = crate::glue_dom::listen(&win, "resize", web_glue::dom::ListenerOptions::default(), move |_| push_viewport(sig));
+    VIEWPORT_SOURCE.with(|s| *s.borrow_mut() = Some(listener));
 }
 
 /// Push the REAL window size through the source once — the hydrate
@@ -751,17 +748,9 @@ pub(crate) fn push_current_viewport_now(
 }
 
 fn remove_viewport_source() {
-    VIEWPORT_SOURCE.with(|s| {
-        if let Some(closure) = s.borrow_mut().take() {
-            if let Some(win) = web_sys::window() {
-                use wasm_bindgen::JsCast;
-                let _ = win.remove_event_listener_with_callback(
-                    "resize",
-                    closure.as_ref().unchecked_ref(),
-                );
-            }
-        }
-    });
+    // The `Listener` detaches as it drops.
+    let old = VIEWPORT_SOURCE.with(|s| s.borrow_mut().take());
+    drop(old);
 }
 
 // ===========================================================================

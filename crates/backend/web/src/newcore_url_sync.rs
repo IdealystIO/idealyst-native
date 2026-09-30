@@ -52,7 +52,6 @@ use runtime_shared::primitives::navigator::{
 use runtime_vocabulary::handlers::nav_url_sync::{
     CommittedKind, NavSyncKind, NavSyncRegistration, UrlSyncService,
 };
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 // ---------------------------------------------------------------------------
@@ -227,7 +226,7 @@ thread_local! {
     static NEXT_ENTRY_ID: Cell<u64> = const { Cell::new(1) };
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// Keeps the popstate listener alive for the page's lifetime.
-    static POPSTATE_LISTENER: RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>> =
+    static POPSTATE_LISTENER: RefCell<Option<web_glue::dom::Listener>> =
         const { RefCell::new(None) };
 }
 
@@ -250,11 +249,9 @@ pub(crate) fn install() {
     }
     let Some(window) = web_sys::window() else { return };
     INSTALLED.with(|c| c.set(true));
-    let listener = Closure::wrap(Box::new(move |_e: web_sys::Event| {
+    let listener = crate::glue_dom::listen(&window, "popstate", web_glue::dom::ListenerOptions::default(), move |_| {
         handle_popstate(&pathname());
-    }) as Box<dyn FnMut(web_sys::Event)>);
-    let _ =
-        window.add_event_listener_with_callback("popstate", listener.as_ref().unchecked_ref());
+    });
     POPSTATE_LISTENER.with(|slot| *slot.borrow_mut() = Some(listener));
 }
 

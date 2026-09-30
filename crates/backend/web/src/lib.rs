@@ -56,6 +56,7 @@ mod tests;
 pub mod async_executor;
 mod assets;
 mod defaults;
+mod glue_dom;
 #[cfg(feature = "runtime-server")]
 pub mod dev_transport;
 #[cfg(feature = "robot")]
@@ -84,7 +85,7 @@ pub use dev_transport::{connect_web, WebClientHandle};
 #[cfg(feature = "robot")]
 pub use robot_transport::install_robot_relay_client;
 pub use drop_deferral::install_drop_deferral;
-pub use logger::install_logger;
+pub use logger::{install_logger, install_panic_hook};
 #[cfg(feature = "async-driver")]
 pub use render_loop::install_render_loop;
 pub use scheduler::install_scheduler;
@@ -290,7 +291,6 @@ use runtime_shared::{
 };
 use runtime_shared::{FxHashMap, FxHashSet};
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, Node};
 
@@ -320,11 +320,10 @@ static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 /// One DOM event listener owned by a node's teardown record
 /// (`WebBackend::state_listeners`).
 ///
-/// Holds the target and the event name alongside the closure so `Drop`
-/// can **detach the listener before the closure dies**. Dropping a
-/// `Closure` only invalidates its JS shim — the listener stays registered
-/// on the element — so a listener that fires afterwards throws "closure
-/// invoked recursively or after being dropped".
+/// A `web_glue::dom::Listener`, which **detaches the listener before the
+/// closure dies**. Dropping a glue `Closure` only revokes its JS function
+/// — the listener stays registered on the element — so a listener that
+/// fired afterwards would throw "called after its Rust owner dropped it".
 ///
 /// That is not hypothetical: node teardown runs the style effect's
 /// cleanup (`on_node_unstyled`, which clears this map) BEFORE the DOM
@@ -332,25 +331,7 @@ static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
 /// `blur` during the removal — so closing a menu or modal while a field
 /// inside it had focus threw on every close. Detaching first makes the
 /// dead listener unreachable instead.
-pub(crate) struct TrackedListener {
-    target: web_sys::EventTarget,
-    event: &'static str,
-    capture: bool,
-    closure: Closure<dyn FnMut(web_sys::Event)>,
-}
-
-impl Drop for TrackedListener {
-    fn drop(&mut self) {
-        // `Drop::drop` runs before the struct's fields drop, so the
-        // closure is still alive here — which is exactly what
-        // `removeEventListener` needs to match the registration.
-        let _ = self.target.remove_event_listener_with_callback_and_bool(
-            self.event,
-            self.closure.as_ref().unchecked_ref(),
-            self.capture,
-        );
-    }
-}
+pub(crate) struct TrackedListener(#[allow(dead_code)] web_glue::dom::Listener);
 
 pub struct WebBackend {
     pub(crate) doc: Document,
@@ -414,20 +395,10 @@ pub struct WebBackend {
     /// into it (the children belong to the screen, already adopted).
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_consumed_outlets: Vec<web_sys::Node>,
-    pub(crate) _click_closures: Vec<Closure<dyn FnMut()>>,
-    /// Keyboard handlers for `Element::Pressable` (Enter/Space →
-    /// click). Held so JS doesn't drop them while the element is in
-    /// the layout tree. The click handler itself lives in
-    /// `_click_closures` (shared shape: `FnMut()` no-arg).
-    pub(crate) _pressable_key_closures: Vec<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
     /// The single APP-LEVEL `keydown` listener installed on `document` by
     /// `set_app_key_handler` (fires regardless of focus). Held so JS keeps it
     /// alive; removing + dropping it tears the listener down.
-    pub(crate) _app_key_closure: Option<Closure<dyn FnMut(web_sys::KeyboardEvent)>>,
-    /// Closures attached to `<a>` elements for `Element::Link`.
-    /// Held so JS doesn't drop them while the anchor is still in
-    /// the layout tree. Same posture as `_click_closures`.
-    pub(crate) _link_click_closures: Vec<Closure<dyn FnMut(web_sys::MouseEvent)>>,
+    pub(crate) _app_key_closure: Option<web_glue::dom::Listener>,
     /// Per-node interaction-event closures. Keyed by node-id so we
     /// can drop them when `on_node_unstyled` fires. Each entry holds
     /// the listeners for one node (pointerenter, pointerleave,
@@ -1321,10 +1292,7 @@ impl WebBackend {
             hydration_nav_saved: Vec::new(),
             #[cfg(feature = "hydrate")]
             hydration_consumed_outlets: Vec::new(),
-            _click_closures: Vec::new(),
-            _pressable_key_closures: Vec::new(),
             _app_key_closure: None,
-            _link_click_closures: Vec::new(),
             state_listeners: FxHashMap::default(),
             inline_props: FxHashMap::default(),
             spinner_keyframes_injected: false,
@@ -2017,21 +1985,13 @@ impl WebBackend {
     pub(crate) fn track_listener(
         &mut self,
         id: u32,
-        target: &impl AsRef<web_sys::EventTarget>,
+        target: &impl AsRef<wasm_bindgen::JsValue>,
         event: &'static str,
         capture: bool,
-        closure: Closure<dyn FnMut(web_sys::Event)>,
+        f: impl FnMut(web_glue::dom::Event) + 'static,
     ) {
-        let target: web_sys::EventTarget = target.as_ref().clone();
-        let _ = target.add_event_listener_with_callback_and_bool(
-            event,
-            closure.as_ref().unchecked_ref(),
-            capture,
-        );
-        self.state_listeners
-            .entry(id)
-            .or_default()
-            .push(TrackedListener { target, event, capture, closure });
+        let listener = glue_dom::listen(target, event, glue_dom::capture(capture), f);
+        self.state_listeners.entry(id).or_default().push(TrackedListener(listener));
     }
 
     pub(crate) fn node_id(&mut self, node: &Node) -> u32 {

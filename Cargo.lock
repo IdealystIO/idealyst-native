@@ -1590,6 +1590,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-glue",
  "web-sys",
  "wire",
 ]
@@ -6293,7 +6294,6 @@ name = "idealyst"
 version = "1.6.0"
 dependencies = [
  "backend-web",
- "console_error_panic_hook",
  "dev-client",
  "host-terminal",
  "idealyst-macros",
@@ -6302,6 +6302,7 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
+ "web-glue",
  "web-sys",
 ]
 

@@ -13,7 +13,6 @@ use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use runtime_shared::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -141,12 +140,11 @@ pub(crate) fn create(
     }
 
     let textarea_clone = textarea.clone();
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+    let id = b.node_id(&textarea.clone().unchecked_into::<Node>());
+    b.track_listener(id, &textarea, "input", false, move |_| {
         autosize(&textarea_clone);
         on_change(textarea_clone.value());
     });
-    let id = b.node_id(&textarea.clone().unchecked_into::<Node>());
-    b.track_listener(id, &textarea, "input", false, closure);
     if let Some(handler) = on_key_down {
         attach_key_listener_textarea(&textarea, id, b, handler);
     }
@@ -164,11 +162,7 @@ pub(crate) fn create(
     // are real. Mirrors `graphics::create`'s deferred first `on_ready`.
     autosize(&textarea);
     let textarea_for_raf = textarea.clone();
-    let raf = Closure::<dyn FnMut()>::new(move || autosize(&textarea_for_raf));
-    if let Some(win) = web_sys::window() {
-        let _ = win.request_animation_frame(raf.as_ref().unchecked_ref());
-    }
-    raf.forget();
+    crate::glue_dom::next_frame(move || autosize(&textarea_for_raf));
     textarea.unchecked_into::<Node>()
 }
 
@@ -393,8 +387,8 @@ fn attach_key_listener_textarea(
     handler: KeyDownHandler,
 ) {
     let textarea_clone = textarea.clone();
-    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |e: web_sys::Event| {
-        if let Ok(ke) = e.dyn_into::<web_sys::KeyboardEvent>() {
+    b.track_listener(id, textarea, "keydown", false, move |e: web_glue::dom::Event| {
+        if let Ok(ke) = web_glue::JsCast::dyn_into::<web_glue::dom::KeyboardEvent>(e) {
             let event = KeyEvent {
                 key: ke.key(),
                 shift: ke.shift_key(),
@@ -417,7 +411,6 @@ fn attach_key_listener_textarea(
             }
         }
     });
-    b.track_listener(id, textarea, "keydown", false, closure);
 }
 
 pub(crate) fn update_value(node: &Node, value: &str) {

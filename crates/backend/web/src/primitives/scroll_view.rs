@@ -5,7 +5,6 @@ use crate::WebBackend;
 use runtime_shared::primitives::scroll_view::{EndReach, ScrollViewHandle, ScrollViewOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -55,32 +54,23 @@ pub(crate) fn create(
     // framework already uses for layout, so author code doesn't
     // need to translate.
     //
-    // `Closure<dyn Fn>` rather than `FnMut` so wasm-bindgen doesn't
-    // emit the `FnMut` runtime recursion guard. The author's callback
-    // may write a signal whose subscribers can mutate layout in ways
-    // that synchronously re-fire `scroll`; the guard would reject
-    // that as recursive even though the second call is benign.
+    // A RE-ENTRANT (`Fn`) listener, not `FnMut`: the author's callback
+    // may write a signal whose subscribers mutate layout in ways that
+    // synchronously re-fire `scroll`, and `FnMut`'s recursion guard would
+    // reject that benign second call (`web_glue::Closure::new_fn`).
     //
-    // `.forget()` leaks the Closure so JS can keep invoking it for
-    // the lifetime of the element. We trade per-ScrollView leakage
-    // (one Closure object) for never holding a dangling function
-    // ref on the DOM listener side \u{2014} which would crash the
-    // page with a "closure invoked after being dropped" throw.
+    // The element owns the listener for its lifetime; the closure is
+    // released when JS collects the element (it used to be `.forget()`ed,
+    // leaking one closure per ScrollView for the life of the page).
     if let Some(cb) = on_scroll {
         let element_for_handler = div.clone();
-        let scroll_handler: Closure<dyn Fn(web_sys::Event)> =
-            Closure::wrap(Box::new(move |_evt: web_sys::Event| {
-                if let Some(html) = element_for_handler.dyn_ref::<web_sys::HtmlElement>() {
-                    let x = html.scroll_left() as f32;
-                    let y = html.scroll_top() as f32;
-                    cb(x, y);
-                }
-            }));
-        let _ = div.add_event_listener_with_callback(
-            "scroll",
-            scroll_handler.as_ref().unchecked_ref(),
-        );
-        scroll_handler.forget();
+        crate::glue_dom::listen_fn_for_element_lifetime(&div, "scroll", move |_| {
+            if let Some(html) = element_for_handler.dyn_ref::<web_sys::HtmlElement>() {
+                let x = html.scroll_left() as f32;
+                let y = html.scroll_top() as f32;
+                cb(x, y);
+            }
+        });
     }
 
     div.unchecked_into::<Node>()
@@ -106,10 +96,9 @@ pub(crate) fn observe_end(
     let el: web_sys::Element = node.clone().unchecked_into();
     let el_for_handler = el.clone();
     let reach = std::cell::RefCell::new(EndReach::new(threshold));
-    // Same `Fn` + `.forget()` trade as the `on_scroll` closure above,
-    // and for the same two reasons — see the note there.
-    let handler: Closure<dyn Fn(web_sys::Event)> =
-        Closure::wrap(Box::new(move |_evt: web_sys::Event| {
+    // Re-entrant and element-owned, for the same reasons as the
+    // `on_scroll` listener above — see the note there.
+    crate::glue_dom::listen_fn_for_element_lifetime(&el, "scroll", move |_| {
             if let Some(html) = el_for_handler.dyn_ref::<web_sys::HtmlElement>() {
                 let (offset, viewport, content) = if horizontal {
                     (
@@ -128,9 +117,7 @@ pub(crate) fn observe_end(
                     on_end();
                 }
             }
-        }));
-    let _ = el.add_event_listener_with_callback("scroll", handler.as_ref().unchecked_ref());
-    handler.forget();
+    });
 }
 
 pub(crate) fn make_handle(node: &Node) -> ScrollViewHandle {

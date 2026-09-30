@@ -22,7 +22,6 @@ use crate::WebBackend;
 use runtime_shared::primitives::link::{LinkConfig, LinkHandle, LinkOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::Node;
 
@@ -69,7 +68,8 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     }
 
     let on_activate = config.on_activate.clone();
-    let closure = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(move |evt: web_sys::MouseEvent| {
+    crate::glue_dom::listen_for_element_lifetime(&anchor, "click", Default::default(), move |evt| {
+        let evt: web_glue::dom::MouseEvent = web_glue::JsCast::unchecked_into(evt);
         // Modified clicks fall through to the browser. Plain
         // left-click is what we intercept for SPA navigation.
         if evt.button() != 0
@@ -83,15 +83,9 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
         evt.prevent_default();
         on_activate();
     });
-    anchor
-        .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
-        .expect("attach link click listener");
-    // Stash so the closure lives as long as the WebBackend. The
-    // anchor itself is held by the layout tree; when its scope
-    // drops the node detaches but the closure handle stays in this
-    // pool. For long-lived apps this would leak; for the framework's
-    // current posture (Owner lifetime ≈ app lifetime) it's fine.
-    b._link_click_closures.push(closure);
+    // The anchor owns the listener; its closure is released when JS
+    // collects the anchor (it used to sit in a never-cleared backend
+    // pool for the life of the app).
 
     // Hold the on_activate Rc separately so `make_link_handle` can
     // reach it through the node's data attribute (see below). The

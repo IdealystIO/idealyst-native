@@ -185,8 +185,11 @@ pub fn needs_glue_file(glue: &Glue) -> bool {
 /// `pkg/__idealyst_glue.js` for hybrid mode: the glue namespace as an ES
 /// module wasm-bindgen's generated JS imports
 /// (`import * as … from "./__idealyst_glue.js"`), where `bindgen_js` is the
-/// file name of that generated JS (`<lib>.js`; `wasm-bindgen-test.js` under
-/// the test runner).
+/// specifier the PAGE imports that generated JS by (`<lib>.js`;
+/// `wasm-bindgen-test`, extension-less, under the test runner). It must
+/// match the page's specifier exactly: ES modules are keyed by URL, and a
+/// different spelling loads a second, uninitialized copy of wasm-bindgen's
+/// module whose `initSync` then instantiates from nothing.
 ///
 /// wasm-bindgen owns instantiation, so `G` attaches lazily through
 /// `initSync()`, which returns the raw exports once the instance exists.

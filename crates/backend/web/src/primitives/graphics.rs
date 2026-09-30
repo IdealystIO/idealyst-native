@@ -128,7 +128,8 @@ pub(crate) struct GraphicsInstance {
     /// Dropped on `release` so DOM listeners stop firing.
     resize_observer: Option<web_sys::ResizeObserver>,
     resize_closure: Option<Closure<dyn FnMut(JsValue, JsValue)>>,
-    context_lost_closure: Option<Closure<dyn FnMut(web_sys::Event)>>,
+    /// Detaches from the canvas as it drops (`release`).
+    context_lost_closure: Option<web_glue::dom::Listener>,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,12 +195,7 @@ pub(crate) fn create(
     // Defer the initial `on_ready` by one rAF so the canvas is
     // laid out and its CSS box has a real size to read.
     let inst_for_init = instance.clone();
-    let init_raf = Closure::<dyn FnMut()>::new(move || {
-        fire_ready(&inst_for_init);
-    });
-    let window = web_sys::window().expect("no window");
-    let _ = window.request_animation_frame(init_raf.as_ref().unchecked_ref());
-    init_raf.forget();
+    crate::glue_dom::next_frame(move || fire_ready(&inst_for_init));
 
     // Install ResizeObserver. Callback fires `fire_resize`, which
     // both updates the drawable buffer and invokes the user's
@@ -342,23 +338,18 @@ fn fire_resize(instance: &Rc<RefCell<GraphicsInstance>>) {
 
 fn install_context_lost_listener(instance: Rc<RefCell<GraphicsInstance>>) {
     let weak = Rc::downgrade(&instance);
-    let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_evt| {
-        let Some(inst) = weak.upgrade() else { return };
-        invoke_on_lost(&inst);
-    });
-    {
+    // `webglcontextlost` is the standard event for WebGL context loss;
+    // WebGPU uses `lost` on the device, but since we don't own the device
+    // we let the author handle that themselves. Still, listening on the
+    // canvas covers the common WebGL path.
+    let listener = {
         let inst = instance.borrow();
-        // `webglcontextlost` is the standard event for WebGL
-        // context loss; WebGPU uses `lost` on the device, but
-        // since we don't own the device we let the author handle
-        // that themselves. Still, listening on the canvas covers
-        // the common WebGL path.
-        let _ = inst.provider.canvas.add_event_listener_with_callback(
-            "webglcontextlost",
-            cb.as_ref().unchecked_ref(),
-        );
-    }
-    instance.borrow_mut().context_lost_closure = Some(cb);
+        crate::glue_dom::listen(&inst.provider.canvas, "webglcontextlost", Default::default(), move |_| {
+            let Some(inst) = weak.upgrade() else { return };
+            invoke_on_lost(&inst);
+        })
+    };
+    instance.borrow_mut().context_lost_closure = Some(listener);
 }
 
 // ---------------------------------------------------------------------------

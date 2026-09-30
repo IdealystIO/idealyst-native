@@ -10,9 +10,14 @@
 //!
 //! 1. `glue::extract` — rename the glue imports, strip the records;
 //! 2. write the stripped module and `__idealyst_glue.js` (the hybrid
-//!    namespace, importing `initSync` from `./wasm-bindgen-test.js`, the
-//!    name the runner gives its bindgen output) into a directory next to
-//!    the test binary;
+//!    namespace, importing `initSync` from `./wasm-bindgen-test` — the
+//!    runner's own specifier for its bindgen output, extension-less, which
+//!    its server resolves to `.js`) into a directory next to the test
+//!    binary. The specifier must be byte-identical to the runner's: ES
+//!    modules are keyed by URL, so `./wasm-bindgen-test.js` would load a
+//!    SECOND, never-initialized copy of the bindgen module, and every
+//!    lazy attach would instantiate from `undefined` ("WebAssembly.Module():
+//!    Argument 0 must be a buffer source" — the failure that found this);
 //! 3. exec `wasm-bindgen-test-runner` on the stripped module with that
 //!    directory as its working directory.
 //!
@@ -48,7 +53,7 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let stripped = dir.join(&stem).with_extension("wasm");
         std::fs::write(&stripped, &extracted.wasm).with_context(|| format!("write {}", stripped.display()))?;
-        std::fs::write(dir.join("__idealyst_glue.js"), glue_js::hybrid_glue_js(&extracted, "wasm-bindgen-test.js"))
+        std::fs::write(dir.join("__idealyst_glue.js"), glue_js::hybrid_glue_js(&extracted, "wasm-bindgen-test"))
             .context("write __idealyst_glue.js")?;
         cmd.arg(&stripped).current_dir(&dir);
     } else {
