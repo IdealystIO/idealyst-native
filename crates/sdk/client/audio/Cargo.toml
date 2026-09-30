@@ -38,18 +38,15 @@ license.workspace = true
 runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 
-# Web (wasm): HTMLAudioElement via web-sys.
+# Web (wasm): HTMLAudioElement through web-glue bindings (`src/web.rs`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "HtmlAudioElement",
-    "HtmlMediaElement",
-    "Blob",
-    "BlobPropertyBag",
-    "Url",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_audio.rs`) — run with
+# `cargo test -p audio --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # iOS / macOS / tvOS: AVAudioPlayer via the Obj-C runtime (objc2), matching
 # the `microphone` / `camera` house style (no typed framework crate).

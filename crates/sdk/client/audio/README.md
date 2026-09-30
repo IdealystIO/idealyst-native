@@ -126,6 +126,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p audio` — `AudioSource` constructors, error `Display`, `load` of garbage bytes is a typed error not a panic
 - [ ] `cargo build -p audio --features catalog` — recipes/docs compile
 - [ ] `cargo build -p audio --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p audio --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_audio.rs`: bytes play from a Blob object URL revoked with the `Sound`; play / pause / resume / volume / loop / stop reach the element; each `play()` is a fresh element
 
 **Behavior**
 - [ ] **Web** — `load()` then `play()` produces sound via `HTMLAudioElement`; `pause`/`resume`/`stop`/`set_volume`/`set_looping` behave; a second `play()` layers an independent voice; dropping `Playback` stops it.
