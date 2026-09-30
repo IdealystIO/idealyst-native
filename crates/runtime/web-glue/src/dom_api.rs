@@ -984,6 +984,78 @@ impl Url {
     }
 }
 
+// ---- MediaStream / MediaStreamTrack ------------------------------------------------------
+
+props!(MediaStream {
+    id: String = "id";
+    active: bool = "active";
+});
+
+impl MediaStream {
+    /// `new MediaStream()` — an empty stream.
+    pub fn new() -> Result<MediaStream, JsError> {
+        construct("MediaStream")
+    }
+    /// `new MediaStream(tracks)`.
+    pub fn new_with_tracks(tracks: &Array) -> Result<MediaStream, JsError> {
+        let ctor = JsValue::global().get("MediaStream")?;
+        Ok(ctor.construct(&[tracks.as_js()])?.unchecked_into())
+    }
+    /// `getTracks()` — every track, audio and video.
+    pub fn get_tracks(&self) -> Array {
+        call(self, "getTracks", &[]).map(JsCast::unchecked_into).unwrap_or_default()
+    }
+    /// `getVideoTracks()`.
+    pub fn get_video_tracks(&self) -> Array {
+        call(self, "getVideoTracks", &[]).map(JsCast::unchecked_into).unwrap_or_default()
+    }
+    /// `getAudioTracks()`.
+    pub fn get_audio_tracks(&self) -> Array {
+        call(self, "getAudioTracks", &[]).map(JsCast::unchecked_into).unwrap_or_default()
+    }
+    /// `addTrack(track)`.
+    pub fn add_track(&self, track: &MediaStreamTrack) {
+        let _ = call(self, "addTrack", &[track.as_js()]);
+    }
+    /// `removeTrack(track)`.
+    pub fn remove_track(&self, track: &MediaStreamTrack) {
+        let _ = call(self, "removeTrack", &[track.as_js()]);
+    }
+}
+
+/// `MediaStreamTrack.readyState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaStreamTrackState {
+    /// `"live"` — the source is producing.
+    Live,
+    /// `"ended"` — `stop()` was called, or the source went away.
+    Ended,
+}
+
+props!(MediaStreamTrack {
+    id: String = "id";
+    kind: String = "kind";
+    label: String = "label";
+    enabled: bool = "enabled";
+    set_enabled <= bool = "enabled";
+    muted: bool = "muted";
+});
+
+impl MediaStreamTrack {
+    /// `stop()` — ends the track and releases its device.
+    pub fn stop(&self) {
+        let _ = call(self, "stop", &[]);
+    }
+    /// `readyState`.
+    pub fn ready_state(&self) -> MediaStreamTrackState {
+        if prop_str(self, "readyState") == "live" {
+            MediaStreamTrackState::Live
+        } else {
+            MediaStreamTrackState::Ended
+        }
+    }
+}
+
 // ---- WebSocket ---------------------------------------------------------------------------
 
 crate::import! {

@@ -31,3 +31,10 @@ wasm-bindgen-bridge = ["dep:wasm-bindgen"]
 
 [dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
+
+# Browser tests (`tests/web_media.rs`) — run with
+# `cargo test -p web-glue --target wasm32-unknown-unknown` (the workspace
+# runner supplies the glue JS). A dev-dependency only: nothing that depends
+# on web-glue links wasm-bindgen through it.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

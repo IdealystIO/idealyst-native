@@ -13711,6 +13711,7 @@ name = "web-glue"
 version = "1.5.2"
 dependencies = [
  "wasm-bindgen",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

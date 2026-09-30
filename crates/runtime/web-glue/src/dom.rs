@@ -11,7 +11,8 @@
 //! surface as `None`.
 
 pub use crate::dom_api::{
-    console, new_event, BinaryType, EventInit, KeyboardEventInit, MouseEventInit, PointerEventInit, Url,
+    console, new_event, BinaryType, EventInit, KeyboardEventInit, MediaStreamTrackState, MouseEventInit,
+    PointerEventInit, Url,
 };
 use crate::cast::JsCast;
 use crate::{string, Closure, JsValue};
@@ -135,6 +136,16 @@ crate::js_class! {
     pub struct Blob = "Blob";
     /// `File`.
     pub struct File: Blob = "File";
+
+    /// `MediaStream` — the live audio/video source the media SDKs hand each
+    /// other as a stream's web `native_source` (camera, microphone and
+    /// screen-recorder produce one; video, canvas and media-writer consume
+    /// it). Cloning the handle is the SAME stream: unlike web-sys, which
+    /// binds the JS `MediaStream.clone()` method as an inherent `clone()`,
+    /// there is no binding here that copies the tracks.
+    pub struct MediaStream: EventTarget = "MediaStream";
+    /// `MediaStreamTrack`.
+    pub struct MediaStreamTrack: EventTarget = "MediaStreamTrack";
 }
 
 /// Slot 0 (`null` / `undefined` mapped by the snippet) → `None`.
