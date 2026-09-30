@@ -563,3 +563,51 @@ file-picker SDK; `wasm-bindgen-test` as the browser-test harness
   inside the snippet — no copy at all — but it must never be retained
   past the call (memory growth). Adopt that as the rule for the batch
   path in phase 2?
+
+## Phase 3 — DOM-mounting SDKs
+
+**svg, video, maps (+ maps-web), form, webview, codeblock (its browser
+test) and canvas-native run on web-glue.** Each handler builds its element
+with `web_glue::dom`, returns it as the host node, and its ops downcast the
+`&dyn Any` host node to `web_glue::dom::Node`; what `web_glue::dom` does not
+bind is a crate-local `import!` / `js_class!` (`HTMLFormElement`, media
+playback, `postMessage` / `eval`, the whole Canvas2D surface in
+`canvas-native/src/web_ctx.rs`). backend-web's node bridge
+(`backend_web::bridge`, 2b, never released) is deleted. No public API
+changed; maps-web keeps a `#[deprecated]` `build_map_iframe ->
+web_sys::Element` next to the new `build_map_element`.
+
+**What still crosses `web_glue::bridge`** (each site marked
+`HYBRID-BRIDGE`):
+
+- `native_source` media streams stay `web_sys::MediaStream` until the media
+  SDKs switch in one change — video's `srcObject`, canvas-native's texture
+  layers and its `captureStream` self-capture;
+- backend-web's dropped file stays a `web_sys::File` for file-picker
+  (`file_drop.rs::file_for_picker`) — backend-web keeps `wasm-bindgen` and
+  web-sys `File` for that site only;
+- canvas-native's public `make_2d_rasterizer` / `publish_capture_stream`
+  take a `web_sys::HtmlCanvasElement` because canvas-vello (wgpu) calls
+  them.
+
+**Bugs found on the way:** form and webview parked their listener closures
+behind an `Rc::into_raw` number on the element that nothing reclaimed —
+every mount leaked, and webview's `message` listener on `window` outlived
+its iframe; both are now `Listener`s dropped at teardown. maps-web pinned
+`width/height: 100%` inline, which beat the author's style classes, so a
+map could not be sized on web. web-sys binds JS `MediaStream.clone()` as
+an inherent `clone()`, so `Rc::new(stream.clone())` publishes a new stream
+with cloned tracks (camera / microphone still do this).
+
+**Verification:** each crate's new wasm32 browser suite through the
+workspace runner (svg 2, maps 1, form 2, webview 3, video 2, codeblock 1,
+canvas-native 3 — pixel read-back), host tests, iOS / Android `cargo
+check`; backend-web's browser suite 118/118; all 35 web-sys-using crates
+`cargo check` alone for wasm32; `wasm_hot_patch_e2e` 2/2,
+`dev_events_e2e` 1/1. Real apps built with `idealyst build --web` in
+headless Chrome: whiteboard-demo (a pointer stroke painted through
+canvas-native, repainted on resize) and a throwaway app mounting svg,
+maps, form, webview, video and codeblock together (reactive markup and
+intrinsic size, author-sized map, handle submit and Enter-to-submit,
+webview load + `postMessage` from `execute_js`, video mute op, editor
+typing) — no console errors besides a deliberately missing clip.
