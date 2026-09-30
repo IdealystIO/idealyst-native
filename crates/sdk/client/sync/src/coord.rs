@@ -466,26 +466,65 @@ fn handle_msg<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'sta
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen::JsCast;
+    //! The browser calls are web-glue bindings declared here
+    //! (own-web-bindings phase 3).
+
+    use web_glue::{string, Closure, JsValue};
+
+    web_glue::import! {
+        #[catch]
+        fn js_channel_new(p: usize, l: usize) -> u32 =
+            "(p, l) => G.add(new BroadcastChannel(G.str(p, l)))";
+        fn js_channel_set_onmessage(c: u32, f: u32) =
+            "(c, f) => { G.get(c).onmessage = G.get(f); }";
+        // Detach the handler and close the channel: a closed channel
+        // receives nothing more.
+        fn js_channel_close(c: u32) =
+            "(c) => { const ch = G.get(c); ch.onmessage = null; ch.close(); }";
+        // `postMessage` throws on a closed channel; the post is best-effort.
+        #[catch]
+        fn js_channel_post(c: u32, p: usize, l: usize) =
+            "(c, p, l) => { G.get(c).postMessage(G.str(p, l)); }";
+        // A `MessageEvent`'s string `data` into `out`; 0 for non-string data.
+        fn js_message_str(e: u32, out: usize) -> u32 =
+            "(e, o) => { const d = G.get(e).data; if (typeof d !== 'string') return 0; \
+               G.retStr(d, o); return 1; }";
+        // `navigator.locks.request(name, cb)`. The lock callback is wrapped
+        // in JS so it can RETURN a never-resolving Promise — that is what
+        // holds the lock until the tab closes; the Rust callback itself
+        // returns nothing. 0 (no-op) without a window or the Web Locks API.
+        #[catch]
+        fn js_request_lock(p: usize, l: usize, f: u32) -> u32 =
+            "(p, l, f) => { if (typeof window === 'undefined') return 0; \
+               const locks = window.navigator.locks; \
+               if (locks == null || typeof locks.request !== 'function') return 0; \
+               const cb = G.get(f); \
+               locks.request(G.str(p, l), (lock) => { cb(lock); return new Promise(() => {}); }); \
+               return 1; }";
+    }
 
     /// A `BroadcastChannel` wrapper. The message callback is retained in the
     /// struct (not leaked) so it lives exactly as long as the bus.
     pub(super) struct TabBus {
-        channel: web_sys::BroadcastChannel,
-        _on_message: Closure<dyn FnMut(web_sys::MessageEvent)>,
+        channel: JsValue,
+        _on_message: Closure,
     }
 
     impl TabBus {
         pub(super) fn new(name: &str, on_msg: impl Fn(String) + 'static) -> Self {
-            let channel = web_sys::BroadcastChannel::new(name)
+            let (p, l) = string::abi(name);
+            let channel = unsafe { js_channel_new(p, l) }
+                // SAFETY: a fresh `G.add` slot the snippet minted for us.
+                .map(|h| unsafe { JsValue::from_raw(h) })
                 .expect("sync: BroadcastChannel unavailable");
-            let cb = Closure::wrap(Box::new(move |ev: web_sys::MessageEvent| {
-                if let Some(s) = ev.data().as_string() {
+            let cb = Closure::new(move |ev: JsValue| {
+                let mut is_str = 0;
+                let s = string::receive(|o| is_str = unsafe { js_message_str(ev.raw(), o) });
+                if is_str != 0 {
                     on_msg(s);
                 }
-            }) as Box<dyn FnMut(web_sys::MessageEvent)>);
-            channel.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+            });
+            unsafe { js_channel_set_onmessage(channel.raw(), cb.as_js().raw()) };
             TabBus {
                 channel,
                 _on_message: cb,
@@ -493,7 +532,19 @@ mod web {
         }
 
         pub(super) fn post(&self, msg: &str) {
-            let _ = self.channel.post_message(&JsValue::from_str(msg));
+            let (p, l) = string::abi(msg);
+            let _ = unsafe { js_channel_post(self.channel.raw(), p, l) };
+        }
+    }
+
+    /// Detach and close before the closure drops (fields drop after this
+    /// body). The web-sys version only dropped the closure: the channel
+    /// stayed open with `onmessage` still pointing at it, so the next
+    /// message from another tab invoked a dropped closure and threw into
+    /// the page. Regression: `tests::regression_dropped_bus_leaves_no_dead_handler`.
+    impl Drop for TabBus {
+        fn drop(&mut self) {
+            unsafe { js_channel_close(self.channel.raw()) }
         }
     }
 
@@ -501,37 +552,95 @@ mod web {
     /// named lock; `on_acquire` fires when this tab becomes leader (the
     /// initial holder, or a promotion when the previous leader's tab
     /// closes). The lock is held until the tab closes (the callback returns
-    /// a never-resolving promise).
+    /// a never-resolving promise). A no-op where the browser lacks the Web
+    /// Locks API (no leader election).
     pub(super) fn request_leadership(name: &str, on_acquire: impl FnOnce() + 'static) {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        // Reach `navigator.locks.request(name, callback)` dynamically via
-        // Reflect — `web_sys::Navigator::locks()` is behind web-sys's
-        // unstable-APIs cfg, and this also degrades gracefully (no-op) if
-        // the browser lacks the Web Locks API.
-        let navigator = window.navigator();
-        let Ok(locks) = js_sys::Reflect::get(&navigator, &JsValue::from_str("locks")) else {
-            return;
-        };
-        if locks.is_undefined() || locks.is_null() {
-            return; // Web Locks unsupported → no leader election
+        // The lock callback: announce acquisition. Its JS wrapper (in
+        // `js_request_lock`) returns the never-resolving Promise.
+        let cb = Closure::once_into_js(move |_lock: JsValue| on_acquire());
+        let (p, l) = string::abi(name);
+        let _ = unsafe { js_request_lock(p, l, cb.raw()) };
+    }
+
+    #[cfg(test)]
+    mod tests {
+        //! Browser tests — `cargo test -p sync --lib --target
+        //! wasm32-unknown-unknown` (the workspace runner supplies web-glue's
+        //! JS; `wasm-pack test` cannot).
+
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use wasm_bindgen_test::*;
+        use web_glue::{JsFuture, JsValue};
+
+        use super::{request_leadership, TabBus};
+
+        wasm_bindgen_test_configure!(run_in_browser);
+
+        fn eval(body: &str) -> JsValue {
+            let f = JsValue::global()
+                .get("Function")
+                .unwrap()
+                .construct(&[&JsValue::from_str(body)])
+                .unwrap();
+            f.call(&JsValue::undefined(), &[]).unwrap()
         }
-        let Ok(request) = js_sys::Reflect::get(&locks, &JsValue::from_str("request")) else {
-            return;
-        };
-        let Ok(request) = request.dyn_into::<js_sys::Function>() else {
-            return;
-        };
 
-        // The lock callback: announce acquisition, then hold the lock open
-        // by returning a Promise that never resolves (released when the tab
-        // closes).
-        let cb = Closure::once_into_js(move |_lock: JsValue| -> JsValue {
-            on_acquire();
-            js_sys::Promise::new(&mut |_resolve, _reject| {}).into()
-        });
+        /// Let BroadcastChannel deliver (it posts on a task).
+        async fn settle() {
+            let p = eval("return new Promise((r) => setTimeout(r, 50));");
+            let _ = JsFuture::new(&p).await;
+        }
 
-        let _ = request.call2(&locks, &JsValue::from_str(name), &cb);
+        #[wasm_bindgen_test]
+        async fn a_message_reaches_the_other_bus() {
+            let got: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = got.clone();
+            let a = TabBus::new("sync-test-deliver", |_| {});
+            let _b = TabBus::new("sync-test-deliver", move |m| sink.borrow_mut().push(m));
+            a.post("{\"hello\":\"ü\"}");
+            settle().await;
+            assert_eq!(*got.borrow(), vec!["{\"hello\":\"ü\"}".to_string()]);
+        }
+
+        /// Regression: a dropped bus must detach and close its channel, so
+        /// a message another tab posts afterwards reaches no dropped
+        /// closure. A throw inside `onmessage` is reported as a window
+        /// `error` event, which this records.
+        #[wasm_bindgen_test]
+        async fn regression_dropped_bus_leaves_no_dead_handler() {
+            let a = TabBus::new("sync-test-drop", |_| {});
+            let b = TabBus::new("sync-test-drop", |_| {});
+            drop(b);
+            eval("globalThis.__errs = []; globalThis.__spy = (e) => __errs.push(e.message); \
+                  window.addEventListener('error', __spy);");
+            a.post("after-drop");
+            settle().await;
+            eval("window.removeEventListener('error', __spy);");
+            let errs = JsValue::global().get("__errs").unwrap();
+            let n = errs.get("length").unwrap().as_f64();
+            let joined = errs.call_method("join", &[&JsValue::from_str(" | ")]).unwrap().as_string();
+            assert_eq!(n, Some(0.0), "a message after drop reached a dead handler: {joined:?}");
+        }
+
+        #[wasm_bindgen_test]
+        async fn the_first_requester_acquires_the_lock() {
+            let acquired = Rc::new(RefCell::new(0));
+            let (a1, a2) = (acquired.clone(), acquired.clone());
+            request_leadership("sync-test-lock", move || *a1.borrow_mut() += 1);
+            // Same name: queued behind the held (never-released) lock.
+            request_leadership("sync-test-lock", move || *a2.borrow_mut() += 1);
+            // The lock manager answers over IPC; give it up to ~2 s.
+            for _ in 0..40 {
+                if *acquired.borrow() != 0 {
+                    break;
+                }
+                settle().await;
+            }
+            settle().await;
+            let n = *acquired.borrow();
+            assert_eq!(n, 1, "exactly one requester holds the lock");
+        }
     }
 }

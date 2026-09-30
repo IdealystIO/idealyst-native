@@ -237,6 +237,7 @@ election. Tick each item as you exercise it.
 - [ ] `cargo test -p sync` — protocol state machine, outbox, cursor/snapshot/delta, idempotency, conflict surfacing, `KvSyncStore`/`MemorySyncStore` conformance
 - [ ] `cargo test -p sync --test crash_recovery` — mid-operation crash ordering invariants (outbox-before-ack, record-state-before-pop, record-data-before-cursor)
 - [ ] `cargo build -p sync --target wasm32-unknown-unknown` — web (`SharedPartition` / `navigator.locks` / `BroadcastChannel`) target compiles
+- [x] `cargo test -p sync --lib --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `coord::web::tests`: a `BroadcastChannel` message reaches the other bus; a dropped bus closes its channel (no dead handler); one of two same-name `navigator.locks` requesters acquires
 
 **Behavior**
 

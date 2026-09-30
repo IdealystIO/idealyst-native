@@ -11882,14 +11882,13 @@ dependencies = [
 name = "sync"
 version = "2.0.0"
 dependencies = [
- "js-sys",
  "runtime-core",
  "serde",
  "serde_json",
  "storage",
  "tokio",
- "wasm-bindgen",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
