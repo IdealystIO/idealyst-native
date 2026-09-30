@@ -12,6 +12,10 @@ license.workspace = true
 # gets out of the way — mapping a URL onto a navigator route is the app's
 # (or a router SDK's) job, not this crate's.
 #
+# It also answers where the app is NOW — `current_url()` / `origin()` /
+# `replace_url()` — on the one platform with an address bar (web); native
+# targets answer `None` / no-op, since a native app is not "at" a URL.
+#
 # The whole SDK side (parse + registry + dispatch + initial-link dedupe) is
 # pure Rust and runs on every target. `feed_link(raw_url)` is the single
 # ingress door the platform host calls when the OS hands it a URL:
@@ -45,9 +49,15 @@ url = { version = "2", default-features = false }
 runtime-core = { workspace = true, optional = true }
 runtime-vocabulary = { workspace = true, optional = true }
 
-# Web (wasm32): read window.location.href for the initial link.
+# Web (wasm32): read window.location for the initial link and the live
+# address (`current_url` / `origin`), and History for `replace_url`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "History"] }
+
+# Browser tests (`tests/location_web.rs`) — run with
+# `wasm-pack test --headless --chrome --package deep-link`.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Compile-checked usage recipes for the docs / MCP catalog. Off in every
 # production build (the recipes — and the framework deps — do not compile then).

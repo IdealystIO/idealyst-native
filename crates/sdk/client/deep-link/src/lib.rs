@@ -45,6 +45,15 @@
 //!   custom-scheme links don't apply in a browser, but app-internal
 //!   navigations / `popstate` can be fed via [`feed_link`].
 //!
+//! # The live address
+//!
+//! [`initial_link`] is fixed at launch. Where the app is *now* is a
+//! separate question with its own three calls — [`current_url`] (read),
+//! [`replace_url`] (rewrite without navigating) and [`origin`] (for
+//! building absolute links). They answer on web, the one platform with
+//! an address bar, and are `None` / no-ops on native. See
+//! [`current_url`] for why that is the honest answer rather than a gap.
+//!
 //! # Permissions
 //!
 //! None at runtime. Inbound links instead require **build-time manifest
@@ -295,6 +304,94 @@ pub fn seed_initial_from_platform() {
     // Non-web: nothing to read here; the host seeds via `feed_link`.
 }
 
+// ---------------------------------------------------------------------------
+// The live address — where the app is right now, not how it was reached.
+// ---------------------------------------------------------------------------
+//
+// Everything above is about URLs ARRIVING. These three are about the URL
+// the app currently occupies, which is a different question: on web the
+// address bar moves under the app (the navigators rewrite it, the user
+// edits it, Back rewinds it) while `initial_link()` stays the launch URL
+// forever. Apps need the live one to decide things before a navigator
+// exists (a public share path that must skip the auth gate), to build
+// absolute links for other people (a share URL is `origin + path`), and
+// to keep filter state in the query string.
+//
+// Only a platform with an address bar has any of this. Native targets
+// answer `None` / do nothing — not as a stub, but because the question
+// has no answer there: an iOS app is not "at" a URL, its navigators hold
+// the in-memory path, and a link built for someone else has no origin
+// to be relative to.
+
+/// The address the app is at **right now**, parsed.
+///
+/// On **web** this is `window.location.href`, read at the time of the
+/// call — it follows every navigator write, every `replace_url`, and the
+/// browser's Back/Forward, unlike [`initial_link`], which is fixed at the
+/// launch URL. Use it for decisions that have to be made from the URL
+/// before a navigator has mounted, and for reading query-string state.
+///
+/// `None` on every **native** target (there is no address bar; the
+/// navigators' in-memory path is the source of truth there) and on web
+/// without a `window` (a worker, a server-side prerender).
+///
+/// ```ignore
+/// let path = deep_link::current_url().map(|u| u.path).unwrap_or_else(|| "/".into());
+/// ```
+pub fn current_url() -> Option<DeepLink> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web::current_href().and_then(|href| DeepLink::parse(&href).ok())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// The origin the app is served from — `scheme://host[:port]`, no
+/// trailing slash — for building absolute URLs to hand to someone else
+/// (a share link, an email, a second browser tab).
+///
+/// `Some` only on **web** (`window.location.origin`). `None` on native,
+/// where the app is not served from anywhere, and for an opaque origin
+/// (`file:` pages, sandboxed frames), which no URL can be built on.
+pub fn origin() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web::origin()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// Rewrite the address the app is at **without navigating**:
+/// `history.replaceState` on web. `url` is usually app-absolute
+/// (`"/projects?tab=2"`); anything `replaceState` accepts works, and a
+/// cross-origin URL is refused by the browser, silently: there is no
+/// success signal.
+///
+/// Nothing re-renders and no history entry is added: this corrects what
+/// the address bar SAYS so a reload or a copied link lands where the
+/// screen already is. Screen changes belong to the navigators, which
+/// write the URL themselves.
+///
+/// The entry's existing `history.state` is carried over, so state a
+/// navigator attached to the entry survives the rewrite. No handler
+/// registered with [`on_link`] fires — this is the app's own write, not
+/// an inbound link.
+///
+/// A no-op on native targets (no address bar) and on web without a
+/// `window`.
+pub fn replace_url(url: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web::replace_url(url);
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = url;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +549,24 @@ mod tests {
             let _s2 = on_link(move |_| o2.borrow_mut().push(2));
             feed_link("myapp://x");
             assert_eq!(*order.borrow(), vec![1, 2]);
+        });
+    }
+
+    /// Off-web there is no address bar: the live-address API answers
+    /// `None` and `replace_url` must neither panic nor feed the link
+    /// registry (it is the app's own write, not an inbound link).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_has_no_live_address_and_replace_is_inert() {
+        fresh(|| {
+            assert_eq!(current_url(), None);
+            assert_eq!(origin(), None);
+            let fired = Rc::new(Cell::new(0u32));
+            let f = Rc::clone(&fired);
+            let _sub = on_link(move |_| f.set(f.get() + 1));
+            replace_url("/somewhere?x=1");
+            assert_eq!(fired.get(), 0, "replace_url must not dispatch to on_link");
+            assert_eq!(initial_link(), None, "replace_url must not claim the initial slot");
         });
     }
 

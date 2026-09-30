@@ -3218,6 +3218,7 @@ dependencies = [
  "runtime-core",
  "runtime-vocabulary",
  "url",
+ "wasm-bindgen-test",
  "web-sys",
 ]
 

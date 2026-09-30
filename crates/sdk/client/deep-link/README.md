@@ -54,6 +54,46 @@ A small parsed `DeepLink` plus a tiny subscription API:
 Every target delivers the **same shape** — platforms diverge in *where*
 `feed_link` is called from, not in the API you use.
 
+## The live address
+
+`initial_link()` is fixed at launch. Where the app is **now** is a
+separate question, answered by three calls:
+
+- `current_url() -> Option<DeepLink>` — the address the app is at at the
+  moment of the call (`window.location.href`), following every navigator
+  write, every `replace_url` and the browser's Back/Forward. Use it for
+  decisions that must be made before a navigator exists (a public share
+  path that skips the auth gate) and for reading query-string state.
+- `replace_url(url)` — rewrite the address **without navigating**
+  (`history.replaceState`). No re-render, no new history entry, no
+  `on_link` dispatch; the entry's existing `history.state` is kept so a
+  navigator's bookkeeping survives. For making the address bar say where
+  the screen already is — screen changes belong to the navigators.
+- `origin() -> Option<String>` — `scheme://host[:port]`, for building
+  absolute links to hand to someone else (a share URL, a second tab).
+
+```rust
+// A client-share link: the server knows the path, the page knows the origin.
+let link = match deep_link::origin() {
+    Some(origin) => format!("{origin}{path}"),
+    None => path.to_string(),
+};
+
+// Keep a filter in the query string without touching history.
+if let Some(here) = deep_link::current_url() {
+    deep_link::replace_url(&format!("{}?date=2026-09-30", here.path));
+}
+```
+
+| Target | `current_url` | `origin` | `replace_url` |
+| --- | --- | --- | --- |
+| web (wasm32) | `location.href`, parsed | `location.origin` (`None` for an opaque `"null"` origin) | `history.replaceState(state, "", url)` |
+| iOS / macOS / Android / desktop | `None` | `None` | no-op |
+
+The native answers are the real answer, not a stub: a native app is not
+"at" a URL (its navigators hold the in-memory path) and is not served
+from an origin anything could be relative to.
+
 ## Per-platform mechanism
 
 | Target | Where the host calls `feed_link` / seeds `initial_link` |
@@ -102,6 +142,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p deep-link` — parse, `query_pairs`, initial-link dedupe, subscription drop, reentrancy (the pure registry is fully unit-tested)
 - [ ] `cargo build -p deep-link --features catalog` — recipes/docs compile
 - [ ] `cargo build -p deep-link --target wasm32-unknown-unknown` — web target
+- [x] `wasm-pack test --headless --chrome --package deep-link` — `tests/location_web.rs`: `replace_url` moves the real address without a history entry and keeps `history.state`; `current_url` follows it; `origin` matches `location.origin`
 
 **Behavior** (the host must call `feed_link` — these verify the host wiring, not just the registry)
 - [ ] **Web** — bootstrap seeds `initial_link()` from `window.location.href`; an app-internal navigation / `popstate` fed via `feed_link` fires `on_link` with the parsed URL.
