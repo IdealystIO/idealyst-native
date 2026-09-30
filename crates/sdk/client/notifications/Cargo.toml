@@ -43,21 +43,17 @@ permissions = { workspace = true }
 runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 
-# Web (wasm): the Notification Web API + web-push subscription via web-sys.
+# Web (wasm): the Notification Web API through a web-glue binding
+# (`src/web.rs`). Web-push is a service-worker seam that reports
+# `NotSupported` and binds nothing.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "Notification",
-    "NotificationOptions",
-    "ServiceWorkerContainer",
-    "ServiceWorkerRegistration",
-    "PushManager",
-    "PushSubscription",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_notify.rs`) — run with
+# `cargo test -p notifications --target wasm32-unknown-unknown` (the
+# workspace runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # iOS / macOS / tvOS: UNUserNotificationCenter via objc2.
 [target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]

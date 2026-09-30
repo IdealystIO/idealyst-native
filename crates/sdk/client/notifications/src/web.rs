@@ -29,11 +29,24 @@
 //! present this is where `subscribe(...)` + `JSON.stringify(subscription)`
 //! would slot in; the seam is structured (we probe for the SW registration)
 //! but delivery + the VAPID key stay app-owned.
+//!
+//! The browser call is a web-glue binding declared here (own-web-bindings
+//! phase 3).
 
-use wasm_bindgen::JsValue;
-use web_sys::{Notification, NotificationOptions};
+use web_glue::string;
 
 use crate::{resolve_id, Notification as Note, NotificationId, NotifyError, PushToken};
+
+web_glue::import! {
+    // `new Notification(title, { body, tag })`. The instance is not kept:
+    // re-posting the tag replaces it (see the module docs). Throws (→ Err)
+    // without the Notification API, or where construction is disallowed
+    // (Chrome on Android requires a service worker registration).
+    #[catch]
+    fn js_notify(tp: usize, tl: usize, bp: usize, bl: usize, gp: usize, gl: usize) =
+        "(tp, tl, bp, bl, gp, gl) => { \
+           new Notification(G.str(tp, tl), { body: G.str(bp, bl), tag: G.str(gp, gl) }); }";
+}
 
 pub(super) async fn notify(n: Note) -> Result<NotificationId, NotifyError> {
     let id = resolve_id(&n);
@@ -44,15 +57,14 @@ pub(super) async fn notify(n: Note) -> Result<NotificationId, NotifyError> {
         _ => n.body.clone(),
     };
 
-    let opts = NotificationOptions::new();
-    opts.set_body(&body);
     // `tag` coalesces: a later notification with the same tag replaces this
     // one, giving the same update-by-id behavior the native backends have.
-    opts.set_tag(id.as_str());
-
-    Notification::new_with_options(&n.title, &opts)
-        .map(|_| id)
-        .map_err(|e| NotifyError::Backend(js_err(&e)))
+    let (tp, tl) = string::abi(&n.title);
+    let (bp, bl) = string::abi(&body);
+    let (gp, gl) = string::abi(id.as_str());
+    unsafe { js_notify(tp, tl, bp, bl, gp, gl) }
+        .map(|()| id)
+        .map_err(|e| NotifyError::Backend(e.message()))
 }
 
 pub(super) async fn schedule(
@@ -77,11 +89,4 @@ pub(super) async fn push_token() -> Result<PushToken, NotifyError> {
     // owns (host seam — see module docs). We probe for a SW registration so
     // the seam is honest; with none present there's no token to return.
     Err(NotifyError::NotSupported)
-}
-
-/// Render a `JsValue` error as a string for `NotifyError::Backend`.
-fn js_err(e: &JsValue) -> String {
-    e.as_string()
-        .or_else(|| js_sys::Object::from(e.clone()).to_string().as_string())
-        .unwrap_or_else(|| "JS error".to_string())
 }

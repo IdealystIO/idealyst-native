@@ -118,6 +118,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p notifications` — builder + `resolve_id` + host no-op `notify`/`authorize`
 - [ ] `cargo build -p notifications --features catalog` — recipes/docs compile
 - [ ] `cargo build -p notifications --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p notifications --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_notify.rs`: `notify` constructs `Notification(title, {body, tag})` with the subtitle folded onto the body and the id as tag; a throwing constructor / no Notification API → `Backend`; `schedule` / `push_token` → `NotSupported`
 
 **Behavior**
 - [ ] **Web** — after `authorize()`, `notify()` shows a browser banner; re-posting with the same `.id(...)` (the `tag`) replaces it. `schedule()` returns `NotSupported`.
