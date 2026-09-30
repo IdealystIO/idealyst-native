@@ -16,28 +16,14 @@
 use camera::{Camera, CameraConfig, CameraError};
 use idea_ui::{install_idea_theme, light_theme, typography_kind, Stack, StackGap, StackPadding, Typography};
 use media_stream::MediaStream;
-use runtime_core::{signal, text, ui, Element, IntoElement, Signal};
+use runtime_core::{signal, ui, Element, IntoElement, Signal};
 
-/// SDK-handler registration seam, invoked by the CLI-generated wrappers
-/// after `runtime_vocabulary::register_builtins`. There is no inventory
-/// self-registration on the scene registry — an UNREGISTERED payload
-/// panics at realize — so the `video` handler MUST be composed in here.
-///
-/// wasm32 takes the `WebBackend`-concrete arm because the real `<video>`
-/// renderer is `web_sys`-bound and cannot be expressed over the caps
-/// traits.
-#[cfg(target_arch = "wasm32")]
-pub fn register_scene_extensions(
-    registry: &mut runtime_scene::Registry<backend_web::WebBackend>,
-) {
-    video::register(registry);
-}
-
-/// Native arm: `video::register` dispatches on the registry TYPE at
-/// registration time (macOS / iOS / Android get their native player,
-/// every other host the External placeholder), so one generic seam
-/// covers them all.
-#[cfg(not(target_arch = "wasm32"))]
+/// SDK-handler registration seam, called by `idealyst::entry!` at boot.
+/// There is no inventory self-registration on the scene registry — an
+/// UNREGISTERED payload panics at realize — so the `video` handler MUST be
+/// composed in here. `video::register` dispatches on the registry TYPE at
+/// registration time (the `<video>` renderer on web, the native player on
+/// macOS / iOS / Android), so one generic seam covers every target.
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps
@@ -76,25 +62,6 @@ pub fn app() -> Element {
     let cam_status: Signal<String> = signal("idle".to_string());
     let screen_status: Signal<String> = signal("idle".to_string());
 
-    let cam_video = video::Video(video::VideoProps {
-        source: video::stream(move || cam_sig.get()),
-        autoplay: true,
-        ..Default::default()
-    })
-    .into_element();
-
-    let screen_video = video::Video(video::VideoProps {
-        source: video::stream(move || screen_sig.get()),
-        autoplay: true,
-        ..Default::default()
-    })
-    .into_element();
-
-    let cam_status_text =
-        text(move || format!("Camera: {}", cam_status.get())).into_element();
-    let screen_status_text =
-        text(move || format!("Screen: {}", screen_status.get())).into_element();
-
     let on_camera = move || {
         cam_status.set("requesting…".to_string());
         runtime_core::driver::spawn_async(async move {
@@ -121,9 +88,24 @@ pub fn app() -> Element {
         });
     };
 
-    let body: Vec<Element> = vec![
-        ui! { Typography(content = "Camera + Screen share → Video".to_string(), kind = typography_kind::H1) },
-        ui! {
+    // `video::Video` is a builder fn, not a `#[component]`, so the two
+    // players are built here and splatted in as children.
+    let cam_video = video::Video(video::VideoProps {
+        source: video::stream(move || cam_sig.get()),
+        autoplay: true,
+        ..Default::default()
+    })
+    .into_element();
+    let screen_video = video::Video(video::VideoProps {
+        source: video::stream(move || screen_sig.get()),
+        autoplay: true,
+        ..Default::default()
+    })
+    .into_element();
+
+    ui! {
+        Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
+            Typography(content = "Camera + Screen share → Video".to_string(), kind = typography_kind::H1)
             Typography(
                 content = "Two Video components, each fed a live MediaStream from a different \
                     producer — a camera and a screen share. Same component, same `source` prop; \
@@ -131,21 +113,17 @@ pub fn app() -> Element {
                     .to_string(),
                 muted = true,
             )
-        },
-        // --- Camera ---
-        ui! { Typography(content = "Camera".to_string(), kind = typography_kind::H2) },
-        cam_status_text,
-        cam_video,
-        ui! { button(label = "Start camera".to_string(), on_click = on_camera) },
-        // --- Screen share ---
-        ui! { Typography(content = "Screen share".to_string(), kind = typography_kind::H2) },
-        screen_status_text,
-        screen_video,
-        ui! { button(label = "Start screen share".to_string(), on_click = on_screen) },
-    ];
-
-    ui! {
-        Stack(gap = StackGap::Md, padding = StackPadding::Lg) { body }
+            // --- Camera ---
+            Typography(content = "Camera".to_string(), kind = typography_kind::H2)
+            text { move || format!("Camera: {}", cam_status.get()) }
+            cam_video
+            button(label = "Start camera".to_string(), on_click = on_camera)
+            // --- Screen share ---
+            Typography(content = "Screen share".to_string(), kind = typography_kind::H2)
+            text { move || format!("Screen: {}", screen_status.get()) }
+            screen_video
+            button(label = "Start screen share".to_string(), on_click = on_screen)
+        }
     }
 }
 

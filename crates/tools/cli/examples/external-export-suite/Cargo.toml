@@ -31,8 +31,7 @@ runtime-core = { workspace = true, features = ["catalog"] }
 # alias only covers paths the author writes.
 runtime-vocabulary = { workspace = true }
 
-[package.metadata.idealyst.app]
-name      = "External Export Suite"
-bundle_id = "ai.truday.idealyst.external_export_suite"
-version   = "0.0.1"
-targets   = ["web"]
+# No `[package.metadata.idealyst.app]`: this crate is a component
+# library, not an app. `idealyst export` reads only the package name, and
+# the consumers under `consumers/` are the apps. Declaring a `web` target
+# here promised an `idealyst build --web` that has no entry point to build.

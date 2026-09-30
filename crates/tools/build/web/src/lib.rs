@@ -3785,6 +3785,54 @@ mod regression_tests {
         ensure_entry_point(&project, "demo").expect("real [[bin]] header, comment and all");
     }
 
+    /// Regression: when apps became their own binary, the SDK examples and
+    /// `docs-app` were left without `src/main.rs`, and
+    /// nothing noticed until `idealyst build --web` / `idealyst docs` failed
+    /// with "has no binary target". Every workspace package that declares
+    /// a `web` app target must pass the same check the web build runs.
+    ///
+    /// Only `web` is checked because it is the only target that builds the
+    /// app's binary; the native targets still generate a wrapper crate
+    /// around the library (e.g. `newcore-android-smoke` has none and is
+    /// correct).
+    #[test]
+    fn regression_every_workspace_web_app_has_an_entry_point() {
+        let out = std::process::Command::new(env!("CARGO"))
+            .args(["metadata", "--no-deps", "--format-version", "1"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("run cargo metadata");
+        assert!(
+            out.status.success(),
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let meta: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("parse cargo metadata");
+
+        let mut checked = 0;
+        let mut missing = Vec::new();
+        for pkg in meta["packages"].as_array().expect("packages") {
+            let targets = &pkg["metadata"]["idealyst"]["app"]["targets"];
+            let is_web_app = targets
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t == "web"));
+            if !is_web_app {
+                continue;
+            }
+            checked += 1;
+            let manifest = Path::new(pkg["manifest_path"].as_str().expect("manifest_path"));
+            let name = pkg["name"].as_str().expect("name");
+            if let Err(e) = ensure_entry_point(manifest.parent().expect("crate dir"), name) {
+                missing.push(format!("{name}: {e:#}"));
+            }
+        }
+        // Guard against the scan silently matching nothing (a metadata
+        // shape change would otherwise make this test vacuous).
+        assert!(checked > 10, "only {checked} web apps found — is the metadata scan broken?");
+        assert!(missing.is_empty(), "web apps without an entry point:\n\n{}", missing.join("\n\n"));
+    }
+
     #[test]
     fn primitive_set_presets_and_lists_resolve() {
         assert_eq!(resolve_primitive_set(None).unwrap(), None);

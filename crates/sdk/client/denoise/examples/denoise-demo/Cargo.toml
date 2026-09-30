@@ -19,6 +19,10 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # The author surface. `runtime-core` is aliased to `runtime_core` at the
 # crate root (see src/lib.rs) — one core, no feature switch;
 # `async-driver` because the model preload + record/stop handlers use
@@ -63,10 +67,6 @@ canvas-vello = { workspace = true }
 # bundle stays small. Native uses the embedded `Denoiser::new()` (no chunk).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-split = { workspace = true }
-# The concrete `WebBackend` — `video::register` is
-# `Registry<WebBackend>`-concrete on wasm32 (the real `<video>` element),
-# so the registration seam specializes there.
-backend-web = { workspace = true }
 
 # The mic capability + its OS prompt reason. `denoise` declares no capability
 # of its own (it consumes an existing stream), so the only permission injected

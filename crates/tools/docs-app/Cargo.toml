@@ -22,6 +22,10 @@ crate-type = ["cdylib", "rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # The author surface. `runtime-core` is aliased to `runtime_core` at
 # the crate root (src/lib.rs) — one core, no feature switch.
 #

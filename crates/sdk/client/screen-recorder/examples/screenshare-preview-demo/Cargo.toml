@@ -12,6 +12,10 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # `runtime-core` is aliased to `runtime_core` at the crate root (see
 # src/lib.rs); `async-driver` for the `driver::spawn_async` capture start.
 # `runtime-vocabulary` for the `ui!` emission's absolute
@@ -24,14 +28,6 @@ runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 screen-recorder = { workspace = true }
 video = { workspace = true }
-
-# Web's `video::register` / `screen_recorder::register` seam is
-# registry-CONCRETE (`Registry<WebBackend>`), so the wasm32 leg of
-# `register_scene_extensions` needs the backend's `Host` impl. The native
-# legs are registry-generic and type-dispatch inside the SDKs, so no
-# per-platform backend dep is needed there.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Screen Share"

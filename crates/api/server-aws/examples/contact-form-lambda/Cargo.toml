@@ -42,6 +42,10 @@ server = [
 ]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 server = { workspace = true }
 net = { workspace = true }
 runtime-core = { workspace = true, features = ["async-driver"] }

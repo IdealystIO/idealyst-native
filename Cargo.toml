@@ -368,8 +368,8 @@ members = [
     # embeds its sources verbatim (cli/src/cmd/scaffold_template.rs).
     "examples/welcome",
     # Runs `welcome` natively on the GTK backend (host-gtk). Linux-only.
-    "examples/welcome-gtk",
-    "examples/idea-ui-docs-gtk",
+    "crates/host/gtk/examples/welcome-gtk",
+    "crates/host/gtk/examples/idea-ui-docs-gtk",
     "examples/fiddle",
     "examples/baseline",
     "examples/inspector",
@@ -668,7 +668,7 @@ file-picker-demo = { path = "crates/sdk/client/file-picker/examples/file-picker-
 graphql-demo = { path = "crates/sdk/client/graphql/examples/graphql-demo", version = "1.5.2", registry = "idealyst" }
 i18n-demo = { path = "crates/sdk/client/i18n/examples/i18n-demo", version = "1.5.2", registry = "idealyst" }
 idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.3", registry = "idealyst" }
-idea-ui-docs-gtk = { path = "examples/idea-ui-docs-gtk", version = "1.5.2", registry = "idealyst" }
+idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.2", registry = "idealyst" }
 idealyst-macros = { path = "crates/idealyst-macros", version = "1.5.2", registry = "idealyst" }
 jobs-demo = { path = "crates/sdk/server/jobs/examples/jobs-demo", version = "1.5.2", registry = "idealyst" }
 kanban-demo = { path = "crates/sdk/client/dnd/examples/kanban-demo", version = "1.5.2", registry = "idealyst" }

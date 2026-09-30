@@ -2182,6 +2182,7 @@ dependencies = [
  "camera",
  "dev-server",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -2191,10 +2192,10 @@ dependencies = [
 name = "camera-preview-demo"
 version = "1.5.2"
 dependencies = [
- "backend-web",
  "camera",
  "dev-server",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -2231,6 +2232,7 @@ dependencies = [
  "canvas",
  "canvas-native",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -2722,6 +2724,7 @@ dependencies = [
  "aws-sdk-dynamodb",
  "aws-sdk-sesv2",
  "idea-ui",
+ "idealyst",
  "net",
  "runtime-core",
  "runtime-scene",
@@ -3272,7 +3275,6 @@ dependencies = [
 name = "denoise-demo"
 version = "1.5.2"
 dependencies = [
- "backend-web",
  "canvas",
  "canvas-native",
  "canvas-vello",
@@ -3280,6 +3282,7 @@ dependencies = [
  "dev-server",
  "files",
  "idea-ui",
+ "idealyst",
  "media-writer",
  "microphone",
  "runtime-core",
@@ -3586,6 +3589,7 @@ dependencies = [
  "dev-server",
  "dnd",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -3634,6 +3638,7 @@ dependencies = [
  "icons-lucide",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "markdown",
  "mcp-catalog",
  "runtime-core",
@@ -4088,6 +4093,7 @@ dependencies = [
  "dev-server",
  "file-picker",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -4142,6 +4148,7 @@ dependencies = [
  "dev-server",
  "file-picker",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -4851,6 +4858,7 @@ dependencies = [
  "graphql",
  "graphql_client",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -5950,6 +5958,7 @@ dependencies = [
  "dev-server",
  "i18n",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -6016,6 +6025,7 @@ dependencies = [
  "dev-server",
  "icons-lucide",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -6730,6 +6740,7 @@ version = "1.5.2"
 dependencies = [
  "axum",
  "idea-ui",
+ "idealyst",
  "idealyst-config",
  "jobs",
  "runtime-core",
@@ -6779,6 +6790,7 @@ dependencies = [
  "dev-server",
  "dnd",
  "idea-theme",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -7354,6 +7366,7 @@ name = "markdown-demo"
 version = "1.5.2"
 dependencies = [
  "idea-ui",
+ "idealyst",
  "markdown",
  "runtime-core",
  "runtime-scene",
@@ -7451,6 +7464,7 @@ dependencies = [
  "file-export",
  "files",
  "idea-ui",
+ "idealyst",
  "media-writer",
  "microphone",
  "runtime-core",
@@ -7462,10 +7476,10 @@ dependencies = [
 name = "media-sources-demo"
 version = "1.5.2"
 dependencies = [
- "backend-web",
  "camera",
  "dev-server",
  "idea-ui",
+ "idealyst",
  "media-stream",
  "runtime-core",
  "runtime-scene",
@@ -7587,6 +7601,7 @@ version = "1.5.2"
 dependencies = [
  "dev-server",
  "idea-ui",
+ "idealyst",
  "microphone",
  "runtime-core",
  "runtime-scene",
@@ -7864,6 +7879,7 @@ name = "nested-nav-demo"
 version = "1.5.2"
 dependencies = [
  "dev-server",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -8811,6 +8827,7 @@ dependencies = [
  "canvas",
  "canvas-native",
  "canvas-vello",
+ "dev-server",
  "file-picker",
  "idea-ui",
  "idealyst",
@@ -9418,6 +9435,7 @@ dependencies = [
  "axum",
  "futures-util",
  "idea-ui",
+ "idealyst",
  "idealyst-config",
  "net",
  "pubsub",
@@ -10002,13 +10020,9 @@ dependencies = [
 name = "robot-e2e-demo"
 version = "1.5.2"
 dependencies = [
- "backend-android-mobile",
- "backend-ios-mobile",
- "backend-macos",
- "backend-terminal",
- "backend-web",
  "dev-server",
  "idea-ui",
+ "idealyst",
  "robot-test",
  "runtime-core",
  "runtime-scene",
@@ -10566,6 +10580,7 @@ version = "1.5.2"
 dependencies = [
  "dev-server",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -10576,8 +10591,8 @@ dependencies = [
 name = "screenshare-preview-demo"
 version = "1.5.2"
 dependencies = [
- "backend-web",
  "idea-ui",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -10883,6 +10898,7 @@ dependencies = [
  "dev-server",
  "futures-util",
  "idea-ui",
+ "idealyst",
  "net",
  "runtime-core",
  "runtime-scene",
@@ -11244,6 +11260,7 @@ dependencies = [
  "dev-server",
  "dnd",
  "idea-theme",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -11434,6 +11451,7 @@ dependencies = [
  "dev-server",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -11666,6 +11684,7 @@ dependencies = [
  "dev-server",
  "idea-ui",
  "idea-ui-nav",
+ "idealyst",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -12146,6 +12165,7 @@ dependencies = [
  "axum",
  "dev-server",
  "idea-ui",
+ "idealyst",
  "js-sys",
  "runtime-core",
  "runtime-scene",
@@ -13177,10 +13197,10 @@ dependencies = [
 name = "video-compose-demo"
 version = "1.5.2"
 dependencies = [
- "backend-web",
  "camera",
  "canvas-core",
  "idea-ui",
+ "idealyst",
  "media-stream",
  "runtime-core",
  "runtime-scene",

@@ -20,6 +20,10 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # The author-surface root: `extern crate runtime_core as runtime_core;`
 # in src/lib.rs maps every `runtime_core::…` path here.
 # `runtime-vocabulary` because the `ui!` emission spells absolute

@@ -11,6 +11,11 @@ publish = false
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# `sidecar`: enabled ONLY by the CLI-generated runtime-server sidecar
+# wrapper (wire recording for `idealyst dev`).
+sidecar = ["dep:dev-server"]
+
 [dependencies]
 # The platform surface, used by `src/main.rs` only — it carries whatever
 # the target needs, so this manifest names no backend directly. An
@@ -34,6 +39,9 @@ canvas-native = { workspace = true }
 canvas-vello = { workspace = true }
 pdf = { workspace = true }
 file-picker = { workspace = true }
+# Recorder backend for the runtime-server sidecar; pulled in only by the
+# `sidecar` feature (host-side build).
+dev-server = { workspace = true, optional = true }
 
 [package.metadata.idealyst.app]
 name      = "PDF Demo"

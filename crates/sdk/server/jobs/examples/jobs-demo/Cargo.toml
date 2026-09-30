@@ -27,6 +27,10 @@ server = [
 ]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 server = { workspace = true }
 jobs = { workspace = true }
 # Unified config: `configure_all()` reads idealyst.toml and wires the jobs

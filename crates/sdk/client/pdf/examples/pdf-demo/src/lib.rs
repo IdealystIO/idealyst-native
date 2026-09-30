@@ -40,6 +40,14 @@ where
     canvas_vello::register(registry);
 }
 
+/// Recorder twin of [`register_scene_extensions`] for the runtime-server
+/// sidecar (`dev_server::sidecar::run_newcore`). Gated by `sidecar` so
+/// device/web builds never pull `dev-server`.
+#[cfg(feature = "sidecar")]
+pub fn register_scene_extensions_recorder(registry: &mut dev_server::newcore::SceneRegistry) {
+    register_scene_extensions(registry);
+}
+
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 

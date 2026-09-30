@@ -15,6 +15,10 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # `runtime-core` is aliased to `runtime_core` at the crate root (see
 # src/lib.rs); `async-driver` for the `driver::spawn_async` camera open.
 # `runtime-vocabulary` for the `ui!` emission's absolute
@@ -28,13 +32,6 @@ idea-ui = { workspace = true }
 camera = { workspace = true }
 video = { workspace = true }
 dev-server = { workspace = true, optional = true }
-
-# Web's `video::register` is registry-CONCRETE (`Registry<WebBackend>`), so
-# the wasm32 leg of `register_scene_extensions` needs the backend's `Host`
-# impl. The native leg is registry-generic and type-dispatches inside the
-# SDK, so no per-platform backend dep is needed there.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-backend-web = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Camera Preview"

@@ -18,6 +18,10 @@ crate-type = ["rlib"]
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 runtime-core = { workspace = true }
 # The `ui!`/`#[component]` expansions spell absolute
 # `::runtime_vocabulary::glue::…` paths, so this is a direct dep.

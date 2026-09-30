@@ -12,6 +12,10 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # The author surface. `runtime-core` is aliased to `runtime_core` at the
 # crate root (see src/lib.rs) — one core, no feature switch.
 # `runtime-vocabulary` is needed because the `ui!` emission spells

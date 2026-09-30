@@ -20,9 +20,9 @@ host-gtk = { workspace = true }
 # screenshot capture), which the backend gates so a release app does not carry
 # them. A dev/test build opts in exactly as the CLI-generated wrapper's own
 # `dev` feature does.
-backend-linux = { path = "../../crates/backend/linux", features = ["robot"] }
-runtime-shared = { path = "../../crates/runtime/shared" }
+backend-linux = { path = "../../../../backend/linux", features = ["robot"] }
+runtime-shared = { path = "../../../../runtime/shared" }
 # The capability traits the tests assert against directly
 # (`caps::IntrospectionOps` for the screenshot/geometry verbs) — they are
 # trait methods, so the trait has to be in scope at the call site.
-runtime-vocabulary = { path = "../../crates/runtime/vocabulary" }
+runtime-vocabulary = { path = "../../../../runtime/vocabulary" }

@@ -29,6 +29,10 @@ default = []
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 # `lazy-fetch` brings the ready-made network loader for the opt-in locale.
 i18n = { workspace = true, features = ["lazy-fetch"] }
 idea-ui = { workspace = true }

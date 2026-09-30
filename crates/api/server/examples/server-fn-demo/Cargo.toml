@@ -42,6 +42,10 @@ server = [
 sidecar = ["dep:dev-server"]
 
 [dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs. An idealyst app IS its binary; there is no generated
+# wrapper crate.
+idealyst = { workspace = true }
 server = { workspace = true }
 # Recorder backend for the runtime-server sidecar wrapper. Optional —
 # pulled in only by the `sidecar` feature (host-side sidecar build);
