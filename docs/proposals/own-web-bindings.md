@@ -611,3 +611,52 @@ maps, form, webview, video and codeblock together (reactive markup and
 intrinsic size, author-sized map, handle submit and Enter-to-submit,
 webview load + `postMessage` from `execute_js`, video mute op, editor
 typing) — no console errors besides a deliberately missing clip.
+
+## Phase 3 — media/file switch
+
+**The three crossings the DOM-mounting phase left are gone.** One coherent
+change switched every producer and consumer of a web `native_source` stream
+to `web_glue::dom::MediaStream` (new, with `MediaStreamTrack`, in web-glue's
+`dom`): camera, microphone, screen-recorder, canvas-native's self-capture,
+video-compose and media-stream's synthetic-audio bridge publish one; video,
+canvas-native's texture layers, canvas-vello, video-compose, media-writer and
+media-stream's `screenshot()` downcast one. backend-web hands a dropped file
+to file-picker as a `web_glue::dom::File`, so backend-web depends on neither
+wasm-bindgen nor web-sys any more (`wasm-bindgen-test` stays as its test
+harness). camera, microphone, media-stream, media-writer, screen-recorder,
+video-compose and file-picker run entirely on web-glue (crate-local
+`import!`s for getUserMedia / getDisplayMedia, the canvas pumps, WebAudio,
+MediaRecorder, `requestVideoFrameCallback`, `showOpenFilePicker` and the
+Blob reader); `files` stays on idb until phase 4.
+
+**What still crosses `web_glue::bridge`** is wgpu's, marked
+`HYBRID-BRIDGE: wgpu`: canvas-native's public `make_2d_rasterizer` /
+`publish_capture_stream` keep their `web_sys::HtmlCanvasElement` signatures
+(canvas-vello calls them) and convert at the boundary, and canvas-vello's
+texture-layer `<video>` stays a web-sys element for wgpu's
+`ExternalImageSource`, so a layer's glue stream crosses out to become its
+`srcObject`. No public signature changed.
+
+**Bug fixed on the way:** web-sys binds the JS `MediaStream.clone()` as an
+inherent `clone()`, so camera and microphone published
+`Rc::new(stream.clone())` — a new stream with cloned tracks — and
+screen-recorder kept such a copy for teardown. Stopping a capture ended one
+stream while consumers kept showing (or sharing) the other. A glue handle's
+`Clone` is the same JS object; each SDK's browser test stops the capture and
+asserts the consumer's tracks ended (each fails against a JS `clone()`).
+
+**Test harness:** the wasm32 runner now carries a crate's `webdriver.json`
+into the directory it runs wasm-bindgen-test-runner from, so a crate can give
+headless Chrome fake media devices (`--use-fake-device-for-media-stream`) or
+relax the autoplay policy (camera, microphone, media-stream, media-writer).
+
+
+**Verification so far:** new wasm32 browser suites through the workspace
+runner (headless Chrome 154) — web-glue 3, media-stream 4, camera 2,
+microphone 2, screen-recorder 2, video 3, video-compose 1, media-writer 3,
+canvas-native 3, file-picker 2; `cargo check` for wasm32 of every touched
+crate and every workspace dependent alone (denoise-demo fails only on its
+un-fetched model asset); iOS / Android `cargo check` of the nine SDKs. Not
+yet run (the work stopped at the disk floor): host `cargo test` of the
+touched crates, backend-web's browser suite, the CLI E2Es, and a real app
+(camera-preview-demo, whiteboard-demo) in headless Chrome.
