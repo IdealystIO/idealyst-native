@@ -13,19 +13,17 @@ web-sys's method names and signatures, `web_glue::js` for the JS
 built-ins. `Host::Node` is `web_glue::dom::Node`. The eight `runtime/js/`
 shims ship as `web_glue::js_module!`s (no run-time eval).
 
-The one exception is a single `HYBRID-BRIDGE` crossing in
-**`src/primitives/file_drop.rs`**: a dropped file reaches the file-picker
-SDK as a `web_sys::File` (the type its `picked_from_dropped` downcasts
-`DroppedFile.source` to), crossed out of the glue slab with
-`web_glue::bridge`. That is why this crate still depends on `wasm-bindgen`
-and `web-sys` (the `File` feature only) and enables web-glue's
-`wasm-bindgen-bridge` feature; all three go when file-picker reads a
-`web_glue::dom::File`. The generic node bridge SDKs used during the port
-(`backend_web::bridge::{node_from_web_sys, node_to_web_sys}`) is gone
-(own-web-bindings phase 3): the SDKs build their DOM with web-glue and
-return / downcast `web_glue::dom::Node` directly. A web page is still
-**hybrid** while any crate in it uses wasm-bindgen: `idealyst build --web`
-extracts the glue before wasm-bindgen runs and writes
+Nothing in this crate names web-sys or wasm-bindgen (`wasm-bindgen-test`
+stays as the browser-test harness, a dev-dependency): a dropped file reaches
+the file-picker SDK as a `web_glue::dom::File` (the type its
+`picked_from_dropped` downcasts `DroppedFile.source` to), and SDKs return /
+downcast `web_glue::dom::Node` as the host node — the generic node bridge used
+during the port (`backend_web::bridge::{node_from_web_sys, node_to_web_sys}`)
+and the dropped-file `HYBRID-BRIDGE` crossing are gone (own-web-bindings
+phase 3).
+
+A web page is still **hybrid** while any crate in it uses wasm-bindgen:
+`idealyst build --web` extracts the glue before wasm-bindgen runs and writes
 `pkg/__idealyst_glue.js` after (`build_web::own_glue`).
 
 A crate that uses web-sys types must enable the web-sys features it uses

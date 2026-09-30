@@ -2,27 +2,68 @@
 //! (Chromium), falling back to a hidden `<input type=file>` everywhere else
 //! (Safari/Firefox).
 //!
-//! `showOpenFilePicker` isn't in `web-sys`'s stable surface, so we drive it
-//! dynamically through `js_sys::Reflect` + `Function` + `JsFuture`. Either path
-//! yields `File` (`Blob`) objects; there is no filesystem path on the web, so
-//! [`PickedFile::path`](crate::PickedFile::path) is `None` and reads stream over
-//! the `Blob`'s `ReadableStream` — a multi-GB pick is consumed chunk-by-chunk,
-//! never buffered whole.
+//! Every browser call is a web-glue binding (docs/proposals/own-web-bindings.md).
+//! Either path yields `File` (`Blob`) objects — `web_glue::dom::File`, the same
+//! handle backend-web puts in a dropped file's `DroppedFile::source`. There is
+//! no filesystem path on the web, so [`PickedFile::path`](crate::PickedFile::path)
+//! is `None` and reads stream over the `Blob`'s `ReadableStream` — a multi-GB
+//! pick is consumed chunk-by-chunk, never buffered whole.
 
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-use web_sys::Window;
+use web_glue::dom::File;
+use web_glue::js::{Array, Uint8Array};
+use web_glue::{string, JsCast, JsError, JsFuture, JsValue};
 
 use crate::{PickError, PickKind, PickRequest};
 
-fn js_err(ctx: &str, e: &JsValue) -> PickError {
-    PickError::Backend(format!("{ctx}: {e:?}"))
+web_glue::import! {
+    // 1 when `window.showOpenFilePicker` (File System Access) is callable.
+    fn js_has_fsa() -> u32 =
+        "() => typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function' ? 1 : 0";
+    // `showOpenFilePicker({ multiple, types })` → a Promise of the picked
+    // `File`s (each handle's `getFile()`). `accept` is the MIME list joined by
+    // '\n'; empty means any file (no `types`).
+    #[catch]
+    fn js_fsa_pick(ap: usize, al: usize, multiple: u32) -> u32 =
+        "(ap, al, m) => { const acc = G.str(ap, al); const o = { multiple: m !== 0 }; \
+           if (acc.length) { const a = {}; for (const t of acc.split('\\n')) a[t] = []; \
+             o.types = [{ description: 'Files', accept: a }]; } \
+           return G.add(window.showOpenFilePicker(o) \
+             .then((hs) => Promise.all(Array.from(hs, (h) => h.getFile())))); }";
+    // The hidden `<input type=file>` fallback, whole: build it, append it,
+    // `click()` it (synchronously, inside the caller's gesture), and resolve
+    // the returned Promise with the selected `File`s on `change` — or an
+    // empty array on `cancel` — after removing the input again. (Very old
+    // browsers without a `cancel` event leave a cancel undetected; `change`
+    // with an empty selection still resolves as cancelled.)
+    #[catch]
+    fn js_input_pick(ap: usize, al: usize, multiple: u32) -> u32 =
+        "(ap, al, m) => { const acc = G.str(ap, al); const i = document.createElement('input'); \
+           i.type = 'file'; if (m !== 0) i.multiple = true; if (acc.length) i.accept = acc; \
+           i.setAttribute('style', 'display:none'); \
+           if (document.body == null) throw new Error('no document body'); \
+           document.body.appendChild(i); \
+           const p = new Promise((res) => { \
+             const done = () => { i.remove(); res(Array.from(i.files || [])); }; \
+             i.addEventListener('change', done, { once: true }); \
+             i.addEventListener('cancel', done, { once: true }); }); \
+           i.click(); return G.add(p); }";
+    // `file.stream().getReader()`.
+    #[catch]
+    fn js_reader(f: u32) -> u32 = "(f) => G.add(G.get(f).stream().getReader())";
+    // `reader.read()` → a Promise of `{ value: Uint8Array, done }`.
+    #[catch]
+    fn js_read(r: u32) -> u32 = "(r) => G.add(G.get(r).read())";
+    // `reader.cancel()` — releases the stream lock (fire-and-forget).
+    fn js_cancel(r: u32) = "(r) => { const p = G.get(r).cancel(); if (p) p.catch(() => {}); }";
+}
+
+fn js_err(ctx: &str, e: &JsError) -> PickError {
+    PickError::Backend(format!("{ctx}: {}", e.message()))
 }
 
 /// A file the user picked on the web: the `File` handle plus cached metadata.
 pub(crate) struct PickedFile {
-    file: web_sys::File,
+    file: File,
     name: String,
     mime: String,
     size: Option<u64>,
@@ -43,17 +84,16 @@ impl PickedFile {
         None
     }
     pub(crate) async fn open(&self) -> Result<FileStream, PickError> {
-        // File derefs to Blob; `stream()` yields a ReadableStream of bytes.
-        let stream = self.file.stream();
-        let reader: web_sys::ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
-        Ok(FileStream {
-            reader,
-            done: false,
-        })
+        // A `File` is a `Blob`; `stream()` yields a ReadableStream of bytes.
+        // SAFETY: a live file handle; the result is a fresh reader handle.
+        let reader = unsafe { js_reader(self.file.as_js().raw()) }
+            .map(|r| unsafe { JsValue::from_raw(r) })
+            .map_err(|e| js_err("stream", &e))?;
+        Ok(FileStream { reader, done: false })
     }
 }
 
-fn picked_from_file(file: web_sys::File) -> PickedFile {
+fn picked_from_file(file: File) -> PickedFile {
     let name = file.name();
     let mime = file.type_();
     let size = Some(file.size() as u64);
@@ -66,17 +106,18 @@ fn picked_from_file(file: web_sys::File) -> PickedFile {
 }
 
 /// Convert a dropped OS file into a `PickedFile`. On web a dropped file has no
-/// filesystem path, so the backend stashed the raw `web_sys::File` in
+/// filesystem path, so backend-web stashes the `web_glue::dom::File` in
 /// `DroppedFile::source`; we downcast it and reuse the picker's `File` reader.
 #[cfg(feature = "drop")]
 pub(crate) fn picked_from_dropped(f: &runtime_shared::DroppedFile) -> Option<PickedFile> {
-    let file = f.source.as_ref()?.downcast_ref::<web_sys::File>()?.clone();
+    let file = f.source.as_ref()?.downcast_ref::<File>()?.clone();
     Some(picked_from_file(file))
 }
 
 /// Reads a picked `File` via its `Blob` `ReadableStream`, a chunk per `chunk()`.
 pub(crate) struct FileStream {
-    reader: web_sys::ReadableStreamDefaultReader,
+    /// The `ReadableStreamDefaultReader`.
+    reader: JsValue,
     done: bool,
 }
 
@@ -85,44 +126,38 @@ impl FileStream {
         if self.done {
             return Ok(None);
         }
-        let result = JsFuture::from(self.reader.read())
-            .await
+        // SAFETY: a live reader handle; the result is a fresh Promise handle.
+        let promise = unsafe { js_read(self.reader.raw()) }
+            .map(|p| unsafe { JsValue::from_raw(p) })
             .map_err(|e| js_err("read", &e))?;
+        let result = JsFuture::new(&promise).await.map_err(|e| js_err("read", &e))?;
         // `{ value: Uint8Array, done: bool }`
-        let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let done = result.get("done").ok().and_then(|v| v.as_bool()).unwrap_or(true);
         if done {
             self.done = true;
             return Ok(None);
         }
-        let value = js_sys::Reflect::get(&result, &JsValue::from_str("value"))
-            .map_err(|e| js_err("read value", &e))?;
-        let bytes = value.unchecked_into::<js_sys::Uint8Array>().to_vec();
-        Ok(Some(bytes))
+        let value = result.get("value").map_err(|e| js_err("read value", &e))?;
+        Ok(Some(value.unchecked_into::<Uint8Array>().to_vec()))
     }
 }
 
 impl Drop for FileStream {
     fn drop(&mut self) {
         // Release the stream lock so the underlying `Blob` isn't left locked.
-        // `cancel()` returns a Promise we intentionally drop (fire-and-forget).
-        let _ = self.reader.cancel();
+        // SAFETY: a live reader handle.
+        unsafe { js_cancel(self.reader.raw()) };
     }
 }
 
 pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>>, PickError> {
-    let window = web_sys::window().ok_or(PickError::NoPresenter)?;
-    let accept = accept_list(request);
+    let accept = accept_list(request).join("\n");
     let multiple = request.allow_multiple;
 
     // Preferred path: the File System Access API.
-    let picker = js_sys::Reflect::get(&window, &JsValue::from_str("showOpenFilePicker"))
-        .ok()
-        .filter(|v| v.is_function());
-    if let Some(func) = picker {
-        match pick_via_fsa(func.unchecked_into(), &accept, multiple).await {
+    // SAFETY: no handles involved.
+    if unsafe { js_has_fsa() } != 0 {
+        match pick_via_fsa(&accept, multiple).await {
             // Got a result (files or a clean cancel) — done.
             Ok(outcome) => return Ok(outcome),
             // FSA present but unusable here (e.g. cross-origin iframe) — fall
@@ -131,112 +166,49 @@ pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>
         }
     }
 
-    pick_via_input(&window, &accept, multiple).await
+    pick_via_input(&accept.replace('\n', ","), multiple).await
 }
 
 /// `showOpenFilePicker({ multiple, types })`. `Ok(Some(..))` = files,
 /// `Ok(None)` = user cancelled, `Err(())` = couldn't use FSA → fall back.
-async fn pick_via_fsa(
-    func: js_sys::Function,
-    accept: &[String],
-    multiple: bool,
-) -> Result<Option<Vec<PickedFile>>, ()> {
-    let opts = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &opts,
-        &JsValue::from_str("multiple"),
-        &JsValue::from_bool(multiple),
-    );
-    if let Some(types) = fsa_types(accept) {
-        let _ = js_sys::Reflect::set(&opts, &JsValue::from_str("types"), &types);
+async fn pick_via_fsa(accept: &str, multiple: bool) -> Result<Option<Vec<PickedFile>>, ()> {
+    let (ap, al) = string::abi(accept);
+    // SAFETY: a borrowed string for the call; the result is a fresh Promise.
+    let promise = unsafe { js_fsa_pick(ap, al, multiple as u32) }
+        .map(|p| unsafe { JsValue::from_raw(p) })
+        .map_err(|_| ())?;
+    match JsFuture::new(&promise).await {
+        Ok(files) => Ok(Some(files_of(files))),
+        // The user dismissing the dialog rejects with AbortError.
+        Err(e) if is_abort(&e) => Ok(None),
+        Err(_) => Err(()),
     }
-
-    let promise: js_sys::Promise = func.call1(&JsValue::UNDEFINED, &opts).map_err(|_| ())?.unchecked_into();
-    let handles = match JsFuture::from(promise).await {
-        Ok(h) => h,
-        Err(e) => {
-            // The user dismissing the dialog rejects with AbortError.
-            return if is_abort(&e) { Ok(None) } else { Err(()) };
-        }
-    };
-
-    let arr = js_sys::Array::from(&handles);
-    let mut out = Vec::new();
-    for handle in arr.iter() {
-        // file = await handle.getFile()
-        let get = reflect_fn(&handle, "getFile").map_err(|_| ())?;
-        let fp: js_sys::Promise = get.call0(&handle).map_err(|_| ())?.unchecked_into();
-        let file: web_sys::File = JsFuture::from(fp).await.map_err(|_| ())?.unchecked_into();
-        out.push(picked_from_file(file));
-    }
-    Ok(Some(out))
 }
 
-/// Fallback: a hidden `<input type=file>` whose `change`/`cancel` events we
-/// await. (Very old browsers without a `cancel` event leave a cancel
-/// undetected; `change` + empty selection still resolves as cancelled.)
-async fn pick_via_input(
-    window: &Window,
-    accept: &[String],
-    multiple: bool,
-) -> Result<Option<Vec<PickedFile>>, PickError> {
-    let document = window.document().ok_or(PickError::NoPresenter)?;
-    let input: web_sys::HtmlInputElement = document
-        .create_element("input")
-        .map_err(|e| js_err("create input", &e))?
-        .unchecked_into();
-    input.set_type("file");
-    if multiple {
-        input.set_multiple(true);
-    }
-    if !accept.is_empty() {
-        input.set_accept(&accept.join(","));
-    }
-    let _ = input.set_attribute("style", "display:none");
-    let body = document.body().ok_or(PickError::NoPresenter)?;
-    let _ = body.append_child(&input);
-
-    // Resolve the promise when the user picks (`change`) or dismisses
-    // (`cancel`). The closures are kept alive in locals (no `mem::forget`) and
-    // drop when this fn returns, after the await.
-    let input_for_listeners = input.clone();
-    let mut on_change: Option<Closure<dyn FnMut()>> = None;
-    let mut on_cancel: Option<Closure<dyn FnMut()>> = None;
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let r1 = resolve.clone();
-        let change = Closure::wrap(Box::new(move || {
-            let _ = r1.call0(&JsValue::UNDEFINED);
-        }) as Box<dyn FnMut()>);
-        let r2 = resolve;
-        let cancel = Closure::wrap(Box::new(move || {
-            let _ = r2.call0(&JsValue::UNDEFINED);
-        }) as Box<dyn FnMut()>);
-        let _ = input_for_listeners
-            .add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
-        let _ = input_for_listeners
-            .add_event_listener_with_callback("cancel", cancel.as_ref().unchecked_ref());
-        on_change = Some(change);
-        on_cancel = Some(cancel);
-    });
-
-    input.click();
-    let _ = JsFuture::from(promise).await;
-    let _ = body.remove_child(&input);
-
-    let mut out = Vec::new();
-    if let Some(list) = input.files() {
-        for i in 0..list.length() {
-            if let Some(file) = list.item(i) {
-                out.push(picked_from_file(file));
-            }
-        }
-    }
-    // `on_change` / `on_cancel` drop here, detaching the listeners.
+/// Fallback: a hidden `<input type=file>` (see [`js_input_pick`]).
+async fn pick_via_input(accept: &str, multiple: bool) -> Result<Option<Vec<PickedFile>>, PickError> {
+    let (ap, al) = string::abi(accept);
+    // SAFETY: a borrowed string for the call; the result is a fresh Promise.
+    let promise = unsafe { js_input_pick(ap, al, multiple as u32) }
+        .map(|p| unsafe { JsValue::from_raw(p) })
+        .map_err(|_| PickError::NoPresenter)?;
+    let files = JsFuture::new(&promise).await.map_err(|e| js_err("file input", &e))?;
+    let out = files_of(files);
     if out.is_empty() {
         Ok(None)
     } else {
         Ok(Some(out))
     }
+}
+
+/// An array of `File`s as picked files.
+fn files_of(files: JsValue) -> Vec<PickedFile> {
+    files
+        .unchecked_into::<Array>()
+        .iter()
+        .filter_map(|f| f.dyn_into::<File>().ok())
+        .map(picked_from_file)
+        .collect()
 }
 
 /// The MIME/`accept` strings for the request (documents → the filters as given;
@@ -251,45 +223,7 @@ fn accept_list(request: &PickRequest) -> Vec<String> {
     }
 }
 
-/// Build the `types` option for `showOpenFilePicker`, or `None` (any file).
-fn fsa_types(accept: &[String]) -> Option<JsValue> {
-    if accept.is_empty() {
-        return None;
-    }
-    let accept_obj = js_sys::Object::new();
-    for mime in accept {
-        let _ = js_sys::Reflect::set(
-            &accept_obj,
-            &JsValue::from_str(mime),
-            &js_sys::Array::new(),
-        );
-    }
-    let entry = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &entry,
-        &JsValue::from_str("description"),
-        &JsValue::from_str("Files"),
-    );
-    let _ = js_sys::Reflect::set(&entry, &JsValue::from_str("accept"), &accept_obj);
-    let types = js_sys::Array::new();
-    types.push(&entry);
-    Some(types.into())
-}
-
-/// Read a JS method off an object as a callable `Function`.
-fn reflect_fn(obj: &JsValue, name: &str) -> Result<js_sys::Function, ()> {
-    js_sys::Reflect::get(obj, &JsValue::from_str(name))
-        .ok()
-        .filter(|v| v.is_function())
-        .map(|v| v.unchecked_into())
-        .ok_or(())
-}
-
 /// Is this rejection an `AbortError` (the user cancelling)?
-fn is_abort(e: &JsValue) -> bool {
-    js_sys::Reflect::get(e, &JsValue::from_str("name"))
-        .ok()
-        .and_then(|n| n.as_string())
-        .map(|n| n == "AbortError")
-        .unwrap_or(false)
+fn is_abort(e: &JsError) -> bool {
+    e.get("name").ok().and_then(|n| n.as_string()).is_some_and(|n| n == "AbortError")
 }

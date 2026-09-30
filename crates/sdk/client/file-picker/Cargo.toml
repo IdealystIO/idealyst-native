@@ -67,23 +67,19 @@ futures-channel = "0.3"
 # fallback for browsers without it (Safari/Firefox). Reads stream a `Blob` via
 # its ReadableStream reader.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Document",
-    "Node",
-    "Element",
-    "HtmlElement",
-    "HtmlInputElement",
-    "Event",
-    "File",
-    "FileList",
-    "Blob",
-    "ReadableStream",
-    "ReadableStreamDefaultReader",
-] }
+# `showOpenFilePicker` / the `<input type=file>` fallback and the `Blob`
+# `ReadableStream` reader — web-glue bindings declared in `src/web.rs`
+# (docs/proposals/own-web-bindings.md). A dropped file arrives from
+# backend-web as a `web_glue::dom::File` in `DroppedFile::source`.
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_file_picker.rs`) — run with
+# `cargo test -p file-picker --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+# `FileDropZone` holds a signal, so the drop test builds it inside a world.
+runtime-world = { workspace = true }
 
 # Windows: the native Open dialog (IFileOpenDialog) via the COM Shell API.
 [target.'cfg(target_os = "windows")'.dependencies]

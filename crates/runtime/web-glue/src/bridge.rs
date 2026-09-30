@@ -7,19 +7,18 @@
 //! every use.
 //!
 //! Phase 3 of `docs/proposals/own-web-bindings.md` ported the DOM-mounting
-//! SDKs, and with them the backend's node bridge (`backend_web::bridge`)
-//! went. What still crosses here, each marked `HYBRID-BRIDGE` at the site:
+//! and the media / file SDKs; the media streams (`native_source`) and the
+//! dropped file now cross between crates as web-glue handles
+//! (`web_glue::dom::MediaStream`, `web_glue::dom::File`). What still crosses
+//! here is wgpu's (phase 5's hybrid mode), each site marked
+//! `HYBRID-BRIDGE: wgpu`:
 //!
-//! * `native_source` media streams — the web `MediaStream` a live stream
-//!   publishes is a `web_sys::MediaStream` (camera, screen-recorder,
-//!   canvas-native's self-capture, video-compose produce it; video,
-//!   canvas-native's texture layers, canvas-vello, media-writer consume
-//!   it). It switches to a glue handle in one change with the media SDKs.
-//! * backend-web's file drop: `DroppedFile.source` is a `web_sys::File`,
-//!   what the file-picker SDK downcasts it to.
 //! * canvas-native's public `make_2d_rasterizer` / `publish_capture_stream`
-//!   take a `web_sys::HtmlCanvasElement`, because canvas-vello (wgpu, so
-//!   always wasm-bindgen — hybrid mode, phase 5) calls them.
+//!   take a `web_sys::HtmlCanvasElement`, because canvas-vello calls them with
+//!   its wgpu graphics canvas;
+//! * canvas-vello's texture-layer `<video>` is a `web_sys::HtmlVideoElement`
+//!   (wgpu's `ExternalImageSource` takes one), so a layer's glue
+//!   `MediaStream` crosses out to become its `srcObject`.
 //!
 //! How: the hybrid glue module (`pkg/__idealyst_glue.js`, written by
 //! `wasm_carve::glue_js::hybrid_glue_js`) publishes

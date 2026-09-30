@@ -1,7 +1,8 @@
 //! Web backend: drives DOM nodes through the framework-owned `web-glue`
-//! boundary (`web_glue::dom` / `web_glue::js`). The only web-sys left is
-//! one HYBRID-BRIDGE crossing in `primitives/file_drop.rs`: a dropped file
-//! reaches the file-picker SDK as a `web_sys::File`.
+//! boundary (`web_glue::dom` / `web_glue::js`). No web-sys / wasm-bindgen
+//! type crosses any of its seams: SDKs downcast the host node to
+//! `web_glue::dom::Node`, and a dropped file reaches the file-picker SDK as a
+//! `web_glue::dom::File`.
 //!
 //! # File layout
 //!

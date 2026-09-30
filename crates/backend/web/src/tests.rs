@@ -3724,15 +3724,13 @@ fn regression_glue_dispatch_does_not_rerun_static_constructors() {
     input.remove();
 }
 
-// ---- HYBRID-BRIDGE: a dropped file reaches file-picker as a web_sys::File --
+// ---- a dropped file reaches file-picker as a web_glue::dom::File -----------
 
-/// `DroppedFile.source` must downcast to `web_sys::File` — the type the
-/// file-picker SDK's `picked_from_dropped` asks for — and be the dropped
-/// file itself. (The generic node bridge this crate used to export is gone;
-/// this is its one remaining crossing, and a wrong type here silently
-/// drops every file.)
+/// `DroppedFile.source` must downcast to `web_glue::dom::File` — the type
+/// the file-picker SDK's `picked_from_dropped` asks for — and be the dropped
+/// file itself. A wrong type here silently drops every file.
 #[wasm_bindgen_test]
-fn regression_dropped_file_source_is_the_web_sys_file_file_picker_reads() {
+fn regression_dropped_file_source_is_the_glue_file_file_picker_reads() {
     let make = web_glue::js::Function::new_no_args(
         "const dt = new DataTransfer(); \
          dt.items.add(new File(['abc'], 'a.txt', { type: 'text/plain' })); \
@@ -3744,7 +3742,11 @@ fn regression_dropped_file_source_is_the_web_sys_file_file_picker_reads() {
     assert_eq!(files.len(), 1);
     assert_eq!((files[0].name.as_str(), files[0].mime.as_str(), files[0].size), ("a.txt", "text/plain", Some(3)));
     let source = files[0].source.as_ref().expect("the raw file rides in source");
-    let file = source.downcast_ref::<web_sys::File>().expect("a web_sys::File, as file-picker downcasts");
+    let file = source
+        .downcast_ref::<web_glue::dom::File>()
+        .expect("a web_glue::dom::File, as file-picker downcasts");
     assert_eq!(file.name(), "a.txt");
     assert_eq!(file.size(), 3.0);
+    let dropped = ev.data_transfer().unwrap().files().unwrap().get(0).unwrap();
+    assert!(file.as_js().strict_eq(dropped.as_js()), "the dropped File itself, not a copy");
 }

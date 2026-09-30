@@ -139,6 +139,7 @@ exercise it.
 **Automated**
 - [ ] `cargo test -p file-picker` — portable request/outcome types, `PickedFile` handle plumbing
 - [ ] `cargo build -p file-picker --target wasm32-unknown-unknown` — web (`showOpenFilePicker` / `<input type=file>`) target compiles
+- [x] `cargo test -p file-picker --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_file_picker.rs`: a dropped file (a `web_glue::dom::File` in `DroppedFile::source`, as backend-web hands it over) becomes a `PickedFile` that streams its bytes; the `<input type=file>` fallback resolves a dismiss as `Cancelled` and removes its input
 
 **Behavior**
 

@@ -22,11 +22,10 @@ description = "Framework-owned wasm <-> JS bindings: handles, strings, callbacks
 [features]
 # HYBRID-BRIDGE: `web_glue::bridge`, the crossing between web-glue handles
 # and wasm-bindgen values for a page that links both. After phase 3 it
-# carries only the `web_sys::MediaStream` native sources (until the media
-# SDKs switch together), backend-web's dropped `web_sys::File` (until
-# file-picker takes a glue File) and canvas-native's web-sys-typed entry
-# points for canvas-vello (wgpu). See `src/bridge.rs`. Own-mode builds
-# never enable it, so their graph stays free of wasm-bindgen.
+# carries only wgpu's crossings (phase 5's hybrid mode): canvas-native's
+# web-sys-typed entry points for canvas-vello, and canvas-vello's
+# texture-layer stream into its web-sys `<video>`. See `src/bridge.rs`.
+# Own-mode builds never enable it, so their graph stays free of wasm-bindgen.
 wasm-bindgen-bridge = ["dep:wasm-bindgen"]
 
 [dependencies]

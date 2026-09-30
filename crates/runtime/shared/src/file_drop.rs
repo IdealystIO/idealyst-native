@@ -51,8 +51,8 @@ pub struct DroppedFile {
     /// Real filesystem path — `Some` on desktop (macOS), `None` on web.
     pub path: Option<PathBuf>,
     /// Opaque backend handle for streaming when [`path`](DroppedFile::path) is
-    /// `None` (on web this holds the raw `web_sys::File`). The SDK downcasts it;
-    /// `None` when `path` is the authoritative source.
+    /// `None` (on web this holds the dropped `web_glue::dom::File`). The SDK
+    /// downcasts it; `None` when `path` is the authoritative source.
     pub source: Option<Rc<dyn Any>>,
 }
 

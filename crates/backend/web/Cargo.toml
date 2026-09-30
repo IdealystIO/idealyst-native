@@ -103,13 +103,9 @@ inventory = "0.3"
 # The framework-owned JS boundary (docs/proposals/own-web-bindings.md):
 # every DOM operation, listener, timer and shim call in this crate goes
 # through it (phase 2b).
-web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
-# HYBRID-BRIDGE only: a dropped file reaches the file-picker SDK as a
-# `web_sys::File` (`primitives/file_drop.rs::file_for_picker`, through
-# `web_glue::bridge`). Nothing else in this crate names wasm-bindgen or
-# web-sys; both go (with the bridge feature above) when file-picker takes a
-# `web_glue::dom::File`.
-wasm-bindgen = "0.2"
+# A dropped file reaches the file-picker SDK as a `web_glue::dom::File` in
+# `DroppedFile::source`; no crate boundary here names web-sys.
+web-glue = { workspace = true }
 serde_json = { workspace = true }
 # runtime-server dev-client replay engine + wire protocol. Only pulled in when
 # the `runtime-server` feature is on; the WebSocket transport itself
@@ -135,8 +131,3 @@ raw-window-handle = "0.6"
 # for tests that need real DOM (the `node_id` identity invariant
 # can't be verified without it).
 wasm-bindgen-test = "0.3"
-
-# HYBRID-BRIDGE only — see the `wasm-bindgen` dependency above.
-[dependencies.web-sys]
-version = "0.3"
-features = ["File"]
