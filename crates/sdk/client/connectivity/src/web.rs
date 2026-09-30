@@ -9,22 +9,40 @@
 //! events fire on that same flag flipping, so they drive [`watch`].
 //!
 //! NetworkInformation (`navigator.connection`) is non-standard and absent in
-//! Safari/Firefox, so we read it defensively via `Reflect` and fall back to
+//! Safari/Firefox, so its binding reads it defensively and we fall back to
 //! [`Transport::Other`] when it (or a usable field) is missing. We never key
 //! online-ness off it — only the transport hint.
+//!
+//! Every browser call is a web-glue binding declared here (own-web-bindings
+//! phase 3); the listeners are `web_glue::dom::Listener`s.
 
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
+use std::rc::Rc;
+
+use web_glue::dom::{self, Listener, ListenerOptions};
+use web_glue::string;
 
 use crate::{Connectivity, Transport, WatchCallback};
+
+web_glue::import! {
+    // `navigator.onLine` as 1/0, or 2 without a window.
+    fn js_on_line() -> u32 =
+        "() => typeof window === 'undefined' ? 2 : (window.navigator.onLine ? 1 : 0)";
+    // `navigator.connection[key]` written to `out` when it is a string;
+    // 0 when there is no window, no `connection` (Safari / Firefox), or no
+    // string under `key`.
+    fn js_connection_str(kp: usize, kl: usize, out: usize) -> u32 =
+        "(kp, kl, o) => { if (typeof window === 'undefined') return 0; \
+           const c = window.navigator.connection; if (c == null) return 0; \
+           const v = c[G.str(kp, kl)]; if (typeof v !== 'string') return 0; \
+           G.retStr(v, o); return 1; }";
+    fn js_console_error(p: usize, l: usize) = "(p, l) => { console.error(G.str(p, l)); }";
+}
 
 /// Read `navigator.onLine`. Defaults to `true` if `window`/`navigator` is
 /// somehow unavailable (e.g. a worker without `WorkerNavigator.onLine`) —
 /// the same "assume reachable" best-effort the rest of the SDK uses.
 fn navigator_online() -> bool {
-    web_sys::window()
-        .map(|w| w.navigator().on_line())
-        .unwrap_or(true)
+    unsafe { js_on_line() != 0 }
 }
 
 /// Best-effort transport from `navigator.connection`. The NetworkInformation
@@ -33,20 +51,7 @@ fn navigator_online() -> bool {
 /// guaranteed. We prefer the concrete `type`, treat any cellular-ish
 /// `effectiveType` as cellular, and otherwise report [`Transport::Other`].
 fn navigator_transport() -> Transport {
-    let Some(window) = web_sys::window() else {
-        return Transport::Other;
-    };
-    let navigator = window.navigator();
-
-    // `navigator.connection` — not in web-sys's typed surface on all
-    // versions, and absent at runtime in several browsers, so reach it via
-    // Reflect and bail to Other on any miss.
-    let conn = match js_sys::Reflect::get(navigator.as_ref(), &JsValue::from_str("connection")) {
-        Ok(c) if !c.is_undefined() && !c.is_null() => c,
-        _ => return Transport::Other,
-    };
-
-    if let Some(kind) = reflect_string(&conn, "type") {
+    if let Some(kind) = connection_string("type") {
         match kind.as_str() {
             "wifi" => return Transport::Wifi,
             "cellular" => return Transport::Cellular,
@@ -59,7 +64,7 @@ fn navigator_transport() -> Transport {
 
     // `effectiveType` is a speed bucket, not a medium, but a present value is
     // a strong signal of a mobile-data link on engines that omit `type`.
-    if let Some(eff) = reflect_string(&conn, "effectiveType") {
+    if let Some(eff) = connection_string("effectiveType") {
         if matches!(eff.as_str(), "slow-2g" | "2g" | "3g" | "4g" | "5g") {
             return Transport::Cellular;
         }
@@ -68,12 +73,13 @@ fn navigator_transport() -> Transport {
     Transport::Other
 }
 
-/// Read a string-valued property off a JS object, or `None` if missing /
-/// not a string.
-fn reflect_string(obj: &JsValue, key: &str) -> Option<String> {
-    js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .ok()
-        .and_then(|v| v.as_string())
+/// A string-valued property of `navigator.connection`, or `None` if the
+/// object or the property is missing / not a string.
+fn connection_string(key: &str) -> Option<String> {
+    let (kp, kl) = string::abi(key);
+    let mut hit = 0;
+    let s = string::receive(|o| hit = unsafe { js_connection_str(kp, kl, o) });
+    (hit != 0).then_some(s)
 }
 
 /// Compose a [`Connectivity`] from the `onLine` flag + transport hint,
@@ -94,51 +100,41 @@ pub(crate) fn current() -> Connectivity {
 }
 
 pub(crate) fn watch(callback: WatchCallback) -> Subscription {
-    // One closure handles both `online` and `offline`; it re-reads the full
+    // One handler serves both `online` and `offline`; it re-reads the full
     // snapshot so the transport hint is refreshed too, then forwards it.
-    let handler = Closure::<dyn Fn()>::new(move || {
+    let handler: Rc<dyn Fn()> = Rc::new(move || {
         // FFI boundary: a panic in `callback` must not unwind into the JS
         // event dispatch (UB across the wasm/JS boundary). Catch + log; the
         // listener stays registered for the next event.
         let snap = snapshot();
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(snap))).is_err() {
-            web_sys::console::error_1(&JsValue::from_str(
-                "connectivity: watch callback panicked (swallowed at the JS boundary)",
-            ));
+            let msg = "connectivity: watch callback panicked (swallowed at the JS boundary)";
+            let (p, l) = string::abi(msg);
+            unsafe { js_console_error(p, l) }
         }
     });
 
-    let target: Option<web_sys::EventTarget> =
-        web_sys::window().map(|w| w.unchecked_into::<web_sys::EventTarget>());
+    // `Listener` detaches itself before its closure drops, so dropping the
+    // subscription can never leave `window` holding a dead callback.
+    // `new_fn`: the handler is re-entrant, as the `dyn Fn` closure it
+    // replaces was.
+    let listeners = dom::window()
+        .map(|w| {
+            let on = handler.clone();
+            let off = handler;
+            [
+                Listener::new_fn(w.clone().into(), "online", ListenerOptions::default(), move |_| on()),
+                Listener::new_fn(w.into(), "offline", ListenerOptions::default(), move |_| off()),
+            ]
+        });
 
-    if let Some(t) = &target {
-        let f = handler.as_ref().unchecked_ref();
-        let _ = t.add_event_listener_with_callback("online", f);
-        let _ = t.add_event_listener_with_callback("offline", f);
-    }
-
-    Subscription {
-        target,
-        handler: Some(handler),
-    }
+    Subscription { _listeners: listeners }
 }
 
-/// Web subscription: removes both event listeners and drops the JS closure on
-/// teardown. Holding the `Closure` here (not `forget`ting it) is what keeps
-/// the listener live exactly as long as the subscription — and frees it when
-/// the caller drops the guard.
+/// Web subscription: the two window listeners, removed (and their closures
+/// released) when the guard drops. Holding them here (not `forget`ting
+/// them) is what keeps the listener live exactly as long as the
+/// subscription.
 pub(crate) struct Subscription {
-    target: Option<web_sys::EventTarget>,
-    handler: Option<Closure<dyn Fn()>>,
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        if let (Some(t), Some(handler)) = (&self.target, &self.handler) {
-            let f = handler.as_ref().unchecked_ref();
-            let _ = t.remove_event_listener_with_callback("online", f);
-            let _ = t.remove_event_listener_with_callback("offline", f);
-        }
-        // `handler` drops here, releasing the JS closure — no leak.
-    }
+    _listeners: Option<[Listener; 2]>,
 }

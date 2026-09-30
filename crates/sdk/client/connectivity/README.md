@@ -94,6 +94,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p connectivity` — snapshot self-consistency, the named constants, `watch` register+drop, fallback `ASSUME_ONLINE`
 - [ ] `cargo build -p connectivity --features catalog` — recipes/docs compile
 - [ ] `cargo build -p connectivity --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p connectivity --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_watch.rs`: `current()` follows `navigator.onLine` and the `navigator.connection` hint; `watch` delivers on `online`/`offline` and its guard detaches both listeners
 
 **Behavior**
 - [ ] **Web** — `current()` reports `online`/`transport` from `navigator.onLine`/`connection`; toggle the network (DevTools offline / real Wi-Fi off) and confirm `watch()` fires with the new `online` value.

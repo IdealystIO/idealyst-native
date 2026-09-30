@@ -2656,13 +2656,12 @@ dependencies = [
  "block2 0.5.1",
  "futures-lite",
  "jni 0.21.1",
- "js-sys",
  "ndk-context",
  "objc2 0.5.2",
  "runtime-core",
  "runtime-vocabulary",
- "wasm-bindgen",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
  "zbus",
 ]
 
