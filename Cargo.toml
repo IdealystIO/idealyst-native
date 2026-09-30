@@ -393,6 +393,11 @@ members = [
     "tests/lazy-payload-split/eager",
     "tests/lazy-payload-split/lazy",
     "tests/prune-regression",
+    # Phase-1 PoC of docs/proposals/own-web-bindings.md (see tests/README.md):
+    # a web-glue-only demo, its web-sys twin, and a hybrid module.
+    "tests/own-glue/demo",
+    "tests/own-glue/websys-demo",
+    "tests/own-glue/hybrid",
 ]
 
 # Sub-crates under `examples/fiddle/` that have their own `[workspace]`

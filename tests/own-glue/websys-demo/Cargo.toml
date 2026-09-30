@@ -1,0 +1,13 @@
+[package]
+name = "own-glue-websys-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The web-sys + wasm-bindgen twin of own-glue-demo, for the phase-1 size / build-time / call-overhead comparison."
+publish = false
+
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "Node", "EventTarget", "Event"] }

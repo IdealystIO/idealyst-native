@@ -1,0 +1,12 @@
+[package]
+name = "own-glue-hybrid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "One module using BOTH web-glue and wasm-bindgen (web-sys), packaged by build-web's own_glue hybrid mode: wasm-bindgen runs over the glue-stripped module and imports the glue namespace as ./__idealyst_glue.js."
+publish = false
+
+[dependencies]
+web-glue = { path = "../../../crates/runtime/web-glue" }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console"] }

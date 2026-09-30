@@ -48,6 +48,7 @@ pub mod hotpatch_build;
 pub mod hotpatch_patch;
 pub mod hotpatch_prepare;
 pub mod hotpatch_wasm;
+pub mod own_glue;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 

@@ -1,0 +1,16 @@
+[package]
+name = "own-glue-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Phase-1 PoC of docs/proposals/own-web-bindings.md: a DOM demo on web-glue alone — no wasm-bindgen, web-sys or js-sys. Driven by build-web's own_glue_e2e."
+publish = false
+
+[features]
+default = ["selftest"]
+# The in-page self-checks the E2E asserts on. Off for the size/build-time
+# comparison against `websys-demo`, which has no counterpart to them.
+selftest = []
+
+[dependencies]
+web-glue = { path = "../../../crates/runtime/web-glue" }

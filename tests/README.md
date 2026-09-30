@@ -80,6 +80,28 @@ handler arrives completes in place instead of being stuck as a permanent
 `crates/runtime/scene/src/tests.rs`; this directory is where they are
 measured in bytes.
 
+## `own-glue/` — the framework-owned JS boundary (phase 1)
+
+Three small bin crates for [`docs/proposals/own-web-bindings.md`](../docs/proposals/own-web-bindings.md).
+They are NOT idealyst apps and are not built by `prune-regression`; the
+driver is `crates/tools/build/web/tests/own_glue_e2e.rs`, which builds them
+through `build_web::own_glue` and loads them in headless Chrome.
+
+- `own-glue/demo/` — DOM, events, a timer promise, a caught exception and
+  handle/callback teardown on `web-glue` alone: no wasm-bindgen, web-sys or
+  js-sys in its crate graph, packaged without the wasm-bindgen CLI. Its
+  `selftest` feature (default on) renders in-page checks of the JS-side
+  invariants (memory growth during a JS → Rust string, slab accounting,
+  stale-callback refusal, the custom-section JS module).
+- `own-glue/websys-demo/` — the same page and benchmark on web-sys +
+  wasm-bindgen, for the size / build-time / call-overhead comparison.
+- `own-glue/hybrid/` — one module using both web-glue and wasm-bindgen,
+  packaged in hybrid mode (glue stripped, wasm-bindgen run over the rest,
+  `pkg/__idealyst_glue.js` written for the namespace wasm-bindgen passes
+  through). Also asserts static constructors run exactly once.
+
+    cargo test -p build-web --test own_glue_e2e -- --ignored --nocapture --test-threads=1
+
 ## Runner
 
 `prune-regression/` shells out to the installed `idealyst` CLI to build

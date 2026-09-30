@@ -2011,6 +2011,7 @@ dependencies = [
  "subsecond-types",
  "tempfile",
  "toml 0.8.23",
+ "tungstenite 0.24.0",
  "walrus",
  "wasm-carve",
  "wasmparser 0.224.1",
@@ -8705,6 +8706,32 @@ name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
+
+[[package]]
+name = "own-glue-demo"
+version = "1.5.2"
+dependencies = [
+ "web-glue",
+]
+
+[[package]]
+name = "own-glue-hybrid"
+version = "1.5.2"
+dependencies = [
+ "wasm-bindgen",
+ "web-glue",
+ "web-sys",
+]
+
+[[package]]
+name = "own-glue-websys-demo"
+version = "1.5.2"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "owned_ttf_parser"

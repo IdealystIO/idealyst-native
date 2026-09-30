@@ -66,3 +66,6 @@ toml = "0.8"
 # The two-crate roundtrip writes rustc captures in the replay's real
 # on-disk format (`replay::CapturedInvocation`, JSON).
 serde_json = { workspace = true }
+# The own-glue E2E (`tests/own_glue_e2e.rs`) drives headless Chrome over
+# the DevTools protocol, as `idealyst-cli`'s browser E2Es do.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
