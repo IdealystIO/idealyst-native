@@ -10,23 +10,22 @@
 //!
 //! ## Running locally
 //!
-//! From the repo root:
+//! From the repo root, with a chromedriver that matches the installed
+//! Chrome:
 //!
 //! ```sh
-//! # Safari (built into macOS — one-time setup):
-//! sudo safaridriver --enable           # once per machine
-//! cd crates/backend/web
-//! wasm-pack test --headless --safari --release
-//!
-//! # Chrome (cross-platform, needs chromedriver on PATH):
-//! brew install --cask chromedriver     # macOS, once
-//! cd crates/backend/web
-//! wasm-pack test --headless --chrome --release
+//! CHROMEDRIVER=/path/to/chromedriver \
+//!   cargo test -p backend-web --target wasm32-unknown-unknown --release
 //! ```
 //!
-//! `wasm-pack test` takes ~10s on a clean build and a few seconds
-//! on incremental. Tests don't run as part of plain `cargo test`
-//! because `backend-web` only compiles for `wasm32-unknown-unknown`.
+//! The workspace's wasm32 test runner (`scripts/wasm-glue-test-runner.sh`,
+//! configured in `.cargo/config.toml`) wraps `wasm-bindgen-test-runner`:
+//! backend-web's bindings are web-glue, whose JS rides inside the test
+//! binary, and the wrapper extracts it into the `__idealyst_glue.js` the
+//! test page imports. `wasm-pack test` sets its own runner and bypasses
+//! the wrapper, so the tests cannot load under it. Tests don't run as part
+//! of plain `cargo test` because `backend-web` only compiles for
+//! `wasm32-unknown-unknown`.
 
 use wasm_bindgen_test::*;
 
@@ -3677,4 +3676,59 @@ fn open_url_opens_a_new_tab_without_an_opener() {
     assert_eq!(arg(0), "https://example.com/docs");
     assert_eq!(arg(1), "_blank", "open_url leaves the app for a NEW tab");
     assert_eq!(arg(2), "noopener", "the opened page must not get window.opener");
+}
+
+// ---- static constructors vs web-glue dispatch ------------------------------
+
+static CTOR_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+extern "C" fn count_ctor_run() {
+    CTOR_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What `inventory::submit!` expands to: a static in `.init_array`, run by
+/// LLD's `__wasm_call_ctors`.
+#[used]
+#[unsafe(link_section = ".init_array.00099")]
+static COUNT_CTOR: extern "C" fn() = count_ctor_run;
+
+/// The web-glue port routes every event listener through the exported
+/// `__glue_invoke` (and strings through `__glue_alloc`, the executor through
+/// `__glue_microtask`). A wasm32 bin is an LLD *command*, which wraps each
+/// export in a `__wasm_call_ctors` call — so, left wrapped, every click
+/// re-ran every static constructor, a cost today's wasm-bindgen call paths
+/// do not pay (measured on `examples/nav-showcase` before the port: 40
+/// clicks, 0 extra runs). The build's hybrid pass and the test runner
+/// unwrap web-glue's exports; this pins it. Fails with the runner's
+/// `IDEALYST_GLUE_KEEP_WRAPPERS=1`.
+#[wasm_bindgen_test]
+fn regression_glue_dispatch_does_not_rerun_static_constructors() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::sync::atomic::Ordering;
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let input = doc.create_element("input").unwrap();
+    doc.body().unwrap().append_child(&input).unwrap();
+    let node: web_sys::Node = input.clone().unchecked_into();
+    let id = backend.node_id(&node);
+    let hits = Rc::new(Cell::new(0));
+    let h = hits.clone();
+    // A handler that also crosses a JS -> Rust string (`__glue_alloc`).
+    backend.track_listener(id, &input, "blur", false, move |ev| {
+        let _ = ev.type_();
+        h.set(h.get() + 1);
+    });
+    let before = CTOR_RUNS.load(Ordering::Relaxed);
+    for _ in 0..10 {
+        input.dispatch_event(&web_sys::Event::new("blur").unwrap()).unwrap();
+    }
+    assert_eq!(hits.get(), 10, "the listener ran");
+    assert_eq!(
+        CTOR_RUNS.load(Ordering::Relaxed),
+        before,
+        "static constructors re-ran during glue listener dispatch"
+    );
+    input.remove();
 }

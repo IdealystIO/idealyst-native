@@ -92,20 +92,37 @@ pub const HYBRID_GLUE_FILE: &str = "__idealyst_glue.js";
 /// whose mtime cargo's freshness check trusts. Returns the stripped path
 /// and what was extracted. A module without glue is returned as-is.
 ///
-/// Deliberately does NOT unwrap LLD's command-export wrappers
-/// (`wasm_carve::command_exports`): that changes how often static
-/// constructors run for every app, and is its own decision
+/// LLD's command-export wrappers (`wasm_carve::command_exports`) are
+/// unwrapped for web-glue's OWN exports only ([`GLUE_EXPORT_PREFIX`]):
+/// they are the entry for every listener dispatch, JS → Rust string and
+/// executor drain, and a wrapped one re-runs every static constructor per
+/// event — which today's wasm-bindgen call paths do not (measured on
+/// `examples/nav-showcase` under the pre-port pipeline: 40 clicks, 0
+/// extra constructor runs). Every other export keeps exactly the
+/// behaviour it has today; whether to unwrap THOSE is its own decision
 /// (docs/proposals/own-web-bindings.md, "Open questions").
 pub fn hybrid_extract(linked: &Path) -> Result<(PathBuf, Glue)> {
     let bytes = fs::read(linked).with_context(|| format!("read {}", linked.display()))?;
-    let glue = glue::extract(&bytes).context("extract web-glue")?;
+    let mut glue = glue::extract(&bytes).context("extract web-glue")?;
     if !wasm_carve::glue_js::needs_glue_file(&glue) {
         return Ok((linked.to_path_buf(), glue));
+    }
+    if let Some((unwrapped, _)) = wasm_carve::command_exports::unwrap_command_exports_where(
+        &glue.wasm,
+        |name| name.starts_with(GLUE_EXPORT_PREFIX),
+    )
+    .context("unwrap web-glue's command exports")?
+    {
+        glue.wasm = unwrapped;
     }
     let stripped = linked.with_extension("glue.wasm");
     write(&stripped, &glue.wasm)?;
     Ok((stripped, glue))
 }
+
+/// web-glue's exports (`__glue_invoke`, `__glue_alloc`, `__glue_release`,
+/// `__glue_microtask`, `__glue_err_slot`) — called only by its runtime.
+pub const GLUE_EXPORT_PREFIX: &str = "__glue_";
 
 /// Hybrid pipeline, step 2 (after wasm-bindgen wrote `pkg_dir`): the
 /// `__idealyst_glue.js` its output imports. No-op for a module without

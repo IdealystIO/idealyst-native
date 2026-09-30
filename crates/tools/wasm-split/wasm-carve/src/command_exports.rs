@@ -62,6 +62,20 @@ fn wrapper_shape(body: &wasmparser::FunctionBody<'_>) -> Result<Option<(u32, u32
 /// `None` when the module has no `main` wrapper (a reactor or a cdylib —
 /// nothing to do).
 pub fn unwrap_command_exports(wasm: &[u8]) -> Result<Option<(Vec<u8>, usize)>> {
+    unwrap_command_exports_where(wasm, |_| true)
+}
+
+/// Unwrap only the exports `select` names (never `main`). The build's
+/// hybrid pass uses this for web-glue's own `__glue_*` exports: every
+/// listener dispatch, JS → Rust string and executor drain enters through
+/// them, so left wrapped they would add a full constructor sweep per event
+/// — a cost today's wasm-bindgen call paths do not pay (measured on
+/// `examples/nav-showcase`: 40 clicks, 0 extra constructor runs) — while
+/// every other export keeps exactly the behaviour it has today.
+pub fn unwrap_command_exports_where(
+    wasm: &[u8],
+    select: impl Fn(&str) -> bool,
+) -> Result<Option<(Vec<u8>, usize)>> {
     // Pass 1: exports, and the bodies of exported functions.
     let mut func_imports = 0u32;
     let mut exports: Vec<(String, ExternalKind, u32)> = Vec::new();
@@ -107,6 +121,7 @@ pub fn unwrap_command_exports(wasm: &[u8]) -> Result<Option<(Vec<u8>, usize)>> {
         let mut index = *index;
         if *kind == ExternalKind::Func
             && name != "main"
+            && select(name)
             && let Some(Some((c, inner))) = exported.get(&index)
             && *c == ctors
         {
@@ -218,6 +233,19 @@ mod tests {
             exports_of(&out),
             [("main".into(), 3), ("f".into(), 2), ("g".into(), 5)],
             "main keeps its wrapper (the one-time ctor call); f points past its wrapper; g untouched"
+        );
+    }
+
+    #[test]
+    fn a_selective_unwrap_touches_only_the_selected_exports() {
+        let (out, moved) = unwrap_command_exports_where(&command_module(), |n| n == "f")
+            .unwrap()
+            .expect("rewritten");
+        assert_eq!(moved, 1);
+        assert_eq!(exports_of(&out), [("main".into(), 3), ("f".into(), 2), ("g".into(), 5)]);
+        assert!(
+            unwrap_command_exports_where(&command_module(), |n| n == "g").unwrap().is_none(),
+            "g is not a wrapper: nothing to do"
         );
     }
 

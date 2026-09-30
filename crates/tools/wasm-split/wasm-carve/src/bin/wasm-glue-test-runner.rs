@@ -45,7 +45,21 @@ fn main() -> Result<()> {
     let runner = std::env::var_os("WASM_BINDGEN_TEST_RUNNER").unwrap_or_else(|| "wasm-bindgen-test-runner".into());
 
     let bytes = std::fs::read(&wasm).with_context(|| format!("read {}", wasm.display()))?;
-    let extracted = glue::extract(&bytes).context("extract web-glue from the test binary")?;
+    let mut extracted = glue::extract(&bytes).context("extract web-glue from the test binary")?;
+    // Same as the build's hybrid pass (`build_web::own_glue::hybrid_extract`):
+    // web-glue's own exports must not re-run constructors per call.
+    // `IDEALYST_GLUE_KEEP_WRAPPERS=1` skips it — only to reproduce the
+    // per-event constructor sweep, i.e. to see backend-web's
+    // `regression_glue_dispatch_does_not_rerun_static_constructors` fail.
+    let keep = std::env::var_os("IDEALYST_GLUE_KEEP_WRAPPERS").is_some();
+    if !keep {
+        if let Some((unwrapped, _)) = wasm_carve::command_exports::unwrap_command_exports_where(
+            &extracted.wasm,
+            |name| name.starts_with("__glue_"),
+        )? {
+            extracted.wasm = unwrapped;
+        }
+    }
     let mut cmd = Command::new(&runner);
     if glue_js::needs_glue_file(&extracted) {
         let stem = wasm.file_stem().context("test binary has no file name")?.to_owned();
