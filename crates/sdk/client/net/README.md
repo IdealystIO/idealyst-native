@@ -40,7 +40,13 @@ let user: User = client
   a base URL, default headers, and a default timeout.
 - **WebSocket** — `WebSocket::connect` with `send`/`recv`/`close`,
   close-on-drop, and a cloneable `WsSender` split so one task can `recv`
-  while others `send`.
+  while others `send`. Text and binary frames (`WsMessage::Text` /
+  `WsMessage::Binary(Vec<u8>)`). Once `recv` has ended, `close_status()`
+  reports how: the peer's `WsClose { code, reason }`, with the two
+  never-on-the-wire codes synthesized the way browsers do — 1005 for a
+  close frame without a code (and a local `close()`), 1006 for a
+  connection that dropped with no close frame — so `is_normal()` (1000)
+  means the same thing on every target.
 - **Server-Sent Events** — `EventSource::connect` + `recv` for consuming a
   `text/event-stream` (what a `#[sse]` endpoint serves), with a cloneable
   `EventSourceCloser`.
@@ -126,6 +132,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p net` — body codecs, header map, builder, error mapping
 - [ ] `cargo test -p net --test native_transport` — live HTTP / WebSocket / SSE / cancellation integration suite (reqwest + tungstenite arms)
 - [ ] `cargo build -p net --target wasm32-unknown-unknown` — web (fetch / `web_sys::WebSocket` / browser `EventSource`)
+- [x] `cargo test -p net --test websocket` — `close_status`: peer code + reason, normal 1000, 1006 on a dropped connection, 1005 after a local `close()`
 
 **Behavior**
 - [ ] **Web** — GET/POST to a live endpoint over `fetch`; WebSocket echo over `web_sys::WebSocket`; SSE stream over the browser's `EventSource`; cancel mid-flight aborts (`Error::Cancelled`)

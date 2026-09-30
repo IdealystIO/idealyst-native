@@ -98,7 +98,7 @@ pub use method::Method;
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use eventsource::{EventSource, EventSourceCloser};
-pub use websocket::{WebSocket, WsMessage, WsSender};
+pub use websocket::{WebSocket, WsClose, WsMessage, WsSender};
 
 // Platform-specific transport. Exactly one of these is compiled per
 // target; each one supplies the `transport` submodule that `client.rs`

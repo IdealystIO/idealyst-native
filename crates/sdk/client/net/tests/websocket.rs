@@ -153,3 +153,108 @@ async fn sender_close_ends_recv_loop() {
         "sender.close() must end the recv loop"
     );
 }
+
+/// A server that answers the first message by closing with `code` +
+/// `reason` (or, with `code == None`, by dropping the TCP connection
+/// without any close frame).
+async fn closing_server(code: Option<u16>, reason: &'static str) -> String {
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let _ = ws.next().await;
+        match code {
+            Some(code) => {
+                let _ = ws
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CloseCode::from(code),
+                        reason: reason.into(),
+                    })))
+                    .await;
+                // Let the client's echo arrive before the socket drops.
+                let _ = tokio::time::timeout(Duration::from_secs(1), ws.next()).await;
+            }
+            None => drop(ws), // TCP gone, no close frame
+        }
+    });
+    format!("ws://{addr}")
+}
+
+/// Read until the stream ends, bounded so a regression fails fast.
+async fn drain(sock: &mut net::WebSocket) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(msg) = sock.recv().await {
+            if msg.is_err() {
+                // A transport error precedes the end; keep draining.
+                continue;
+            }
+        }
+    })
+    .await
+    .expect("recv() must end once the peer closes");
+}
+
+/// The peer's close code and reason are what `close_status` reports —
+/// the voice-transcription client tells a finished session (1000) from a
+/// failure by exactly this, and reading it off the event was the one
+/// thing that kept it on raw `web_sys::WebSocket`.
+#[tokio::test]
+async fn close_status_reports_the_peers_code_and_reason() {
+    let url = closing_server(Some(4001), "ticket expired").await;
+    let mut sock = net::WebSocket::connect(&url).await.unwrap();
+    assert_eq!(sock.close_status(), None, "open socket has no close status");
+
+    sock.send(net::WsMessage::Text("hi".into())).unwrap();
+    drain(&mut sock).await;
+
+    assert_eq!(
+        sock.close_status(),
+        Some(net::WsClose {
+            code: 4001,
+            reason: "ticket expired".into()
+        })
+    );
+    assert!(!sock.close_status().unwrap().is_normal());
+}
+
+#[tokio::test]
+async fn close_status_normal_closure_is_normal() {
+    let url = closing_server(Some(net::WsClose::NORMAL), "").await;
+    let mut sock = net::WebSocket::connect(&url).await.unwrap();
+    sock.send(net::WsMessage::Text("hi".into())).unwrap();
+    drain(&mut sock).await;
+    assert!(sock.close_status().expect("closed").is_normal());
+}
+
+/// No close frame at all — what a browser reports as 1006. The native
+/// arm synthesizes the same code so an app reads one number everywhere.
+#[tokio::test]
+async fn close_status_without_a_close_frame_is_abnormal() {
+    let url = closing_server(None, "").await;
+    let mut sock = net::WebSocket::connect(&url).await.unwrap();
+    sock.send(net::WsMessage::Text("hi".into())).unwrap();
+    drain(&mut sock).await;
+    assert_eq!(
+        sock.close_status().map(|c| c.code),
+        Some(net::WsClose::ABNORMAL)
+    );
+}
+
+/// A close WE started ends as 1005 (a close frame with no status), the
+/// code a browser reports for `WebSocket.close()` with no arguments.
+#[tokio::test]
+async fn close_status_after_local_close_is_no_status() {
+    let url = echo_server().await;
+    let mut sock = net::WebSocket::connect(&url).await.unwrap();
+    sock.close();
+    drain(&mut sock).await;
+    assert_eq!(
+        sock.close_status().map(|c| c.code),
+        Some(net::WsClose::NO_STATUS)
+    );
+}

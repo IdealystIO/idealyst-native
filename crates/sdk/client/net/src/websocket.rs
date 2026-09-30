@@ -39,6 +39,47 @@ pub enum WsMessage {
     Binary(Vec<u8>),
 }
 
+/// How a WebSocket connection ended — the close code and reason, as
+/// RFC 6455 defines them, reported identically on every target.
+///
+/// The two codes that never travel on the wire are synthesized the way
+/// browsers synthesize them, so an app reads the same number everywhere:
+/// [`WsClose::NO_STATUS`] (1005) when a close frame carried no code (which
+/// is also what a locally-initiated [`WebSocket::close`] ends with), and
+/// [`WsClose::ABNORMAL`] (1006) when the connection dropped with no close
+/// frame at all — network loss, a killed server, a transport error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsClose {
+    /// The close code (`1000` = normal closure; `4000`–`4999` are
+    /// application-defined).
+    pub code: u16,
+    /// The peer's close reason, or empty.
+    pub reason: String,
+}
+
+impl WsClose {
+    /// 1000 — the purpose of the connection was fulfilled.
+    pub const NORMAL: u16 = 1000;
+    /// 1005 — a close frame arrived without a status code (never sent on
+    /// the wire; synthesized).
+    pub const NO_STATUS: u16 = 1005;
+    /// 1006 — the connection ended without any close frame (never sent on
+    /// the wire; synthesized).
+    pub const ABNORMAL: u16 = 1006;
+
+    /// Did the connection end with a normal (1000) closure?
+    pub fn is_normal(&self) -> bool {
+        self.code == Self::NORMAL
+    }
+
+    pub(crate) fn new(code: u16, reason: impl Into<String>) -> Self {
+        WsClose {
+            code,
+            reason: reason.into(),
+        }
+    }
+}
+
 /// A connected WebSocket. The connection is closed when this is dropped
 /// (so a `use_socket`-style hook gets teardown for free by tying the
 /// handle's lifetime to a component scope).
@@ -71,6 +112,23 @@ impl WebSocket {
     /// Close the connection. Idempotent; also runs on drop.
     pub fn close(&self) {
         self.inner.close();
+    }
+
+    /// How the connection ended, once it has: `None` while it is open,
+    /// then the [`WsClose`] code and reason. Set before [`recv`](Self::recv)
+    /// yields its final `None`, so the natural read is right after the
+    /// receive loop ends:
+    ///
+    /// ```ignore
+    /// while let Some(msg) = ws.recv().await { /* … */ }
+    /// match ws.close_status() {
+    ///     Some(c) if c.is_normal() => {}                 // server finished
+    ///     Some(c) => report(format!("closed ({})", c.code)),
+    ///     None => {}
+    /// }
+    /// ```
+    pub fn close_status(&self) -> Option<WsClose> {
+        self.inner.close_status()
     }
 
     /// A cheap, cloneable send handle. Lets one task own the socket for
@@ -111,13 +169,13 @@ impl WsSender {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
-    use super::WsMessage;
+    use super::{WsClose, WsMessage};
     use crate::error::Error;
 
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc as std_mpsc;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use futures_channel::mpsc as fut_mpsc;
@@ -141,6 +199,26 @@ mod imp {
         outbound: std_mpsc::Sender<Outbound>,
         inbound: fut_mpsc::UnboundedReceiver<Result<WsMessage, Error>>,
         closed: Arc<AtomicBool>,
+        close_status: CloseSlot,
+    }
+
+    /// How the connection ended, written once by the I/O thread before it
+    /// drops the inbound sender (so it is visible by the time `recv`
+    /// yields `None`). First write wins: the peer's close frame is the
+    /// answer even if a transport error follows it.
+    #[derive(Clone, Default)]
+    struct CloseSlot(Arc<Mutex<Option<WsClose>>>);
+
+    impl CloseSlot {
+        fn record(&self, close: WsClose) {
+            let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if slot.is_none() {
+                *slot = Some(close);
+            }
+        }
+        fn get(&self) -> Option<WsClose> {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        }
     }
 
     pub async fn connect(url: &str) -> Result<WebSocketImpl, Error> {
@@ -148,12 +226,14 @@ mod imp {
         let (in_tx, in_rx) = fut_mpsc::unbounded::<Result<WsMessage, Error>>();
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), Error>>();
         let closed = Arc::new(AtomicBool::new(false));
+        let close_status = CloseSlot::default();
 
         let url = url.to_string();
         let closed_thread = closed.clone();
+        let status_thread = close_status.clone();
         std::thread::Builder::new()
             .name("net-ws".into())
-            .spawn(move || io_loop(url, out_rx, in_tx, ready_tx, closed_thread))
+            .spawn(move || io_loop(url, out_rx, in_tx, ready_tx, closed_thread, status_thread))
             .map_err(|e| Error::Other(format!("ws thread spawn failed: {e}")))?;
 
         // The handshake runs on the worker thread; await its result so
@@ -163,6 +243,7 @@ mod imp {
                 outbound: out_tx,
                 inbound: in_rx,
                 closed,
+                close_status,
             }),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(Error::Network("ws worker dropped during handshake".into())),
@@ -183,6 +264,10 @@ mod imp {
         pub fn close(&self) {
             self.closed.store(true, Ordering::Relaxed);
             let _ = self.outbound.send(Outbound::Close);
+        }
+
+        pub fn close_status(&self) -> Option<WsClose> {
+            self.close_status.get()
         }
 
         pub fn sender(&self) -> WsSenderImpl {
@@ -229,7 +314,11 @@ mod imp {
         in_tx: fut_mpsc::UnboundedSender<Result<WsMessage, Error>>,
         ready_tx: oneshot::Sender<Result<(), Error>>,
         closed: Arc<AtomicBool>,
+        status: CloseSlot,
     ) {
+        // A locally-initiated close sends a close frame with no status
+        // code, which is what a browser reports for it too (1005).
+        let local_close = || WsClose::new(WsClose::NO_STATUS, "");
         // Blocking handshake.
         let mut socket = match tungstenite::connect(&url) {
             Ok((socket, _resp)) => socket,
@@ -258,6 +347,7 @@ mod imp {
             if closed.load(Ordering::Relaxed) {
                 let _ = socket.close(None);
                 let _ = socket.flush();
+                status.record(local_close());
                 break;
             }
 
@@ -275,6 +365,7 @@ mod imp {
                     Ok(Outbound::Close) => {
                         let _ = socket.close(None);
                         let _ = socket.flush();
+                        status.record(local_close());
                         return;
                     }
                     Err(std_mpsc::TryRecvError::Empty) => break,
@@ -287,6 +378,7 @@ mod imp {
             if disconnected {
                 let _ = socket.close(None);
                 let _ = socket.flush();
+                status.record(local_close());
                 break;
             }
             // Drain the write buffer; WouldBlock just means "more next loop".
@@ -299,6 +391,15 @@ mod imp {
 
             // Read whatever is ready.
             match socket.read() {
+                Ok(Message::Close(frame)) => {
+                    // The peer's verdict. tungstenite queues the echo
+                    // itself; the next read reports ConnectionClosed.
+                    status.record(match frame {
+                        Some(f) => WsClose::new(u16::from(f.code), f.reason.to_string()),
+                        None => WsClose::new(WsClose::NO_STATUS, ""),
+                    });
+                    continue;
+                }
                 Ok(msg) => {
                     if let Some(m) = from_tung(msg) {
                         if in_tx.unbounded_send(Ok(m)).is_err() {
@@ -325,6 +426,10 @@ mod imp {
 
             std::thread::sleep(POLL_INTERVAL);
         }
+        // Anything that got here without a close frame — a transport
+        // error, the peer vanishing — is the abnormal closure a browser
+        // reports as 1006. A no-op when a frame was already recorded.
+        status.record(WsClose::new(WsClose::ABNORMAL, ""));
         // Dropping `in_tx` here resolves the consumer's `recv()` to `None`.
     }
 
@@ -389,7 +494,7 @@ mod imp {
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
-    use super::WsMessage;
+    use super::{WsClose, WsMessage};
     use crate::error::Error;
 
     use std::cell::RefCell;
@@ -409,6 +514,9 @@ mod imp {
     pub struct WebSocketImpl {
         ws: WebSysWs,
         inbound: fut_mpsc::UnboundedReceiver<Result<WsMessage, Error>>,
+        /// Written by `onclose` BEFORE it drops the inbound sender, so
+        /// it is set by the time `recv` yields `None`.
+        close_status: Rc<RefCell<Option<WsClose>>>,
         // Closures must outlive the socket so the browser can call them
         // — and must be DETACHED from it before they die. See `Handlers`.
         _handlers: Handlers,
@@ -490,10 +598,17 @@ mod imp {
         };
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
 
-        // onclose → drop the sender so `recv()` ends with `None`.
+        // onclose → record how it ended, then drop the sender so
+        // `recv()` ends with `None`. The browser already synthesizes
+        // 1005/1006 for the no-frame cases, which is the contract.
+        let close_status: Rc<RefCell<Option<WsClose>>> = Rc::new(RefCell::new(None));
         let onclose = {
             let sender = sender.clone();
-            Closure::<dyn FnMut(CloseEvent)>::new(move |_| {
+            let close_status = close_status.clone();
+            Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
+                close_status
+                    .borrow_mut()
+                    .get_or_insert_with(|| WsClose::new(e.code(), e.reason()));
                 *sender.borrow_mut() = None;
             })
         };
@@ -537,6 +652,7 @@ mod imp {
         Ok(WebSocketImpl {
             ws,
             inbound: in_rx,
+            close_status,
             _handlers: handlers,
         })
     }
@@ -550,6 +666,9 @@ mod imp {
         }
         pub fn close(&self) {
             let _ = self.ws.close();
+        }
+        pub fn close_status(&self) -> Option<WsClose> {
+            self.close_status.borrow().clone()
         }
         pub fn sender(&self) -> WsSenderImpl {
             WsSenderImpl {
