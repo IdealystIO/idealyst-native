@@ -9,8 +9,9 @@
 //! 2. **Link.** `wasm-ld --pie --experimental-pic` over those objects
 //!    alone, with `--allow-undefined`, so every reference into a crate
 //!    the patch did not recompile comes out as an import.
-//! 3. **Resolve.** [`crate::hotpatch_patch::resolve_against_base`] turns
-//!    those imports into things `subsecond::apply_patch` can supply.
+//! 3. **Resolve.** [`crate::hotpatch_prepare::prepare`] decides where
+//!    each of those imports comes from and appends that plan to the
+//!    module; the page's loader supplies them. Nothing is rewritten.
 //! 4. **Pair.** [`crate::hotpatch_wasm::build_jump_table`] matches every
 //!    function the patch takes the address of to the base's table slot
 //!    for it.
@@ -427,7 +428,9 @@ impl WasmPatchBuilder {
         let started = Instant::now();
         let raw = std::fs::read(&linked)
             .with_context(|| format!("read the linked patch {}", linked.display()))?;
-        let resolved = crate::hotpatch_patch::resolve_against_base(&raw, &self.base)?;
+        // Read, not rewritten: the page supplies each import as the plan
+        // appended here says (see `hotpatch_prepare`).
+        let resolved = crate::hotpatch_prepare::prepare(&raw, &self.base)?.wasm;
         // The pre-resolve module is only useful when a patch misbehaves,
         // and it is larger than the one we serve. Keeping every one of
         // them fills a dev session's staging dir.
@@ -452,8 +455,8 @@ impl WasmPatchBuilder {
 
         // Then serve it without them. The `name` section is more than half
         // of a real patch (33 of 60 MB on CrewForge) and nothing at run
-        // time reads it: pairing is done, and subsecond applies by table
-        // index. What it costs is function names in a stack trace through
+        // time reads it: pairing is done, and the page loads by table
+        // index and import order. What it costs is function names in a stack trace through
         // the patch, so the named module is kept on disk beside the build
         // (`last-patch.named.wasm`), and `IDEALYST_HOTPATCH_KEEP_NAMES=1`
         // serves it instead when a trace has to be read in the browser.
@@ -495,8 +498,8 @@ impl WasmPatchBuilder {
     ///
     /// Everything the objects reference but do not define is left
     /// undefined on purpose: `--allow-undefined` turns each into an
-    /// import, which is exactly the set `resolve_against_base` then
-    /// points back at the running module. Linking the rlibs instead
+    /// import, which is exactly the set `hotpatch_prepare` then plans
+    /// against the running module. Linking the rlibs instead
     /// would produce a self-contained module that duplicates the whole
     /// program in the page's memory.
     fn link(&self, objects: &[PathBuf], out: &Path) -> Result<()> {

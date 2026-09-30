@@ -31,6 +31,10 @@
 //!   global jump table. [`apply_patch`] installs a new jump table.
 //!   A [`HotFnPanic`] from a stale call site unwinds up to the
 //!   nearest `catch_unwind` boundary in `runtime_core::render`.
+//! - **On, wasm**: the page loads patches itself, so this crate owns
+//!   the jump table and the dispatch ([`table`]); `commit` installs a
+//!   loaded patch's table and `register_handler` hooks it. subsecond is
+//!   not linked. See [`table`] for why.
 //!
 //! # Macro emission shape
 //!
@@ -72,8 +76,13 @@
 
 #![cfg_attr(not(feature = "hot"), allow(unused_imports, dead_code))]
 
-#[cfg(feature = "hot")]
+#[cfg(all(feature = "hot", not(target_arch = "wasm32")))]
 pub use subsecond::{HotFn, HotFnPanic, JumpTable, PatchError};
+
+/// The jump table and hot-call dispatch on wasm, where the page loads
+/// patches itself instead of through subsecond. See the module docs.
+#[cfg(any(all(feature = "hot", target_arch = "wasm32"), test))]
+pub mod table;
 
 /// Wrap `f` in subsecond's auto-retry catch-unwind boundary. This
 /// is the idiomatic top-level hot-patch entry point — host glue
@@ -87,13 +96,16 @@ pub use subsecond::{HotFn, HotFnPanic, JumpTable, PatchError};
 ///
 /// In feature-off mode this is a direct call — no panic handling,
 /// no jump-table dispatch.
-#[cfg(feature = "hot")]
+#[cfg(all(feature = "hot", not(target_arch = "wasm32")))]
 #[inline]
 pub fn with_retry<O>(f: impl FnMut() -> O) -> O {
     subsecond::call(f)
 }
 
-#[cfg(not(feature = "hot"))]
+/// On wasm a panic aborts rather than unwinds, so there is no
+/// [`HotFnPanic`] to catch and retry: a direct call. The wasm dispatch
+/// ([`table`]) never raises one either.
+#[cfg(any(not(feature = "hot"), target_arch = "wasm32"))]
 #[inline(always)]
 pub fn with_retry<O>(mut f: impl FnMut() -> O) -> O {
     f()
@@ -107,7 +119,7 @@ pub fn with_retry<O>(mut f: impl FnMut() -> O) -> O {
 /// Callers shouldn't invoke this directly — `#[component]` emits the
 /// call site automatically. It's `pub` only so macro expansion can
 /// reach it across crates.
-#[cfg(feature = "hot")]
+#[cfg(all(feature = "hot", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 #[inline]
 pub fn call<Args, F, M>(f: F, args: Args) -> F::Return
@@ -116,6 +128,18 @@ where
 {
     debug_log_call::<F>(&f);
     subsecond::HotFn::current(f).call(args)
+}
+
+/// Wasm: the same dispatch through this crate's own table ([`table`]).
+#[cfg(all(feature = "hot", target_arch = "wasm32"))]
+#[doc(hidden)]
+#[inline]
+pub fn call<Args, F, M>(f: F, args: Args) -> F::Return
+where
+    F: table::HotFunction<Args, M>,
+{
+    debug_log_call::<F>(&f);
+    table::call(f, args)
 }
 
 /// How many dispatches to log, per patch generation.
@@ -139,6 +163,7 @@ fn debug_log_call<F>(f: &F) {
         } else {
             0
         };
+        #[cfg(not(target_arch = "wasm32"))]
         let (table_entries, hit) = unsafe {
             match subsecond::get_jump_table() {
                 Some(t) => {
@@ -148,6 +173,8 @@ fn debug_log_call<F>(f: &F) {
                 None => (0, None),
             }
         };
+        #[cfg(target_arch = "wasm32")]
+        let (table_entries, hit) = (table::len(), table::redirect_of(ptr as u64));
         eprintln!(
             "[dev-hot] call #{} F_size={} ptr=0x{:x} debug_assertions={} jt_entries={} jt_hit={:?}",
             n, size, ptr, cfg!(debug_assertions), table_entries, hit,
@@ -237,7 +264,7 @@ impl_direct_call!(A, B, C, D, E, F, G, H, I);
 /// framework's symbol-diff generator [`diff`] only emits entries
 /// for functions with identical mangled names, so signatures match
 /// by construction.
-#[cfg(feature = "hot")]
+#[cfg(all(feature = "hot", not(target_arch = "wasm32")))]
 pub unsafe fn apply_patch(table: JumpTable) -> Result<(), PatchError> {
     let result = subsecond::apply_patch(table);
     if result.is_ok() {
@@ -258,10 +285,31 @@ pub unsafe fn apply_patch(_table: ()) -> Result<(), ()> {
 /// patched components only take effect on the next signal change.
 ///
 /// In feature-off mode the callback is silently dropped.
-#[cfg(feature = "hot")]
+#[cfg(all(feature = "hot", not(target_arch = "wasm32")))]
 pub fn register_handler(f: fn()) {
     use std::sync::Arc;
     subsecond::register_handler(Arc::new(f))
+}
+
+/// Wasm: registered with this crate's own table; see [`table::commit`].
+#[cfg(all(feature = "hot", target_arch = "wasm32"))]
+pub fn register_handler(f: fn()) {
+    table::register_handler(f)
+}
+
+/// Wasm: install a loaded patch's jump table (absolute `fn` pointer
+/// values on both sides) and run the handlers. The page's loader
+/// (`backend_web::hot_patch`) is the caller.
+///
+/// # Safety
+///
+/// As [`table::commit`]: every value a valid `fn` pointer of its key's
+/// signature.
+#[cfg(all(feature = "hot", target_arch = "wasm32"))]
+pub unsafe fn commit(map: std::collections::HashMap<u64, u64>) {
+    // Re-arm the dispatch log for the next few calls — see `CALLS`.
+    CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+    unsafe { table::commit(map) }
 }
 
 #[cfg(not(feature = "hot"))]

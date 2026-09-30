@@ -61,6 +61,8 @@ hot-reload = [
     "dev-hot/hot",
     "dep:subsecond-types",
     "runtime-world/hot-reload",
+    # The patch loader awaits fetch / compile / instantiate.
+    "dep:wasm-bindgen-futures",
 ]
 # Stamp a `data-idealyst-id="N"` attribute on every Element the
 # framework has minted a node id for. Pure developer ergonomic —

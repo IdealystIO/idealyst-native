@@ -46,6 +46,7 @@ pub mod hotpatch_aliases;
 pub mod hotpatch_base;
 pub mod hotpatch_build;
 pub mod hotpatch_patch;
+pub mod hotpatch_prepare;
 pub mod hotpatch_wasm;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -2480,7 +2481,7 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
         push("--no-gc-sections");
         push("--export-table");
         push("--export-memory");
-        // `subsecond::apply_patch` calls `funcs.grow(ifunc_count)` to make
+        // The page's patch loader calls `funcs.grow(ifunc_count)` to make
         // room for the patch's functions. A fixed-size table makes that
         // throw.
         push("--growable-table");

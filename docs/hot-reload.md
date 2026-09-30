@@ -400,8 +400,9 @@ all" (it was never codegened, so no rooting pass could keep it).
 `__wasm_apply_global_relocs` the start function of a `--pie` module. It
 adds `__table_base` to every `GOT.func.internal.*` global, which is the
 address of a function the PATCH defines and can only be written relative
-to the patch's own segment. The resolver drops any other start function
-(it would run before the jump table is committed), and it used to drop
+to the patch's own segment. `hotpatch_prepare` drops any other start
+function (it would run before the jump table is committed) and exports
+the relocations for the loader instead; an earlier resolver used to drop
 this one too. Then walrus's GC removed the function, those globals stayed
 relative, and the first render against a patch trapped with `null
 function` in `core::fmt::write`, where a `format!` argument's formatter
@@ -468,6 +469,64 @@ pub fn app() -> Element {
 }
 ```
 
+### The page supplies the patch's imports
+
+A patch linked `--pie --experimental-pic` imports everything it does not
+define — on a CrewForge screen crate, 3,462 base functions (most of them
+private, so not exported), 106 `GOT.func` function addresses, 4
+`GOT.mem` data addresses, and a handful of base exports and wasm-bindgen
+names. subsecond's loader supplies a patch one namespace, `env` (the
+base's exports plus `__memory_base`/`__table_base`), so the dev loop used
+to REWRITE the patch until it needed nothing else: every import became a
+local stub `call_indirect`ing the base's table slot and every `GOT` import
+a constant. Each of those renumbers the module, so walrus parsed and
+re-emitted the whole patch — 0.7 s of every save on a Mac, 1.0 s in the
+devcontainer, on a 27 MB patch.
+
+Now nothing is rewritten. `build_web::hotpatch_prepare` reads the imports
+(milliseconds) and decides where each comes from — a base export, the
+function in a base table slot, a `GOT` value, or a function that throws —
+and appends that decision to the module as the `idealyst.hotpatch` custom
+section, one entry per import in import order. The page's own loader
+(`backend_web::hot_patch::load`) pairs it with
+`WebAssembly.Module.imports(module)` and hands each import its value:
+
+- a base function goes in as ITSELF (`table.get(slot)`), so a `fn`
+  pointer the patch takes compares equal to the base's, and a call into
+  the base is a direct call rather than the old stub's `call_indirect`;
+- because a function import of the wrong type fails the WHOLE
+  instantiation (the stub only trapped when called), `BaseIndex` records
+  every slot's signature and a disagreeing import becomes a throwing
+  function instead;
+- a wasm-bindgen descriptor, which only runs at bindgen time, is a
+  throwing function naming what it is.
+
+Two edits remain, both byte-level splices that renumber nothing. A
+wasm-bindgen cast the patch defines itself (a crate building its own
+`Closure`) has its one raw body replaced by a forward to the base's
+forwarder for it — the raw body passes its OWN address to
+`__wbindgen_describe_cast`, so no import can be bound instead, and
+`wasm-ld --wrap` crashes lld under PIC. A start function that does more
+than relocate is dropped and `__wasm_apply_global_relocs` exported (see
+above).
+
+The loader also reserves only the patch's data — `dylink.0`'s mem-info —
+where subsecond grew memory by the whole module's byte length on every
+save.
+
+Measured on CrewForge (Mac, arm64), the `resolve` step of the `[hotpatch]`
+line: the projects crate's patch (10,155 functions redirected, ~3,600
+imports) went from ~700 ms to 41–56 ms; the landing crate's is
+5–12 ms. The page applied every patch and rebuilt the tree with state
+carried and no reload.
+
+Loading the patch ourselves means committing the jump table ourselves,
+and subsecond's commit is private (in 0.7.9 and 0.8.0-alpha.1). So on
+wasm `dev_hot` owns the table and the hot-call dispatch (`dev_hot::table`:
+look the `fn` pointer up, call the patched one on a hit), and
+`dev_hot::commit` installs a loaded patch's table. Native keeps subsecond,
+whose dylib patches link against its table.
+
 ### The jump table is indices, not addresses
 
 A native entry pairs two addresses. A wasm entry pairs two
@@ -476,7 +535,7 @@ section (function index → name) with the element segments (table index →
 function index). `build_web::hotpatch_wasm::build_jump_table` does that.
 
 A key is an ABSOLUTE index in the base's table; a value is an index
-RELATIVE to the patch's own element segment, because `apply_patch` grows
+RELATIVE to the patch's own element segment, because the loader grows
 the table and rebases the patch's entries by the grow's return — which is
 what the `__table_base` global the patch imports resolves to. Which is
 also why a segment whose offset is `global.get` (every PIC patch) folds
@@ -501,13 +560,15 @@ so the ordinary session has it.
    patched since the last rebuild ([Workspace crates](#workspace-crates))
    — with `--emit=obj -Crelocation-model=pic`, concurrently, links those
    objects alone into one module with `wasm-ld --pie --experimental-pic`,
-   resolves the imports against the running base, and pairs the two
-   tables.
+   decides where each import comes from and appends that plan to the
+   module ([The page supplies the patch's imports](#the-page-supplies-the-patchs-imports)),
+   and pairs the two tables.
 4. The patch module is written into the served bundle's
    `pkg/hotpatch/patch-N.wasm`, and the dev loop pushes an SSE `hot-patch`
    event carrying `{url, table}`.
 5. The page's livereload script calls `window.__idealyst_hot_patch`, which
-   applies the patch and rebuilds the tree against it.
+   loads the patch — supplying its imports from the plan — commits its
+   jump table, and rebuilds the tree against it.
 6. Once the rebuilt tree is mounted, the page reports back — a `POST` to
    `/__idealyst/ack` with how many functions were redirected and how many
    signal values were carried — and the session records it as a
@@ -892,9 +953,10 @@ The native sidecar's `SessionMsg::Rerender` still drops its session's
 world, with `harvest()`: a sidecar world is per session, and nothing
 outlives a session there.
 
-The rebuild rides `subsecond::register_handler` rather than following the
-`apply_patch` call, because on wasm `apply_patch` finishes asynchronously —
-it awaits a fetch and an instantiate. Rebuilding at the call site would
+The rebuild rides `dev_hot::register_handler` — fired by `dev_hot::commit`
+once the patch is in place — rather than following the
+`__idealyst_hot_patch` call, because loading finishes asynchronously: it
+awaits a fetch, a compile and an instantiate. Rebuilding at the call site would
 rebuild against the old code and show nothing changed.
 
 ### Why components are split

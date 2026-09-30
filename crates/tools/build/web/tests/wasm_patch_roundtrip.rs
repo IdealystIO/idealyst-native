@@ -15,7 +15,8 @@
 //!   which it only does because `prepare_base_module` rooted it;
 //! * a patch linked from the same crate's objects carries an element
 //!   segment offset by the imported `__table_base`;
-//! * every import that patch carries can be resolved against the base;
+//! * every import that patch carries has a source in the base, recorded
+//!   in the plan the page loads it with (`hotpatch_prepare`);
 //! * the jump table pairs the two, with an absolute key and a relative
 //!   value.
 //!
@@ -39,7 +40,8 @@ use std::process::Command;
 
 use build_web::hotpatch_aliases;
 use build_web::hotpatch_base::prepare_base_module;
-use build_web::hotpatch_patch::{resolve_against_base, BaseIndex};
+use build_web::hotpatch_patch::BaseIndex;
+use build_web::hotpatch_prepare::{prepare, ImportSource, Plan, PLAN_SECTION};
 use build_web::hotpatch_wasm::build_jump_table;
 
 /// The fixture crate. Small, but every shape the pipeline has to handle
@@ -268,7 +270,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
 
     // ── 4. Resolve and pair ──────────────────────────────────────────
     let raw = std::fs::read(&patch_path).unwrap();
-    let resolved = resolve_against_base(&raw, &base).unwrap_or_else(|e| {
+    let resolved = prepare(&raw, &base).map(|p| p.wasm).unwrap_or_else(|e| {
         panic!(
             "the patch's imports could not be resolved against the base, so a save would fall \
              back to a rebuild:\n{e:#}"
@@ -295,7 +297,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         base.ifunc.get(canonical_name),
         "with the map, both spellings have to resolve to the one slot they share"
     );
-    let refused = resolve_against_base(&raw, &blind);
+    let refused = prepare(&raw, &blind);
     assert!(
         refused.is_err(),
         "without the alias map this patch should have been refused — if it resolves, the \
@@ -303,7 +305,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     );
 
     let table = build_jump_table(&served, &resolved, &aliases).unwrap();
-    let with_dwarf = resolve_against_base(&std::fs::read(&with_dwarf_path).unwrap(), &base).unwrap();
+    let with_dwarf = prepare(&std::fs::read(&with_dwarf_path).unwrap(), &base).unwrap().wasm;
     assert_eq!(
         build_jump_table(&served, &with_dwarf, &aliases).unwrap(),
         table,
@@ -368,20 +370,33 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
         "the stripped patch claims a different number of table slots"
     );
 
-    // Finally, the artifact has to be something the runtime can actually
-    // instantiate: one import namespace, `env`, and nothing else.
-    let module = walrus::Module::from_buffer(&resolved).unwrap();
-    let foreign: Vec<String> = module
+    // Finally, the artifact has to be something the page can actually
+    // instantiate: the plan it carries names a source for every import,
+    // in import order, and the only imports it leaves to the runtime are
+    // in `env` — the one namespace the page fills from the base's exports.
+    let plan_bytes = wasmparser::Parser::new(0)
+        .parse_all(&stripped)
+        .find_map(|p| match p.unwrap() {
+            wasmparser::Payload::CustomSection(c) if c.name() == PLAN_SECTION => Some(c.data().to_vec()),
+            _ => None,
+        })
+        .expect("the served patch carries its plan");
+    let plan = Plan::decode(&plan_bytes).unwrap();
+    let module = walrus::Module::from_buffer(&stripped).unwrap();
+    assert_eq!(module.imports.iter().count(), plan.imports.len(), "one plan entry per import");
+    let unsupplied: Vec<String> = module
         .imports
         .iter()
-        .filter(|i| i.module != "env")
-        .map(|i| format!("{}.{}", i.module, i.name))
+        .zip(&plan.imports)
+        .filter(|(i, source)| matches!(source, ImportSource::Runtime) && i.module != "env")
+        .map(|(i, _)| format!("{}.{}", i.module, i.name))
         .collect();
     assert!(
-        foreign.is_empty(),
-        "subsecond::apply_patch provides only an `env` namespace, so instantiation would \
-         throw on: {foreign:?}"
+        unsupplied.is_empty(),
+        "the page fills only `env` from the base's exports, so instantiation would throw on: \
+         {unsupplied:?}"
     );
+    assert!(plan.memory_size.is_some(), "wasm-ld's PIC output carries dylink.0 mem-info");
 }
 
 // ── Two crates: a library of the workspace and the app using it ──────

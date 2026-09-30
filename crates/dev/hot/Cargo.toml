@@ -40,10 +40,6 @@ hot = ["dep:subsecond"]
 diff = ["hot", "dep:object", "dep:memmap2", "dep:subsecond-types"]
 
 [dependencies]
-# Upstream hot-patch runtime. Optional so the feature off-state has
-# zero deps. We re-export a subset under `hot::*` so consumers don't
-# need to depend on `subsecond` directly.
-subsecond = { version = "0.7", optional = true }
 # JumpTable + AddressMap struct definitions. Pulled in unconditionally
 # with `subsecond` (it re-exports JumpTable from this crate), but we
 # also need direct access to construct one in the diff generator.
@@ -53,3 +49,13 @@ subsecond-types = { version = "0.7", optional = true }
 # code.
 object = { version = "0.39", optional = true, default-features = false, features = ["read", "std"] }
 memmap2 = { version = "0.9", optional = true }
+
+# Upstream hot-patch runtime. Optional so the feature off-state has
+# zero deps. We re-export a subset under `hot::*` so consumers don't
+# need to depend on `subsecond` directly.
+#
+# Native only: on wasm the page loads patches itself and this crate owns
+# the jump table (`src/table.rs` says why), so subsecond's wasm half —
+# its loader and its private commit — would be dead weight in the bundle.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+subsecond = { version = "0.7", optional = true }

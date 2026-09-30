@@ -24,7 +24,7 @@
 //!
 //! # What the runtime does with the result
 //!
-//! `subsecond::apply_patch`'s wasm arm grows the table by
+//! The page's loader (`backend_web::hot_patch::load`) grows the table by
 //! [`WasmJumpTable::ifunc_count`] and rebases every VALUE by the grow's
 //! return (the table's prior length), because the patch module's own
 //! element segment is placed at the `__table_base` global it imports.
