@@ -102,6 +102,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p permissions` — portable logic (status helpers + host `Unsupported` fallback)
 - [ ] `cargo build -p permissions --features catalog` — recipes/docs compile
 - [ ] `cargo build -p permissions --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p permissions --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_permissions.rs`: no `Notification` API → `Unsupported`; notification status/request mapping incl. the callback-only `requestPermission`; `permissions.query` states and every failure shape → `Unsupported`
 
 **Behavior**
 - [ ] **Web** — `status(Notifications)` reads `Notification.permission` without prompting; `request(Notifications)` shows the browser prompt and resolves `Granted`/`Denied`. Geolocation/camera/microphone `status` reports `Undetermined` ("prompts on first use") and never blocks.
