@@ -2490,16 +2490,14 @@ version = "1.5.2"
 dependencies = [
  "arboard",
  "jni 0.21.1",
- "js-sys",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
  "runtime-vocabulary",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]

@@ -42,7 +42,7 @@ not in the functions you call.
 
 | Target | Mechanism |
 | --- | --- |
-| web (wasm32) | `navigator.clipboard.writeText` / `readText` (JsFuture) — runnable |
+| web (wasm32) | `navigator.clipboard.writeText` / `readText` (web-glue bindings, Promises awaited as `JsFuture`) — runnable; `Backend` error when `navigator.clipboard` is absent (insecure context) |
 | iOS / tvOS | `UIPasteboard.generalPasteboard` `setString:` / `string` (objc2) — compile-checked only |
 | macOS | `NSPasteboard.generalPasteboard` `clearContents` + `setString:forType:` / `stringForType:` with `public.utf8-plain-text` (objc2) — compile-checked only |
 | Android | `ClipboardManager` (`Context.CLIPBOARD_SERVICE`) `setPrimaryClip(ClipData.newPlainText(...))` / `getPrimaryClip().getItemAt(0).coerceToText(context)` via JNI — compile-checked only |

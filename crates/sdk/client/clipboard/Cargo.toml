@@ -39,16 +39,16 @@ license.workspace = true
 runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 
-# Web (wasm): navigator.clipboard via web-sys; JsFuture bridges the Promises.
+# Web (wasm): navigator.clipboard through web-glue bindings (`src/web.rs`);
+# `web_glue::JsFuture` bridges the Promises.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "Clipboard",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_clipboard.rs`) — run with
+# `cargo test -p clipboard --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # iOS / macOS / tvOS: UIPasteboard / NSPasteboard via the Obj-C runtime (objc2).
 [target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
