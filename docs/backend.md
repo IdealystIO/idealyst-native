@@ -162,11 +162,13 @@ Three consequences:
 **`H::Node` on the web is `web_glue::dom::Node`**, the framework-owned
 JS boundary's handle — not `web_sys::Node` (own-web-bindings phase 2b,
 [`proposals/own-web-bindings.md`](proposals/own-web-bindings.md)). A web
-handler written against web-sys crosses once at each seam through
-`backend_web::bridge` (HYBRID-BRIDGE, until phase 3 ports the SDKs):
-`node_from_web_sys` for the node it returns, `node_to_web_sys` for the
-host node its ops receive as `&dyn Any`. Downcasting that `&dyn Any` to
-`web_sys::Node` directly compiles and silently yields `None`.
+handler builds its DOM with `web_glue::dom` and returns the element as a
+`web_glue::dom::Node`; its ops downcast the `&dyn Any` they receive to
+`web_glue::dom::Node` and cast from there (`dyn_ref::<Element>()`, an
+SDK-local `js_class!`). Downcasting that `&dyn Any` to `web_sys::Node`
+compiles and silently yields `None`. (The phase-2b crossing
+`backend_web::bridge::{node_from_web_sys, node_to_web_sys}` is gone since
+every SDK that mounts DOM was ported in phase 3.)
 
 The framework's own handlers install through one call —
 `runtime_vocabulary::handlers::register_builtins(&mut registry)`: the

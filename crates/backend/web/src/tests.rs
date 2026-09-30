@@ -3724,32 +3724,27 @@ fn regression_glue_dispatch_does_not_rerun_static_constructors() {
     input.remove();
 }
 
-// ---- HYBRID-BRIDGE: SDK ops recover a web-sys node from the host node ------
+// ---- HYBRID-BRIDGE: a dropped file reaches file-picker as a web_sys::File --
 
-/// Since phase 2b the host node an SDK's ops receive as `&dyn Any` is a
-/// `web_glue::dom::Node`. An un-ported SDK that still downcast it to
-/// `web_sys::Node` got `None` and silently no-oped (form `submit`, video
-/// `play`, webview `post_message`, svg `intrinsic_size`). They go through
-/// `bridge::node_to_web_sys`; this pins that it hands back the SAME DOM
-/// object, and refuses anything that is not a host node.
+/// `DroppedFile.source` must downcast to `web_sys::File` — the type the
+/// file-picker SDK's `picked_from_dropped` asks for — and be the dropped
+/// file itself. (The generic node bridge this crate used to export is gone;
+/// this is its one remaining crossing, and a wrong type here silently
+/// drops every file.)
 #[wasm_bindgen_test]
-fn regression_bridge_recovers_the_web_sys_node_behind_a_host_node() {
-    let doc = web_glue::dom::window().unwrap().document().unwrap();
-    let el = doc.create_element("section").unwrap();
-    el.set_attribute("data-bridge", "same").unwrap();
-    let host: web_glue::dom::Node = el.clone().into();
-    let as_any: &dyn std::any::Any = &host;
-    let back = crate::bridge::node_to_web_sys(as_any).expect("a host node crosses the bridge");
-    let back_el: &web_sys_bridge_check::Element = wasm_bindgen::JsCast::unchecked_ref(&back);
-    assert_eq!(back_el.get_attribute("data-bridge").as_deref(), Some("same"));
-    // And back: the web-sys node becomes a host node for the same element.
-    let again = crate::bridge::node_from_web_sys(&back);
-    assert!(again.is_same_node(Some(&host)), "a round trip is the same DOM node");
-    // Not a host node: refused, not reinterpreted.
-    assert!(crate::bridge::node_to_web_sys(&42u32).is_none());
-}
-
-/// The web-sys types the bridge test inspects with (dev-dependency).
-mod web_sys_bridge_check {
-    pub use web_sys::Element;
+fn regression_dropped_file_source_is_the_web_sys_file_file_picker_reads() {
+    let make = web_glue::js::Function::new_no_args(
+        "const dt = new DataTransfer(); \
+         dt.items.add(new File(['abc'], 'a.txt', { type: 'text/plain' })); \
+         return new DragEvent('drop', { dataTransfer: dt });",
+    );
+    let ev: web_glue::dom::DragEvent =
+        make.call0(&web_glue::JsValue::undefined()).unwrap().unchecked_into();
+    let files = crate::primitives::file_drop::collect_files(&ev);
+    assert_eq!(files.len(), 1);
+    assert_eq!((files[0].name.as_str(), files[0].mime.as_str(), files[0].size), ("a.txt", "text/plain", Some(3)));
+    let source = files[0].source.as_ref().expect("the raw file rides in source");
+    let file = source.downcast_ref::<web_sys::File>().expect("a web_sys::File, as file-picker downcasts");
+    assert_eq!(file.name(), "a.txt");
+    assert_eq!(file.size(), 3.0);
 }

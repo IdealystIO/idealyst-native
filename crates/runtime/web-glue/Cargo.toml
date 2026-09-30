@@ -20,10 +20,13 @@ license.workspace = true
 description = "Framework-owned wasm <-> JS bindings: handles, strings, callbacks, futures, exceptions, with the JS shipped inside the wasm."
 
 [features]
-# HYBRID-BRIDGE (temporary, phase 3 deletes it): `web_glue::bridge`, the
-# crossing between web-glue handles and wasm-bindgen values for a page that
-# still links both (backend-web on web-glue, SDKs on web-sys). Own-mode
-# builds never enable it, so their graph stays free of wasm-bindgen.
+# HYBRID-BRIDGE: `web_glue::bridge`, the crossing between web-glue handles
+# and wasm-bindgen values for a page that links both. After phase 3 it
+# carries only the `web_sys::MediaStream` native sources (until the media
+# SDKs switch together), backend-web's dropped `web_sys::File` (until
+# file-picker takes a glue File) and canvas-native's web-sys-typed entry
+# points for canvas-vello (wgpu). See `src/bridge.rs`. Own-mode builds
+# never enable it, so their graph stays free of wasm-bindgen.
 wasm-bindgen-bridge = ["dep:wasm-bindgen"]
 
 [dependencies]

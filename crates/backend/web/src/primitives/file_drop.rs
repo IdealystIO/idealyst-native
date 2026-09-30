@@ -12,8 +12,9 @@
 //! - `dragleave` → [`FileDropPhase::Exited`].
 //! - `drop` → [`FileDropPhase::Dropped`], carrying one [`DroppedFile`] per
 //!   `DataTransfer.files` entry. The web has no filesystem path, so each
-//!   `DroppedFile` has `path: None` and stashes the raw `web_glue::dom::File` in
-//!   `source` for the `file-picker` SDK to stream over its `ReadableStream`.
+//!   `DroppedFile` has `path: None` and stashes the raw file in `source` (as a
+//!   `web_sys::File` — see [`file_for_picker`]) for the `file-picker` SDK to
+//!   stream over its `ReadableStream`.
 //!
 //! We only treat a drag as a *file* drag when `DataTransfer.types` contains
 //! `"Files"` — dragging selected text or a link also fires these events, and
@@ -105,10 +106,8 @@ fn is_file_drag(ev: &DragEvent) -> bool {
 }
 
 /// Pull the dropped `File`s out of the event into neutral [`DroppedFile`]s.
-/// The raw `web_glue::dom::File` rides along in `source` for the SDK to stream —
-/// crossed back through the HYBRID-BRIDGE, since that is the type the
-/// file-picker SDK downcasts to until phase 3 ports it.
-fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
+/// The raw file rides along in `source` for the SDK to stream.
+pub(crate) fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
     let Some(dt) = ev.data_transfer() else {
         return Vec::new();
     };
@@ -133,10 +132,18 @@ fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
             mime,
             size,
             path: None,
-            source: Some(Rc::new(crate::bridge::to_web_sys::<web_sys::File>(&file)) as Rc<dyn std::any::Any>),
+            source: Some(Rc::new(file_for_picker(&file)) as Rc<dyn std::any::Any>),
         });
     }
     out
+}
+
+/// HYBRID-BRIDGE: `DroppedFile.source` is a `web_sys::File`, because that is
+/// what the file-picker SDK downcasts it to (`picked_from_dropped`). The glue
+/// file crosses out once here — the backend's last web-sys / wasm-bindgen
+/// use; it goes when file-picker takes a `web_glue::dom::File`.
+fn file_for_picker(file: &web_glue::dom::File) -> web_sys::File {
+    wasm_bindgen::JsCast::unchecked_into(web_glue::bridge::to_bindgen(file))
 }
 
 /// Element-local pointer coordinates: `client` minus the rect of `el`, the

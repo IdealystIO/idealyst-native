@@ -13,16 +13,19 @@ web-sys's method names and signatures, `web_glue::js` for the JS
 built-ins. `Host::Node` is `web_glue::dom::Node`. The eight `runtime/js/`
 shims ship as `web_glue::js_module!`s (no run-time eval).
 
-The one exception is **`src/bridge.rs`** (`HYBRID-BRIDGE`, deleted in
-phase 3). SDKs that still build their DOM with web-sys (svg, video, maps,
-form, webview, canvas-native, file-picker) cross there: a mount handler
-hands its web-sys element to the host with `bridge::node_from_web_sys`,
-an ops impl recovers a web-sys node from the host node it receives as
-`&dyn Any` with `bridge::node_to_web_sys`, and a dropped file reaches the
-file-picker SDK as a `web_sys::File`. That module is why this crate still
-depends on `wasm-bindgen` and `web-sys` (with only the `Node` and `File`
-features) — and why a web page is still **hybrid**: `idealyst build
---web` extracts the glue before wasm-bindgen runs and writes
+The one exception is a single `HYBRID-BRIDGE` crossing in
+**`src/primitives/file_drop.rs`**: a dropped file reaches the file-picker
+SDK as a `web_sys::File` (the type its `picked_from_dropped` downcasts
+`DroppedFile.source` to), crossed out of the glue slab with
+`web_glue::bridge`. That is why this crate still depends on `wasm-bindgen`
+and `web-sys` (the `File` feature only) and enables web-glue's
+`wasm-bindgen-bridge` feature; all three go when file-picker reads a
+`web_glue::dom::File`. The generic node bridge SDKs used during the port
+(`backend_web::bridge::{node_from_web_sys, node_to_web_sys}`) is gone
+(own-web-bindings phase 3): the SDKs build their DOM with web-glue and
+return / downcast `web_glue::dom::Node` directly. A web page is still
+**hybrid** while any crate in it uses wasm-bindgen: `idealyst build --web`
+extracts the glue before wasm-bindgen runs and writes
 `pkg/__idealyst_glue.js` after (`build_web::own_glue`).
 
 A crate that uses web-sys types must enable the web-sys features it uses
@@ -84,7 +87,6 @@ the backend up by hand must call them.
   spinner keyframes, the JS shims (as web-glue modules), and dynamic-slot
   teardown.
 - **`glue_dom.rs`**: listener helpers, element-lifetime callbacks, the shim callback shapes.
-- **`bridge.rs`**: the HYBRID-BRIDGE for un-ported SDKs (see above).
 - **`primitives/`**: one module per primitive. Each owns its
   create/update functions, any `Ops` impl, and the `make_*_handle` builder.
 - **`newcore.rs`**: the `impl Host for WebBackend` block plus all ~30

@@ -1,6 +1,7 @@
 //! Web backend: drives DOM nodes through the framework-owned `web-glue`
-//! boundary (`web_glue::dom` / `web_glue::js`). The only web-sys left is the
-//! HYBRID-BRIDGE in `bridge.rs` for SDKs not yet ported (phase 3).
+//! boundary (`web_glue::dom` / `web_glue::js`). The only web-sys left is
+//! one HYBRID-BRIDGE crossing in `primitives/file_drop.rs`: a dropped file
+//! reaches the file-picker SDK as a `web_sys::File`.
 //!
 //! # File layout
 //!
@@ -59,8 +60,6 @@ pub mod async_executor;
 mod assets;
 mod defaults;
 mod glue_dom;
-/// HYBRID-BRIDGE (temporary): see the module docs.
-pub mod bridge;
 #[cfg(feature = "runtime-server")]
 pub mod dev_transport;
 #[cfg(feature = "robot")]

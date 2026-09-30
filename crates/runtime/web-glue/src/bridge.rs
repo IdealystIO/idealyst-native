@@ -1,12 +1,25 @@
-//! HYBRID-BRIDGE — temporary, deleted in phase 3 of
-//! `docs/proposals/own-web-bindings.md`.
+//! HYBRID-BRIDGE — the crossing between web-glue handles and wasm-bindgen
+//! values, for a page that links both.
 //!
-//! While backend-web runs on web-glue but the SDKs (and wgpu) still run on
-//! web-sys, one page holds two handle spaces: web-glue's slab and
-//! wasm-bindgen's heap. These two functions move a value across. They are
-//! the ONLY sanctioned crossing — grep for `HYBRID-BRIDGE` / `bridge::` to
-//! find every use; phase 3 ports those call sites and removes this module
-//! together with the optional `wasm-bindgen` dependency behind it.
+//! One page can hold two handle spaces: web-glue's slab and wasm-bindgen's
+//! heap. These two functions move a value across. They are the ONLY
+//! sanctioned crossing — grep for `HYBRID-BRIDGE` / `bridge::` to find
+//! every use.
+//!
+//! Phase 3 of `docs/proposals/own-web-bindings.md` ported the DOM-mounting
+//! SDKs, and with them the backend's node bridge (`backend_web::bridge`)
+//! went. What still crosses here, each marked `HYBRID-BRIDGE` at the site:
+//!
+//! * `native_source` media streams — the web `MediaStream` a live stream
+//!   publishes is a `web_sys::MediaStream` (camera, screen-recorder,
+//!   canvas-native's self-capture, video-compose produce it; video,
+//!   canvas-native's texture layers, canvas-vello, media-writer consume
+//!   it). It switches to a glue handle in one change with the media SDKs.
+//! * backend-web's file drop: `DroppedFile.source` is a `web_sys::File`,
+//!   what the file-picker SDK downcasts it to.
+//! * canvas-native's public `make_2d_rasterizer` / `publish_capture_stream`
+//!   take a `web_sys::HtmlCanvasElement`, because canvas-vello (wgpu, so
+//!   always wasm-bindgen — hybrid mode, phase 5) calls them.
 //!
 //! How: the hybrid glue module (`pkg/__idealyst_glue.js`, written by
 //! `wasm_carve::glue_js::hybrid_glue_js`) publishes
