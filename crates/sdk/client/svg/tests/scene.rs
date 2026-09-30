@@ -10,6 +10,10 @@
 //! those are covered by the per-target check gates plus live
 //! verification (no host-side harness can construct a UIKit view).
 
+// Host-only: `svg::register` is `WebBackend`-concrete on wasm32, where the
+// browser suite (`tests/web_svg.rs`) covers the real handler instead.
+#![cfg(not(target_arch = "wasm32"))]
+
 use host_mock::Harness;
 use runtime_shared::{Ref, StyleRules, Tokenized};
 use runtime_scene::Realized;

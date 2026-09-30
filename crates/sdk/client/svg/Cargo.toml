@@ -70,23 +70,18 @@ host-mock = { path = "../../../dev/host-mock" }
 
 # The wasm32 handler is `WebBackend`-concrete (`innerHTML` has no
 # caps-trait expression), so `Registry<WebBackend>` needs the backend's
-# `Host` impl.
-#
-# COORDINATION (runtime-v2 deletion wave): `` is
-# still required because the backends' `Host` + caps impls are behind
-# that feature. Drop the forward once the backend crates make them
-# unconditional.
+# `Host` impl. The DOM itself goes through web-glue, the framework-owned
+# JS boundary (docs/proposals/own-web-bindings.md) — the host node IS a
+# `web_glue::dom::Node`, so the handler builds with glue handles directly.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
-web-sys = { version = "0.3", features = [
-    "Document",
-    "Element",
-    "HtmlElement",
-    "SvgElement",
-    "Window",
-] }
-wasm-bindgen = "0.2"
-js-sys = "0.3"
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_svg.rs`) — run with
+# `cargo test -p svg --target wasm32-unknown-unknown` (the workspace runner
+# supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # `usvg` is only used by the iOS and Android painters — the web
 # backend uses native browser SVG, and other hosts fall through to

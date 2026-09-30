@@ -45,7 +45,7 @@ output. The *mechanism* differs per platform:
 
 | Target | Mechanism |
 | --- | --- |
-| Web (wasm32) | `innerHTML` into a wrapper `<div>` — the browser is the SVG renderer |
+| Web (wasm32) | `innerHTML` into a wrapper `<div>` (built with web-glue, the framework's own JS bindings) — the browser is the SVG renderer |
 | iOS | `usvg` parse → replay into a `UIView` subclass's `drawRect:` `CGContext` (resolution-independent, no raster step) |
 | Android | `usvg` parse → walk into a `Picture` → `PictureDrawable` on an `ImageView` (scales with bounds, no raster step) |
 | Other (SSR, wgpu desktop, terminal, …) | the frozen External "not supported" placeholder |
@@ -87,6 +87,7 @@ item as you exercise it.
 
 **Automated**
 - [ ] `cargo build -p svg --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p svg --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_svg.rs`: the wrapper mounts the markup, `intrinsic_size` reads viewBox / width+height through the host node, reactive markup re-renders and skips identical strings
 
 **Rendering / behavior**
 - [ ] **Web** — a known SVG renders crisp via `innerHTML` (the browser's own SVG

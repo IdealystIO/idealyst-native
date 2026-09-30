@@ -1,23 +1,18 @@
 //! Pure wasm32 DOM helpers for the web leg: intrinsic-size
 //! introspection off the mounted wrapper. Kept as its own module so the DOM introspection
-//! stays framework-free (pure `web_sys`, no scene/world types).
+//! stays framework-free (web-glue handles only, no scene/world types).
 
 use std::any::Any;
-use wasm_bindgen::JsCast;
+use web_glue::dom::{Element, Node};
+use web_glue::JsCast;
 
-/// Walk from the type-erased backend node (a `web_sys::Node` wrapper
-/// `<div>`) to the first `<svg>` descendant and read its intrinsic
-/// size. This is the whole body of `SvgOps::intrinsic_size` on web,
-/// shared by the crate's web ops impls.
+/// Walk from the type-erased backend node (the wrapper `<div>` as a
+/// `web_glue::dom::Node`, the web backend's `Host::Node`) to the first
+/// `<svg>` descendant and read its intrinsic size. This is the whole body
+/// of `SvgOps::intrinsic_size` on web, shared by the crate's web ops impls.
 pub(crate) fn intrinsic_size_of_node(node: &dyn Any) -> Option<(f32, f32)> {
-    // HYBRID-BRIDGE: the host node is a `web_glue::dom::Node` since phase
-    // 2b; this SDK's internals are still web-sys until phase 3.
-    let wrapper = backend_web::bridge::node_to_web_sys(node)?;
-    let wrapper_el: &web_sys::Element = wrapper.dyn_ref::<web_sys::Element>()?;
-    // `querySelector` is enabled by web-sys's base `Element`
-    // feature. Iterating `children()` would also work but needs
-    // the `HtmlCollection` feature — overkill for "find the first
-    // svg descendant".
+    let wrapper = node.downcast_ref::<Node>()?;
+    let wrapper_el: &Element = wrapper.dyn_ref::<Element>()?;
     let svg = wrapper_el.query_selector("svg").ok().flatten()?;
     parse_svg_intrinsic_size(&svg)
 }
@@ -25,7 +20,7 @@ pub(crate) fn intrinsic_size_of_node(node: &dyn Any) -> Option<(f32, f32)> {
 /// Pull intrinsic dimensions off an `<svg>` element. Prefers viewBox
 /// (the conventional way to declare logical extents) and falls back
 /// to width/height attributes for simpler markup.
-pub(crate) fn parse_svg_intrinsic_size(svg: &web_sys::Element) -> Option<(f32, f32)> {
+pub(crate) fn parse_svg_intrinsic_size(svg: &Element) -> Option<(f32, f32)> {
     if let Some(vb) = svg.get_attribute("viewBox") {
         // `viewBox = "minX minY width height"`. Comma- or space-
         // separated per the SVG spec.

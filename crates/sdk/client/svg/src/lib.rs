@@ -250,7 +250,7 @@ pub struct UnsupportedOps;
 impl SvgOps for UnsupportedOps {}
 
 #[cfg(target_arch = "wasm32")]
-static OPS: &dyn SvgOps = web_glue::OPS;
+static OPS: &dyn SvgOps = web_leg::OPS;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 static OPS: &dyn SvgOps = crate::ios::OPS;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
@@ -495,7 +495,7 @@ where
 /// registry — the real `innerHTML` renderer.
 #[cfg(target_arch = "wasm32")]
 pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
-    registry.register::<SvgPrim, _>(web_glue::mount_svg_web);
+    registry.register::<SvgPrim, _>(web_leg::mount_svg_web);
 }
 
 /// Declare this SDK's payload kind **late-bound** instead of installing
@@ -535,7 +535,7 @@ where
 #[cfg(target_arch = "wasm32")]
 pub fn register_from_chunk() {
     runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
-        registry.register_deferred::<SvgPrim, _>(web_glue::mount_svg_web);
+        registry.register_deferred::<SvgPrim, _>(web_leg::mount_svg_web);
     });
 }
 
@@ -544,11 +544,11 @@ pub fn register_from_chunk() {
 pub fn register_from_chunk() {}
 
 // ============================================================================
-// Web glue (wasm32).
+// Web leg (wasm32) — DOM through web-glue.
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]
-mod web_glue {
+mod web_leg {
     use super::*;
     use backend_web::WebBackend;
 
@@ -565,9 +565,9 @@ mod web_glue {
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<SvgPrim>,
         _children: Vec<Element>,
-    ) -> backend_web::bridge::HostNode {
+    ) -> web_glue::dom::Node {
         let backend = cx.backend().clone();
-        let document = web_sys::window()
+        let document = web_glue::dom::window()
             .expect("no window")
             .document()
             .expect("no document");
@@ -612,8 +612,7 @@ mod web_glue {
             }
         });
 
-        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
-        let node = backend_web::bridge::node_from_web_sys(&wrapper.into());
+        let node: web_glue::dom::Node = wrapper.into();
         finish_mount(&backend, &node, prim);
         node
     }

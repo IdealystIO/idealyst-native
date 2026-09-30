@@ -11660,7 +11660,6 @@ dependencies = [
  "gtk4",
  "host-mock",
  "jni 0.21.1",
- "js-sys",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
@@ -11672,8 +11671,8 @@ dependencies = [
  "runtime-world",
  "tiny-skia",
  "usvg 0.42.0",
- "wasm-bindgen",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
