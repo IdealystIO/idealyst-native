@@ -7,13 +7,17 @@ turns it into the page's JS without post-processing the whole module.
 Apps may keep using wasm-bindgen themselves; the framework stops relying
 on it.
 
-> **Status: phase 1 (proof of concept) done — recommendation GO for
-> phase 2.** The PoC is `crates/runtime/web-glue`, the passes
-> `wasm_carve::{glue, command_exports}` and `build_web::own_glue`, and the
-> demos under `tests/own-glue/`, driven in headless Chrome by
-> `crates/tools/build/web/tests/own_glue_e2e.rs`. Measured results are in
-> [Phase 1 results](#phase-1-results). Nothing in the normal build uses
-> any of it yet.
+> **Status: phase 2a done (backend-web's foundation on web-glue, hybrid
+> mode, in every web build).** Phase 1 (the proof of concept) is
+> `crates/runtime/web-glue`, the passes `wasm_carve::{glue, glue_js,
+> command_exports}` and `build_web::own_glue`, and the demos under
+> `tests/own-glue/`, driven in headless Chrome by
+> `crates/tools/build/web/tests/own_glue_e2e.rs` —
+> [Phase 1 results](#phase-1-results). Phase 2a moved backend-web's
+> scheduler, executor, time source, logger, panic hook, every event
+> listener and its eight JS shims onto web-glue, and made the hybrid pass
+> part of every `idealyst build --web` / `dev --web` —
+> [Phase 2a results](#phase-2a-results).
 
 ---
 
@@ -60,21 +64,28 @@ exactly — an app linked against 0.2.126 is refused by a 0.2.128 CLI
 (observed during phase 1 on CrewForge's modules, after the CLI had
 already reached 2.3 GB of RSS parsing the 68 MB input).
 
-**Found during phase 1: every export call re-runs static constructors.**
-A wasm32 *bin* is linked by LLD as a command module, and LLD wraps every
-export in a call to `__wasm_call_ctors`. wasm-bindgen 0.2.128 unwraps
-none of them — including its own `#[wasm_bindgen]` exports (verified on
-the phase-1 hybrid module: a constructor-bumped counter read 15 after
-boot and a few clicks) — and the existing neutralize pass skips any
-export with a bare name. On CrewForge's main hot-reload base, **5,086
-exports** have that wrapper. So every JS → Rust call through such an
-export runs every static constructor again; that has not yet been
-measured inside a running framework app. `inventory` 0.3.24 made `submit` idempotent for exactly
-this reason (its crate docs, "WebAssembly and constructors"), which is
-why nothing crashes. It still costs a constructor sweep per call. The
-own-bindings loader links the module as a reactor and runs constructors
-once (the E2E asserts it); hybrid mode repoints the wrapped exports (see
-below). This could also be fixed in today's pipeline on its own.
+**Found during phase 1, corrected in 2a: which export calls re-run static
+constructors.** A wasm32 *bin* is linked by LLD as a command module, and
+LLD wraps an export in a call to `__wasm_call_ctors` — re-running every
+static constructor on each call — unless something unwraps it. Phase 1
+saw this on the hybrid demo (a constructor-bumped counter read 15 after
+boot and a few clicks) and counted 5,086 wrapped exports in CrewForge's
+hot-reload base, and concluded every JS → Rust call in today's apps paid
+a sweep. **Measured in a real app in 2a, that is wrong:** on
+`examples/nav-showcase` built by the pre-port pipeline (master
+`64306778`), a probe constructor ran **once at boot and zero more times
+over 40 clicks** and the frames and navigation they caused. Only a
+bare-named export (`#[no_mangle]`, `#[wasm_bindgen]` fns the page calls
+directly) re-runs them — the probe's own reader did, once per read. The
+5,086 were counted on the module *before* wasm-bindgen, whose output a
+normal UI never calls through a wrapped export. So today's apps do not pay
+a per-event sweep; `inventory` 0.3.24's idempotent `submit` covers the
+remaining bare-export case. What IS affected is web-glue: its exports
+(`__glue_invoke`, `__glue_alloc`, `__glue_microtask`, …) are bare-named
+and on every event path, so the hybrid pass unwraps exactly those
+(`unwrap_command_exports_where`, [Hybrid mode](#hybrid-mode)) and a
+backend-web browser test pins it. The own-bindings loader links the
+module as a reactor and runs constructors once (the E2E asserts it).
 
 ## What the framework needs from a binding layer
 
@@ -231,18 +242,32 @@ An app that uses wasm-bindgen (directly, or through wgpu) links both. The
 glue namespace composes with wasm-bindgen instead of replacing it:
 
 1. `glue::extract` renames and strips as above.
-2. `command_exports::unwrap_command_exports` repoints every export except
-   `main` past LLD's ctor wrapper. Hybrid cannot link a reactor:
+2. `command_exports::unwrap_command_exports_where` repoints web-glue's
+   own exports (`__glue_*`) past LLD's ctor wrapper, so a listener
+   dispatch does not re-run every static constructor. Every other export
+   keeps its behaviour. Hybrid cannot link a reactor instead:
    wasm-bindgen's `__wbindgen_start` only calls `main(0, 0)`, so a reactor
-   would never run constructors. `main` keeps its wrapper, which is the
-   one-time constructor run.
+   would never run constructors. (The phase-1 PoC's `package_hybrid`
+   unwraps every export but `main`; the build does not.)
 3. wasm-bindgen runs over the result as today. It passes the unknown
    import module through as `import * as … from "./__idealyst_glue.js"`.
 4. The pass writes `pkg/__idealyst_glue.js`, which exports `g0…` and
    attaches `G` lazily through `initSync(undefined)` — the same trick the
    split loaders use to reach the instance. The import is circular
    (`<lib>.js` ⇄ glue); that is safe because `initSync` is a hoisted
-   function declaration and is only called at glue-call time.
+   function declaration and is only called at glue-call time. The
+   specifier must be the one the page itself imports wasm-bindgen's JS
+   by — ES modules are keyed by URL, and a different spelling loads a
+   second, uninitialized copy (found under wasm-bindgen-test-runner,
+   which imports `./wasm-bindgen-test` without an extension). It also
+   publishes `globalThis.__idealystGlue`: the HYBRID-BRIDGE
+   (`web_glue::bridge`) and the hot-patch loader's `compileImport` /
+   `registerRecords`.
+
+In 2a this runs in every web build (`own_glue::hybrid_extract` /
+`write_hybrid_glue_file`), in `idealyst export`, and — through the
+workspace's wasm32 test runner (`scripts/wasm-glue-test-runner.sh`) — for
+every wasm-bindgen browser test of a crate that links web-glue.
 
 The same precedent already exists: `wasm-split-macro` emits
 `#[link(wasm_import_module = "./__wasm_split.js")]` imports that
@@ -280,12 +305,11 @@ learn glue imports (see risks).
   non-`catch` wasm-bindgen import today. Mitigation: `#[catch]` on
   anything that can throw, and phase 2 review of every snippet with that
   question.
-- **Hot patching adds glue imports the base never saw.** A patch that
-  introduces a new `import!` needs its snippet at patch time, and the base
-  page's `pkg/<lib>.js` does not have it. The patch loader must extract
-  the patch's glue imports and supply them — evaluating new snippet text
-  in dev, which needs `new Function` (dev only; release never patches).
-  This must be designed in phase 2, before backend-web's bindings move.
+- **Hot patching adds glue imports the base never saw.** Done in 2a: the
+  patch plan's `Glue` tag makes the page compile each glue import from
+  the JS in its name (`new Function`, dev only), and the patch's glue
+  records are registered first — a record that CHANGES a module the page
+  already runs fails the apply, i.e. reloads. Nothing is pre-declared.
 - **Split chunks import glue too.** A chunk whose code uses a binding main
   does not use imports it from `./__idealyst_glue.js`; the split loader
   must supply the namespace to chunk instantiation. Phase 6.
@@ -314,19 +338,33 @@ learn glue imports (see risks).
 1. **Proof of concept (done).** `web-glue`, the passes, the own and
    hybrid packaging, the demos, the E2E, the measurements.
    [Results below.](#phase-1-results)
-2. **backend-web onto web-glue**, including a **framework handle type**
-   to replace `web_sys::Node` as the cross-crate native handle: a
-   `web_glue::JsValue` newtype (`DomNode`) that SDKs downcast to instead
-   of web-sys types. Port the eight existing shims to `js_module!` and
-   their call sites to `import!`. Design and land the hot-patch glue
-   import story first. Wire `BuildOptions` / the CLI so an app on the
-   ported backend builds in own mode (hybrid when anything still links
-   wasm-bindgen).
+2. **backend-web onto web-glue**, with a **typed handle family**
+   (`web_glue::dom::{Node, Element, HtmlElement, HtmlInputElement, …}`,
+   `instanceof`-checked casts) to replace web-sys types as the
+   cross-crate native handle.
+   - **2a (done):** the typed family; scheduler, render loop, executor,
+     time source, logger and panic hook; every event listener
+     (`TrackedListener` semantics kept); the eight shims as
+     `js_module!`s (no run-time eval); boot; the hybrid pass in every
+     build; hot-patch glue imports; the wasm32 test runner.
+   - **2b (next):** the DOM-operation surface (element creation,
+     attribute / style / class / text writes, measurement) as `import!`s
+     over the typed handles; the shim CALL sites (`window.__idealyst*`
+     via js-sys) and the virtualizer / virtual-grid callbacks those take;
+     ResizeObserver; `Host::Node` becoming a glue handle — which is where
+     SDK mount handlers, still receiving `web_sys::Node`, need the
+     HYBRID-BRIDGE until phase 3; the dev-only transports, robot, overlay
+     entry and hot-patch loader. `Host::Node` did NOT move in 2a: SDK
+     mount handlers take it (phase 3 scope), so changing it meant either
+     editing every SDK or bridging on every node creation.
+   - An own-mode switch in `BuildOptions` comes when a framework-only app
+     links no wasm-bindgen at all (after phases 3–4).
 3. **SDKs** (the 35 crates' remaining web-sys/js-sys use), each onto
    `import!` and the handle type.
 4. **Third-party replacements**: fetch (gloo-net), IndexedDB (idb), the
-   Worker bootstrap (wasmworker); drop plotters' web backend, web-time
-   and console_error_panic_hook.
+   Worker bootstrap (wasmworker); drop plotters' web backend and
+   web-time. (`console_error_panic_hook` went in 2a:
+   `backend_web::install_panic_hook`.)
 5. **Hybrid mode as a supported configuration** for wgpu (the GPU host's
    WebGPU canvas) and for apps that use wasm-bindgen themselves.
 6. **Pipeline cleanup**: remove the wasm-bindgen-only machinery listed
@@ -391,18 +429,65 @@ function bodies. The size delta is small and unoptimized. The two open
 design items that must be settled at the start of phase 2 are hot-patch
 glue imports and the handle type.
 
+## Phase 2a results
+
+Machine and toolchain as phase 1; Chrome 154 with a matching
+chromedriver.
+
+**backend-web's browser suite: 101/101** (its wasm-bindgen tests, left on
+wasm-bindgen-test — porting the runner is not 2a's scope), run through
+`scripts/wasm-glue-test-runner.sh`, i.e. the whole test binary in hybrid
+mode. Plus the new
+`regression_glue_dispatch_does_not_rerun_static_constructors` (see
+below).
+
+**A real app, before and after** — `examples/nav-showcase`,
+`idealyst build --web` (dev profile, split on), master `64306778`'s CLI vs
+this branch's:
+
+| | before (wasm-bindgen only) | after (hybrid) |
+|---|---:|---:|
+| cold build total | 33.02 s (cargo 32.69) | 32.91 s (cargo 32.54) |
+| warm rebuild (touch `lib.rs`) | 1.29 s (cargo 0.99) | 1.05 s (cargo 0.67) |
+| wasm-bindgen | 0.13–0.16 s | 0.14–0.15 s |
+| glue-extract (new) | — | 0.04–0.06 s |
+| constructor runs: boot / 40 clicks | 1 / 0 | 1 / 0 |
+
+No regression: hybrid mode does not remove wasm-bindgen's cost yet (it
+still runs), and the extraction adds tens of milliseconds. In Chrome the
+after build boots, navigates, and logs no errors (a favicon 404 aside);
+`pkg/__idealyst_glue.<hash>.js` is fingerprinted with the rest of the
+bundle.
+
+**Constructor count (decision 3's verification).** Before the port, 1
+run at boot and 0 over 40 clicks — see [Why](#why) for what that
+corrected. After the port the same, but only because the hybrid pass
+unwraps web-glue's own exports: with them wrapped, every glue listener
+dispatch re-runs every constructor, which the regression test above
+shows (it fails with the runner's `IDEALYST_GLUE_KEEP_WRAPPERS=1`).
+
+**Design changes from the phase-2 brief:**
+
+- `Host::Node` stays `web_sys::Node` through 2a (see the plan above).
+- A GC-owned closure (`web_glue::Closure::into_js_value`, via a
+  `FinalizationRegistry` and a new `__glue_release` export): an
+  element-lifetime listener hands its closure to the element instead of a
+  backend `Vec`. That retired three never-cleared closure pools and two
+  `.forget()`s.
+- A re-entrant closure (`Closure::new_fn`): `scroll` handlers and the
+  portal focus trap are re-entered by design, and a `FnMut` glue closure
+  refuses re-entry the way wasm-bindgen's does.
+- Test runner: wasm-bindgen-test-runner serves its output from a fresh
+  tempdir but falls back to serving its working directory, so a thin
+  wrapper supplies `__idealyst_glue.js` there. `wasm-pack test` bypasses
+  it; `cargo test --target wasm32-unknown-unknown` is the supported way.
+
 ## Open questions
 
-- **Hot patching:** evaluate a patch's new snippets in the page at patch
-  time (dev-only `new Function`), or have the base declare every snippet
-  its crates *could* use (rooting imports, not functions)?
-- **Handle type:** a `DomNode(JsValue)` newtype SDKs downcast to, or a
-  typed family (`Element`, `HtmlVideoElement`, …) with checked casts?
-  Phase 2 should prototype on the video and maps SDKs, the heaviest
-  downcasters.
-- **Should the reactor/unwrap fix land in today's pipeline now?** It is
-  independent of this proposal and removes a per-call constructor sweep
-  from every current app (5,086 wrapped exports on CrewForge's base).
+- **Unwrapping the remaining bare-named exports** (an app's own
+  `#[wasm_bindgen]` / `#[no_mangle]` fns the page calls): measured in 2a,
+  a normal UI never calls one, so this is now a small question rather
+  than a per-event cost. Left as today.
 - **Typed arrays:** the batch shims hand `Uint32Array`s built from Rust
   slices. With own bindings that is a `G.u32().subarray(...)` view read
   inside the snippet — no copy at all — but it must never be retained

@@ -1,8 +1,50 @@
 # backend-web
 
-Web backend: drives DOM nodes via `web-sys` / `wasm-bindgen`. The reference
-backend, with the most complete primitive coverage. Every framework test and
-example targets it first.
+Web backend: drives DOM nodes. The reference backend, with the most complete
+primitive coverage. Every framework test and example targets it first.
+
+## Its JS boundary: web-glue, in hybrid mode
+
+The backend is mid-way through moving off wasm-bindgen onto the
+framework-owned boundary, `web-glue`
+([`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md)).
+As of phase 2a:
+
+- **On web-glue:** the scheduler (microtasks, rAF, timers), the render
+  loop, the async executor, the time source and wall clock, the logger and
+  panic hook, every event listener, and the eight `runtime/js/` shims
+  (shipped as `web_glue::js_module!`s, evaluated once — no run-time
+  `Function(src)` eval).
+- **Still web-sys / wasm-bindgen:** the DOM-operation surface (create,
+  attribute and style writes), `Host::Node` (`web_sys::Node`, which SDK
+  mount handlers receive), ResizeObserver callbacks, the virtualizer shim
+  callbacks, and the dev-only transports, robot, overlay and hot-patch
+  loader.
+
+So a page is **hybrid**: one module, both bindings. `idealyst build --web`
+extracts the glue before wasm-bindgen runs and writes
+`pkg/__idealyst_glue.js` after (`build_web::own_glue`).
+`src/glue_dom.rs` is the one place the crate crosses between web-sys
+values and glue handles (`HYBRID-BRIDGE`, removed in phase 2b/3).
+
+Listener ownership, which the port made uniform:
+
+- a listener a node's teardown must detach → `WebBackend::track_listener`
+  (a `web_glue::dom::Listener`: detaches BEFORE its closure drops);
+- a `window` / `document` listener → a `Listener` held by its owner;
+- a listener that lives exactly as long as its element →
+  `glue_dom::listen_for_element_lifetime` (the element owns it; the Rust
+  closure is released when JS collects the element). Never a backend-held
+  `Vec` of closures — that pinned them for the life of the page.
+- a handler that may be re-entered (`scroll` re-fired by its own layout
+  write, a focus trap's own `.focus()`) → the `_fn` variants
+  (`web_glue::Closure::new_fn`); `FnMut` refuses re-entry loudly.
+
+**Running the browser tests:** `cargo test -p backend-web --target
+wasm32-unknown-unknown` with `CHROMEDRIVER` set. The workspace's wasm32
+runner (`scripts/wasm-glue-test-runner.sh`, `.cargo/config.toml`) supplies
+`__idealyst_glue.js` to the test page; `wasm-pack test` bypasses it and the
+tests cannot load.
 
 ## Bootstrap: every web host must do this
 
@@ -37,7 +79,9 @@ the backend up by hand must call them.
   `WebBackend`), and the register/apply inherent methods that live next to
   the data they mutate (the `caps::StyleOps` impl delegates to them).
 - **`defaults.rs`**: global baselines, including the `.ui-default` class,
-  spinner keyframes, virtualizer JS shim, and dynamic-slot teardown.
+  spinner keyframes, the JS shims (as web-glue modules), and dynamic-slot
+  teardown.
+- **`glue_dom.rs`**: the listener helpers and the HYBRID-BRIDGE crossing.
 - **`primitives/`**: one module per primitive. Each owns its
   create/update functions, any `Ops` impl, and the `make_*_handle` builder.
 - **`newcore.rs`**: the `impl Host for WebBackend` block plus all ~30

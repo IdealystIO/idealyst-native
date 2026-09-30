@@ -516,7 +516,17 @@ section, one entry per import in import order. The page's own loader
   every slot's signature and a disagreeing import becomes a throwing
   function instead;
 - a wasm-bindgen descriptor, which only runs at bindgen time, is a
-  throwing function naming what it is.
+  throwing function naming what it is;
+- a **web-glue import** (`./__idealyst_glue.js`; backend-web's own
+  bindings, see `docs/proposals/own-web-bindings.md`) carries its JS in
+  its import name, so the page compiles it
+  (`__idealystGlue.compileImport`, a dev-only `new Function`) — a patch
+  may call a binding the base never linked, and nothing is declared
+  ahead of time. The patch's `__idealyst_glue` records (the web-glue
+  runtime, `js_module!` sources) are registered first; one that CHANGES a
+  module the page already has fails the apply, which reloads the page,
+  because the old module may already have run. Plan version 2 added this
+  tag.
 
 Two edits remain, both byte-level splices that renumber nothing. A
 wasm-bindgen cast the patch defines itself (a crate building its own
