@@ -39,9 +39,10 @@ runtime-vocabulary = { workspace = true, optional = true }
 reactive = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/async-driver"]
 catalog = ["reactive", "runtime-core/catalog"]
 
-# Web (wasm): localStorage via web-sys.
+# Web (wasm): localStorage through web-glue bindings declared in
+# `src/web.rs` (the framework's own JS boundary — no wasm-bindgen/web-sys).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Storage"] }
+web-glue = { workspace = true }
 
 # iOS / macOS / tvOS: NSUserDefaults via the Obj-C runtime (objc2).
 [target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
@@ -53,9 +54,11 @@ objc2-foundation = { version = "0.2", features = ["NSString"] }
 jni = "0.21"
 ndk-context = "0.1"
 
+# Browser tests run through the workspace's wasm32 runner
+# (`cargo test -p storage --target wasm32-unknown-unknown`), which supplies
+# web-glue's JS; `wasm-pack test` cannot load a web-glue crate.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Storage"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

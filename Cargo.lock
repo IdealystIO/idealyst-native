@@ -11556,7 +11556,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "wasm-bindgen-test",
- "web-sys",
+ "web-glue",
 ]
 
 [[package]]

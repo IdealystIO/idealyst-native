@@ -108,7 +108,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p storage` — `MemoryStorage`/`FileStorage` round-trip, namespaced `clear`, idempotent `remove`
 - [ ] `cargo build -p storage --target wasm32-unknown-unknown` — web (`localStorage`) target compiles
 - [x] `cargo test -p storage` — `get_now`/`set_now`/`remove_now` share state with the async API (memory + file), and a store whose future would wait reports `NotSupported`
-- [x] `wasm-pack test --headless --chrome --package storage` — `tests/web_now.rs`: the `localStorage` store answers `*_now` under its `name:` prefix
+- [x] `cargo test -p storage --target wasm32-unknown-unknown` (headless Chrome through the workspace runner; `wasm-pack test` cannot load web-glue crates) — `tests/web_now.rs`: the `localStorage` store answers `*_now` under its `name:` prefix, round-trips non-ASCII, and `clear()` removes only its own namespace
 
 **Behavior**
 
