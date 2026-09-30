@@ -5956,7 +5956,8 @@ dependencies = [
  "runtime-vocabulary",
  "serde_json",
  "trybuild",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]

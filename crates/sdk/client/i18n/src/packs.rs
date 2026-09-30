@@ -161,11 +161,22 @@ fn resolve_pack_url(base: &str, code: &str) -> String {
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         format!("{trimmed}/{code}.json")
     } else {
-        let origin = web_sys::window()
-            .and_then(|w| w.location().origin().ok())
-            .unwrap_or_default();
-        format!("{origin}{trimmed}/{code}.json")
+        format!("{}{trimmed}/{code}.json", document_origin())
     }
+}
+
+#[cfg(all(feature = "lazy-fetch", target_arch = "wasm32"))]
+web_glue::import! {
+    // `location.origin` written to `out`; untouched (so `""`) without a
+    // window.
+    fn js_document_origin(out: usize) =
+        "(o) => { if (typeof window !== 'undefined') G.retStr(window.location.origin, o); }";
+}
+
+/// `window.location.origin`, or `""` outside a window context.
+#[cfg(all(feature = "lazy-fetch", target_arch = "wasm32"))]
+fn document_origin() -> String {
+    web_glue::string::receive(|o| unsafe { js_document_origin(o) })
 }
 
 /// Native loader: the caller supplies an absolute base (there's no document
@@ -173,6 +184,36 @@ fn resolve_pack_url(base: &str, code: &str) -> String {
 #[cfg(all(feature = "lazy-fetch", not(target_arch = "wasm32")))]
 fn resolve_pack_url(base: &str, code: &str) -> String {
     format!("{}/{code}.json", base.trim_end_matches('/'))
+}
+
+/// Browser tests for the web pack-URL resolution. Run with
+/// `cargo test -p i18n --features lazy-fetch --lib --target wasm32-unknown-unknown`.
+#[cfg(all(test, feature = "lazy-fetch", target_arch = "wasm32"))]
+mod web_tests {
+    use super::resolve_pack_url;
+    use wasm_bindgen_test::*;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn page_origin() -> String {
+        let loc = web_glue::JsValue::global().get("location").unwrap();
+        loc.get("origin").unwrap().as_string().unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    fn relative_base_resolves_against_the_document_origin() {
+        let origin = page_origin();
+        assert!(origin.starts_with("http"), "test page origin: {origin}");
+        assert_eq!(resolve_pack_url("/locales/", "ja"), format!("{origin}/locales/ja.json"));
+    }
+
+    #[wasm_bindgen_test]
+    fn absolute_base_is_used_verbatim() {
+        assert_eq!(
+            resolve_pack_url("https://cdn.example/packs", "fr"),
+            "https://cdn.example/packs/fr.json"
+        );
+    }
 }
 
 #[cfg(test)]
