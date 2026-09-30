@@ -17,7 +17,7 @@ such facility exists, rather than faking a gate.**
 | macOS | LocalAuthentication (`LAContext`) | Touch ID | 🟡 **UNTESTED at runtime** — compiles + links on host; prompt not exercised |
 | Android | framework `BiometricPrompt` + `BiometricManager` (no androidx) | fingerprint / face / iris | 🔴 **UNTESTED** — compiles (`aarch64-linux-android`); JNI signatures + `nativeResult` export not run on a device |
 | Windows | Windows Hello (`UserConsentVerifier`) | face / fingerprint / PIN | 🔴 **UNTESTED** — compiles (`x86_64-pc-windows-gnu`); Hello modal not run on a host |
-| web | WebAuthn (`navigator.credentials.get`) | platform / roaming passkey | 🔴 **UNTESTED** — compiles (`wasm32-unknown-unknown`); ceremony not run in a browser |
+| web | WebAuthn (`navigator.credentials.get`) | platform / roaming passkey | 🟡 binding tested in headless Chrome against a stand-in `navigator.credentials` (`tests/web_webauthn.rs`); a real passkey ceremony not yet run |
 | Linux / other | **errors** — no standard API | n/a | 🟢 covered — `Unsupported` shim unit-tested |
 
 > **Testing status: every real backend is COMPILE-CHECKED ONLY, not yet
@@ -196,6 +196,7 @@ prompt. Tick each item as you exercise it.
 **Automated**
 - [ ] `cargo test -p biometrics` — portable core: trait, `Biometry`, `BioError`, `AuthRequest`/`WebAuthnRequest` builders, `Unsupported` shim, factory
 - [ ] `cargo build -p biometrics --target wasm32-unknown-unknown` — web (WebAuthn) target compiles
+- [x] `cargo test -p biometrics --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_webauthn.rs`: the options built from the request's bytes, the assertion's bytes back, cancellation / failure / no-`navigator.credentials` mapping, no challenge → `Unsupported`
 
 **Behavior**
 

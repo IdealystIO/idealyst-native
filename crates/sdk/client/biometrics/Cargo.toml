@@ -67,20 +67,13 @@ windows = { version = "0.58", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
-# web: WebAuthn assertion ceremony via `navigator.credentials.get`.
+# web: WebAuthn assertion ceremony via `navigator.credentials.get`, through
+# web-glue bindings (`src/web.rs`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "CredentialsContainer",
-    "Credential",
-    "CredentialRequestOptions",
-    "PublicKeyCredential",
-    "PublicKeyCredentialType",
-    "AuthenticatorAssertionResponse",
-    "AuthenticationExtensionsClientOutputs",
-    "Location",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_webauthn.rs`) — run with
+# `cargo test -p biometrics --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

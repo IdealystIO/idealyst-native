@@ -13,21 +13,60 @@
 //!   [`Authentication::assertion`] for the caller to POST to its server.
 //!   This crate cannot verify the signature locally and does not pretend to.
 //!
-//! The options dictionary is built with `js_sys::Reflect` rather than a
-//! typed web-sys builder — fewer optional web-sys features, and the shape
-//! maps 1:1 to the WebAuthn `PublicKeyCredentialRequestOptions` spec.
+//! Every browser call is a web-glue binding declared here (own-web-bindings
+//! phase 3). The options dictionary is built inside the one binding that
+//! calls `navigator.credentials.get` — its shape maps 1:1 to the WebAuthn
+//! `PublicKeyCredentialRequestOptions` spec — and the assertion's
+//! `ArrayBuffer`s are copied out into `Vec<u8>`s (length, then one copy
+//! into a buffer Rust allocated first, so no view outlives a wasm call).
 
-use js_sys::{Array, Object, Reflect, Uint8Array};
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    AuthenticatorAssertionResponse, CredentialRequestOptions, PublicKeyCredential,
-};
+use web_glue::{cast, string, JsError, JsFuture, JsValue};
 
 use crate::{
     AuthFuture, AuthRequest, Authentication, BioError, Biometry, BiometricAuthenticator,
     WebAuthnAssertion, WebAuthnRequest,
 };
+
+web_glue::import! {
+    fn js_webauthn_supported() -> u32 =
+        "() => typeof window !== 'undefined' && 'PublicKeyCredential' in window ? 1 : 0";
+    fn js_has_window() -> u32 = "() => typeof window === 'undefined' ? 0 : 1";
+    // `navigator.credentials.get({ publicKey })` → its Promise.
+    //   challenge: `cl` bytes at `cp` (copied — `slice`, never a view);
+    //   rpId: set when `has & 1`; timeout: set when `has & 2`;
+    //   allowCredentials: `n` ids whose u32 byte lengths are at `lens`,
+    //   concatenated at `ids`.
+    // Throws (→ Err) where `navigator.credentials` is absent (an insecure
+    // context) or the options are rejected synchronously.
+    #[catch]
+    fn js_credentials_get(
+        cp: usize, cl: usize,
+        has: u32, rp: usize, rl: usize, timeout: f64,
+        ids: usize, lens: usize, n: usize
+    ) -> u32 =
+        "(cp, cl, has, rp, rl, timeout, ids, lens, n) => { \
+           const u8 = G.u8(); const bytes = (p, l) => u8.slice(p >>> 0, (p >>> 0) + (l >>> 0)); \
+           const pk = { challenge: bytes(cp, cl), userVerification: 'required' }; \
+           if (has & 1) pk.rpId = G.str(rp, rl); \
+           if (has & 2) pk.timeout = timeout; \
+           if (n > 0) { const w = G.u32(); const lb = (lens >>> 0) >>> 2; let at = ids >>> 0; \
+             pk.allowCredentials = []; \
+             for (let k = 0; k < (n >>> 0); k++) { const l = w[lb + k]; \
+               pk.allowCredentials.push({ type: 'public-key', id: bytes(at, l) }); at += l; } } \
+           return G.add(window.navigator.credentials.get({ publicKey: pk })); }";
+    // The assertion's buffers: `which` 0 rawId, 1 authenticatorData,
+    // 2 clientDataJSON, 3 signature, 4 userHandle (0 when null).
+    fn js_assertion_buffer(cred: u32, which: u32) -> u32 =
+        "(c, k) => { const v = G.get(c); const r = v.response; \
+           const b = k === 0 ? v.rawId : k === 1 ? r.authenticatorData : k === 2 ? r.clientDataJSON \
+                   : k === 3 ? r.signature : r.userHandle; \
+           return b == null ? 0 : G.add(b); }";
+    fn js_response(cred: u32) -> u32 =
+        "(c) => { const r = G.get(c).response; return r == null ? 0 : G.add(r); }";
+    fn js_byte_length(b: u32) -> u32 = "(b) => G.get(b).byteLength";
+    // Copy an ArrayBuffer into `len` bytes Rust already allocated at `p`.
+    fn js_copy_bytes(b: u32, p: usize) = "(b, p) => { G.u8().set(new Uint8Array(G.get(b)), p >>> 0); }";
+}
 
 /// Guidance returned when a web `authenticate` call arrives without a
 /// WebAuthn challenge — the one thing the browser path can't synthesize.
@@ -74,43 +113,40 @@ impl BiometricAuthenticator for WebAuthn {
 }
 
 fn webauthn_supported() -> bool {
-    web_sys::window()
-        .map(|w| {
-            Reflect::has(&w, &JsValue::from_str("PublicKeyCredential")).unwrap_or(false)
-        })
-        .unwrap_or(false)
+    unsafe { js_webauthn_supported() != 0 }
 }
 
 /// Build the `PublicKeyCredentialRequestOptions`, run
 /// `navigator.credentials.get`, and unpack the assertion.
 async fn run_ceremony(req: WebAuthnRequest) -> Result<Authentication, BioError> {
-    let window = web_sys::window().ok_or_else(|| BioError::Backend("no window".into()))?;
-    let credentials = window.navigator().credentials();
+    if unsafe { js_has_window() } == 0 {
+        return Err(BioError::Backend("no window".into()));
+    }
+    let promise = credentials_get(&req).map_err(js_to_backend)?;
+    let credential = JsFuture::new(&promise).await.map_err(map_get_error)?;
 
-    let public_key = build_request_options(&req).map_err(js_to_backend)?;
-    let options = Object::new();
-    Reflect::set(&options, &"publicKey".into(), &public_key).map_err(js_to_backend)?;
-    let options: CredentialRequestOptions = options.unchecked_into();
+    if !cast::instance_of(&credential, "PublicKeyCredential") {
+        return Err(BioError::Backend("credential was not a PublicKeyCredential".into()));
+    }
+    // SAFETY (both): fresh `G.add` slots the snippets minted for us.
+    let response = match unsafe { js_response(credential.raw()) } {
+        0 => JsValue::undefined(),
+        h => unsafe { JsValue::from_raw(h) },
+    };
+    if !cast::instance_of(&response, "AuthenticatorAssertionResponse") {
+        return Err(BioError::Backend("response was not an assertion".into()));
+    }
 
-    let promise = credentials
-        .get_with_options(&options)
-        .map_err(js_to_backend)?;
-    let credential = JsFuture::from(promise).await.map_err(map_get_error)?;
-
-    let pkc: PublicKeyCredential = credential
-        .dyn_into()
-        .map_err(|_| BioError::Backend("credential was not a PublicKeyCredential".into()))?;
-    let response: AuthenticatorAssertionResponse = pkc
-        .response()
-        .dyn_into()
-        .map_err(|_| BioError::Backend("response was not an assertion".into()))?;
-
+    let field = |which: u32| match unsafe { js_assertion_buffer(credential.raw(), which) } {
+        0 => None,
+        h => Some(buffer_to_vec(&unsafe { JsValue::from_raw(h) })),
+    };
     let assertion = WebAuthnAssertion {
-        credential_id: buffer_to_vec(&pkc.raw_id()),
-        authenticator_data: buffer_to_vec(&response.authenticator_data()),
-        client_data_json: buffer_to_vec(&response.client_data_json()),
-        signature: buffer_to_vec(&response.signature()),
-        user_handle: response.user_handle().map(|b| buffer_to_vec(&b)),
+        credential_id: field(0).unwrap_or_default(),
+        authenticator_data: field(1).unwrap_or_default(),
+        client_data_json: field(2).unwrap_or_default(),
+        signature: field(3).unwrap_or_default(),
+        user_handle: field(4),
     };
 
     Ok(Authentication {
@@ -118,45 +154,62 @@ async fn run_ceremony(req: WebAuthnRequest) -> Result<Authentication, BioError> 
     })
 }
 
-/// Construct the WebAuthn request options object (the `publicKey` member).
-fn build_request_options(req: &WebAuthnRequest) -> Result<Object, JsValue> {
-    let pk = Object::new();
-    Reflect::set(
-        &pk,
-        &"challenge".into(),
-        Uint8Array::from(req.challenge.as_slice()).as_ref(),
-    )?;
-    Reflect::set(&pk, &"userVerification".into(), &"required".into())?;
-
-    if let Some(rp_id) = &req.rp_id {
-        Reflect::set(&pk, &"rpId".into(), &JsValue::from_str(rp_id))?;
-    }
-    if let Some(timeout) = req.timeout_ms {
-        Reflect::set(&pk, &"timeout".into(), &JsValue::from_f64(timeout as f64))?;
-    }
-    if !req.allow_credentials.is_empty() {
-        let list = Array::new();
-        for id in &req.allow_credentials {
-            let desc = Object::new();
-            Reflect::set(&desc, &"type".into(), &"public-key".into())?;
-            Reflect::set(&desc, &"id".into(), Uint8Array::from(id.as_slice()).as_ref())?;
-            list.push(&desc);
+/// Start the ceremony: the WebAuthn request options (the `publicKey`
+/// member) are assembled inside the binding from the request's bytes.
+fn credentials_get(req: &WebAuthnRequest) -> Result<JsValue, JsError> {
+    let mut has = 0;
+    let (rp, rl) = match &req.rp_id {
+        Some(id) => {
+            has |= 1;
+            string::abi(id)
         }
-        Reflect::set(&pk, &"allowCredentials".into(), &list)?;
-    }
-    Ok(pk)
+        None => (0, 0),
+    };
+    let timeout = match req.timeout_ms {
+        Some(ms) => {
+            has |= 2;
+            f64::from(ms)
+        }
+        None => 0.0,
+    };
+    let ids: Vec<u8> = req.allow_credentials.concat();
+    let lens: Vec<u32> = req.allow_credentials.iter().map(|id| id.len() as u32).collect();
+    let h = unsafe {
+        js_credentials_get(
+            req.challenge.as_ptr() as usize,
+            req.challenge.len(),
+            has,
+            rp,
+            rl,
+            timeout,
+            ids.as_ptr() as usize,
+            lens.as_ptr() as usize,
+            lens.len(),
+        )
+    }?;
+    // SAFETY: a fresh `G.add` slot the snippet minted for us.
+    Ok(unsafe { JsValue::from_raw(h) })
 }
 
 /// Copy an `ArrayBuffer` (as returned by WebAuthn fields) into a `Vec<u8>`.
-fn buffer_to_vec(buffer: &js_sys::ArrayBuffer) -> Vec<u8> {
-    Uint8Array::new(buffer).to_vec()
+fn buffer_to_vec(buffer: &JsValue) -> Vec<u8> {
+    let len = unsafe { js_byte_length(buffer.raw()) } as usize;
+    // Allocated BEFORE the copy crossing: the snippet takes its memory view
+    // after nothing else can grow memory.
+    let mut out = vec![0u8; len];
+    if len != 0 {
+        unsafe { js_copy_bytes(buffer.raw(), out.as_mut_ptr() as usize) }
+    }
+    out
 }
 
 /// Map a rejected `navigator.credentials.get` promise to a typed error. A
 /// `NotAllowedError`/`AbortError` DOMException is the browser's signal for a
 /// user cancellation or ceremony timeout.
-fn map_get_error(err: JsValue) -> BioError {
-    let name = Reflect::get(&err, &JsValue::from_str("name"))
+fn map_get_error(err: JsError) -> BioError {
+    let name = err
+        .value()
+        .get("name")
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_default();
@@ -166,15 +219,16 @@ fn map_get_error(err: JsValue) -> BioError {
     }
 }
 
-fn js_to_backend(err: JsValue) -> BioError {
+fn js_to_backend(err: JsError) -> BioError {
     BioError::Backend(describe(&err))
 }
 
 /// Best-effort human description of a JS error value.
-fn describe(err: &JsValue) -> String {
-    Reflect::get(err, &JsValue::from_str("message"))
+fn describe(err: &JsError) -> String {
+    let v = err.value();
+    v.get("message")
         .ok()
-        .and_then(|v| v.as_string())
-        .or_else(|| err.as_string())
+        .and_then(|m| m.as_string())
+        .or_else(|| v.as_string())
         .unwrap_or_else(|| "unknown JS error".into())
 }
