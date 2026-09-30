@@ -13701,6 +13701,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-glue"
+version = "1.5.2"
+
+[[package]]
 name = "web-sys"
 version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"

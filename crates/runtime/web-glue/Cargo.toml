@@ -1,0 +1,23 @@
+# web-glue — the framework-owned wasm ⇄ JS boundary (phase 1 proof of
+# concept of docs/proposals/own-web-bindings.md).
+#
+# Replaces what wasm-bindgen / web-sys / js-sys give the framework today:
+# JS object handles, strings, callbacks, promises-as-futures, exceptions —
+# with the JS for every binding carried INSIDE the linked wasm (import
+# names + one custom section) and turned into `pkg/<lib>.js` by a streaming
+# build pass (`wasm_carve::glue` + `build_web::own_glue`) that never walks a
+# function body.
+#
+# Zero dependencies on purpose: it sits under every web crate that will be
+# ported onto it, and it must not drag wasm-bindgen back in.
+
+[package]
+name = "web-glue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Framework-owned wasm <-> JS bindings: handles, strings, callbacks, futures, exceptions, with the JS shipped inside the wasm."
+# Phase 1 PoC: not published until backend-web is ported onto it (phase 2).
+publish = false
+
+[dependencies]

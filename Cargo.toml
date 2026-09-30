@@ -33,6 +33,9 @@ members = [
     # signatures + patch validation. Deps: runtime-scene and serde only.
     "crates/runtime/template",
     "crates/runtime/layout",
+    # Framework-owned wasm <-> JS bindings (phase 1 PoC of
+    # docs/proposals/own-web-bindings.md). Zero deps; no wasm-bindgen.
+    "crates/runtime/web-glue",
 
     # Shared StyleRules → CSS conversion (used by web + ssr backends).
     "crates/css",
