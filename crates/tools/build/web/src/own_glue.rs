@@ -1,14 +1,21 @@
 //! The own-bindings packaging pass: `pkg/<lib>.js` + `pkg/<lib>_bg.wasm`
 //! from a linked module that uses `web-glue` instead of wasm-bindgen.
 //!
-//! Phase 1 of `docs/proposals/own-web-bindings.md`. Additive and opt-in:
-//! nothing in [`crate::build`] calls it. It is reached only through
-//! [`build_crate`] / [`package_own`] / [`package_hybrid`], which the E2E
-//! (`tests/own_glue_e2e.rs`) and the phase-1 measurements drive directly.
-//! Wiring a `BuildOptions` switch into `build()` belongs to phase 2: until
-//! backend-web is ported, every idealyst app links wasm-bindgen through
-//! backend-web, so the only mode `build()` could offer it is hybrid, whose
-//! pipeline is today's plus one extraction pass.
+//! `docs/proposals/own-web-bindings.md`. Two uses:
+//!
+//! * **Every web build, hybrid mode** — [`hybrid_extract`] before
+//!   hot-patch base prep and wasm-bindgen, [`write_hybrid_glue_file`]
+//!   after (called from [`crate::build`]; `idealyst export` does the same).
+//!   backend-web's bindings are web-glue while the SDKs and wgpu are still
+//!   on wasm-bindgen (phase 2a), so wasm-bindgen still runs; this pass
+//!   only takes the glue out first and supplies it back as
+//!   `pkg/__idealyst_glue.js`. A module with no glue passes through.
+//! * **Own mode** — [`package_own`] / [`build_crate`], no wasm-bindgen:
+//!   what a framework-only app builds with once phases 3–4 remove the
+//!   remaining web-sys users. Reached today only from the E2E and
+//!   measurements (`tests/own_glue_e2e.rs`). [`package_hybrid`] is the
+//!   phase-1 hybrid measurement path; unlike the build's hybrid steps it
+//!   also unwraps command exports (`wasm_carve::command_exports`).
 //!
 //! # Output contract
 //!
@@ -35,7 +42,6 @@
 //! the module being linked as a reactor ([`link_args`]); see `web_glue`'s
 //! crate docs for the command-export trap that flag avoids.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -74,166 +80,41 @@ pub struct PackageReport {
     pub unwrapped_command_exports: usize,
 }
 
-fn indent_block(src: &str) -> String {
-    let mut out = String::with_capacity(src.len() + src.len() / 16);
-    for line in src.lines() {
-        if !line.is_empty() {
-            out.push_str("  ");
-        }
-        out.push_str(line);
-        out.push('\n');
+pub use wasm_carve::glue_js::{hybrid_glue_js, loader_js};
+
+/// The hybrid glue file's name in `pkg/` — what wasm-bindgen's output
+/// imports the `./__idealyst_glue.js` namespace from.
+pub const HYBRID_GLUE_FILE: &str = "__idealyst_glue.js";
+
+/// Hybrid pipeline, step 1 (before hot-patch base prep and wasm-bindgen):
+/// extract the glue from `linked` and write the stripped module to a
+/// SIBLING file (`<bin>.glue.wasm`) — never over cargo's own artifact,
+/// whose mtime cargo's freshness check trusts. Returns the stripped path
+/// and what was extracted. A module without glue is returned as-is.
+///
+/// Deliberately does NOT unwrap LLD's command-export wrappers
+/// (`wasm_carve::command_exports`): that changes how often static
+/// constructors run for every app, and is its own decision
+/// (docs/proposals/own-web-bindings.md, "Open questions").
+pub fn hybrid_extract(linked: &Path) -> Result<(PathBuf, Glue)> {
+    let bytes = fs::read(linked).with_context(|| format!("read {}", linked.display()))?;
+    let glue = glue::extract(&bytes).context("extract web-glue")?;
+    if !wasm_carve::glue_js::needs_glue_file(&glue) {
+        return Ok((linked.to_path_buf(), glue));
     }
-    out
+    let stripped = linked.with_extension("glue.wasm");
+    write(&stripped, &glue.wasm)?;
+    Ok((stripped, glue))
 }
 
-/// The runtime + module prelude shared by both modes: defines `G`.
-fn prelude_js(glue: &Glue) -> String {
-    let mut js = String::new();
-    match &glue.runtime {
-        Some(runtime) => {
-            js.push_str("const G = (function () {\n");
-            js.push_str(&indent_block(runtime));
-            js.push_str("})();\n");
-        }
-        None => js.push_str("const G = null;\n"),
+/// Hybrid pipeline, step 2 (after wasm-bindgen wrote `pkg_dir`): the
+/// `__idealyst_glue.js` its output imports. No-op for a module without
+/// glue.
+pub fn write_hybrid_glue_file(pkg_dir: &Path, glue: &Glue, lib_name: &str) -> Result<()> {
+    if !wasm_carve::glue_js::needs_glue_file(glue) {
+        return Ok(());
     }
-    for m in &glue.modules {
-        let _ = writeln!(js, "G.module({}, function (G) {{", json_string(&m.name));
-        js.push_str(&indent_block(&m.source));
-        js.push_str("});\n");
-    }
-    js
-}
-
-/// One `name: (snippet),` entry per glue import.
-fn snippet_entries(glue: &Glue, prefix: &str, sep: &str, suffix: &str) -> String {
-    let mut js = String::new();
-    for imp in &glue.imports {
-        let _ = writeln!(js, "// {}", imp.key.replace('\n', " "));
-        let body = if imp.catch {
-            format!("G.catching((\n{}\n))", imp.js.trim())
-        } else {
-            format!("(\n{}\n)", imp.js.trim())
-        };
-        let _ = writeln!(js, "{prefix}{}{sep}{body}{suffix}", imp.short);
-    }
-    js
-}
-
-/// A JS string literal.
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// `pkg/<lib>.js` for own mode.
-pub fn loader_js(glue: &Glue, lib_name: &str) -> String {
-    let mut js = String::from(
-        "// Generated by build-web's own-glue pass from the web-glue records and\n\
-         // import snippets carried inside the wasm. Do not edit.\n",
-    );
-    for (i, m) in glue.foreign_import_modules.iter().enumerate() {
-        let _ = writeln!(js, "import * as __foreign{i} from {};", json_string(m));
-    }
-    js.push_str(&prelude_js(glue));
-    js.push_str("const __glue = {\n");
-    js.push_str(&snippet_entries(glue, "  ", ": ", ","));
-    js.push_str("};\n");
-    let _ = write!(js, "const __imports = {{ {}: __glue", json_string(glue::IMPORT_MODULE));
-    for (i, m) in glue.foreign_import_modules.iter().enumerate() {
-        let _ = write!(js, ", {}: __foreign{i}", json_string(m));
-    }
-    js.push_str(" };\n");
-    let _ = write!(
-        js,
-        r#"
-let wasm;
-let __pending;
-
-function __finalize(instance) {{
-  if (wasm !== undefined) return wasm;
-  wasm = instance.exports;
-  if (G !== null) G.attach(wasm);
-  // Reactor module: constructors run once, here, never per export call.
-  if (typeof wasm.__wasm_call_ctors === "function") wasm.__wasm_call_ctors();
-  if (typeof wasm.main === "function") wasm.main(0, 0);
-  return wasm;
-}}
-
-export function initSync(module) {{
-  if (wasm !== undefined) return wasm;
-  if (module !== undefined && module !== null && Object.getPrototypeOf(module) === Object.prototype) {{
-    module = module.module;
-  }}
-  if (!(module instanceof WebAssembly.Module)) module = new WebAssembly.Module(module);
-  return __finalize(new WebAssembly.Instance(module, __imports));
-}}
-
-async function __instantiate(input) {{
-  if (input !== undefined && input !== null && Object.getPrototypeOf(input) === Object.prototype) {{
-    input = input.module_or_path;
-  }}
-  if (input === undefined) input = new URL({wasm_name}, import.meta.url);
-  if (typeof input === "string" || input instanceof URL ||
-      (typeof Request === "function" && input instanceof Request)) {{
-    input = fetch(input);
-  }}
-  input = await input;
-  if (input instanceof WebAssembly.Module) {{
-    return new WebAssembly.Instance(input, __imports);
-  }}
-  if (typeof Response === "function" && input instanceof Response) {{
-    if (typeof WebAssembly.instantiateStreaming === "function" &&
-        input.headers.get("Content-Type") === "application/wasm") {{
-      return (await WebAssembly.instantiateStreaming(input, __imports)).instance;
-    }}
-    input = await input.arrayBuffer();
-  }}
-  return (await WebAssembly.instantiate(input, __imports)).instance;
-}}
-
-export default function init(input) {{
-  if (wasm !== undefined) return Promise.resolve(wasm);
-  return (__pending ??= __instantiate(input).then(__finalize));
-}}
-"#,
-        wasm_name = json_string(&format!("{lib_name}_bg.wasm")),
-    );
-    js
-}
-
-/// `pkg/__idealyst_glue.js` for hybrid mode: the glue namespace as an ES
-/// module wasm-bindgen's generated JS imports
-/// (`import * as … from "./__idealyst_glue.js"`). wasm-bindgen owns
-/// instantiation, so `G` attaches lazily through `initSync()`, which
-/// returns the raw exports once the instance exists. The import is
-/// circular (`<lib>.js` ⇄ this file); that is safe because `initSync` is
-/// a hoisted function declaration and is only called at glue-call time.
-pub fn hybrid_glue_js(glue: &Glue, lib_name: &str) -> String {
-    let mut js = String::from(
-        "// Generated by build-web's own-glue pass (hybrid mode). Do not edit.\n",
-    );
-    let _ = writeln!(js, "import {{ initSync }} from {};", json_string(&format!("./{lib_name}.js")));
-    js.push_str(&prelude_js(glue));
-    js.push_str("if (G !== null) G.lazyAttach(() => initSync(undefined));\n");
-    js.push_str(&snippet_entries(glue, "export const ", " = ", ";"));
-    js
+    write(&pkg_dir.join(HYBRID_GLUE_FILE), hybrid_glue_js(glue, &format!("{lib_name}.js")))
 }
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) -> Result<()> {
@@ -303,8 +184,8 @@ pub fn package_hybrid(
     let bindgen_time = bindgen_start.elapsed();
 
     let js_start = Instant::now();
-    let js = hybrid_glue_js(&glue, lib_name);
-    write(&out_dir.join("__idealyst_glue.js"), &js)?;
+    let js = hybrid_glue_js(&glue, &format!("{lib_name}.js"));
+    write(&out_dir.join(HYBRID_GLUE_FILE), &js)?;
     let wasm_bytes = fs::metadata(out_dir.join(format!("{lib_name}_bg.wasm")))?.len() as usize;
     Ok(PackageReport {
         unwrapped_command_exports: unwrapped,
@@ -400,72 +281,4 @@ pub fn build_crate(reporter: &dev_events::Reporter, b: &CrateBuild) -> Result<Cr
         Mode::Hybrid => package_hybrid(reporter, &linked, &b.out_dir, &lib_name)?,
     };
     Ok(CrateBuildReport { cargo_time, package, linked_wasm: linked })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasm_carve::glue::{GlueImport, GlueRecord};
-
-    fn glue() -> Glue {
-        Glue {
-            wasm: Vec::new(),
-            imports: vec![
-                GlueImport { short: "g0".into(), key: "a::f(u32)".into(), catch: false, js: "(x) => x".into() },
-                GlueImport { short: "g1".into(), key: "a::g()".into(), catch: true, js: "() => { throw 1; }".into() },
-            ],
-            runtime: Some("return { module() {}, attach() {}, catching(f) { return f; } };".into()),
-            modules: vec![GlueRecord { kind: 1, name: "m\"x".into(), source: "return 1;".into() }],
-            foreign_import_modules: vec!["./__wasm_split.js".into()],
-            section_bytes: 0,
-        }
-    }
-
-    #[test]
-    fn the_own_loader_keeps_wasm_bindgens_entry_contract() {
-        let js = loader_js(&glue(), "my_app");
-        assert!(js.contains("export default function init(input)"));
-        assert!(js.contains("export function initSync(module)"));
-        assert!(js.contains("if (wasm !== undefined) return wasm;"), "idempotent re-init returns the raw exports");
-        assert!(js.contains("new URL(\"my_app_bg.wasm\", import.meta.url)"));
-        assert!(js.contains("import * as __foreign0 from \"./__wasm_split.js\";"));
-        assert!(js.contains("\"./__wasm_split.js\": __foreign0"));
-        assert!(js.contains("G.module(\"m\\\"x\", function (G) {"), "module names are escaped");
-        assert!(js.contains("g0: (\n(x) => x\n),"));
-        assert!(js.contains("g1: G.catching(("), "catch flag wraps the snippet");
-        // Constructors before main, both after attach.
-        let attach = js.find("G.attach(wasm)").unwrap();
-        let ctors = js.find("wasm.__wasm_call_ctors()").unwrap();
-        let main = js.find("wasm.main(0, 0)").unwrap();
-        assert!(attach < ctors && ctors < main);
-    }
-
-    #[test]
-    fn the_hybrid_glue_module_exports_every_snippet_and_attaches_lazily() {
-        let js = hybrid_glue_js(&glue(), "my_app");
-        assert!(js.contains("import { initSync } from \"./my_app.js\";"));
-        assert!(js.contains("G.lazyAttach(() => initSync(undefined));"));
-        assert!(js.contains("export const g0 = (\n(x) => x\n);"));
-        assert!(js.contains("export const g1 = G.catching(("));
-    }
-
-    #[test]
-    fn generated_js_parses_under_node_when_available() {
-        // Syntax check of both generated files with `node --check`, which
-        // catches an unbalanced brace in the templates. Skipped (not
-        // failed) without node: the browser E2E covers the real run.
-        let Ok(out) = Command::new("node").arg("--version").output() else { return };
-        if !out.status.success() {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("own-glue-syntax-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        for (name, js) in [("a.mjs", loader_js(&glue(), "x")), ("b.mjs", hybrid_glue_js(&glue(), "x"))] {
-            let p = dir.join(name);
-            fs::write(&p, js).unwrap();
-            let st = Command::new("node").arg("--check").arg(&p).output().unwrap();
-            assert!(st.status.success(), "{name}: {}", String::from_utf8_lossy(&st.stderr));
-        }
-        let _ = fs::remove_dir_all(&dir);
-    }
 }

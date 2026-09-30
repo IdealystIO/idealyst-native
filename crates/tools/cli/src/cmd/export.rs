@@ -325,13 +325,23 @@ fn build_wasm(
 }
 
 /// Run `wasm-bindgen --target web` into `pkg_dir`.
+///
+/// backend-web's bindings are web-glue (JS carried inside the wasm), so the
+/// module goes through the same hybrid pass `idealyst build --web` runs:
+/// extract the glue, bindgen the stripped module, then write
+/// `pkg/__idealyst_glue.js` for the namespace wasm-bindgen's output
+/// imports (`build_web::own_glue`).
 fn run_wasm_bindgen(wasm: &Path, pkg_dir: &Path) -> Result<()> {
     println!("[idealyst export] running wasm-bindgen…");
+    let (input, glue) = build_web::own_glue::hybrid_extract(wasm)?;
+    // Named explicitly: the stripped input is `external_bridge.glue.wasm`,
+    // and the element shells import `pkg/external_bridge.js`.
+    let out_name = wasm.file_stem().and_then(|s| s.to_str()).unwrap_or("external_bridge");
     let status = Command::new("wasm-bindgen")
-        .arg(wasm)
+        .arg(&input)
         .arg("--out-dir")
         .arg(pkg_dir)
-        .args(["--target", "web"])
+        .args(["--target", "web", "--out-name", out_name])
         .status()
         .context(
             "run wasm-bindgen — install it with `cargo install wasm-bindgen-cli` \
@@ -340,7 +350,7 @@ fn run_wasm_bindgen(wasm: &Path, pkg_dir: &Path) -> Result<()> {
     if !status.success() {
         bail!("wasm-bindgen failed");
     }
-    Ok(())
+    build_web::own_glue::write_hybrid_glue_file(pkg_dir, &glue, out_name)
 }
 
 /// Generate every JS/TS artifact + the demo page into `out_dir`.

@@ -3,3 +3,13 @@
 # of their bare names are taken by unrelated crates on crates.io.
 [registries.idealyst]
 index = "sparse+https://crates.idealyst.io/index/"
+
+# wasm32 tests (`cargo test --target wasm32-unknown-unknown -p backend-web`)
+# run through a wrapper around wasm-bindgen-test-runner that supplies the
+# web-glue namespace (`./__idealyst_glue.js`) a web-glue crate imports. It
+# passes test binaries without web-glue straight through. An explicit
+# CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER (as `wasm-pack test` sets)
+# bypasses it — and then a web-glue crate's tests cannot load. See
+# scripts/wasm-glue-test-runner.sh.
+[target.wasm32-unknown-unknown]
+runner = "scripts/wasm-glue-test-runner.sh"

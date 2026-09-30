@@ -206,12 +206,23 @@ pub fn apply_patch(url: &str, table_json: &str) {
     });
 }
 
+// The hybrid glue module's hot-patch entry points (`wasm_carve::glue_js`,
+// `globalThis.__idealystGlue`). Dev-only, like this whole module.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = __idealystGlue, js_name = compileImport)]
+    fn glue_compile_import(name: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_namespace = __idealystGlue, js_name = registerRecords)]
+    fn glue_register_records(section: &JsValue) -> Result<(), JsValue>;
+}
+
 #[cfg(target_arch = "wasm32")]
 /// The custom section the dev loop writes the import plan into — see
 /// `build_web::hotpatch_prepare`, which owns the format.
 const PLAN_SECTION: &str = "idealyst.hotpatch";
 #[cfg(target_arch = "wasm32")]
-const PLAN_VERSION: u32 = 1;
+const PLAN_VERSION: u32 = 2;
 
 #[cfg(target_arch = "wasm32")]
 /// Where one import comes from (`build_web::hotpatch_prepare::ImportSource`).
@@ -224,6 +235,8 @@ enum ImportSource {
     Global { value: u32, mutable: bool },
     /// A function that throws this when called.
     Trap(String),
+    /// A web-glue import: compiled from the JS in its own name.
+    Glue,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -261,6 +274,7 @@ fn decode_plan(bytes: &[u8]) -> Result<Plan, String> {
             0 => ImportSource::Runtime,
             1 => ImportSource::Slot(u32le(&mut at)?),
             2 | 3 => ImportSource::Global { value: u32le(&mut at)?, mutable: tag == 2 },
+            5 => ImportSource::Glue,
             4 => {
                 let len = u32le(&mut at)? as usize;
                 let s = bytes.get(at..at + len).ok_or("the import plan is truncated")?;
@@ -306,6 +320,14 @@ async fn load(
         .into());
     }
     let plan = decode_plan(&Uint8Array::new(&sections.get(0)).to_vec())?;
+    // The glue records the patch links (the web-glue runtime, `js_module!`
+    // sources): registered before any of its glue imports can run. The
+    // hybrid glue module refuses one that CHANGES what this page has —
+    // that edit needs a reload, and failing the apply is what gets one.
+    let glue_records = WebAssembly::Module::custom_sections(&module, "__idealyst_glue");
+    for section in glue_records.iter() {
+        glue_register_records(&section)?;
+    }
     let descriptors: Array = WebAssembly::Module::imports(&module);
     if descriptors.length() as usize != plan.imports.len() {
         return Err(format!(
@@ -378,6 +400,12 @@ async fn load(
                 f.into()
             }
             ImportSource::Global { value, mutable } => i32_global(*value, *mutable)?,
+            ImportSource::Glue => {
+                let name = name.as_string().unwrap_or_default();
+                glue_compile_import(&name).map_err(|e| {
+                    JsValue::from_str(&format!("compiling glue import {name:?}: {e:?}"))
+                })?
+            }
             ImportSource::Trap(why) => {
                 let why = why.clone();
                 Closure::<dyn Fn() -> Result<(), JsValue>>::new(move || {

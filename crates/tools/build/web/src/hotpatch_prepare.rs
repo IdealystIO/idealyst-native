@@ -39,6 +39,14 @@
 //!   old stub's `call_indirect`;
 //! * [`ImportSource::Global`] — a `GOT` entry: the base slot of a
 //!   function, or the address of a base `static`;
+//! * [`ImportSource::Glue`] — a web-glue import
+//!   (`./__idealyst_glue.js`). Its JS is in its own name
+//!   (`<key>\n<flags>\n<js>`, see `wasm_carve::glue`), so the page
+//!   compiles it (`__idealystGlue.compileImport`) — a patch may call a
+//!   binding the base never linked, and nothing had to be declared ahead
+//!   of time. The patch's own glue records (a `js_module!` it links) are
+//!   registered from its `__idealyst_glue` section; one that CHANGES a
+//!   module the page already has is refused and the page reloads;
 //! * [`ImportSource::Trap`] — a function that must never run (a
 //!   wasm-bindgen descriptor), or one whose signature the base disagrees
 //!   with. Calling it throws with the reason. The old stub trapped on
@@ -84,7 +92,7 @@ use crate::hotpatch_patch::BaseIndex;
 pub const PLAN_SECTION: &str = "idealyst.hotpatch";
 /// Bumped whenever [`Plan::encode`]'s layout changes; the page refuses a
 /// version it does not know rather than misreading one.
-pub const PLAN_VERSION: u32 = 1;
+pub const PLAN_VERSION: u32 = 2;
 
 /// Where one import comes from. See the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +101,7 @@ pub enum ImportSource {
     Slot(u32),
     Global { value: u32, mutable: bool },
     Trap(String),
+    Glue,
 }
 
 /// What the page needs to load one patch.
@@ -120,6 +129,7 @@ impl Plan {
     ///   2 global   u32 value   (mutable)
     ///   3 global   u32 value   (immutable)
     ///   4 trap     u32 len, UTF-8 reason
+    ///   5 glue     (the page compiles the import from its name)
     /// ```
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(20 + self.imports.len() * 5);
@@ -140,6 +150,7 @@ impl Plan {
                     out.push(if *mutable { 2 } else { 3 });
                     u32le(&mut out, *value);
                 }
+                ImportSource::Glue => out.push(5),
                 ImportSource::Trap(why) => {
                     out.push(4);
                     u32le(&mut out, why.len() as u32);
@@ -182,6 +193,7 @@ impl Plan {
                     at += len;
                     ImportSource::Trap(String::from_utf8_lossy(s).into_owned())
                 }
+                5 => ImportSource::Glue,
                 other => bail!("unknown plan tag {other}"),
             });
         }
@@ -326,6 +338,22 @@ fn resolve_import(
             }
             (_, _) => {
                 unresolved.push(format!("GOT.mem.{name} (not a global)"));
+                ImportSource::Runtime
+            }
+        },
+
+        // web-glue: the snippet is in the name, the page compiles it.
+        wasm_carve::glue::IMPORT_MODULE => match (
+            wasm_carve::glue::parse_import_name(name),
+            &func_sig,
+        ) {
+            (Ok(_), Some(_)) => ImportSource::Glue,
+            (Err(e), _) => {
+                unresolved.push(format!("{}.{name:?}: {e:#}", import.module));
+                ImportSource::Runtime
+            }
+            (Ok(_), None) => {
+                unresolved.push(format!("{}.{name:?} (a glue import that is not a function)", import.module));
                 ImportSource::Runtime
             }
         },
@@ -956,6 +984,28 @@ mod tests {
         );
     }
 
+    /// A web-glue import carries its JS in its name, so the page compiles
+    /// it — including a binding the base never linked (decision 1 of the
+    /// phase-2 brief: no pre-declared bindings). A glue import whose name
+    /// is not `<key>\n<flags>\n<js>` is an error naming it.
+    #[test]
+    fn a_web_glue_import_is_compiled_by_the_page() {
+        let name = "app::js_poke(u32)\n\n(h) => G.get(h).poke()";
+        let raw = patch(&[(wasm_carve::glue::IMPORT_MODULE, name)]);
+        let prepared = prepare_ok(&raw, &base_with(&[], &[], &[]));
+        assert_eq!(
+            source_of(&prepared, &format!("{}.{name}", wasm_carve::glue::IMPORT_MODULE)),
+            ImportSource::Glue
+        );
+        let plan = Plan::decode(&Plan { memory_size: None, memory_align: 0, imports: vec![ImportSource::Glue] }.encode())
+            .unwrap();
+        assert_eq!(plan.imports, [ImportSource::Glue], "tag 5 round-trips");
+
+        let bad = patch(&[(wasm_carve::glue::IMPORT_MODULE, "no-key-line")]);
+        let message = format!("{:#}", prepare(&bad, &base_with(&[], &[], &[])).unwrap_err());
+        assert!(message.contains("no-key-line"), "{message}");
+    }
+
     /// A descriptor symbol runs only at bindgen time; the base has none.
     /// It traps if called, saying what it is — where the old stub jumped
     /// to the null slot.
@@ -1239,17 +1289,19 @@ mod tests {
                 ImportSource::Global { value: 9, mutable: true },
                 ImportSource::Global { value: 10, mutable: false },
                 ImportSource::Trap("ab".into()),
+                ImportSource::Glue,
             ],
         };
         let bytes = plan.encode();
         #[rustfmt::skip]
         let expected: Vec<u8> = vec![
-            1,0,0,0,  1,0,0,0,  2,1,0,0,  3,0,0,0,  5,0,0,0,
+            2,0,0,0,  1,0,0,0,  2,1,0,0,  3,0,0,0,  6,0,0,0,
             0,
             1, 7,0,0,0,
             2, 9,0,0,0,
             3, 10,0,0,0,
             4, 2,0,0,0, b'a', b'b',
+            5,
         ];
         assert_eq!(bytes, expected);
         assert_eq!(Plan::decode(&bytes).unwrap(), plan);

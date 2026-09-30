@@ -1,0 +1,63 @@
+//! `wasm-glue-test-runner` — run `wasm-bindgen-test-runner` over a wasm32
+//! test binary that links web-glue.
+//!
+//! A crate on web-glue (backend-web, in hybrid mode) imports its bindings
+//! from `./__idealyst_glue.js`, and the snippets ride in the import names
+//! (see `wasm_carve::glue`). wasm-bindgen-test-runner knows nothing of
+//! that: left alone it would hand wasm-bindgen a module whose glue imports
+//! have no JS behind them. So this wrapper does to the test binary what the
+//! build does to an app (`build_web::own_glue::hybrid_pass`):
+//!
+//! 1. `glue::extract` — rename the glue imports, strip the records;
+//! 2. write the stripped module and `__idealyst_glue.js` (the hybrid
+//!    namespace, importing `initSync` from `./wasm-bindgen-test.js`, the
+//!    name the runner gives its bindgen output) into a directory next to
+//!    the test binary;
+//! 3. exec `wasm-bindgen-test-runner` on the stripped module with that
+//!    directory as its working directory.
+//!
+//! Step 3's working directory is the whole trick: the runner serves its
+//! generated files from a fresh tempdir and falls back to serving `.`
+//! (wasm-bindgen-cli 0.2.128, `server.rs`, `try_asset(request, ".")`), so
+//! the page's `import … from "./__idealyst_glue.js"` resolves to the file
+//! written in step 2. Browser-mode tests only (`run_in_browser`): the
+//! node runner resolves imports from the generated file's own directory.
+//!
+//! A test binary with no glue at all is passed through untouched, so this
+//! is safe as the workspace-wide wasm32 runner (`.cargo/config.toml`).
+//! `WASM_BINDGEN_TEST_RUNNER` names a different underlying runner.
+
+use std::path::PathBuf;
+use std::process::Command;
+
+use anyhow::{Context, Result};
+use wasm_carve::{glue, glue_js};
+
+fn main() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    let wasm = PathBuf::from(args.next().context("usage: wasm-glue-test-runner <test.wasm> [args…]")?);
+    let rest: Vec<_> = args.collect();
+    let runner = std::env::var_os("WASM_BINDGEN_TEST_RUNNER").unwrap_or_else(|| "wasm-bindgen-test-runner".into());
+
+    let bytes = std::fs::read(&wasm).with_context(|| format!("read {}", wasm.display()))?;
+    let extracted = glue::extract(&bytes).context("extract web-glue from the test binary")?;
+    let mut cmd = Command::new(&runner);
+    if glue_js::needs_glue_file(&extracted) {
+        let stem = wasm.file_stem().context("test binary has no file name")?.to_owned();
+        let dir = wasm.with_extension("glue");
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        let stripped = dir.join(&stem).with_extension("wasm");
+        std::fs::write(&stripped, &extracted.wasm).with_context(|| format!("write {}", stripped.display()))?;
+        std::fs::write(dir.join("__idealyst_glue.js"), glue_js::hybrid_glue_js(&extracted, "wasm-bindgen-test.js"))
+            .context("write __idealyst_glue.js")?;
+        cmd.arg(&stripped).current_dir(&dir);
+    } else {
+        cmd.arg(&wasm);
+    }
+    let status = cmd
+        .args(&rest)
+        .status()
+        .with_context(|| format!("run {} — is wasm-bindgen-cli installed?", runner.to_string_lossy()))?;
+    // The runner's own exit code (test failures) is the result cargo reports.
+    std::process::exit(status.code().unwrap_or(1));
+}

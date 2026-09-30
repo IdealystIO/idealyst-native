@@ -735,7 +735,16 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         // leave a later non-hot-patch build reusing a module with
         // thousands of extra table entries, considering it fresh, and
         // shipping it.
-        let mut bindgen_input = original_wasm.clone();
+        // web-glue (backend-web's bindings) rides in the linked module:
+        // snippets in its `./__idealyst_glue.js` import names, the runtime
+        // and JS modules in a custom section. Pull it out FIRST, so
+        // everything downstream — hot-patch base prep, wasm-bindgen — sees
+        // short `g<N>` imports and no glue section; `pkg/__idealyst_glue.js`
+        // is written after wasm-bindgen. See `own_glue::hybrid_extract`.
+        let (glue_input, glue) = timings
+            .time("glue-extract", || own_glue::hybrid_extract(&original_wasm))
+            .with_context(|| "web-glue extraction")?;
+        let mut bindgen_input = glue_input.clone();
         if opts.hot_patch {
             let prepared_path = original_wasm.with_extension("hotbase.wasm");
             let alias_path = original_wasm.with_extension("aliases.tsv");
@@ -755,7 +764,18 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                 let data = hotpatch_aliases::read_data_symbols_from_linked(&linked)
                     .context("reading the base module's data symbols")?;
                 hotpatch_aliases::write_data_symbols(&data_path, &data)?;
-                let (prepared, census) = hotpatch_base::prepare_base_module(&linked)
+                // The prep works on the glue-stripped module (the aliases
+                // above came from cargo's own: extraction renames imports
+                // only, so no function index or symbol differs).
+                let stripped = if glue_input == original_wasm {
+                    None
+                } else {
+                    Some(fs::read(&glue_input).with_context(|| {
+                        format!("read {} for hot-patch prep", glue_input.display())
+                    })?)
+                };
+                let (prepared, census) =
+                    hotpatch_base::prepare_base_module(stripped.as_deref().unwrap_or(&linked))
                     .context("preparing the base module for hot patching")?;
                 reporter.log(
                     "build-web",
@@ -783,6 +803,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             )
         })
         .with_context(|| "wasm-bindgen")?;
+        own_glue::write_hybrid_glue_file(&wrapper_pkg, &glue, &manifest.lib_name)
+            .with_context(|| "write pkg/__idealyst_glue.js")?;
         // Rooting every function keeps wasm-bindgen's descriptor
         // machinery alive, and it emits no JS binding for the
         // `__wbindgen_placeholder__` import that machinery calls. Give
