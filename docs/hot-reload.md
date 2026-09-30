@@ -622,7 +622,12 @@ contents. The work in flight is handled per tier:
   the next replay loads the newest finalized one, and rustc deletes the
   dead `-working` directory once it is 10 s old. Each replay's object dir
   is emptied first, the killed crate's cached objects are dropped, and no
-  patch file is written. A patch that finished anyway is not pushed.
+  patch file is written. A patch that finished anyway is not pushed. The
+  archive scan running beside the replays asks the same question between
+  files and stops too, writing nothing
+  (`Workspace::scan_read_cancellable`). Before it did, the abandoned
+  attempt waited out the whole crate's scan before the restart could
+  begin: 1.4 s on CrewForge's projects crate.
 - **Rebuild**: not killed. It writes the served bundle in place, and
   killing it mid-packaging would leave a half-written bundle. Killing
   cargo would also orphan its rustc processes. So it runs to the end, no
@@ -630,6 +635,18 @@ contents. The work in flight is handled per tier:
   reloads once. Until it does, the save stays on the rebuild tier: a
   patch decided against the new bundle would reach a page still running
   the old one.
+
+Only a batch that changes something is a save. The watcher keeps a
+digest of the last bytes it saw of each file (`SeenContent`), and a batch
+naming only files whose bytes have not moved is dropped: it supersedes
+nothing and starts no work. Some setups report one save as two batches
+(CrewForge's devcontainer did, on every save), and the second used to
+throw away the hot patch the first had started. Measured there on the
+projects crate, a save followed by an identical rewrite 80 ms later went
+from "superseded after 1375 ms" and a restart to one patch, 3.9 s save to
+patch instead of ~5.2 s. A real second save 300 ms in now restarts after
+313 ms. The flip side: rewriting a file with the same bytes (`touch`, a
+save with no edits) does nothing; change the file to force work.
 
 Each overtaken attempt emits `superseded` (see
 [Watching a session](#watching-a-session)). Supersession only applies

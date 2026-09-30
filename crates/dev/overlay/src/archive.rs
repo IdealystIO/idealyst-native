@@ -255,6 +255,22 @@ pub fn read_crate(dir: &Path) -> Result<CrateSources> {
 
 /// Scan sources already read into a [`DescriptorSet`].
 pub fn scan_sources(sources: &CrateSources) -> DescriptorSet {
+    scan_sources_cancellable(sources, &|| false).expect("a scan that is never cancelled finishes")
+}
+
+/// [`scan_sources`], abandoned between files once `cancel` says so:
+/// `None`, and nothing half-built escapes.
+///
+/// The dev loop scans the edited crate BESIDE a hot patch's compile, and
+/// a newer save kills that compile within milliseconds — but the attempt
+/// could not return until the scan it had started finished: 1.4 s on
+/// CrewForge's projects crate, paid on every save its editor reported
+/// twice. A file is the unit of cancellation: one file's scan is
+/// milliseconds, the whole crate's is seconds.
+pub fn scan_sources_cancellable(
+    sources: &CrateSources,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Option<DescriptorSet> {
     let package = sources.package.clone();
     let mut set = DescriptorSet {
         overlay_version: OVERLAY_VERSION,
@@ -265,6 +281,9 @@ pub fn scan_sources(sources: &CrateSources) -> DescriptorSet {
     };
 
     for (relative, text) in &sources.files {
+        if cancel() {
+            return None;
+        }
         let relative = relative.clone();
         let content = hex(&Sha256::digest(text.as_bytes()));
 
@@ -346,7 +365,7 @@ pub fn scan_sources(sources: &CrateSources) -> DescriptorSet {
         }
     }
 
-    set
+    Some(set)
 }
 
 /// Scan `crate_dir` and write its descriptor set under
@@ -406,6 +425,19 @@ pub fn write_scanned(dir: &Path, sources: &CrateSources) -> Result<DescriptorSet
     let set = scan_sources(sources);
     write_set(dir, &set)?;
     Ok(set)
+}
+
+/// [`write_scanned`], abandoned between files once `cancel` says so:
+/// `Ok(None)`, and nothing is written — a cancelled scan leaves the
+/// archive directory exactly as it found it.
+pub fn write_scanned_cancellable(
+    dir: &Path,
+    sources: &CrateSources,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<Option<DescriptorSet>> {
+    let Some(set) = scan_sources_cancellable(sources, cancel) else { return Ok(None) };
+    write_set(dir, &set)?;
+    Ok(Some(set))
 }
 
 fn write_set(dir: &Path, set: &DescriptorSet) -> Result<PathBuf> {

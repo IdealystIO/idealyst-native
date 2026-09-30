@@ -621,17 +621,43 @@ impl Workspace {
         tip: &str,
         read: Vec<(String, Option<crate::archive::CrateSources>)>,
     ) -> Vec<(String, Option<DescriptorSet>)> {
-        read.into_iter()
-            .map(|(package, sources)| {
-                let dir = crate::archive::crate_overlay_dir(project_root, tip, &package);
-                let set = sources.and_then(|sources| {
-                    crate::archive::write_scanned(&dir, &sources)
-                        .map_err(|e| eprintln!("[dev-reload] no descriptor set for {package}: {e}"))
-                        .ok()
-                });
-                (package, set)
-            })
-            .collect()
+        Self::scan_read_cancellable(project_root, tip, read, &|| false)
+            .expect("a scan that is never cancelled finishes")
+    }
+
+    /// [`Self::scan_read`], abandoned between files once `cancel` says
+    /// so. `None` means cancelled: there is nothing to install, and the
+    /// crate being scanned when it stopped wrote nothing (see
+    /// [`crate::archive::write_scanned_cancellable`]).
+    ///
+    /// For a scan that runs beside work a newer save can overtake: the
+    /// work stops in milliseconds, and the scan must too, or the caller
+    /// waits out the whole crate before it can start over.
+    pub fn scan_read_cancellable(
+        project_root: &Path,
+        tip: &str,
+        read: Vec<(String, Option<crate::archive::CrateSources>)>,
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Option<Vec<(String, Option<DescriptorSet>)>> {
+        let mut out = Vec::with_capacity(read.len());
+        for (package, sources) in read {
+            let dir = crate::archive::crate_overlay_dir(project_root, tip, &package);
+            let set = match sources {
+                None => None,
+                Some(sources) => {
+                    match crate::archive::write_scanned_cancellable(&dir, &sources, cancel) {
+                        Ok(Some(set)) => Some(set),
+                        Ok(None) => return None,
+                        Err(e) => {
+                            eprintln!("[dev-reload] no descriptor set for {package}: {e}");
+                            None
+                        }
+                    }
+                }
+            };
+            out.push((package, set));
+        }
+        Some(out)
     }
 
     /// Install archives [`Self::scan_read`] produced.
@@ -1191,6 +1217,42 @@ pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
                 WorkspaceDecision::HotPatch(_)
             ),
             "the save made during the compile must still be decided as a change"
+        );
+    }
+
+    /// Regression: a hot patch overtaken by a newer save could not return
+    /// until the scan beside it finished — 1.4 s on CrewForge's projects
+    /// crate, on every save its editor reported twice. A cancelled scan
+    /// stops at the next file and writes nothing, so the restart never
+    /// finds a descriptor set the scan did not finish.
+    #[test]
+    fn regression_a_cancelled_scan_stops_between_files_and_writes_nothing() {
+        let f = fixture();
+        let v2 = SHARED.replace("v1 {}", "v2 {}");
+        std::fs::write(f.root.join("lab-shared/src/lib.rs"), &v2).unwrap();
+        std::fs::write(f.root.join("lab-shared/src/second.rs"), "pub fn s() {}\n").unwrap();
+        let read = f.ws.read_sources(["lab-shared"]);
+        let files = read[0].1.as_ref().expect("read").files.len();
+        assert!(files >= 2, "the cancel must land between files: {files}");
+        let dir = crate::archive::crate_overlay_dir(&f.root, &f.ws.tip, "lab-shared");
+        let before: BTreeSet<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+
+        // Cancelled after the first file: asked again before the second.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let cancel = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1;
+        let got = Workspace::scan_read_cancellable(&f.root, &f.ws.tip, read.clone(), &cancel);
+        assert!(got.is_none(), "a cancelled scan has nothing to install");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2, "stopped at the second file");
+        let after: BTreeSet<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(before, after, "a cancelled scan wrote a descriptor set");
+
+        // Never cancelled: the same answer `scan_read` gives.
+        let full = Workspace::scan_read_cancellable(&f.root, &f.ws.tip, read.clone(), &|| false)
+            .expect("not cancelled");
+        let plain = Workspace::scan_read(&f.root, &f.ws.tip, read);
+        assert_eq!(
+            full.iter().map(|(p, s)| (p.clone(), s.as_ref().map(DescriptorSet::build_key))).collect::<Vec<_>>(),
+            plain.iter().map(|(p, s)| (p.clone(), s.as_ref().map(DescriptorSet::build_key))).collect::<Vec<_>>(),
         );
     }
 

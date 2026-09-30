@@ -31,6 +31,8 @@ build-ios = { workspace = true }
 # `watch_roots` — the watcher follows the project's LOCAL dependency
 # closure (path deps / workspace members), not just its own `src/`.
 serde_json = { workspace = true }
+# Content digests for the watcher's duplicate-event filter (`SeenContent`).
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # The overlay producer and the decision table are tested against real

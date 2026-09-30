@@ -1140,8 +1140,15 @@ fn watch_loop(
     // superseding it.
     let saves = Arc::new(SaveLog::default());
     let counted = saves.clone();
+    let mut seen = SeenContent::default();
     let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
-        notify_save(&tx, &counted, is_save(&r), WatchMsg::Fs(r))
+        match seen.classify(&r) {
+            // Nothing moved since the watcher last looked: neither work
+            // nor a supersession. See `SeenContent`.
+            Batch::Unchanged => {}
+            Batch::Save => notify_save(&tx, &counted, true, WatchMsg::Fs(r)),
+            Batch::Other => notify_save(&tx, &counted, false, WatchMsg::Fs(r)),
+        }
     }) {
         Ok(d) => d,
         Err(e) => {
@@ -1487,7 +1494,7 @@ fn handle_save(
     build_patch: &mut dyn FnMut(
         &[build_web::hotpatch_build::PatchCrate],
     ) -> std::result::Result<PatchEvent, PatchFailure>,
-    superseded: &dyn Fn() -> bool,
+    superseded: &(dyn Fn() -> bool + Sync),
 ) -> Handled {
     let started = std::time::Instant::now();
     let decided = |decision| {
@@ -1549,8 +1556,16 @@ fn handle_save(
             });
             let read = ws.read_sources(plan.edited.iter().map(String::as_str));
             let tip = ws.tip.clone();
+            // The scan stops when the patch does. The replays are killed
+            // within milliseconds of a newer save, but the join below used
+            // to wait out the whole crate's scan first — 1.4 s on
+            // CrewForge's projects crate, on every save its editor
+            // reported twice — before the restart could begin. A cancelled
+            // scan yields `None` and writes nothing.
             let (built, scanned) = std::thread::scope(|scope| {
-                let scan = scope.spawn(|| dev_overlay::Workspace::scan_read(dir, &tip, read));
+                let scan = scope.spawn(|| {
+                    dev_overlay::Workspace::scan_read_cancellable(dir, &tip, read, superseded)
+                });
                 let built = build_patch(&crates);
                 (built, scan.join().expect("the archive scan panicked"))
             });
@@ -1567,6 +1582,10 @@ fn handle_save(
                     Handled::Superseded(dev_events::SupersededWork::HotPatch)
                 }
                 Ok(event) => {
+                    // `superseded` never goes back to false (a save that
+                    // arrived stays arrived), and it was false just above,
+                    // so it was false every time the scan asked.
+                    let scanned = scanned.expect("a scan is only cancelled once the patch is superseded");
                     ws.install(scanned);
                     ws.note_patched(&plan);
                     // Before the push, for the reason the overlay arm gives.
@@ -1761,6 +1780,83 @@ fn is_save(
     >,
 ) -> bool {
     !saved_paths(&event_paths(events)).is_empty()
+}
+
+/// What one watcher batch amounts to, once its files have been read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Batch {
+    /// At least one saved file's bytes differ from what the watcher last
+    /// saw of it (or it no longer reads): a save.
+    Save,
+    /// Every path is a saved file whose bytes the watcher has already
+    /// seen: a duplicate event. Dropped.
+    Unchanged,
+    /// Not a save — editor scratch files, a watcher error — but still
+    /// handed to the loop, as before.
+    Other,
+}
+
+/// The bytes the watcher last saw of each saved file, as a digest.
+///
+/// Why: one save can reach the watcher as two batches. CrewForge's
+/// devcontainer delivered every save twice, and the second batch — the
+/// same bytes — superseded the hot patch the first had started, which
+/// then restarted from scratch: "hot patch superseded by a newer save",
+/// ~1.5 s lost on every save. A batch that names only files whose content
+/// has not moved is not a save, so it supersedes nothing and is not sent.
+///
+/// Compared against what the WATCHER last saw, not against what the page
+/// runs: the attempt reads the files itself after the batch is sent, so
+/// it always sees bytes at least as new as these. A batch that observed a
+/// half-written file records the partial bytes; the write that completes
+/// it then differs and counts, as it must.
+#[derive(Default)]
+struct SeenContent(std::collections::HashMap<PathBuf, [u8; 32]>);
+
+impl SeenContent {
+    fn classify(
+        &mut self,
+        events: &std::result::Result<
+            Vec<notify_debouncer_mini::DebouncedEvent>,
+            notify_debouncer_mini::notify::Error,
+        >,
+    ) -> Batch {
+        let paths = event_paths(events);
+        let saved = saved_paths(&paths);
+        if saved.is_empty() {
+            return Batch::Other;
+        }
+        let mut changed = false;
+        // Every file is read, not just up to the first change: each
+        // digest recorded here is what the next batch compares against.
+        for path in &saved {
+            changed |= self.moved(path);
+        }
+        if changed {
+            Batch::Save
+        } else if paths.iter().all(|p| saved.contains(p)) {
+            Batch::Unchanged
+        } else {
+            Batch::Other
+        }
+    }
+
+    /// Whether `path`'s bytes differ from the last ones seen, recording
+    /// the new ones. A file that does not read (deleted, a directory)
+    /// always counts as moved and forgets its digest.
+    fn moved(&mut self, path: &Path) -> bool {
+        use sha2::Digest as _;
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+                self.0.insert(path.to_path_buf(), digest) != Some(digest)
+            }
+            Err(_) => {
+                self.0.remove(path);
+                true
+            }
+        }
+    }
 }
 
 /// The saves a watcher has seen: how many, and when the recent ones
@@ -2919,6 +3015,60 @@ mod tests {
         assert!(!is_save(&Err(notify_debouncer_mini::notify::Error::generic("x"))));
     }
 
+    /// Regression: CrewForge's devcontainer delivered every save as two
+    /// watcher batches, and the second — the same bytes — superseded the
+    /// hot patch the first had started ("hot patch superseded by a newer
+    /// save after 1375 ms", then a restart from scratch). A batch naming
+    /// only files whose bytes the watcher has already seen is dropped.
+    #[test]
+    fn regression_a_duplicate_event_for_an_unchanged_save_is_not_a_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("app.rs");
+        let swp = tmp.path().join(".app.rs.swp");
+        let batch = |paths: &[&Path]| {
+            Ok(paths
+                .iter()
+                .map(|p| notify_debouncer_mini::DebouncedEvent {
+                    path: p.to_path_buf(),
+                    kind: notify_debouncer_mini::DebouncedEventKind::Any,
+                })
+                .collect())
+        };
+        let mut seen = SeenContent::default();
+
+        std::fs::write(&file, "fn a() {}\n").unwrap();
+        assert_eq!(seen.classify(&batch(&[&file])), Batch::Save, "the first sight of a file is a save");
+        assert_eq!(seen.classify(&batch(&[&file])), Batch::Unchanged, "the duplicate event");
+
+        std::fs::write(&file, "fn a() { 1; }\n").unwrap();
+        assert_eq!(seen.classify(&batch(&[&file])), Batch::Save, "new bytes are a save");
+        // Rewritten with the same bytes (an editor's second write, a
+        // format-on-save that changed nothing).
+        std::fs::write(&file, "fn a() { 1; }\n").unwrap();
+        assert_eq!(seen.classify(&batch(&[&file])), Batch::Unchanged);
+
+        // Scratch files alone stay what they were: not a save, still sent.
+        std::fs::write(&swp, "x").unwrap();
+        assert_eq!(seen.classify(&batch(&[&swp])), Batch::Other);
+        // An unchanged save beside a scratch file: not a save, still sent.
+        assert_eq!(seen.classify(&batch(&[&file, &swp])), Batch::Other);
+        // A changed file beside an unchanged one is a save — and both are
+        // recorded, so the next duplicate of that batch is dropped.
+        let other = tmp.path().join("b.rs");
+        std::fs::write(&other, "fn b() {}\n").unwrap();
+        assert_eq!(seen.classify(&batch(&[&file, &other])), Batch::Save);
+        assert_eq!(seen.classify(&batch(&[&file, &other])), Batch::Unchanged);
+
+        // A deleted file always counts, and is forgotten: recreating it
+        // with its old bytes is a save again.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(seen.classify(&batch(&[&file])), Batch::Save);
+        std::fs::write(&file, "fn a() { 1; }\n").unwrap();
+        assert_eq!(seen.classify(&batch(&[&file])), Batch::Save);
+
+        assert_eq!(seen.classify(&Err(notify_debouncer_mini::notify::Error::generic("x"))), Batch::Other);
+    }
+
     /// A hot patch overtaken by a newer save is never pushed, and the
     /// archives stay where they were, so the restart decides the union
     /// against what the page actually runs.
@@ -2932,17 +3082,19 @@ mod tests {
         let saved = read_saved(&ws, &[file.clone()]);
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
-        let newer_save = std::cell::Cell::new(false);
+        // Atomic, not a `Cell`: the scan beside the patch asks it too, from
+        // its own thread.
+        let newer_save = std::sync::atomic::AtomicBool::new(false);
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| {
             // The author saves again while rustc runs; the build finishes
             // anyway (it was not polling), and the check before the push
             // catches it.
             std::fs::write(&file, "pub fn v() -> u32 { 3 }\n").unwrap();
-            newer_save.set(true);
+            newer_save.store(true, std::sync::atomic::Ordering::SeqCst);
             patched_ok()
         };
         let got = handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| {
-            newer_save.get()
+            newer_save.load(std::sync::atomic::Ordering::SeqCst)
         });
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
         assert!(signal.patches_since(0).is_empty(), "a stale patch reached the page");
@@ -2953,6 +3105,39 @@ mod tests {
         // Not advanced: the restart still sees a body edit to patch.
         let next = read_saved(&ws, &[file]);
         assert!(matches!(ws.decide(&next, false), dev_overlay::WorkspaceDecision::HotPatch(_)));
+    }
+
+    /// Regression: a superseded hot patch waited for the archive scan
+    /// beside it to finish before the restart could begin — 1.4 s on
+    /// CrewForge's projects crate, paid on every save its editor reported
+    /// twice ("hot patch superseded by a newer save after 1375 ms"). The
+    /// scan now asks the same question the replays do and stops.
+    ///
+    /// Asserted by what the scan WRITES rather than by a clock: a scan
+    /// that ran to the end leaves a descriptor set for the saved sources
+    /// in the crate's overlay dir; one that honoured the supersession
+    /// leaves the dir untouched. The newer save is already in when the
+    /// scan starts, so the outcome does not depend on thread timing.
+    #[test]
+    fn regression_a_superseded_hot_patch_does_not_wait_for_the_archive_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let file = root.join("lab-shared/src/lib.rs");
+        std::fs::write(&file, "pub fn v() -> u32 { 2 }\n").unwrap();
+        let saved = read_saved(&ws, &[file]);
+        assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::HotPatch(_)));
+        let overlay = dev_overlay::crate_overlay_dir(&root, &ws.tip, "lab-shared");
+        let listing = || -> std::collections::BTreeSet<PathBuf> {
+            std::fs::read_dir(&overlay).map(|d| d.map(|e| e.unwrap().path()).collect()).unwrap_or_default()
+        };
+        let before = listing();
+        let signal = ReloadSignal::new();
+        let (reporter, _) = capture();
+        let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Superseded);
+        let got = handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| true);
+        assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
+        assert_eq!(listing(), before, "the scan ran on after the patch was superseded");
     }
 
     /// A patch whose replays were killed is superseded, not failed: no
