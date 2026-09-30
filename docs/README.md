@@ -73,6 +73,14 @@ If you're new to the codebase, read the docs in this order:
    `#[channel]` / `#[sse]`), schema versioning, batching, and serving.
    Read this when your app grows a backend.
 
+10. [`web-platform-coverage.md`](./web-platform-coverage.md). Every
+    browser capability an app has needed (the URL, new tabs, storage,
+    network status, highlighted text input, WebSocket binary frames and
+    close codes, microphone buffers), the SDK call that covers each one,
+    and how each backend answers. Apps do not call `web-sys` / `js-sys`
+    / `wasm-bindgen` themselves; a missing capability becomes a row there
+    and an SDK method.
+
 ## Tooling
 
 - [`hot-reload.md`](./hot-reload.md). What a save costs. `idealyst dev`

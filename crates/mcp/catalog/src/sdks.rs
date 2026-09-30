@@ -70,7 +70,7 @@ sdk!(
     "net",
     SdkCategory::Data,
     SdkKind::Api,
-    "Cross-platform async networking — HTTP, WebSocket, and Server-Sent Events. `net::Client` is the HTTP entry point; the transport the server-functions layer composes."
+    "Cross-platform async networking — HTTP, WebSocket, and Server-Sent Events. `net::Client` is the HTTP entry point; the transport the server-functions layer composes. `net::WebSocket` carries text and binary frames (`WsMessage::Binary(Vec<u8>)`); after `recv()` returns None, `close_status()` reports the peer's `WsClose { code, reason }` (1000 = normal; 1005/1006 synthesized identically on every target). Use it instead of `web_sys::WebSocket`."
 );
 sdk!(
     "server",
@@ -88,7 +88,7 @@ sdk!(
     "storage",
     SdkCategory::Data,
     SdkKind::Api,
-    "Cross-platform INSECURE key-value storage for non-sensitive app data. PREFERRED for signal-backed state: `storage::persisted_signal(namespace, key, initial) -> Signal<T>` (crate feature `reactive`) — hydrates on creation, persists on change, race-correct (a user write before the async load resolves WINS; hand-rolled load/persist wiring almost always clobbers it). Raw API: `storage::platform_storage(namespace) -> Arc<dyn Storage>` with ASYNC `get(key) -> Result<Option<String>, StorageError>` / `set` / `remove` — call via `runtime_core::spawn_then(future, |result| { … })`, which keeps every signal write in a callback that runs inside a turn or not at all (needs runtime-core's `async-driver` feature; generated wrappers enable it). Do NOT write signals inside the future: every `.await` is a flush boundary, so an unmount mid-flight leaves the continuation writing a freed slot and the app aborts with `idealyst[stale-signal-handle]`. Backends: localStorage (web), NSUserDefaults (iOS/macOS), SharedPreferences (Android), JSON file (desktop). The `persisted_signal` recipe registers once storage is a dependency of the build. No security claims — use `credentials` for secrets."
+    "Cross-platform INSECURE key-value storage for non-sensitive app data. PREFERRED for signal-backed state: `storage::persisted_signal(namespace, key, initial) -> Signal<T>` (crate feature `reactive`) — hydrates on creation, persists on change, race-correct (a user write before the async load resolves WINS; hand-rolled load/persist wiring almost always clobbers it). Raw API: `storage::platform_storage(namespace) -> Arc<dyn Storage>` with ASYNC `get(key) -> Result<Option<String>, StorageError>` / `set` / `remove`, plus SYNCHRONOUS `get_now` / `set_now` / `remove_now` for the few values needed before first paint (a saved theme — an async read boots in the default and flips a tick later); every shipped store answers them, a custom store that would wait returns `NotSupported` — call via `runtime_core::spawn_then(future, |result| { … })`, which keeps every signal write in a callback that runs inside a turn or not at all (needs runtime-core's `async-driver` feature; generated wrappers enable it). Do NOT write signals inside the future: every `.await` is a flush boundary, so an unmount mid-flight leaves the continuation writing a freed slot and the app aborts with `idealyst[stale-signal-handle]`. Backends: localStorage (web), NSUserDefaults (iOS/macOS), SharedPreferences (Android), JSON file (desktop). The `persisted_signal` recipe registers once storage is a dependency of the build. No security claims — use `credentials` for secrets."
 );
 sdk!(
     "sync",
@@ -314,7 +314,7 @@ sdk!(
     "codeblock",
     SdkCategory::Ui,
     SdkKind::External,
-    "Two code surfaces. `code_block(spans)` is the read-only colored-text panel. `code_editor(value_signal, on_change)` is the EDITABLE one: an editor whose syntax highlighting and underlines come from author-supplied BYTE RANGES — `.decorate(|text| Vec<Decoration>)` for a synchronous tokenizer, `.decorations(read_signal)` for async diagnostics — so the primitive never parses anything and works for any language. Decorations overlap and layer field-by-field, which is how a red `Underline` sits on a syntax-colored token without clearing its color; stale/mid-character ranges clamp rather than panic. Font/size/line-height/padding are `.font()`/`.line_height()`/`.padding()` METRICS, not `.with_style()` — styling one of its two layers and not the other is the drift it exists to prevent. It does not soft-wrap and does not scroll internally: put it in a `scroll_view`. WEB REGISTRATION REQUIRED: call `codeblock::register(&mut backend)` from your wasm32 `register_extensions` (and the SSR bootstrap, so first paint matches) or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
+    "Two code surfaces. `code_block(spans)` is the read-only colored-text panel. `code_editor(value_signal, on_change)` is the EDITABLE one: an editor whose syntax highlighting and underlines come from author-supplied BYTE RANGES — `.decorate(|text| Vec<Decoration>)` for a synchronous tokenizer, `.decorations(read_signal)` for async diagnostics — so the primitive never parses anything and works for any language. Decorations overlap and layer field-by-field, which is how a red `Underline` sits on a syntax-colored token without clearing its color; stale/mid-character ranges clamp rather than panic. Font/size/line-height/padding are `.font()`/`.line_height()`/`.padding()` METRICS, not `.with_style()` — styling one of its two layers and not the other is the drift it exists to prevent. It is code-mode by default (no soft wrap) and does not scroll internally: put it in a `scroll_view`. For a short expression buffer in a fixed-width column (a formula, a filter) call `.soft_wrap(true)` — both layers then wrap under the same rules and the box grows downward. WEB REGISTRATION REQUIRED: call `codeblock::register(&mut backend)` from your wasm32 `register_extensions` (and the SSR bootstrap, so first paint matches) or it renders an unsupported-`External` placeholder (runtime, not compile-time); native self-registers. See the `sdks` guide's \"Registering External UI SDKs\" section."
 );
 sdk!(
     "pdf",
@@ -472,7 +472,7 @@ sdk!(
     "deep-link",
     SdkCategory::Device,
     SdkKind::Api,
-    "Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). The host forwards URLs in via `feed_link`."
+    "Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). The host forwards URLs in via `feed_link`. Also the LIVE address on web: `current_url()` (the address right now, parsed — path + query), `replace_url(url)` (rewrite the address bar without navigating; keeps history.state; no on_link dispatch) and `origin()` (for building absolute share links). Native answers None / no-op — a native app is not at a URL. Use these instead of reading `window.location` / calling `history.replaceState` through web-sys."
 );
 sdk!(
     "connectivity",
