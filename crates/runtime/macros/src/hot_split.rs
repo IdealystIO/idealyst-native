@@ -99,7 +99,15 @@ pub(crate) fn split(item_fn: ItemFn) -> Result<TokenStream2, (Refusal, Box<ItemF
     // rebind, and the patch dylib would contain no `__*_hot_impl` for
     // it. Doc comments are dropped (the outer keeps them; two copies
     // would duplicate every component in rustdoc).
+    // The body MOVES into the inner fn; only the (small) rest of the item is
+    // cloned. Cloning the whole `ItemFn` deep-copied every component body
+    // just to throw the outer's copy away below — ~13% of `#[component]`
+    // expansion on CrewForge's projects crate.
+    let mut item_fn = item_fn;
+    let brace_token = item_fn.block.brace_token;
+    let body = std::mem::replace(&mut *item_fn.block, syn::Block { brace_token, stmts: Vec::new() });
     let mut inner = item_fn.clone();
+    *inner.block = body;
     inner.vis = syn::Visibility::Inherited;
     inner.sig.ident = inner_name.clone();
     inner.attrs.retain(|a| !a.path().is_ident("doc"));

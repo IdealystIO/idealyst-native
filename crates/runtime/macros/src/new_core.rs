@@ -34,6 +34,11 @@
 //! lands on the glue equivalent or fails loudly with a
 //! `runtime_vocabulary::glue` path in the error. Unqualified
 //! `runtime_core::…` user paths are NOT touched.
+//!
+//! The body of a `ui! { … }` / `jsx! { … }` invocation found in the
+//! output is passed through as is: it is that macro's input, and what the
+//! macro emits from it is retargeted by the macro's own `finish()`. A
+//! user path inside one is still rewritten, one expansion later.
 
 use proc_macro2::{Delimiter, Group, Ident, Punct, Spacing, TokenStream as TokenStream2, TokenTree};
 
@@ -90,6 +95,22 @@ pub(crate) fn retarget(stream: TokenStream2) -> TokenStream2 {
                 }
             }
         }
+        // `ui! { … }` / `jsx! { … }` inside the output (a `#[component]`
+        // body is mostly these): push the invocation through untouched.
+        // Its tokens are that macro's INPUT, and whatever it emits from
+        // them passes through its own `finish()` → `retarget` when it
+        // expands, so walking them here only rebuilt every group of every
+        // component body for nothing — ~75% of the retarget cost of
+        // `#[component]` output on CrewForge's projects crate.
+        if let (TokenTree::Ident(id), Some(TokenTree::Punct(bang)), Some(TokenTree::Group(_))) =
+            (&tokens[i], tokens.get(i + 1), tokens.get(i + 2))
+        {
+            if bang.as_char() == '!' && (id == "ui" || id == "jsx") {
+                out.extend(tokens[i..i + 3].iter().cloned());
+                i += 3;
+                continue;
+            }
+        }
         match &tokens[i] {
             TokenTree::Group(g) => {
                 let mut ng = Group::new(g.delimiter(), retarget(g.stream()));
@@ -128,6 +149,27 @@ fn is_non_segment_keyword(ident: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A `ui!`/`jsx!` invocation in the output is left for that macro's
+    /// own `finish()`: its body is not walked (the cost this skips was
+    /// ~75% of retargeting `#[component]` output on CrewForge), while
+    /// paths around it still are.
+    #[test]
+    fn a_ui_invocation_body_is_left_for_that_macro() {
+        let out = super::retarget(quote::quote! {
+            ::runtime_core::component_scope(move || {
+                ui! { view() { ::runtime_core::x() } }
+            });
+            jsx! { <a b={::runtime_core::y()} /> };
+            let ne = ui != ::runtime_core::z;
+        })
+        .to_string();
+        assert!(out.starts_with(":: runtime_vocabulary :: glue :: component_scope"), "{out}");
+        assert!(out.contains("ui ! { view () { :: runtime_core :: x () } }"), "{out}");
+        assert!(out.contains(":: runtime_core :: y ()"), "{out}");
+        // `ui != …` is a comparison, not an invocation.
+        assert!(out.contains("ui != :: runtime_vocabulary :: glue :: z"), "{out}");
+    }
+
     use super::*;
     use quote::quote;
 

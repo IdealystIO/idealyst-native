@@ -124,7 +124,21 @@ pub(crate) fn wrap_body(item_fn: &mut ItemFn, legacy_props: bool, bind_to_inject
             },
         );
     };
-    let finish: syn::Expr = syn::parse_quote! { __idealyst_inspect.finish(#scoped) };
+    // Built as AST with the parsed body MOVED in. The obvious
+    // `parse_quote! { __idealyst_inspect.finish(#scoped) }` prints the whole
+    // body back to tokens and parses it again — measured on CrewForge's
+    // projects crate that re-parse was the largest single phase of
+    // `#[component]` expansion (~35%), paid on every hot-patch replay. Same
+    // AST, same call-site spans as the template would have produced.
+    let finish = syn::Expr::MethodCall(syn::ExprMethodCall {
+        attrs: Vec::new(),
+        receiver: Box::new(syn::parse_quote!(__idealyst_inspect)),
+        dot_token: Default::default(),
+        method: syn::Ident::new("finish", proc_macro2::Span::call_site()),
+        turbofish: None,
+        paren_token: Default::default(),
+        args: std::iter::once(scoped).collect(),
+    });
     item_fn.block.stmts.push(register);
     item_fn.block.stmts.push(syn::Stmt::Expr(finish, None));
 }
