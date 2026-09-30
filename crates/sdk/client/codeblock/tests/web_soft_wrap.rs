@@ -11,15 +11,18 @@
 //! (fewer). A border on the editing layer alone, or a `<pre>` still at
 //! `white-space: pre`, breaks that.
 //!
-//! Run with `wasm-pack test --headless --chrome --package codeblock`.
+//! Run with `cargo test -p codeblock --target wasm32-unknown-unknown` (the
+//! workspace runner supplies web-glue's JS; `wasm-pack test` cannot).
 
 #![cfg(target_arch = "wasm32")]
 
 use codeblock::code_editor;
 use runtime_vocabulary::glue::IntoElement;
 use runtime_world::signal;
-use web_sys::wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
+use web_glue::dom::{window, Element, HtmlElement, HtmlTextAreaElement};
+use web_glue::js::Promise;
+use web_glue::{JsCast, JsFuture, JsValue};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -31,19 +34,19 @@ const LONG: &str = "IF {quantity_delivered} > 100 AND {site_code} = \"NORTH-DRIF
 async fn next_frames() {
     // Two timer turns: the mount's microtask flush, then layout.
     for _ in 0..2 {
-        let promise = js_sys::Promise::new(&mut |resolve, _| {
-            web_sys::window()
+        let promise = Promise::new(&mut |resolve, _| {
+            window()
                 .unwrap()
                 .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 30)
                 .unwrap();
         });
-        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+        JsFuture::from(JsValue::from(promise)).await.unwrap();
     }
 }
 
 #[wasm_bindgen_test]
 async fn soft_wrap_layers_break_at_the_same_places() {
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = window().unwrap().document().unwrap();
     if let Some(old) = doc.get_element_by_id("app") {
         old.remove();
     }
@@ -60,20 +63,20 @@ async fn soft_wrap_layers_break_at_the_same_places() {
     });
     next_frames().await;
 
-    let ta: web_sys::HtmlTextAreaElement = doc
+    let ta: HtmlTextAreaElement = doc
         .query_selector("#app textarea")
         .unwrap()
         .expect("the editing layer")
         .dyn_into()
         .unwrap();
-    let pre: web_sys::HtmlElement = doc
+    let pre: HtmlElement = doc
         .query_selector("#app pre")
         .unwrap()
         .expect("the decorated layer")
         .dyn_into()
         .unwrap();
-    let win = web_sys::window().unwrap();
-    let css = |el: &web_sys::Element, prop: &str| {
+    let win = window().unwrap();
+    let css = |el: &Element, prop: &str| {
         win.get_computed_style(el)
             .unwrap()
             .unwrap()

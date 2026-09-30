@@ -265,7 +265,7 @@ highlight** (the decorated layer not following an edit).
 - [ ] **macOS** — ⚠️ not yet device-confirmed. Same drift check as iOS.
 - [ ] **Tabs** — open a file with literal tab characters on each backend;
   the highlight must not slide one tab stop right of the glyphs.
-- [x] **Soft wrap, web** — `tests/web_soft_wrap.rs` (browser): in a 220px
+- [x] **Soft wrap, web** — `tests/web_soft_wrap.rs` (browser, `cargo test -p codeblock --target wasm32-unknown-unknown`): in a 220px
   column both layers compute the same wrapping, font, line box and
   padding, the editing layer has no border, both boxes match, and the
   textarea's wrapped content height equals the box (same row count as the
