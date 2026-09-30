@@ -13187,6 +13187,8 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen",
+ "wasm-bindgen-test",
+ "web-glue",
  "web-sys",
 ]
 

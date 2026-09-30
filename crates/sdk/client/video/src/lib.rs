@@ -384,7 +384,7 @@ pub struct UnsupportedOps;
 impl VideoOps for UnsupportedOps {}
 
 #[cfg(target_arch = "wasm32")]
-static OPS: &dyn VideoOps = web_glue::OPS;
+static OPS: &dyn VideoOps = web_leg::OPS;
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
 static OPS: &dyn VideoOps = crate::macos::OPS;
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
@@ -664,7 +664,7 @@ where
 {
     let any: &mut dyn Any = registry;
     if let Some(reg) = any.downcast_mut::<Registry<backend_web::WebBackend>>() {
-        reg.register::<VideoPrim, _>(web_glue::mount_video_web);
+        reg.register::<VideoPrim, _>(web_leg::mount_video_web);
         return;
     }
     // A non-web registry on a wasm build is the SSR/dump path, which has
@@ -707,7 +707,7 @@ where
 #[cfg(target_arch = "wasm32")]
 pub fn register_from_chunk() {
     runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
-        registry.register_deferred::<VideoPrim, _>(web_glue::mount_video_web);
+        registry.register_deferred::<VideoPrim, _>(web_leg::mount_video_web);
     });
 }
 
@@ -716,11 +716,11 @@ pub fn register_from_chunk() {
 pub fn register_from_chunk() {}
 
 // ============================================================================
-// Web glue (wasm32).
+// Web leg (wasm32) — DOM through web-glue.
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]
-mod web_glue {
+mod web_leg {
     use super::*;
     use crate::web_util;
     use backend_web::WebBackend;
@@ -753,7 +753,7 @@ mod web_glue {
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<VideoPrim>,
         _children: Vec<Element>,
-    ) -> backend_web::bridge::HostNode {
+    ) -> web_glue::dom::Node {
         let backend = cx.backend().clone();
         let fit = match prim.props.object_fit {
             ObjectFit::Contain => "contain",
@@ -789,8 +789,7 @@ mod web_glue {
             }
         });
 
-        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
-        let node = backend_web::bridge::node_from_web_sys(&video.into());
+        let node: web_glue::dom::Node = video.into();
         finish_mount(&backend, &node, prim);
         node
     }

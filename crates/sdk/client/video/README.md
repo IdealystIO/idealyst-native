@@ -58,7 +58,7 @@ fetches it) or a live `Stream`. The *mechanism* differs per platform:
 
 | Target | URL mechanism | Live `Stream` mechanism |
 | --- | --- | --- |
-| Web (wasm32) | `<video>` element (`src`) | `<video>.srcObject` ← the stream's native `MediaStream` (zero-copy) |
+| Web (wasm32) | `<video>` element (`src`), built and driven through web-glue | `<video>.srcObject` ← the stream's native `MediaStream` (zero-copy; still a `web_sys::MediaStream` until the media SDKs switch together) |
 | iOS | `AVPlayer` + `AVPlayerLayer` in a `UIView` | — (GPU/compositing phase) |
 | Android | `android.widget.VideoView` (`setVideoURI`) | — (GPU/compositing phase) |
 | Other (SSR, wgpu desktop, terminal, …) | the frozen External "not supported" placeholder | — |
@@ -101,6 +101,7 @@ exercise a `Video` in a running app).
 **Automated**
 - [ ] `cargo test -p video` — portable logic (`source` builders, prop defaults)
 - [ ] `cargo build -p video --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p video --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_video.rs`: construction props (autoplay forces the muted property, controls, object-fit), the handle ops through the host node, a stream's native `MediaStream` as `srcObject`, and the reactive source switching stream → URL → none
 
 **Behavior**
 - [ ] **Web** — a `url(..)` source plays in a `<video>`; a `stream(..)` source binds the live `MediaStream` via `.srcObject` (zero-copy); reactive `source` swaps the clip; `autoplay`/`controls`/`loop_playback` and imperative `play`/`pause`/`seek` work.
