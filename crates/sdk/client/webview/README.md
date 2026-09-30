@@ -56,7 +56,7 @@ The *mechanism* differs per platform:
 
 | Target | Mechanism |
 | --- | --- |
-| Web (wasm32) | `<iframe>`; callbacks are DOM `load` / `error` / `message` listeners |
+| Web (wasm32) | `<iframe>` (web-glue); callbacks are DOM `load` / `error` / `message` listeners, detached at unmount |
 | iOS | `WKWebView` via raw `msg_send`; callbacks via a `WKNavigationDelegate` + `WKScriptMessageHandler` shim |
 | Android | `android.webkit.WebView`; `loadUrl` navigation |
 | Other (wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder |
@@ -113,6 +113,7 @@ verification note above). Tick each item as you exercise it.
 
 **Automated**
 - [ ] `cargo build -p webview --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p webview --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_webview.rs`: `on_load`, `on_message` filtered to this frame, `post_message`, `execute_js` results and every error shape (incl. cross-origin), and unmount detaching + freeing the listeners
 
 **Rendering / behavior**
 - [ ] **Web** — `WebView` loads the `url` in an `<iframe>` and renders the page;

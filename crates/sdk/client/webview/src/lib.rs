@@ -11,8 +11,8 @@
 //!   handler: one `<iframe>` per mount (inline `border: 0` only —
 //!   size/positioning stays with the author's stylesheet), reactive
 //!   `src` through a world effect, message/load/error DOM listeners
-//!   persisted via the iframe's `__wv_state` reflect slot (see
-//!   [`web_util`]), author style via `attach_style`, ref fill with the
+//!   owned by the mount and detached at unmount (see [`web_util`]; all
+//!   DOM access is web-glue), author style via `attach_style`, ref fill with the
 //!   web ops (`post_message`/`reload`/`execute_js` bodies also live in
 //!   `web_util`).
 //! - **Everywhere else** — [`register`] installs the External-placeholder
@@ -58,8 +58,7 @@
 #![deny(missing_docs)]
 
 // Shared wasm32 helpers (pure DOM: imperative iframe ops + the event
-// listener wiring with its `__wv_state` closure persistence — no core
-// types).
+// listener wiring — no core types).
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod web_util;
 // Real WebKitGTK leaf, behind the OFF-by-default `linux-webkit` feature:
@@ -248,7 +247,7 @@ pub struct UnsupportedOps;
 impl WebViewOps for UnsupportedOps {}
 
 #[cfg(target_arch = "wasm32")]
-static OPS: &dyn WebViewOps = web_glue::OPS;
+static OPS: &dyn WebViewOps = web_leg::OPS;
 #[cfg(not(target_arch = "wasm32"))]
 static OPS: &dyn WebViewOps = &UnsupportedOps;
 
@@ -449,7 +448,7 @@ where
 /// registry — the real `<iframe>` renderer.
 #[cfg(target_arch = "wasm32")]
 pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
-    registry.register::<WebViewPrim, _>(web_glue::mount_webview_web);
+    registry.register::<WebViewPrim, _>(web_leg::mount_webview_web);
 }
 
 /// Declare this SDK's payload kind **late-bound** instead of installing
@@ -486,7 +485,7 @@ where
 #[cfg(target_arch = "wasm32")]
 pub fn register_from_chunk() {
     runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
-        registry.register_deferred::<WebViewPrim, _>(web_glue::mount_webview_web);
+        registry.register_deferred::<WebViewPrim, _>(web_leg::mount_webview_web);
     });
 }
 
@@ -495,12 +494,12 @@ pub fn register_from_chunk() {
 pub fn register_from_chunk() {}
 
 // ============================================================================
-// Web glue (wasm32): the real `<iframe>` renderer over the scene
+// Web leg (wasm32): the real `<iframe>` renderer over the scene
 // contract.
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]
-mod web_glue {
+mod web_leg {
     use super::*;
     use backend_web::WebBackend;
 
@@ -551,9 +550,9 @@ mod web_glue {
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<WebViewPrim>,
         _children: Vec<Element>,
-    ) -> backend_web::bridge::HostNode {
+    ) -> web_glue::dom::Node {
         let backend = cx.backend().clone();
-        let document = web_sys::window()
+        let document = web_glue::dom::window()
             .expect("no window")
             .document()
             .expect("no document");
@@ -578,18 +577,22 @@ mod web_glue {
             let _ = iframe_for_url.set_attribute("src", &url);
         });
 
-        // Author-callback listeners + `__wv_state` closure persistence
-        // (see `web_util`), each callback wrapped to schedule_flush
-        // after it returns.
-        crate::web_util::wire_listeners(
+        // Author-callback listeners (see `web_util`), each callback
+        // wrapped to schedule_flush after it returns. They live exactly
+        // as long as the mounted iframe: teardown detaches them and frees
+        // their closures. (They used to be parked behind an `Rc::into_raw`
+        // number on the element that nothing ever reclaimed — every
+        // mounted webview leaked its listeners, including a `message`
+        // listener on `window` that outlived the iframe.)
+        let listeners = crate::web_util::wire_listeners(
             &iframe,
             prim.props.on_message.clone().map(flush_after_msg),
             prim.props.on_load.clone().map(flush_after),
             prim.props.on_error.clone().map(flush_after),
         );
+        on_teardown(move || drop(listeners));
 
-        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
-        let node = backend_web::bridge::node_from_web_sys(&iframe.into());
+        let node: web_glue::dom::Node = iframe.into();
         finish_mount(&backend, &node, prim);
         node
     }

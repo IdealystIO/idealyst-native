@@ -49,16 +49,16 @@ host-mock = { path = "../../../dev/host-mock" }
 # `Host` impl — and the DOM event listeners must call
 # `backend_web::newcore::schedule_flush` after author callbacks.
 backend-web = { workspace = true }
-web-sys = { version = "0.3", features = [
-    "Document",
-    "Element",
-    "HtmlIFrameElement",
-    "Window",
-    "MessageEvent",
-    "EventTarget",
-] }
-wasm-bindgen = "0.2"
-js-sys = "0.3"
+# The `<iframe>`, its listeners and the ops (`postMessage`, `eval`) go
+# through web-glue, the framework-owned JS boundary
+# (docs/proposals/own-web-bindings.md).
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_webview.rs`) — run with
+# `cargo test -p webview --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 backend-android-mobile = { workspace = true }
