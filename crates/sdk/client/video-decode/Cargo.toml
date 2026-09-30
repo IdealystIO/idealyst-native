@@ -55,39 +55,16 @@ block2 = "0.5"
 frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "MediaToolbox", "CoreFoundation"]
 
 # Web (wasm): a hidden <video> for decode/transport, an offscreen <canvas> to
-# pull RGBA per frame, and WebAudio to tap the PCM for recording.
+# pull RGBA per frame, and WebAudio to tap the PCM for recording — web-glue
+# bindings declared in `src/web.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Document",
-    "Node",
-    "Element",
-    "HtmlElement",
-    "EventTarget",
-    "Blob",
-    "BlobPropertyBag",
-    "Url",
-    "HtmlVideoElement",
-    "HtmlCanvasElement",
-    "HtmlMediaElement",
-    "CanvasRenderingContext2d",
-    "ImageData",
-    "AudioContext",
-    "AudioContextState",
-    "AudioNode",
-    "AudioParam",
-    "AudioDestinationNode",
-    "MediaElementAudioSourceNode",
-    "ScriptProcessorNode",
-    "AudioBuffer",
-    "AudioProcessingEvent",
-    "GainNode",
-    "Event",
-    "TimeRanges",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_decode.rs`) — run with
+# `cargo test -p video-decode --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Android: MediaExtractor + MediaCodec decode driven by a Kotlin shim that
 # trampolines frames/PCM back through JNI, mirroring the `camera` SDK.

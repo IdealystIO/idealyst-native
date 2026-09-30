@@ -28,16 +28,17 @@
 //! `onaudioprocess` [`Closure`], and the `<video>` element all live in the
 //! [`StreamHandle`] so nothing is dropped early; its `Drop` pauses the video,
 //! disconnects the nodes, removes the element, and stops the pump.
+//!
+//! Every browser call is a web-glue binding declared here (own-web-bindings
+//! phase 3). The element and canvas are created by this SDK, never mounted by
+//! the backend. Pixel and PCM readback write straight into buffers Rust
+//! allocated first (sized from values Rust already knows), so each is one
+//! crossing and no JS view of wasm memory outlives a call into wasm.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{
-    AudioContext, AudioProcessingEvent, CanvasRenderingContext2d, HtmlCanvasElement,
-    HtmlVideoElement, MediaElementAudioSourceNode, ScriptProcessorNode,
-};
+use web_glue::{string, Closure, JsError, JsValue};
 
 use media_stream::{AudioWriter, FrameWriter};
 
@@ -54,6 +55,150 @@ const SCRIPT_PROCESSOR_BUFFER: u32 = 4096;
 /// the macOS `apple.rs` gate.
 const ENABLE_AUDIO_TAP: bool = false;
 
+/// The inline style that keeps the hidden `<video>` decoding. Offscreen but
+/// with a real (tiny) size and NOT `visibility:hidden` / zero-size: browsers
+/// throttle or refuse playback of hidden / 0×0 / display:none media, which
+/// freezes `currentTime` (play() appears dead). `opacity:0` + a 2px box pinned
+/// offscreen keeps it decoding AND advancing while invisible.
+const HIDDEN_VIDEO_STYLE: &str =
+    "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none;z-index:-1;";
+
+web_glue::import! {
+    // `URL.createObjectURL(new Blob([bytes], { type }))` into `out`; the
+    // bytes are copied (`slice`).
+    #[catch]
+    fn js_blob_url(p: usize, l: usize, tp: usize, tl: usize, out: usize) =
+        "(p, l, tp, tl, o) => { \
+           const bytes = G.u8().slice(p >>> 0, (p >>> 0) + (l >>> 0)); \
+           G.retStr(URL.createObjectURL(new Blob([bytes], { type: G.str(tp, tl) })), o); }";
+    fn js_revoke_url(p: usize, l: usize) = "(p, l) => { URL.revokeObjectURL(G.str(p, l)); }";
+    // 1 with a window + document, 0 otherwise.
+    fn js_has_document() -> u32 =
+        "() => typeof window !== 'undefined' && window.document != null ? 1 : 0";
+    // The hidden `<video>`: attributes first, then `src` (which starts the
+    // load, so `muted` / `loop` are honored from frame zero), then appended
+    // to <body> so the browser keeps decoding it.
+    #[catch]
+    fn js_create_video(up: usize, ul: usize, sp: usize, sl: usize, muted: u32, looping: u32) -> u32 =
+        "(up, ul, sp, sl, muted, looping) => { const v = document.createElement('video'); \
+           v.muted = muted !== 0; v.loop = looping !== 0; v.crossOrigin = 'anonymous'; \
+           v.preload = 'auto'; v.setAttribute('playsinline', ''); \
+           v.setAttribute('style', G.str(sp, sl)); v.src = G.str(up, ul); \
+           if (document.body) document.body.appendChild(v); return G.add(v); }";
+    // `play()`; its Promise may reject (autoplay without a gesture), which
+    // is acceptable — the caller re-plays from a gesture — so it's observed
+    // here rather than left as an unhandled rejection.
+    fn js_play(v: u32) = "(v) => { const p = G.get(v).play(); if (p) p.catch(() => {}); }";
+    fn js_pause(v: u32) = "(v) => { G.get(v).pause(); }";
+    fn js_set_current_time(v: u32, t: f64) = "(v, t) => { G.get(v).currentTime = t; }";
+    // 1 if `fastSeek` exists and was issued, 0 when unsupported (Chrome).
+    #[catch]
+    fn js_fast_seek(v: u32, t: f64) -> u32 =
+        "(v, t) => { const e = G.get(v); if (typeof e.fastSeek !== 'function') return 0; \
+           e.fastSeek(t); return 1; }";
+    fn js_current_time(v: u32) -> f64 = "(v) => G.get(v).currentTime";
+    fn js_duration(v: u32) -> f64 = "(v) => G.get(v).duration";
+    fn js_paused(v: u32) -> u32 = "(v) => G.get(v).paused ? 1 : 0";
+    fn js_set_muted(v: u32, m: u32) = "(v, m) => { G.get(v).muted = m !== 0; }";
+    fn js_set_rate(v: u32, r: f64) = "(v, r) => { G.get(v).playbackRate = r; }";
+    fn js_ready_state(v: u32) -> u32 = "(v) => G.get(v).readyState";
+    fn js_video_width(v: u32) -> u32 = "(v) => G.get(v).videoWidth";
+    fn js_video_height(v: u32) -> u32 = "(v) => G.get(v).videoHeight";
+    // `onseeked = f` (0 clears it).
+    fn js_set_onseeked(v: u32, f: u32) =
+        "(v, f) => { G.get(v).onseeked = f === 0 ? null : G.get(f); }";
+    // Teardown: pause, detach the seek handler, drop the source, remove the
+    // element from the DOM.
+    fn js_teardown_video(v: u32) =
+        "(v) => { const e = G.get(v); e.pause(); e.onseeked = null; e.src = ''; \
+           if (e.parentNode) e.parentNode.removeChild(e); }";
+    // An offscreen canvas's 2D context. `willReadFrequently` keeps the
+    // backing store CPU-side: every frame is read back with `getImageData`,
+    // so this avoids a per-readback GPU→CPU stall (and the browser's
+    // "Multiple readback operations" warning).
+    #[catch]
+    fn js_create_ctx() -> u32 =
+        "() => { const c = document.createElement('canvas'); \
+           const x = c.getContext('2d', { willReadFrequently: true }); return x == null ? 0 : G.add(x); }";
+    // Draw the video's current frame scaled to w×h and copy the straight
+    // (non-premultiplied) RGBA8 `ImageData` into the w*h*4 bytes at `out`.
+    // 1 on success, 0 if the draw / readback threw (e.g. a tainted canvas).
+    fn js_pump(x: u32, v: u32, w: u32, h: u32, out: usize) -> u32 =
+        "(x, v, w, h, o) => { const ctx = G.get(x); const c = ctx.canvas; \
+           if (c.width !== w) c.width = w; if (c.height !== h) c.height = h; \
+           try { ctx.drawImage(G.get(v), 0, 0, w, h); \
+             G.u8().set(ctx.getImageData(0, 0, w, h).data, o >>> 0); return 1; } \
+           catch (_) { return 0; } }";
+    // The PCM tap graph `MediaElementSource → ScriptProcessor → destination`
+    // as `{ context, source, processor }`, or 0 if any node fails to build.
+    fn js_audio_tap(v: u32, buf: u32, f: u32) -> u32 =
+        "(v, buf, f) => { try { const context = new AudioContext(); \
+           const source = context.createMediaElementSource(G.get(v)); \
+           const processor = context.createScriptProcessor(buf, 2, 2); \
+           processor.onaudioprocess = G.get(f); \
+           source.connect(processor); processor.connect(context.destination); \
+           return G.add({ context, source, processor }); } catch (_) { return 0; } }";
+    fn js_audio_rate(t: u32) -> f64 = "(t) => G.get(t).context.sampleRate";
+    fn js_audio_teardown(t: u32) =
+        "(t) => { const g = G.get(t); g.processor.onaudioprocess = null; \
+           try { g.processor.disconnect(); } catch (_) {} \
+           try { g.source.disconnect(); } catch (_) {} g.context.close().catch(() => {}); }";
+    // An `AudioProcessingEvent`'s input buffer shape: channels * 2^20 +
+    // frames (frames < 2^20, channels ≤ 32 per the Web Audio spec), 0 when
+    // unreadable.
+    fn js_audio_shape(e: u32) -> f64 =
+        "(e) => { const b = G.get(e).inputBuffer; return b == null ? 0 : \
+           b.numberOfChannels * 1048576 + b.length; }";
+    // Interleave the input channels ([L0,R0,L1,R1,…]) into the
+    // channels*frames f32s at `out` (4-byte aligned).
+    fn js_audio_interleave(e: u32, out: usize, channels: u32, frames: u32) =
+        "(e, o, ch, n) => { const b = G.get(e).inputBuffer; \
+           const f = new Float32Array(G.u8().buffer, o >>> 0, ch * n); \
+           for (let c = 0; c < ch; c++) { const d = b.getChannelData(c); \
+             for (let i = 0; i < n; i++) f[i * ch + c] = d[i]; } }";
+}
+
+fn revoke(url: &str) {
+    let (p, l) = string::abi(url);
+    unsafe { js_revoke_url(p, l) }
+}
+
+/// The hidden `<video>` handle, with the element reads the pump and the
+/// transport need.
+#[derive(Clone)]
+struct Video(JsValue);
+
+impl Video {
+    fn play(&self) {
+        unsafe { js_play(self.0.raw()) }
+    }
+    fn pause(&self) {
+        unsafe { js_pause(self.0.raw()) }
+    }
+    fn current_time(&self) -> f64 {
+        unsafe { js_current_time(self.0.raw()) }
+    }
+    fn set_current_time(&self, t: f64) {
+        unsafe { js_set_current_time(self.0.raw(), t) }
+    }
+    /// `fastSeek(t)`; `false` when unsupported (or it threw).
+    fn fast_seek(&self, t: f64) -> bool {
+        matches!(unsafe { js_fast_seek(self.0.raw(), t) }, Ok(1))
+    }
+    fn paused(&self) -> bool {
+        unsafe { js_paused(self.0.raw()) != 0 }
+    }
+    fn ready_state(&self) -> u32 {
+        unsafe { js_ready_state(self.0.raw()) }
+    }
+    fn video_width(&self) -> u32 {
+        unsafe { js_video_width(self.0.raw()) }
+    }
+    fn video_height(&self) -> u32 {
+        unsafe { js_video_height(self.0.raw()) }
+    }
+}
+
 // ===========================================================================
 // Transport — drives the <video> element.
 // ===========================================================================
@@ -63,7 +208,7 @@ const ENABLE_AUDIO_TAP: bool = false;
 /// read (the element's muted state would otherwise need a JS round-trip and is
 /// the player's concern, distinct from the recorder's PCM tap).
 struct WebTransport {
-    video: HtmlVideoElement,
+    video: Video,
     muted: Cell<bool>,
     /// Latest-wins, one-in-flight scrub coordination (shared with the `seeked`
     /// handler).
@@ -90,7 +235,7 @@ struct SeekState {
 /// in-flight flag). A non-exact target prefers `fastSeek` (fast, approximate) for
 /// smooth scrubbing; exact targets — and any browser without `fastSeek` — decode
 /// the precise frame via `currentTime`.
-fn pump_seek(video: &HtmlVideoElement, state: &SeekState) {
+fn pump_seek(video: &Video, state: &SeekState) {
     if state.seeking.get() {
         return;
     }
@@ -101,7 +246,7 @@ fn pump_seek(video: &HtmlVideoElement, state: &SeekState) {
     state.seeking.set(true);
     if exact || state.no_fast_seek.get() {
         video.set_current_time(t);
-    } else if video.fast_seek(t).is_err() {
+    } else if !video.fast_seek(t) {
         // fastSeek unsupported here (e.g. Chrome) — latch + use exact from now on.
         state.no_fast_seek.set(true);
         video.set_current_time(t);
@@ -112,10 +257,10 @@ impl TransportControl for WebTransport {
     fn play(&self) {
         // play() returns a Promise we don't await; browsers may reject autoplay
         // without a user gesture, but our calls originate from a click.
-        let _ = self.video.play();
+        self.video.play();
     }
     fn pause(&self) {
-        let _ = self.video.pause();
+        self.video.pause();
     }
     fn seek(&self, seconds: f32) {
         // Exact landing (drag end): decode the precise frame.
@@ -131,10 +276,10 @@ impl TransportControl for WebTransport {
     }
     fn set_muted(&self, muted: bool) {
         self.muted.set(muted);
-        self.video.set_muted(muted);
+        unsafe { js_set_muted(self.video.0.raw(), muted as u32) }
     }
     fn set_rate(&self, rate: f32) {
-        self.video.set_playback_rate(rate.max(0.0) as f64);
+        unsafe { js_set_rate(self.video.0.raw(), rate.max(0.0) as f64) }
     }
     fn position(&self) -> f32 {
         let t = self.video.current_time();
@@ -146,7 +291,7 @@ impl TransportControl for WebTransport {
     }
     fn duration(&self) -> f32 {
         // `duration` is NaN before metadata loads and +inf for live/unknown.
-        let d = self.video.duration();
+        let d = unsafe { js_duration(self.video.0.raw()) };
         if d.is_finite() {
             d as f32
         } else {
@@ -170,7 +315,7 @@ impl TransportControl for WebTransport {
 /// DOM, and stops the rAF pump (the [`RafLoop`](runtime_shared::scheduling::RafLoop)
 /// cancels on its own drop).
 struct StreamHandle {
-    video: HtmlVideoElement,
+    video: Video,
     _raf: runtime_shared::scheduling::RafLoop,
     /// WebAudio tap, present only if the `AudioContext` built successfully. The
     /// `onaudioprocess` `Closure` is held here so it isn't dropped while the node
@@ -180,41 +325,30 @@ struct StreamHandle {
     /// in-memory clip is freed.
     object_url: Option<String>,
     /// The `seeked` event handler, held so it stays valid while the element lives.
-    _onseeked: Closure<dyn FnMut()>,
+    _onseeked: Closure,
 }
 
 /// The WebAudio PCM-tap graph: `MediaElementSource → ScriptProcessor →
-/// destination`. All three are retained for the tap's lifetime.
+/// destination`, retained for the tap's lifetime.
 struct AudioTap {
-    context: AudioContext,
-    source: MediaElementAudioSourceNode,
-    processor: ScriptProcessorNode,
+    graph: JsValue,
     /// Kept alive so the node's `onaudioprocess` callback stays valid.
-    _on_process: Closure<dyn FnMut(AudioProcessingEvent)>,
+    _on_process: Closure,
 }
 
 impl Drop for StreamHandle {
     fn drop(&mut self) {
-        let _ = self.video.pause();
-        // Detach the seek handler before teardown so it can't fire mid-drop.
-        self.video.set_onseeked(None);
-        // Stop pulling from the element + drop the canvas src.
-        self.video.set_src("");
+        // Pause, detach the seek handler (so it can't fire mid-drop), drop the
+        // source and remove the offscreen element from the DOM.
+        unsafe { js_teardown_video(self.video.0.raw()) };
         if let Some(audio) = self.audio.take() {
             // Detach the callback first so it can't fire mid-teardown, then
             // disconnect the graph and close the context.
-            audio.processor.set_onaudioprocess(None);
-            let _ = audio.processor.disconnect();
-            let _ = audio.source.disconnect();
-            let _ = audio.context.close();
-        }
-        // Remove the offscreen element from the DOM.
-        if let Some(parent) = self.video.parent_node() {
-            let _ = parent.remove_child(&self.video);
+            unsafe { js_audio_teardown(audio.graph.raw()) };
         }
         // Free the in-memory clip blob, if any.
         if let Some(u) = &self.object_url {
-            let _ = web_sys::Url::revoke_object_url(u);
+            revoke(u);
         }
         // `_raf` cancels the pump on its own drop.
     }
@@ -236,85 +370,46 @@ pub(crate) async fn open(
     let (url, object_url) = match source {
         DecodeSource::Url(u) => (u, None),
         DecodeSource::Bytes(data) => {
-            let arr = js_sys::Uint8Array::from(data.as_slice());
-            let parts = js_sys::Array::new();
-            parts.push(&arr);
-            let opts = web_sys::BlobPropertyBag::new();
-            opts.set_type("video/mp4");
-            let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts)
-                .map_err(|e| VideoDecodeError::Backend(format!("blob: {}", err_string(&e))))?;
-            let obj = web_sys::Url::create_object_url_with_blob(&blob)
-                .map_err(|e| VideoDecodeError::Backend(format!("object url: {}", err_string(&e))))?;
+            let (tp, tl) = string::abi("video/mp4");
+            let mut res = Ok(());
+            let obj = string::receive(|o| {
+                res = unsafe { js_blob_url(data.as_ptr() as usize, data.len(), tp, tl, o) }
+            });
+            res.map_err(|e| VideoDecodeError::Backend(format!("object url: {}", err_string(&e))))?;
             (obj.clone(), Some(obj))
         }
     };
 
-    let document = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or(VideoDecodeError::Unsupported)?;
+    if unsafe { js_has_document() } == 0 {
+        return Err(VideoDecodeError::Unsupported);
+    }
 
     // Hidden <video> that drives decode + the clock.
-    let video: HtmlVideoElement = document
-        .create_element("video")
-        .map_err(|e| VideoDecodeError::Backend(format!("create video: {}", err_string(&e))))?
-        .dyn_into()
-        .map_err(|_| VideoDecodeError::Backend("element is not a video".into()))?;
-
-    video.set_muted(config.muted);
-    video.set_loop(config.loop_playback);
-    video.set_cross_origin(Some("anonymous"));
-    video.set_preload("auto");
-    let _ = video.set_attribute("playsinline", "");
-    // Offscreen but with a real (tiny) size and NOT `visibility:hidden` /
-    // zero-size: browsers throttle or refuse playback of hidden / 0×0 / display:none
-    // media, which freezes `currentTime` (play() appears dead). `opacity:0` +
-    // a 2px box pinned offscreen keeps it decoding AND advancing while invisible.
-    let _ = video.set_attribute(
-        "style",
-        "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none;z-index:-1;",
-    );
-    // src triggers the load; setting it after the attributes keeps `muted` /
-    // `loop` honored from frame zero.
-    video.set_src(&url);
-
-    if let Some(body) = document.body() {
-        let _ = body.append_child(&video);
+    let (up, ul) = string::abi(&url);
+    let (sp, sl) = string::abi(HIDDEN_VIDEO_STYLE);
+    let video = unsafe {
+        js_create_video(up, ul, sp, sl, config.muted as u32, config.loop_playback as u32)
     }
+    // SAFETY: a fresh `G.add` slot the snippet minted for us.
+    .map(|h| Video(unsafe { JsValue::from_raw(h) }))
+    .map_err(|e| VideoDecodeError::Backend(format!("create video: {}", err_string(&e))))?;
 
     // Autoplay (browsers require muted for unprompted autoplay; if the caller
     // asked for autoplay && !muted we still attempt play() — it may be rejected,
     // which is acceptable: the caller can re-`play()` from a user gesture).
     if config.autoplay {
-        let _ = video.play();
+        video.play();
     }
 
     // Offscreen canvas + 2d context, reused across pump ticks.
-    let canvas: HtmlCanvasElement = document
-        .create_element("canvas")
-        .map_err(|e| VideoDecodeError::Backend(format!("create canvas: {}", err_string(&e))))?
-        .dyn_into()
-        .map_err(|_| VideoDecodeError::Backend("element is not a canvas".into()))?;
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context_with_context_options(
-            "2d",
-            // These 2D contexts read pixels back every frame via `get_image_data`;
-            // `willReadFrequently` keeps the backing store CPU-side (avoids a per-
-            // readback GPU→CPU stall) and silences the browser's "Multiple readback
-            // operations" warning.
-            &{
-                let o = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(
-                    &o,
-                    &wasm_bindgen::JsValue::from_str("willReadFrequently"),
-                    &wasm_bindgen::JsValue::TRUE,
-                );
-                wasm_bindgen::JsValue::from(o)
-            },
-        )
-        .map_err(|e| VideoDecodeError::Backend(format!("get 2d context: {}", err_string(&e))))?
-        .ok_or_else(|| VideoDecodeError::Backend("no 2d context".into()))?
-        .dyn_into()
-        .map_err(|_| VideoDecodeError::Backend("context is not 2d".into()))?;
+    let ctx = match unsafe { js_create_ctx() } {
+        Ok(0) => return Err(VideoDecodeError::Backend("no 2d context".into())),
+        // SAFETY: a fresh `G.add` slot the snippet minted for us.
+        Ok(h) => unsafe { JsValue::from_raw(h) },
+        Err(e) => {
+            return Err(VideoDecodeError::Backend(format!("get 2d context: {}", err_string(&e))))
+        }
+    };
 
     // Set by the `<video>`'s `seeked` event: a seek's decoded frame just became
     // available, so the pump must redraw even though currentTime is now steady at
@@ -333,12 +428,12 @@ pub(crate) async fn open(
         // A seek completed: draw the landed frame, mark no seek in flight, and
         // issue the newest pending target (if the user kept dragging) — dropping
         // the intermediate ones. This is what keeps scrubbing backlog-free.
-        let cb = Closure::<dyn FnMut()>::new(move || {
+        let cb = Closure::new(move |_| {
             seek_state_cb.seeking.set(false);
             redraw.set(true);
             pump_seek(&video_cb, &seek_state_cb);
         });
-        video.set_onseeked(Some(cb.as_ref().unchecked_ref()));
+        unsafe { js_set_onseeked(video.0.raw(), cb.as_js().raw()) };
         cb
     };
 
@@ -349,6 +444,7 @@ pub(crate) async fn open(
         let redraw = redraw.clone();
         let mut last_t = -1.0_f64;
         let mut drew_once = false;
+        let mut buf = Vec::new();
         runtime_shared::scheduling::raf_loop(move || {
             // Only push a frame when there's actually a NEW one: while playing
             // (currentTime advances) or right after a seek. A paused, unchanged
@@ -368,7 +464,7 @@ pub(crate) async fn open(
             // `redraw` (a completed seek) forces one draw even when t is steady.
             let seeked = redraw.replace(false);
             if advancing || changed || seeked || !drew_once {
-                pump_frame(&video, &canvas, &ctx, &frames, max_dim);
+                pump_frame(&video, &ctx, &frames, max_dim, &mut buf);
                 last_t = t;
                 drew_once = true;
             }
@@ -415,12 +511,13 @@ pub(crate) async fn open(
 /// Draw the video's current frame into the canvas (downscaled per `max_dim`)
 /// and push it back as tightly-packed `RGBA8`. A no-op until the video has
 /// decoded a frame (`readyState >= HAVE_CURRENT_DATA` and non-zero dimensions).
+/// `buf` is reused across frames.
 fn pump_frame(
-    video: &HtmlVideoElement,
-    canvas: &HtmlCanvasElement,
-    ctx: &CanvasRenderingContext2d,
+    video: &Video,
+    ctx: &JsValue,
     frames: &FrameWriter,
     max_dim: Option<u32>,
+    buf: &mut Vec<u8>,
 ) {
     // `HAVE_CURRENT_DATA` == 2: there's a frame for the current playback position.
     if video.ready_state() < 2 {
@@ -432,26 +529,13 @@ fn pump_frame(
         return;
     }
     let (w, h) = target_size(nat_w, nat_h, max_dim);
-    if canvas.width() != w {
-        canvas.set_width(w);
-    }
-    if canvas.height() != h {
-        canvas.set_height(h);
-    }
-    // Scale into the (possibly smaller) canvas in one draw.
-    if ctx
-        .draw_image_with_html_video_element_and_dw_and_dh(video, 0.0, 0.0, w as f64, h as f64)
-        .is_err()
-    {
+    // Sized BEFORE the crossing: the snippet writes into it without calling
+    // back into wasm, so its memory view can't be detached mid-copy.
+    buf.resize(w as usize * h as usize * 4, 0);
+    if unsafe { js_pump(ctx.raw(), video.0.raw(), w, h, buf.as_mut_ptr() as usize) } == 0 {
         return;
     }
-    let image = match ctx.get_image_data(0.0, 0.0, w as f64, h as f64) {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    // `ImageData::data()` is straight (non-premultiplied) RGBA8, tightly packed.
-    let bytes = image.data();
-    frames.write_rgba8(w, h, &bytes.0);
+    frames.write_rgba8(w, h, buf);
 }
 
 /// Target decode size honoring `max_dim` (aspect-preserving). `(0,0)` natural
@@ -476,72 +560,46 @@ fn target_size(nat_w: u32, nat_h: u32, max_dim: Option<u32>) -> (u32, u32) {
 /// set `has_audio` optimistically: if the clip has no audio track the processor
 /// just receives silence, which is acceptable (we can't cheaply pre-check tracks
 /// on the web). Returns `None` only if the WebAudio graph itself fails to build.
-fn install_audio_tap(video: &HtmlVideoElement, writer: AudioWriter) -> Option<AudioTap> {
-    let context = AudioContext::new().ok()?;
-    let source = context.create_media_element_source(video).ok()?;
-    let processor = context
-        .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
-            SCRIPT_PROCESSOR_BUFFER,
-            2,
-            2,
-        )
-        .ok()?;
-
-    let sample_rate = context.sample_rate() as u32;
-
+fn install_audio_tap(video: &Video, writer: AudioWriter) -> Option<AudioTap> {
+    let rate = Rc::new(Cell::new(0u32));
+    let rate_cb = rate.clone();
     // Interleave each input channel into one frame-major f32 buffer and push it.
-    let on_process = Closure::wrap(Box::new(move |event: AudioProcessingEvent| {
-        let buffer = match event.input_buffer() {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let channels = buffer.number_of_channels() as usize;
-        let frames = buffer.length() as usize;
+    let on_process = Closure::new(move |event: JsValue| {
+        let shape = unsafe { js_audio_shape(event.raw()) } as u64;
+        let channels = (shape >> 20) as usize;
+        let frames = (shape & 0xF_FFFF) as usize;
         if channels == 0 || frames == 0 {
             return;
         }
-        // Gather per-channel data, then interleave [L0,R0,L1,R1,...].
-        let mut planar: Vec<Vec<f32>> = Vec::with_capacity(channels);
-        for c in 0..channels {
-            match buffer.get_channel_data(c as u32) {
-                Ok(data) => planar.push(data),
-                Err(_) => return,
-            }
-        }
         let mut interleaved = vec![0.0f32; frames * channels];
-        for (c, chan) in planar.iter().enumerate() {
-            let n = chan.len().min(frames);
-            for f in 0..n {
-                interleaved[f * channels + c] = chan[f];
-            }
-        }
-        writer.write_pcm_f32(sample_rate, channels as u16, &interleaved);
-    }) as Box<dyn FnMut(AudioProcessingEvent)>);
-
-    processor.set_onaudioprocess(Some(on_process.as_ref().unchecked_ref()));
-
-    // source → processor → destination (keeps audio audible while we tap it).
-    source.connect_with_audio_node(&processor).ok()?;
-    processor
-        .connect_with_audio_node(&context.destination())
-        .ok()?;
-
+        unsafe {
+            js_audio_interleave(
+                event.raw(),
+                interleaved.as_mut_ptr() as usize,
+                channels as u32,
+                frames as u32,
+            )
+        };
+        writer.write_pcm_f32(rate_cb.get(), channels as u16, &interleaved);
+    });
+    let graph = match unsafe {
+        js_audio_tap(video.0.raw(), SCRIPT_PROCESSOR_BUFFER, on_process.as_js().raw())
+    } {
+        0 => return None,
+        // SAFETY: a fresh `G.add` slot the snippet minted for us.
+        h => unsafe { JsValue::from_raw(h) },
+    };
+    rate.set(unsafe { js_audio_rate(graph.raw()) } as u32);
     Some(AudioTap {
-        context,
-        source,
-        processor,
+        graph,
         _on_process: on_process,
     })
 }
 
-/// Best-effort string from a `JsValue` (its `.message` or debug form).
-fn err_string(value: &JsValue) -> String {
-    value
-        .as_string()
-        .or_else(|| {
-            js_sys::Reflect::get(value, &"message".into())
-                .ok()
-                .and_then(|v| v.as_string())
-        })
-        .unwrap_or_else(|| format!("{value:?}"))
+/// Best-effort string from a JS error (its `.message`, or `String(value)`).
+fn err_string(e: &JsError) -> String {
+    let v = e.value();
+    v.as_string()
+        .or_else(|| v.get("message").ok().and_then(|m| m.as_string()))
+        .unwrap_or_else(|| e.message())
 }

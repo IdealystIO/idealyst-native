@@ -120,6 +120,7 @@ item as you exercise it.
 - [ ] `cargo test -p video-decode` — portable logic (source/config builders, error contracts)
 - [ ] `VIDEO_DECODE_TEST_FILE=/path/clip.mp4 cargo test -p video-decode --test host_open -- --nocapture` — opens a real local clip, exercises `open()` + transport getters + the frame pump (macOS)
 - [ ] `cargo build -p video-decode --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p video-decode --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_decode.rs`: a WebM recorded in the page decodes to downscaled RGBA8 frames (solid red checked), the transport reaches the element, drop removes the hidden `<video>`; a `Bytes` source plays from a Blob URL revoked on drop
 
 **Behavior**
 - [ ] **Web** — open a `Blob`/`data:`/remote URL clip → `frames()` delivers decoded RGBA8 (hidden `<video>` → `<canvas>` pump); `audio()` yields PCM when present; `transport` play/pause/seek/`seek_preview`/mute drive playback; `position`/`duration` resolve.
