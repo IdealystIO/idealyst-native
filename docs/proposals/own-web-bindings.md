@@ -525,6 +525,33 @@ own. The runtime-server transport attached a new window `resize`
 listener (and leaked its closure) on every reconnect; it is now one
 listener, replaced per connect.
 
+### Phase 2b verification
+
+- backend-web's browser suite **103/103** (all features), through the
+  wasm32 runner; web-glue native tests; the codeblock soft-wrap and
+  stack-navigator SSR-hydration browser tests.
+- Every workspace crate that uses web-sys, checked **on its own** for
+  wasm32 (so feature unification cannot hide a missing declaration).
+- `dev_events_e2e` 1/1 and `wasm_hot_patch_e2e` 2/2 — including the body
+  edit that adds a web-glue binding the base never had; `own_glue_e2e`
+  3/3.
+- Real apps in headless Chrome, built by `idealyst build --web`:
+  `examples/nav-showcase` (tabs, a stack push, browser back via the
+  `popstate` listener, URL sync) and `examples/whiteboard-demo`
+  (canvas-native mounted through the HYBRID-BRIDGE seam, sized by the
+  glue ResizeObserver, and a pointer-drawn stroke painted through the
+  glue touch listeners). No console errors beyond a missing favicon.
+- Build-time spot check, `nav-showcase`, warm rebuild after touching
+  `lib.rs`: **0.99–1.00 s** (2a: 1.05 s; master before phase 2: 1.29 s);
+  the glue extraction is 0.06–0.08 s of it. Hybrid mode still runs
+  wasm-bindgen, so its cost is unchanged until phase 3.
+
+**What remains in backend-web:** `src/bridge.rs` (and its `web-sys` —
+`Node`, `File` — and `wasm-bindgen` dependencies) for the SDKs that still
+use web-sys; the file-drop handoff of a `web_sys::File` to the
+file-picker SDK; `wasm-bindgen-test` as the browser-test harness
+(dev-dependency). Phase 3 ports those SDKs and deletes the bridge.
+
 ## Open questions
 
 - **Unwrapping the remaining bare-named exports** (an app's own
