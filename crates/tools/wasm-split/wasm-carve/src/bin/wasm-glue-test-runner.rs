@@ -28,6 +28,12 @@
 //! written in step 2. Browser-mode tests only (`run_in_browser`): the
 //! node runner resolves imports from the generated file's own directory.
 //!
+//! Moving the working directory would also hide a crate's `webdriver.json`
+//! (browser capabilities — e.g. Chrome's fake media devices or its
+//! autoplay policy — which wasm-bindgen-test-runner reads from its working
+//! directory, cargo's package root when it runs a test), so step 2 copies it
+//! into the directory too.
+//!
 //! A test binary with no glue at all is passed through untouched, so this
 //! is safe as the workspace-wide wasm32 runner (`.cargo/config.toml`).
 //! `WASM_BINDGEN_TEST_RUNNER` names a different underlying runner.
@@ -69,6 +75,17 @@ fn main() -> Result<()> {
         std::fs::write(&stripped, &extracted.wasm).with_context(|| format!("write {}", stripped.display()))?;
         std::fs::write(dir.join("__idealyst_glue.js"), glue_js::hybrid_glue_js(&extracted, "wasm-bindgen-test"))
             .context("write __idealyst_glue.js")?;
+        // The package's browser capabilities, if it has any (see the module
+        // docs). A stale copy from an earlier run goes when the file does.
+        let caps = dir.join("webdriver.json");
+        match std::env::current_dir().map(|d| d.join("webdriver.json")) {
+            Ok(src) if src.is_file() => {
+                std::fs::copy(&src, &caps).with_context(|| format!("copy {}", src.display()))?;
+            }
+            _ => {
+                let _ = std::fs::remove_file(&caps);
+            }
+        }
         cmd.arg(&stripped).current_dir(&dir);
     } else {
         cmd.arg(&wasm);
