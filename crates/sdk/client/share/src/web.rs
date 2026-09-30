@@ -13,46 +13,53 @@
 //! backend shares `title`/`text`/`url`; `files` are ignored on web (documented
 //! in the crate `## Scope`).
 //!
-//! The typed `web_sys::Navigator::share` surface isn't stable, so we drive
-//! `navigator.share` dynamically through `js_sys::Reflect` + `Function` +
-//! `JsFuture`, the same posture `file-export`'s web backend takes for
-//! `showSaveFilePicker`.
+//! `navigator.share` is two web-glue bindings declared here
+//! (own-web-bindings phase 3): a feature probe and the call, which builds
+//! the `ShareData` object in JS and hands back the Promise, awaited as a
+//! `web_glue::JsFuture`.
 
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
+use web_glue::{string, JsError, JsFuture, JsValue};
 
 use crate::{ShareContent, ShareError, ShareOutcome};
 
+web_glue::import! {
+    // 1 when `navigator.share` is a function (absent in unsupporting
+    // browsers and in insecure contexts).
+    fn js_can_share() -> u32 =
+        "() => typeof window !== 'undefined' && typeof window.navigator.share === 'function' ? 1 : 0";
+    // `navigator.share({ title?, text?, url? })` → its Promise. `has` bits:
+    // 1 title, 2 text, 4 url; an absent member is left off the object
+    // rather than set to "" (an empty `url` is invalid to the spec).
+    #[catch]
+    fn js_share(has: u32, tp: usize, tl: usize, xp: usize, xl: usize, up: usize, ul: usize) -> u32 =
+        "(has, tp, tl, xp, xl, up, ul) => { const d = {}; \
+           if (has & 1) d.title = G.str(tp, tl); \
+           if (has & 2) d.text = G.str(xp, xl); \
+           if (has & 4) d.url = G.str(up, ul); \
+           return G.add(window.navigator.share(d)); }";
+}
+
 pub(crate) async fn share(content: &ShareContent) -> Result<ShareOutcome, ShareError> {
-    let window = web_sys::window().ok_or(ShareError::NotSupported)?;
-    let navigator = window.navigator();
-
     // `navigator.share` is absent in unsupporting browsers / insecure contexts.
-    let share_fn = js_sys::Reflect::get(&navigator, &JsValue::from_str("share"))
-        .ok()
-        .filter(|v| v.is_function())
-        .ok_or(ShareError::NotSupported)?;
-    let share_fn: js_sys::Function = share_fn.unchecked_into();
+    if unsafe { js_can_share() } == 0 {
+        return Err(ShareError::NotSupported);
+    }
 
-    // Build the ShareData object: { title?, text?, url? }. Web ignores our
+    // The ShareData object: { title?, text?, url? }. Web ignores our
     // `files` (PathBuf refs have no web meaning) — documented in `## Scope`.
-    let data = js_sys::Object::new();
-    if let Some(title) = &content.title {
-        set(&data, "title", title);
-    }
-    if let Some(text) = &content.text {
-        set(&data, "text", text);
-    }
-    if let Some(url) = &content.url {
-        set(&data, "url", url);
-    }
+    let field = |v: &Option<String>, bit: u32| match v {
+        Some(s) => (bit, string::abi(s)),
+        None => (0, (0, 0)),
+    };
+    let (t, (tp, tl)) = field(&content.title, 1);
+    let (x, (xp, xl)) = field(&content.text, 2);
+    let (u, (up, ul)) = field(&content.url, 4);
+    let promise = unsafe { js_share(t | x | u, tp, tl, xp, xl, up, ul) }
+        // SAFETY: a fresh `G.add` slot the snippet minted for us.
+        .map(|h| unsafe { JsValue::from_raw(h) })
+        .map_err(|e| ShareError::Backend(format!("navigator.share: {e}")))?;
 
-    let promise: js_sys::Promise = share_fn
-        .call1(&navigator, &data)
-        .map_err(|e| ShareError::Backend(format!("navigator.share: {e:?}")))?
-        .unchecked_into();
-
-    match JsFuture::from(promise).await {
+    match JsFuture::new(&promise).await {
         Ok(_) => Ok(ShareOutcome::Completed),
         // The spec rejects with an `AbortError` `DOMException` when the user
         // dismisses the share UI; anything else is a genuine failure.
@@ -60,21 +67,16 @@ pub(crate) async fn share(content: &ShareContent) -> Result<ShareOutcome, ShareE
             if reject_name(&e) == "AbortError" {
                 Ok(ShareOutcome::Dismissed)
             } else {
-                Err(ShareError::Backend(format!("navigator.share rejected: {e:?}")))
+                Err(ShareError::Backend(format!("navigator.share rejected: {e}")))
             }
         }
     }
 }
 
-/// Set a string property on a JS object, ignoring the (infallible-for-plain-
-/// object) result.
-fn set(obj: &js_sys::Object, key: &str, value: &str) {
-    let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_str(value));
-}
-
 /// The `name` of a rejected `DOMException` (e.g. `"AbortError"`), or empty.
-fn reject_name(e: &JsValue) -> String {
-    js_sys::Reflect::get(e, &JsValue::from_str("name"))
+fn reject_name(e: &JsError) -> String {
+    e.value()
+        .get("name")
         .ok()
         .and_then(|n| n.as_string())
         .unwrap_or_default()

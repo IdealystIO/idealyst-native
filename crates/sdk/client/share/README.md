@@ -112,6 +112,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p share` — builder + `is_empty` + `NothingToShare` guard
 - [ ] `cargo build -p share --features catalog` — recipes/docs compile
 - [ ] `cargo build -p share --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p share --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_share.rs`: no `navigator.share` → `NotSupported`; the `ShareData` carries only the present members; `AbortError` → `Dismissed`; other rejections and synchronous throws → `Backend`
 
 **Behavior**
 - [ ] **Web** — from a button (user gesture, secure context), `share(text + url)` opens the Web Share dialog with the right targets; picking one sends the content; cancel → `Dismissed`. `files` are ignored; no `navigator.share` → `NotSupported`.

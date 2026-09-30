@@ -53,13 +53,16 @@ futures-channel = "0.3"
 jni = "0.21"
 ndk-context = "0.1"
 
-# Web: navigator.share() (Web Share API). Driven dynamically through js-sys
-# because the typed `Navigator::share` surface isn't in web-sys's stable API.
+# Web: navigator.share() (Web Share API) through web-glue bindings
+# (`src/web.rs`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_share.rs`) — run with
+# `cargo test -p share --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Linux: outbound share through the XDG desktop portal — `OpenURI` for a lone
 # link (app chooser) and `Email`/`ComposeEmail` for body + subject + file
