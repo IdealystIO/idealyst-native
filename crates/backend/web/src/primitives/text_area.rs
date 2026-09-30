@@ -216,6 +216,19 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
     if textarea.wrap() == "off" {
         return;
     }
+    // A detached node has no layout: `scrollHeight` is 0 and computed
+    // style is empty, so a measure here can only pin a wrong height —
+    // and one that sticks. The create-time call runs detached (the rAF
+    // pass below `create` is the one that sizes the box), and when that
+    // later pass bails on author-owned geometry (`position: absolute`,
+    // just below) nothing ever removes the `height: 0px` the detached
+    // pass wrote. `codeblock`'s soft-wrap `code_editor` is that shape: an
+    // absolutely positioned, inset-0 editing layer, collapsed to its
+    // padding over the text it edits.
+    // Regression: `regression_detached_autosize_leaves_absolute_textarea_unpinned`.
+    if !textarea.is_connected() {
+        return;
+    }
     // Read border + the floor/cap inputs (and bail on author-owned geometry)
     // up front. All are constant w.r.t. the height we're about to pin, so
     // reading them before the `height: auto` write is correct and avoids a
@@ -700,6 +713,59 @@ mod tests {
             pinned >= 56.0,
             "textarea must autosize to its 3-row floor (~60px) after attach, got {pinned}px"
         );
+    }
+
+    /// REGRESSION: a wrapping textarea that is absolutely positioned and
+    /// stretched (`inset: 0`) over another element — `codeblock`'s
+    /// soft-wrap `code_editor` editing layer — collapsed to its padding.
+    /// `create` ran `autosize` while the node was DETACHED, which pinned
+    /// an inline `height: 0px`; the post-attach rAF pass then correctly
+    /// bailed on the author-owned (absolute) geometry, and nothing ever
+    /// removed the stale height. Detached nodes are no longer measured.
+    #[wasm_bindgen_test]
+    async fn regression_detached_autosize_leaves_absolute_textarea_unpinned() {
+        install_mount_body();
+        let mut backend = crate::WebBackend::new("#app");
+        let doc = web_sys::window().unwrap().document().unwrap();
+
+        // A positioned 200×180 box, like the code editor's stack.
+        let stack = doc.create_element("div").unwrap();
+        stack
+            .set_attribute("style", "position: relative; width: 200px; height: 180px;")
+            .unwrap();
+        doc.get_element_by_id("app").unwrap().append_child(&stack).unwrap();
+
+        let node = create(
+            &mut backend,
+            "some text",
+            None,
+            /* wrap */ true,
+            None,
+            None,
+            Rc::new(|_| {}),
+            None,
+        );
+        let ta: web_sys::HtmlTextAreaElement = node.clone().unchecked_into();
+        // The editing layer's geometry (in the SDK it arrives as a class).
+        for (prop, value) in [
+            ("position", "absolute"),
+            ("top", "0"),
+            ("right", "0"),
+            ("bottom", "0"),
+            ("left", "0"),
+            ("padding", "12px"),
+        ] {
+            let _ = ta.style().set_property(prop, value);
+        }
+        stack.append_child(&node).unwrap();
+        next_animation_frame().await;
+
+        assert_eq!(
+            ta.style().get_property_value("height").unwrap(),
+            "",
+            "no height may be pinned on an absolutely positioned textarea"
+        );
+        assert_eq!(ta.offset_height(), 180, "the textarea must stretch to its inset box");
     }
 
     /// `#app` mount that survives an async test (the shared `tests::install_mount`
