@@ -758,8 +758,12 @@ Replay objects go to a private directory emptied first, because with many
 units their names are hashed and would otherwise accumulate.
 
 The rebuild with the tier armed is still slower than an ordinary one
-because base prep, the stranded-import pass and a second walrus pass run
-over a 223 MB module (320 MB linked), about 22 s on CrewForge.
+because base prep and the base index each parse a 223 MB module (320 MB
+linked) with walrus. The stranded-import pass was a third walrus parse
+and re-emit (6.5 s on a Mac, 19–25 s in the container) until it moved to
+`wasm_carve::strand`, which renumbers the function index space from a
+streaming parse and re-encodes the code on every core (0.7 s on the same
+module).
 
 **Memory.** On CrewForge the CLI's peak RSS during base prep is about
 3.7 GB (one walrus parse of the module). The default memory cap is

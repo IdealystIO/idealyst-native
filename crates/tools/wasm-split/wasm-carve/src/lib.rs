@@ -16,6 +16,7 @@ pub mod graph;
 pub mod liveness;
 pub mod module;
 pub mod neutralize;
+pub mod strand;
 
 use std::collections::HashSet;
 

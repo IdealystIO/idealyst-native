@@ -361,47 +361,21 @@ fn const_offset(expr: &walrus::ConstExpr) -> u64 {
 /// already read what it describes. If one somehow were, `unreachable`
 /// traps at the call with a stack rather than returning a plausible
 /// value, which is the loud failure this is allowed to have.
+///
+/// # Why not walrus
+///
+/// Parsing and re-emitting the whole module through walrus to change a
+/// handful of imports cost 5.4–5.7 s of every warm CrewForge rebuild on a
+/// Mac and 19–25 s in the container. `wasm_carve::strand` renumbers the
+/// function index space from a streaming parse instead and re-encodes the
+/// code on every core.
 pub fn neutralize_unsupplied_imports(wasm: &[u8]) -> Result<Option<Vec<u8>>> {
-    let mut module = Module::from_buffer(wasm).context("parsing the bindgened module")?;
-
     // The two namespaces wasm-bindgen uses for "I will resolve this
     // myself". Everything else in the import list is either a real JS
     // shim it generated a binding for, or the memory and table.
     const UNSUPPLIED: [&str; 2] = ["__wbindgen_placeholder__", "__wbindgen_externref_xform__"];
-
-    let stranded: Vec<_> = module
-        .imports
-        .iter()
-        .filter(|i| UNSUPPLIED.contains(&i.module.as_str()))
-        .filter_map(|i| match i.kind {
-            ImportKind::Function(func) => Some((i.id(), func, i.name.clone())),
-            _ => None,
-        })
-        .collect();
-    if stranded.is_empty() {
-        return Ok(None);
-    }
-
-    for (import_id, func_id, name) in stranded {
-        let ty_id = module.funcs.get(func_id).ty();
-        let ty = module.types.get(ty_id);
-        let params = ty.params().to_vec();
-        let results = ty.results().to_vec();
-        let locals: Vec<_> = params.iter().map(|t| module.locals.add(*t)).collect();
-
-        let mut builder = FunctionBuilder::new(&mut module.types, &params, &results);
-        builder
-            .name(format!("__idealyst_stranded_{name}"))
-            .func_body()
-            .unreachable();
-
-        module.imports.delete(import_id);
-        let func = module.funcs.get_mut(func_id);
-        func.kind = FunctionKind::Local(builder.local_func(locals));
-        func.name = Some(format!("__idealyst_stranded_{name}"));
-    }
-
-    Ok(Some(module.emit_wasm()))
+    wasm_carve::strand::trap_imports(wasm, &UNSUPPLIED, "__idealyst_stranded_")
+        .context("replacing the imports wasm-bindgen did not supply")
 }
 
 /// Every function already reachable through an active element segment.
