@@ -13,6 +13,7 @@ use super::logs::LogsScreen;
 use super::navigation::NavigationScreen;
 use super::shell::Shell;
 use super::signals::SignalsScreen;
+use super::theme_toggle::ThemeToggle;
 use crate::bridge::model::*;
 use crate::Target;
 
@@ -27,6 +28,21 @@ impl Mounted {
     }
     fn shows(&self, text: &str) -> bool {
         self.ops().contains(&format!("{text:?}"))
+    }
+    /// The press-handler index of the pressable whose label is `text`:
+    /// the last pressable created before that text node (handlers are
+    /// captured in creation order, one per pressable).
+    fn press_index_wrapping(&self, text: &str) -> usize {
+        let label = format!("text {text:?}");
+        let mut pressables = 0usize;
+        for op in self.harness.ops() {
+            if op.starts_with("create ") && op.ends_with(" pressable") {
+                pressables += 1;
+            } else if op.starts_with("create ") && op.ends_with(&label) {
+                return pressables.checked_sub(1).unwrap_or_else(|| panic!("no pressable before {text:?}"));
+            }
+        }
+        panic!("no text {text:?} in:\n{}", self.ops())
     }
 }
 
@@ -322,12 +338,8 @@ fn regression_disconnect_from_the_shell_does_not_touch_a_freed_signal() {
         }
     });
     let snapshot = slot.get().unwrap();
-    // Press handlers in creation order: the four section links, the
-    // sidebar's Disconnect, the "Show elements" checkbox, then the tree
-    // rows' chevron + label pairs (App 6-7, Card 8-9; Counter has no
-    // children, so its label is 10).
-    let select_counter = m.harness.press_handler(10);
-    let disconnect = m.harness.press_handler(4);
+    let select_counter = m.harness.press_handler(m.press_index_wrapping("Counter"));
+    let disconnect = m.harness.press_handler(m.press_index_wrapping("Disconnect"));
     m.harness.world.enter(|| select_counter());
     m.harness.flush();
     assert!(m.shows("instance #3 · src/counter.rs:14"), "the detail pane is mounted:\n{}", m.ops());
@@ -341,4 +353,25 @@ fn regression_disconnect_from_the_shell_does_not_touch_a_freed_signal() {
     });
     m.harness.flush();
     assert!(m.shows("picker"), "{}", m.ops());
+}
+
+/// The sidebar's theme toggle flips the app-owned mode, and its icon
+/// names the mode a press switches to.
+#[test]
+fn theme_toggle_flips_the_mode() {
+    let slot: Rc<std::cell::Cell<Option<Signal<bool>>>> = Rc::default();
+    let slot_in = slot.clone();
+    let m = mount(move || {
+        let dark = signal(true);
+        slot_in.set(Some(dark));
+        ui! { ThemeToggle(dark = dark) }
+    });
+    let dark = slot.get().unwrap();
+    let toggle = m.harness.press_handler(0);
+    m.harness.world.enter(|| toggle());
+    m.harness.flush();
+    assert!(!m.harness.world.enter(|| dark.get()), "dark → light");
+    m.harness.world.enter(|| toggle());
+    m.harness.flush();
+    assert!(m.harness.world.enter(|| dark.get()), "light → dark");
 }

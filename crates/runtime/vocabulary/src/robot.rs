@@ -343,6 +343,10 @@ pub fn current_revision() -> u64 {
 /// drop (end of the handler body — children are realized by then).
 pub(crate) struct RegisteredPrim {
     id: ElementId,
+    /// `false` for a mount inside the framework's own highlight layer
+    /// (see [`crate::robot_highlight`]): nothing was registered and
+    /// nothing was pushed, so there's nothing to pop.
+    live: bool,
 }
 
 impl RegisteredPrim {
@@ -355,6 +359,9 @@ impl RegisteredPrim {
 
 impl Drop for RegisteredPrim {
     fn drop(&mut self) {
+        if !self.live {
+            return;
+        }
         PARENT_STACK.with(|s| {
             let mut stack = s.borrow_mut();
             debug_assert_eq!(
@@ -389,6 +396,11 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
     label_fn: Option<Rc<dyn Fn() -> Option<String>>>,
     actions: MountActions,
 ) -> RegisteredPrim {
+    // The highlight layer is the framework's own drawing, not the app's:
+    // it must not appear in snapshots, element counts or the Inspector.
+    if crate::robot_highlight::registration_suppressed() {
+        return RegisteredPrim { id: ElementId(u32::MAX), live: false };
+    }
     let MountActions {
         click,
         set_text,
@@ -474,7 +486,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
     });
 
     PARENT_STACK.with(|s| s.borrow_mut().push(id));
-    RegisteredPrim { id }
+    RegisteredPrim { id, live: true }
 }
 
 // =============================================================================
@@ -1370,6 +1382,14 @@ pub mod bridge {
             "get_absolute_frame" => {
                 let el = resolve_element(args)?;
                 rect_json(robot.absolute_frame(&el).map_err(|e| e.to_string())?)
+            }
+            "highlight_element" => {
+                let el = resolve_element(args)?;
+                crate::robot_highlight::highlight(el.id)
+            }
+            "clear_highlight" => {
+                crate::robot_highlight::clear();
+                Ok("\"ok\"".into())
             }
             "get_device_frame" => {
                 let el = resolve_element(args)?;

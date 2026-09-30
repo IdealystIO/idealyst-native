@@ -21,6 +21,7 @@
 //! server → client  {"type":"snapshot","app":"Todo-48213","snapshot":{…}}   whenever its state changes
 //! client → server  {"type":"focus","component":7,"signal":null}
 //! client → server  {"type":"action","label":"navigate push","cmd":"navigate","args":{…}}
+//! client → server  {"type":"highlight","element":42}         box element 42 in the app (null clears)
 //! ```
 //!
 //! A front end never talks to an app. Everything it learns arrives in a
@@ -120,6 +121,13 @@ pub enum ClientMsg {
     Action { label: String, cmd: String, args: Value },
     /// Rescan for running apps now instead of on the server's cadence.
     Rescan,
+    /// Draw a box over this element in the running app (`None` clears
+    /// it) — hover-to-highlight. Unlike an `action` it records no
+    /// `last_action` and forces no refresh: it fires on every hover.
+    Highlight {
+        #[serde(default)]
+        element: Option<u64>,
+    },
 }
 
 /// Server → front end.
@@ -170,6 +178,8 @@ mod tests {
             args: serde_json::json!({ "path": "/a" }),
         });
         round_trip_client(ClientMsg::Rescan);
+        round_trip_client(ClientMsg::Highlight { element: Some(42) });
+        round_trip_client(ClientMsg::Highlight { element: None });
     }
 
     #[test]

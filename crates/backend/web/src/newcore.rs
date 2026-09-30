@@ -1994,6 +1994,20 @@ impl caps::IntrospectionOps for WebBackend {
     fn note_introspection_root(&self, node: &Self::Node) {
         WebBackend::note_introspection_root_impl(self, node)
     }
+
+    // Geometry: the same DOM measurements a view ref's `frame()` and
+    // overlay anchoring already use (`WebViewOps`). Unwired, the robot's
+    // `get_frame` / `get_absolute_frame` answered `null` on web and the
+    // Inspector's element highlight had nothing to draw around.
+    #[cfg(feature = "robot")]
+    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        runtime_shared::ViewOps::frame(&crate::WebViewOps, node as &dyn Any)
+    }
+
+    #[cfg(feature = "robot")]
+    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        runtime_shared::ViewOps::absolute_frame(&crate::WebViewOps, node as &dyn Any)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2072,6 +2086,34 @@ mod tests {
                 .unwrap();
         });
         let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// Regression: the robot's geometry verbs (`get_frame`,
+    /// `get_absolute_frame`) and the Inspector's element highlight read
+    /// `IntrospectionOps::{frame, absolute_frame}`, which web never
+    /// implemented, so they answered `null` for every element. They now
+    /// report the DOM's own measurements.
+    #[cfg(feature = "robot")]
+    #[wasm_bindgen_test]
+    fn regression_introspection_reports_element_geometry() {
+        setup_mount();
+        let backend = WebBackend::new("#app");
+        let document = web_sys::window().unwrap().document().unwrap();
+        let el = document.create_element("div").unwrap();
+        el.set_attribute("style", "position:fixed;left:30px;top:40px;width:50px;height:60px").unwrap();
+        document.body().unwrap().append_child(&el).unwrap();
+        let node: web_sys::Node = el.clone().into();
+
+        let abs = caps::IntrospectionOps::absolute_frame(&backend, &node).expect("an absolute frame");
+        assert_eq!((abs.x, abs.y, abs.width, abs.height), (30.0, 40.0, 50.0, 60.0));
+        let frame = caps::IntrospectionOps::frame(&backend, &node).expect("a frame");
+        assert_eq!((frame.width, frame.height), (50.0, 60.0));
+
+        el.remove();
+        assert!(
+            caps::IntrospectionOps::absolute_frame(&backend, &node).is_none(),
+            "a detached element has no frame"
+        );
     }
 
     /// Regression (dispatch-site glue): a REAL DOM click on a button

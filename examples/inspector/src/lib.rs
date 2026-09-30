@@ -40,7 +40,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use idea_ui::{dark_theme, install_idea_theme};
+use idea_ui::{dark_theme, install_idea_theme_reactive, light_theme};
 use runtime_core::{component, effect, signal, ui, Element, Signal};
 use serde_json::Value;
 
@@ -102,7 +102,10 @@ pub fn register_scene_extensions<H: runtime_scene::Host>(_registry: &mut runtime
 
 #[component]
 pub fn app() -> Element {
-    install_idea_theme(dark_theme());
+    // Dark by default (the Inspector was designed dark); the sidebar and
+    // picker toggles flip it, and idea-ui re-themes from the signal.
+    let dark: Signal<bool> = signal(true);
+    install_idea_theme_reactive(move || if dark.get() { dark_theme() } else { light_theme() });
 
     let snapshot: Signal<Snapshot> = signal(Snapshot::default());
     let apps: Signal<Vec<AppInfo>> = signal(Vec::new());
@@ -150,12 +153,14 @@ pub fn app() -> Element {
                 Shell(
                     snapshot = snapshot,
                     target = target_now,
+                    dark = dark,
                     on_disconnect = Rc::new(on_disconnect) as Rc<dyn Fn()>,
                 )
             } else {
                 Connect(
                     apps = apps.read_only(),
                     link = link.read_only(),
+                    dark = dark,
                     on_connect = Rc::new(on_connect) as Rc<dyn Fn(Option<AppInfo>, String)>,
                 )
             }

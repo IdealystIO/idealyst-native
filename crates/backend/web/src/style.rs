@@ -160,10 +160,10 @@ impl WebBackend {
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
 
-            // Seed the resets at indices 0–2. We never delete or
+            // Seed the resets at indices 0–4. We never delete or
             // shift these, so the rule recycler in `insert_rule`
             // doesn't need to know about them — it appends or
-            // recycles at index ≥ 3.
+            // recycles at index ≥ 5.
             let sheet = self
                 .style_element
                 .as_ref()
@@ -224,10 +224,20 @@ impl WebBackend {
             // platform. `:where(img)` is specificity 0, so a minted author
             // class that sets `object-fit` (e.g. `ObjectFit::Cover`,
             // specificity 0,1,0) always wins. Shared with the SSR backend
-            // via `base_reset_css`. These four fixed resets occupy indices
-            // 0–3; author rules append at sheet length (index 4+) or recycle
-            // deleted author slots, so this index never collides.
+            // via `base_reset_css`.
             let _ = sheet.insert_rule_with_index(css::IMG_FIT_RESET, 3);
+
+            // Index 4 — the default text color.
+            //
+            // An icon with no color paints `currentColor` and an unstyled
+            // text node inherits `color`; the native backends give both the
+            // theme's `color-text`, so web must too, or they come out in
+            // the browser's black on a dark theme. `var()` re-tints through
+            // the cascade on a theme swap. Shared with the SSR backend via
+            // `base_reset_css`. These five fixed resets occupy indices 0–4;
+            // author rules append at sheet length (index 5+) or recycle
+            // deleted author slots, so these indices never collide.
+            let _ = sheet.insert_rule_with_index(css::DEFAULT_TEXT_COLOR_RESET, 4);
         }
         self.style_element.as_ref().unwrap().clone()
     }

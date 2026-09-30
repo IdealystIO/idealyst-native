@@ -466,6 +466,11 @@ fn tab_session(mut ws: tungstenite::WebSocket<TcpStream>, hub: &Arc<Hub>) {
                     let _ = a.session.send(SessionMsg::Action { tab, label, cmd, args });
                 }
             }
+            ClientMsg::Highlight { element } => {
+                if let Some(a) = &attached {
+                    let _ = a.session.send(SessionMsg::Highlight(tab, element));
+                }
+            }
             ClientMsg::Rescan => {
                 hub.rescan();
                 let _ = out_tx.send(hub.apps_frame());

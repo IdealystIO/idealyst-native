@@ -387,7 +387,7 @@ pub use scheduling::{
 pub use logging::{install_logger, is_logger_installed, log, LogLevel, Logger, StderrLogger};
 
 pub use style::{
-    cached_stylesheet, default_text_font, derived, install_tokens, pregenerate,
+    cached_stylesheet, default_text_font, derived, install_token_read_hook, install_tokens, pregenerate,
     pregenerate_and_seed, reset_for_ssg_render,
     empty_absolute_sheet, install_minted_classes, minted_class_known, premint_class_name,
     scan_minted_classes,

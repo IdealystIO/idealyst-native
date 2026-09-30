@@ -542,8 +542,9 @@ pub fn Button(props: &ButtonProps) -> Element {
 /// A zero-path placeholder glyph. Only reachable in the impossible
 /// "arm says the icon slot is `Some`, but the live closure now yields
 /// `None`" case (a presence flip rebuilds the `switch` arm instead, so the
-/// reactive `.data()` closure never actually observes `None`).
-const EMPTY_ICON_DATA: IconData = IconData {
+/// reactive `.data()` closure never actually observes `None`). Shared with
+/// `IconButton`, which follows a live `icon` the same way.
+pub(crate) const EMPTY_ICON_DATA: IconData = IconData {
     view_box: (24, 24),
     paths: &[],
     fill_rule: runtime_core::FillRule::NonZero,

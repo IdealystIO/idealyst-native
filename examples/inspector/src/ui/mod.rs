@@ -9,6 +9,7 @@ pub mod navigation;
 pub mod shell;
 pub mod signals;
 pub mod styles;
+pub mod theme_toggle;
 
 #[cfg(test)]
 mod tests;

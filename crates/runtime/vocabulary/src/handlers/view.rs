@@ -48,6 +48,11 @@ where
         // context (walker `build_view` ordering).
         backend.borrow_mut().mark_container(&node);
     }
+    // Offer this view as the debugging highlight's host — before the
+    // children, so the outermost view wins. Mounts nothing until a tool
+    // asks for a highlight (see `robot_highlight`).
+    #[cfg(feature = "robot")]
+    crate::robot_highlight::offer_host(cx, &node);
     cx.realize_children_into(&mut node, children);
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);

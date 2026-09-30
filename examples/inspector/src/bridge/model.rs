@@ -23,8 +23,21 @@ pub enum RowKey {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowKind {
-    Component { instance_id: u64, name: String },
+    /// `element` is the element the component renders as — what a hover
+    /// highlights in the app.
+    Component { instance_id: u64, name: String, element: u64 },
     Element { id: u64, kind: String },
+}
+
+impl TreeRow {
+    /// The element this row stands for in the app: an element row's own,
+    /// a component row's rendered element.
+    pub fn element_id(&self) -> u64 {
+        match self.kind {
+            RowKind::Component { element, .. } => element,
+            RowKind::Element { id, .. } => id,
+        }
+    }
 }
 
 /// One visible line of the component tree.
@@ -108,7 +121,7 @@ fn display_nodes(nodes: &[ElementNode], show_elements: bool) -> Vec<DisplayNode>
         for c in e.components.iter().rev() {
             children = vec![DisplayNode {
                 key: RowKey::Component(c.instance_id),
-                kind: RowKind::Component { instance_id: c.instance_id, name: c.name.clone() },
+                kind: RowKind::Component { instance_id: c.instance_id, name: c.name.clone(), element: e.id },
                 meta: e.test_id.clone().unwrap_or_default(),
                 search: format!("{} {}", c.name, e.test_id.as_deref().unwrap_or("")).to_lowercase(),
                 children,
@@ -313,6 +326,16 @@ mod tests {
             [Some(10), Some(10), Some(11), Some(11), Some(12), Some(13), Some(13), Some(10)],
             "an element row selects the innermost component it belongs to"
         );
+    }
+
+    /// Hover-to-highlight boxes the row's element: a component row's is the
+    /// element it renders as (shared by nested components).
+    #[test]
+    fn rows_know_which_element_to_highlight() {
+        let collapsed = HashSet::new();
+        let rows = visible_rows(&sample(), &TreeOptions { show_elements: true, collapsed: &collapsed, filter: "" });
+        let ids: Vec<u64> = rows.iter().map(TreeRow::element_id).collect();
+        assert_eq!(ids, [1, 1, 2, 2, 3, 3, 3, 4]);
     }
 
     #[test]

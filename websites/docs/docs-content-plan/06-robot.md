@@ -108,6 +108,20 @@ element exists but hasn't been laid out yet. Use `get_frame` to
 answer "where is this relative to its container"; use
 `get_absolute_frame` for "where is this on screen".
 
+### Highlight an element
+
+| Tool | What it does |
+| --- | --- |
+| `highlight_element` | Draw a translucent box over `{element_id}` in the running app. It follows the element as it moves and disappears when the element unmounts. |
+| `clear_highlight` | Remove the box. |
+
+The box is drawn by the framework's own `overlay` and `view`, so it
+looks the same on every platform. It passes clicks through to the app,
+and it never appears in `get_snapshot` or `count_elements`. Nothing is
+added to the app until the first highlight. It needs the element's
+`get_absolute_frame`: on a platform that can't report one yet (Android
+today), `highlight_element` returns an error saying so.
+
 ### Inspect logs
 
 | Tool | What it does |

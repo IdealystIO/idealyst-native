@@ -39,6 +39,9 @@ pub fn ComponentsScreen(snapshot: Signal<Snapshot>) -> Element {
 
     // The client fetches the selected instance's detail every refresh.
     effect(move || crate::set_focus(Focus { component: selected.get(), signal: None }));
+    // A row that unmounts under the cursor never reports the hover ending:
+    // leaving the screen takes any box down.
+    runtime_core::on_scope_drop(|| crate::bridge::client::highlight(None));
 
     let rows = memo(move || {
         let snap = snapshot.get();
@@ -144,8 +147,11 @@ fn TreeLine(
         }
     };
     let select = pressable(vec![label], move || selected.set(owner)).into_element();
+    // Hover boxes this row's element in the running app.
+    let element = row.element_id();
+    let hover = move |inside: bool| crate::bridge::client::highlight(inside.then_some(element));
     ui! {
-        view(style = boxed) {
+        view(style = boxed, on_hover = hover) {
             view(style = indent(row.depth)) {}
             chevron
             select

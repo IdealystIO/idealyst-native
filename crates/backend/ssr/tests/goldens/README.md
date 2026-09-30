@@ -53,6 +53,19 @@ No minted class hash moved; no other byte moved. Pinned by
 `regression_nav_screen_cursor_steering_adopts_out_of_order_build` in
 backend-web's browser suite.
 
+**Amended 2026-09-29** (default text color): every `*.head.css` gained
+exactly one reset rule after `:where(img) { … }`:
+`:where(html) { color: var(--color-text, #1a1a1f); }`
+(`css::DEFAULT_TEXT_COLOR_RESET`). The old core published no document
+text color, so on web an icon with no color (`fill`/`stroke:
+currentColor`) and an unstyled text node inherited the browser's black.
+In a dark theme that made them invisible, where the native backends use
+the theme's `color-text`. No `.html` byte moved and no minted class hash
+moved: the color reaches nodes by inheritance from `html`, at
+specificity 0. Pinned by
+`regression_unstyled_content_inherits_the_theme_text_color` in the `css`
+crate.
+
 Minted class hashes are content-derived and therefore process-stable, so
 they are frozen as-is (verified: a freeze run followed by a plain run is
 green).

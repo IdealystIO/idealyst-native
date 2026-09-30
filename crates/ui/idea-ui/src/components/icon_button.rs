@@ -173,12 +173,15 @@ impl Default for IconButtonProps {
 pub fn IconButton(props: &IconButtonProps) -> Element {
     let on_click = props.on_click.clone();
 
-    // TODO(reactive-sweep): route the child-structure props (`glyph`, `icon`,
-    // and the `size`/`size_px`-derived icon pixel size) reactively. Which child
-    // is rendered (vector `icon` vs text `glyph`) and the icon's pinned square
-    // are STRUCTURAL — switching them on a live signal needs a `switch`/`when`
-    // wrapper, not an in-place sink. These are snapshotted at build; a live
-    // `glyph`/`icon`/`size`/`size_px` won't swap the child in place.
+    // A live `icon` whose presence doesn't change (one vector glyph swapped
+    // for another — a light/dark toggle's sun ↔ moon) follows in place
+    // through the icon primitive's `.data()` setter, as `Button` does.
+    //
+    // TODO(reactive-sweep): the rest of the child structure is snapshotted
+    // at build. Which child is rendered (vector `icon` vs text `glyph`) and
+    // the icon's pinned square are STRUCTURAL: flipping `icon` between
+    // `Some` and `None`, or a live `glyph`/`size`/`size_px`, needs a
+    // `switch`/`when` wrapper, not an in-place sink.
     let icon_data = props.icon.get();
     let glyph = props.glyph.get();
     let size_snapshot = props.size.get();
@@ -290,7 +293,13 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
         .unwrap_or_else(|| icon_px_for(size_snapshot));
     let child = match icon_data {
         Some(data) => {
-            let el = icon(data).with_style(icon_button_icon_sheet(icon_px));
+            let mut el = icon(data).with_style(icon_button_icon_sheet(icon_px));
+            if !props.icon.is_static() {
+                // Presence is fixed for this build (see above), so the
+                // fallback only covers a live slot that turned `None`.
+                let slot = props.icon.clone();
+                el = el.data(move || slot.get().unwrap_or(crate::components::button::EMPTY_ICON_DATA));
+            }
             if style_is_reactive {
                 // A live style axis re-resolves per read, so the tint tracks
                 // the container in place instead of freezing this build's.

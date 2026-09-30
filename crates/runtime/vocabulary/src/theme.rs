@@ -211,11 +211,45 @@ thread_local! {
     static LAST_CTX: RefCell<Option<ThemeCtx>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    static TOKEN_READ_HOOK_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make every `Tokenized::resolve()` of a token inside a world effect
+/// subscribe that effect to the ambient world's theme [`version`
+/// signal](version_signal), so it re-runs on a theme swap.
+///
+/// `resolve()` is documented as a reactive read, but it reads
+/// `runtime_shared`'s token registry, whose signals belong to the legacy
+/// arena and are invisible to a world effect. Component code resolves
+/// tokens inside world effects all the time: every idea-ui icon tint is
+/// `.color(move || fg.resolve())`. On web the CSS-variable cascade
+/// re-tints class-styled nodes by itself, but a color stamped as a
+/// literal only changes when its effect re-runs, so those icons kept the
+/// first theme's color forever. The version bumps once per theme or
+/// token batch, the same signal the style effects already subscribe to.
+///
+/// Installed once per thread, from the first [`theme_ctx`] and from
+/// builtin registration, before any component effect can resolve a token.
+pub(crate) fn ensure_token_read_hook() {
+    if TOKEN_READ_HOOK_INSTALLED.with(|f| f.replace(true)) {
+        return;
+    }
+    runtime_shared::install_token_read_hook(Rc::new(|| {
+        // Only a running effect has anything to subscribe; a build-time
+        // or handler read stays a plain read.
+        if runtime_world::is_entered() && runtime_world::in_effect() {
+            let _ = version_signal().get();
+        }
+    }));
+}
+
 /// The ambient world's theme context, created (and `provide`d) on first
 /// use. Must run inside `World::enter` — same contract as every
 /// creation-side kernel API. (Handler-side callers go through the free
 /// fns below, which fall back to the last ambient world's ctx.)
 pub fn theme_ctx() -> ThemeCtx {
+    ensure_token_read_hook();
     if let Some(ctx) = inject::<ThemeCtx>() {
         LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
         return ctx;

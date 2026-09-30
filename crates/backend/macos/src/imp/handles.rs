@@ -368,7 +368,7 @@ pub(crate) fn make_text_handle(node: &MacosNode) -> TextHandle {
 /// Window/viewport-relative rect for a node, or `None` when the view isn't
 /// mounted in a window yet. Shared by `ViewOps::rect` (overlay anchoring) and
 /// `ViewOps::absolute_frame` so both agree on coordinate space.
-fn absolute_rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
+pub(crate) fn absolute_rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
     let macos_node = node.downcast_ref::<MacosNode>()?;
     let view = macos_node.as_view();
     let bounds: CGRect = unsafe { msg_send![view, bounds] };
@@ -636,5 +636,15 @@ mod tests {
         // Distinguishing assertion: pre-fix `rect() == frame()` (both parent-
         // relative). Post-fix they diverge for a nested trigger.
         assert_ne!((rect.x, rect.y), (frame.x, frame.y));
+
+        // The robot's `get_absolute_frame` and the Inspector's element
+        // highlight read the new-core `IntrospectionOps::absolute_frame`,
+        // which macOS left at the trait's `None` default: every element was
+        // frame-less and the highlight had nothing to draw around. It must
+        // report the same window-space rect.
+        let backend = crate::imp::MacosBackend::new(mtm);
+        let via_caps = runtime_vocabulary::caps::IntrospectionOps::absolute_frame(&backend, &node)
+            .expect("IntrospectionOps::absolute_frame in a window");
+        assert_eq!((via_caps.x, via_caps.y, via_caps.width, via_caps.height), (60.0, 80.0, 80.0, 40.0));
     }
 }

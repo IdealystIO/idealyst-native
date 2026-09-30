@@ -15,6 +15,7 @@ use super::components::ComponentsScreen;
 use super::logs::LogsScreen;
 use super::navigation::NavigationScreen;
 use super::signals::SignalsScreen;
+use super::theme_toggle::ThemeToggle;
 use crate::bridge::model::{Snapshot, Status};
 use crate::Target;
 
@@ -62,12 +63,14 @@ fn status_line(status: &Status) -> String {
 pub fn Shell(
     snapshot: Signal<Snapshot>,
     target: Target,
+    /// The theme mode, owned by the app (see `ThemeToggle`).
+    dark: Signal<bool>,
     #[prop(default = Rc::new(|| {}) as Rc<dyn Fn()>)] on_disconnect: Rc<dyn Fn()>,
 ) -> Element {
     let section: Signal<Section> = signal(Section::Components);
     ui! {
         view(style = ShellRow()) {
-            SideNav(snapshot = snapshot, target = target, section = section, on_disconnect = on_disconnect)
+            SideNav(snapshot = snapshot, target = target, section = section, dark = dark, on_disconnect = on_disconnect)
             view(style = Main()) {
                 match section.get() {
                     Section::Components => {
@@ -93,6 +96,7 @@ fn SideNav(
     snapshot: Signal<Snapshot>,
     target: Target,
     section: Signal<Section>,
+    dark: Signal<bool>,
     #[prop(default = Rc::new(|| {}) as Rc<dyn Fn()>)] on_disconnect: Rc<dyn Fn()>,
 ) -> Element {
     let name = target.clone();
@@ -115,13 +119,16 @@ fn SideNav(
                 SectionLink(section = section, target = s)
             }
             view(style = Spacer()) {}
-            Button(
-                label = "Disconnect".to_string(),
-                on_click = on_disconnect,
-                tone = tone::Neutral,
-                variant = variant::Ghost,
-                leading_icon = Some(icons_lucide::UNPLUG),
-            )
+            view(style = super::styles::RowBetween()) {
+                Button(
+                    label = "Disconnect".to_string(),
+                    on_click = on_disconnect,
+                    tone = tone::Neutral,
+                    variant = variant::Ghost,
+                    leading_icon = Some(icons_lucide::UNPLUG),
+                )
+                ThemeToggle(dark = dark)
+            }
         }
     }
 }

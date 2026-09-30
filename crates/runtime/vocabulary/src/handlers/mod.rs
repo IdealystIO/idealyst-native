@@ -457,6 +457,8 @@ builtin_set!(
 ///
 /// See [`BuiltinSet`] for why the selector is a type rather than a value.
 pub fn register_builtins_with<H: AllCaps + 'static, S: BuiltinSet>(registry: &mut Registry<H>) {
+    // Token reads inside effects follow theme swaps (see the fn docs).
+    crate::theme::ensure_token_read_hook();
     // Every primitive goes through `S`'s method — NOT an `if S::FLAG`.
     // That distinction is the whole mechanism; see `BuiltinSet`.
     S::view(registry);

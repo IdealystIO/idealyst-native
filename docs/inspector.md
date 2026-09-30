@@ -4,7 +4,9 @@ The Inspector is a live debugging dashboard for running idealyst apps:
 the rendered component tree with each instance's props and methods,
 watched signals and their history, every navigator's back stack, and
 the captured logs and phase timers. It can also act on the app: invoke a
-`#[method]`, write a signal, push or pop a route.
+`#[method]`, write a signal, push or pop a route. It starts in idea-ui's
+dark theme; the sun/moon button (sidebar and app picker) switches to the
+light theme for the session.
 
 ```text
 idealyst inspect                    # the Inspector, at http://127.0.0.1:9719
@@ -78,6 +80,7 @@ frame is one JSON message.
 | client → server | `focus {component, signal}` | selection changed |
 | client → server | `action {label, cmd, args}` | a bridge verb to run on the app |
 | client → server | `rescan` | refresh the app list now |
+| client → server | `highlight {element}` | box an element in the app (`null` clears); no `last_action`, no refresh |
 | server → client | `{"type":"snapshot","app":…,"snapshot":{…}}` | the attached app's state changed, for this client's focus |
 
 A snapshot is the whole picture and is sent only when it differs from
@@ -90,6 +93,33 @@ The server keeps nothing about a front end across connections. The
 client remembers its attachment and focus and replays them when the
 socket reconnects, and it retries every second while the server is
 away.
+
+## Highlighting an element
+
+Hovering a row in the component tree boxes that element in the running
+app, the way browser devtools do. The front end sends `highlight` (only
+when the hovered element changes). The server calls the app's
+`highlight_element` / `clear_highlight` bridge verbs and clears the box
+if that front end detaches or disconnects mid-hover.
+
+The app side lives in `runtime-vocabulary` (`robot_highlight`, robot
+builds only):
+
+- **Built from the framework's own primitives.** The box is an `overlay`
+  holding one absolutely positioned `view`, the same composition idea-ui's
+  `ToastHost` floats above an app with. It needs no per-backend code, and
+  it passes clicks through.
+- **Mounted only while a highlight is up.** Until then, a dev build's tree
+  is exactly the release build's. The first `view` mounted (normally the
+  app root) records how to mount into itself. The verb realizes the
+  overlay as that view's last child, and `clear_highlight` removes it.
+- **Follows its element.** It re-reads the element's `absolute_frame`
+  every 120 ms, and takes itself down when the element unmounts.
+- **Invisible to introspection.** It never appears in `get_snapshot`,
+  `count_elements`, or the Inspector's own tree.
+- **Needs a frame.** It depends on the backend's `absolute_frame`. That's
+  wired on web, macOS, iOS, Linux and wgpu. Android reports only screen
+  pixels for now, so `highlight_element` answers "no frame" there.
 
 ## Guarding the socket
 

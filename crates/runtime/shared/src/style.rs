@@ -262,6 +262,37 @@ impl TokenVocabulary for () {
 // the per-token signal in `TOKEN_REGISTRY` — only nodes that read a
 // token re-fire on that token's update.
 //
+// That subscription is to the LEGACY arena's signal, which an effect of
+// the new kernel (`runtime-world`) never hears. So every token read also
+// calls the token-read hook, which the vocabulary installs to subscribe
+// the running world effect to its theme version signal
+// ([`install_token_read_hook`]). Without it `resolve()` was reactive in
+// name only on the new core: an idea-ui icon's tint (`.color(move ||
+// tok.resolve())`) kept the first theme's color through every swap.
+
+thread_local! {
+    static TOKEN_READ_HOOK: RefCell<Option<std::rc::Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// Install the callback every [`Tokenized::resolve`] of a TOKEN runs
+/// (literals don't). The vocabulary installs one that subscribes the
+/// running effect to the world's theme version, so a token read inside
+/// an effect re-runs it on every theme change — the reactivity
+/// `resolve()` promises. A later call replaces the hook (one per thread,
+/// like [`install_reactive_idle_hook`](crate::reactive::install_reactive_idle_hook)).
+pub fn install_token_read_hook(f: std::rc::Rc<dyn Fn()>) {
+    TOKEN_READ_HOOK.with(|h| *h.borrow_mut() = Some(f));
+}
+
+/// Run the token-read hook, if one is installed. Cloned out first so the
+/// hook can itself resolve tokens without a re-entrant borrow.
+fn note_token_read() {
+    let hook = TOKEN_READ_HOOK.with(|h| h.borrow().clone());
+    if let Some(f) = hook {
+        f();
+    }
+}
+//
 // One `resolve()` per `T` (Color / Length / f32) because each variant
 // of `TokenValue` carries a different concrete type — there is no
 // generic extraction helper that would work for all three.
@@ -277,6 +308,7 @@ impl Tokenized<Color> {
             Tokenized::Literal(v) => v.clone(),
             Tokenized::Token { name, fallback } => {
                 debug_warn_resolve_on_unthemed_thread(name);
+                note_token_read();
                 with_or_create_token_signal(name, || TokenValue::Color(fallback.clone()))
                     .map(|sig| match sig.get() {
                         TokenValue::Color(c) => c,
@@ -298,6 +330,7 @@ impl Tokenized<Length> {
             Tokenized::Literal(v) => *v,
             Tokenized::Token { name, fallback } => {
                 debug_warn_resolve_on_unthemed_thread(name);
+                note_token_read();
                 with_or_create_token_signal(name, || TokenValue::Length(*fallback))
                     .map(|sig| match sig.get() {
                         TokenValue::Length(l) => l,
@@ -319,6 +352,7 @@ impl Tokenized<f32> {
             Tokenized::Literal(v) => *v,
             Tokenized::Token { name, fallback } => {
                 debug_warn_resolve_on_unthemed_thread(name);
+                note_token_read();
                 with_or_create_token_signal(name, || TokenValue::Number(*fallback))
                     .map(|sig| match sig.get() {
                         TokenValue::Number(n) => n,

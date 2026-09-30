@@ -72,8 +72,27 @@ pub const FORM_FONT_RESET: &str =
 /// [`ObjectFit`]: runtime_shared::ObjectFit
 pub const IMG_FIT_RESET: &str = ":where(img) { object-fit: contain; }";
 
+/// Default text color: the installed theme's `color-text`
+/// ([`runtime_shared::THEME_TEXT_COLOR_TOKEN`]), falling back to the
+/// framework light theme's text color
+/// ([`runtime_shared::THEME_TEXT_COLOR_FALLBACK`]) when no theme set it.
+///
+/// This is web's half of the cross-backend rule in
+/// `runtime_shared::text_defaults`: content with no color of its own takes
+/// the theme text color. The native backends resolve that token for an
+/// unstyled `text()` and for an icon with no `color` (macOS: "the analogue
+/// of web's `currentColor`"). On web both simply inherit CSS `color`, and
+/// nothing supplied one, so they inherited the browser's black. Every
+/// untinted idea-ui `Icon` in a dark theme rendered black (the Inspector's
+/// sidebar icons). Declared on `html` it reaches every node by
+/// inheritance, and `var()` re-tints on a theme swap through the cascade
+/// with no per-node work. `:where(html)` is specificity 0, so an author
+/// color anywhere below still wins.
+pub const DEFAULT_TEXT_COLOR_RESET: &str = ":where(html) { color: var(--color-text, #1a1a1f); }";
+
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
-/// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`]). The SSR backend emits this
+/// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`] +
+/// [`DEFAULT_TEXT_COLOR_RESET`]). The SSR backend emits this
 /// once in `<head>`; the web backend inserts the rules at low sheet indices.
 ///
 /// Host-surface theming (body background, scrollbar) is **not** part of
@@ -83,9 +102,11 @@ pub const IMG_FIT_RESET: &str = ":where(img) { object-fit: contain; }";
 /// background on iOS, etc.). Keeping the reset theme-agnostic means a
 /// vanilla framework user with no theme SDK still gets a sensible
 /// `box-sizing` + `<button>` baseline without inheriting opinions about
-/// color tokens that may not exist.
+/// color tokens that may not exist. The one color it does carry, the
+/// default text color, names the token every backend already defaults to
+/// and falls back to a concrete color when that token isn't installed.
 pub fn base_reset_css() -> String {
-    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}")
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}")
 }
 
 /// Default inline style for a `Link` primitive's `<a>`: strip the
@@ -1981,6 +2002,24 @@ mod tests {
     // (`:where(img)`), so the framework's cross-backend default matches the
     // native letterbox instead of the UA `fill` stretch. A minted author
     // class wins (0,1,0 > 0). Guards the web-stretch regression.
+    /// An untinted icon (`fill`/`stroke: currentColor`) and an unstyled
+    /// text node inherit CSS `color`; with none declared they rendered in
+    /// the browser's black on a dark theme, where the native backends use
+    /// the theme's `color-text`. The reset must name exactly the token and
+    /// fallback the native backends resolve.
+    #[test]
+    fn regression_unstyled_content_inherits_the_theme_text_color() {
+        assert_eq!(
+            DEFAULT_TEXT_COLOR_RESET,
+            format!(
+                ":where(html) {{ color: var(--{}, {}); }}",
+                runtime_shared::THEME_TEXT_COLOR_TOKEN,
+                runtime_shared::THEME_TEXT_COLOR_FALLBACK
+            )
+        );
+        assert!(base_reset_css().contains(DEFAULT_TEXT_COLOR_RESET));
+    }
+
     #[test]
     fn base_reset_includes_img_object_fit_contain() {
         let reset = base_reset_css();

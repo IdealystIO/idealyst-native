@@ -192,6 +192,8 @@ pub mod handlers;
 pub mod prims;
 #[cfg(feature = "robot")]
 pub mod robot;
+#[cfg(feature = "robot")]
+pub(crate) mod robot_highlight;
 // Always compiled (stub-shaped without `robot`): every `#[component]`
 // emits `glue::__inspect::…` (and a `#[method]` component `glue::robot::…`)
 // unconditionally (see robot_methods' module docs).

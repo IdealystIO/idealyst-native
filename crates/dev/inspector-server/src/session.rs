@@ -49,6 +49,8 @@ pub(crate) enum SessionMsg {
     RemoveTab(TabId),
     Focus(TabId, Focus),
     Action { tab: TabId, label: String, cmd: String, args: Value },
+    /// Box an element in the app (`None` clears). Fire-and-forget.
+    Highlight(TabId, Option<u64>),
     /// The app pushed a change.
     Refresh,
 }
@@ -77,6 +79,8 @@ pub(crate) struct Session {
     /// Phase timers summed across refreshes (the bridge drains them).
     perf_acc: BTreeMap<String, PhaseRow>,
     rx: Receiver<SessionMsg>,
+    /// The front end whose highlight is showing, so its leaving clears it.
+    highlighted_by: Option<TabId>,
     registry: Registry,
     stop: Arc<AtomicBool>,
     refresh_pending: Arc<AtomicBool>,
@@ -105,6 +109,7 @@ pub(crate) fn spawn(key: String, app: String, addr: String, registry: Registry) 
         tabs: HashMap::new(),
         perf_acc: BTreeMap::new(),
         rx,
+        highlighted_by: None,
         registry,
         stop,
         refresh_pending,
@@ -177,7 +182,29 @@ impl Session {
             }
             SessionMsg::RemoveTab(tab) => {
                 self.tabs.remove(&tab);
+                // A front end that closes mid-hover must not leave its box
+                // painted over the app.
+                if self.highlighted_by == Some(tab) {
+                    self.highlighted_by = None;
+                    if let Some(conn) = conn {
+                        let _ = conn.call("clear_highlight", serde_json::json!({}));
+                    }
+                }
                 None
+            }
+            SessionMsg::Highlight(tab, element) => {
+                let Some(conn) = conn else { return None };
+                // The app may lack a frame for the element, or be an older
+                // build without the verb: a missing box is the whole cost.
+                let result = match element {
+                    Some(id) => conn.call("highlight_element", serde_json::json!({ "element_id": id })),
+                    None => conn.call("clear_highlight", serde_json::json!({})),
+                };
+                self.highlighted_by = element.map(|_| tab);
+                match result {
+                    Err(CallError::Io(e)) => Some(Wake::ConnLost(e)),
+                    _ => None,
+                }
             }
             SessionMsg::Focus(tab, focus) => {
                 let t = self.tabs.get_mut(&tab)?;

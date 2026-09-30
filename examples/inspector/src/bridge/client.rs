@@ -53,6 +53,9 @@ struct State {
     /// for it carry.
     attached: Option<(ClientMsg, String)>,
     focus: Focus,
+    /// The element last sent as highlighted, so a hover that stays on
+    /// one row sends one message.
+    highlighted: Option<u64>,
 }
 
 thread_local! {
@@ -71,6 +74,8 @@ async fn run(url: String, sinks: Sinks) {
             let (attach, focus) = STATE.with(|s| {
                 let mut s = s.borrow_mut();
                 s.sender = Some(sender.clone());
+                // A new connection starts with no box showing.
+                s.highlighted = None;
                 (s.attached.as_ref().map(|(m, _)| m.clone()), s.focus)
             });
             if let Some(attach) = attach {
@@ -155,6 +160,8 @@ pub fn detach() {
         let mut s = s.borrow_mut();
         s.attached = None;
         s.focus = Focus::default();
+        // The server clears the app's box when this front end detaches.
+        s.highlighted = None;
     });
     send(&ClientMsg::Detach);
 }
@@ -171,6 +178,15 @@ pub fn set_focus(focus: Focus) {
 /// next snapshot's `last_action`.
 pub fn action(label: impl Into<String>, cmd: &str, args: Value) {
     send(&ClientMsg::Action { label: label.into(), cmd: cmd.to_string(), args });
+}
+
+/// Box `element` in the running app (`None` clears it): hover-to-highlight.
+/// Sends only when the highlighted element changes.
+pub fn highlight(element: Option<u64>) {
+    let changed = STATE.with(|s| std::mem::replace(&mut s.borrow_mut().highlighted, element) != element);
+    if changed {
+        send(&ClientMsg::Highlight { element });
+    }
 }
 
 pub fn rescan() {

@@ -3569,7 +3569,7 @@ impl WebBackend {
 /// scroll, no measure) — the trait is reserved for future
 /// additions. We still need an instance to satisfy
 /// `ViewHandle::new`'s `&'static dyn ViewOps` parameter.
-struct WebViewOps;
+pub(crate) struct WebViewOps;
 impl runtime_shared::ViewOps for WebViewOps {
     fn rect(&self, node: &dyn std::any::Any) -> runtime_shared::ViewportRect {
         match view_rect_from_node(node) {

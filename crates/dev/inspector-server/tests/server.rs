@@ -26,6 +26,8 @@ struct Bridge {
     total_conns: AtomicUsize,
     /// `get_snapshot` replies this error instead of a tree.
     refuse_snapshot: Option<&'static str>,
+    /// Every highlight verb received, as `highlight:<id>` / `clear`.
+    highlights: std::sync::Mutex<Vec<String>>,
 }
 
 fn start_bridge(bridge: Bridge) -> (Arc<Bridge>, u16) {
@@ -82,6 +84,14 @@ fn serve_bridge(stream: TcpStream, b: &Bridge) {
             }
             "get_signal_history" => Ok(Value::Null),
             "clear_logs" => Ok(json!("cleared")),
+            "highlight_element" => {
+                b.highlights.lock().unwrap().push(format!("highlight:{}", req["args"]["element_id"]));
+                Ok(json!("ok"))
+            }
+            "clear_highlight" => {
+                b.highlights.lock().unwrap().push("clear".into());
+                Ok(json!("ok"))
+            }
             other => Err(format!("unknown command `{other}`")),
         };
         let resp = match reply {
@@ -411,4 +421,25 @@ fn a_cross_origin_page_cannot_open_the_socket() {
     assert!(matches!(err, tungstenite::Error::Http(ref r) if r.status() == 403), "{err:?}");
     let own = format!("http://127.0.0.1:{}", server.addr.port());
     assert!(Tab::open_with(&server, Some(&own)).is_ok());
+}
+
+/// Hover-to-highlight: the element reaches the app's `highlight_element`,
+/// leaves no `last_action` behind (it fires on every hover), and a front
+/// end that closes mid-hover doesn't leave its box painted over the app.
+#[test]
+fn a_highlight_reaches_the_app_and_is_cleared_when_its_front_end_leaves() {
+    let (bridge, port) = start_bridge(Bridge::default());
+    let (server, id, _dir) = server_with_app(port);
+    let mut a = Tab::open(&server);
+    a.send(ClientMsg::Attach { app: id });
+    a.snapshot_where("live", live);
+
+    a.send(ClientMsg::Highlight { element: Some(7) });
+    wait_for("the app to get the highlight", || bridge.highlights.lock().unwrap().contains(&"highlight:7".to_string()));
+    a.send(ClientMsg::Focus { component: Some(7), signal: None });
+    let s = a.snapshot_where("a refresh", |s| s.component.is_some());
+    assert_eq!(s.last_action, None, "a highlight is not an action");
+
+    drop(a);
+    wait_for("the box to be cleared", || bridge.highlights.lock().unwrap().last().map(String::as_str) == Some("clear"));
 }

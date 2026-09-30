@@ -4,16 +4,19 @@
 use std::rc::Rc;
 
 use idea_ui::{tone, typography_kind, variant, Badge, Button, Field, FieldSize, Typography};
-use runtime_core::{component, memo, signal, ui, Element, ReadSignal};
+use runtime_core::{component, memo, signal, ui, Element, ReadSignal, Signal};
 
 use super::styles::{AppRow, Caption, Column, ComponentName, ConnectColumn, Grow, MonoMuted, RowBetween, RowStart, TableBox};
 use crate::bridge::client::{self, ServerLink};
+use super::theme_toggle::ThemeToggle;
 use crate::bridge::model::AppInfo;
 
 #[component]
 pub fn Connect(
     apps: ReadSignal<Vec<AppInfo>>,
     link: ReadSignal<ServerLink>,
+    /// The theme mode, owned by the app (see `ThemeToggle`).
+    dark: Signal<bool>,
     #[prop(default = Rc::new(|_, _| {}) as Rc<dyn Fn(Option<AppInfo>, String)>)]
     on_connect: Rc<dyn Fn(Option<AppInfo>, String)>,
 ) -> Element {
@@ -35,7 +38,10 @@ pub fn Connect(
     ui! {
         view(style = ConnectColumn()) {
             view(style = Column()) {
-                Typography(content = "Idealyst Inspector".to_string(), kind = typography_kind::H1)
+                view(style = RowBetween()) {
+                    Typography(content = "Idealyst Inspector".to_string(), kind = typography_kind::H1)
+                    ThemeToggle(dark = dark)
+                }
                 Typography(content = "Pick a running app to inspect. Apps started with idealyst dev show up here on their own.".to_string(), muted = true)
             }
             view(style = Column()) {

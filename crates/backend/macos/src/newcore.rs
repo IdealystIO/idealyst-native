@@ -1465,6 +1465,14 @@ impl caps::IntrospectionOps for MacosBackend {
         MacosBackend::frame_impl(self, node)
     }
 
+    /// Top-left window coordinates: the conversion overlay anchoring
+    /// already uses (`ViewOps::rect`). Unwired, `get_absolute_frame`
+    /// answered `null` on macOS and the Inspector's element highlight had
+    /// nothing to draw around.
+    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        crate::imp::handles::absolute_rect_of_node(node as &dyn std::any::Any)
+    }
+
     fn supports_native_introspection(&self) -> bool {
         MacosBackend::supports_native_introspection_impl(self)
     }
