@@ -167,6 +167,7 @@ idealyst = {{ path = "{idealyst}" }}
 runtime-core = {{ path = "{core}" }}
 runtime-vocabulary = {{ path = "{vocab}" }}
 runtime-scene = {{ path = "{scene}" }}
+web-glue = {{ path = "{glue}" }}
 
 [package.metadata.idealyst.app]
 name = "Hot Patch E2E"
@@ -180,6 +181,7 @@ targets = ["web"]
             core = dep("crates/runtime/core"),
             vocab = dep("crates/runtime/vocabulary"),
             scene = dep("crates/runtime/scene"),
+            glue = dep("crates/runtime/web-glue"),
         ),
     )
     .unwrap();
@@ -502,6 +504,52 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
         "{:?}",
         page.text()
     );
+
+    // ── a body edit that adds a web-glue binding the base never had ────
+    // The patch imports it from `./__idealyst_glue.js` with its JS in the
+    // import name; the page compiles it (`__idealystGlue.compileImport`)
+    // rather than finding it in the base's glue file — nothing was
+    // declared ahead of time.
+    let source = std::fs::read_to_string(&app_rs).unwrap();
+    std::fs::write(
+        &app_rs,
+        source.replace(
+            "format!(\"logic v2 -> {}\", n * 2)",
+            "web_glue::import! { fn js_triple(n: i32) -> i32 = \"(n) => n * 3\"; }\n    \
+             format!(\"glue v3 -> {}\", unsafe { js_triple(n) })",
+        ),
+    )
+    .unwrap();
+    assert!(
+        page.wait_for_text("glue v3 -> 12", Duration::from_secs(120)),
+        "the glue-binding edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert_eq!(
+        page.eval("window.__e2e_marker"),
+        json!("still-here"),
+        "the page reloaded — a new glue binding must arrive as a hot patch"
+    );
+    let latest_patch = std::fs::read_dir(project.join("pkg/hotpatch"))
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "wasm"))
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .expect("a served patch");
+    let glue_imports = wasmparser::Parser::new(0)
+        .parse_all(&std::fs::read(&latest_patch).unwrap())
+        .filter_map(|p| match p.expect("the served patch parses") {
+            wasmparser::Payload::ImportSection(r) => Some(
+                r.into_iter()
+                    .filter_map(|i| i.ok())
+                    .filter(|i| i.module == "./__idealyst_glue.js" && i.name.contains("js_triple"))
+                    .count(),
+            ),
+            _ => None,
+        })
+        .sum::<usize>();
+    assert_eq!(glue_imports, 1, "{} should import the new binding from the glue namespace", latest_patch.display());
 
     // ── the shape edit ─────────────────────────────────────────────────
     let source = std::fs::read_to_string(&app_rs).unwrap();
