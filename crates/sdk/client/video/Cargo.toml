@@ -57,15 +57,10 @@ host-mock = { path = "../../../dev/host-mock" }
 backend-web = { workspace = true }
 # The `<video>` element and its playback ops go through web-glue, the
 # framework-owned JS boundary (docs/proposals/own-web-bindings.md).
-web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
-# HYBRID-BRIDGE: native_source MediaStream — switches with the media SDKs.
-# The live-stream producers (camera, screen-recorder, canvas self-capture,
-# video-compose) publish a `web_sys::MediaStream` as the stream's native
-# source; `web_util::apply_stream` downcasts it and crosses it into the
-# glue slab (`web_glue::bridge`). That one site is the only reason this
-# crate names web-sys / wasm-bindgen.
-web-sys = { version = "0.3", features = ["MediaStream"] }
-wasm-bindgen = "0.2"
+# A live stream's web native source is a `web_glue::dom::MediaStream`
+# (what camera, microphone, screen-recorder, canvas self-capture and
+# video-compose publish); `web_util::apply_stream` sets it as `srcObject`.
+web-glue = { workspace = true }
 
 # Browser tests (`tests/web_video.rs`) — run with
 # `cargo test -p video --target wasm32-unknown-unknown` (the workspace runner

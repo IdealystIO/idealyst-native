@@ -131,6 +131,7 @@ item as you exercise it.
 **Automated**
 - [ ] `cargo test -p screen-recorder` — config builders, the private-layer mount shape (`tests/private_layer.rs`), the `Unsupported` skeleton contract
 - [ ] `cargo build -p screen-recorder --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p screen-recorder --target wasm32-unknown-unknown` (headless Chrome through the workspace runner, with a stand-in `getDisplayMedia` resolving a canvas capture) — `tests/web_screen_recorder.rs`: the constraints (`video`, `preferCurrentTab` for `ThisApp`), the `native_source` IS the capture stream and stopping the recording ends its tracks (the old web-sys port stopped a `clone()`'s), and a subscriber receives the screen's RGBA8 frames
 
 **Behavior**
 - [ ] **Web** — `getDisplayMedia` source picker appears; frames stream as RGBA8; `PrivateLayer` is an inline no-op (no exclusion yet).

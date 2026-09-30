@@ -38,7 +38,7 @@ pub fn now_micros() -> u64 {
     thread_local! {
         static EPOCH_MS: Cell<Option<f64>> = const { Cell::new(None) };
     }
-    let now = js_sys::Date::now();
+    let now = web_glue::dom::date_now();
     EPOCH_MS.with(|e| {
         let epoch = e.get().unwrap_or_else(|| {
             e.set(Some(now));

@@ -8,15 +8,14 @@
 //! (CLAUDE.md §7).
 //!
 //! Every DOM and Canvas2D call goes through web-glue ([`crate::web_ctx`]).
-//! Two things still cross to web-sys, at the crate's seams only:
-//!
-//! * the public entry points [`make_2d_rasterizer`] / [`publish_capture_stream`]
-//!   take a `web_sys::HtmlCanvasElement`, because `canvas-vello` (on
-//!   wgpu, hence wasm-bindgen) calls them with one — changing that is a
-//!   public API change, so the element crosses in with `web_glue::bridge`;
-//! * a texture layer's / the self-capture's `native_source` is a
-//!   `web_sys::MediaStream` (`HYBRID-BRIDGE: native_source MediaStream` —
-//!   it switches with the media SDKs in one change).
+//! A texture layer's and the self-capture's `native_source` is a
+//! `web_glue::dom::MediaStream`, the type every media producer publishes and
+//! every consumer downcasts. One thing still crosses to web-sys, at the
+//! crate's seam only (`HYBRID-BRIDGE: wgpu`): the public entry points
+//! [`make_2d_rasterizer`] / [`publish_capture_stream`] take a
+//! `web_sys::HtmlCanvasElement`, because `canvas-vello` (on wgpu, hence
+//! wasm-bindgen — phase 5's hybrid mode) calls them with one. Changing that
+//! is a public API change, so the element crosses in with `web_glue::bridge`.
 //!
 //! [`Scene`]: canvas_core::Scene
 
@@ -27,14 +26,10 @@ use canvas_core::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use web_glue::dom::{Document, HtmlCanvasElement, ResizeObserver};
-use web_glue::{Closure, JsValue};
+use web_glue::dom::{Document, HtmlCanvasElement, MediaStream, ResizeObserver};
+use web_glue::Closure;
 
 use crate::web_ctx::{capture_stream, context_2d, new_canvas, CaptureTrack, Ctx2d, Gradient, Video};
-
-/// HYBRID-BRIDGE: native_source MediaStream — switches with the media SDKs.
-/// The stream type every producer publishes and every consumer downcasts.
-type NativeMediaStream = web_sys::MediaStream;
 
 /// Disconnects the `ResizeObserver` and frees its `Closure` on scope
 /// teardown, so a callback the browser has already queued can't fire
@@ -66,11 +61,13 @@ impl Drop for ObserverGuard {
 /// path (CLAUDE.md §7).
 ///
 /// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
-/// holds; the element crosses into web-glue once, here.
+/// holds; the element crosses into web-glue once, here (HYBRID-BRIDGE:
+/// wgpu).
 pub fn make_2d_rasterizer(
     canvas: web_sys::HtmlCanvasElement,
     props: &Rc<CanvasProps>,
 ) -> Box<dyn FnMut(&Scene)> {
+    // HYBRID-BRIDGE: wgpu — canvas-vello's web-sys canvas into the glue slab.
     rasterizer_2d(web_glue::bridge::from_bindgen(canvas.as_ref()), props)
 }
 
@@ -128,12 +125,14 @@ pub(crate) fn rasterizer_2d(
 /// when there's no capture sink; otherwise the caller MUST `tick()` it each frame.
 ///
 /// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
-/// holds; the element crosses into web-glue once, here.
+/// holds; the element crosses into web-glue once, here (HYBRID-BRIDGE:
+/// wgpu).
 #[must_use]
 pub fn publish_capture_stream(
     canvas: &web_sys::HtmlCanvasElement,
     props: &CanvasProps,
 ) -> Option<CaptureFrameDriver> {
+    // HYBRID-BRIDGE: wgpu — canvas-vello's web-sys canvas into the glue slab.
     capture_stream_of(&web_glue::bridge::from_bindgen(canvas.as_ref()), props)
 }
 
@@ -141,11 +140,8 @@ pub fn publish_capture_stream(
 fn capture_stream_of(canvas: &HtmlCanvasElement, props: &CanvasProps) -> Option<CaptureFrameDriver> {
     let capture = props.capture.as_ref()?;
     let (stream, track) = capture_stream(canvas)?;
-    // HYBRID-BRIDGE: native_source MediaStream — switches with the media
-    // SDKs. Consumers (media-writer, media-stream's screenshot, video)
-    // downcast a `web_sys::MediaStream`; the glue stream crosses out once.
-    let stream: NativeMediaStream =
-        wasm_bindgen::JsCast::unchecked_into(web_glue::bridge::to_bindgen(&stream));
+    // Consumers (media-writer, media-stream's screenshot, video) downcast
+    // the native source to a `web_glue::dom::MediaStream`.
     capture.publish_native_source(Rc::new(stream));
     Some(CaptureFrameDriver { track, last_ms: std::cell::Cell::new(f64::NEG_INFINITY) })
 }
@@ -192,13 +188,10 @@ impl LayerVideo {
         Self { el: Video::new_layer(document), stream_id: None }
     }
 
-    fn ensure(&mut self, ms: &NativeMediaStream) {
+    fn ensure(&mut self, ms: &MediaStream) {
         let id = ms.id();
         if self.stream_id.as_deref() != Some(id.as_str()) {
-            // HYBRID-BRIDGE: native_source MediaStream — crosses into the
-            // glue slab to become the hidden player's srcObject.
-            let stream: JsValue = web_glue::bridge::from_bindgen(ms.as_ref());
-            self.el.attach(&stream);
+            self.el.attach(ms.as_js());
             self.stream_id = Some(id);
         }
     }
@@ -228,7 +221,7 @@ fn draw_layers(
                 let Some(stream) = f() else { continue };
                 let Some(ms) = stream
                     .native_source()
-                    .and_then(|rc| rc.downcast::<NativeMediaStream>().ok())
+                    .and_then(|rc| rc.downcast::<MediaStream>().ok())
                 else {
                     continue;
                 };

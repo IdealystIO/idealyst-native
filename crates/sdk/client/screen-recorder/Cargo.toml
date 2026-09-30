@@ -81,28 +81,12 @@ futures-channel = "0.3"
 # `Registry<IosBackend>`.
 backend-ios-mobile = { workspace = true }
 
-# Web capture: getDisplayMedia → a hidden <video> → <canvas> pixel pump.
+# Web capture: getDisplayMedia → a hidden <video> → <canvas> pixel pump —
+# web-glue bindings declared in `src/web.rs`
+# (docs/proposals/own-web-bindings.md). The capture stream is published as a
+# `web_glue::dom::MediaStream`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "MediaDevices",
-    "MediaStream",
-    "MediaStreamTrack",
-    "DisplayMediaStreamConstraints",
-    "Document",
-    "Element",
-    "HtmlMediaElement",
-    "HtmlVideoElement",
-    "HtmlCanvasElement",
-    "CanvasRenderingContext2d",
-    "ImageData",
-    "Performance",
-    "DomException",
-] }
+web-glue = { workspace = true }
 # Web has no separate-window exclusion yet (TODO: Element Capture
 # `restrictTo`), so the private layer takes the generic passthrough
 # handler there and this backend dep is only the capture path's host.
@@ -187,6 +171,12 @@ runtime_kotlin = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# Browser tests (`tests/web_screen_recorder.rs`) — run with
+# `cargo test -p screen-recorder --target wasm32-unknown-unknown` (the
+# workspace runner supplies web-glue's JS).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 # tests/private_layer.rs mounts `PrivateLayer(children)` through the
 # scene registry on the shared host-mock recording substrate.
 host-mock = { path = "../../../dev/host-mock" }

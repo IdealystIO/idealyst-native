@@ -67,27 +67,17 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
 
 # Web (wasm) target: getUserMedia for the MediaStream, an offscreen
-# <canvas> to pull RGBA pixels out of each <video> frame.
+# <canvas> to pull RGBA pixels out of each <video> frame — web-glue
+# bindings declared in `src/web.rs` (docs/proposals/own-web-bindings.md).
+# The capture stream is published as a `web_glue::dom::MediaStream`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "Document",
-    "MediaDevices",
-    "MediaStream",
-    "MediaStreamConstraints",
-    "MediaStreamTrack",
-    "MediaTrackConstraints",
-    "HtmlVideoElement",
-    "HtmlCanvasElement",
-    "CanvasRenderingContext2d",
-    "ImageData",
-    "Element",
-    "EventTarget",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_camera.rs`) — run with
+# `cargo test -p camera --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `webdriver.json` gives Chrome a fake camera).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Android target: Camera2 + ImageReader, driven by a Kotlin shim that
 # trampolines frames back through JNI. `ndk-context` exposes the host

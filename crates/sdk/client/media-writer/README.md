@@ -100,8 +100,11 @@ description is not supposed to change`) and corrupt the file.
   the `camera`/`biometrics` Android backends).
 - **web** — compile-checked for `wasm32-unknown-unknown`; the canvas-capture
   fallback's size-before-`captureStream()` invariant is browser-verified by the
-  `#[wasm_bindgen_test]`s in `src/web.rs` (run with
-  `wasm-pack test --headless --safari --release` from this crate dir).
+  `#[wasm_bindgen_test]`s in `src/web.rs`, and `tests/web_record.rs` records a
+  native video `MediaStream` plus a bridged synthetic audio stream to a real
+  WebM/MP4 (run both with
+  `cargo test -p media-writer --target wasm32-unknown-unknown`; the workspace
+  runner supplies web-glue's JS, which `wasm-pack test` cannot).
 
 ## Permissions / linking
 
@@ -119,7 +122,7 @@ compiles for that target but isn't confirmed on real hardware yet (see
 
 **Automated**
 - [ ] `cargo test -p media-writer` — host record (`host_record.rs`): synthetic `MediaStream` + `AudioStream` producers (no hardware) mux to a non-trivial, real `.mp4` on disk
-- [ ] `wasm-pack test --headless --safari --release` (from this crate dir) — the canvas-capture size-before-`captureStream()` invariant
+- [x] `cargo test -p media-writer --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — the canvas-capture size-before-`captureStream()` invariant (`src/web.rs`), and a native-video + bridged-audio recording written to the store as a WebM/MP4 (`tests/web_record.rs`)
 - [ ] `cargo build -p media-writer --target wasm32-unknown-unknown` — web target
 
 **Behavior**

@@ -10,15 +10,17 @@
 //! self-contained crate. It's supported in every current browser. Moving
 //! to an `AudioWorklet` is a transparent swap behind this same API if the
 //! deprecation ever bites.
+//!
+//! Every browser call goes through web-glue, the framework-owned JS boundary
+//! (docs/proposals/own-web-bindings.md). The capture stream is published as
+//! the `AudioStream`'s `native_source` as a `web_glue::dom::MediaStream` —
+//! THE capture stream, not a copy (see [`StreamHandle::native_source`]).
 
-use js_sys::{Array, Reflect};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    AudioContext, AudioContextOptions, AudioProcessingEvent, MediaStream, MediaStreamConstraints,
-    MediaStreamTrack, ScriptProcessorNode,
-};
+use std::rc::Rc;
+
+use web_glue::dom::{MediaStream, MediaStreamTrack};
+use web_glue::js::Object;
+use web_glue::{Closure, JsCast, JsError, JsFuture, JsValue};
 
 use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicError};
 
@@ -27,25 +29,91 @@ use crate::{AudioBuffer, AudioStreamConfig, BoxedCallback, MicError};
 /// in `[256, 16384]` per the Web Audio spec.
 const SCRIPT_PROCESSOR_BUFFER: u32 = 4096;
 
+/// Bit layout of [`js_in_shape`]: channels above, frames below.
+const SHAPE_CHANNEL_SHIFT: f64 = 1_048_576.0;
+
+web_glue::import! {
+    // `navigator.mediaDevices`, 0 when absent (insecure context, old engine).
+    fn js_media_devices() -> u32 =
+        "() => { const n = typeof navigator === 'undefined' ? null : navigator; \
+           const m = n == null ? null : n.mediaDevices; return m == null ? 0 : G.add(m); }";
+    // `mediaDevices.getUserMedia(constraints)` → its Promise.
+    #[catch]
+    fn js_get_user_media(md: u32, c: u32) -> u32 = "(m, c) => G.add(G.get(m).getUserMedia(G.get(c)))";
+    // `navigator.permissions.query({ name: 'microphone' })` → its Promise, 0
+    // when the Permissions API is absent.
+    #[catch]
+    fn js_query_mic_permission() -> u32 =
+        "() => { const p = typeof navigator === 'undefined' ? null : navigator.permissions; \
+           return p == null ? 0 : G.add(p.query({ name: 'microphone' })); }";
+    // `new AudioContext()`, or at `sampleRate` when `rate > 0`.
+    #[catch]
+    fn js_ctx_new(rate: f64) -> u32 =
+        "(r) => G.add(r > 0 ? new AudioContext({ sampleRate: r }) : new AudioContext())";
+    fn js_ctx_rate(c: u32) -> f64 = "(c) => G.get(c).sampleRate";
+    // The capture graph `MediaStreamSource(s) → ScriptProcessor → destination`
+    // as `{ source, processor }`, `onaudioprocess = f`. A ScriptProcessorNode
+    // only fires while connected to the destination, even though we don't
+    // want to hear the input; the output channels we never write stay
+    // silent, so nothing is played back.
+    #[catch]
+    fn js_graph(c: u32, s: u32, buf: u32, ch: u32, f: u32) -> u32 =
+        "(c, s, buf, ch, f) => { const ctx = G.get(c); \
+           const source = ctx.createMediaStreamSource(G.get(s)); \
+           const processor = ctx.createScriptProcessor(buf, ch, ch); \
+           processor.onaudioprocess = G.get(f); \
+           source.connect(processor); processor.connect(ctx.destination); \
+           return G.add({ source, processor }); }";
+    // Teardown: the handler first (no late call into a dropped closure),
+    // then the nodes, then the context (`close()` is fire-and-forget).
+    fn js_teardown(g: u32, c: u32) =
+        "(g, c) => { const x = G.get(g); x.processor.onaudioprocess = null; \
+           try { x.processor.disconnect(); } catch (_) {} \
+           try { x.source.disconnect(); } catch (_) {} \
+           const p = G.get(c).close(); if (p) p.catch(() => {}); }";
+    // An `AudioProcessingEvent`'s input buffer shape: channels * 2^20 +
+    // frames (frames < 2^20, channels ≤ 32 per the Web Audio spec), 0 when
+    // unreadable.
+    fn js_in_shape(e: u32) -> f64 =
+        "(e) => { const b = G.get(e).inputBuffer; return b == null ? 0 : \
+           b.numberOfChannels * 1048576 + b.length; }";
+    // Interleave the input channels ([L0,R0,L1,R1,…]; mono is a straight
+    // copy) into the channels*frames f32s at `out` (4-byte aligned).
+    fn js_in_interleave(e: u32, out: usize, ch: u32, n: u32) =
+        "(e, o, ch, n) => { const b = G.get(e).inputBuffer; \
+           const f = new Float32Array(G.u8().buffer, o >>> 0, ch * n); \
+           if (ch === 1) { f.set(b.getChannelData(0)); return; } \
+           for (let c = 0; c < ch; c++) { const d = b.getChannelData(c); \
+             for (let i = 0; i < n; i++) f[i * ch + c] = d[i]; } }";
+}
+
 /// Keeps the capture graph and its `onaudioprocess` closure alive. Drop
 /// tears the graph down and stops the underlying media tracks.
 pub(crate) struct StreamHandle {
-    context: AudioContext,
-    source: web_sys::MediaStreamAudioSourceNode,
-    processor: ScriptProcessorNode,
+    /// The `AudioContext`.
+    context: JsValue,
+    /// `{ source, processor }` (see [`js_graph`]).
+    graph: JsValue,
     stream: MediaStream,
-    // Owns the JS callback for the node's lifetime; dropped last.
-    _on_audio: Closure<dyn FnMut(AudioProcessingEvent)>,
+    // Owns the JS callback for the node's lifetime; dropped after `Drop`
+    // detached it.
+    _on_audio: Closure,
 }
 
 impl StreamHandle {
-    /// Publish the live `web_sys::MediaStream` (audio track) as the
+    /// Publish the live capture `MediaStream` (audio track) as the
     /// [`AudioStream`](media_stream::AudioStream)'s native source, so a
     /// same-platform consumer — the `media-writer` `MediaRecorder` path, a
     /// future `<audio>` playback layer — binds the browser's own audio
     /// pipeline instead of reconstructing it from raw PCM.
+    ///
+    /// The handle clone is the SAME JS stream, so stopping the capture ends
+    /// the consumer's tracks too. (The web-sys port published
+    /// `Rc::new(self.stream.clone())` — web-sys's inherent `clone()` is the
+    /// JS `MediaStream.clone()`, a new stream with cloned tracks that
+    /// stopping the microphone left running.)
     pub(crate) fn native_source(&self) -> Option<crate::NativeSource> {
-        Some(std::rc::Rc::new(self.stream.clone()))
+        Some(Rc::new(self.stream.clone()))
     }
 }
 
@@ -53,18 +121,15 @@ impl Drop for StreamHandle {
     fn drop(&mut self) {
         // Detach the node graph and stop every track so the browser's
         // recording indicator clears and the mic is released.
-        let _ = self.processor.disconnect();
-        let _ = self.source.disconnect();
-        self.processor.set_onaudioprocess(None);
-        if let Ok(tracks) = stream_tracks(&self.stream) {
-            for track in tracks.iter() {
-                if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
-                    track.stop();
-                }
-            }
-        }
-        // `close()` returns a Promise; we don't need to await teardown.
-        let _ = self.context.close();
+        // SAFETY: live handles.
+        unsafe { js_teardown(self.graph.raw(), self.context.raw()) };
+        stop_tracks(&self.stream);
+    }
+}
+
+fn stop_tracks(stream: &MediaStream) {
+    for track in stream.get_tracks().iter() {
+        track.unchecked_into::<MediaStreamTrack>().stop();
     }
 }
 
@@ -73,13 +138,7 @@ pub(crate) async fn request_permission() -> Result<(), MicError> {
     // its tracks. A granted prompt is cached by the browser, so the later
     // `open()` won't prompt again.
     let stream = get_user_media(&AudioStreamConfig::default()).await?;
-    if let Ok(tracks) = stream_tracks(&stream) {
-        for track in tracks.iter() {
-            if let Ok(track) = track.dyn_into::<MediaStreamTrack>() {
-                track.stop();
-            }
-        }
-    }
+    stop_tracks(&stream);
     Ok(())
 }
 
@@ -88,30 +147,19 @@ pub(crate) async fn request_permission() -> Result<(), MicError> {
 /// `microphone` descriptor), so any failure degrades to
 /// [`MicPermission::Unknown`](crate::MicPermission::Unknown).
 pub(crate) async fn permission_status() -> crate::MicPermission {
-    let Some(window) = web_sys::window() else {
+    // SAFETY: the result is 0 or a fresh Promise handle.
+    let promise = match unsafe { js_query_mic_permission() } {
+        Ok(0) | Err(_) => return crate::MicPermission::Unknown,
+        Ok(p) => unsafe { JsValue::from_raw(p) },
+    };
+    let Ok(status) = JsFuture::new(&promise).await else {
         return crate::MicPermission::Unknown;
     };
-    let Ok(permissions) = window.navigator().permissions() else {
-        return crate::MicPermission::Unknown;
-    };
-    let desc = js_sys::Object::new();
-    if Reflect::set(&desc, &JsValue::from_str("name"), &JsValue::from_str("microphone")).is_err() {
-        return crate::MicPermission::Unknown;
-    }
-    let Ok(promise) = permissions.query(&desc) else {
-        return crate::MicPermission::Unknown;
-    };
-    let Ok(result) = JsFuture::from(promise).await else {
-        return crate::MicPermission::Unknown;
-    };
-    match result.dyn_into::<web_sys::PermissionStatus>() {
-        Ok(status) => match status.state() {
-            web_sys::PermissionState::Granted => crate::MicPermission::Granted,
-            web_sys::PermissionState::Denied => crate::MicPermission::Denied,
-            web_sys::PermissionState::Prompt => crate::MicPermission::Undetermined,
-            _ => crate::MicPermission::Unknown,
-        },
-        Err(_) => crate::MicPermission::Unknown,
+    match status.get("state").ok().and_then(|s| s.as_string()).as_deref() {
+        Some("granted") => crate::MicPermission::Granted,
+        Some("denied") => crate::MicPermission::Denied,
+        Some("prompt") => crate::MicPermission::Undetermined,
+        _ => crate::MicPermission::Unknown,
     }
 }
 
@@ -123,91 +171,54 @@ pub(crate) async fn open(
 
     // An AudioContext at the requested rate if any; the browser may still
     // clamp it, so the rate we read off the context is authoritative.
-    let context = match config.sample_rate {
-        Some(sr) => {
-            let opts = AudioContextOptions::new();
-            opts.set_sample_rate(sr as f32);
-            AudioContext::new_with_context_options(&opts)
-        }
-        None => AudioContext::new(),
-    }
-    .map_err(|e| MicError::Backend(format!("AudioContext: {}", err_string(&e))))?;
-
-    let source = context
-        .create_media_stream_source(&stream)
-        .map_err(|e| MicError::Backend(format!("create_media_stream_source: {}", err_string(&e))))?;
+    let rate = config.sample_rate.map_or(0.0, |sr| sr as f64);
+    // SAFETY: the result is a fresh context handle.
+    let context = unsafe { js_ctx_new(rate) }
+        .map(|c| unsafe { JsValue::from_raw(c) })
+        .map_err(|e| MicError::Backend(format!("AudioContext: {}", err_string(&e))))?;
 
     let channels = config.channels.unwrap_or(1).max(1);
-    let processor = context
-        .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
-            SCRIPT_PROCESSOR_BUFFER,
-            channels as u32,
-            channels as u32,
-        )
-        .map_err(|e| MicError::Backend(format!("create_script_processor: {}", err_string(&e))))?;
-
-    let sample_rate = context.sample_rate() as u32;
+    // SAFETY: a live context handle.
+    let sample_rate = unsafe { js_ctx_rate(context.raw()) } as u32;
     let mut callback = callback;
     let mut scratch: Vec<f32> = Vec::new();
 
-    let on_audio = Closure::wrap(Box::new(move |event: AudioProcessingEvent| {
-        let in_buf = match event.input_buffer() {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let n_channels = in_buf.number_of_channels();
-        let frames = in_buf.length() as usize;
+    let on_audio = Closure::new(move |event: JsValue| {
+        // SAFETY: the `AudioProcessingEvent` handed to this listener.
+        let shape = unsafe { js_in_shape(event.raw()) };
+        let n_channels = (shape / SHAPE_CHANNEL_SHIFT).floor() as u32;
+        let frames = (shape % SHAPE_CHANNEL_SHIFT) as usize;
         if n_channels == 0 || frames == 0 {
             return;
         }
-
-        if n_channels == 1 {
-            // Mono fast path: hand the channel data straight through.
-            if let Ok(data) = in_buf.get_channel_data(0) {
-                let buffer = AudioBuffer {
-                    samples: &data,
-                    sample_rate,
-                    channels: 1,
-                };
-                callback(&buffer);
-            }
-            return;
-        }
-
-        // Interleave planar channels into the scratch buffer.
         scratch.clear();
         scratch.resize(frames * n_channels as usize, 0.0);
-        for ch in 0..n_channels {
-            if let Ok(data) = in_buf.get_channel_data(ch) {
-                for (frame, &sample) in data.iter().enumerate() {
-                    scratch[frame * n_channels as usize + ch as usize] = sample;
-                }
-            }
-        }
+        // SAFETY: `scratch` holds exactly channels * frames f32s.
+        unsafe { js_in_interleave(event.raw(), scratch.as_mut_ptr() as usize, n_channels, frames as u32) };
         let buffer = AudioBuffer {
             samples: &scratch,
             sample_rate,
             channels: n_channels as u16,
         };
         callback(&buffer);
-    }) as Box<dyn FnMut(AudioProcessingEvent)>);
+    });
 
-    processor.set_onaudioprocess(Some(on_audio.as_ref().unchecked_ref()));
-
-    // A ScriptProcessorNode only fires while connected to the destination,
-    // even though we don't want to hear the input. The output channels we
-    // never write stay silent, so nothing is played back.
-    source
-        .connect_with_audio_node(&processor)
-        .map_err(|e| MicError::Backend(format!("connect source: {}", err_string(&e))))?;
-    processor
-        .connect_with_audio_node(&context.destination())
-        .map_err(|e| MicError::Backend(format!("connect dest: {}", err_string(&e))))?;
+    // SAFETY: live handles; the result is a fresh graph handle.
+    let graph = unsafe {
+        js_graph(
+            context.raw(),
+            stream.as_js().raw(),
+            SCRIPT_PROCESSOR_BUFFER,
+            channels as u32,
+            on_audio.as_js().raw(),
+        )
+    }
+    .map(|g| unsafe { JsValue::from_raw(g) })
+    .map_err(|e| MicError::Backend(format!("capture graph: {}", err_string(&e))))?;
 
     Ok(StreamHandle {
         context,
-        source,
-        processor,
+        graph,
         stream,
         _on_audio: on_audio,
     })
@@ -216,20 +227,21 @@ pub(crate) async fn open(
 /// Run `getUserMedia({ audio: <constraints> })` and await the resulting
 /// `MediaStream`. Maps a rejected promise to the closest [`MicError`].
 async fn get_user_media(config: &AudioStreamConfig) -> Result<MediaStream, MicError> {
-    let window = web_sys::window().ok_or(MicError::Unsupported)?;
-    let devices = window
-        .navigator()
-        .media_devices()
-        .map_err(|_| MicError::Unsupported)?;
+    // SAFETY: the result is 0 or a fresh handle.
+    let devices = match unsafe { js_media_devices() } {
+        0 => return Err(MicError::Unsupported),
+        h => unsafe { JsValue::from_raw(h) },
+    };
 
-    let constraints = MediaStreamConstraints::new();
-    constraints.set_audio(&audio_constraint(config));
+    let constraints = Object::new();
+    let _ = constraints.set("audio", &audio_constraint(config));
 
-    let promise = devices
-        .get_user_media_with_constraints(&constraints)
+    // SAFETY: live handles; the result is a fresh Promise handle.
+    let promise = unsafe { js_get_user_media(devices.raw(), constraints.as_js().raw()) }
+        .map(|p| unsafe { JsValue::from_raw(p) })
         .map_err(|e| MicError::Backend(format!("getUserMedia: {}", err_string(&e))))?;
 
-    let value = JsFuture::from(promise).await.map_err(map_gum_error)?;
+    let value = JsFuture::new(&promise).await.map_err(map_gum_error)?;
     value
         .dyn_into::<MediaStream>()
         .map_err(|_| MicError::Backend("getUserMedia did not return a MediaStream".into()))
@@ -247,38 +259,31 @@ fn audio_constraint(config: &AudioStreamConfig) -> JsValue {
         && config.echo_cancellation.is_none()
         && config.auto_gain_control.is_none()
     {
-        return JsValue::TRUE;
+        return JsValue::from_bool(true);
     }
-    let obj = js_sys::Object::new();
+    let obj = Object::new();
     if let Some(sr) = config.sample_rate {
-        let _ = Reflect::set(&obj, &"sampleRate".into(), &JsValue::from_f64(sr as f64));
+        let _ = obj.set("sampleRate", &JsValue::from_f64(sr as f64));
     }
     if let Some(ch) = config.channels {
-        let _ = Reflect::set(&obj, &"channelCount".into(), &JsValue::from_f64(ch as f64));
+        let _ = obj.set("channelCount", &JsValue::from_f64(ch as f64));
     }
     if let Some(on) = config.noise_suppression {
-        let _ = Reflect::set(&obj, &"noiseSuppression".into(), &JsValue::from_bool(on));
+        let _ = obj.set("noiseSuppression", &JsValue::from_bool(on));
     }
     if let Some(on) = config.echo_cancellation {
-        let _ = Reflect::set(&obj, &"echoCancellation".into(), &JsValue::from_bool(on));
+        let _ = obj.set("echoCancellation", &JsValue::from_bool(on));
     }
     if let Some(on) = config.auto_gain_control {
-        let _ = Reflect::set(&obj, &"autoGainControl".into(), &JsValue::from_bool(on));
+        let _ = obj.set("autoGainControl", &JsValue::from_bool(on));
     }
     obj.into()
 }
 
-fn stream_tracks(stream: &MediaStream) -> Result<Array, MicError> {
-    Ok(stream.get_tracks())
-}
-
 /// Map a rejected `getUserMedia` to a [`MicError`]. The DOMException name
 /// distinguishes a user/policy denial from no device / device busy.
-fn map_gum_error(err: JsValue) -> MicError {
-    let name = Reflect::get(&err, &"name".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
+fn map_gum_error(err: JsError) -> MicError {
+    let name = err.get("name").ok().and_then(|v| v.as_string()).unwrap_or_default();
     match name.as_str() {
         "NotAllowedError" | "SecurityError" | "PermissionDeniedError" => MicError::PermissionDenied,
         "NotFoundError" | "OverconstrainedError" => MicError::NoInputDevice,
@@ -289,10 +294,6 @@ fn map_gum_error(err: JsValue) -> MicError {
 fn err_string(value: &JsValue) -> String {
     value
         .as_string()
-        .or_else(|| {
-            Reflect::get(value, &"message".into())
-                .ok()
-                .and_then(|v| v.as_string())
-        })
+        .or_else(|| value.get("message").ok().and_then(|v| v.as_string()))
         .unwrap_or_else(|| format!("{value:?}"))
 }

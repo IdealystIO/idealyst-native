@@ -104,18 +104,16 @@ impl VideoSource for Pick {
     }
 }
 
-/// A live stream source attaches the stream's native `MediaStream` as
-/// `srcObject` (the web-sys native source crosses into the glue slab);
-/// switching the reactive source to a URL clears it, and `None` clears
-/// both.
+/// A live stream source attaches the stream's native `MediaStream` (a
+/// `web_glue::dom::MediaStream`, what the capture SDKs publish) as
+/// `srcObject`; switching the reactive source to a URL clears it, and
+/// `None` clears both.
 #[wasm_bindgen_test]
 async fn stream_source_sets_src_object_and_switches_reactively() {
     let host = fresh_host();
-    let native = web_sys::MediaStream::new().unwrap();
+    let native = web_glue::dom::MediaStream::new().unwrap();
     let (ms, _writer) = media_stream::MediaStream::new();
-    // `Clone::clone`, not `native.clone()`: web-sys binds the JS
-    // `MediaStream.clone()` as an inherent method, which makes a NEW stream.
-    ms.set_native_source(Rc::new(Clone::clone(&native)));
+    ms.set_native_source(Rc::new(native.clone()));
 
     let which = Rc::new(std::cell::Cell::new(None));
     let which_app = which.clone();
@@ -137,9 +135,8 @@ async fn stream_source_sets_src_object_and_switches_reactively() {
     next_frames().await;
 
     let v = video_el(&host);
-    let expected: JsValue = web_glue::bridge::from_bindgen(native.as_ref());
     let so = prop(&v, "srcObject");
-    assert!(so.strict_eq(&expected), "the native stream is the srcObject");
+    assert!(so.strict_eq(native.as_js()), "the native stream is the srcObject");
     assert!(v.has_attribute("playsinline"));
     assert!(!v.has_attribute("src"));
 
@@ -153,5 +150,21 @@ async fn stream_source_sets_src_object_and_switches_reactively() {
     backend_web::newcore::flush_sync();
     assert!(prop(&v, "srcObject").is_null());
     assert!(!v.has_attribute("src"), "None clears the URL too");
+    backend_web::newcore::stop();
+}
+
+/// Anything other than a `web_glue::dom::MediaStream` as the native source
+/// (another platform's type, a stale producer) is ignored: no `srcObject`.
+#[wasm_bindgen_test]
+async fn stream_source_ignores_a_foreign_native_source() {
+    let host = fresh_host();
+    let (ms, _writer) = media_stream::MediaStream::new();
+    ms.set_native_source(Rc::new(7u32));
+    backend_web::newcore::start_in("#app", video::register, move || {
+        Video(VideoProps { source: video::stream(ms.clone()), ..Default::default() }).into_element()
+    });
+    next_frames().await;
+    let v = video_el(&host);
+    assert!(prop(&v, "srcObject").is_null(), "a foreign native source is not attached");
     backend_web::newcore::stop();
 }

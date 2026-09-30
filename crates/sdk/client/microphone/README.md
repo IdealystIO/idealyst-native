@@ -152,6 +152,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p microphone` — portable logic (framing math + config builders)
 - [ ] `cargo test -p microphone --test host_capture -- --ignored --nocapture` — opens the host's default input, asserts the callback fires
 - [ ] `cargo build -p microphone --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p microphone --target wasm32-unknown-unknown` (headless Chrome through the workspace runner; `webdriver.json` gives it a fake mic) — `tests/web_microphone.rs`: `open_stream`'s `native_source` IS the capture stream (stopping the mic ends a consumer's tracks — the old web-sys `stream.clone()` published a copy), and the Web Audio graph delivers mono 4096-frame PCM blocks
 
 **Behavior**
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); capturing yields non-silent PCM at the configured sample rate/channels; dropping the stream releases the device.

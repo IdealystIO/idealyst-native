@@ -323,9 +323,11 @@ impl Video {
 
 /// `canvas.captureStream(0)` and its first video track as a
 /// `CanvasCaptureMediaStreamTrack`; `None` when either is unavailable.
-pub(crate) fn capture_stream(canvas: &HtmlCanvasElement) -> Option<(JsValue, CaptureTrack)> {
-    let stream: JsValue = opt(unsafe { js_capture_stream(h(canvas)) })?;
-    let track: JsValue = opt(unsafe { js_first_video_track(stream.raw()) })?;
+pub(crate) fn capture_stream(
+    canvas: &HtmlCanvasElement,
+) -> Option<(web_glue::dom::MediaStream, CaptureTrack)> {
+    let stream: web_glue::dom::MediaStream = opt(unsafe { js_capture_stream(h(canvas)) })?;
+    let track: JsValue = opt(unsafe { js_first_video_track(h(&stream)) })?;
     let track = track.dyn_into::<CaptureTrack>().ok()?;
     Some((stream, track))
 }

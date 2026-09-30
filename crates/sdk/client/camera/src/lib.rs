@@ -40,9 +40,10 @@
 //! frames into a [`FrameWriter`](media_stream::FrameWriter):
 //!
 //! - **web (wasm32)** — `getUserMedia` + a `<video>`/`<canvas>` frame pump.
-//!   Also publishes the `web_sys::MediaStream` as the stream's
-//!   [`native_source`](MediaStream::native_source) for a future zero-copy
-//!   display / GPU consumer.
+//!   Also publishes the capture `MediaStream` itself (a
+//!   `web_glue::dom::MediaStream`) as the stream's
+//!   [`native_source`](MediaStream::native_source) for zero-copy display /
+//!   GPU / recording consumers.
 //! - **iOS / macOS** — `AVCaptureSession` + `AVCaptureVideoDataOutput`.
 //! - **Android** — `Camera2` + `ImageReader` via a Kotlin shim.
 //! - **desktop Linux** — GStreamer **V4L2** (`v4l2src ! videoconvert !
@@ -78,7 +79,7 @@ pub use error::CameraError;
 pub use media_stream::{FrameCallback, MediaStream, PixelFormat, Subscription, VideoFrame};
 
 /// The type-erased zero-copy frame source a backend publishes on the stream
-/// (e.g. the web `web_sys::MediaStream`), downcast by a same-platform
+/// (e.g. the web `web_glue::dom::MediaStream`), downcast by a same-platform
 /// consumer. `None` where no zero-copy source is exposed (yet).
 pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 

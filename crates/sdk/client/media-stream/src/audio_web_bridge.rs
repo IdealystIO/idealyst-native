@@ -1,7 +1,7 @@
 //! Web-only: turn a *synthetic* [`AudioStream`] (one fed by an
 //! [`AudioWriter`](crate::AudioWriter) rather than backed by a real
-//! `getUserMedia`/`<audio>` source) into a live `web_sys::MediaStream` with a
-//! real audio track.
+//! `getUserMedia`/`<audio>` source) into a live `MediaStream`
+//! (`web_glue::dom::MediaStream`) with a real audio track.
 //!
 //! # Why this exists
 //!
@@ -14,7 +14,7 @@
 //! On web they are *not* the same thing. Browser sinks — `MediaRecorder`,
 //! `<audio srcObject>`, WebRTC — consume a `MediaStreamTrack` *object*, not PCM
 //! callbacks. A capture stream (mic/camera) publishes its live
-//! `web_sys::MediaStream` as the stream's
+//! `MediaStream` (`web_glue::dom::MediaStream`) as the stream's
 //! [`native_source`](crate::AudioStream::native_source), so those sinks bind to
 //! it directly. A *synthetic* stream has no such object, so before this bridge
 //! `native_source()` returned `None` and e.g. recording a denoised or mixed mic
@@ -27,11 +27,11 @@
 //! lazily builds one of these bridges the first time a consumer asks for a
 //! native handle on a synthetic stream, then caches it. The bridge:
 //!
-//! 1. opens an [`AudioContext`],
-//! 2. creates a [`MediaStreamAudioDestinationNode`] — its `.stream` is a real
+//! 1. opens an `AudioContext`,
+//! 2. creates a `MediaStreamAudioDestinationNode` — its `.stream` is a real
 //!    `MediaStream` with a live audio track (this is what `native_source()`
 //!    returns),
-//! 3. drives a [`ScriptProcessorNode`] into that destination, filling each
+//! 3. drives a `ScriptProcessorNode` into that destination, filling each
 //!    render quantum from a ring buffer that a [`subscribe`] callback feeds with
 //!    the stream's PCM frames (remixed / resampled to the graph's format).
 //!
@@ -60,14 +60,55 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
-use web_sys::{
-    AudioContext, AudioContextOptions, AudioProcessingEvent, MediaStream,
-    MediaStreamAudioDestinationNode, ScriptProcessorNode,
-};
+use web_glue::dom::MediaStream;
+use web_glue::{Closure, JsCast, JsValue};
 
 use crate::audio::{AudioFrame, AudioStream, AudioSubscription};
+
+// The WebAudio graph, as web-glue bindings. Every node is a plain handle;
+// the graph shape (context → script processor → stream destination) lives in
+// the snippets.
+web_glue::import! {
+    // `new AudioContext({ sampleRate })`, resumed in case the autoplay policy
+    // started it suspended (recording is triggered by a user gesture, so the
+    // context is allowed to run). Throws when WebAudio is unavailable or the
+    // rate is refused.
+    #[catch]
+    fn js_ctx_new(rate: f64) -> u32 =
+        "(r) => { const c = new AudioContext({ sampleRate: r }); \
+           const p = c.resume(); if (p) p.catch(() => {}); return G.add(c); }";
+    // `ctx.createMediaStreamDestination()`.
+    #[catch]
+    fn js_ctx_dest(c: u32) -> u32 = "(c) => G.add(G.get(c).createMediaStreamDestination())";
+    // `dest.stream` — the live `MediaStream` whose audio track sinks bind to.
+    fn js_dest_stream(d: u32) -> u32 = "(d) => G.add(G.get(d).stream)";
+    // `ctx.createScriptProcessor(buffer, 1, outChannels)`.
+    #[catch]
+    fn js_proc_new(c: u32, buffer: u32, out: u32) -> u32 =
+        "(c, b, o) => G.add(G.get(c).createScriptProcessor(b, 1, o))";
+    fn js_proc_channels(p: u32) -> u32 = "(p) => G.get(p).channelCount >>> 0";
+    // `onaudioprocess = f`, then connect into the destination so its track
+    // carries the processor's output.
+    fn js_proc_attach(p: u32, f: u32, d: u32) =
+        "(p, f, d) => { const n = G.get(p); n.onaudioprocess = G.get(f); n.connect(G.get(d)); }";
+    // Teardown: handler FIRST (see `Drop for WebAudioBridge`), then the node.
+    fn js_proc_detach(p: u32) =
+        "(p) => { const n = G.get(p); n.onaudioprocess = null; try { n.disconnect(); } catch (_) {} }";
+    // `close()` returns a Promise; teardown is fire-and-forget.
+    fn js_ctx_close(c: u32) = "(c) => { const p = G.get(c).close(); if (p) p.catch(() => {}); }";
+    // An `AudioProcessingEvent`'s output buffer shape: channels * 2^20 +
+    // frames (frames < 2^20, channels ≤ 32 per the Web Audio spec).
+    fn js_out_shape(e: u32) -> f64 =
+        "(e) => { const b = G.get(e).outputBuffer; return b == null ? 0 : \
+           b.numberOfChannels * 1048576 + b.length; }";
+    // Copy `ch` planar channels of `n` f32s at `p` (channel c at p + c*n*4)
+    // into the event's output buffer. The views are made and used inside
+    // this one call (memory may grow between calls).
+    fn js_out_fill(e: u32, p: usize, ch: u32, n: u32) =
+        "(e, p, ch, n) => { const b = G.get(e).outputBuffer; const base = p >>> 0; \
+           for (let c = 0; c < ch; c++) \
+             b.copyToChannel(new Float32Array(G.u8().buffer, base + c * n * 4, n), c); }";
+}
 
 /// ScriptProcessor render-quantum size (power of two, 256..=16384). ~43 ms at
 /// 48 kHz — a balance between callback overhead and latency.
@@ -81,6 +122,9 @@ const PRIME_FRAMES: usize = BUFFER_SIZE as usize;
 /// consumes slower than the producer, drop the oldest rather than grow without
 /// bound. In practice the graph is rate-matched, so this never trips.
 const MAX_BACKLOG_FRAMES: usize = 48_000;
+
+/// Bit layout of [`js_out_shape`]: channels above, frames below.
+const SHAPE_CHANNEL_SHIFT: f64 = 1_048_576.0;
 
 /// Per-output-channel PCM waiting to be rendered, plus the primed latch.
 struct Ring {
@@ -101,15 +145,18 @@ impl Ring {
 }
 
 /// Mutable graph state shared between `native_source`'s setup and the per-frame
-/// fill callback. The [`ScriptProcessorNode`] is built lazily on the first frame
+/// fill callback. The `ScriptProcessorNode` is built lazily on the first frame
 /// (that's when the channel count is known), so it starts as `None`.
 struct Graph {
-    ctx: AudioContext,
-    dest: MediaStreamAudioDestinationNode,
-    /// The render node, once the first frame has fixed the channel count.
-    proc: Option<ScriptProcessorNode>,
+    /// The `AudioContext`.
+    ctx: JsValue,
+    /// The `MediaStreamAudioDestinationNode`.
+    dest: JsValue,
+    /// The `ScriptProcessorNode`, once the first frame has fixed the channel
+    /// count.
+    proc: Option<JsValue>,
     /// Kept alive alongside `proc`: its `onaudioprocess` handler.
-    on_audio: Option<Closure<dyn FnMut(AudioProcessingEvent)>>,
+    on_audio: Option<Closure>,
     /// The graph's sample rate (the `AudioContext`'s rate); PCM at a different
     /// rate is resampled to it before entering the ring.
     ctx_rate: u32,
@@ -120,7 +167,7 @@ struct Graph {
 /// last drop tears the graph down.
 pub(crate) struct WebAudioBridge {
     /// The `MediaStream` whose audio track carries the rendered PCM — the value
-    /// `native_source()` hands out (downcast to `web_sys::MediaStream`).
+    /// `native_source()` hands out (downcast to `web_glue::dom::MediaStream`).
     stream: MediaStream,
     /// Feeds the ring; dropping it detaches from the source stream.
     _sub: AudioSubscription,
@@ -130,6 +177,7 @@ pub(crate) struct WebAudioBridge {
 
 impl WebAudioBridge {
     /// The bridged `MediaStream` (its audio track is what sinks record/play).
+    /// A handle clone: the same JS stream.
     pub(crate) fn media_stream(&self) -> MediaStream {
         self.stream.clone()
     }
@@ -140,18 +188,17 @@ impl Drop for WebAudioBridge {
         // Release the audio device. ORDER MATTERS: detach the `onaudioprocess`
         // handler FIRST. The node can still fire one queued render callback
         // during teardown, and if the Rust `Closure` (dropped right after this,
-        // when `Graph` drops) were gone by then, that late call throws
-        // "closure invoked recursively or after being dropped" (harmless — the
-        // browser swallows it — but it litters the console). Clearing the
-        // handler drops JS's reference to the closure up front, so no late call
-        // can land. Then disconnect the node and close the context (both return
-        // Promises we don't await — teardown is fire-and-forget).
+        // when `Graph` drops) were gone by then, that late call would throw
+        // "called after its Rust owner dropped it". Clearing the handler drops
+        // JS's reference to the closure up front, so no late call can land.
+        // Then disconnect the node and close the context (both fire-and-forget).
         let g = self.graph.borrow();
         if let Some(proc) = &g.proc {
-            proc.set_onaudioprocess(None);
-            let _ = proc.disconnect();
+            // SAFETY: a live node handle.
+            unsafe { js_proc_detach(proc.raw()) };
         }
-        let _ = g.ctx.close();
+        // SAFETY: a live context handle.
+        unsafe { js_ctx_close(g.ctx.raw()) };
     }
 }
 
@@ -162,15 +209,10 @@ impl Drop for WebAudioBridge {
 pub(crate) fn build(source: &AudioStream, rate_hint: u32) -> Option<WebAudioBridge> {
     let ctx_rate = if rate_hint == 0 { 48_000 } else { rate_hint };
 
-    let opts = AudioContextOptions::new();
-    opts.set_sample_rate(ctx_rate as f32);
-    let ctx = AudioContext::new_with_context_options(&opts).ok()?;
-    // Recording is triggered by a user gesture, so the context is allowed to
-    // run; resume anyway in case autoplay policy started it suspended.
-    let _ = ctx.resume();
-
-    let dest = ctx.create_media_stream_destination().ok()?;
-    let stream = dest.stream();
+    // SAFETY (all three): handles the previous call just returned.
+    let ctx = unsafe { JsValue::from_raw(js_ctx_new(ctx_rate as f64).ok()?) };
+    let dest = unsafe { JsValue::from_raw(js_ctx_dest(ctx.raw()).ok()?) };
+    let stream: MediaStream = unsafe { JsValue::from_raw(js_dest_stream(dest.raw())) }.unchecked_into();
 
     let graph = Rc::new(RefCell::new(Graph {
         ctx,
@@ -213,27 +255,23 @@ pub(crate) fn build(source: &AudioStream, rate_hint: u32) -> Option<WebAudioBrid
     Some(WebAudioBridge { stream, _sub: sub, graph })
 }
 
-/// Ensure the [`ScriptProcessorNode`] exists (built lazily once the first frame
+/// Ensure the `ScriptProcessorNode` exists (built lazily once the first frame
 /// fixes the channel count) and return its output channel count. Idempotent.
 fn ensure_proc(graph: &Rc<RefCell<Graph>>, ring: &Rc<RefCell<Ring>>, in_channels: u16) -> usize {
     {
         let g = graph.borrow();
         if let Some(proc) = &g.proc {
-            return proc.channel_count() as usize;
+            // SAFETY: a live node handle.
+            return unsafe { js_proc_channels(proc.raw()) } as usize;
         }
     }
     let out_channels = in_channels.max(1) as usize;
     *ring.borrow_mut() = Ring::new(out_channels);
 
     let mut g = graph.borrow_mut();
-    let proc = match g
-        .ctx
-        .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
-            BUFFER_SIZE,
-            1,
-            out_channels as u32,
-        ) {
-        Ok(p) => p,
+    // SAFETY: a live context handle; the result is a fresh node handle.
+    let proc = match unsafe { js_proc_new(g.ctx.raw(), BUFFER_SIZE, out_channels as u32) } {
+        Ok(p) => unsafe { JsValue::from_raw(p) },
         Err(_) => return out_channels,
     };
 
@@ -241,33 +279,37 @@ fn ensure_proc(graph: &Rc<RefCell<Graph>>, ring: &Rc<RefCell<Ring>>, in_channels
     // silence until primed or on underrun.
     let on_audio = {
         let ring = ring.clone();
-        Closure::<dyn FnMut(AudioProcessingEvent)>::new(move |e: AudioProcessingEvent| {
-            let out = match e.output_buffer() {
-                Ok(b) => b,
-                Err(_) => return,
-            };
-            let len = out.length() as usize;
+        let mut planar: Vec<f32> = Vec::new();
+        Closure::new(move |e: JsValue| {
+            // SAFETY: the `AudioProcessingEvent` handed to this listener.
+            let shape = unsafe { js_out_shape(e.raw()) };
+            let channels = (shape / SHAPE_CHANNEL_SHIFT).floor() as usize;
+            let len = (shape % SHAPE_CHANNEL_SHIFT) as usize;
+            if channels == 0 || len == 0 {
+                return;
+            }
             let mut r = ring.borrow_mut();
             if !r.primed && r.chans.first().map_or(0, |q| q.len()) >= PRIME_FRAMES {
                 r.primed = true;
             }
             let draining = r.primed;
-            let mut scratch = vec![0.0f32; len];
-            for c in 0..out.number_of_channels() as usize {
-                for s in scratch.iter_mut() {
-                    *s = if draining {
-                        r.chans.get_mut(c).and_then(|q| q.pop_front()).unwrap_or(0.0)
-                    } else {
-                        0.0
-                    };
+            planar.clear();
+            planar.resize(channels * len, 0.0);
+            if draining {
+                for (c, chunk) in planar.chunks_exact_mut(len).enumerate() {
+                    if let Some(q) = r.chans.get_mut(c) {
+                        for s in chunk.iter_mut() {
+                            *s = q.pop_front().unwrap_or(0.0);
+                        }
+                    }
                 }
-                let _ = out.copy_to_channel(&scratch, c as i32);
             }
+            // SAFETY: `planar` holds exactly `channels * len` f32s.
+            unsafe { js_out_fill(e.raw(), planar.as_ptr() as usize, channels as u32, len as u32) };
         })
     };
-    proc.set_onaudioprocess(Some(on_audio.as_ref().unchecked_ref()));
-    // Connect into the destination so its track carries our render output.
-    let _ = proc.connect_with_audio_node(&g.dest);
+    // SAFETY: live node / closure / destination handles.
+    unsafe { js_proc_attach(proc.raw(), on_audio.as_js().raw(), g.dest.raw()) };
 
     g.proc = Some(proc);
     g.on_audio = Some(on_audio);

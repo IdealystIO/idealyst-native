@@ -153,9 +153,10 @@ async fn scene_ops_paint_the_expected_pixels() {
 }
 
 /// Texture layers: a static image layer and a live stream layer (another
-/// canvas's `captureStream`, published as a `web_sys::MediaStream` native
-/// source) both composite over the scene; and a `capture` sink receives the
-/// canvas's own `captureStream` as a `web_sys::MediaStream` native source.
+/// canvas's `captureStream`, published as a `web_glue::dom::MediaStream`
+/// native source) both composite over the scene; and a `capture` sink
+/// receives the canvas's own `captureStream` as a
+/// `web_glue::dom::MediaStream` native source.
 #[wasm_bindgen_test]
 async fn texture_layers_and_self_capture() {
     let host = fresh_host();
@@ -173,8 +174,7 @@ async fn texture_layers_and_self_capture() {
     )
     .unwrap();
     let live = src.as_js().call_method("captureStream", &[&JsValue::from_f64(30.0)]).unwrap();
-    let native: web_sys::MediaStream =
-        wasm_bindgen::JsCast::unchecked_into(web_glue::bridge::to_bindgen(&live));
+    let native: web_glue::dom::MediaStream = live.dyn_into().expect("captureStream is a MediaStream");
     let (layer_stream, _layer_writer) = media_stream::MediaStream::new();
     layer_stream.set_native_source(Rc::new(native));
 
@@ -222,9 +222,10 @@ async fn texture_layers_and_self_capture() {
     assert!(orange, "stream layer composited: {:?}", pixel(&canvas, 70.0, 20.0));
 
     // Self-capture: the canvas published its captureStream as the stream's
-    // native source, as the web-sys type the media consumers downcast.
+    // native source, as the glue type the media consumers downcast.
     let src = captured.native_source().expect("capture published a native source");
-    let ms = src.downcast_ref::<web_sys::MediaStream>().expect("a web_sys::MediaStream");
+    let ms = src.downcast_ref::<web_glue::dom::MediaStream>().expect("a web_glue::dom::MediaStream");
+    assert_eq!(ms.get_video_tracks().length(), 1, "the canvas capture track");
     assert!(!ms.id().is_empty());
     backend_web::newcore::stop();
 }

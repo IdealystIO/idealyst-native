@@ -48,7 +48,7 @@ pub use private_layer::{register, PrivateLayer, PrivateLayerProps};
 pub use media_stream::{FrameCallback, MediaStream, PixelFormat, Subscription, VideoFrame};
 
 /// The type-erased zero-copy frame source a backend may publish on the stream
-/// (e.g. the web `web_sys::MediaStream`), downcast by a same-platform display
+/// (e.g. the web `web_glue::dom::MediaStream`), downcast by a same-platform display
 /// / GPU consumer. `None` where no zero-copy source is exposed (yet).
 pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 

@@ -36,8 +36,8 @@
 //! - **iOS / macOS** — `AVAssetWriter` (H.264 + AAC) over AVFoundation.
 //! - **Android** — `MediaCodec` + `MediaMuxer` via a Kotlin shim.
 //! - **web (wasm32)** — `MediaRecorder` over the streams' native
-//!   `web_sys::MediaStream`; the recorded `Blob` is written through the
-//!   `files` store.
+//!   `MediaStream` (`web_glue::dom::MediaStream`); the recorded `Blob` is
+//!   written through the `files` store.
 //! - **Linux / desktop** — GStreamer, encoding an `appsrc ! videoconvert !
 //!   vp8enc ! webmmux ! filesink` pipeline (plus an `opusenc` audio branch).
 //!   VP8/WebM ([`Container::WebM`]) is the default because a base GStreamer

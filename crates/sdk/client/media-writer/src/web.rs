@@ -1,15 +1,16 @@
 //! Web recording via `MediaRecorder`.
 //!
 //! On the web the browser owns the encoder/muxer, so this backend's job is to
-//! assemble one `web_sys::MediaStream` carrying the right tracks and hand it to
-//! a `MediaRecorder`; the recorded `Blob` is written back through the `files`
-//! store.
+//! assemble one `MediaStream` carrying the right tracks and hand it to a
+//! `MediaRecorder`; the recorded `Blob` is written back through the `files`
+//! store. Every browser call is a web-glue binding
+//! (docs/proposals/own-web-bindings.md).
 //!
 //! # Fast path — native tracks
 //!
 //! `camera` / `screen-recorder` (via `getUserMedia` / `getDisplayMedia`) and
-//! `microphone` (via `getUserMedia`) each publish their live
-//! `web_sys::MediaStream` as the stream's
+//! `microphone` (via `getUserMedia`) each publish their live `MediaStream` (a
+//! `web_glue::dom::MediaStream`) as the stream's
 //! [`native_source`](media_stream::MediaStream::native_source). When present we
 //! pull the video track(s) from the video stream and the audio track(s) from
 //! the audio stream into one combined stream and record that directly —
@@ -43,13 +44,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    Blob, BlobEvent, BlobPropertyBag, CanvasRenderingContext2d, HtmlCanvasElement, MediaRecorder,
-    MediaRecorderOptions, MediaStream, MediaStreamTrack,
-};
+use web_glue::dom::{HtmlCanvasElement, MediaStream, MediaStreamTrack};
+use web_glue::js::Uint8Array;
+use web_glue::{string, Closure, JsCast, JsError, JsFuture, JsValue};
 
 use crate::{MediaInputs, MediaWriterError, RecordConfig};
 use media_stream::Subscription;
@@ -62,22 +59,71 @@ const MIME_CANDIDATES: &[&str] = &[
     "video/webm",
 ];
 
+/// `MediaRecorder` time slice: a chunk per second, so a long recording isn't
+/// buffered as one giant blob in memory.
+const TIME_SLICE_MS: u32 = 1_000;
+
+web_glue::import! {
+    // `MediaRecorder.isTypeSupported(mime)`; 0 without MediaRecorder.
+    fn js_is_type_supported(p: usize, l: usize) -> u32 =
+        "(p, l) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(G.str(p, l)) ? 1 : 0";
+    // `new MediaRecorder(stream, options)` wrapped as `{ rec, chunks }`: each
+    // non-empty `dataavailable` Blob is pushed onto `chunks` in JS (the
+    // chunks never cross into Rust until `stop` assembles them). `mime` is
+    // omitted when empty; a bitrate of 0 is omitted.
+    #[catch]
+    fn js_recorder_new(s: u32, mp: usize, ml: usize, vbps: f64, abps: f64) -> u32 =
+        "(s, mp, ml, v, a) => { const o = {}; const m = G.str(mp, ml); if (m) o.mimeType = m; \
+           if (v > 0) o.videoBitsPerSecond = v; if (a > 0) o.audioBitsPerSecond = a; \
+           const r = new MediaRecorder(G.get(s), o); const x = { rec: r, chunks: [] }; \
+           r.ondataavailable = (e) => { if (e.data && e.data.size > 0) x.chunks.push(e.data); }; \
+           return G.add(x); }";
+    #[catch]
+    fn js_recorder_start(x: u32, slice: u32) = "(x, t) => { G.get(x).rec.start(t); }";
+    // 1 while the recorder is recording / paused, 0 once inactive.
+    fn js_recorder_active(x: u32) -> u32 = "(x) => G.get(x).rec.state !== 'inactive' ? 1 : 0";
+    fn js_recorder_onstop(x: u32, f: u32) = "(x, f) => { G.get(x).rec.onstop = G.get(f); }";
+    #[catch]
+    fn js_recorder_stop(x: u32) = "(x) => { G.get(x).rec.stop(); }";
+    // The recorded chunks as one Blob of `mime`, read out: a Promise of its
+    // ArrayBuffer.
+    #[catch]
+    fn js_recorder_bytes(x: u32, mp: usize, ml: usize) -> u32 =
+        "(x, mp, ml) => G.add(new Blob(G.get(x).chunks, { type: G.str(mp, ml) }).arrayBuffer())";
+    // A `<canvas>` and its 2D context (`willReadFrequently`: see
+    // `canvas_capture`), as the context; throws without a document.
+    #[catch]
+    fn js_new_ctx() -> u32 =
+        "() => { const c = document.createElement('canvas'); \
+           const x = c.getContext('2d', { willReadFrequently: true }); \
+           if (x == null) throw new Error('canvas 2d context missing'); return G.add(x); }";
+    fn js_ctx_canvas(x: u32) -> u32 = "(x) => G.add(G.get(x).canvas)";
+    // Size the canvas to w×h (only when it differs — a resize clears it) and
+    // `putImageData` the w*h*4 straight RGBA8 bytes at `p`.
+    fn js_put_frame(x: u32, p: usize, l: usize, w: u32, h: u32) =
+        "(x, p, l, w, h) => { const ctx = G.get(x); const c = ctx.canvas; \
+           if (c.width !== w) c.width = w; if (c.height !== h) c.height = h; \
+           const px = new Uint8ClampedArray(G.u8().slice(p >>> 0, (p >>> 0) + (l >>> 0)).buffer); \
+           try { ctx.putImageData(new ImageData(px, w, h), 0, 0); } catch (_) {} }";
+    #[catch]
+    fn js_capture_stream(c: u32) -> u32 = "(c) => G.add(G.get(c).captureStream())";
+}
+
 fn err(msg: impl Into<String>) -> MediaWriterError {
     MediaWriterError::Backend(msg.into())
 }
 
-fn js_err(ctx: &str, e: JsValue) -> MediaWriterError {
-    MediaWriterError::Backend(format!("{ctx}: {e:?}"))
+fn js_err(ctx: &str, e: JsError) -> MediaWriterError {
+    MediaWriterError::Backend(format!("{ctx}: {}", e.message()))
 }
 
 pub(crate) struct RecordingHandle {
-    recorder: MediaRecorder,
-    chunks: Rc<RefCell<Vec<Blob>>>,
+    /// `{ rec: MediaRecorder, chunks: Blob[] }` (see [`js_recorder_new`]).
+    recorder: JsValue,
     mime: String,
     store: std::sync::Arc<dyn files::FileStore>,
     path: String,
-    // Keep callbacks + the canvas frame pump alive for the recording's life.
-    _on_data: Closure<dyn FnMut(BlobEvent)>,
+    // Keep the canvas frame pump alive for the recording's life.
     _video_pump: Option<Subscription>,
     _canvas: Option<HtmlCanvasElement>,
 }
@@ -87,41 +133,42 @@ impl RecordingHandle {
         // Await the recorder's `stop` event so every buffered chunk has landed.
         let (tx, rx) = futures_oneshot();
         let tx = Rc::new(RefCell::new(Some(tx)));
-        let on_stop = Closure::<dyn FnMut()>::new({
+        let on_stop = Closure::new({
             let tx = tx.clone();
-            move || {
+            move |_: JsValue| {
                 if let Some(tx) = tx.borrow_mut().take() {
                     let _ = tx.send(());
                 }
             }
         });
-        self.recorder
-            .set_onstop(Some(on_stop.as_ref().unchecked_ref()));
+        // SAFETY (below): live handles.
+        unsafe { js_recorder_onstop(self.recorder.raw(), on_stop.as_js().raw()) };
 
-        if self.recorder.state() != web_sys::RecordingState::Inactive {
-            self.recorder
-                .stop()
-                .map_err(|e| js_err("MediaRecorder.stop", e))?;
+        if unsafe { js_recorder_active(self.recorder.raw()) } != 0 {
+            unsafe { js_recorder_stop(self.recorder.raw()) }.map_err(|e| js_err("MediaRecorder.stop", e))?;
             let _ = rx.await;
         }
 
         // Concatenate the recorded chunks into one Blob and read its bytes.
-        let parts = js_sys::Array::new();
-        for blob in self.chunks.borrow().iter() {
-            parts.push(blob);
-        }
-        let opts = BlobPropertyBag::new();
-        opts.set_type(&self.mime);
-        let blob = Blob::new_with_blob_sequence_and_options(&parts, &opts)
+        let (mp, ml) = string::abi(&self.mime);
+        // SAFETY: a live handle; the result is a fresh Promise handle.
+        let buf = unsafe { js_recorder_bytes(self.recorder.raw(), mp, ml) }
+            .map(|p| unsafe { JsValue::from_raw(p) })
             .map_err(|e| js_err("assemble Blob", e))?;
-        let buf = JsFuture::from(blob.array_buffer())
-            .await
-            .map_err(|e| js_err("Blob.arrayBuffer", e))?;
-        let bytes = js_sys::Uint8Array::new(&buf).to_vec();
+        let buf = JsFuture::new(&buf).await.map_err(|e| js_err("Blob.arrayBuffer", e))?;
+        let bytes = Uint8Array::new(&buf).to_vec();
 
         self.store.write(&self.path, &bytes).await?;
         drop(on_stop);
         Ok(())
+    }
+}
+
+/// Add every track of `tracks` (a `getVideoTracks()` / `getAudioTracks()`
+/// array) to `combined`.
+fn add_tracks(combined: &MediaStream, tracks: web_glue::js::Array) {
+    for track in tracks.iter() {
+        combined.add_track(&track.unchecked_into::<MediaStreamTrack>());
     }
 }
 
@@ -139,9 +186,7 @@ pub(crate) async fn start(
             .native_source()
             .and_then(|rc| rc.downcast::<MediaStream>().ok())
         {
-            for track in native.get_video_tracks().iter() {
-                combined.add_track(&track.unchecked_into::<MediaStreamTrack>());
-            }
+            add_tracks(&combined, native.get_video_tracks());
         } else {
             // CPU-only producer: pump frames into a canvas and capture it.
             let (canvas, sub) = canvas_capture(stream, &combined).await?;
@@ -156,11 +201,7 @@ pub(crate) async fn start(
             .native_source()
             .and_then(|rc| rc.downcast::<MediaStream>().ok())
         {
-            Some(native) => {
-                for track in native.get_audio_tracks().iter() {
-                    combined.add_track(&track.unchecked_into::<MediaStreamTrack>());
-                }
-            }
+            Some(native) => add_tracks(&combined, native.get_audio_tracks()),
             None => {
                 return Err(MediaWriterError::Unsupported);
             }
@@ -169,39 +210,22 @@ pub(crate) async fn start(
 
     // --- Recorder ---
     let mime = pick_mime();
-    let options = MediaRecorderOptions::new();
-    if let Some(m) = &mime {
-        options.set_mime_type(m);
+    let (mp, ml) = string::abi(mime.as_deref().unwrap_or(""));
+    // SAFETY: a live stream handle; the result is a fresh handle.
+    let recorder = unsafe {
+        js_recorder_new(
+            combined.as_js().raw(),
+            mp,
+            ml,
+            config.video_bitrate.map_or(0.0, f64::from),
+            config.audio_bitrate.map_or(0.0, f64::from),
+        )
     }
-    if let Some(bps) = config.video_bitrate {
-        options.set_video_bits_per_second(bps);
-    }
-    if let Some(bps) = config.audio_bitrate {
-        options.set_audio_bits_per_second(bps);
-    }
-    let recorder = MediaRecorder::new_with_media_stream_and_media_recorder_options(
-        &combined, &options,
-    )
+    .map(|r| unsafe { JsValue::from_raw(r) })
     .map_err(|e| js_err("new MediaRecorder", e))?;
 
-    let chunks: Rc<RefCell<Vec<Blob>>> = Rc::new(RefCell::new(Vec::new()));
-    let on_data = Closure::<dyn FnMut(BlobEvent)>::new({
-        let chunks = chunks.clone();
-        move |e: BlobEvent| {
-            if let Some(blob) = e.data() {
-                if blob.size() > 0.0 {
-                    chunks.borrow_mut().push(blob);
-                }
-            }
-        }
-    });
-    recorder.set_ondataavailable(Some(on_data.as_ref().unchecked_ref()));
-
-    // Emit a chunk per second so a long recording isn't buffered as one giant
-    // blob in memory.
-    recorder
-        .start_with_time_slice(1_000)
-        .map_err(|e| js_err("MediaRecorder.start", e))?;
+    // SAFETY: a live handle.
+    unsafe { js_recorder_start(recorder.raw(), TIME_SLICE_MS) }.map_err(|e| js_err("MediaRecorder.start", e))?;
 
     // The web backend writes the recorded blob to the requested path verbatim
     // (only the encoded container inside may differ per the browser's choice —
@@ -210,11 +234,9 @@ pub(crate) async fn start(
     Ok((
         RecordingHandle {
             recorder,
-            chunks,
             mime: mime.unwrap_or_else(|| "video/webm".into()),
             store: config.store.clone(),
             path: config.path.clone(),
-            _on_data: on_data,
             _video_pump: video_pump,
             _canvas: canvas_keep,
         },
@@ -227,7 +249,11 @@ pub(crate) async fn start(
 fn pick_mime() -> Option<String> {
     MIME_CANDIDATES
         .iter()
-        .find(|m| MediaRecorder::is_type_supported(m))
+        .find(|m| {
+            let (p, l) = string::abi(m);
+            // SAFETY: a borrowed string for the call.
+            unsafe { js_is_type_supported(p, l) != 0 }
+        })
         .map(|m| m.to_string())
 }
 
@@ -255,33 +281,15 @@ async fn canvas_capture(
     stream: &media_stream::MediaStream,
     combined: &MediaStream,
 ) -> Result<(HtmlCanvasElement, Subscription), MediaWriterError> {
-    let document = web_sys::window()
-        .and_then(|w| w.document())
-        .ok_or_else(|| err("no document for canvas fallback"))?;
-    let canvas: HtmlCanvasElement = document
-        .create_element("canvas")
-        .map_err(|e| js_err("create canvas", e))?
-        .unchecked_into();
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context_with_context_options(
-            "2d",
-            // These 2D contexts read pixels back every frame via `get_image_data`;
-            // `willReadFrequently` keeps the backing store CPU-side (avoids a per-
-            // readback GPU→CPU stall) and silences the browser's "Multiple readback
-            // operations" warning.
-            &{
-                let o = js_sys::Object::new();
-                let _ = js_sys::Reflect::set(
-                    &o,
-                    &wasm_bindgen::JsValue::from_str("willReadFrequently"),
-                    &wasm_bindgen::JsValue::TRUE,
-                );
-                wasm_bindgen::JsValue::from(o)
-            },
-        )
-        .map_err(|e| js_err("canvas 2d context", e))?
-        .ok_or_else(|| err("canvas 2d context missing"))?
-        .unchecked_into();
+    // These 2D contexts are written every frame; `willReadFrequently` keeps the
+    // backing store CPU-side (avoids a per-frame GPU round trip) and silences
+    // the browser's "Multiple readback operations" warning.
+    // SAFETY: the result is a fresh context handle.
+    let ctx = unsafe { js_new_ctx() }
+        .map(|c| unsafe { JsValue::from_raw(c) })
+        .map_err(|_| err("no document for canvas fallback"))?;
+    // SAFETY: a live context handle.
+    let canvas: HtmlCanvasElement = unsafe { JsValue::from_raw(js_ctx_canvas(ctx.raw())) }.unchecked_into();
 
     // The persistent pump draws every frame and resizes the canvas if the
     // source dimensions ever change. It also fires `first_tx` exactly once, so
@@ -289,22 +297,10 @@ async fn canvas_capture(
     // when the producer hasn't buffered one yet.
     let (first_tx, first_rx) = futures_oneshot();
     let first_tx = Rc::new(RefCell::new(Some(first_tx)));
-    let canvas_for_cb = canvas.clone();
     let ctx_for_cb = ctx.clone();
     let first_tx_cb = first_tx.clone();
     let sub = stream.subscribe(move |frame| {
-        if canvas_for_cb.width() != frame.width || canvas_for_cb.height() != frame.height {
-            canvas_for_cb.set_width(frame.width);
-            canvas_for_cb.set_height(frame.height);
-        }
-        let clamped = wasm_bindgen::Clamped(frame.data);
-        if let Ok(image) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-            clamped,
-            frame.width,
-            frame.height,
-        ) {
-            let _ = ctx_for_cb.put_image_data(&image, 0.0, 0.0);
-        }
+        put_frame(&ctx_for_cb, frame.data, frame.width, frame.height);
         if let Some(tx) = first_tx_cb.borrow_mut().take() {
             let _ = tx.send(());
         }
@@ -314,32 +310,32 @@ async fn canvas_capture(
     // doc comment: avc1 can't survive a mid-stream resolution change.
     let mut buf = Vec::new();
     match stream.latest(&mut buf) {
-        Some((w, h)) => {
-            // The producer already has a frame: size + draw it synchronously so
-            // captureStream()'s very first emitted frame carries content at the
-            // locked resolution (no initial blank frame). `add_subscriber` does
-            // not replay buffered frames, so without this pull the pump wouldn't
-            // fire until the *next* push and the canvas would stay 300×150.
-            canvas.set_width(w);
-            canvas.set_height(h);
-            let clamped = wasm_bindgen::Clamped(buf.as_slice());
-            if let Ok(image) =
-                web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, w, h)
-            {
-                let _ = ctx.put_image_data(&image, 0.0, 0.0);
-            }
-        }
+        // The producer already has a frame: size + draw it synchronously so
+        // captureStream()'s very first emitted frame carries content at the
+        // locked resolution (no initial blank frame). `add_subscriber` does
+        // not replay buffered frames, so without this pull the pump wouldn't
+        // fire until the *next* push and the canvas would stay 300×150.
+        Some((w, h)) => put_frame(&ctx, &buf, w, h),
         // No buffered frame yet: park until the pump draws the first pushed one.
         None => first_rx.await,
     }
 
-    let capture: MediaStream = canvas
-        .capture_stream()
-        .map_err(|e| js_err("canvas.captureStream", e))?;
-    for track in capture.get_video_tracks().iter() {
-        combined.add_track(&track.unchecked_into::<MediaStreamTrack>());
-    }
+    // SAFETY: a live canvas handle; the result is a fresh stream handle.
+    let capture: MediaStream = unsafe { js_capture_stream(canvas.as_js().raw()) }
+        .map(|s| unsafe { JsValue::from_raw(s) })
+        .map_err(|e| js_err("canvas.captureStream", e))?
+        .unchecked_into();
+    add_tracks(combined, capture.get_video_tracks());
     Ok((canvas, sub))
+}
+
+/// Size the canvas to `w`×`h` and draw one straight-RGBA8 frame into it.
+fn put_frame(ctx: &JsValue, rgba: &[u8], w: u32, h: u32) {
+    if rgba.len() != w as usize * h as usize * 4 {
+        return;
+    }
+    // SAFETY: a live context handle; `rgba` is borrowed for the call.
+    unsafe { js_put_frame(ctx.raw(), rgba.as_ptr() as usize, rgba.len(), w, h) }
 }
 
 // The `onstop`-wait future is a WAKER-BASED single-shot signal (see
@@ -409,7 +405,7 @@ mod tests {
         // No buffered frame: kick the first push from a microtask so the
         // `first_rx.await` inside `canvas_capture` parks and then resumes. The
         // pump is subscribed synchronously before that await, so it catches it.
-        wasm_bindgen_futures::spawn_local(async move {
+        web_glue::spawn_local(async move {
             writer.write_rgba8(W, H, &vec![0u8; (W * H * 4) as usize]);
         });
 

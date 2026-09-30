@@ -74,34 +74,18 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
 
 # Web (wasm) target: getUserMedia for the MediaStream, a Web Audio graph
-# (MediaStreamAudioSourceNode → ScriptProcessorNode) to pull PCM frames.
+# (MediaStreamAudioSourceNode → ScriptProcessorNode) to pull PCM frames and
+# the passive `navigator.permissions` query — web-glue bindings declared in
+# `src/web.rs` (docs/proposals/own-web-bindings.md). The capture stream is
+# published as a `web_glue::dom::MediaStream`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "MediaDevices",
-    "MediaStream",
-    "MediaStreamConstraints",
-    "MediaStreamTrack",
-    "MediaStreamAudioSourceNode",
-    "AudioContext",
-    "AudioContextOptions",
-    "BaseAudioContext",
-    "AudioNode",
-    "AudioDestinationNode",
-    "ScriptProcessorNode",
-    "AudioProcessingEvent",
-    "AudioBuffer",
-    "EventTarget",
-    # Passive permission query (`permission_status`): navigator.permissions
-    # .query({name:"microphone"}) — no getUserMedia, no prompt.
-    "Permissions",
-    "PermissionStatus",
-    "PermissionState",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_microphone.rs`) — run with
+# `cargo test -p microphone --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `webdriver.json` gives Chrome a fake mic).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Android target: AudioRecord via JNI on a dedicated reader thread.
 # `ndk-context` exposes the host JavaVM + Activity (for the runtime

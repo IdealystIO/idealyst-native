@@ -49,19 +49,17 @@ runtime-world = { workspace = true }
 backend-web = { workspace = true }
 # The `<canvas>`, the Canvas2D replay, texture-layer `<video>`s, the
 # ResizeObserver and `captureStream` all go through web-glue, the
-# framework-owned JS boundary (docs/proposals/own-web-bindings.md). The
-# bridge feature is for the two seams below.
+# framework-owned JS boundary (docs/proposals/own-web-bindings.md). A texture
+# layer's / the self-capture's native source is a `web_glue::dom::MediaStream`.
+# The bridge feature is for the one seam below.
 web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
-# web-sys / wasm-bindgen remain for two seams only:
-# - `HtmlCanvasElement`: the public `make_2d_rasterizer` /
-#   `publish_capture_stream` take one, because `canvas-vello` (wgpu, hence
-#   wasm-bindgen) calls them with its graphics canvas. Changing that is a
-#   public API change.
-# - `MediaStream`: HYBRID-BRIDGE: native_source MediaStream — the texture
-#   layers' streams and the self-capture stream are `web_sys::MediaStream`
-#   native sources, which switch with the media SDKs in one change.
+# HYBRID-BRIDGE: wgpu. web-sys / wasm-bindgen remain for one seam only: the
+# public `make_2d_rasterizer` / `publish_capture_stream` take a
+# `web_sys::HtmlCanvasElement`, because `canvas-vello` (wgpu, hence
+# wasm-bindgen — phase 5's hybrid mode) calls them with its graphics canvas.
+# Changing that is a public API change.
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "MediaStream"] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 
 # Browser tests (`tests/web_canvas.rs`) — run with
 # `cargo test -p canvas-native --target wasm32-unknown-unknown` (the

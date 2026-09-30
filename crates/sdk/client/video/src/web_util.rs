@@ -111,14 +111,11 @@ pub(crate) fn apply_stream(
 ) {
     let _ = video.remove_attribute("src");
     let Some(native) = stream.native_source() else { return };
-    // HYBRID-BRIDGE: native_source MediaStream — switches with the media
-    // SDKs. The producers (camera, screen-recorder, canvas self-capture,
-    // video-compose) still publish a `web_sys::MediaStream`; it crosses
-    // into the glue slab here (one JS call, same object).
-    let Some(media_stream) = native.downcast_ref::<web_sys::MediaStream>() else { return };
-    let media_stream: JsValue = web_glue::bridge::from_bindgen(media_stream.as_ref());
+    // The producers (camera, microphone, screen-recorder, canvas
+    // self-capture, video-compose) publish a `web_glue::dom::MediaStream`.
+    let Some(media_stream) = native.downcast_ref::<web_glue::dom::MediaStream>() else { return };
     // SAFETY: live handles.
-    unsafe { js_set_src_object(raw(video), media_stream.raw()) };
+    unsafe { js_set_src_object(raw(video), media_stream.as_js().raw()) };
     let _ = video.set_attribute("playsinline", "");
     if autoplay {
         // SAFETY: a live `<video>` handle.

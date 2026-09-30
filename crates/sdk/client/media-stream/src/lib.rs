@@ -302,7 +302,7 @@ impl FrameWriter {
     }
 
     /// Publish a platform native source (e.g. the web canvas's `captureStream()`
-    /// `web_sys::MediaStream`) as the paired stream's
+    /// `web_glue::dom::MediaStream`) as the paired stream's
     /// [`native_source`](MediaStream::native_source). No-op unless the pair was
     /// built via [`MediaStream::with_surface_capture`]. Web self-capture seam.
     #[cfg(target_arch = "wasm32")]
@@ -685,54 +685,78 @@ impl MediaStream {
 
     #[cfg(target_arch = "wasm32")]
     async fn screenshot_web(&self) -> Option<Screenshot> {
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen_futures::JsFuture;
-
         let stream = self
             .native_source()?
-            .downcast::<web_sys::MediaStream>()
+            .downcast::<web_glue::dom::MediaStream>()
             .ok()?;
-        let win = web_sys::window()?;
-        let doc = win.document()?;
+        web_screenshot::grab(&stream).await
+    }
+}
 
-        // A detached <video> playing the capture stream is the readable surface.
-        let video: web_sys::HtmlVideoElement =
-            doc.create_element("video").ok()?.dyn_into().ok()?;
-        video.set_muted(true);
-        video.set_src_object(Some(&stream));
-        let _ = video.play();
+/// The web leg of [`MediaStream::screenshot`]: one frame off the stream's web
+/// `MediaStream`, through a detached `<video>` and a 2D canvas.
+#[cfg(target_arch = "wasm32")]
+mod web_screenshot {
+    use web_glue::{JsFuture, JsValue};
+
+    use crate::Screenshot;
+
+    /// How many animation frames to wait for the first decoded frame.
+    const MAX_WAIT_FRAMES: u32 = 30;
+    /// `HTMLMediaElement.HAVE_CURRENT_DATA`: a current frame is drawable.
+    const HAVE_CURRENT_DATA: u32 = 2;
+
+    web_glue::import! {
+        // A detached, muted `<video>` playing `s` — the readable surface.
+        // `play()`'s rejection (autoplay policy) is observed here; the wait
+        // below simply times out if nothing ever decodes.
+        #[catch]
+        fn js_video_for(s: u32) -> u32 =
+            "(s) => { const v = document.createElement('video'); v.muted = true; \
+               v.srcObject = G.get(s); const p = v.play(); if (p) p.catch(() => {}); return G.add(v); }";
+        // A Promise resolving on the next animation frame.
+        fn js_next_frame() -> u32 = "() => G.add(new Promise((r) => requestAnimationFrame(r)))";
+        fn js_ready_state(v: u32) -> u32 = "(v) => G.get(v).readyState >>> 0";
+        fn js_video_width(v: u32) -> u32 = "(v) => G.get(v).videoWidth >>> 0";
+        fn js_video_height(v: u32) -> u32 = "(v) => G.get(v).videoHeight >>> 0";
+        // Draw the current frame into a w×h canvas and copy its straight RGBA8
+        // into the w*h*4 bytes at `out`. 1 on success, 0 if it threw.
+        fn js_read_rgba(v: u32, w: u32, h: u32, out: usize) -> u32 =
+            "(v, w, h, o) => { try { const c = document.createElement('canvas'); c.width = w; c.height = h; \
+               const x = c.getContext('2d'); x.drawImage(G.get(v), 0, 0); \
+               G.u8().set(x.getImageData(0, 0, w, h).data, o >>> 0); return 1; } catch (_) { return 0; } }";
+        // Stop the `<video>` tapping the stream (the stream itself lives on).
+        fn js_release(v: u32) = "(v) => { const e = G.get(v); e.pause(); e.srcObject = null; }";
+    }
+
+    pub(crate) async fn grab(stream: &web_glue::dom::MediaStream) -> Option<Screenshot> {
+        // SAFETY: a live stream handle; the result is a fresh element handle.
+        let video = unsafe { JsValue::from_raw(js_video_for(stream.as_js().raw()).ok()?) };
 
         // Wait (a few animation frames) for the first decoded frame to land.
-        for _ in 0..30 {
-            let p = js_sys::Promise::new(&mut |resolve, _| {
-                let _ = win.request_animation_frame(&resolve);
-            });
-            let _ = JsFuture::from(p).await;
-            // readyState >= HAVE_CURRENT_DATA (2) and real dimensions ⇒ drawable.
-            if video.video_width() > 0 && video.ready_state() >= 2 {
+        for _ in 0..MAX_WAIT_FRAMES {
+            // SAFETY: a fresh Promise handle.
+            let frame = unsafe { JsValue::from_raw(js_next_frame()) };
+            let _ = JsFuture::new(&frame).await;
+            // SAFETY (below): live element handle.
+            if unsafe { js_video_width(video.raw()) } > 0
+                && unsafe { js_ready_state(video.raw()) } >= HAVE_CURRENT_DATA
+            {
                 break;
             }
         }
-        let (w, h) = (video.video_width(), video.video_height());
-        if w == 0 || h == 0 {
-            return None;
-        }
-
-        let canvas: web_sys::HtmlCanvasElement =
-            doc.create_element("canvas").ok()?.dyn_into().ok()?;
-        canvas.set_width(w);
-        canvas.set_height(h);
-        let ctx = canvas
-            .get_context("2d")
-            .ok()??
-            .dyn_into::<web_sys::CanvasRenderingContext2d>()
-            .ok()?;
-        ctx.draw_image_with_html_video_element(&video, 0.0, 0.0).ok()?;
-        let img = ctx.get_image_data(0.0, 0.0, w as f64, h as f64).ok()?;
-
-        // Stop the <video> tapping the stream (the stream itself lives on).
-        video.set_src_object(None);
-        Some(Screenshot { data: img.data().0, width: w, height: h })
+        let (w, h) = unsafe { (js_video_width(video.raw()), js_video_height(video.raw())) };
+        let result = if w == 0 || h == 0 {
+            None
+        } else {
+            let mut data = vec![0u8; w as usize * h as usize * 4];
+            // SAFETY: `data` holds exactly w*h*4 bytes.
+            (unsafe { js_read_rgba(video.raw(), w, h, data.as_mut_ptr() as usize) } == 1)
+                .then_some(Screenshot { data, width: w, height: h })
+        };
+        // SAFETY: live element handle.
+        unsafe { js_release(video.raw()) };
+        result
     }
 }
 

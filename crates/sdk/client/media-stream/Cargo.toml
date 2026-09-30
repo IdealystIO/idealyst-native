@@ -25,26 +25,22 @@ license.workspace = true
 
 [dependencies]
 
-# Web target only: the capture clock (`clock::now_micros`) has no `Instant`
-# time source on `wasm32-unknown-unknown`, so it reads `Date.now()`. js-sys is
-# already universal in this project's wasm builds; nothing else here touches
-# the web platform, so the crate stays thin and GPU-free everywhere else.
 # Native `screenshot()` bridges the one-shot frame out of the `subscribe`
 # callback (a capture-thread `Send` closure) to the awaiting caller.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-channel = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-# `MediaStream::screenshot()` web backend: grab one frame off the canvas
-# `captureStream()` (our `native_source` on web) via a `<video>` + 2D `getImageData`.
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window", "Document", "Element", "HtmlMediaElement", "HtmlVideoElement",
-    "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData", "MediaStream",
-    # Synthetic-AudioStream -> real MediaStreamTrack bridge (audio_web_bridge):
-    "AudioContext", "AudioContextOptions", "BaseAudioContext", "AudioNode",
-    "MediaStreamAudioDestinationNode", "ScriptProcessorNode",
-    "AudioProcessingEvent", "AudioBuffer",
-] }
+# The web legs — the capture clock's `Date.now()`, `screenshot()`'s
+# `<video>` + 2D `getImageData`, and the synthetic-`AudioStream` →
+# `MediaStreamTrack` WebAudio bridge (`audio_web_bridge`) — go through
+# web-glue, the framework-owned JS boundary
+# (docs/proposals/own-web-bindings.md). A web stream's `native_source` is a
+# `web_glue::dom::MediaStream`.
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_media_stream.rs`) — run with
+# `cargo test -p media-stream --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

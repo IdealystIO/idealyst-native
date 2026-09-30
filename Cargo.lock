@@ -2159,7 +2159,6 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "jni 0.21.1",
- "js-sys",
  "media-stream",
  "ndk-context",
  "objc2 0.5.2",
@@ -2167,9 +2166,8 @@ dependencies = [
  "permissions",
  "thiserror 2.0.18",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
@@ -2295,6 +2293,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-glue",
  "web-sys",
  "wgpu",
  "wgpu-hal",
@@ -7481,9 +7480,7 @@ dependencies = [
  "runtime-scene",
  "runtime-vocabulary",
  "video",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "web-glue",
 ]
 
 [[package]]
@@ -7491,10 +7488,8 @@ name = "media-stream"
 version = "1.5.2"
 dependencies = [
  "futures-channel",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
@@ -7509,17 +7504,14 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "jni 0.21.1",
- "js-sys",
  "media-stream",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "thiserror 2.0.18",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "web-sys",
+ "web-glue",
 ]
 
 [[package]]
@@ -7611,7 +7603,6 @@ dependencies = [
  "cpal",
  "futures-channel",
  "jni 0.21.1",
- "js-sys",
  "media-stream",
  "ndk-context",
  "objc2 0.5.2",
@@ -7619,9 +7610,8 @@ dependencies = [
  "permissions",
  "thiserror 2.0.18",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
@@ -10576,7 +10566,6 @@ dependencies = [
  "gstreamer-app",
  "host-mock",
  "jni 0.21.1",
- "js-sys",
  "media-stream",
  "ndk-context",
  "objc2 0.5.2",
@@ -10586,9 +10575,8 @@ dependencies = [
  "runtime-vocabulary",
  "thiserror 2.0.18",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
@@ -13188,10 +13176,8 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "wasm-bindgen",
  "wasm-bindgen-test",
  "web-glue",
- "web-sys",
 ]
 
 [[package]]
@@ -13201,12 +13187,11 @@ dependencies = [
  "canvas-core",
  "canvas-vello",
  "cosmic-text",
- "js-sys",
  "media-stream",
  "resvg",
  "runtime-shared",
- "wasm-bindgen",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]

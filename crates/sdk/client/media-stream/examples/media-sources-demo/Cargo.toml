@@ -35,20 +35,11 @@ video = { workspace = true }
 media-stream = { workspace = true }
 dev-server = { workspace = true, optional = true }
 
-# Web: the concrete `WebBackend` — `video::register` is
-# `Registry<WebBackend>`-concrete on wasm32 (the real `<video>` renderer,
-# which needs `web_sys`), so the registration seam specializes there.
-# Also the `getDisplayMedia` surface for the inline screen-share producer.
+# Web: the `getDisplayMedia` surface for the inline screen-share producer,
+# through web-glue (the framework-owned JS boundary); its stream is a
+# `web_glue::dom::MediaStream`, the native source the `video` SDK attaches.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "MediaDevices",
-    "MediaStream",
-    "MediaStreamTrack",
-] }
+web-glue = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Media Sources"

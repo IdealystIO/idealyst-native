@@ -74,7 +74,9 @@ This SDK renders **nothing** — by design. The [`MediaStream`] is meant to be
 
 - **Display / composite** — a `video` consumer or a GPU compositor takes the
   `MediaStream`; on web it can attach the stream's zero-copy
-  [`native_source`] (a `web_sys::MediaStream`) directly, no per-frame copy.
+  [`native_source`] (the capture `MediaStream` itself, a
+  `web_glue::dom::MediaStream`) directly, no per-frame copy. Dropping the
+  camera stream stops its tracks, so every consumer showing it ends too.
 - **Process / analyze** — `subscribe` and run frames through your own
   pipeline (ML, QR decode, color sampling) off the capture thread.
 - **Record / upload** — feed frames to an encoder or a `net` upload.
@@ -211,6 +213,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p camera` — portable logic (frame-size math + config builders)
 - [ ] `cargo test -p camera --test host_capture -- --ignored --nocapture` — opens the host camera, asserts a well-formed RGBA8 frame
 - [ ] `cargo build -p camera --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p camera --target wasm32-unknown-unknown` (headless Chrome through the workspace runner; `webdriver.json` gives it a fake camera) — `tests/web_camera.rs`: the published `native_source` IS the capture stream (stopping the camera ends a consumer's tracks — the old web-sys `stream.clone()` published a copy), and a subscriber receives RGBA8 frames off the canvas pump
 
 **Behavior**
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); `subscribe` delivers live RGBA8 frames at the requested resolution; deny → `PermissionDenied`, no crash.

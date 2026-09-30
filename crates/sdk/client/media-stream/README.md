@@ -99,7 +99,7 @@ fast-path) differs:
 | macOS | `IOSurface` (`SurfaceSource`), set as `CALayer.contents` | `Instant`, monotonic |
 | iOS | `CMSampleBuffer`, enqueued into `AVSampleBufferDisplayLayer` | `Instant`, monotonic |
 | Android | a `SurfaceTexture` published by the producer | `Instant`, monotonic |
-| web (wasm32) | a `web_sys::MediaStream` (e.g. canvas `captureStream()`) | `Date.now()`-rebased (ordering hint only) |
+| web (wasm32) | a `web_glue::dom::MediaStream` (e.g. `getUserMedia`, canvas `captureStream()`) | `Date.now()`-rebased (ordering hint only) |
 
 On macOS, `MediaStream::with_surface_capture()` wires the IOSurface
 self-capture path (`FrameWriter::publish_surface` + `SurfaceSource`); on web it
@@ -123,9 +123,10 @@ coverage is automated; the per-backend items only exercise the opaque
 **Automated**
 - [ ] `cargo test -p media-stream` — producer/consumer channel: a producer feeds frames and `subscribe`/`latest` deliver them in order; PTS stays monotonic; the shared `clock::now_micros()` timeline is consistent across producers
 - [ ] `cargo build -p media-stream --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p media-stream --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_media_stream.rs`: `screenshot()` reads a frame off a `web_glue::dom::MediaStream` native source (and is `None` for any other type); a synthetic `AudioStream`'s WebAudio bridge publishes a glue `MediaStream` with one audio track, cached, whose track carries the written PCM
 
 **Behavior**
-- [ ] **Web** — the `web_sys::MediaStream` `native_source` round-trips: `set_native_source` → `native_source()` downcast yields the same handle for a zero-copy display.
+- [ ] **Web** — the `web_glue::dom::MediaStream` `native_source` round-trips: `set_native_source` → `native_source()` downcast yields the same handle for a zero-copy display.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: a `CMSampleBuffer` `native_source` round-trips for `AVSampleBufferDisplayLayer` enqueue.
 - [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: a `SurfaceTexture` `native_source` round-trips.
 - [ ] **macOS** — the `IOSurface` (`SurfaceSource`) `native_source` round-trips and can be set as `CALayer.contents`; `with_surface_capture()` wires the self-capture path.

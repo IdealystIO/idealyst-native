@@ -52,34 +52,11 @@ objc2 = { version = "0.5", features = ["exception"] }
 objc2-foundation = { version = "0.2", features = ["NSString", "NSError"] }
 block2 = "0.5"
 
-# Web (wasm) target: MediaRecorder over a `web_sys::MediaStream`, Blob -> the
-# `files` store.
+# Web (wasm) target: MediaRecorder over the streams' native
+# `web_glue::dom::MediaStream`s, Blob -> the `files` store — web-glue bindings
+# declared in `src/web.rs` (docs/proposals/own-web-bindings.md).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Document",
-    "Element",
-    "Blob",
-    "BlobPropertyBag",
-    "MediaStream",
-    "MediaStreamTrack",
-    "MediaRecorder",
-    "MediaRecorderOptions",
-    "RecordingState",
-    "BlobEvent",
-    "Event",
-    "EventTarget",
-    "HtmlCanvasElement",
-    "CanvasRenderingContext2d",
-    "CanvasCaptureMediaStreamTrack",
-    "ImageData",
-    "AudioContext",
-    "MediaStreamAudioSourceNode",
-    "MediaStreamAudioDestinationNode",
-] }
+web-glue = { workspace = true }
 
 # Linux / desktop native: GStreamer (the native Linux media stack — the same
 # engine the `audio` playback backend drives). We build a small encode pipeline
@@ -128,8 +105,10 @@ runtime_kotlin = ["runtime/kotlin/io/idealyst/mediawriter/RustMediaWriter.kt"]
 # run on the test thread.
 tokio = { version = "1", features = ["macros", "rt"] }
 
-# Web canvas-capture regression test runs in a real browser (it needs a DOM
-# `document` + `<canvas>`). Run from this crate dir with e.g.
-# `wasm-pack test --headless --chrome --release`.
+# The web backend's browser tests (`src/web.rs` unit tests, and
+# `tests/web_record.rs`) need a DOM `document` + `<canvas>` +
+# `MediaRecorder`. Run with
+# `cargo test -p media-writer --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

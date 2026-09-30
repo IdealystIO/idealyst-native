@@ -108,6 +108,11 @@ vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
 raw-window-handle = "0.6"
 canvas-native = { path = "../native", default-features = false, version = "1.5.2", registry = "idealyst" }
+# A texture layer's native source is a `web_glue::dom::MediaStream` (what the
+# media SDKs publish). HYBRID-BRIDGE: wgpu — the layer `<video>` is a web-sys
+# element for wgpu's `ExternalImageSource`, so the stream crosses to
+# wasm-bindgen once per attach (`web_layer::LayerSlot::ensure_stream`).
+web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -122,8 +127,9 @@ web-sys = { version = "0.3", features = [
     # `console.log` marker of which renderer engaged (GPU vs Canvas2D fallback).
     "console",
     # GPU layer compositor (`web_layer`): a hidden `<video>` per texture layer
-    # plays the camera `MediaStream`; its current frame is copied into a wgpu
-    # texture each frame via `Queue::copy_external_image_to_texture`.
+    # plays the camera `MediaStream` (crossed over from its web-glue handle);
+    # its current frame is copied into a wgpu texture each frame via
+    # `Queue::copy_external_image_to_texture`.
     "Document",
     "Element",
     "HtmlVideoElement",

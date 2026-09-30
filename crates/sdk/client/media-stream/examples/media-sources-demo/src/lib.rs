@@ -4,7 +4,7 @@
 //! - **Camera** comes from the `camera` SDK (`Camera::open() -> MediaStream`).
 //! - **Screen share** comes from an inline producer (web `getDisplayMedia()`
 //!   wrapped in a `MediaStream` whose `native_source` is the resulting
-//!   `web_sys::MediaStream`).
+//!   `web_glue::dom::MediaStream`).
 //!
 //! Both feed the *same* `Video(source = stream(..))` component — the only
 //! difference is which producer made the stream. That's the point: `Video`
@@ -138,41 +138,45 @@ fn camera_error(e: CameraError) -> String {
 
 // ---------------------------------------------------------------------------
 // Inline screen-share producer. On web, `getDisplayMedia()` yields a
-// `web_sys::MediaStream`; we wrap it in a platform-agnostic `MediaStream`
-// and publish it as the `native_source` so the `video` SDK attaches it as
+// `MediaStream`, bound here through web-glue (the framework-owned JS boundary)
+// as a `web_glue::dom::MediaStream` — the type every media consumer
+// downcasts. We wrap it in a platform-agnostic `MediaStream` and publish it
+// as the `native_source` so the `video` SDK attaches it as
 // `<video>.srcObject` — the exact same consumer path the camera uses.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-async fn open_screen_share() -> Result<MediaStream, String> {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
+web_glue::import! {
+    // `navigator.mediaDevices.getDisplayMedia()` → its Promise.
+    #[catch]
+    fn js_get_display_media() -> u32 = "() => G.add(navigator.mediaDevices.getDisplayMedia())";
+}
 
-    let window = web_sys::window().ok_or("no window")?;
-    let devices = window
-        .navigator()
-        .media_devices()
-        .map_err(|_| "no mediaDevices".to_string())?;
-    let promise = devices
-        .get_display_media()
-        .map_err(|e| format!("getDisplayMedia: {e:?}"))?;
-    let value = JsFuture::from(promise)
+#[cfg(target_arch = "wasm32")]
+async fn open_screen_share() -> Result<MediaStream, String> {
+    use web_glue::dom::{MediaStream as WebMediaStream, MediaStreamTrack};
+    use web_glue::{JsCast, JsFuture, JsValue};
+
+    // SAFETY: the result is a fresh Promise handle.
+    let promise = unsafe { js_get_display_media() }
+        .map(|p| unsafe { JsValue::from_raw(p) })
+        .map_err(|e| format!("getDisplayMedia: {}", e.message()))?;
+    let value = JsFuture::new(&promise)
         .await
         .map_err(|_| "permission denied / cancelled".to_string())?;
-    let web_ms: web_sys::MediaStream = value
+    let web_ms: WebMediaStream = value
         .dyn_into()
         .map_err(|_| "getDisplayMedia did not return a MediaStream".to_string())?;
 
     // Wrap it as a platform-agnostic MediaStream. No CPU frames are pushed —
-    // the consumer uses the native_source for zero-copy display.
+    // the consumer uses the native_source for zero-copy display. The handle
+    // clone is the same JS stream the stopper below ends.
     let (stream, _writer) = MediaStream::new();
     stream.set_native_source(std::rc::Rc::new(web_ms.clone()));
     // Stop the OS capture when the last stream clone drops.
     stream.attach_stopper(move || {
         for track in web_ms.get_tracks().iter() {
-            if let Ok(track) = track.dyn_into::<web_sys::MediaStreamTrack>() {
-                track.stop();
-            }
+            track.unchecked_into::<MediaStreamTrack>().stop();
         }
     });
     Ok(stream)

@@ -74,7 +74,7 @@ pub use media_stream::{
 };
 
 /// The type-erased native audio source a backend may publish on an
-/// [`AudioStream`] (e.g. the web `web_sys::MediaStream`), downcast by a
+/// [`AudioStream`] (e.g. the web `web_glue::dom::MediaStream`), downcast by a
 /// same-platform playback layer. `None` where no native source is exposed.
 pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 
@@ -229,7 +229,8 @@ impl Microphone {
     /// with a camera `MediaStream`), or a future audio-playback layer that
     /// binds the platform's native pipeline. Tap PCM with
     /// [`AudioStream::subscribe`] / [`AudioStream::latest`]; on web the
-    /// underlying `web_sys::MediaStream` is published as the stream's
+    /// capture `MediaStream` itself (a `web_glue::dom::MediaStream`) is
+    /// published as the stream's
     /// [`native_source`](AudioStream::native_source) for zero-reconstruction
     /// playback / recording.
     ///

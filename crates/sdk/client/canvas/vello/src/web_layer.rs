@@ -23,7 +23,8 @@
 
 use canvas_core::{Fit, LayerSource, TextureLayer};
 use wasm_bindgen::JsCast;
-use web_sys::{Document, HtmlVideoElement, MediaStream as WebMediaStream};
+use web_glue::dom::MediaStream;
+use web_sys::{Document, HtmlVideoElement};
 
 /// The vello target is `Rgba8Unorm`; the compositor draws into it.
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -126,10 +127,15 @@ impl LayerSlot {
     }
 
     /// Attach `ms` to the `<video>` (only when the stream id changes).
-    fn ensure_stream(&mut self, ms: &WebMediaStream) {
+    fn ensure_stream(&mut self, ms: &MediaStream) {
         let id = ms.id();
         if self.stream_id.as_deref() != Some(id.as_str()) {
-            self.video.set_src_object(Some(ms));
+            // HYBRID-BRIDGE: wgpu. The layer's native source is the glue
+            // `MediaStream` every media producer publishes; this `<video>` is
+            // a web-sys element because wgpu's `ExternalImageSource` takes
+            // one, so the stream crosses out once per (re)attach.
+            let ms: web_sys::MediaStream = web_glue::bridge::to_bindgen(ms).unchecked_into();
+            self.video.set_src_object(Some(&ms));
             let _ = self.video.play(); // Promise; ignore
             self.stream_id = Some(id);
         }
@@ -319,7 +325,7 @@ impl WebLayerCompositor {
                     let Some(stream) = f() else { continue };
                     let Some(ms) = stream
                         .native_source()
-                        .and_then(|rc| rc.downcast::<WebMediaStream>().ok())
+                        .and_then(|rc| rc.downcast::<MediaStream>().ok())
                     else {
                         continue;
                     };

@@ -287,6 +287,10 @@ mod native {
 // PiP via Canvas2D `drawImage`, then `captureStream()` becomes the output
 // stream's native source. Drawn-graphics ops (`.draw()`) aren't rendered here
 // yet (they'd need a full Canvas2D scene replay, which lives in `canvas-native`).
+//
+// Every browser call is a web-glue binding (docs/proposals/own-web-bindings.md);
+// the input's / PiP's native source and the published output are
+// `web_glue::dom::MediaStream`s — the type every media SDK publishes.
 // ---------------------------------------------------------------------------
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -296,29 +300,104 @@ mod web {
     use runtime_shared::scheduling::{raf_loop, RafLoop};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use wasm_bindgen::{prelude::Closure, Clamped, JsCast, JsValue};
-    use web_sys::{
-        CanvasCaptureMediaStreamTrack, CanvasRenderingContext2d, Document, HtmlCanvasElement,
-        HtmlVideoElement, ImageData, MediaStream as WebMediaStream,
-    };
+    use web_glue::dom::MediaStream as WebMediaStream;
+    use web_glue::{Closure, JsCast, JsValue};
 
-    // `HTMLVideoElement.requestVideoFrameCallback` isn't in web-sys 0.3.x and can't
-    // be bound as an inherent method on the foreign type, so reach it reflectively.
-    // It fires once per PRESENTED video frame (returning a handle to cancel), which
-    // lets the compositor emit exactly one output frame per real input frame —
-    // locking the output's cadence to the input's true framerate instead of a
-    // free-running raf that duplicates/drops frames. `None` ⇒ the browser lacks
-    // rVFC, so the caller falls back to the raf driver.
-    fn request_video_frame_callback(video: &HtmlVideoElement, cb: &js_sys::Function) -> Option<f64> {
-        let f = js_sys::Reflect::get(video, &JsValue::from_str("requestVideoFrameCallback")).ok()?;
-        let f = f.dyn_ref::<js_sys::Function>()?;
-        f.call1(video, cb).ok()?.as_f64()
+    /// Style that parks the capture canvas off-screen: some browsers only
+    /// drive `captureStream` for a canvas in the document, and `display:none`
+    /// can suspend painting.
+    const OFFSCREEN_STYLE: &str =
+        "position:absolute;left:-99999px;top:0;width:1px;height:1px;pointer-events:none;";
+    /// Output size until the input reports one (and no fixed size was asked).
+    const DEFAULT_OUTPUT: (u32, u32) = (640, 480);
+
+    web_glue::import! {
+        // A detached, muted, autoplaying, inline `<video>` — a frame source.
+        fn js_new_video() -> u32 =
+            "() => { const v = document.createElement('video'); v.muted = true; v.autoplay = true; \
+               v.setAttribute('playsinline', ''); return G.add(v); }";
+        // `srcObject = s; play()` (the Promise is observed; a rejected play
+        // just leaves the video without frames, which every reader tolerates).
+        fn js_video_attach(v: u32, s: u32) =
+            "(v, s) => { const e = G.get(v); e.srcObject = G.get(s); \
+               const p = e.play(); if (p) p.catch(() => {}); }";
+        fn js_video_width(v: u32) -> u32 = "(v) => G.get(v).videoWidth >>> 0";
+        fn js_video_height(v: u32) -> u32 = "(v) => G.get(v).videoHeight >>> 0";
+        // `requestVideoFrameCallback(f)` → its handle, or -1 when the
+        // browser lacks rVFC (the caller then falls back to the raf driver).
+        #[catch]
+        fn js_request_vfc(v: u32, f: u32) -> f64 =
+            "(v, f) => { const e = G.get(v); \
+               return typeof e.requestVideoFrameCallback === 'function' \
+                 ? e.requestVideoFrameCallback(G.get(f)) : -1; }";
+        fn js_cancel_vfc(v: u32, h: f64) =
+            "(v, h) => { const e = G.get(v); \
+               if (typeof e.cancelVideoFrameCallback === 'function') e.cancelVideoFrameCallback(h); }";
+        // The capture `<canvas>` (w×h, parked off-screen in <body>) and its
+        // 2D context, as `{ canvas, ctx }`; throws if there is no document /
+        // context.
+        #[catch]
+        fn js_new_capture_canvas(w: u32, h: u32, sp: usize, sl: usize) -> u32 =
+            "(w, h, sp, sl) => { const c = document.createElement('canvas'); c.width = w; c.height = h; \
+               c.setAttribute('style', G.str(sp, sl)); if (document.body) document.body.appendChild(c); \
+               const x = c.getContext('2d'); if (x == null) throw new Error('no 2d context'); \
+               return G.add({ canvas: c, ctx: x }); }";
+        // `captureStream(0)` (manual mode: one frame per `requestFrame`) as
+        // `{ stream, track }`; throws when unsupported / trackless.
+        #[catch]
+        fn js_capture(o: u32) -> u32 =
+            "(o) => { const s = G.get(o).canvas.captureStream(0); const t = s.getVideoTracks()[0]; \
+               if (t == null || typeof t.requestFrame !== 'function') throw new Error('no capture track'); \
+               return G.add({ stream: s, track: t }); }";
+        fn js_get(o: u32, k: u32) -> u32 = "(o, k) => G.add(k === 0 ? G.get(o).stream : G.get(o).track)";
+        fn js_request_frame(t: u32) = "(t) => { G.get(t).requestFrame(); }";
+        // Resize the capture canvas when the output size changes, then clear.
+        fn js_begin_frame(o: u32, w: u32, h: u32) =
+            "(o, w, h) => { const { canvas: c, ctx: x } = G.get(o); \
+               if (c.width !== w) c.width = w; if (c.height !== h) c.height = h; x.clearRect(0, 0, w, h); }";
+        fn js_set_alpha(o: u32, a: f64) = "(o, a) => { G.get(o).ctx.globalAlpha = a; }";
+        // `drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh)`; a throw (a source
+        // with no decodable frame yet) skips the draw.
+        fn js_draw_src_dst(o: u32, s: u32, sx: f64, sy: f64, sw: f64, sh: f64, dx: f64, dy: f64, dw: f64, dh: f64) =
+            "(o, s, sx, sy, sw, sh, dx, dy, dw, dh) => { \
+               try { G.get(o).ctx.drawImage(G.get(s), sx, sy, sw, sh, dx, dy, dw, dh); } catch (_) {} }";
+        // `drawImage(src, dx, dy, dw, dh)`.
+        fn js_draw_dst(o: u32, s: u32, dx: f64, dy: f64, dw: f64, dh: f64) =
+            "(o, s, dx, dy, dw, dh) => { try { G.get(o).ctx.drawImage(G.get(s), dx, dy, dw, dh); } catch (_) {} }";
+        fn js_remove_canvas(o: u32) = "(o) => { G.get(o).canvas.remove(); }";
+        // A fresh w×h `<canvas>` holding the w*h*4 straight RGBA8 bytes at
+        // `p` (copied in with `putImageData`); throws on failure.
+        #[catch]
+        fn js_image_canvas(p: usize, l: usize, w: u32, h: u32) -> u32 =
+            "(p, l, w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; \
+               const x = c.getContext('2d'); if (x == null) throw new Error('no 2d context'); \
+               const px = new Uint8ClampedArray(G.u8().slice(p >>> 0, (p >>> 0) + (l >>> 0)).buffer); \
+               x.putImageData(new ImageData(px, w, h), 0, 0); return G.add(c); }";
     }
 
-    fn cancel_video_frame_callback(video: &HtmlVideoElement, handle: f64) {
-        if let Ok(f) = js_sys::Reflect::get(video, &JsValue::from_str("cancelVideoFrameCallback")) {
-            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
-                let _ = f.call1(video, &JsValue::from_f64(handle));
+    /// A detached `<video>` element.
+    #[derive(Clone)]
+    struct Video(JsValue);
+
+    impl Video {
+        fn new() -> Video {
+            // SAFETY: a fresh element handle.
+            Video(unsafe { JsValue::from_raw(js_new_video()) })
+        }
+        fn attach(&self, stream: &WebMediaStream) {
+            // SAFETY: live handles.
+            unsafe { js_video_attach(self.0.raw(), stream.as_js().raw()) }
+        }
+        fn size(&self) -> (u32, u32) {
+            // SAFETY: a live element handle.
+            unsafe { (js_video_width(self.0.raw()), js_video_height(self.0.raw())) }
+        }
+        /// `requestVideoFrameCallback(f)`; `None` without rVFC.
+        fn request_vfc(&self, f: &Closure) -> Option<f64> {
+            // SAFETY: live handles.
+            match unsafe { js_request_vfc(self.0.raw(), f.as_js().raw()) } {
+                Ok(h) if h >= 0.0 => Some(h),
+                _ => None,
             }
         }
     }
@@ -332,14 +411,15 @@ mod web {
     /// and the latest pending handle. Dropping it cancels the pending callback and
     /// releases the closure (breaking the closure↔slot cycle), stopping the loop.
     struct RvfcState {
-        video: HtmlVideoElement,
+        video: Video,
         handle: Rc<Cell<f64>>,
-        cb: Rc<RefCell<Option<Closure<dyn FnMut(JsValue, JsValue)>>>>,
+        cb: Rc<RefCell<Option<Closure>>>,
     }
 
     impl Drop for RvfcState {
         fn drop(&mut self) {
-            cancel_video_frame_callback(&self.video, self.handle.get());
+            // SAFETY: a live element handle.
+            unsafe { js_cancel_vfc(self.video.0.raw(), self.handle.get()) };
             self.cb.borrow_mut().take();
         }
     }
@@ -348,7 +428,7 @@ mod web {
     enum WebOp {
         Crop { fit: Fit, rect: Rc<dyn Fn() -> (f32, f32, f32, f32)> },
         Watermark {
-            canvas: HtmlCanvasElement,
+            canvas: JsValue,
             w: f32,
             h: f32,
             corner: Corner,
@@ -357,7 +437,7 @@ mod web {
         },
         Overlay {
             stream: MediaStream,
-            video: HtmlVideoElement,
+            video: Video,
             id: RefCell<Option<String>>,
             rect: Rc<dyn Fn() -> (f32, f32, f32, f32)>,
         },
@@ -365,22 +445,19 @@ mod web {
 
     struct Driver {
         input: MediaStream,
-        input_video: HtmlVideoElement,
+        input_video: Video,
         input_id: RefCell<Option<String>>,
-        canvas: HtmlCanvasElement,
-        ctx: CanvasRenderingContext2d,
-        track: CanvasCaptureMediaStreamTrack,
+        /// `{ canvas, ctx }` — the capture canvas and its 2D context.
+        surface: JsValue,
+        /// The capture's `CanvasCaptureMediaStreamTrack`.
+        track: JsValue,
         ops: Vec<WebOp>,
         output_size: Option<(u32, u32)>,
     }
 
     /// Attach `stream`'s web `MediaStream` to `video` (only when the id changes),
     /// keeping a detached element playing as a frame source.
-    fn ensure_srcobject(
-        video: &HtmlVideoElement,
-        id_cell: &RefCell<Option<String>>,
-        stream: &MediaStream,
-    ) -> bool {
+    fn ensure_srcobject(video: &Video, id_cell: &RefCell<Option<String>>, stream: &MediaStream) -> bool {
         let Some(ms) = stream
             .native_source()
             .and_then(|rc| rc.downcast::<WebMediaStream>().ok())
@@ -389,46 +466,29 @@ mod web {
         };
         let id = ms.id();
         if id_cell.borrow().as_deref() != Some(id.as_str()) {
-            video.set_src_object(Some(&ms));
-            let _ = video.play();
+            video.attach(&ms);
             *id_cell.borrow_mut() = Some(id);
         }
         true
     }
 
-    fn new_video(doc: &Document) -> HtmlVideoElement {
-        let v: HtmlVideoElement = doc
-            .create_element("video")
-            .expect("create video")
-            .dyn_into()
-            .expect("video cast");
-        v.set_muted(true);
-        v.set_autoplay(true);
-        let _ = v.set_attribute("playsinline", "");
-        v
-    }
-
     /// Paint an `ImageSource`'s RGBA into a fresh offscreen `<canvas>` (once).
-    fn image_to_canvas(doc: &Document, img: &canvas_core::ImageSource) -> Option<HtmlCanvasElement> {
-        let canvas: HtmlCanvasElement = doc.create_element("canvas").ok()?.dyn_into().ok()?;
-        canvas.set_width(img.width);
-        canvas.set_height(img.height);
-        let ctx: CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
-        let data = ImageData::new_with_u8_clamped_array_and_sh(
-            Clamped(img.rgba.as_slice()),
-            img.width,
-            img.height,
-        )
-        .ok()?;
-        ctx.put_image_data(&data, 0.0, 0.0).ok()?;
-        Some(canvas)
+    fn image_to_canvas(img: &canvas_core::ImageSource) -> Option<JsValue> {
+        let rgba = img.rgba.as_slice();
+        if rgba.len() != img.width as usize * img.height as usize * 4 {
+            return None;
+        }
+        // SAFETY: `rgba` is live for the call; the result is a fresh handle.
+        let c = unsafe { js_image_canvas(rgba.as_ptr() as usize, rgba.len(), img.width, img.height) }.ok()?;
+        Some(unsafe { JsValue::from_raw(c) })
     }
 
     impl Drop for Driver {
         fn drop(&mut self) {
             // Remove the off-screen capture canvas when the pipeline stops (the
             // output stream was dropped) so it doesn't linger in the document.
-            self.canvas.remove();
+            // SAFETY: a live handle.
+            unsafe { js_remove_canvas(self.surface.raw()) };
         }
     }
 
@@ -451,11 +511,23 @@ mod web {
             self.render_and_emit();
         }
 
+        fn draw_src_dst(&self, src: &JsValue, s: (f32, f32, f32, f32), d: (f32, f32, f32, f32)) {
+            // SAFETY: live handles.
+            unsafe {
+                js_draw_src_dst(
+                    self.surface.raw(),
+                    src.raw(),
+                    s.0 as f64, s.1 as f64, s.2 as f64, s.3 as f64,
+                    d.0 as f64, d.1 as f64, d.2 as f64, d.3 as f64,
+                )
+            }
+        }
+
         /// Composite the current input frame + ops into the output canvas and pin
         /// one captured frame. Assumes the input `<video>` is already attached.
         fn render_and_emit(&self) {
             // Output size: fixed, or the input video's intrinsic size once known.
-            let (iw, ih) = (self.input_video.video_width(), self.input_video.video_height());
+            let (iw, ih) = self.input_video.size();
             let (out_w, out_h) = match self.output_size {
                 Some(s) => s,
                 None => {
@@ -465,14 +537,8 @@ mod web {
                     (iw, ih)
                 }
             };
-            if self.canvas.width() != out_w {
-                self.canvas.set_width(out_w);
-            }
-            if self.canvas.height() != out_h {
-                self.canvas.set_height(out_h);
-            }
-            let (ow, oh) = (out_w as f64, out_h as f64);
-            self.ctx.clear_rect(0.0, 0.0, ow, oh);
+            // SAFETY: a live handle.
+            unsafe { js_begin_frame(self.surface.raw(), out_w, out_h) };
 
             // Base input, cropped/fit into the whole output.
             if iw > 0 && ih > 0 {
@@ -494,13 +560,7 @@ mod web {
                     ),
                     None => fit.map_rects(iw as f32, ih as f32, 0.0, 0.0, out_w as f32, out_h as f32),
                 };
-                let _ = self
-                    .ctx
-                    .draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-                        &self.input_video,
-                        src.0 as f64, src.1 as f64, src.2 as f64, src.3 as f64,
-                        dst.0 as f64, dst.1 as f64, dst.2 as f64, dst.3 as f64,
-                    );
+                self.draw_src_dst(&self.input_video.0, src, dst);
             }
 
             // Watermark + PiP layers, in order, over the base.
@@ -509,39 +569,32 @@ mod web {
                     WebOp::Watermark { canvas, w, h, corner, margin, opacity } => {
                         let (x, y, ww, hh) =
                             watermark_rect(*corner, *margin, *w, *h, out_w as f32, out_h as f32);
-                        self.ctx.set_global_alpha(opacity().clamp(0.0, 1.0) as f64);
-                        let _ = self
-                            .ctx
-                            .draw_image_with_html_canvas_element_and_dw_and_dh(
-                                canvas, x as f64, y as f64, ww as f64, hh as f64,
-                            );
-                        self.ctx.set_global_alpha(1.0);
+                        // SAFETY (below): live handles.
+                        unsafe {
+                            js_set_alpha(self.surface.raw(), opacity().clamp(0.0, 1.0) as f64);
+                            js_draw_dst(self.surface.raw(), canvas.raw(), x as f64, y as f64, ww as f64, hh as f64);
+                            js_set_alpha(self.surface.raw(), 1.0);
+                        }
                     }
                     WebOp::Overlay { stream, video, id, rect } => {
                         if !ensure_srcobject(video, id, stream) {
                             continue;
                         }
-                        let (pw, ph) = (video.video_width(), video.video_height());
+                        let (pw, ph) = video.size();
                         if pw == 0 || ph == 0 {
                             continue;
                         }
                         let (dx, dy, dw, dh) = rect();
-                        let (src, dst) =
-                            Fit::Cover.map_rects(pw as f32, ph as f32, dx, dy, dw, dh);
-                        let _ = self
-                            .ctx
-                            .draw_image_with_html_video_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
-                                video,
-                                src.0 as f64, src.1 as f64, src.2 as f64, src.3 as f64,
-                                dst.0 as f64, dst.1 as f64, dst.2 as f64, dst.3 as f64,
-                            );
+                        let (src, dst) = Fit::Cover.map_rects(pw as f32, ph as f32, dx, dy, dw, dh);
+                        self.draw_src_dst(&video.0, src, dst);
                     }
                     WebOp::Crop { .. } => {}
                 }
             }
 
             // Pin one captured frame to this render (manual `captureStream`).
-            self.track.request_frame();
+            // SAFETY: a live track handle.
+            unsafe { js_request_frame(self.track.raw()) };
         }
     }
 
@@ -551,49 +604,26 @@ mod web {
         output_size: Option<(u32, u32)>,
         ops: Vec<Op>,
     ) -> DriverHandle {
-        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-            return DriverHandle { _raf: None, _rvfc: None };
+        let inert = || DriverHandle { _raf: None, _rvfc: None };
+        let (w, h) = output_size.unwrap_or(DEFAULT_OUTPUT);
+        let (sp, sl) = web_glue::string::abi(OFFSCREEN_STYLE);
+        // SAFETY: the result is a fresh handle.
+        let Ok(surface) = (unsafe { js_new_capture_canvas(w, h, sp, sl) }) else {
+            return inert();
         };
-        let Some(canvas) = doc
-            .create_element("canvas")
-            .ok()
-            .and_then(|e| e.dyn_into::<HtmlCanvasElement>().ok())
-        else {
-            return DriverHandle { _raf: None, _rvfc: None };
-        };
-        let (w, h) = output_size.unwrap_or((640, 480));
-        canvas.set_width(w);
-        canvas.set_height(h);
-        // Some browsers only drive `captureStream` for a canvas in the document.
-        // Park it off-screen (not `display:none`, which can suspend painting).
-        let _ = canvas.set_attribute(
-            "style",
-            "position:absolute;left:-99999px;top:0;width:1px;height:1px;pointer-events:none;",
-        );
-        if let Some(body) = doc.body() {
-            let _ = body.append_child(&canvas);
-        }
-        let Some(ctx) = canvas
-            .get_context("2d")
-            .ok()
-            .flatten()
-            .and_then(|c| c.dyn_into::<CanvasRenderingContext2d>().ok())
-        else {
-            return DriverHandle { _raf: None, _rvfc: None };
-        };
+        let surface = unsafe { JsValue::from_raw(surface) };
         // `captureStream` in manual mode: one frame per `request_frame` (a fixed
         // auto rate under-delivers). Publish it as the output stream's source.
-        let Ok(stream) = canvas.capture_stream_with_frame_request_rate(0.0) else {
-            return DriverHandle { _raf: None, _rvfc: None };
+        // SAFETY: a live handle.
+        let Ok(capture) = (unsafe { js_capture(surface.raw()) }) else {
+            // SAFETY: a live handle (the canvas must not linger).
+            unsafe { js_remove_canvas(surface.raw()) };
+            return inert();
         };
-        let Some(track) = stream
-            .get_video_tracks()
-            .get(0)
-            .dyn_into::<CanvasCaptureMediaStreamTrack>()
-            .ok()
-        else {
-            return DriverHandle { _raf: None, _rvfc: None };
-        };
+        let capture = unsafe { JsValue::from_raw(capture) };
+        // SAFETY (both): a live `{ stream, track }` handle.
+        let stream: WebMediaStream = unsafe { JsValue::from_raw(js_get(capture.raw(), 0)) }.unchecked_into();
+        let track = unsafe { JsValue::from_raw(js_get(capture.raw(), 1)) };
         writer.publish_native_source(Rc::new(stream));
 
         // Resolve each op's web resources once (params stay reactive).
@@ -602,7 +632,7 @@ mod web {
             .filter_map(|op| match op {
                 Op::Crop { fit, rect } => Some(WebOp::Crop { fit, rect }),
                 Op::Watermark { image, corner, margin, opacity } => {
-                    let canvas = image_to_canvas(&doc, &image)?;
+                    let canvas = image_to_canvas(&image)?;
                     Some(WebOp::Watermark {
                         canvas,
                         w: image.width as f32,
@@ -614,7 +644,7 @@ mod web {
                 }
                 Op::Overlay { stream, rect, corner_radius: _ } => Some(WebOp::Overlay {
                     stream,
-                    video: new_video(&doc),
+                    video: Video::new(),
                     id: RefCell::new(None),
                     rect,
                 }),
@@ -625,10 +655,9 @@ mod web {
 
         let driver = Rc::new(Driver {
             input,
-            input_video: new_video(&doc),
+            input_video: Video::new(),
             input_id: RefCell::new(None),
-            canvas,
-            ctx,
+            surface,
             track,
             ops: web_ops,
             output_size,
@@ -639,33 +668,28 @@ mod web {
         // true framerate (no free-running-raf resampling → no duplicated/dropped
         // frames = smooth capture). Requires the input stream to be attachable now
         // (rVFC won't fire until the `<video>` plays) AND the browser to support rVFC
-        // (the helper returns `None` otherwise). Either miss falls through to the raf
-        // driver below (older browsers, or a stream not yet published).
+        // (`request_vfc` returns `None` otherwise). Either miss falls through to the
+        // raf driver below (older browsers, or a stream not yet published).
         if driver.ensure_input() {
             let video = driver.input_video.clone();
             let handle = Rc::new(Cell::new(0.0f64));
-            let cb: Rc<RefCell<Option<Closure<dyn FnMut(JsValue, JsValue)>>>> =
-                Rc::new(RefCell::new(None));
+            let cb: Rc<RefCell<Option<Closure>>> = Rc::new(RefCell::new(None));
             let closure = {
                 let driver = driver.clone();
                 let video = video.clone();
                 let cb_slot = cb.clone();
                 let handle = handle.clone();
-                Closure::wrap(Box::new(move |_now: JsValue, _meta: JsValue| {
+                Closure::new(move |_now: JsValue| {
                     driver.render_and_emit();
                     // rVFC is one-shot — re-arm for the next presented frame.
                     if let Some(cb) = cb_slot.borrow().as_ref() {
-                        if let Some(h) =
-                            request_video_frame_callback(&video, cb.as_ref().unchecked_ref())
-                        {
+                        if let Some(h) = video.request_vfc(cb) {
                             handle.set(h);
                         }
                     }
-                }) as Box<dyn FnMut(JsValue, JsValue)>)
+                })
             };
-            if let Some(h) =
-                request_video_frame_callback(&video, closure.as_ref().unchecked_ref())
-            {
+            if let Some(h) = video.request_vfc(&closure) {
                 handle.set(h);
                 *cb.borrow_mut() = Some(closure);
                 return DriverHandle {
