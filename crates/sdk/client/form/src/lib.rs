@@ -209,7 +209,7 @@ pub struct UnsupportedOps;
 impl FormOps for UnsupportedOps {}
 
 #[cfg(target_arch = "wasm32")]
-static OPS: &dyn FormOps = web_glue::OPS;
+static OPS: &dyn FormOps = web_leg::OPS;
 #[cfg(not(target_arch = "wasm32"))]
 static OPS: &dyn FormOps = &UnsupportedOps;
 
@@ -421,7 +421,7 @@ where
 /// registry — the real `<form>` renderer.
 #[cfg(target_arch = "wasm32")]
 pub fn register(registry: &mut Registry<backend_web::WebBackend>) {
-    registry.register::<FormPrim, _>(web_glue::mount_form_web);
+    registry.register::<FormPrim, _>(web_leg::mount_form_web);
 }
 
 /// Declare this SDK's payload kind **late-bound** instead of installing
@@ -458,7 +458,7 @@ where
 #[cfg(target_arch = "wasm32")]
 pub fn register_from_chunk() {
     runtime_scene::defer_registration::<backend_web::WebBackend, _>(|registry| {
-        registry.register_deferred::<FormPrim, _>(web_glue::mount_form_web);
+        registry.register_deferred::<FormPrim, _>(web_leg::mount_form_web);
     });
 }
 
@@ -467,17 +467,15 @@ pub fn register_from_chunk() {
 pub fn register_from_chunk() {}
 
 // ============================================================================
-// Web glue (wasm32): the real `<form>` renderer over the scene
+// Web leg (wasm32): the real `<form>` renderer over the scene
 // contract.
 // ============================================================================
 
 #[cfg(target_arch = "wasm32")]
-mod web_glue {
+mod web_leg {
     use super::*;
     use backend_web::WebBackend;
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::{JsCast, JsValue};
-    use web_sys::Event;
+    use web_glue::dom::{Listener, ListenerOptions};
 
     pub(super) static OPS: &dyn FormOps = &WebFormOps;
 
@@ -488,21 +486,13 @@ mod web_glue {
         }
     }
 
-    /// Per-form owned state — the submit listener closure stays alive
-    /// here so the browser's event-target table keeps a valid callback
-    /// to fire. Detaching the form drops the `Rc` (held via a JS
-    /// reflect property), which drops the closure.
-    struct FormState {
-        submit_listener: Option<Closure<dyn FnMut(Event)>>,
-    }
-
     pub(super) fn mount_form_web(
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<FormPrim>,
         children: Vec<Element>,
-    ) -> backend_web::bridge::HostNode {
+    ) -> web_glue::dom::Node {
         let backend = cx.backend().clone();
-        let document = web_sys::window()
+        let document = web_glue::dom::window()
             .expect("no window")
             .document()
             .expect("no document");
@@ -511,47 +501,41 @@ mod web_glue {
             .expect("create_element(form) failed");
         let _ = form.set_attribute("data-external-kind", "form::FormProps");
 
-        let state = Rc::new(RefCell::new(FormState {
-            submit_listener: None,
-        }));
-
         if let Some(cb) = prim.on_submit.clone() {
             // `preventDefault()` is mandatory: without it the browser
             // performs the default GET/POST navigation and reloads the
             // SPA, tearing down the framework runtime. idealyst forms
             // carry their data in signals, not FormData, so the default
             // action is never wanted.
-            let closure: Closure<dyn FnMut(Event)> = Closure::new(move |ev: Event| {
-                ev.prevent_default();
-                cb();
-                // External web glue must call `schedule_flush` after the
-                // author callback returns — this raw DOM listener is one
-                // of the "residual surfaces" named in
-                // `backend-web/src/newcore.rs`'s module docs: it is not
-                // wrapped by the backend's capability impls, so a signal
-                // write inside `on_submit` would stay staged in the
-                // world until some unrelated event flushed it.
-                backend_web::newcore::schedule_flush();
-            });
-            let _ = form
-                .add_event_listener_with_callback("submit", closure.as_ref().unchecked_ref());
-            state.borrow_mut().submit_listener = Some(closure);
+            let listener = Listener::new(
+                form.clone().into(),
+                "submit",
+                ListenerOptions::default(),
+                move |ev| {
+                    ev.prevent_default();
+                    cb();
+                    // External web glue must call `schedule_flush` after the
+                    // author callback returns — this raw DOM listener is one
+                    // of the "residual surfaces" named in
+                    // `backend-web/src/newcore.rs`'s module docs: it is not
+                    // wrapped by the backend's capability impls, so a signal
+                    // write inside `on_submit` would stay staged in the
+                    // world until some unrelated event flushed it.
+                    backend_web::newcore::schedule_flush();
+                },
+            );
+            // The listener lives exactly as long as the mounted form:
+            // teardown detaches it and frees its closure. (It used to be
+            // parked behind an `Rc::into_raw` number on the element that
+            // nothing ever reclaimed — every mounted form leaked its
+            // listener state.)
+            on_teardown(move || drop(listener));
         }
-
-        // Stash the state Rc on the form so its lifetime matches the
-        // form's.
-        let raw = Rc::into_raw(state);
-        let _ = js_sys::Reflect::set(
-            form.as_ref(),
-            &JsValue::from_str("__form_state"),
-            &JsValue::from_f64(raw as usize as f64),
-        );
 
         // Children BEFORE style. They become real DOM descendants of
         // the `<form>`, which is what makes browser autofill +
         // submit-on-enter work.
-        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
-        let mut node = backend_web::bridge::node_from_web_sys(&form.into());
+        let mut node: web_glue::dom::Node = form.into();
         cx.realize_children_into(&mut node, children);
         finish_mount(&backend, &node, prim);
         node

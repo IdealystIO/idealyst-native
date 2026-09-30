@@ -10,6 +10,10 @@
 //! (`<form>` + submit listener) handler is `WebBackend`-concrete and is
 //! covered by the wasm32 check gate.
 
+// Host-only: `form::register` is `WebBackend`-concrete on wasm32, where the
+// browser suite (`tests/web_form.rs`) covers the real handler instead.
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::cell::Cell;
 use std::rc::Rc;
 

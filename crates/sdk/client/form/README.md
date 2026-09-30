@@ -37,7 +37,7 @@ ui! {
 
 | Target | Mechanism |
 | --- | --- |
-| Web (wasm32) | A real `<form>` wrapping the inputs as DOM descendants. The native `submit` event is wired to `on_submit` after `preventDefault()` (idealyst apps don't POST form-encoded data — the browser must not navigate). Enter-to-submit and autofill work because the inputs are real DOM children. |
+| Web (wasm32) | A real `<form>` wrapping the inputs as DOM descendants. The native `submit` event is wired to `on_submit` after `preventDefault()` (idealyst apps don't POST form-encoded data — the browser must not navigate). Enter-to-submit and autofill work because the inputs are real DOM children. The listener is owned by the mount and detached at unmount. |
 | iOS / Android | A plain passthrough container. There is no form `submit` event, so submission is fired by the author's submit button calling `on_submit`. (Return-key / IME-action submit is a *field-level* affordance and belongs on the input.) |
 | Other targets | No-op `register`; the framework's `External` placeholder renders, making the missing binding obvious. |
 
@@ -86,6 +86,7 @@ item as you exercise it.
 - [ ] `cargo test -p form` — lowering tests (the scene payload keyed by
   its own type, children flow through, `ui!`/`Form!` dispatch)
 - [ ] `cargo build -p form --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p form --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_form.rs`: children inside the `<form>`, `FormHandle::submit` → `requestSubmit` → `on_submit` with the navigation cancelled, and unmount detaching + freeing the submit listener
 
 **Rendering / behavior**
 

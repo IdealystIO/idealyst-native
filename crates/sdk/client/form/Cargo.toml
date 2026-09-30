@@ -50,17 +50,15 @@ host-mock = { path = "../../../dev/host-mock" }
 # call `backend_web::newcore::schedule_flush`), so `Registry<WebBackend>`
 # needs the backend's `Host` impl.
 backend-web = { workspace = true }
-web-sys = { version = "0.3", features = [
-    "Document",
-    "Element",
-    "Node",
-    "Window",
-    "Event",
-    "EventTarget",
-    "HtmlFormElement",
-] }
-wasm-bindgen = "0.2"
-js-sys = "0.3"
+# The `<form>`, its submit listener and `requestSubmit` go through web-glue,
+# the framework-owned JS boundary (docs/proposals/own-web-bindings.md).
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_form.rs`) — run with
+# `cargo test -p form --target wasm32-unknown-unknown` (the workspace runner
+# supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 backend-android-mobile = { workspace = true }

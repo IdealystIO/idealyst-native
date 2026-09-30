@@ -1,9 +1,30 @@
 //! wasm32 helpers for the web leg — pure DOM ops on the mounted
 //! `<form>`, no core types, kept separable from the primitive's
-//! core-facing surface.
+//! core-facing surface. DOM access is web-glue (the host node IS a
+//! `web_glue::dom::Node`).
 
 use std::any::Any;
-use wasm_bindgen::JsCast;
+
+use web_glue::dom::{Element, EventTarget, HtmlElement, Node};
+use web_glue::JsCast;
+
+web_glue::js_class! {
+    /// `HTMLFormElement` — only what this SDK calls.
+    pub(crate) struct HtmlFormElement: HtmlElement, Element, Node, EventTarget = "HTMLFormElement";
+}
+
+web_glue::import! {
+    fn js_request_submit(form: u32) = "(f) => { G.get(f).requestSubmit(); }";
+}
+
+impl HtmlFormElement {
+    /// `requestSubmit()`: runs constraint validation and fires `submit`
+    /// (unlike `submit()`, which does neither).
+    pub(crate) fn request_submit(&self) {
+        // SAFETY: a live handle to a form element.
+        unsafe { js_request_submit(self.as_js().raw()) }
+    }
+}
 
 /// `FormOps::submit` on web: downcast the type-erased mounted node to
 /// the concrete `<form>` element and call `requestSubmit()` (not
@@ -12,12 +33,11 @@ use wasm_bindgen::JsCast;
 /// `preventDefault()`. Silently no-ops when the node isn't a form
 /// (matches the ops-trait degradation contract).
 pub(crate) fn request_submit(node: &dyn Any) {
-    // HYBRID-BRIDGE: the host node is a `web_glue::dom::Node` since phase
-    // 2b; this SDK's internals are still web-sys until phase 3.
-    let Some(form) = backend_web::bridge::node_to_web_sys(node)
-        .and_then(|n| n.dyn_into::<web_sys::HtmlFormElement>().ok())
+    let Some(form) = node
+        .downcast_ref::<Node>()
+        .and_then(|n| n.dyn_ref::<HtmlFormElement>())
     else {
         return;
     };
-    let _ = form.request_submit();
+    form.request_submit();
 }

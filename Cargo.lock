@@ -4304,14 +4304,13 @@ dependencies = [
  "gtk4",
  "host-mock",
  "jni 0.21.1",
- "js-sys",
  "objc2 0.5.2",
  "objc2-ui-kit",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
- "wasm-bindgen",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
