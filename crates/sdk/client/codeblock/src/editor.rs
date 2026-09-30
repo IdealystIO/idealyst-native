@@ -57,17 +57,20 @@
 //!   one layer and forget the other — the failure that makes glyphs
 //!   walk away from the caret one row at a time.
 //!
-//! ## No soft wrap, and the ancestor a long line needs
+//! ## Code mode by default, and the ancestor a long line needs
 //!
-//! The editor is always code-mode (`white-space: pre` on web, the same
-//! no-wrap shape on native). Soft wrap would require the two layers to
-//! choose *identical* break points, and the framework's style substrate
-//! has no `white-space` property to put both of them in `pre-wrap` — the
-//! decorated layer relies on the `<pre>` element for its whitespace
-//! semantics on web.
+//! The editor is code-mode unless told otherwise (`white-space: pre` on
+//! web, the same no-wrap shape on native). Soft wrap requires the two
+//! layers to choose *identical* break points, and the framework's style
+//! substrate has no `white-space` property to put both of them in
+//! `pre-wrap` — the decorated layer relies on the `<pre>` element for
+//! its whitespace semantics on web. [`CodeEditorBuilder::soft_wrap`]
+//! opts in anyway, for short expression-shaped buffers (a formula, a
+//! query, a template) where wrapping matters more than columns; see
+//! "Soft wrap" below for what it does per platform.
 //!
-//! So long lines run off the side, and **which ancestor the editor sits
-//! in decides what happens then**. The box can only take the width of
+//! In code mode long lines run off the side, and **which ancestor the
+//! editor sits in decides what happens then**. The box can only take the width of
 //! the longest line where something gives it unbounded space to measure
 //! into:
 //!
@@ -101,6 +104,24 @@
 //! primitive exists to replace: it needs the editing layer's scroll
 //! offset piped through a capability the backend seam does not have,
 //! and it drifts the moment one path is missed.
+//!
+//! ## Soft wrap
+//!
+//! [`CodeEditorBuilder::soft_wrap`]`(true)` wraps long lines at the
+//! box's width in BOTH layers, so none of the "ancestor a long line
+//! needs" section applies: the box is the container's width, the text
+//! wraps inside it, and the height grows with the wrapped rows.
+//!
+//! Break-point parity is the whole game, and it holds for the same
+//! reason the metric parity does — the handler states it on both
+//! layers. The editing layer is a wrapping `text_area` (on web a
+//! `<textarea>` at `white-space: pre-wrap; overflow-wrap: break-word;
+//! word-break: break-word`); the decorated `<pre>` is given the
+//! identical three declarations through `attach_html_style`. Same font,
+//! same padding, same width, same wrapping rules: same breaks. On hosts
+//! without CSS the declarations are no-ops and both layers wrap through
+//! the platform's own text engine at the same width, as they do for
+//! every other wrapping text node.
 //!
 //! ## Height comes from the text — a minimum is `min_rows`
 //!
@@ -246,9 +267,21 @@ pub(crate) struct CodeEditorPrim {
     /// Floor on the decorated layer's measured row count — see
     /// [`CodeEditorBuilder::min_rows`].
     pub(crate) min_rows: u32,
+    /// Wrap long lines in both layers — see [`CodeEditorBuilder::soft_wrap`].
+    pub(crate) soft_wrap: bool,
     pub(crate) style: RefCell<Option<StyleProp>>,
     pub(crate) editor: RefCell<Option<Element>>,
 }
+
+/// The wrapping declarations the web `<textarea>` carries in its
+/// soft-wrap shape (`backend-web/src/primitives/text_area.rs`), stated
+/// on the decorated `<pre>` too so both layers break at the same
+/// places. Each pair is `(property, value)`.
+const SOFT_WRAP_CSS: [(&str, &str); 3] = [
+    ("white-space", "pre-wrap"),
+    ("overflow-wrap", "break-word"),
+    ("word-break", "break-word"),
+];
 
 /// Author-side builder returned by [`code_editor`].
 pub struct CodeEditorBuilder {
@@ -260,6 +293,7 @@ pub struct CodeEditorBuilder {
     style: Option<StyleProp>,
     placeholder: Option<String>,
     min_rows: u32,
+    soft_wrap: bool,
     test_id: Option<&'static str>,
     ref_fill: Option<Box<dyn FnOnce(runtime_shared::primitives::text_area::TextAreaHandle)>>,
 }
@@ -294,6 +328,7 @@ pub fn code_editor(value: Signal<String>, on_change: impl Fn(String) + 'static) 
         style: None,
         placeholder: None,
         min_rows: 0,
+        soft_wrap: false,
         test_id: None,
         ref_fill: None,
     }
@@ -420,6 +455,21 @@ impl CodeEditorBuilder {
         self
     }
 
+    /// Wrap long lines at the box's width instead of running them off
+    /// the side. Off by default: code wants its columns, and in code mode
+    /// the editor takes the longest line's width inside a horizontal
+    /// `scroll_view` (see the module docs). Turn it on for short,
+    /// expression-shaped buffers — a formula, a filter, a template —
+    /// that live in a fixed-width column (a form, a modal) where a
+    /// horizontal scroller would be absurd.
+    ///
+    /// Both layers wrap under the same rules (module docs, "Soft
+    /// wrap"), so decorations stay on their glyphs across wrapped rows.
+    pub fn soft_wrap(mut self, wrap: bool) -> Self {
+        self.soft_wrap = wrap;
+        self
+    }
+
     /// Robot/automation anchor, forwarded to the editing layer (the
     /// node a driver types into).
     pub fn test_id(mut self, id: &'static str) -> Self {
@@ -471,9 +521,11 @@ impl IntoElement for CodeEditorBuilder {
                 let f = self.on_change.clone();
                 move |v| f(v)
             })
-            // No soft wrap: the two layers must break lines identically,
-            // and only `pre` guarantees that (module docs).
-            .wrap(false)
+            // Code mode unless opted in: the two layers must break lines
+            // identically, and the decorated `<pre>` is told the same
+            // wrapping rules at mount when `soft_wrap` is on (module
+            // docs, "Soft wrap").
+            .wrap(self.soft_wrap)
             .style(StyleProp::Static(Rc::new(editor_layer_style(&self.metrics))));
         if let Some(k) = self.on_key_down {
             editor = editor.on_key_down(move |ev| k(ev));
@@ -496,6 +548,7 @@ impl IntoElement for CodeEditorBuilder {
                 metrics: self.metrics,
                 placeholder,
                 min_rows: self.min_rows,
+                soft_wrap: self.soft_wrap,
                 style: RefCell::new(self.style),
                 editor: RefCell::new(Some(editor.build())),
             },
@@ -593,6 +646,18 @@ fn editor_layer_style(m: &EditorMetrics) -> StyleRules {
             m.caret_color.clone().unwrap_or_else(|| m.text_color.clone()),
         )),
         background: Some(Tokenized::Literal(Color("transparent".into()))),
+        // No border, stated rather than assumed. The web backend strips
+        // the `<textarea>` UA border inline only in its CODE shape; the
+        // soft-wrap shape is its prose textarea, which keeps the UA's
+        // 1px frame so a field stylesheet can own it. Left there, that
+        // frame insets the editing layer's text by its width while the
+        // decorated `<pre>` has none — every glyph a pixel off its
+        // highlight, and a narrower wrap width that breaks lines
+        // earlier than the layer underneath.
+        border_top_width: Some(Tokenized::Literal(0.0)),
+        border_right_width: Some(Tokenized::Literal(0.0)),
+        border_bottom_width: Some(Tokenized::Literal(0.0)),
+        border_left_width: Some(Tokenized::Literal(0.0)),
         // The editing layer must NEVER be the thing that scrolls. It is
         // stretched to the box the decorated layer measured, so by
         // design it always fits — but when an ancestor refuses to let
@@ -768,6 +833,17 @@ where
     backend
         .borrow()
         .attach_html_style(&pre, "tab-size", TAB_SIZE);
+    // Soft wrap: the editing layer is a wrapping `text_area`, whose web
+    // realization carries exactly these declarations. Without them the
+    // `<pre>` keeps `white-space: pre`, the textarea wraps a long line
+    // and the pre does not — every glyph after the first break paints
+    // one row above its caret position.
+    if prim.soft_wrap {
+        let b = backend.borrow();
+        for (prop, value) in SOFT_WRAP_CSS {
+            b.attach_html_style(&pre, prop, value);
+        }
+    }
 
     let initial_text = prim.value.get();
     let initial_runs = layer_runs(

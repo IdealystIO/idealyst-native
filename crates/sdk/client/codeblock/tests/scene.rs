@@ -259,3 +259,95 @@ fn author_style_lands_on_the_editors_outer_box() {
         "author style must reach the outer node: {log:?}"
     );
 }
+
+/// Code mode is the default: the editing layer is a non-wrapping
+/// text_area and the `<pre>` is told nothing about wrapping (it keeps
+/// `white-space: pre`).
+#[test]
+fn code_mode_is_the_default_and_nothing_wraps() {
+    let h = editor_harness();
+    let _mounted = mount_editor(&h, "fn main");
+    let log = h.ops().join("\n");
+    assert!(log.contains("text_area wrap=false"), "{log}");
+    assert!(!log.contains("white-space"), "code mode must not re-wrap the <pre>: {log}");
+}
+
+/// Soft wrap must reach BOTH layers. The editing layer alone wrapping
+/// (a wrapping textarea over a `white-space: pre` <pre>) paints every
+/// glyph after the first break a row away from its caret — the drift
+/// this primitive exists to prevent. The <pre> must carry the same three
+/// declarations the web textarea's soft-wrap shape uses.
+#[test]
+fn soft_wrap_wraps_both_layers_with_the_same_rules() {
+    let h = editor_harness();
+    let src = h.world.enter(|| signal(String::from("IF {qty} > 100 THEN 1 ELSE 2 END")));
+    let _realized: Realized<u32> = h.mount(
+        code_editor(src, move |next| src.set(next))
+            .soft_wrap(true)
+            .into_element(),
+    );
+    let log = h.ops().join("\n");
+    assert!(log.contains("text_area wrap=true"), "editing layer must wrap: {log}");
+    let pre = log
+        .lines()
+        .find(|l| l.contains(r#"element "pre""#))
+        .and_then(|l| l.split_whitespace().find(|w| w.starts_with('n')))
+        .expect("a <pre> node")
+        .to_string();
+    for decl in [
+        "white-space=pre-wrap",
+        "overflow-wrap=break-word",
+        "word-break=break-word",
+    ] {
+        assert!(
+            log.contains(&format!("attach_html_style {pre} {decl}")),
+            "the decorated <pre> ({pre}) must carry `{decl}`: {log}"
+        );
+    }
+}
+
+/// The editing layer states a zero border. In the soft-wrap shape the web
+/// `<textarea>` is the prose one, which keeps its UA 1px frame unless
+/// style says otherwise — and that frame shifts the editing layer's text
+/// (and narrows its wrap width) against a borderless decorated layer.
+#[test]
+fn regression_soft_wrap_editing_layer_has_no_border_to_offset_its_text() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let h = editor_harness();
+    // Capture every style the handler applies or mints.
+    let seen: Rc<RefCell<Vec<StyleRules>>> = Rc::default();
+    {
+        let seen = seen.clone();
+        h.set_style_line(move |n, style| {
+            seen.borrow_mut().push(style.clone());
+            format!("apply_style n{n}")
+        });
+    }
+    {
+        let seen = seen.clone();
+        h.set_mint_class(move |style| {
+            seen.borrow_mut().push(style.clone());
+            None
+        });
+    }
+    let src = h.world.enter(|| signal(String::from("x")));
+    let _realized: Realized<u32> = h.mount(
+        code_editor(src, move |next| src.set(next))
+            .soft_wrap(true)
+            .into_element(),
+    );
+    let styles = seen.borrow();
+    let editing = styles
+        .iter()
+        .find(|s| s.color == Some(Tokenized::Literal(Color("transparent".into()))))
+        .expect("the editing layer's style (transparent glyphs)");
+    for (side, w) in [
+        ("top", &editing.border_top_width),
+        ("right", &editing.border_right_width),
+        ("bottom", &editing.border_bottom_width),
+        ("left", &editing.border_left_width),
+    ] {
+        assert_eq!(w, &Some(Tokenized::Literal(0.0)), "border-{side} must be 0");
+    }
+}

@@ -126,8 +126,28 @@ glyphs walk away from the caret one row at a time.
 
 Neither layer scrolls internally — both clip (`Overflow::Hidden`), so
 scrolling happens on an ancestor and moves them as one. The editor is
-always code-mode (no soft wrap): the two layers would have to choose
-identical break points, and only `pre` guarantees that.
+code-mode by default (no soft wrap): the two layers have to choose
+identical break points, and `pre` guarantees that without any help.
+
+**Soft wrap** is opt-in with `.soft_wrap(true)`, for short
+expression-shaped buffers (a formula, a filter, a template) that live in
+a fixed-width column where a horizontal scroller would be absurd. The
+editing layer becomes a wrapping `text_area`, and the handler states the
+same three wrapping declarations that layer carries on web
+(`white-space: pre-wrap; overflow-wrap: break-word; word-break:
+break-word`) on the decorated `<pre>` — same font, padding, width and
+rules, so the same breaks. On hosts without CSS the declarations are
+no-ops and both layers wrap through the platform's own text engine at the
+same width. With soft wrap on, the "long lines need an ancestor" section
+below does not apply: the box is the container's width and grows
+downward.
+
+```rust
+code_editor(formula, move |next| formula.set(next))
+    .decorate(tokenize_formula)
+    .soft_wrap(true)
+    .min_rows(3)
+```
 
 **Long lines need a specific ancestor**, because the box can only take
 the width of the longest line where something gives it unbounded space
@@ -245,3 +265,14 @@ highlight** (the decorated layer not following an edit).
 - [ ] **macOS** — ⚠️ not yet device-confirmed. Same drift check as iOS.
 - [ ] **Tabs** — open a file with literal tab characters on each backend;
   the highlight must not slide one tab stop right of the glyphs.
+- [x] **Soft wrap, web** — `tests/web_soft_wrap.rs` (browser): in a 220px
+  column both layers compute the same wrapping, font, line box and
+  padding, the editing layer has no border, both boxes match, and the
+  textarea's wrapped content height equals the box (same row count as the
+  decorated layer, no sideways scroll). Needs backend-web's detached-
+  autosize fix: before it, the wrapping textarea was pinned to
+  `height: 0px` at creation and collapsed over the text it edits.
+- [ ] **Soft wrap, native** — ⚠️ not device-confirmed. `.soft_wrap(true)`
+  in a narrow column on iOS / macOS / Android: type a line three times
+  the box's width; every wrapped row's highlight must sit on its glyphs
+  and the caret must stay on the character it is after.

@@ -2542,10 +2542,12 @@ dependencies = [
  "backend-ios-mobile",
  "backend-linux",
  "backend-macos",
+ "backend-web",
  "backend-windows",
  "gtk4",
  "host-mock",
  "jni 0.21.1",
+ "js-sys",
  "log",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
@@ -2556,6 +2558,9 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

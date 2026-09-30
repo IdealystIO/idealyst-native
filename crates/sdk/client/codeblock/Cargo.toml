@@ -123,3 +123,14 @@ objc2-app-kit = { version = "0.2", features = [
     "NSView",
     "NSResponder",
 ] }
+
+# tests/web_soft_wrap.rs mounts `code_editor(..).soft_wrap(true)` through
+# the real web backend in a browser and measures both layers — the
+# break-point parity that the host-mock op log can only name. Run with
+# `wasm-pack test --headless --chrome --package codeblock`.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+backend-web = { workspace = true }
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlTextAreaElement", "CssStyleDeclaration", "DomRect"] }
