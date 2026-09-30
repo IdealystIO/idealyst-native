@@ -3,24 +3,36 @@
 //! `history`.
 //!
 //! Browser-only, because the whole mechanism is: run with
-//! `wasm-pack test --headless --chrome --package deep-link`
-//! (or `cargo test --target wasm32-unknown-unknown -p deep-link` with
-//! `wasm-bindgen-test-runner` as the target runner).
+//! `cargo test -p deep-link --target wasm32-unknown-unknown` (the
+//! workspace runner supplies web-glue's JS; `wasm-pack test` cannot).
 
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen_test::*;
+use web_glue::JsValue;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+/// `window[a][b]` as a string, read straight from the page.
+fn page_str(a: &str, b: &str) -> String {
+    JsValue::global().get(a).unwrap().get(b).unwrap().as_string().unwrap()
+}
+
+fn history() -> JsValue {
+    JsValue::global().get("history").unwrap()
+}
+
+fn history_length() -> f64 {
+    history().get("length").unwrap().as_f64().unwrap()
+}
+
 fn location_path_and_search() -> (String, String) {
-    let loc = web_sys::window().unwrap().location();
-    (loc.pathname().unwrap(), loc.search().unwrap())
+    (page_str("location", "pathname"), page_str("location", "search"))
 }
 
 #[wasm_bindgen_test]
 fn replace_url_rewrites_the_address_and_current_url_follows_it() {
-    let before = web_sys::window().unwrap().history().unwrap().length().unwrap();
+    let before = history_length();
 
     deep_link::replace_url("/projects/42?tab=a%20b&flag");
 
@@ -30,7 +42,7 @@ fn replace_url_rewrites_the_address_and_current_url_follows_it() {
         ("/projects/42".to_string(), "?tab=a%20b&flag".to_string())
     );
     // …without adding a history entry (replace, never push).
-    let after = web_sys::window().unwrap().history().unwrap().length().unwrap();
+    let after = history_length();
     assert_eq!(before, after, "replace_url must not push a history entry");
 
     // And the live read reports the new address, decoded.
@@ -47,17 +59,15 @@ fn replace_url_rewrites_the_address_and_current_url_follows_it() {
 
 #[wasm_bindgen_test]
 fn replace_url_keeps_the_entrys_history_state() {
-    use web_sys::wasm_bindgen::JsValue;
-    let history = web_sys::window().unwrap().history().unwrap();
     // A navigator (or anyone) parked state on the current entry.
-    history
-        .replace_state_with_url(&JsValue::from_str("nav-entry-7"), "", None)
+    history()
+        .call_method("replaceState", &[&JsValue::from_str("nav-entry-7"), &JsValue::from_str("")])
         .unwrap();
 
     deep_link::replace_url("/elsewhere");
 
     assert_eq!(
-        history.state().unwrap().as_string().as_deref(),
+        history().get("state").unwrap().as_string().as_deref(),
         Some("nav-entry-7"),
         "rewriting the address must not wipe the entry's state"
     );
@@ -65,7 +75,7 @@ fn replace_url_keeps_the_entrys_history_state() {
 
 #[wasm_bindgen_test]
 fn origin_is_the_pages_origin_without_a_trailing_slash() {
-    let expected = web_sys::window().unwrap().location().origin().unwrap();
+    let expected = page_str("location", "origin");
     let origin = deep_link::origin().expect("the test page is served over http");
     assert_eq!(origin, expected);
     assert!(!origin.ends_with('/'));
@@ -83,4 +93,14 @@ fn replace_url_does_not_dispatch_to_link_handlers() {
     let _sub = deep_link::on_link(move |_| f.set(f.get() + 1));
     deep_link::replace_url("/quiet");
     assert_eq!(fired.get(), 0);
+}
+
+/// `history.replaceState` throws a `SecurityError` for a URL on another
+/// origin. That throw must stay inside the binding (`#[catch]`) — the
+/// address is left alone and the caller never sees an exception.
+#[wasm_bindgen_test]
+fn replace_url_to_another_origin_is_ignored() {
+    deep_link::replace_url("/before-cross-origin");
+    deep_link::replace_url("https://example.invalid/elsewhere");
+    assert_eq!(page_str("location", "pathname"), "/before-cross-origin");
 }

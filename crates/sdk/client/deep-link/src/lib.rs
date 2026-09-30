@@ -294,8 +294,8 @@ pub fn feed_link(raw_url: &str) {
 /// subscriber exists. On **web** it reads `window.location.href`; on every
 /// other target it is a no-op (the native host reads the launch URL /
 /// intent itself and calls [`feed_link`]). Calling [`feed_link`] directly
-/// is equivalent — this just spares the web host from reaching into
-/// `web_sys`.
+/// is equivalent — this just spares the web host from reading
+/// `window.location` itself.
 pub fn seed_initial_from_platform() {
     #[cfg(target_arch = "wasm32")]
     if let Some(href) = web::current_href() {

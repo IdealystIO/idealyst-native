@@ -50,12 +50,14 @@ runtime-core = { workspace = true, optional = true }
 runtime-vocabulary = { workspace = true, optional = true }
 
 # Web (wasm32): read window.location for the initial link and the live
-# address (`current_url` / `origin`), and History for `replace_url`.
+# address (`current_url` / `origin`), and History for `replace_url` —
+# web-glue bindings declared in `src/web.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location", "History"] }
+web-glue = { workspace = true }
 
 # Browser tests (`tests/location_web.rs`) — run with
-# `wasm-pack test --headless --chrome --package deep-link`.
+# `cargo test -p deep-link --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 

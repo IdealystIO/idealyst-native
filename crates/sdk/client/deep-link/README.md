@@ -142,7 +142,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p deep-link` — parse, `query_pairs`, initial-link dedupe, subscription drop, reentrancy (the pure registry is fully unit-tested)
 - [ ] `cargo build -p deep-link --features catalog` — recipes/docs compile
 - [ ] `cargo build -p deep-link --target wasm32-unknown-unknown` — web target
-- [x] `wasm-pack test --headless --chrome --package deep-link` — `tests/location_web.rs`: `replace_url` moves the real address without a history entry and keeps `history.state`; `current_url` follows it; `origin` matches `location.origin`
+- [x] `cargo test -p deep-link --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/location_web.rs`: `replace_url` moves the real address without a history entry and keeps `history.state`; `current_url` follows it; `origin` matches `location.origin`
 
 **Behavior** (the host must call `feed_link` — these verify the host wiring, not just the registry)
 - [ ] **Web** — bootstrap seeds `initial_link()` from `window.location.href`; an app-internal navigation / `popstate` fed via `feed_link` fires `on_link` with the parsed URL.

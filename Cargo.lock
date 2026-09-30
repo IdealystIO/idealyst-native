@@ -3226,7 +3226,7 @@ dependencies = [
  "runtime-vocabulary",
  "url",
  "wasm-bindgen-test",
- "web-sys",
+ "web-glue",
 ]
 
 [[package]]
