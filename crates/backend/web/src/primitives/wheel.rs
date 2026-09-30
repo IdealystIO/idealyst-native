@@ -18,9 +18,9 @@
 //! doesn't also scroll or trigger the browser's own pinch-zoom.
 
 use runtime_shared::{TouchPoint, WheelEvent as FwWheelEvent, WheelHandler, WheelKind};
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 use web_glue::dom::WheelEvent as GlueWheelEvent;
-use web_sys::{Element, Node};
+use web_glue::dom::{Element, Node};
 
 /// Maps one unit of `WheelEvent.deltaY` (under `ctrlKey`) to a fraction of
 /// zoom. `scale = exp(-deltaY * k)`: negative deltaY (pinch open / scroll up)

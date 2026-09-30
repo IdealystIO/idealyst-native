@@ -19,28 +19,21 @@
 //! single file and the browser parses stylesheets atomically, so a
 //! non-empty scan is never a partial one.
 
-use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen(
-    inline_js = "export function __iy_scan_minted_classes(){\
-const out=new Set();\
-const collect=(rules)=>{\
-  for(const r of rules){\
-    if(r.selectorText){\
-      const re=/\\.(iy-[A-Za-z0-9_-]+)/g;let m;\
-      while((m=re.exec(r.selectorText)))out.add(m[1]);\
-    }\
-    if(r.cssRules)collect(r.cssRules);\
-  }\
-};\
-for(const ss of document.styleSheets){\
-  let rules;try{rules=ss.cssRules}catch(e){continue}\
-  if(rules)collect(rules);\
-}\
-return Array.from(out).join(' ');}"
-)]
-extern "C" {
-    fn __iy_scan_minted_classes() -> String;
+web_glue::import! {
+    fn js_scan_minted_classes(out: usize) =
+        "(o) => { const out = new Set(); \
+           const collect = (rules) => { for (const r of rules) { \
+             if (r.selectorText) { const re = /\\.(iy-[A-Za-z0-9_-]+)/g; let m; \
+               while ((m = re.exec(r.selectorText))) out.add(m[1]); } \
+             if (r.cssRules) collect(r.cssRules); } }; \
+           for (const ss of document.styleSheets) { let rules; try { rules = ss.cssRules; } catch (e) { continue; } \
+             if (rules) collect(rules); } \
+           G.retStr(Array.from(out).join(' '), o); }";
+}
+
+fn __iy_scan_minted_classes() -> String {
+    web_glue::string::receive(|o| unsafe { js_scan_minted_classes(o) })
 }
 
 /// Scan the loaded stylesheets and arm the minted-class guard. Called

@@ -1,4 +1,6 @@
-//! Web backend: drives DOM nodes via web-sys/wasm-bindgen.
+//! Web backend: drives DOM nodes through the framework-owned `web-glue`
+//! boundary (`web_glue::dom` / `web_glue::js`). The only web-sys left is the
+//! HYBRID-BRIDGE in `bridge.rs` for SDKs not yet ported (phase 3).
 //!
 //! # File layout
 //!
@@ -57,6 +59,8 @@ pub mod async_executor;
 mod assets;
 mod defaults;
 mod glue_dom;
+/// HYBRID-BRIDGE (temporary): see the module docs.
+pub mod bridge;
 #[cfg(feature = "runtime-server")]
 pub mod dev_transport;
 #[cfg(feature = "robot")]
@@ -126,7 +130,7 @@ pub fn install_global_self(backend: &std::rc::Rc<std::cell::RefCell<WebBackend>>
 /// borrowed (an in-flight call will pick the new value up on its
 /// next frame).
 pub fn set_animated_f32(
-    node: &web_sys::Node,
+    node: &web_glue::dom::Node,
     prop: runtime_shared::animation::AnimProp,
     value: f32,
 ) {
@@ -147,7 +151,7 @@ pub fn set_animated_f32(
 /// the global backend's `set_animated_color`. `value` is sRGB
 /// `[r, g, b, a]` with channels in `0..=1`.
 pub fn set_animated_color(
-    node: &web_sys::Node,
+    node: &web_glue::dom::Node,
     prop: runtime_shared::animation::AnimProp,
     value: [f32; 4],
 ) {
@@ -160,7 +164,7 @@ pub fn set_animated_color(
 }
 
 /// `true` if `el`'s `class` attribute contains `class` as a whole token.
-fn element_has_class(el: &web_sys::Element, class: &str) -> bool {
+fn element_has_class(el: &web_glue::dom::Element, class: &str) -> bool {
     el.class_name().split_whitespace().any(|c| c == class)
 }
 
@@ -169,7 +173,7 @@ fn element_has_class(el: &web_sys::Element, class: &str) -> bool {
 /// `create_*` calls adopt the server content inside it. No-op off
 /// hydration.
 #[cfg(feature = "hydrate")]
-pub fn hydrate_enter(region: &web_sys::Node) {
+pub fn hydrate_enter(region: &web_glue::dom::Node) {
     let weak = WEB_BACKEND_HANDLE.with(|s| s.borrow().clone());
     let Some(weak) = weak else { return };
     let Some(rc) = weak.upgrade() else { return };
@@ -178,9 +182,9 @@ pub fn hydrate_enter(region: &web_sys::Node) {
             return;
         }
         let first = region
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .and_then(|el| el.first_element_child());
-        b.hydration_cursor = first.map(|e| e.unchecked_into::<web_sys::Node>());
+        b.hydration_cursor = first.map(|e| e.unchecked_into::<web_glue::dom::Node>());
         b.hydration_suppress = false;
         b.hydration_pending_fresh = false;
     };
@@ -191,7 +195,7 @@ pub fn hydrate_enter(region: &web_sys::Node) {
 /// entry; this stub keeps them callable without `#[cfg]` plumbing in
 /// the SDK crates.
 #[cfg(not(feature = "hydrate"))]
-pub fn hydrate_enter(_region: &web_sys::Node) {}
+pub fn hydrate_enter(_region: &web_glue::dom::Node) {}
 
 /// Whether an SSR-hydration pass is currently in progress. Borrow-free
 /// (reads the scheduler's hydration-buffer thread-local, not the backend),
@@ -291,15 +295,15 @@ use runtime_shared::{
 };
 use runtime_shared::{FxHashMap, FxHashSet};
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::{Document, Node};
+use web_glue::JsCast;
+use web_glue::dom::{Document, Node};
 
 /// Read the `data-navigator-id` attribute the SDK helpers crate stamps
 /// on each navigator container. Returns `None` when `node` isn't an
 /// Element or the attribute isn't present — every Backend trait nav
 /// method gracefully no-ops in that case.
 fn nav_id_from_node(node: &Node) -> Option<u32> {
-    let elem: web_sys::Element = node.clone().dyn_into().ok()?;
+    let elem: web_glue::dom::Element = node.clone().dyn_into().ok()?;
     elem.get_attribute("data-navigator-id")?.parse().ok()
 }
 
@@ -335,7 +339,7 @@ pub(crate) struct TrackedListener(#[allow(dead_code)] web_glue::dom::Listener);
 
 pub struct WebBackend {
     pub(crate) doc: Document,
-    pub(crate) mount: web_sys::Element,
+    pub(crate) mount: web_glue::dom::Element,
     /// HYDRATION (prototype): when `true`, `create_*` adopts the
     /// pre-rendered SSR DOM node at [`hydration_cursor`] instead of
     /// creating a fresh element — so the booting bundle reuses the
@@ -348,7 +352,7 @@ pub struct WebBackend {
     pub(crate) hydrating: bool,
     /// Next SSR node to adopt (pre-order). `None` once exhausted.
     #[cfg(feature = "hydrate")]
-    pub(crate) hydration_cursor: Option<web_sys::Node>,
+    pub(crate) hydration_cursor: Option<web_glue::dom::Node>,
     /// SUBTREE-LOCAL REMOUNT: when the walker's node doesn't match the
     /// SSR node at the cursor, we don't fail the whole hydration — we
     /// build *that one subtree* fresh, replace the stale SSR node in
@@ -374,27 +378,27 @@ pub struct WebBackend {
     /// The fresh subtree root being built; when the walker `insert`s it,
     /// the remount completes (replace the stale node, resume cursor).
     #[cfg(feature = "hydrate")]
-    pub(crate) hydration_remount_root: Option<web_sys::Node>,
+    pub(crate) hydration_remount_root: Option<web_glue::dom::Node>,
     /// The stale SSR node the remount root replaces (removed on resync).
     #[cfg(feature = "hydrate")]
-    pub(crate) hydration_remount_stale: Option<web_sys::Node>,
+    pub(crate) hydration_remount_stale: Option<web_glue::dom::Node>,
     /// Cursor to restore once the remount subtree completes (the stale
     /// node's next sibling — so the remounted node's siblings adopt).
     #[cfg(feature = "hydrate")]
-    pub(crate) hydration_remount_resume: Option<web_sys::Node>,
+    pub(crate) hydration_remount_resume: Option<web_glue::dom::Node>,
     /// NAVIGATOR cursor steering (`hydrate_nav_screen_begin`/`_end`):
     /// LIFO stack of saved cursors, one frame per in-flight navigator
     /// initial-screen build. `(true, cursor)` = steering active, restore
     /// on end; `(false, None)` = the begin ran suppressed/unmatched and
     /// end must pop without touching the cursor.
     #[cfg(feature = "hydrate")]
-    pub(crate) hydration_nav_saved: Vec<(bool, Option<web_sys::Node>)>,
+    pub(crate) hydration_nav_saved: Vec<(bool, Option<web_glue::dom::Node>)>,
     /// Outlet nodes whose SSR subtree was already consumed by a steered
     /// screen build. When the author-layout build later adopts one of
     /// these, the cursor must skip its subtree instead of descending
     /// into it (the children belong to the screen, already adopted).
     #[cfg(feature = "hydrate")]
-    pub(crate) hydration_consumed_outlets: Vec<web_sys::Node>,
+    pub(crate) hydration_consumed_outlets: Vec<web_glue::dom::Node>,
     /// The single APP-LEVEL `keydown` listener installed on `document` by
     /// `set_app_key_handler` (fires regardless of focus). Held so JS keeps it
     /// alive; removing + dropping it tears the listener down.
@@ -431,7 +435,7 @@ pub struct WebBackend {
     /// shim is injected. Avoids a per-batch `Reflect::get` lookup
     /// off `window` — the function reference is stable for the
     /// page's lifetime.
-    pub(crate) batch_fn: Option<js_sys::Function>,
+    pub(crate) batch_fn: Option<web_glue::js::Function>,
     /// Has the batched-text-update shim
     /// (`runtime/js/text_batch.js`) been injected? Mirrors
     /// `batch_shim_injected` for the reactive-text fast path.
@@ -446,16 +450,16 @@ pub struct WebBackend {
     pub(crate) text_bindings_shim_injected: bool,
     /// Cached handle to `window.__idealystRegisterText`. Set on first
     /// `create_text_with_id` call.
-    pub(crate) text_register_fn: Option<js_sys::Function>,
+    pub(crate) text_register_fn: Option<web_glue::js::Function>,
     /// Cached handle to `window.__idealystOnSignalChanged`. Set
     /// the first time a JS-registered signal fires.
-    pub(crate) signal_changed_fn: Option<js_sys::Function>,
+    pub(crate) signal_changed_fn: Option<web_glue::js::Function>,
     /// Cached handle to `window.__idealystRegisterBinding`. Set on
     /// first call to `register_reactive_text_binding`.
-    pub(crate) binding_register_fn: Option<js_sys::Function>,
+    pub(crate) binding_register_fn: Option<web_glue::js::Function>,
     /// Cached handle to `window.__idealystReleaseBinding`. Set on
     /// first call to `release_reactive_text_binding`.
-    pub(crate) binding_release_fn: Option<js_sys::Function>,
+    pub(crate) binding_release_fn: Option<web_glue::js::Function>,
     /// Monotonically-assigned text id counter. NEVER reused — a stale
     /// `update_text_by_id` queued before a release but flushed after
     /// would otherwise race against a re-assigned slot.
@@ -486,7 +490,7 @@ pub struct WebBackend {
     pub(crate) class_batch_shim_injected: bool,
     /// Cached `window.__idealystRegisterStyledNode`. Looked up once
     /// after first registration.
-    pub(crate) class_register_fn: Option<js_sys::Function>,
+    pub(crate) class_register_fn: Option<web_glue::js::Function>,
     /// Set of node ids the JS side has been told about. We register
     /// each styled node ONCE on its first apply (1 FFI hop /
     /// node-lifetime); subsequent applies hit the batched path.
@@ -517,9 +521,9 @@ pub struct WebBackend {
     pub(crate) node_id_shim_injected: bool,
     /// Cached `window.__idealystNodeId` after first lookup —
     /// subsequent `node_id` cache misses skip the `Reflect::get` round-trip.
-    pub(crate) node_id_fn: Option<js_sys::Function>,
+    pub(crate) node_id_fn: Option<web_glue::js::Function>,
     /// Cached `window.__idealystRegisterClassBinding`.
-    pub(crate) class_binding_register_fn: Option<js_sys::Function>,
+    pub(crate) class_binding_register_fn: Option<web_glue::js::Function>,
     /// Pending class-binding releases. Flushed via one FFI call to
     /// `__idealystReleaseClassBindingsBatch`. Shares the same
     /// `IdBatch` infrastructure the styled-node release path uses.
@@ -561,7 +565,7 @@ pub struct WebBackend {
     /// DOM identity; see [`WebBackend::node_id`]).
     pub(crate) next_graphics_id: u32,
     /// Shared `<style>` element holding every active CSS rule.
-    pub(crate) style_element: Option<web_sys::HtmlStyleElement>,
+    pub(crate) style_element: Option<web_glue::dom::HtmlStyleElement>,
     /// Pre-generated classes from `register_stylesheet`. Content-keyed,
     /// shared, refcounted (refcount tracks how many active
     /// registrations hold them — not how many nodes apply them).
@@ -698,11 +702,11 @@ pub struct WebBackend {
     /// `note_introspection_root` (called from the walker as each primitive is
     /// registered). The native-introspection walk uses object identity here
     /// to know where one primitive's DOM ends and a child primitive's begins
-    /// — it prunes the tree at any descendant in this set. A `js_sys::Set`
+    /// — it prunes the tree at any descendant in this set. A `web_glue::js::Set`
     /// (SameValueZero identity for objects) so it needs no node-id round-trip.
     /// Populated only in robot builds (the walker calls
     /// `note_introspection_root`); a single cheap JS Set otherwise idle.
-    pub(crate) introspection_roots: js_sys::Set,
+    pub(crate) introspection_roots: web_glue::js::Set,
 }
 
 /// Diagnostic snapshot returned by [`WebBackend::debug_counts`].
@@ -810,12 +814,12 @@ impl WebBackend {
     /// [`hydrate_adopt_child`] + re-enters regions via [`hydrate_enter`].
     /// `None` when not hydrating or the cursor doesn't match.
     #[cfg(feature = "hydrate")]
-    pub fn hydrate_adopt_container(&mut self, class: &str) -> Option<web_sys::Node> {
+    pub fn hydrate_adopt_container(&mut self, class: &str) -> Option<web_glue::dom::Node> {
         if !self.hydrating {
             return None;
         }
         let cur = self.hydration_cursor.clone()?;
-        let el = cur.dyn_ref::<web_sys::Element>()?;
+        let el = cur.dyn_ref::<web_glue::dom::Element>()?;
         if !element_has_class(el, class) {
             return None;
         }
@@ -831,13 +835,13 @@ impl WebBackend {
     #[cfg(feature = "hydrate")]
     pub fn hydrate_adopt_child_of(
         &self,
-        parent: &web_sys::Node,
+        parent: &web_glue::dom::Node,
         class: &str,
-    ) -> Option<web_sys::Node> {
+    ) -> Option<web_glue::dom::Node> {
         if !self.hydrating {
             return None;
         }
-        let parent_el = parent.dyn_ref::<web_sys::Element>()?;
+        let parent_el = parent.dyn_ref::<web_glue::dom::Element>()?;
         let mut child = parent_el.first_element_child();
         while let Some(c) = child {
             if element_has_class(&c, class) {
@@ -874,13 +878,13 @@ impl WebBackend {
         }
         let attr = runtime_shared::primitives::navigator::NAV_OUTLET_HYDRATION_ATTR;
         let outlet = root
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .and_then(|el| el.query_selector(&format!("[{attr}=\"{base}\"]")).ok().flatten());
         match outlet {
             Some(outlet) => {
                 self.hydration_nav_saved.push((true, self.hydration_cursor.take()));
                 self.hydration_cursor =
-                    outlet.first_element_child().map(|e| e.unchecked_into::<web_sys::Node>());
+                    outlet.first_element_child().map(|e| e.unchecked_into::<web_glue::dom::Node>());
                 self.hydration_consumed_outlets.push(outlet.unchecked_into());
             }
             None => {
@@ -933,14 +937,14 @@ impl WebBackend {
     /// after adopting its container so the SYNCHRONOUS walker `attach_initial`
     /// screen build adopts the screen's root node — not the container itself.
     #[cfg(feature = "hydrate")]
-    pub fn hydrate_enter_region(&mut self, region: &web_sys::Node) {
+    pub fn hydrate_enter_region(&mut self, region: &web_glue::dom::Node) {
         if !self.hydrating {
             return;
         }
         let first = region
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .and_then(|el| el.first_element_child());
-        self.hydration_cursor = first.map(|e| e.unchecked_into::<web_sys::Node>());
+        self.hydration_cursor = first.map(|e| e.unchecked_into::<web_glue::dom::Node>());
         self.hydration_suppress = false;
         self.hydration_pending_fresh = false;
     }
@@ -955,12 +959,12 @@ impl WebBackend {
     /// [`Self::hydrate_note_fresh`] as a subtree-local remount root.
     /// Inside a remount subtree (`suppress`), it always returns `None`.
     #[cfg(feature = "hydrate")]
-    pub(crate) fn hydrate_next(&mut self, tag: &str) -> Option<web_sys::Element> {
+    pub(crate) fn hydrate_next(&mut self, tag: &str) -> Option<web_glue::dom::Element> {
         if !self.hydrating || self.hydration_suppress {
             return None;
         }
         let cur = self.hydration_cursor.clone()?;
-        let el: web_sys::Element = cur.dyn_into().ok()?;
+        let el: web_glue::dom::Element = cur.dyn_into().ok()?;
         if el.tag_name().eq_ignore_ascii_case(tag) {
             // A steered screen build already consumed this outlet's
             // subtree (`hydrate_nav_screen_begin`) — adopt the outlet
@@ -998,12 +1002,12 @@ impl WebBackend {
     pub(crate) fn hydrate_next_skip_subtree(
         &mut self,
         tag: &str,
-    ) -> Option<web_sys::Element> {
+    ) -> Option<web_glue::dom::Element> {
         if !self.hydrating || self.hydration_suppress {
             return None;
         }
         let cur = self.hydration_cursor.clone()?;
-        let el: web_sys::Element = cur.dyn_into().ok()?;
+        let el: web_glue::dom::Element = cur.dyn_into().ok()?;
         if el.tag_name().eq_ignore_ascii_case(tag) {
             self.hydration_cursor = Self::next_preorder_skip_subtree(&el, &self.mount);
             Some(el)
@@ -1021,7 +1025,7 @@ impl WebBackend {
     /// node's next sibling), and enter `suppress` so the rest of this
     /// subtree builds fresh. Cheap no-op otherwise.
     #[cfg(feature = "hydrate")]
-    pub(crate) fn hydrate_note_fresh(&mut self, fresh: &web_sys::Node) {
+    pub(crate) fn hydrate_note_fresh(&mut self, fresh: &web_glue::dom::Node) {
         if !self.hydration_pending_fresh {
             return;
         }
@@ -1030,7 +1034,7 @@ impl WebBackend {
         let Some(stale) = self.hydration_cursor.clone() else { return };
 
         // Diagnostics: which BRANCH is being remounted.
-        if let Some(se) = stale.dyn_ref::<web_sys::Element>() {
+        if let Some(se) = stale.dyn_ref::<web_glue::dom::Element>() {
             let here: String = se.outer_html().chars().take(140).collect();
             let mut chain = Vec::new();
             let mut p = se.parent_element();
@@ -1047,7 +1051,7 @@ impl WebBackend {
                 p = pe.parent_element();
             }
             chain.reverse();
-            web_sys::console::warn_1(
+            web_glue::dom::console::warn_1(
                 &format!(
                     "[hydrate] SSR/client diverge — remounting just this subtree (siblings still \
                      adopt).\n  client wanted: <{}>\n  branch: {}\n  stale SSR node: {}",
@@ -1069,7 +1073,7 @@ impl WebBackend {
     /// handler runs. `None` off the hydrate path. Paired with
     /// [`Self::hydrate_external_note_if_unadopted`].
     #[cfg(feature = "hydrate")]
-    pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_sys::Node> {
+    pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_glue::dom::Node> {
         if self.hydrating {
             self.hydration_cursor.clone()
         } else {
@@ -1089,8 +1093,8 @@ impl WebBackend {
     #[cfg(feature = "hydrate")]
     pub(crate) fn hydrate_external_note_if_unadopted(
         &mut self,
-        before: &Option<web_sys::Node>,
-        node: &web_sys::Node,
+        before: &Option<web_glue::dom::Node>,
+        node: &web_glue::dom::Node,
     ) {
         if !self.hydrating || self.hydration_suppress {
             return;
@@ -1125,7 +1129,7 @@ impl WebBackend {
     /// by `insert_at` therefore left the stale SSR node in the DOM: the
     /// duplicated absolutely-positioned nav this method was added to fix.
     #[cfg(feature = "hydrate")]
-    fn hydrate_resync_remount(&mut self, parent: &mut web_sys::Node, child: &web_sys::Node) -> bool {
+    fn hydrate_resync_remount(&mut self, parent: &mut web_glue::dom::Node, child: &web_glue::dom::Node) -> bool {
         if !self
             .hydration_remount_root
             .as_ref()
@@ -1154,7 +1158,7 @@ impl WebBackend {
     /// the backend insert when this holds (outside a remount `suppress`
     /// subtree, where the child is genuinely fresh).
     #[cfg(feature = "hydrate")]
-    fn hydrate_child_already_adopted(&self, parent: &web_sys::Node, child: &web_sys::Node) -> bool {
+    fn hydrate_child_already_adopted(&self, parent: &web_glue::dom::Node, child: &web_glue::dom::Node) -> bool {
         child
             .parent_node()
             .map(|p| p.is_same_node(Some(parent)))
@@ -1175,43 +1179,43 @@ impl WebBackend {
         Self::new(mount_selector)
     }
     #[cfg(not(feature = "hydrate"))]
-    pub fn hydrate_adopt_container(&mut self, _class: &str) -> Option<web_sys::Node> {
+    pub fn hydrate_adopt_container(&mut self, _class: &str) -> Option<web_glue::dom::Node> {
         None
     }
     #[cfg(not(feature = "hydrate"))]
     pub fn hydrate_adopt_child_of(
         &self,
-        _parent: &web_sys::Node,
+        _parent: &web_glue::dom::Node,
         _class: &str,
-    ) -> Option<web_sys::Node> {
+    ) -> Option<web_glue::dom::Node> {
         None
     }
     #[cfg(not(feature = "hydrate"))]
     pub fn hydrate_suspend_cursor(&mut self) {}
     #[cfg(not(feature = "hydrate"))]
-    pub fn hydrate_enter_region(&mut self, _region: &web_sys::Node) {}
+    pub fn hydrate_enter_region(&mut self, _region: &web_glue::dom::Node) {}
     #[cfg(not(feature = "hydrate"))]
-    pub(crate) fn hydrate_next(&mut self, _tag: &str) -> Option<web_sys::Element> {
+    pub(crate) fn hydrate_next(&mut self, _tag: &str) -> Option<web_glue::dom::Element> {
         None
     }
     #[cfg(not(feature = "hydrate"))]
     pub(crate) fn hydrate_next_skip_subtree(
         &mut self,
         _tag: &str,
-    ) -> Option<web_sys::Element> {
+    ) -> Option<web_glue::dom::Element> {
         None
     }
     #[cfg(not(feature = "hydrate"))]
-    pub(crate) fn hydrate_note_fresh(&mut self, _fresh: &web_sys::Node) {}
+    pub(crate) fn hydrate_note_fresh(&mut self, _fresh: &web_glue::dom::Node) {}
     #[cfg(not(feature = "hydrate"))]
-    pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_sys::Node> {
+    pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_glue::dom::Node> {
         None
     }
     #[cfg(not(feature = "hydrate"))]
     pub(crate) fn hydrate_external_note_if_unadopted(
         &mut self,
-        _before: &Option<web_sys::Node>,
-        _node: &web_sys::Node,
+        _before: &Option<web_glue::dom::Node>,
+        _node: &web_glue::dom::Node,
     ) {
     }
 
@@ -1219,8 +1223,8 @@ impl WebBackend {
     /// Descends into children first. Matches the walker's pre-order
     /// `create_*` order.
     #[cfg(feature = "hydrate")]
-    fn next_preorder(node: &web_sys::Node, mount: &web_sys::Element) -> Option<web_sys::Node> {
-        let el = node.dyn_ref::<web_sys::Element>()?;
+    fn next_preorder(node: &web_glue::dom::Node, mount: &web_glue::dom::Element) -> Option<web_glue::dom::Node> {
+        let el = node.dyn_ref::<web_glue::dom::Element>()?;
         if let Some(child) = el.first_element_child() {
             return Some(child.unchecked_into());
         }
@@ -1231,10 +1235,10 @@ impl WebBackend {
     /// else climb). Used to resume after a remounted subtree.
     #[cfg(feature = "hydrate")]
     fn next_preorder_skip_subtree(
-        node: &web_sys::Node,
-        mount: &web_sys::Element,
-    ) -> Option<web_sys::Node> {
-        let mut cur: web_sys::Element = node.dyn_ref::<web_sys::Element>()?.clone();
+        node: &web_glue::dom::Node,
+        mount: &web_glue::dom::Element,
+    ) -> Option<web_glue::dom::Node> {
+        let mut cur: web_glue::dom::Element = node.dyn_ref::<web_glue::dom::Element>()?.clone();
         loop {
             if let Some(sib) = cur.next_element_sibling() {
                 return Some(sib.unchecked_into());
@@ -1248,7 +1252,7 @@ impl WebBackend {
     }
 
     pub fn new(mount_selector: &str) -> Self {
-        let window = web_sys::window().expect("no window");
+        let window = web_glue::dom::window().expect("no window");
         let doc = window.document().expect("no document");
         let mount = doc
             .query_selector(mount_selector)
@@ -1266,8 +1270,8 @@ impl WebBackend {
     /// bridge: each custom-element instance mounts its own Idealyst
     /// tree into its own host node, so multiple independent trees can
     /// coexist on a page the framework doesn't own.
-    pub fn new_in(mount: web_sys::Element) -> Self {
-        let window = web_sys::window().expect("no window");
+    pub fn new_in(mount: web_glue::dom::Element) -> Self {
+        let window = web_glue::dom::window().expect("no window");
         let doc = window.document().expect("no document");
         let mut backend = Self {
             doc,
@@ -1352,7 +1356,7 @@ impl WebBackend {
             blob_asset_urls: FxHashSet::default(),
             font_face_rule_indices: runtime_shared::collections::SmallIdMap::new(),
             animated_states: FxHashMap::default(),
-            introspection_roots: js_sys::Set::new(&wasm_bindgen::JsValue::UNDEFINED),
+            introspection_roots: web_glue::js::Set::new(&web_glue::JsValue::UNDEFINED),
         };
         backend
     }
@@ -1408,17 +1412,17 @@ impl WebBackend {
     /// in `newcore.rs` — world signals have no `Signal::set` JS hook,
     /// so a vocabulary notifier effect delivers commits instead.
     pub(crate) fn ship_signal_change_to_js(&mut self, sid_raw: u64, value: &str) {
-        use wasm_bindgen::JsValue;
+        use web_glue::JsValue;
         if self.signal_changed_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(
                 &window,
                 &JsValue::from_str("__idealystOnSignalChanged"),
             )
             .expect("Reflect::get for __idealystOnSignalChanged failed");
             self.signal_changed_fn = Some(
                 f_val
-                    .dyn_into::<js_sys::Function>()
+                    .dyn_into::<web_glue::js::Function>()
                     .expect("__idealystOnSignalChanged is not a Function — shim missing"),
             );
         }
@@ -1472,7 +1476,7 @@ impl WebBackend {
         initial_values: &[&str],
         stringifiers: &[std::rc::Rc<dyn Fn() -> String>],
     ) {
-        use wasm_bindgen::JsValue;
+        use web_glue::JsValue;
         debug_assert_eq!(
             template_parts.len(),
             signal_ids.len() + 1,
@@ -1505,15 +1509,15 @@ impl WebBackend {
             }
         }
         if self.binding_register_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(
                 &window,
                 &JsValue::from_str("__idealystRegisterBinding"),
             )
             .expect("Reflect::get for __idealystRegisterBinding failed");
             self.binding_register_fn = Some(
                 f_val
-                    .dyn_into::<js_sys::Function>()
+                    .dyn_into::<web_glue::js::Function>()
                     .expect("__idealystRegisterBinding is not a Function — shim missing"),
             );
         }
@@ -1523,20 +1527,20 @@ impl WebBackend {
         // time exactly so the binding can write to `nodeValue`
         // directly.
         let text_node: JsValue = {
-            let window = web_sys::window().expect("no window");
-            let registry = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let registry = web_glue::js::Reflect::get(
                 &window,
                 &JsValue::from_str("__idealystTextRegistry"),
             )
             .expect("Reflect::get for __idealystTextRegistry failed");
-            js_sys::Reflect::get_u32(&registry, text_id)
+            web_glue::js::Reflect::get_u32(&registry, text_id)
                 .expect("text id not in __idealystTextRegistry — was create_text_with_id called?")
         };
 
         // Encode signal_ids as Uint32Array (single FFI marshal),
         // parts + initials as NUL-joined strings (single FFI each).
         let ids_u32: Vec<u32> = signal_ids.iter().map(|&s| s as u32).collect();
-        let ids_buf = js_sys::Uint32Array::from(&ids_u32[..]);
+        let ids_buf = web_glue::js::Uint32Array::from(&ids_u32[..]);
         let parts_joined = template_parts.join("\0");
         let initials_joined = initial_values.join("\0");
 
@@ -1546,7 +1550,7 @@ impl WebBackend {
             .expect("set above")
             .apply(
                 &JsValue::NULL,
-                &js_sys::Array::of5(
+                &web_glue::js::Array::of5(
                     &JsValue::from(text_id),
                     &text_node,
                     &ids_buf,
@@ -1563,17 +1567,17 @@ impl WebBackend {
     /// `release_text_id` path; this only clears the binding
     /// metadata (signal subscriptions) on the JS side.
     pub fn release_reactive_text_binding(&mut self, text_id: u32) {
-        use wasm_bindgen::JsValue;
+        use web_glue::JsValue;
         if self.binding_release_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(
                 &window,
                 &JsValue::from_str("__idealystReleaseBinding"),
             )
             .expect("Reflect::get for __idealystReleaseBinding failed");
             self.binding_release_fn = Some(
                 f_val
-                    .dyn_into::<js_sys::Function>()
+                    .dyn_into::<web_glue::js::Function>()
                     .expect("__idealystReleaseBinding is not a Function — shim missing"),
             );
         }
@@ -1606,7 +1610,7 @@ impl WebBackend {
         classes: &[&str],
         value_reader: std::rc::Rc<dyn Fn() -> u32>,
     ) -> u32 {
-        use wasm_bindgen::JsValue;
+        use web_glue::JsValue;
 
         self.ensure_class_bindings_shim();
 
@@ -1649,15 +1653,15 @@ impl WebBackend {
 
         // Lazily resolve the JS-side register fn.
         if self.class_binding_register_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(
                 &window,
                 &JsValue::from_str("__idealystRegisterClassBinding"),
             )
             .expect("Reflect::get for __idealystRegisterClassBinding failed");
             self.class_binding_register_fn = Some(
                 f_val
-                    .dyn_into::<js_sys::Function>()
+                    .dyn_into::<web_glue::js::Function>()
                     .expect(
                         "__idealystRegisterClassBinding is not a Function — \
                          class_bindings.js shim missing",
@@ -1671,7 +1675,7 @@ impl WebBackend {
         // Encode the args. `values` ships as Uint32Array; `classes`
         // as one big length-prefixed string buffer + Uint32Array
         // of lengths (same wire shape as the class-apply batch).
-        let values_buf = js_sys::Uint32Array::from(values);
+        let values_buf = web_glue::js::Uint32Array::from(values);
         let mut classes_joined = String::with_capacity(64);
         let mut lengths: Vec<u32> = Vec::with_capacity(classes.len());
         for cls in classes {
@@ -1683,7 +1687,7 @@ impl WebBackend {
             };
             lengths.push(utf16_len);
         }
-        let lengths_buf = js_sys::Uint32Array::from(&lengths[..]);
+        let lengths_buf = web_glue::js::Uint32Array::from(&lengths[..]);
 
         // Pack the four small u32 args (binding_id, node_id, sig_lo,
         // sig_hi) into a 4-element header Uint32Array so the final
@@ -1693,7 +1697,7 @@ impl WebBackend {
         // which defeats the batching point.
         let sig_lo = (signal_id & 0xFFFF_FFFF) as u32;
         let sig_hi = (signal_id >> 32) as u32;
-        let header = js_sys::Uint32Array::from(&[binding_id, node_id, sig_lo, sig_hi][..]);
+        let header = web_glue::js::Uint32Array::from(&[binding_id, node_id, sig_lo, sig_hi][..]);
 
         let _ = self
             .class_binding_register_fn
@@ -1701,7 +1705,7 @@ impl WebBackend {
             .expect("set above")
             .apply(
                 &JsValue::NULL,
-                &js_sys::Array::of4(
+                &web_glue::js::Array::of4(
                     &header,
                     &values_buf,
                     &JsValue::from_str(&classes_joined),
@@ -1807,7 +1811,7 @@ impl WebBackend {
         // usage correct (just slower).
         let has_handle = WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some());
         if !has_handle {
-            if let Some(element) = node.dyn_ref::<web_sys::Element>() {
+            if let Some(element) = node.dyn_ref::<web_glue::dom::Element>() {
                 let _ = element.set_attribute("class", class_name);
             }
             return;
@@ -1849,7 +1853,7 @@ impl WebBackend {
             // there SHOULD transition (e.g. the dark-mode swap).
             self.register_styled_node(node, id);
             self.class_nodes_registered.insert(id);
-            if let Some(element) = node.dyn_ref::<web_sys::Element>() {
+            if let Some(element) = node.dyn_ref::<web_glue::dom::Element>() {
                 let _ = element.set_attribute("class", class_name);
             }
             return;
@@ -1864,14 +1868,14 @@ impl WebBackend {
     /// can address it by id alone.
     fn register_styled_node(&mut self, node: &Node, id: u32) {
         if self.class_register_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(
                 &window,
-                &wasm_bindgen::JsValue::from_str("__idealystRegisterStyledNode"),
+                &web_glue::JsValue::from_str("__idealystRegisterStyledNode"),
             )
             .expect("Reflect::get for __idealystRegisterStyledNode failed");
             self.class_register_fn = Some(
-                f_val.dyn_into::<js_sys::Function>().expect(
+                f_val.dyn_into::<web_glue::js::Function>().expect(
                     "__idealystRegisterStyledNode is not a Function — class_batch shim missing",
                 ),
             );
@@ -1881,8 +1885,8 @@ impl WebBackend {
             .as_ref()
             .expect("set above")
             .call2(
-                &wasm_bindgen::JsValue::NULL,
-                &wasm_bindgen::JsValue::from(id),
+                &web_glue::JsValue::NULL,
+                &web_glue::JsValue::from(id),
                 node.as_ref(),
             )
             .expect("__idealystRegisterStyledNode call failed");
@@ -1940,7 +1944,7 @@ impl WebBackend {
     /// `state_listeners`, `animated_states`, and friends.
     ///
     /// Identity is keyed by the underlying JS object — multiple
-    /// Rust `web_sys::Node` wrappers around the same DOM element
+    /// Rust `web_glue::dom::Node` wrappers around the same DOM element
     /// always resolve to the same id. That's necessary because the
     /// framework freely constructs fresh wrappers (e.g. when
     /// filling a `Ref<ViewHandle>`'s `Rc<dyn Any>`), and the
@@ -1985,7 +1989,7 @@ impl WebBackend {
     pub(crate) fn track_listener(
         &mut self,
         id: u32,
-        target: &impl AsRef<wasm_bindgen::JsValue>,
+        target: &impl AsRef<web_glue::JsValue>,
         event: &'static str,
         capture: bool,
         f: impl FnMut(web_glue::dom::Event) + 'static,
@@ -1996,7 +2000,7 @@ impl WebBackend {
 
     pub(crate) fn node_id(&mut self, node: &Node) -> u32 {
         // No Rust-side pointer cache: the framework regularly
-        // constructs fresh `web_sys::Node` wrappers around the same
+        // constructs fresh `web_glue::dom::Node` wrappers around the same
         // DOM element (e.g. when filling a `Ref<ViewHandle>`'s
         // `Rc<dyn Any>`), and the wrapper's heap address has no
         // relationship to the underlying JS object. The Rust
@@ -2009,19 +2013,19 @@ impl WebBackend {
         // call) and trust *that* as the source of truth.
         self.ensure_node_id_shim();
         if self.node_id_fn.is_none() {
-            let window = web_sys::window().expect("no window");
+            let window = web_glue::dom::window().expect("no window");
             let f_val =
-                js_sys::Reflect::get(&window, &wasm_bindgen::JsValue::from_str("__idealystNodeId"))
+                web_glue::js::Reflect::get(&window, &web_glue::JsValue::from_str("__idealystNodeId"))
                     .expect("Reflect::get for __idealystNodeId failed");
             self.node_id_fn = Some(
                 f_val
-                    .dyn_into::<js_sys::Function>()
+                    .dyn_into::<web_glue::js::Function>()
                     .expect("__idealystNodeId is not a Function — shim injection failed"),
             );
         }
         let f = self.node_id_fn.as_ref().expect("set above");
         let id_val = f
-            .call1(&wasm_bindgen::JsValue::NULL, node.as_ref())
+            .call1(&web_glue::JsValue::NULL, node.as_ref())
             .expect("__idealystNodeId call failed");
         let id = id_val
             .as_f64()
@@ -2031,7 +2035,7 @@ impl WebBackend {
         // `data-idealyst-id` attribute so devtools / e2e selectors
         // can see it. Compiled out in production.
         #[cfg(feature = "debug-node-ids")]
-        if let Some(elem) = node.dyn_ref::<web_sys::Element>() {
+        if let Some(elem) = node.dyn_ref::<web_glue::dom::Element>() {
             let _ = elem.set_attribute("data-idealyst-id", &id.to_string());
         }
 
@@ -2051,11 +2055,11 @@ impl WebBackend {
     pub(crate) fn execute_batch_inner(
         &mut self,
         batch: runtime_shared::BackendBatch,
-        attach: Option<(&mut web_sys::Node, &[u32])>,
-    ) -> Vec<web_sys::Node> {
-        use js_sys::Array;
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen::JsValue;
+        attach: Option<(&mut web_glue::dom::Node, &[u32])>,
+    ) -> Vec<web_glue::dom::Node> {
+        use web_glue::js::Array;
+        use web_glue::JsCast;
+        use web_glue::JsValue;
 
         let _t_total = crate::phase_timer::PhaseTimer::start("execute_batch_total");
 
@@ -2066,11 +2070,11 @@ impl WebBackend {
         // First call: inject the shim and cache the function handle.
         self.ensure_batch_shim();
         if self.batch_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(&window, &JsValue::from_str("__idealystExecuteBatch"))
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(&window, &JsValue::from_str("__idealystExecuteBatch"))
                 .expect("Reflect::get for __idealystExecuteBatch failed");
             let f = f_val
-                .dyn_into::<js_sys::Function>()
+                .dyn_into::<web_glue::js::Function>()
                 .expect("__idealystExecuteBatch is not a Function — shim injection failed");
             self.batch_fn = Some(f);
         }
@@ -2122,7 +2126,7 @@ impl WebBackend {
                 }
             }
         }
-        let u32_buf = js_sys::Uint32Array::from(&u32s[..]);
+        let u32_buf = web_glue::js::Uint32Array::from(&u32s[..]);
         let strings_buf = JsValue::from_str(&strings);
         drop(_t_encode);
 
@@ -2140,7 +2144,7 @@ impl WebBackend {
                 // regardless of length). The JS shim does N
                 // `appendChild` calls inside its own loop without
                 // re-entering wasm.
-                let locals_buf = js_sys::Uint32Array::from(locals);
+                let locals_buf = web_glue::js::Uint32Array::from(locals);
                 let args = Array::of5(
                     &u32_buf,
                     &strings_buf,
@@ -2163,7 +2167,7 @@ impl WebBackend {
         for i in 0..batch.node_count {
             let val = nodes_array.get(i);
             let node = val
-                .dyn_into::<web_sys::Node>()
+                .dyn_into::<web_glue::dom::Node>()
                 .expect("execute_batch return-array entry must be a Node");
             nodes.push(node);
         }
@@ -2192,7 +2196,7 @@ impl WebBackend {
         // `classList.add` (not `className =`) so a preminted/structural
         // class composes with classes the style engine or hydration
         // already stamped. Idempotent on hydration re-adoption.
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+        if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
             let _ = el.class_list().add_1(class);
         }
     }
@@ -2203,7 +2207,7 @@ impl WebBackend {
         // touching the classes hydration or the style engine stamped.
         // Removing an absent class is a no-op in the DOM, so the first
         // run of a `PremintedDynamic` effect (nothing stamped yet) is safe.
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+        if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
             let _ = el.class_list().remove_1(class);
         }
     }
@@ -2216,10 +2220,10 @@ impl WebBackend {
         // Inline custom property on `<html>` — wins over any stylesheet
         // `:root` definition and needs no rule bookkeeping. Preminted
         // rule bodies read it via `var(--iy-default-font, inherit)`.
-        let Some(root) = web_sys::window()
+        let Some(root) = web_glue::dom::window()
             .and_then(|w| w.document())
             .and_then(|d| d.document_element())
-            .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+            .and_then(|e| e.dyn_into::<web_glue::dom::HtmlElement>().ok())
         else {
             return;
         };
@@ -2275,7 +2279,7 @@ impl WebBackend {
         // returns `null`, which a fire-and-forget opener never read.
         // Regression: `open_url_opens_a_new_tab_without_an_opener`.
         Some(std::rc::Rc::new(|url: &str| {
-            if let Some(win) = web_sys::window() {
+            if let Some(win) = web_glue::dom::window() {
                 let _ = win.open_with_url_and_target_and_features(url, "_blank", "noopener");
             }
         }))
@@ -2289,7 +2293,7 @@ impl WebBackend {
         // has no such restriction. We fire-and-forget either way, matching
         // the no-success-signal posture of `open_url`.
         Some(std::rc::Rc::new(|enabled: bool| {
-            let Some(win) = web_sys::window() else { return };
+            let Some(win) = web_glue::dom::window() else { return };
             let Some(doc) = win.document() else { return };
             if enabled {
                 if let Some(el) = doc.document_element() {
@@ -2341,9 +2345,9 @@ impl WebBackend {
         // (so an External handler built through the Backend reuses the
         // server's DOM rather than bypassing it via raw `web_sys`).
         if let Some(el) = self.hydrate_next(tag) {
-            return el.unchecked_into::<web_sys::Node>();
+            return el.unchecked_into::<web_glue::dom::Node>();
         }
-        let node: web_sys::Node = self
+        let node: web_glue::dom::Node = self
             .doc
             .create_element(tag)
             .expect("create_element failed")
@@ -2368,20 +2372,20 @@ impl WebBackend {
     /// container a stable id the chunk's `mount_chunk` can root its
     /// own `WebBackend` against.
     pub(crate) fn attach_html_id_impl(&self, node: &Node, id: &str) {
-        use wasm_bindgen::JsCast;
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+        use web_glue::JsCast;
+        if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
             let _ = el.set_attribute("id", id);
         }
     }
 
     pub(crate) fn attach_html_style_impl(&self, node: &Node, prop: &str, value: &str) {
-        use wasm_bindgen::JsCast;
+        use web_glue::JsCast;
         // `set_property` handles CSS custom properties (`--drawer-width`)
         // and normal declarations alike, and merges into the element's
         // existing inline style rather than clobbering it (the walker's
         // `apply_style` swaps the *class* attribute, not inline style, so
         // these coexist).
-        if let Some(el) = node.dyn_ref::<web_sys::HtmlElement>() {
+        if let Some(el) = node.dyn_ref::<web_glue::dom::HtmlElement>() {
             let _ = el.style().set_property(prop, value);
         }
     }
@@ -2592,15 +2596,15 @@ impl WebBackend {
         }
         self.ensure_text_batch_shim();
         if self.text_register_fn.is_none() {
-            let window = web_sys::window().expect("no window");
-            let f_val = js_sys::Reflect::get(
+            let window = web_glue::dom::window().expect("no window");
+            let f_val = web_glue::js::Reflect::get(
                 &window,
-                &wasm_bindgen::JsValue::from_str("__idealystRegisterText"),
+                &web_glue::JsValue::from_str("__idealystRegisterText"),
             )
             .expect("Reflect::get for __idealystRegisterText failed");
             self.text_register_fn = Some(
                 f_val
-                    .dyn_into::<js_sys::Function>()
+                    .dyn_into::<web_glue::js::Function>()
                     .expect("__idealystRegisterText is not a Function — shim injection failed"),
             );
         }
@@ -2619,8 +2623,8 @@ impl WebBackend {
             .as_ref()
             .expect("set above")
             .call2(
-                &wasm_bindgen::JsValue::NULL,
-                &wasm_bindgen::JsValue::from(id),
+                &web_glue::JsValue::NULL,
+                &web_glue::JsValue::from(id),
                 inner_text.as_ref(),
             )
             .expect("__idealystRegisterText call failed");
@@ -3166,7 +3170,7 @@ impl WebBackend {
     /// `primitives::scroll_view::apply_bounces` for what the web's
     /// `overscroll-behavior` does and does not share with iOS `bounces`.
     pub(crate) fn apply_scroll_view_bounces_impl(&mut self, node: &Node, bounces: bool) {
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+        if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
             crate::primitives::scroll_view::apply_bounces(el, bounces);
         }
     }
@@ -3175,7 +3179,7 @@ impl WebBackend {
     /// non-scrolling elements — `scrollLeft/Top` read 0 there). Used by
     /// the navigator substrate's URL sync for back-restores scroll.
     pub(crate) fn node_scroll_impl(&self, node: &Node) -> (f32, f32) {
-        node.dyn_ref::<web_sys::Element>()
+        node.dyn_ref::<web_glue::dom::Element>()
             .map(|el| (el.scroll_left() as f32, el.scroll_top() as f32))
             .unwrap_or((0.0, 0.0))
     }
@@ -3183,7 +3187,7 @@ impl WebBackend {
     /// Set `node`'s DOM scroll offset. Setting on a non-scrolling
     /// element is a browser-defined no-op, matching the trait contract.
     pub(crate) fn set_node_scroll_impl(&mut self, node: &Node, x: f32, y: f32) {
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+        if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
             el.set_scroll_left(x as i32);
             el.set_scroll_top(y as i32);
         }
@@ -3359,7 +3363,7 @@ impl WebBackend {
         // matches on — the overlay is emitted under the `[disabled]`
         // attribute selector (see `style.rs`), NOT the `:disabled`
         // pseudo-class, precisely so a `<div disabled>` styles correctly.
-        let Ok(element) = node.clone().dyn_into::<web_sys::Element>() else {
+        let Ok(element) = node.clone().dyn_into::<web_glue::dom::Element>() else {
             return;
         };
         if disabled {
@@ -3402,7 +3406,7 @@ impl WebBackend {
     }
 
     pub(crate) fn make_view_handle_impl(&self, node: &Node) -> runtime_shared::ViewHandle {
-        // Wrap the actual `web_sys::Node` (not the trait-default
+        // Wrap the actual `web_glue::dom::Node` (not the trait-default
         // `Rc<()>`), so framework helpers like `LayoutPlan` can
         // downcast back to the concrete node and operate on it.
         runtime_shared::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
@@ -3411,7 +3415,7 @@ impl WebBackend {
     pub(crate) fn make_text_handle_impl(&self, node: &Node) -> runtime_shared::TextHandle {
         // Same plumbing as `make_view_handle` for the text element so
         // author-level animation drivers (welcome's `drive_color_text_av`)
-        // can downcast `text_ref.as_any()` to `web_sys::Node` and write
+        // can downcast `text_ref.as_any()` to `web_glue::dom::Node` and write
         // `style.color` directly. Without this the typed handle stores
         // the trait-default `Rc<()>` and the downcast silently fails,
         // leaving text color frozen at its stylesheet value.
@@ -3566,7 +3570,7 @@ impl runtime_shared::ViewOps for WebViewOps {
         let r = el.get_bounding_client_rect();
         let (ox, oy) = el
             .clone()
-            .dyn_into::<web_sys::HtmlElement>()
+            .dyn_into::<web_glue::dom::HtmlElement>()
             .map(|h| (h.offset_left() as f32, h.offset_top() as f32))
             // SVG / non-HTML elements have no `offsetLeft`; fall
             // back to viewport coords. Authors mixing those into
@@ -3605,7 +3609,7 @@ impl runtime_shared::ViewOps for WebViewOps {
     /// Route `AnimatedValue::bind` writes through the crate-level
     /// [`set_animated_f32`] free function so author code doesn't
     /// need a `cfg(target_arch = "wasm32")` block to dispatch to
-    /// the right backend. Downcasts `node` to `web_sys::Node`;
+    /// the right backend. Downcasts `node` to `web_glue::dom::Node`;
     /// silently no-ops if the cast fails.
     fn set_animated_f32(
         &self,
@@ -3613,7 +3617,7 @@ impl runtime_shared::ViewOps for WebViewOps {
         prop: runtime_shared::animation::AnimProp,
         value: f32,
     ) {
-        if let Some(n) = node.downcast_ref::<web_sys::Node>() {
+        if let Some(n) = node.downcast_ref::<web_glue::dom::Node>() {
             crate::set_animated_f32(n, prop, value);
         }
     }
@@ -3625,7 +3629,7 @@ impl runtime_shared::ViewOps for WebViewOps {
         prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
-        if let Some(n) = node.downcast_ref::<web_sys::Node>() {
+        if let Some(n) = node.downcast_ref::<web_glue::dom::Node>() {
             crate::set_animated_color(n, prop, value);
         }
     }
@@ -3667,9 +3671,9 @@ impl runtime_shared::ViewOps for WebViewOps {
         // first observed entry's contentRect. Single-element
         // observers always emit a one-entry array; we still bounds-
         // check in case the spec evolves.
-        let cb = wasm_bindgen::closure::Closure::wrap(Box::new(
-            move |entries: js_sys::Array, _observer: web_sys::ResizeObserver| {
-                let Some(first) = entries.get(0).dyn_into::<web_sys::ResizeObserverEntry>().ok()
+        let cb = web_glue::Closure::new(move |entries: web_glue::JsValue| {
+                let entries: web_glue::js::Array = entries.unchecked_into();
+                let Some(first) = entries.get(0).dyn_into::<web_glue::dom::ResizeObserverEntry>().ok()
                 else {
                     return;
                 };
@@ -3683,10 +3687,8 @@ impl runtime_shared::ViewOps for WebViewOps {
                 // #103). Same post-dispatch hook the scheduler fires
                 // after `after_ms` / rAF bodies — a no-op before boot.
                 crate::dispatch_hook::fire_dispatch_hook();
-            },
-        )
-            as Box<dyn FnMut(js_sys::Array, web_sys::ResizeObserver)>);
-        let Ok(observer) = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref()) else {
+        });
+        let Ok(observer) = web_glue::dom::ResizeObserver::new(cb.as_js().unchecked_ref()) else {
             return runtime_shared::LayoutSubscription::noop();
         };
         observer.observe(&el);
@@ -3701,9 +3703,9 @@ impl runtime_shared::ViewOps for WebViewOps {
     }
 }
 
-fn element_from_any(node: &dyn std::any::Any) -> Option<web_sys::Element> {
-    let n = node.downcast_ref::<web_sys::Node>()?;
-    n.clone().dyn_into::<web_sys::Element>().ok()
+fn element_from_any(node: &dyn std::any::Any) -> Option<web_glue::dom::Element> {
+    let n = node.downcast_ref::<web_glue::dom::Node>()?;
+    n.clone().dyn_into::<web_glue::dom::Element>().ok()
 }
 
 /// `TextOps` impl. The framework's animated-color binding routes
@@ -3719,7 +3721,7 @@ impl runtime_shared::TextOps for WebTextOps {
         prop: runtime_shared::animation::AnimProp,
         value: [f32; 4],
     ) {
-        if let Some(n) = node.downcast_ref::<web_sys::Node>() {
+        if let Some(n) = node.downcast_ref::<web_glue::dom::Node>() {
             crate::set_animated_color(n, prop, value);
         }
     }
@@ -3741,9 +3743,9 @@ fn view_rect_from_node(node: &dyn std::any::Any) -> Option<runtime_shared::Viewp
 /// platform are obvious; user-space `has_external::<T>()` discovery is
 /// the supported way to render custom degradation instead.
 fn external_placeholder_element(
-    doc: &web_sys::Document,
+    doc: &web_glue::dom::Document,
     type_name: &'static str,
-) -> web_sys::Element {
+) -> web_glue::dom::Element {
     let div = doc
         .create_element("div")
         .expect("create_element failed for external placeholder");

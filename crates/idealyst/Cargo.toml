@@ -2,7 +2,7 @@
 # target needs.
 #
 # This crate exists so an app's Cargo.toml doesn't have to name
-# `backend-web` + `web-glue` + `lol_alloc` + `js-sys` + `web-sys` on wasm, `host-terminal` on a TTY,
+# `backend-web` + `web-glue` + `lol_alloc` on wasm, `host-terminal` on a TTY,
 # `host-macos` on desktop, and so on — the per-target dependency blocks
 # below do that. Previously those lines lived in a CLI-generated wrapper
 # crate, which is what made the app crate un-buildable by plain `cargo
@@ -119,9 +119,6 @@ web-glue = { path = "../runtime/web-glue", version = "1.5.2", registry = "idealy
 # the dep deleted outright — byte-identical. Selecting it drops that to
 # 1,575,878 (dlmalloc out, free list in).
 lol_alloc = "0.4"
-# The runtime-server (dev) client path only: its console diagnostics.
-js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Navigator", "console"] }
 dev-client = { path = "../dev/client", optional = true, version = "1.6.0", registry = "idealyst" }
 
 # --- Native -----------------------------------------------------------

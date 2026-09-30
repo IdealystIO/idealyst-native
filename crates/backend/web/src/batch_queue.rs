@@ -22,8 +22,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use js_sys::{Function, Reflect, Uint32Array};
-use wasm_bindgen::{JsCast, JsValue};
+use web_glue::js::{Function, Reflect, Uint32Array};
+use web_glue::{JsCast, JsValue};
 
 /// Queue of `(id, utf-16-string)` updates flushed via one FFI call.
 ///
@@ -36,7 +36,7 @@ use wasm_bindgen::{JsCast, JsValue};
 ///                              shim can call `joined.substring(off,
 ///                              off + len)` directly
 ///
-/// Each queue caches its `js_sys::Function` handle after the first
+/// Each queue caches its `web_glue::js::Function` handle after the first
 /// flush so subsequent flushes skip the `Reflect::get` lookup.
 ///
 /// **Re-entrancy contract:** the flag is cleared at the start of the
@@ -137,7 +137,7 @@ impl StringBatchQueue {
             return;
         }
         if self.flush_fn.is_none() {
-            let window = web_sys::window().expect("no window");
+            let window = web_glue::dom::window().expect("no window");
             let f_val = Reflect::get(&window, &JsValue::from_str(self.js_fn_name))
                 .unwrap_or_else(|_| panic!("Reflect::get for {} failed", self.js_fn_name));
             self.flush_fn = Some(
@@ -212,14 +212,14 @@ impl IdBatch {
     }
 
     /// Ship the entire id buffer in one FFI call, then clear. No-op
-    /// if the buffer is empty. Caches the `js_sys::Function` handle
+    /// if the buffer is empty. Caches the `web_glue::js::Function` handle
     /// after first flush.
     pub fn flush(&mut self) {
         if self.ids.is_empty() {
             return;
         }
         if self.flush_fn.is_none() {
-            let window = web_sys::window().expect("no window");
+            let window = web_glue::dom::window().expect("no window");
             let f_val = Reflect::get(&window, &JsValue::from_str(self.js_fn_name))
                 .unwrap_or_else(|_| panic!("Reflect::get for {} failed", self.js_fn_name));
             self.flush_fn = Some(

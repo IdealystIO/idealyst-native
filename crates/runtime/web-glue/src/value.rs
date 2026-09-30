@@ -14,9 +14,9 @@ thread_local! {
 /// slab (`G.heap` in `js/runtime.js`).
 ///
 /// RAII: dropping it releases the slot, cloning it takes a second slot for
-/// the same JS value. Index 0 is `undefined`, which owns no slot, so
-/// [`JsValue::undefined`] and dropping an undefined value never cross the
-/// boundary.
+/// the same JS value. Index 0 is `undefined` and index 1 is `null`; they own
+/// no slot, so [`JsValue::UNDEFINED`] / [`JsValue::NULL`] are constants and
+/// dropping or cloning them never crosses the boundary.
 ///
 /// Not `Send`: the slab lives on the one JS thread the module runs on.
 pub struct JsValue {
@@ -47,7 +47,7 @@ impl JsValue {
     /// one released from a `JsValue` with [`JsValue::into_raw`]).
     #[inline]
     pub unsafe fn from_raw(idx: u32) -> JsValue {
-        if idx != 0 {
+        if idx > 1 {
             LIVE.with(|l| l.set(l.get() + 1));
         }
         JsValue { idx, _not_send: std::marker::PhantomData }
@@ -57,7 +57,7 @@ impl JsValue {
     #[inline]
     pub fn into_raw(self) -> u32 {
         let me = ManuallyDrop::new(self);
-        if me.idx != 0 {
+        if me.idx > 1 {
             LIVE.with(|l| l.set(l.get() - 1));
         }
         me.idx
@@ -73,12 +73,18 @@ impl JsValue {
     /// `undefined`. Owns no slot.
     #[inline]
     pub fn undefined() -> JsValue {
-        JsValue { idx: 0, _not_send: std::marker::PhantomData }
+        JsValue::UNDEFINED
     }
 
+    /// `null`. Owns no slot.
     pub fn null() -> JsValue {
-        unsafe { JsValue::from_raw(ffi::null_new()) }
+        JsValue::NULL
     }
+
+    /// `undefined` (slot 0), usable in constant position.
+    pub const UNDEFINED: JsValue = JsValue { idx: 0, _not_send: std::marker::PhantomData };
+    /// `null` (slot 1), usable in constant position.
+    pub const NULL: JsValue = JsValue { idx: 1, _not_send: std::marker::PhantomData };
 
     /// `globalThis`.
     pub fn global() -> JsValue {
@@ -120,6 +126,18 @@ impl JsValue {
 
     pub fn is_undefined(&self) -> bool {
         self.idx == 0 || self.js_type() == JsType::Undefined
+    }
+
+    pub fn is_function(&self) -> bool {
+        self.js_type() == JsType::Function
+    }
+
+    pub fn is_object(&self) -> bool {
+        matches!(self.js_type(), JsType::Object | JsType::Function)
+    }
+
+    pub fn is_string(&self) -> bool {
+        self.js_type() == JsType::String
     }
 
     pub fn is_null(&self) -> bool {
@@ -218,8 +236,8 @@ impl JsValue {
 
 impl Clone for JsValue {
     fn clone(&self) -> JsValue {
-        if self.idx == 0 {
-            return JsValue::undefined();
+        if self.idx <= 1 {
+            return JsValue { idx: self.idx, _not_send: std::marker::PhantomData };
         }
         unsafe { JsValue::from_raw(ffi::clone_ref(self.idx)) }
     }
@@ -228,7 +246,7 @@ impl Clone for JsValue {
 impl Drop for JsValue {
     #[inline]
     fn drop(&mut self) {
-        if self.idx != 0 {
+        if self.idx > 1 {
             LIVE.with(|l| l.set(l.get() - 1));
             unsafe { ffi::drop_ref(self.idx) }
         }
@@ -256,5 +274,42 @@ impl From<f64> for JsValue {
 impl From<bool> for JsValue {
     fn from(b: bool) -> JsValue {
         JsValue::from_bool(b)
+    }
+}
+
+impl From<String> for JsValue {
+    fn from(s: String) -> JsValue {
+        JsValue::from_str(&s)
+    }
+}
+
+impl From<&String> for JsValue {
+    fn from(s: &String) -> JsValue {
+        JsValue::from_str(s)
+    }
+}
+
+macro_rules! from_number {
+    ($($t:ty),*) => {$(
+        impl From<$t> for JsValue {
+            fn from(n: $t) -> JsValue {
+                JsValue::from_f64(n as f64)
+            }
+        }
+    )*};
+}
+from_number!(f32, i8, i16, i32, u8, u16, u32, usize, isize, i64, u64);
+
+impl<T: Into<JsValue>> From<Option<T>> for JsValue {
+    /// `None` is `undefined`, as with wasm-bindgen.
+    fn from(v: Option<T>) -> JsValue {
+        v.map_or(JsValue::UNDEFINED, Into::into)
+    }
+}
+
+impl PartialEq for JsValue {
+    /// `===`.
+    fn eq(&self, other: &JsValue) -> bool {
+        self.strict_eq(other)
     }
 }

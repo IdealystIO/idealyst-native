@@ -12,7 +12,7 @@
 //! - `dragleave` → [`FileDropPhase::Exited`].
 //! - `drop` → [`FileDropPhase::Dropped`], carrying one [`DroppedFile`] per
 //!   `DataTransfer.files` entry. The web has no filesystem path, so each
-//!   `DroppedFile` has `path: None` and stashes the raw `web_sys::File` in
+//!   `DroppedFile` has `path: None` and stashes the raw `web_glue::dom::File` in
 //!   `source` for the `file-picker` SDK to stream over its `ReadableStream`.
 //!
 //! We only treat a drag as a *file* drag when `DataTransfer.types` contains
@@ -21,9 +21,9 @@
 
 use runtime_shared::{DroppedFile, FileDropEvent, FileDropPhase, FileDropHandler, TouchPoint};
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 use web_glue::dom::DragEvent;
-use web_sys::{Element, Node};
+use web_glue::dom::{Element, Node};
 
 /// Install the drag-and-drop listeners on `node`. The element owns the
 /// closures (`glue_dom::listen_for_element_lifetime`), so they are released with it.
@@ -105,7 +105,7 @@ fn is_file_drag(ev: &DragEvent) -> bool {
 }
 
 /// Pull the dropped `File`s out of the event into neutral [`DroppedFile`]s.
-/// The raw `web_sys::File` rides along in `source` for the SDK to stream —
+/// The raw `web_glue::dom::File` rides along in `source` for the SDK to stream —
 /// crossed back through the HYBRID-BRIDGE, since that is the type the
 /// file-picker SDK downcasts to until phase 3 ports it.
 fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
@@ -133,7 +133,7 @@ fn collect_files(ev: &DragEvent) -> Vec<DroppedFile> {
             mime,
             size,
             path: None,
-            source: Some(Rc::new(crate::glue_dom::to_web_sys::<web_sys::File>(&file)) as Rc<dyn std::any::Any>),
+            source: Some(Rc::new(crate::bridge::to_web_sys::<web_sys::File>(&file)) as Rc<dyn std::any::Any>),
         });
     }
     out

@@ -80,6 +80,16 @@ impl fmt::Debug for JsError {
     }
 }
 
+/// A JS exception IS a JS value — as with wasm-bindgen, where `catch`
+/// imports return `Result<_, JsValue>` — so `&err` passes wherever a
+/// `&JsValue` is wanted (logging it, rethrowing it).
+impl std::ops::Deref for JsError {
+    type Target = JsValue;
+    fn deref(&self) -> &JsValue {
+        self.value()
+    }
+}
+
 impl fmt::Display for JsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message())

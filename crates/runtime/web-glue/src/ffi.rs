@@ -19,7 +19,6 @@ crate::import! {
     pub(crate) fn str_new(p: usize, l: usize) -> u32 = "(p, l) => G.add(G.str(p, l))";
     pub(crate) fn num_new(n: f64) -> u32 = "(n) => G.add(n)";
     pub(crate) fn bool_new(b: u32) -> u32 = "(b) => G.add(b !== 0)";
-    pub(crate) fn null_new() -> u32 = "() => G.add(null)";
     pub(crate) fn global() -> u32 = "() => G.add(globalThis)";
 
     // 0 undefined, 1 null, 2 boolean, 3 number, 4 string, 5 object,

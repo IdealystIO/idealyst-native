@@ -22,21 +22,21 @@ use crate::WebBackend;
 use runtime_shared::primitives::link::{LinkConfig, LinkHandle, LinkOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     // HYDRATION: adopt the SSR `<a>` (href + reset style + external
     // target/rel already set by the SSR `create_link`); its children are
     // adopted separately as the cursor descends. Otherwise create fresh.
-    let anchor: web_sys::HtmlAnchorElement = if let Some(adopted) = b.hydrate_next("a") {
+    let anchor: web_glue::dom::HtmlAnchorElement = if let Some(adopted) = b.hydrate_next("a") {
         adopted.unchecked_into()
     } else {
         let anchor = b
             .doc
             .create_element("a")
             .expect("create anchor")
-            .unchecked_into::<web_sys::HtmlAnchorElement>();
+            .unchecked_into::<web_glue::dom::HtmlAnchorElement>();
         anchor.set_href(&config.url);
         // De-default the anchor (blue/underlined) so the wrapping content's
         // styling shows through. Shared with the SSR `create_link`.
@@ -100,7 +100,7 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
 /// fires. Mirrors `image::update_src` — guard against a needless write
 /// so a no-op update doesn't perturb the element.
 pub(crate) fn update_url(node: &Node, url: &str) {
-    if let Ok(anchor) = node.clone().dyn_into::<web_sys::HtmlAnchorElement>() {
+    if let Ok(anchor) = node.clone().dyn_into::<web_glue::dom::HtmlAnchorElement>() {
         // Compare against the raw `href` ATTRIBUTE, not the `.href()`
         // property — the latter returns the resolved absolute URL, so a
         // relative `url` would never match and we'd rewrite every fire.
@@ -118,7 +118,7 @@ pub(crate) fn update_url(node: &Node, url: &str) {
 /// the framework having to remember the `on_activate` Rc per
 /// link.
 pub(crate) fn make_handle(node: &Node) -> LinkHandle {
-    let html: web_sys::HtmlElement = node
+    let html: web_glue::dom::HtmlElement = node
         .clone()
         .dyn_into()
         .expect("link node is not an HtmlElement");
@@ -128,7 +128,7 @@ pub(crate) fn make_handle(node: &Node) -> LinkHandle {
 struct WebLinkOps;
 impl LinkOps for WebLinkOps {
     fn activate(&self, node: &dyn Any) {
-        if let Some(html) = node.downcast_ref::<web_sys::HtmlElement>() {
+        if let Some(html) = node.downcast_ref::<web_glue::dom::HtmlElement>() {
             html.click();
         }
     }

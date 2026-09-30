@@ -30,7 +30,7 @@ pub(crate) fn mount_canvas(
     cx: &mut MountCx<'_, WebBackend>,
     prim: &Rc<CanvasPrim>,
     _children: Vec<Element>,
-) -> web_sys::Node {
+) -> backend_web::bridge::HostNode {
     let backend = cx.backend().clone();
     let document = web_sys::window()
         .expect("no window")
@@ -74,7 +74,8 @@ pub(crate) fn mount_canvas(
         (rasterize.borrow_mut())(&cell.borrow());
     });
 
-    let node: web_sys::Node = el.into();
+    // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
+    let node = backend_web::bridge::node_from_web_sys(&el.into());
     crate::finish_mount(&backend, &node, prim);
     node
 }

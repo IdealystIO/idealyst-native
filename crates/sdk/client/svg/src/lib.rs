@@ -565,7 +565,7 @@ mod web_glue {
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<SvgPrim>,
         _children: Vec<Element>,
-    ) -> web_sys::Node {
+    ) -> backend_web::bridge::HostNode {
         let backend = cx.backend().clone();
         let document = web_sys::window()
             .expect("no window")
@@ -612,7 +612,8 @@ mod web_glue {
             }
         });
 
-        let node: web_sys::Node = wrapper.into();
+        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
+        let node = backend_web::bridge::node_from_web_sys(&wrapper.into());
         finish_mount(&backend, &node, prim);
         node
     }

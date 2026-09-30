@@ -2,7 +2,7 @@
 //!
 //! Test functions use `#[wasm_bindgen_test]` instead of plain
 //! `#[test]`; the `wasm_bindgen_test_configure!` line below
-//! switches the runner into browser mode so `web_sys::Node` and
+//! switches the runner into browser mode so `web_glue::dom::Node` and
 //! friends work.
 //!
 //! Inline rather than a `tests/` directory because the tests need
@@ -32,13 +32,13 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 use crate::WebBackend;
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 
 /// Set up a `#app` element in the document so `WebBackend::new`
 /// can find a mount point. Idempotent — drops any prior `#app` and
 /// re-creates it so tests don't bleed state.
 pub(crate) fn install_mount() {
-    let doc = web_sys::window().expect("window").document().expect("document");
+    let doc = web_glue::dom::window().expect("window").document().expect("document");
     if let Some(existing) = doc.get_element_by_id("app") {
         existing.remove();
     }
@@ -56,7 +56,7 @@ pub(crate) fn install_mount() {
 
 /// REGRESSION TEST.
 ///
-/// Two `web_sys::Node` wrappers around the same JS DOM object must
+/// Two `web_glue::dom::Node` wrappers around the same JS DOM object must
 /// resolve to the same `node_id`. Previously, `node_id` keyed off
 /// the Rust wrapper's address (`*const Node`), so the same DOM
 /// element could end up with multiple ids if the framework
@@ -76,22 +76,22 @@ fn node_id_is_stable_across_distinct_rust_wrappers_for_same_dom_node() {
 
     // Build an element directly so we can construct multiple
     // wrappers around the same JS object below.
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let element = doc.create_element("div").expect("create element");
 
     // Two SEPARATE Rust wrappers around the SAME JS object. Each
-    // `.clone().into()` produces a fresh `web_sys::Node` wrapper —
+    // `.clone().into()` produces a fresh `web_glue::dom::Node` wrapper —
     // different Rust stack addresses, same underlying JS Element.
-    let wrapper_a: web_sys::Node = element.clone().unchecked_into();
-    let wrapper_b: web_sys::Node = element.clone().unchecked_into();
-    let wrapper_c: web_sys::Node = element.unchecked_into();
+    let wrapper_a: web_glue::dom::Node = element.clone().unchecked_into();
+    let wrapper_b: web_glue::dom::Node = element.clone().unchecked_into();
+    let wrapper_c: web_glue::dom::Node = element.unchecked_into();
 
     // Sanity: the wrapper addresses really are different in Rust.
     // If they ever happened to coincide, the test wouldn't be
     // exercising the WeakMap fallback path it's designed to test.
-    let pa = &wrapper_a as *const web_sys::Node;
-    let pb = &wrapper_b as *const web_sys::Node;
-    let pc = &wrapper_c as *const web_sys::Node;
+    let pa = &wrapper_a as *const web_glue::dom::Node;
+    let pb = &wrapper_b as *const web_glue::dom::Node;
+    let pc = &wrapper_c as *const web_glue::dom::Node;
     assert_ne!(pa, pb, "wrappers should occupy different Rust addresses");
     assert_ne!(pa, pc);
     assert_ne!(pb, pc);
@@ -120,8 +120,8 @@ fn node_id_cache_returns_same_id_for_same_wrapper() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
-    let wrapper: web_sys::Node = doc.create_element("div").unwrap().unchecked_into();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let wrapper: web_glue::dom::Node = doc.create_element("div").unwrap().unchecked_into();
 
     let id_first = backend.node_id(&wrapper);
     let id_second = backend.node_id(&wrapper);
@@ -139,10 +139,10 @@ fn node_id_returns_distinct_ids_for_distinct_dom_elements() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
-    let n1: web_sys::Node = doc.create_element("div").unwrap().unchecked_into();
-    let n2: web_sys::Node = doc.create_element("div").unwrap().unchecked_into();
-    let n3: web_sys::Node = doc.create_element("span").unwrap().unchecked_into();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let n1: web_glue::dom::Node = doc.create_element("div").unwrap().unchecked_into();
+    let n2: web_glue::dom::Node = doc.create_element("div").unwrap().unchecked_into();
+    let n3: web_glue::dom::Node = doc.create_element("span").unwrap().unchecked_into();
 
     let id1 = backend.node_id(&n1);
     let id2 = backend.node_id(&n2);
@@ -164,10 +164,10 @@ fn node_id_handles_text_nodes_via_weakmap() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let text = doc.create_text_node("hello");
-    let wrapper_a: web_sys::Node = text.clone().unchecked_into();
-    let wrapper_b: web_sys::Node = text.unchecked_into();
+    let wrapper_a: web_glue::dom::Node = text.clone().unchecked_into();
+    let wrapper_b: web_glue::dom::Node = text.unchecked_into();
 
     let id_a = backend.node_id(&wrapper_a);
     let id_b = backend.node_id(&wrapper_b);
@@ -202,7 +202,7 @@ fn node_id_handles_text_nodes_via_weakmap() {
 fn node_id_unique_across_many_create_drop_cycles() {
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let body = doc.body().expect("body");
 
     const N: usize = 100;
@@ -211,10 +211,10 @@ fn node_id_unique_across_many_create_drop_cycles() {
     // alive across iterations — otherwise GC could collect them
     // mid-loop and the WeakMap entries would clear, making the
     // address-collision test meaningless.
-    let mut keepalive: Vec<web_sys::Element> = Vec::with_capacity(N);
+    let mut keepalive: Vec<web_glue::dom::Element> = Vec::with_capacity(N);
     for _ in 0..N {
         let element = doc.create_element("div").unwrap();
-        let wrapper: web_sys::Node = element.clone().unchecked_into();
+        let wrapper: web_glue::dom::Node = element.clone().unchecked_into();
         ids.push(backend.node_id(&wrapper));
         keepalive.push(element);
         // wrapper drops here; its address is available for reuse.
@@ -256,10 +256,10 @@ fn apply_style_snapshots_gradient_shape_for_animation() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let element = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element).unwrap();
-    let node: web_sys::Node = element.unchecked_into();
+    let node: web_glue::dom::Node = element.unchecked_into();
 
     let rules = Rc::new(StyleRules {
         background_gradient: Some(Gradient {
@@ -305,10 +305,10 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let element = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element).unwrap();
-    let node: web_sys::Node = element.unchecked_into();
+    let node: web_glue::dom::Node = element.unchecked_into();
 
     let base = Rc::new(StyleRules {
         background_gradient: Some(Gradient {
@@ -368,10 +368,10 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let element = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element).unwrap();
-    let node: web_sys::Node = element.unchecked_into();
+    let node: web_glue::dom::Node = element.unchecked_into();
 
     let base = Rc::new(StyleRules {
         width: Some(Tokenized::Literal(Length::Px(100.0))),
@@ -424,13 +424,13 @@ fn apply_styled_variants_emits_container_query_rule() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let container = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&container).unwrap();
-    let container_node: web_sys::Node = container.clone().unchecked_into();
+    let container_node: web_glue::dom::Node = container.clone().unchecked_into();
     let element = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element).unwrap();
-    let node: web_sys::Node = element.unchecked_into();
+    let node: web_glue::dom::Node = element.unchecked_into();
 
     backend.mark_container_impl(&container_node);
 
@@ -669,12 +669,12 @@ fn regression_web_disabled_state_styles_div_pressable() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     // A pressable is a `<div>`, NOT a form control — this is the whole
     // point of the bug.
     let element = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element).unwrap();
-    let node: web_sys::Node = element.clone().unchecked_into();
+    let node: web_glue::dom::Node = element.clone().unchecked_into();
 
     let base = Rc::new(StyleRules {
         opacity: Some(Tokenized::Literal(1.0)),
@@ -703,7 +703,7 @@ fn regression_web_disabled_state_styles_div_pressable() {
         let text = rule.css_text();
         all.push_str(&text);
         all.push('\n');
-        if let Ok(style_rule) = rule.dyn_into::<web_sys::CssStyleRule>() {
+        if let Ok(style_rule) = rule.dyn_into::<web_glue::dom::CssStyleRule>() {
             let selector = style_rule.selector_text();
             if selector.contains("[disabled]") || selector.contains(":disabled") {
                 disabled_selector = Some(selector);
@@ -924,11 +924,11 @@ fn regression_first_class_apply_is_synchronous_no_boot_transition() {
     // `setAttribute` fallback and the regression couldn't reproduce.
     let backend = install_for_text_bindings();
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let element = doc.create_element("div").unwrap();
     // DETACHED on purpose: mirrors the walker's order (style applied
     // during `build`, BEFORE the node is `insert`ed into its parent).
-    let node: web_sys::Node = element.clone().unchecked_into();
+    let node: web_glue::dom::Node = element.clone().unchecked_into();
 
     let rules = Rc::new(StyleRules {
         background: Some(Tokenized::Literal(Color("#ff0000".into()))),
@@ -968,13 +968,13 @@ fn regression_first_class_apply_is_synchronous_no_boot_transition() {
 /// (e.g. `Rc<Node>` keyed) is worth the complexity.
 #[wasm_bindgen_test]
 fn benchmark_node_id_ffi_cost() {
-    use web_sys::console;
+    use web_glue::dom::console;
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let body = doc.body().unwrap();
-    let performance = web_sys::window().unwrap().performance().unwrap();
+    let performance = web_glue::dom::window().unwrap().performance().unwrap();
 
     // Bench A: REPEAT calls on the same Rust wrapper. Hits the
     // WeakMap with the same JS object N times. Pure FFI cost —
@@ -984,7 +984,7 @@ fn benchmark_node_id_ffi_cost() {
     // still stable.
     const N_SAME: usize = 500;
     let element = doc.create_element("div").unwrap();
-    let wrapper: web_sys::Node = element.unchecked_into();
+    let wrapper: web_glue::dom::Node = element.unchecked_into();
     // (Intentionally NOT appending to body — empirically the
     //  combo of `append_child` + a tight follow-up loop wedges
     //  headless safaridriver, even though the same pattern works
@@ -992,7 +992,7 @@ fn benchmark_node_id_ffi_cost() {
     let _ = &body;
 
     // Warm up — first call lazily injects the shim + caches the
-    // js_sys::Function handle. Don't include that in the timing.
+    // web_glue::js::Function handle. Don't include that in the timing.
     let _ = backend.node_id(&wrapper);
 
     let t0 = performance.now();
@@ -1006,7 +1006,7 @@ fn benchmark_node_id_ffi_cost() {
     // case at scale — `apply_style` over many styled rows). Each
     // call mints a fresh WeakMap entry.
     const N_DISTINCT: usize = 200;
-    let mut nodes: Vec<web_sys::Node> = Vec::with_capacity(N_DISTINCT);
+    let mut nodes: Vec<web_glue::dom::Node> = Vec::with_capacity(N_DISTINCT);
     for _ in 0..N_DISTINCT {
         let el = doc.create_element("div").unwrap();
         nodes.push(el.unchecked_into());
@@ -1182,7 +1182,7 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
     use std::rc::Rc;
 
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let app = doc.get_element_by_id("app").unwrap();
 
     // SSR-style markup: one root child, one `<input>` inside it. The
@@ -1213,7 +1213,7 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 
     // The returned node must be the SAME element the SSR rendered —
     // adoption succeeded, not a fresh `<input>` next to it.
-    let adopted: web_sys::Element = input_node.unchecked_into();
+    let adopted: web_glue::dom::Element = input_node.unchecked_into();
     assert!(
         adopted.is_same_node(Some(ssr_input.as_ref())),
         "text_input::create must adopt the SSR input during hydration; got a fresh element \
@@ -1258,7 +1258,7 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
 
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let app = doc.get_element_by_id("app").unwrap();
 
     // SSR markup: the app root `<div>` holds one `<span>` — the stale
@@ -1284,7 +1284,7 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
 
     // Exactly one element child under `.approot`, and it's the fresh nav
     // `<div>` — the stale `<span>` is gone. Pre-fix this was 2 (span + div).
-    let approot_el: web_sys::Element = approot.unchecked_into();
+    let approot_el: web_glue::dom::Element = approot.unchecked_into();
     assert_eq!(
         count_element_children(&approot_el),
         1,
@@ -1333,7 +1333,7 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
 #[wasm_bindgen_test]
 fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let app = doc.get_element_by_id("app").unwrap();
 
     // SSR document for a stack navigator whose layout is
@@ -1357,7 +1357,7 @@ fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
     let screen = backend.create_view_impl(&Default::default());
     assert!(
         screen
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .unwrap()
             .is_same_node(Some(ssr_screen.as_ref())),
         "the steered screen build must adopt the server's screen root, \
@@ -1366,7 +1366,7 @@ fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
     // The screen's text leaf adopts the span inside it.
     let txt = crate::primitives::text::create(&mut backend, "hi");
     assert_eq!(
-        txt.unchecked_ref::<web_sys::Element>().tag_name().to_lowercase(),
+        txt.unchecked_ref::<web_glue::dom::Element>().tag_name().to_lowercase(),
         "span",
         "screen text adopts the SSR span",
     );
@@ -1377,7 +1377,7 @@ fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
     let outlet = backend.create_view_impl(&Default::default());
     assert!(
         outlet
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .unwrap()
             .is_same_node(Some(ssr_outlet.as_ref())),
         "the layout build must adopt the outlet node after the restore",
@@ -1387,7 +1387,7 @@ fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
     let chrome = backend.create_view_impl(&Default::default());
     assert!(
         chrome
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .unwrap()
             .is_same_node(Some(ssr_chrome.as_ref())),
         "post-outlet chrome must adopt its own node — descending into the \
@@ -1414,7 +1414,7 @@ fn regression_nav_screen_cursor_steering_adopts_out_of_order_build() {
 #[wasm_bindgen_test]
 fn nav_screen_steering_without_marker_builds_screen_fresh_and_layout_adopts() {
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let app = doc.get_element_by_id("app").unwrap();
 
     app.set_inner_html(
@@ -1431,7 +1431,7 @@ fn nav_screen_steering_without_marker_builds_screen_fresh_and_layout_adopts() {
     let screen = backend.create_view_impl(&Default::default());
     assert!(
         !screen
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .unwrap()
             .is_same_node(Some(ssr_outlet.as_ref())),
         "without the marker the screen must build fresh, never consume the outlet",
@@ -1441,7 +1441,7 @@ fn nav_screen_steering_without_marker_builds_screen_fresh_and_layout_adopts() {
     let outlet = backend.create_view_impl(&Default::default());
     assert!(
         outlet
-            .dyn_ref::<web_sys::Element>()
+            .dyn_ref::<web_glue::dom::Element>()
             .unwrap()
             .is_same_node(Some(ssr_outlet.as_ref())),
         "the layout build adopts the outlet after the restore",
@@ -1454,7 +1454,7 @@ fn nav_screen_steering_without_marker_builds_screen_fresh_and_layout_adopts() {
 /// `child_element_count()` aren't in this crate's enabled web-sys feature
 /// set; `first_element_child` / `next_element_sibling` are).
 #[cfg(feature = "hydrate")]
-fn count_element_children(el: &web_sys::Element) -> u32 {
+fn count_element_children(el: &web_glue::dom::Element) -> u32 {
     let mut n = 0;
     let mut cur = el.first_element_child();
     while let Some(c) = cur {
@@ -1473,7 +1473,7 @@ fn count_element_children(el: &web_sys::Element) -> u32 {
 fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
 
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let app = doc.get_element_by_id("app").unwrap();
 
     // SSR: app root with a stale `<span>` at the cursor.
@@ -1487,7 +1487,7 @@ fn insert_many_removes_stale_ssr_node_on_divergence_remount() {
 
     backend.insert_many_impl(&mut approot, vec![fresh_row.clone()]);
 
-    let approot_el: web_sys::Element = approot.unchecked_into();
+    let approot_el: web_glue::dom::Element = approot.unchecked_into();
     assert_eq!(
         count_element_children(&approot_el),
         1,
@@ -1517,7 +1517,7 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
     struct CanvasLike;
 
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let app = doc.get_element_by_id("app").unwrap();
 
     // SSR: external host (empty div) then a sibling span.
@@ -1553,7 +1553,7 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
     );
     // approot holds exactly [fresh-external, sibling] — the fresh node took
     // the host's slot, the sibling is untouched.
-    let approot_el: web_sys::Element = approot.unchecked_into();
+    let approot_el: web_glue::dom::Element = approot.unchecked_into();
     assert_eq!(count_element_children(&approot_el), 2, "expected [external, sibling]");
     assert!(
         approot_el.first_element_child().unwrap().is_same_node(Some(ext.unchecked_ref())),
@@ -1616,10 +1616,10 @@ fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
     install_mount();
     let mut backend = WebBackend::new("#app");
 
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el1 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el1).unwrap();
-    let node1: web_sys::Node = el1.clone().unchecked_into();
+    let node1: web_glue::dom::Node = el1.clone().unchecked_into();
 
     // Apply COLOR style to node1 — populates `dynamic_by_content` with
     // the color content_key and `dynamic_by_ptr` with ptr(color_rc).
@@ -1658,7 +1658,7 @@ fn dynamic_by_ptr_stale_entry_does_not_misroute_class() {
     // resulting class must encode the flex rules, not the color.
     let el2 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el2).unwrap();
-    let node2: web_sys::Node = el2.clone().unchecked_into();
+    let node2: web_glue::dom::Node = el2.clone().unchecked_into();
     backend.apply_styled_states_impl(&node2, &flex_rules, &[]);
     let flex_class = el2.class_name();
 
@@ -1718,7 +1718,7 @@ fn regression_filled_icon_paints_fill_not_stroke() {
 
     // --- Filled icon: color goes to `fill`, stroke disabled. ---
     let filled_node = crate::primitives::icon::create(&mut backend, &FILLED_ICON, Some(&red));
-    let filled_el: web_sys::Element = filled_node.clone().dyn_into().unwrap();
+    let filled_el: web_glue::dom::Element = filled_node.clone().dyn_into().unwrap();
     assert_eq!(filled_el.tag_name().to_lowercase(), "svg");
     assert_eq!(
         filled_el.get_attribute("fill").as_deref(),
@@ -1747,7 +1747,7 @@ fn regression_filled_icon_paints_fill_not_stroke() {
 
     // --- Outlined icon (default): historic stroke-only behavior. ---
     let outlined_node = crate::primitives::icon::create(&mut backend, &OUTLINED_ICON, Some(&red));
-    let outlined_el: web_sys::Element = outlined_node.clone().dyn_into().unwrap();
+    let outlined_el: web_glue::dom::Element = outlined_node.clone().dyn_into().unwrap();
     assert_eq!(
         outlined_el.get_attribute("fill").as_deref(),
         Some("none"),
@@ -1805,10 +1805,9 @@ fn regression_filled_icon_paints_fill_not_stroke() {
 fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     use std::cell::Cell;
     use std::rc::Rc;
-    use wasm_bindgen::closure::Closure;
 
     install_mount();
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let body = doc.body().expect("body");
 
     // A portal subtree with two focusable children, plus an element
@@ -1830,19 +1829,17 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     // test runner's own handler — our assertion below is the signal.
     let errors: Rc<Cell<u32>> = Rc::new(Cell::new(0));
     let errors_for_cb = errors.clone();
-    let on_error: Closure<dyn FnMut(web_sys::Event)> =
-        Closure::wrap(Box::new(move |ev: web_sys::Event| {
+    let window = web_glue::dom::window().unwrap();
+    // Capture phase — run before any runner-installed handler.
+    let on_error = web_glue::dom::Listener::new(
+        window.clone().into(),
+        "error",
+        web_glue::dom::ListenerOptions::CAPTURE,
+        move |ev| {
             errors_for_cb.set(errors_for_cb.get() + 1);
             ev.prevent_default();
-        }) as Box<dyn FnMut(web_sys::Event)>);
-    let window = web_sys::window().unwrap();
-    window
-        .add_event_listener_with_callback_and_bool(
-            "error",
-            on_error.as_ref().unchecked_ref(),
-            true, // capture phase — run before any runner-installed handler
-        )
-        .unwrap();
+        },
+    );
 
     // Arm the trap (keep the returned Closure alive for the duration).
     let _trap = crate::primitives::portal::install_focus_trap(&doc, portal_root.clone())
@@ -1852,7 +1849,7 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     // (target = outside) → the trap calls `.focus()` on `inside_a`
     // → that synchronously re-dispatches `focusin` (target = inside_a),
     // re-entering the listener. The old `FnMut` listener threw here.
-    let outside_html: web_sys::HtmlElement = outside.unchecked_into();
+    let outside_html: web_glue::dom::HtmlElement = outside.unchecked_into();
     outside_html.focus().expect("focus outside");
 
     // (a) No uncaught error must have been reported.
@@ -1876,12 +1873,7 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     );
 
     // Cleanup so later tests don't inherit the document `error`
-    // listener.
-    let _ = window.remove_event_listener_with_callback_and_bool(
-        "error",
-        on_error.as_ref().unchecked_ref(),
-        true,
-    );
+    // listener (the `Listener` detaches as it drops).
     drop(on_error);
 }
 
@@ -1902,11 +1894,11 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
 
 /// Build a `pointerdown` that actually bubbles, dispatch it on `target`,
 /// and let it walk the ancestor chain like a real pointer press.
-fn dispatch_bubbling_pointerdown(target: &web_sys::Element) {
-    let init = web_sys::PointerEventInit::new();
+fn dispatch_bubbling_pointerdown(target: &web_glue::dom::Element) {
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
-    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init)
         .expect("construct bubbling pointerdown");
     target.dispatch_event(&ev).expect("dispatch pointerdown");
 }
@@ -1925,7 +1917,7 @@ fn regression_web_touch_consumed_child_stops_ancestor_on_touch() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     // Parent wraps child; both are connected to the document so DOM
     // bubbling is live (listeners are registered bubble-phase, so child
@@ -1977,7 +1969,7 @@ fn web_touch_ignored_child_still_bubbles_to_ancestor() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let parent = doc.create_element("div").unwrap();
     let child = doc.create_element("div").unwrap();
@@ -2034,7 +2026,7 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     // The ancestor stands in for a clickable table row's `<td>`: it carries an
     // `on_touch` that would fire the row callback.
@@ -2051,10 +2043,10 @@ fn regression_web_pressable_swallows_ancestor_on_touch() {
     );
 
     // A real Pressable, parented into the row.
-    let pressable: web_sys::Node =
+    let pressable: web_glue::dom::Node =
         backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
     row.append_child(&pressable).unwrap();
-    let pressable_el: web_sys::Element = pressable.unchecked_into();
+    let pressable_el: web_glue::dom::Element = pressable.unchecked_into();
 
     dispatch_bubbling_pointerdown(&pressable_el);
 
@@ -2081,7 +2073,7 @@ fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow(
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     // The marked ancestor stands in for the combobox menu panel.
     let panel = doc.create_element("div").unwrap();
@@ -2089,14 +2081,14 @@ fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow(
     backend.mark_preserves_focus_impl(&panel.clone().unchecked_into());
 
     // A real Pressable row inside it — installs the pointerdown swallow.
-    let row: web_sys::Node = backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
+    let row: web_glue::dom::Node = backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
     panel.append_child(&row).unwrap();
-    let row_el: web_sys::Element = row.unchecked_into();
+    let row_el: web_glue::dom::Element = row.unchecked_into();
 
-    let init = web_sys::PointerEventInit::new();
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
-    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init)
         .expect("construct bubbling pointerdown");
     row_el.dispatch_event(&ev).expect("dispatch pointerdown");
 
@@ -2122,7 +2114,7 @@ fn regression_web_preserves_focus_cancels_pointerdown_through_pressable_swallow(
 fn regression_web_preserves_focus_lets_a_press_focus_a_text_field_inside_it() {
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     // The marked ancestor stands in for the slotted menu panel.
     let panel = doc.create_element("div").unwrap();
@@ -2133,10 +2125,10 @@ fn regression_web_preserves_focus_lets_a_press_focus_a_text_field_inside_it() {
     let input = doc.create_element("input").unwrap();
     panel.append_child(&input).unwrap();
 
-    let init = web_sys::PointerEventInit::new();
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
-    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init)
         .expect("construct bubbling pointerdown");
     input.dispatch_event(&ev).expect("dispatch pointerdown");
 
@@ -2165,25 +2157,25 @@ fn regression_web_node_teardown_detaches_listeners_before_dropping_them() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let input = doc.create_element("input").unwrap();
     doc.body().unwrap().append_child(&input).unwrap();
-    let node: web_sys::Node = input.clone().unchecked_into();
+    let node: web_glue::dom::Node = input.clone().unchecked_into();
     let id = backend.node_id(&node);
 
     let fired = Rc::new(Cell::new(0));
     let counter = fired.clone();
     backend.track_listener(id, &input, "blur", false, move |_| counter.set(counter.get() + 1));
 
-    let ev = web_sys::Event::new("blur").expect("construct blur");
+    let ev = web_glue::dom::Event::new("blur").expect("construct blur");
     input.dispatch_event(&ev).expect("dispatch blur");
     assert_eq!(fired.get(), 1, "a tracked listener fires while the node is live");
 
     // Teardown: what `on_node_unstyled` does to the node's record.
     backend.state_listeners.remove(&id);
 
-    let ev = web_sys::Event::new("blur").expect("construct blur");
+    let ev = web_glue::dom::Event::new("blur").expect("construct blur");
     input.dispatch_event(&ev).expect("dispatch blur");
     assert_eq!(
         fired.get(),
@@ -2212,23 +2204,23 @@ fn regression_web_node_teardown_detaches_listeners_before_dropping_them() {
 /// dispatch it on `target`. Wider than [`dispatch_bubbling_pointerdown`]: the
 /// capture tests need a specific pointer id, and the selection tests need the
 /// matching `pointerup` to close the gesture back down.
-fn dispatch_bubbling_pointer(target: &web_sys::Element, kind: &str, pointer_id: i32) {
-    let init = web_sys::PointerEventInit::new();
+fn dispatch_bubbling_pointer(target: &web_glue::dom::Element, kind: &str, pointer_id: i32) {
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_pointer_id(pointer_id);
-    let ev = web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict(kind, &init)
         .unwrap_or_else(|_| panic!("construct bubbling {kind}"));
     target.dispatch_event(&ev).expect("dispatch pointer event");
 }
 
 /// Dispatch the bubbling, cancelable `selectstart` a browser fires when a
 /// press starts anchoring a highlight, and report whether it was cancelled.
-fn selectstart_was_suppressed(target: &web_sys::Element) -> bool {
-    let init = web_sys::EventInit::new();
+fn selectstart_was_suppressed(target: &web_glue::dom::Element) -> bool {
+    let init = web_glue::dom::EventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
-    let ev = web_sys::Event::new_with_event_init_dict("selectstart", &init)
+    let ev = web_glue::dom::Event::new_with_event_init_dict("selectstart", &init)
         .expect("construct selectstart");
     target.dispatch_event(&ev).expect("dispatch selectstart");
     ev.default_prevented()
@@ -2254,7 +2246,7 @@ fn regression_web_consumed_press_captures_pointer_without_a_claim() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
@@ -2290,7 +2282,7 @@ fn web_touch_ignored_press_does_not_capture_the_pointer() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
@@ -2324,7 +2316,7 @@ fn regression_web_gesture_press_suppresses_native_text_selection() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let handle = doc.create_element("div").unwrap();
     let label = doc.create_element("span").unwrap();
@@ -2370,7 +2362,7 @@ fn web_gesture_press_leaves_owned_selections_alone() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let card = doc.create_element("div").unwrap();
     let field = doc.create_element("input").unwrap();
@@ -2419,7 +2411,7 @@ fn regression_web_toggle_swallows_ancestor_on_touch() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let row = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&row).unwrap();
@@ -2433,10 +2425,10 @@ fn regression_web_toggle_swallows_ancestor_on_touch() {
         }),
     );
 
-    let toggle: web_sys::Node =
+    let toggle: web_glue::dom::Node =
         backend.create_toggle_impl(false, Rc::new(|_| {}), &Default::default());
     row.append_child(&toggle).unwrap();
-    let toggle_el: web_sys::Element = toggle.unchecked_into();
+    let toggle_el: web_glue::dom::Element = toggle.unchecked_into();
 
     let _ = crate::primitives::touch::take_capture_attempts();
     dispatch_bubbling_pointerdown(&toggle_el);
@@ -2459,12 +2451,12 @@ fn regression_web_toggle_swallows_ancestor_on_touch() {
 /// Dispatch a bubbling `pointerdown` with `button == 2` — the shape Safari
 /// (macOS Ctrl-click remap) and every browser's two-finger / right-button
 /// press produce.
-fn dispatch_bubbling_secondary_pointerdown(target: &web_sys::Element) {
-    let init = web_sys::PointerEventInit::new();
+fn dispatch_bubbling_secondary_pointerdown(target: &web_glue::dom::Element) {
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_button(2);
-    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init)
         .expect("construct secondary pointerdown");
     target.dispatch_event(&ev).expect("dispatch pointerdown");
 }
@@ -2473,12 +2465,12 @@ fn dispatch_bubbling_secondary_pointerdown(target: &web_sys::Element) {
 /// Firefox delivers, and (modulo the PointerEvent subclass) what Chrome on
 /// macOS delivers for a Ctrl-click after suppressing the `pointerdown`.
 /// Returns the event so callers can assert `default_prevented`.
-fn dispatch_bubbling_contextmenu(target: &web_sys::Element, ctrl: bool) -> web_sys::MouseEvent {
-    let init = web_sys::MouseEventInit::new();
+fn dispatch_bubbling_contextmenu(target: &web_glue::dom::Element, ctrl: bool) -> web_glue::dom::MouseEvent {
+    let init = web_glue::dom::MouseEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_ctrl_key(ctrl);
-    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init)
+    let ev = web_glue::dom::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init)
         .expect("construct contextmenu");
     target.dispatch_event(&ev).expect("dispatch contextmenu");
     ev
@@ -2487,14 +2479,14 @@ fn dispatch_bubbling_contextmenu(target: &web_sys::Element, ctrl: bool) -> web_s
 /// Dispatch a bubbling `pointerdown` with `button == 0`, `ctrlKey`, and
 /// pointerType "mouse" — the macOS Ctrl-click shape Chrome and Firefox
 /// deliver when they don't suppress the pointerdown outright.
-fn dispatch_bubbling_ctrl_primary_pointerdown(target: &web_sys::Element) {
-    let init = web_sys::PointerEventInit::new();
+fn dispatch_bubbling_ctrl_primary_pointerdown(target: &web_glue::dom::Element) {
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_button(0);
     init.set_ctrl_key(true);
     init.set_pointer_type("mouse");
-    let ev = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init)
         .expect("construct ctrl primary pointerdown");
     target.dispatch_event(&ev).expect("dispatch pointerdown");
 }
@@ -2521,7 +2513,7 @@ fn regression_web_mac_ctrl_primary_pointerdown_folds_to_secondary() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -2540,10 +2532,10 @@ fn regression_web_mac_ctrl_primary_pointerdown_folds_to_secondary() {
     dispatch_bubbling_ctrl_primary_pointerdown(&el);
     let ctx = dispatch_bubbling_contextmenu(&el, true);
     {
-        let init = web_sys::PointerEventInit::new();
+        let init = web_glue::dom::PointerEventInit::new();
         init.set_bubbles(true);
         init.set_button(0);
-        let up = web_sys::PointerEvent::new_with_event_init_dict("pointerup", &init)
+        let up = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerup", &init)
             .expect("construct pointerup");
         el.dispatch_event(&up).expect("dispatch pointerup");
     }
@@ -2581,7 +2573,7 @@ fn web_non_mac_ctrl_primary_click_stays_primary() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -2628,7 +2620,7 @@ fn regression_web_chrome_ctrl_click_contextmenu_only_delivers_secondary_began() 
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -2673,7 +2665,7 @@ fn web_contextmenu_after_secondary_pointerdown_is_not_redelivered() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -2714,7 +2706,7 @@ fn web_contextmenu_consumed_secondary_does_not_leak_to_ancestor() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let parent = doc.create_element("div").unwrap();
     let child = doc.create_element("div").unwrap();
     parent.append_child(&child).unwrap();
@@ -2756,8 +2748,8 @@ fn web_contextmenu_consumed_secondary_does_not_leak_to_ancestor() {
 /// which the browser then hit-tests the press's `contextmenu` onto. Returns
 /// `(row, catcher, row Began count, catcher Began count)`.
 fn row_and_catcher() -> (
-    web_sys::Element,
-    web_sys::Element,
+    web_glue::dom::Element,
+    web_glue::dom::Element,
     std::rc::Rc<std::cell::Cell<u32>>,
     std::rc::Rc<std::cell::Cell<u32>>,
 ) {
@@ -2767,7 +2759,7 @@ fn row_and_catcher() -> (
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let row = doc.create_element("div").unwrap();
     let catcher = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&row).unwrap();
@@ -2866,7 +2858,7 @@ fn regression_web_secondary_press_on_a_tappable_cell_reaches_the_row_menu() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let row = doc.create_element("div").unwrap();
     let cell = doc.create_element("div").unwrap();
     row.append_child(&cell).unwrap();
@@ -2909,14 +2901,14 @@ fn regression_web_secondary_press_on_a_tappable_cell_reaches_the_row_menu() {
 
     // The cell is still clickable: a primary press taps it and never
     // reaches the row.
-    let init = web_sys::PointerEventInit::new();
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_button(0);
     init.set_pointer_id(7);
-    let down = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
+    let down = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
     cell.dispatch_event(&down).unwrap();
-    let up = web_sys::PointerEvent::new_with_event_init_dict("pointerup", &init).unwrap();
+    let up = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerup", &init).unwrap();
     cell.dispatch_event(&up).unwrap();
     assert_eq!(taps.get(), 1, "a left-click still taps the cell");
     assert_eq!(
@@ -2940,7 +2932,7 @@ fn web_contextmenu_synthesis_respects_pressable_swallow() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let row = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&row).unwrap();
@@ -2954,10 +2946,10 @@ fn web_contextmenu_synthesis_respects_pressable_swallow() {
         }),
     );
 
-    let pressable: web_sys::Node =
+    let pressable: web_glue::dom::Node =
         backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
     row.append_child(&pressable).unwrap();
-    let pressable_el: web_sys::Element = pressable.unchecked_into();
+    let pressable_el: web_glue::dom::Element = pressable.unchecked_into();
 
     // Chrome-shape right-press on the control: contextmenu with no
     // pointerdown reaching the row.
@@ -2986,7 +2978,7 @@ fn web_touch_longpress_contextmenu_does_not_synthesize_secondary() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -3000,11 +2992,11 @@ fn web_touch_longpress_contextmenu_does_not_synthesize_secondary() {
         }),
     );
 
-    let init = web_sys::PointerEventInit::new();
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_pointer_type("touch");
-    let ev = web_sys::PointerEvent::new_with_event_init_dict("contextmenu", &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict("contextmenu", &init)
         .expect("construct touch contextmenu");
     el.dispatch_event(&ev).expect("dispatch contextmenu");
 
@@ -3029,12 +3021,12 @@ fn web_touch_longpress_contextmenu_does_not_synthesize_secondary() {
 // ---------------------------------------------------------------------------
 
 /// Build a bubbling, cancelable pointer event of `kind` carrying `pointer_id`.
-fn pointer_event_with_id(kind: &str, pointer_id: i32) -> web_sys::PointerEvent {
-    let init = web_sys::PointerEventInit::new();
+fn pointer_event_with_id(kind: &str, pointer_id: i32) -> web_glue::dom::PointerEvent {
+    let init = web_glue::dom::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
     init.set_pointer_id(pointer_id);
-    web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+    web_glue::dom::PointerEvent::new_with_event_init_dict(kind, &init)
         .expect("construct bubbling pointer event")
 }
 
@@ -3050,7 +3042,7 @@ fn regression_web_touch_window_net_is_shared_not_per_element() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     // 25 independently subscribed elements, each with a live gesture (the net
     // is armed at `pointerdown`, so this is the state that used to have 50
@@ -3109,7 +3101,7 @@ fn web_touch_off_element_release_ends_gesture_via_shared_net() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -3133,7 +3125,7 @@ fn web_touch_off_element_release_ends_gesture_via_shared_net() {
     assert_eq!(armed, before + 1, "a live gesture arms the shared net");
 
     // The release never touches the element — it goes straight to `window`.
-    let win = web_sys::window().unwrap();
+    let win = web_glue::dom::window().unwrap();
     win.dispatch_event(&pointer_event_with_id("pointerup", 601))
         .expect("dispatch pointerup on window");
 
@@ -3164,7 +3156,7 @@ fn web_touch_on_element_release_disarms_shared_net() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -3195,12 +3187,12 @@ fn web_touch_on_element_release_disarms_shared_net() {
 
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
-fn dispatch_bubbling_keydown(target: &web_sys::Element, key: &str) -> bool {
-    let init = web_sys::KeyboardEventInit::new();
+fn dispatch_bubbling_keydown(target: &web_glue::dom::Element, key: &str) -> bool {
+    let init = web_glue::dom::KeyboardEventInit::new();
     init.set_key(key);
     init.set_bubbles(true);
     init.set_cancelable(true);
-    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
+    let ev = web_glue::dom::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
         .expect("construct bubbling keydown");
     target.dispatch_event(&ev).expect("dispatch keydown");
     ev.default_prevented()
@@ -3222,15 +3214,15 @@ fn regression_web_pressable_ignores_descendant_key() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     // A pressable card layer with a text input nested inside it — the Modal
     // shape: `pressable > ... > <input>`.
     let pressed = Rc::new(Cell::new(false));
     let p = pressed.clone();
-    let pressable: web_sys::Node =
+    let pressable: web_glue::dom::Node =
         backend.create_pressable_impl(Rc::new(move || p.set(true)), &Default::default());
-    let pressable_el: web_sys::Element = pressable.clone().unchecked_into();
+    let pressable_el: web_glue::dom::Element = pressable.clone().unchecked_into();
     doc.body().unwrap().append_child(&pressable_el).unwrap();
 
     let input = doc.create_element("input").unwrap();
@@ -3273,17 +3265,17 @@ fn regression_web_pressable_ignores_descendant_key() {
 
 /// Dispatch a non-bubbling pointer enter/leave event directly at `target`,
 /// optionally tagging the pointer type (`""` = unspecified/mouse-like).
-fn dispatch_pointer_typed(target: &web_sys::Element, kind: &str, pointer_type: &str) {
-    let init = web_sys::PointerEventInit::new();
+fn dispatch_pointer_typed(target: &web_glue::dom::Element, kind: &str, pointer_type: &str) {
+    let init = web_glue::dom::PointerEventInit::new();
     if !pointer_type.is_empty() {
         init.set_pointer_type(pointer_type);
     }
-    let ev = web_sys::PointerEvent::new_with_event_init_dict(kind, &init)
+    let ev = web_glue::dom::PointerEvent::new_with_event_init_dict(kind, &init)
         .expect("construct pointer event");
     target.dispatch_event(&ev).expect("dispatch pointer event");
 }
 
-fn dispatch_pointer(target: &web_sys::Element, kind: &str) {
+fn dispatch_pointer(target: &web_glue::dom::Element, kind: &str) {
     dispatch_pointer_typed(target, kind, "");
 }
 
@@ -3296,7 +3288,7 @@ fn web_on_hover_fires_true_on_enter_false_on_leave() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -3330,7 +3322,7 @@ fn web_on_hover_ignores_touch_pointers() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let el = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&el).unwrap();
 
@@ -3364,7 +3356,7 @@ fn web_on_load_fires_on_img_load_event() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let img = doc.create_element("img").unwrap();
     doc.body().unwrap().append_child(&img).unwrap();
 
@@ -3378,7 +3370,7 @@ fn web_on_load_fires_on_img_load_event() {
     // No src → not `complete` with a bitmap, so nothing fires yet.
     assert!(seen.borrow().is_empty(), "on_load must not fire before load");
 
-    let ev = web_sys::Event::new("load").unwrap();
+    let ev = web_glue::dom::Event::new("load").unwrap();
     img.dispatch_event(&ev).unwrap();
     assert_eq!(seen.borrow().len(), 1, "on_load fires once on the load event");
 }
@@ -3391,7 +3383,7 @@ fn web_on_error_fires_on_img_error_event() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let img = doc.create_element("img").unwrap();
     doc.body().unwrap().append_child(&img).unwrap();
 
@@ -3403,7 +3395,7 @@ fn web_on_error_fires_on_img_error_event() {
     );
     assert_eq!(fired.get(), 0, "on_error must not fire before error");
 
-    let ev = web_sys::Event::new("error").unwrap();
+    let ev = web_glue::dom::Event::new("error").unwrap();
     img.dispatch_event(&ev).unwrap();
     assert_eq!(fired.get(), 1, "on_error fires once on the error event");
 }
@@ -3437,7 +3429,7 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
 
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
 
     let make_base = || {
         Rc::new(StyleRules {
@@ -3462,11 +3454,11 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
         let mut media_pos = None;
         for i in 0..rules.length() {
             let Some(r) = rules.get(i) else { continue };
-            if let Some(style_rule) = r.dyn_ref::<web_sys::CssStyleRule>() {
+            if let Some(style_rule) = r.dyn_ref::<web_glue::dom::CssStyleRule>() {
                 if style_rule.selector_text() == selector {
                     base_pos = Some(i);
                 }
-            } else if r.dyn_ref::<web_sys::CssMediaRule>().is_some()
+            } else if r.dyn_ref::<web_glue::dom::CssMediaRule>().is_some()
                 && r.css_text().contains(class)
             {
                 media_pos = Some(i);
@@ -3482,7 +3474,7 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
     // Initial mint on node 1: appended in source order, base < media.
     let element1 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element1).unwrap();
-    let node1: web_sys::Node = element1.unchecked_into();
+    let node1: web_glue::dom::Node = element1.unchecked_into();
     backend.apply_styled_variants_impl(
         &node1,
         &make_base(),
@@ -3514,7 +3506,7 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
     // here too. Pre-fix, the LIFO recycle inverted the pair.
     let element2 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element2).unwrap();
-    let node2: web_sys::Node = element2.unchecked_into();
+    let node2: web_glue::dom::Node = element2.unchecked_into();
     backend.apply_styled_variants_impl(
         &node2,
         &make_base(),
@@ -3556,22 +3548,21 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
 /// Await an `<img>`'s `load` event so `complete() && naturalWidth > 0`
 /// holds deterministically before the test installs its handler — this
 /// reproduces the "already cached / already decoded" state the bug needs.
-async fn decoded_img() -> web_sys::HtmlImageElement {
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::JsCast;
-    let doc = web_sys::window().unwrap().document().unwrap();
-    let img: web_sys::HtmlImageElement =
+async fn decoded_img() -> web_glue::dom::HtmlImageElement {
+    use web_glue::JsCast;
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let img: web_glue::dom::HtmlImageElement =
         doc.create_element("img").unwrap().unchecked_into();
     // 1×1 transparent GIF — decodes to naturalWidth == 1.
     let src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let cb = Closure::once_into_js(move || {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+    let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+        let resolve = resolve.clone();
+        crate::glue_dom::listen_for_element_lifetime(&img, "load", Default::default(), move |_| {
+            let _ = resolve.call0(&web_glue::JsValue::NULL);
         });
-        let _ = img.add_event_listener_with_callback("load", cb.unchecked_ref());
     });
     img.set_src(src);
-    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+    web_glue::JsFuture::new(&promise).await.unwrap();
     assert!(
         img.complete() && img.natural_width() > 0,
         "test image must be fully decoded before install",
@@ -3601,7 +3592,7 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
     let backend = Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
 
     let img = decoded_img().await;
-    let node: web_sys::Node = wasm_bindgen::JsCast::unchecked_into(img);
+    let node: web_glue::dom::Node = web_glue::JsCast::unchecked_into(img);
 
     // A handler that re-enters the backend borrow — the shape a
     // signal-writing `on_load` produces once its style effect runs.
@@ -3633,8 +3624,8 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
 
     // Yield one microtask turn; now the deferred notification runs, and
     // the re-entrant borrow is safe because `install` has returned.
-    let yield_promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL);
-    wasm_bindgen_futures::JsFuture::from(yield_promise).await.unwrap();
+    let yield_promise = web_glue::js::Promise::resolve(&web_glue::JsValue::NULL);
+    web_glue::JsFuture::new(&yield_promise).await.unwrap();
     assert!(
         fired.get(),
         "deferred on_load must fire on the next microtask",
@@ -3653,25 +3644,25 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
 /// `noopener` itself.
 #[wasm_bindgen_test]
 fn open_url_opens_a_new_tab_without_an_opener() {
-    use wasm_bindgen::JsValue;
+    use web_glue::JsValue;
     install_mount();
     let backend = WebBackend::new("#app");
-    let window = web_sys::window().unwrap();
+    let window = web_glue::dom::window().unwrap();
 
     // Swap `window.open` for a recorder so no real tab opens.
-    let real_open = js_sys::Reflect::get(&window, &JsValue::from_str("open")).unwrap();
-    let recorder = js_sys::Function::new_with_args(
+    let real_open = web_glue::js::Reflect::get(&window, &JsValue::from_str("open")).unwrap();
+    let recorder = web_glue::js::Function::new_with_args(
         "url, target, features",
         "window.__idealystOpenCall = [url, target, features]; return null;",
     );
-    js_sys::Reflect::set(&window, &JsValue::from_str("open"), &recorder).unwrap();
+    web_glue::js::Reflect::set(&window, &JsValue::from_str("open"), &recorder).unwrap();
 
     let opener = backend.url_opener_impl().expect("web has an opener");
     opener("https://example.com/docs");
 
-    let call = js_sys::Reflect::get(&window, &JsValue::from_str("__idealystOpenCall")).unwrap();
-    js_sys::Reflect::set(&window, &JsValue::from_str("open"), &real_open).unwrap();
-    let call: js_sys::Array = call.dyn_into().expect("window.open was called");
+    let call = web_glue::js::Reflect::get(&window, &JsValue::from_str("__idealystOpenCall")).unwrap();
+    web_glue::js::Reflect::set(&window, &JsValue::from_str("open"), &real_open).unwrap();
+    let call: web_glue::js::Array = call.dyn_into().expect("window.open was called");
     let arg = |i: u32| call.get(i).as_string().unwrap_or_default();
     assert_eq!(arg(0), "https://example.com/docs");
     assert_eq!(arg(1), "_blank", "open_url leaves the app for a NEW tab");
@@ -3708,10 +3699,10 @@ fn regression_glue_dispatch_does_not_rerun_static_constructors() {
     use std::sync::atomic::Ordering;
     install_mount();
     let mut backend = WebBackend::new("#app");
-    let doc = web_sys::window().unwrap().document().unwrap();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
     let input = doc.create_element("input").unwrap();
     doc.body().unwrap().append_child(&input).unwrap();
-    let node: web_sys::Node = input.clone().unchecked_into();
+    let node: web_glue::dom::Node = input.clone().unchecked_into();
     let id = backend.node_id(&node);
     let hits = Rc::new(Cell::new(0));
     let h = hits.clone();
@@ -3722,7 +3713,7 @@ fn regression_glue_dispatch_does_not_rerun_static_constructors() {
     });
     let before = CTOR_RUNS.load(Ordering::Relaxed);
     for _ in 0..10 {
-        input.dispatch_event(&web_sys::Event::new("blur").unwrap()).unwrap();
+        input.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
     }
     assert_eq!(hits.get(), 10, "the listener ran");
     assert_eq!(
@@ -3731,4 +3722,34 @@ fn regression_glue_dispatch_does_not_rerun_static_constructors() {
         "static constructors re-ran during glue listener dispatch"
     );
     input.remove();
+}
+
+// ---- HYBRID-BRIDGE: SDK ops recover a web-sys node from the host node ------
+
+/// Since phase 2b the host node an SDK's ops receive as `&dyn Any` is a
+/// `web_glue::dom::Node`. An un-ported SDK that still downcast it to
+/// `web_sys::Node` got `None` and silently no-oped (form `submit`, video
+/// `play`, webview `post_message`, svg `intrinsic_size`). They go through
+/// `bridge::node_to_web_sys`; this pins that it hands back the SAME DOM
+/// object, and refuses anything that is not a host node.
+#[wasm_bindgen_test]
+fn regression_bridge_recovers_the_web_sys_node_behind_a_host_node() {
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let el = doc.create_element("section").unwrap();
+    el.set_attribute("data-bridge", "same").unwrap();
+    let host: web_glue::dom::Node = el.clone().into();
+    let as_any: &dyn std::any::Any = &host;
+    let back = crate::bridge::node_to_web_sys(as_any).expect("a host node crosses the bridge");
+    let back_el: &web_sys_bridge_check::Element = wasm_bindgen::JsCast::unchecked_ref(&back);
+    assert_eq!(back_el.get_attribute("data-bridge").as_deref(), Some("same"));
+    // And back: the web-sys node becomes a host node for the same element.
+    let again = crate::bridge::node_from_web_sys(&back);
+    assert!(again.is_same_node(Some(&host)), "a round trip is the same DOM node");
+    // Not a host node: refused, not reinterpreted.
+    assert!(crate::bridge::node_to_web_sys(&42u32).is_none());
+}
+
+/// The web-sys types the bridge test inspects with (dev-dependency).
+mod web_sys_bridge_check {
+    pub use web_sys::Element;
 }

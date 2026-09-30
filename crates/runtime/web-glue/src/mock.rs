@@ -53,7 +53,7 @@ struct Heap {
 
 thread_local! {
     static HEAP: RefCell<Heap> = RefCell::new(Heap {
-        slots: vec![Slot::Used(V::Undefined)],
+        slots: vec![Slot::Used(V::Undefined), Slot::Used(V::Null)],
         free: Vec::new(),
         live: 0,
         global: None,
@@ -64,6 +64,9 @@ thread_local! {
 pub(crate) fn add(v: V) -> u32 {
     if matches!(v, V::Undefined) {
         return 0;
+    }
+    if matches!(v, V::Null) {
+        return 1;
     }
     HEAP.with(|h| {
         let mut h = h.borrow_mut();
@@ -103,9 +106,13 @@ pub(crate) fn call_js_fn(f: &V, arg: V) -> Result<(), String> {
         st.dead.set(true);
     }
     match crate::callback::__glue_invoke(st.id, add(arg)) {
-        0 => Ok(()),
         1 => Err(format!("web-glue: callback #{} is no longer registered", st.id)),
-        _ => Err(format!("web-glue: callback #{} invoked recursively", st.id)),
+        2 => Err(format!("web-glue: callback #{} invoked recursively", st.id)),
+        code => {
+            // What `G.take(code - 3)` does with the returned handle.
+            unsafe { drop_ref(code - 3) };
+            Ok(())
+        }
     }
 }
 
@@ -162,7 +169,7 @@ unsafe fn read_str<'a>(p: usize, l: usize) -> &'a str {
 }
 
 pub(crate) unsafe fn drop_ref(i: u32) {
-    if i == 0 {
+    if i <= 1 {
         return;
     }
     HEAP.with(|h| {
@@ -177,6 +184,9 @@ pub(crate) unsafe fn drop_ref(i: u32) {
     })
 }
 pub(crate) unsafe fn clone_ref(i: u32) -> u32 {
+    if i <= 1 {
+        return i;
+    }
     add(val(i))
 }
 pub(crate) unsafe fn live_js() -> u32 {
@@ -190,9 +200,6 @@ pub(crate) unsafe fn num_new(n: f64) -> u32 {
 }
 pub(crate) unsafe fn bool_new(b: u32) -> u32 {
     add(V::Bool(b != 0))
-}
-pub(crate) unsafe fn null_new() -> u32 {
-    add(V::Null)
 }
 pub(crate) unsafe fn global() -> u32 {
     let g = HEAP.with(|h| {

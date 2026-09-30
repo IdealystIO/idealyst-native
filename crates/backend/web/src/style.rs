@@ -21,7 +21,7 @@ use runtime_shared::{Easing, StyleRules};
 // CSS conversion lives in the shared, platform-neutral `css` crate so
 // the web backend and the SSR backend emit byte-identical declarations.
 use css::{hash_class_name, rules_to_css};
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 
 /// Is this the text primitive's node? Detected by tag: the text
 /// primitive renders a `<span>`, and `apply_style` targets no other
@@ -33,7 +33,7 @@ use wasm_bindgen::JsCast;
 /// styled span) — would get `text-shadow` instead of `box-shadow`, a
 /// nonsensical combination we accept over threading a per-node text flag
 /// through the perf-critical batched-text creation path.
-fn is_text_span(node: &web_sys::Node) -> bool {
+fn is_text_span(node: &web_glue::dom::Node) -> bool {
     node.node_name().eq_ignore_ascii_case("span")
 }
 
@@ -94,7 +94,7 @@ fn class_rule(class_name: &str, body: &str) -> String {
     rule
 }
 
-fn insert_rule_or_placeholder(sheet: &web_sys::CssStyleSheet, rule: &str, idx: u32) -> u32 {
+fn insert_rule_or_placeholder(sheet: &web_glue::dom::CssStyleSheet, rule: &str, idx: u32) -> u32 {
     match sheet.insert_rule_with_index(rule, idx) {
         Ok(new_idx) => new_idx,
         Err(_) => {
@@ -118,7 +118,7 @@ fn warn_rejected_rule_once(rule: &str) {
     }
     WARNED.with(|w| {
         if !w.replace(true) {
-            web_sys::console::warn_1(
+            web_glue::dom::console::warn_1(
                 &format!(
                     "idealyst: browser rejected a generated CSS rule; \
                      skipping it (further rejections silenced). \
@@ -149,13 +149,13 @@ impl WebBackend {
     /// Without this reset, the framework's `<button>` element comes
     /// in with the browser's chunky outset border showing through
     /// any class rule that doesn't explicitly zero out `border`.
-    pub(crate) fn ensure_style_element(&mut self) -> web_sys::HtmlStyleElement {
+    pub(crate) fn ensure_style_element(&mut self) -> web_glue::dom::HtmlStyleElement {
         if self.style_element.is_none() {
             let elem = self
                 .doc
                 .create_element("style")
                 .expect("create style")
-                .unchecked_into::<web_sys::HtmlStyleElement>();
+                .unchecked_into::<web_glue::dom::HtmlStyleElement>();
             let head = self.doc.head().expect("document has head");
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
@@ -170,7 +170,7 @@ impl WebBackend {
                 .unwrap()
                 .sheet()
                 .expect("sheet")
-                .unchecked_into::<web_sys::CssStyleSheet>();
+                .unchecked_into::<web_glue::dom::CssStyleSheet>();
 
             // Index 0 — universal `box-sizing: border-box`.
             //
@@ -242,11 +242,11 @@ impl WebBackend {
         self.style_element.as_ref().unwrap().clone()
     }
 
-    pub(crate) fn sheet(&mut self) -> web_sys::CssStyleSheet {
+    pub(crate) fn sheet(&mut self) -> web_glue::dom::CssStyleSheet {
         let elem = self.ensure_style_element();
         elem.sheet()
             .expect("style element has no sheet")
-            .unchecked_into::<web_sys::CssStyleSheet>()
+            .unchecked_into::<web_glue::dom::CssStyleSheet>()
     }
 
     /// Insert a CSS rule into the shared sheet and return its index.
@@ -430,7 +430,7 @@ impl WebBackend {
             let sheet = self.sheet();
             if let Ok(rules) = sheet.css_rules() {
                 if let Some(rule) = rules.get(idx) {
-                    if let Ok(style_rule) = rule.dyn_into::<web_sys::CssStyleRule>() {
+                    if let Ok(style_rule) = rule.dyn_into::<web_glue::dom::CssStyleRule>() {
                         let decl = style_rule.style();
                         for entry in tokens {
                             let prop = format!("--{}", entry.name);
@@ -663,17 +663,17 @@ impl WebBackend {
     /// gradients, transforms), and replacing `cssText` would wipe them.
     pub(crate) fn apply_inline_style_impl(
         &mut self,
-        node: &web_sys::Node,
+        node: &web_glue::dom::Node,
         style: &std::rc::Rc<StyleRules>,
     ) {
-        use wasm_bindgen::JsCast;
+        use web_glue::JsCast;
         // Both casts, not just HtmlElement: an ICON node is an `<svg>`,
         // which is an SVGElement — the HtmlElement-only cast silently
         // no-op'd every inline layer on icons (the Checkbox checkmark's
         // `flex_shrink: 0` never landed).
-        let decl = if let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() {
+        let decl = if let Some(element) = node.dyn_ref::<web_glue::dom::HtmlElement>() {
             element.style()
-        } else if let Some(element) = node.dyn_ref::<web_sys::SvgElement>() {
+        } else if let Some(element) = node.dyn_ref::<web_glue::dom::SvgElement>() {
             element.style()
         } else {
             return;
@@ -714,7 +714,7 @@ impl WebBackend {
 
     pub(crate) fn impl_apply_style(
         &mut self,
-        node: &web_sys::Node,
+        node: &web_glue::dom::Node,
         style: &std::rc::Rc<StyleRules>,
     ) {
         let id = self.node_id(node);
@@ -781,7 +781,7 @@ impl WebBackend {
 
     pub(crate) fn impl_apply_styled_states(
         &mut self,
-        node: &web_sys::Node,
+        node: &web_glue::dom::Node,
         base: &std::rc::Rc<StyleRules>,
         overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
     ) {
@@ -799,8 +799,8 @@ impl WebBackend {
     /// `className` replace on every restyle, which would wipe a container
     /// class; an inline style is independent of the node's styled class.
     /// See [`css::CONTAINER_TYPE_BODY`].
-    pub(crate) fn impl_mark_container(&mut self, node: &web_sys::Node) {
-        if let Some(element) = node.dyn_ref::<web_sys::HtmlElement>() {
+    pub(crate) fn impl_mark_container(&mut self, node: &web_glue::dom::Node) {
+        if let Some(element) = node.dyn_ref::<web_glue::dom::HtmlElement>() {
             let _ = element.style().set_property("container-type", "inline-size");
         }
     }
@@ -813,7 +813,7 @@ impl WebBackend {
     /// rendered HTML's stylesheet already encodes the responsive layout.
     pub(crate) fn impl_apply_styled_variants(
         &mut self,
-        node: &web_sys::Node,
+        node: &web_glue::dom::Node,
         base: &std::rc::Rc<StyleRules>,
         overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
         breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
@@ -1165,7 +1165,7 @@ impl WebBackend {
         class_name
     }
 
-    pub(crate) fn impl_on_node_unstyled(&mut self, node: &web_sys::Node) {
+    pub(crate) fn impl_on_node_unstyled(&mut self, node: &web_glue::dom::Node) {
         // Resolve the JS-side id for this DOM node. `node_id` is
         // the single source of truth — going through it here means
         // teardown sees the same id `apply_style` stamped state

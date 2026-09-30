@@ -183,7 +183,7 @@ thread_local! {
 /// Everything the boot path must keep alive. Field order is drop order:
 /// the realized tree unmounts before the world (its slots' owner) dies.
 struct App {
-    realized: Realized<web_sys::Node>,
+    realized: Realized<web_glue::dom::Node>,
     _backend: Rc<RefCell<WebBackend>>,
     _registry: Rc<Registry<WebBackend>>,
     world: World,
@@ -213,57 +213,47 @@ struct App {
 /// imports the module, could not see it. It looked, found nothing, and
 /// logged "this bundle has no overlay" on a bundle that had one.
 ///
-/// The closure is leaked on purpose: it has to outlive this call and
-/// stay callable for the life of the page, and a dev session's page is
-/// the only thing that ever holds it.
+/// `window` owns the function — and so the closure — for the life of the
+/// page (`web_glue::Closure::into_js_value`).
 #[cfg(feature = "ui-overlay")]
 fn install_overlay_patch_entry() {
-    use wasm_bindgen::prelude::Closure;
-    use wasm_bindgen::JsCast;
-
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_glue::dom::window() else { return };
     // Returns `{applied, refused}` — or `{error}` — so the page's reload
     // script can report the outcome to the dev session (see
     // `dev_http::ACK_URL`). A failure is still logged and swallowed, not
     // thrown: the next rebuild carries the edit, and throwing would make
     // the script reload a page that is otherwise fine.
-    let apply = Closure::<dyn Fn(String) -> wasm_bindgen::JsValue>::new(|json: String| {
-        let report = js_sys::Object::new();
+    let apply = web_glue::Closure::new_with_args(|args| {
+        let json = args.first().and_then(web_glue::JsValue::as_string).unwrap_or_default();
+        let report = web_glue::js::Object::new();
         match overlay_patch_counts(&json) {
             Ok((applied, refused)) => {
-                let _ = js_sys::Reflect::set(&report, &"applied".into(), &(applied as f64).into());
-                let _ = js_sys::Reflect::set(&report, &"refused".into(), &(refused as f64).into());
+                let _ = web_glue::js::Reflect::set(&report, &"applied".into(), &(applied as f64).into());
+                let _ = web_glue::js::Reflect::set(&report, &"refused".into(), &(refused as f64).into());
             }
             Err(e) => {
-                web_sys::console::error_2(
-                    &wasm_bindgen::JsValue::from_str("[idealyst] overlay patch failed"),
+                web_glue::dom::console::error_2(
+                    &web_glue::JsValue::from_str("[idealyst] overlay patch failed"),
                     &e,
                 );
-                let _ = js_sys::Reflect::set(&report, &"error".into(), &e);
+                let _ = web_glue::js::Reflect::set(&report, &"error".into(), &e);
             }
         }
         report.into()
     });
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &window,
-        &wasm_bindgen::JsValue::from_str("__idealyst_overlay_patch"),
-        apply.as_ref().unchecked_ref(),
+        &web_glue::JsValue::from_str("__idealyst_overlay_patch"),
+        &apply.into_js_value(),
     );
-    apply.forget();
 }
 
-#[cfg(feature = "ui-overlay")]
-#[wasm_bindgen::prelude::wasm_bindgen(js_name = __idealyst_overlay_patch)]
-pub fn overlay_patch(json: &str) -> Result<(), wasm_bindgen::JsValue> {
-    overlay_patch_counts(json).map(|_| ())
-}
-
-/// [`overlay_patch`], returning how many nodes the patch updated in place
+/// Apply an overlay patch, returning how many nodes the patch updated in place
 /// and how many wait for their site's next render.
 #[cfg(feature = "ui-overlay")]
-fn overlay_patch_counts(json: &str) -> Result<(usize, usize), wasm_bindgen::JsValue> {
+fn overlay_patch_counts(json: &str) -> Result<(usize, usize), web_glue::JsValue> {
     let patch: wire::WireOverlayPatch = serde_json::from_str(json)
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("bad overlay patch: {e}")))?;
+        .map_err(|e| web_glue::JsValue::from_str(&format!("bad overlay patch: {e}")))?;
     let edits = patch.to_edits();
 
     let applied = APP.with(|slot| {
@@ -284,13 +274,13 @@ fn overlay_patch_counts(json: &str) -> Result<(usize, usize), wasm_bindgen::JsVa
 
     match applied {
         Some(outcome) => {
-            web_sys::console::info_1(&wasm_bindgen::JsValue::from_str(&format!(
+            web_glue::dom::console::info_1(&web_glue::JsValue::from_str(&format!(
                 "[idealyst] overlay patch: {} applied, {} waiting for the next render",
                 outcome.applied, outcome.refused
             )));
             Ok((outcome.applied, outcome.refused))
         }
-        None => Err(wasm_bindgen::JsValue::from_str(
+        None => Err(web_glue::JsValue::from_str(
             "no mounted app to patch",
         )),
     }
@@ -587,7 +577,7 @@ pub fn is_booted() -> bool {
 }
 
 /// Borrow the mounted app's live tree (tests, diagnostics).
-pub fn with_realized<R>(f: impl FnOnce(&Realized<web_sys::Node>) -> R) -> Option<R> {
+pub fn with_realized<R>(f: impl FnOnce(&Realized<web_glue::dom::Node>) -> R) -> Option<R> {
     APP.with(|slot| slot.borrow().as_ref().map(|app| f(&app.realized)))
 }
 
@@ -707,7 +697,7 @@ fn js_sid(raw_id: u64) -> u64 {
 /// `None` outside a browser context (workers) — degrade like the
 /// old-core observer.
 fn current_window_viewport() -> Option<runtime_shared::ViewportSize> {
-    let win = web_sys::window()?;
+    let win = web_glue::dom::window()?;
     let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
     let h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
     Some(runtime_shared::ViewportSize::new(w, h))
@@ -732,7 +722,7 @@ pub(crate) fn install_viewport_source(
     sig: runtime_world::Signal<runtime_shared::ViewportSize>,
 ) {
     remove_viewport_source();
-    let Some(win) = web_sys::window() else { return };
+    let Some(win) = web_glue::dom::window() else { return };
     let listener = crate::glue_dom::listen(&win, "resize", web_glue::dom::ListenerOptions::default(), move |_| push_viewport(sig));
     VIEWPORT_SOURCE.with(|s| *s.borrow_mut() = Some(listener));
 }
@@ -857,7 +847,7 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
 // ---------------------------------------------------------------------------
 
 impl Host for WebBackend {
-    type Node = web_sys::Node;
+    type Node = web_glue::dom::Node;
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_insert");
@@ -2038,7 +2028,7 @@ mod tests {
     use super::*;
     use runtime_vocabulary::{button, text, toggle, view};
     use runtime_world::signal;
-    use wasm_bindgen::{JsCast, JsValue};
+    use web_glue::{JsCast, JsValue};
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -2046,8 +2036,8 @@ mod tests {
     /// Recreate a fresh `#app` mount point (same shape as tests.rs's
     /// helper — duplicated because that one is `#[cfg(test)]`-private to
     /// its module).
-    fn setup_mount() -> web_sys::Element {
-        let document = web_sys::window().unwrap().document().unwrap();
+    fn setup_mount() -> web_glue::dom::Element {
+        let document = web_glue::dom::window().unwrap().document().unwrap();
         if let Some(prior) = document.get_element_by_id("app") {
             prior.remove();
         }
@@ -2060,21 +2050,21 @@ mod tests {
     /// Await one microtask checkpoint (lets `schedule_flush`'s queued
     /// `Promise.then` run).
     async fn microtask() {
-        let promise = js_sys::Promise::resolve(&JsValue::UNDEFINED);
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let promise = web_glue::js::Promise::resolve(&JsValue::UNDEFINED);
+        let _ = web_glue::JsFuture::new(&promise).await;
     }
 
     /// Await a real macrotask boundary (`setTimeout(ms)`) so scheduler
     /// timer callbacks — and the flush microtask the post-dispatch hook
     /// queues after them — have run.
     async fn sleep_ms(ms: i32) {
-        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            web_sys::window()
+        let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+            web_glue::dom::window()
                 .unwrap()
                 .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
                 .unwrap();
         });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let _ = web_glue::JsFuture::new(&promise).await;
     }
 
     /// Regression: the robot's geometry verbs (`get_frame`,
@@ -2087,11 +2077,11 @@ mod tests {
     fn regression_introspection_reports_element_geometry() {
         setup_mount();
         let backend = WebBackend::new("#app");
-        let document = web_sys::window().unwrap().document().unwrap();
+        let document = web_glue::dom::window().unwrap().document().unwrap();
         let el = document.create_element("div").unwrap();
         el.set_attribute("style", "position:fixed;left:30px;top:40px;width:50px;height:60px").unwrap();
         document.body().unwrap().append_child(&el).unwrap();
-        let node: web_sys::Node = el.clone().into();
+        let node: web_glue::dom::Node = el.clone().into();
 
         let abs = caps::IntrospectionOps::absolute_frame(&backend, &node).expect("an absolute frame");
         assert_eq!((abs.x, abs.y, abs.width, abs.height), (30.0, 40.0, 50.0, 60.0));
@@ -2130,7 +2120,7 @@ mod tests {
         microtask().await;
         assert!(body_text().contains("n=0"), "boot mounted the tree");
 
-        let btn: web_sys::HtmlElement = mount
+        let btn: web_glue::dom::HtmlElement = mount
             .query_selector("button")
             .unwrap()
             .expect("button rendered")
@@ -2194,7 +2184,7 @@ mod tests {
         let mount = setup_mount();
         let sub_slot: Rc<RefCell<Option<runtime_shared::LayoutSubscription>>> =
             Rc::new(RefCell::new(None));
-        let el_slot: Rc<RefCell<Option<web_sys::HtmlElement>>> = Rc::new(RefCell::new(None));
+        let el_slot: Rc<RefCell<Option<web_glue::dom::HtmlElement>>> = Rc::new(RefCell::new(None));
         let (sub_for_build, el_for_build) = (sub_slot.clone(), el_slot.clone());
         start(move || {
             let height = signal(0i32);
@@ -2205,8 +2195,8 @@ mod tests {
                         .on_handle(move |h| {
                             *el_for_build.borrow_mut() = h
                                 .as_any()
-                                .downcast_ref::<web_sys::Node>()
-                                .and_then(|n| n.clone().dyn_into::<web_sys::HtmlElement>().ok());
+                                .downcast_ref::<web_glue::dom::Node>()
+                                .and_then(|n| n.clone().dyn_into::<web_glue::dom::HtmlElement>().ok());
                             *sub_for_build.borrow_mut() =
                                 Some(h.on_layout(move |_w, hh| height.set(hh.round() as i32)));
                         })
@@ -2280,31 +2270,31 @@ mod tests {
 
         // What the browser would deliver a real press to: the topmost
         // element at a point on the (full-screen) backdrop.
-        let doc = web_sys::window().unwrap().document().unwrap();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
         let hit = doc
             .element_from_point(5.0, 5.0)
             .expect("the full-screen backdrop is hit-testable");
 
         // Right button: pointerdown(button=2) then contextmenu.
-        let init = web_sys::PointerEventInit::new();
+        let init = web_glue::dom::PointerEventInit::new();
         init.set_bubbles(true);
         init.set_cancelable(true);
         init.set_button(2);
         init.set_pointer_type("mouse");
-        let down = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
+        let down = web_glue::dom::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
         hit.dispatch_event(&down).unwrap();
-        let minit = web_sys::MouseEventInit::new();
+        let minit = web_glue::dom::MouseEventInit::new();
         minit.set_bubbles(true);
         minit.set_cancelable(true);
         minit.set_button(2);
-        let ctx = web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &minit).unwrap();
+        let ctx = web_glue::dom::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &minit).unwrap();
         hit.dispatch_event(&ctx).unwrap();
 
         assert_eq!(dismissed.get(), 1, "a right-click on a Dismiss backdrop dismisses (once)");
         assert!(ctx.default_prevented(), "the backdrop swallows the native context menu");
 
         // Primary click still dismisses through the pressable's click.
-        let hit: web_sys::HtmlElement = hit.unchecked_into();
+        let hit: web_glue::dom::HtmlElement = hit.unchecked_into();
         hit.click();
         assert_eq!(dismissed.get(), 2, "a primary click on the backdrop still dismisses");
         stop();
@@ -2341,7 +2331,7 @@ mod tests {
 
         // The anchor is layout-transparent (`display: contents`).
         let anchor = Host::create_anchor(&mut backend);
-        let anchor_el: &web_sys::Element = anchor.unchecked_ref();
+        let anchor_el: &web_glue::dom::Element = anchor.unchecked_ref();
         assert!(anchor_el
             .get_attribute("style")
             .unwrap_or_default()
@@ -2506,11 +2496,11 @@ mod tests {
         let body = || mount.text_content().unwrap();
         assert!(body().contains("row:alpha") && body().contains("row:beta"), "{}", body());
 
-        let row_node = |label: &str| -> web_sys::Element {
+        let row_node = |label: &str| -> web_glue::dom::Element {
             let all = mount.query_selector_all("*").unwrap();
             (0..all.length())
                 .filter_map(|i| all.item(i))
-                .filter_map(|n| n.dyn_into::<web_sys::Element>().ok())
+                .filter_map(|n| n.dyn_into::<web_glue::dom::Element>().ok())
                 .filter(|e| e.text_content().as_deref() == Some(&format!("row:{label}")))
                 .last()
                 .expect("row element")
@@ -2804,8 +2794,8 @@ mod tests {
 
         let folded = super::js_sid(n.raw_id()) as u32;
         assert!(folded >= 0x8000_0000, "fold must set the high bit");
-        let values: js_sys::Map = js_sys::Reflect::get(
-            &web_sys::window().unwrap(),
+        let values: web_glue::js::Map = web_glue::js::Reflect::get(
+            &web_glue::dom::window().unwrap(),
             &JsValue::from_str("__idealystSignalValues"),
         )
         .unwrap()
@@ -2955,7 +2945,7 @@ mod tests {
         });
         let root = realized.collect_nodes().pop().expect("one root");
         setup_mount().append_child(&root).unwrap();
-        let row: web_sys::Element = root
+        let row: web_glue::dom::Element = root
             .child_nodes()
             .item(1)
             .expect("styled row")
@@ -2986,20 +2976,21 @@ mod tests {
     /// actually resize) so a synthetic `resize` event exercises the
     /// viewport source end-to-end.
     fn force_inner_width(w: f64) {
-        let win = web_sys::window().unwrap();
-        let desc = js_sys::Object::new();
-        js_sys::Reflect::set(&desc, &"configurable".into(), &true.into()).unwrap();
-        js_sys::Reflect::set(
+        let win = web_glue::dom::window().unwrap();
+        let desc = web_glue::js::Object::new();
+        web_glue::js::Reflect::set(&desc, &"configurable".into(), &true.into()).unwrap();
+        web_glue::js::Reflect::set(
             &desc,
             &"get".into(),
-            &js_sys::Function::new_no_args(&format!("return {w};")),
+            &web_glue::js::Function::new_no_args(&format!("return {w};")),
         )
         .unwrap();
-        js_sys::Object::define_property(
-            win.unchecked_ref::<js_sys::Object>(),
+        web_glue::js::Object::define_property(
+            win.unchecked_ref::<web_glue::js::Object>(),
             &"innerWidth".into(),
             &desc,
-        );
+        )
+        .expect("override window.innerWidth");
     }
 
     /// Regression (the idea-ui-docs "hamburger visible at desktop
@@ -3035,8 +3026,8 @@ mod tests {
 
         // Cross the Lg threshold and fire the resize source.
         force_inner_width(1280.0); // Xl
-        let win = web_sys::window().unwrap();
-        win.dispatch_event(&web_sys::Event::new("resize").unwrap())
+        let win = web_glue::dom::window().unwrap();
+        win.dispatch_event(&web_glue::dom::Event::new("resize").unwrap())
             .unwrap();
         assert!(
             body_text().contains("bp=Xs"),
@@ -3053,7 +3044,7 @@ mod tests {
         // `stop` removes the listener: further resizes are inert.
         stop();
         force_inner_width(500.0);
-        win.dispatch_event(&web_sys::Event::new("resize").unwrap())
+        win.dispatch_event(&web_glue::dom::Event::new("resize").unwrap())
             .unwrap();
         microtask().await;
         setup_mount();

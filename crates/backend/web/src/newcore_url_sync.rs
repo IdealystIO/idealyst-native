@@ -38,7 +38,7 @@
 //!   newcore module docs called out).
 //!
 //! Scroll restore reads/writes the OUTLET node's scroll offset (the
-//! registration's type-erased node, downcast to `web_sys::Node`). Only
+//! registration's type-erased node, downcast to `web_glue::dom::Node`). Only
 //! meaningful when the outlet is itself a scroll surface — screens that
 //! own their scroll via `scroll_view` are unaffected, same as legacy.
 
@@ -52,7 +52,7 @@ use runtime_shared::primitives::navigator::{
 use runtime_vocabulary::handlers::nav_url_sync::{
     CommittedKind, NavSyncKind, NavSyncRegistration, UrlSyncService,
 };
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 
 // ---------------------------------------------------------------------------
 // Browser History surface (same calls url_provider.rs makes)
@@ -105,7 +105,7 @@ fn pathname() -> String {
     if let Some(p) = HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.current_path)())) {
         return p;
     }
-    web_sys::window()
+    web_glue::dom::window()
         .and_then(|w| {
             let loc = w.location();
             let path = loc.pathname().ok()?;
@@ -120,9 +120,9 @@ fn push_state(url: &str) {
     if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.push_state)(url))).is_some() {
         return;
     }
-    if let Some(w) = web_sys::window() {
+    if let Some(w) = web_glue::dom::window() {
         if let Ok(h) = w.history() {
-            let _ = h.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
+            let _ = h.push_state_with_url(&web_glue::JsValue::NULL, "", Some(url));
         }
     }
 }
@@ -131,9 +131,9 @@ fn replace_state(url: &str) {
     if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.replace_state)(url))).is_some() {
         return;
     }
-    if let Some(w) = web_sys::window() {
+    if let Some(w) = web_glue::dom::window() {
         if let Ok(h) = w.history() {
-            let _ = h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
+            let _ = h.replace_state_with_url(&web_glue::JsValue::NULL, "", Some(url));
         }
     }
 }
@@ -142,7 +142,7 @@ fn history_back() {
     if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.history_back)())).is_some() {
         return;
     }
-    if let Some(w) = web_sys::window() {
+    if let Some(w) = web_glue::dom::window() {
         if let Ok(h) = w.history() {
             let _ = h.back();
         }
@@ -171,7 +171,7 @@ struct NavEntry {
     dispatch: Rc<dyn Fn(NavCommand)>,
     /// The outlet as a DOM element, when the registration's type-erased
     /// node downcast (foreign node types → `None`, scroll is a no-op).
-    outlet: Option<web_sys::Element>,
+    outlet: Option<web_glue::dom::Element>,
     /// The slice of the platform URL this navigator currently owns. PATH
     /// only — this is hierarchy math (which navigator owns which segments),
     /// and a query string in it would break the prefix/suffix arithmetic
@@ -247,7 +247,7 @@ pub(crate) fn install() {
     if INSTALLED.with(|c| c.get()) {
         return;
     }
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_glue::dom::window() else { return };
     INSTALLED.with(|c| c.set(true));
     let listener = crate::glue_dom::listen(&window, "popstate", web_glue::dom::ListenerOptions::default(), move |_| {
         handle_popstate(&pathname());
@@ -281,8 +281,8 @@ impl UrlSyncService for WebUrlSync {
         });
         let outlet = reg
             .outlet
-            .downcast_ref::<web_sys::Node>()
-            .and_then(|n| n.dyn_ref::<web_sys::Element>().cloned());
+            .downcast_ref::<web_glue::dom::Node>()
+            .and_then(|n| n.dyn_ref::<web_glue::dom::Element>().cloned());
         let entry = Rc::new(NavEntry {
             id,
             kind: reg.kind,
@@ -610,8 +610,8 @@ mod tests {
     const ROOT: Route<()> = Route::<()>::new("root", "/");
     const DETAIL: Route<()> = Route::<()>::new("detail", "/detail");
 
-    fn setup_mount() -> web_sys::Element {
-        let document = web_sys::window().unwrap().document().unwrap();
+    fn setup_mount() -> web_glue::dom::Element {
+        let document = web_glue::dom::window().unwrap().document().unwrap();
         if let Some(prior) = document.get_element_by_id("app") {
             prior.remove();
         }
@@ -625,13 +625,13 @@ mod tests {
     }
 
     async fn sleep_ms(ms: i32) {
-        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            web_sys::window()
+        let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+            web_glue::dom::window()
                 .unwrap()
                 .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
                 .unwrap();
         });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let _ = web_glue::JsFuture::new(&promise).await;
     }
 
     // -----------------------------------------------------------------
@@ -717,7 +717,7 @@ mod tests {
     /// Fresh mount + fake history + cleared initial-path slot. The slot
     /// is per-thread and this binary shares one page, so a deep-link
     /// test would otherwise leak into its neighbours.
-    fn setup_sim(initial: &str) -> (web_sys::Element, Rc<RefCell<SimHistory>>) {
+    fn setup_sim(initial: &str) -> (web_glue::dom::Element, Rc<RefCell<SimHistory>>) {
         let mount = setup_mount();
         runtime_shared::primitives::navigator::set_initial_path(None);
         let sim = install_sim_history(initial);
@@ -753,12 +753,12 @@ mod tests {
         crate::newcore::flush_sync();
     }
 
-    fn text_of(mount: &web_sys::Element) -> String {
+    fn text_of(mount: &web_glue::dom::Element) -> String {
         mount.text_content().unwrap_or_default()
     }
 
     /// A two-screen stack app; the captured `NavHandle` drives it.
-    fn boot_stack_app(mount: &web_sys::Element) -> NavHandle {
+    fn boot_stack_app(mount: &web_glue::dom::Element) -> NavHandle {
         let _ = mount;
         let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
         let handle_for_build = handle.clone();
@@ -831,7 +831,7 @@ mod tests {
         crate::newcore::flush_sync();
         assert!(mount.text_content().unwrap().contains("detail-screen"));
 
-        web_sys::window().unwrap().history().unwrap().back().unwrap();
+        web_glue::dom::window().unwrap().history().unwrap().back().unwrap();
         sleep_ms(80).await; // popstate → reconciler → staged Pop → flush
         assert_eq!(pathname(), "/", "browser back landed on the root URL");
         assert!(
@@ -861,7 +861,7 @@ mod tests {
         assert_eq!(pathname(), "/detail", "URL untouched by the seed");
 
         // The seed placed the index entry under us: browser back reveals it.
-        web_sys::window().unwrap().history().unwrap().back().unwrap();
+        web_glue::dom::window().unwrap().history().unwrap().back().unwrap();
         sleep_ms(80).await;
         assert_eq!(pathname(), "/", "back landed on the seeded index entry");
         assert!(
@@ -1345,7 +1345,7 @@ mod tests {
 
     /// The outlet element: the mount's nav root's first element child
     /// (the layout here is a bare `navigator_outlet`).
-    fn outlet_element(mount: &web_sys::Element) -> web_sys::Element {
+    fn outlet_element(mount: &web_glue::dom::Element) -> web_glue::dom::Element {
         mount
             .first_element_child()
             .expect("nav root")

@@ -14,7 +14,7 @@
 //! still read in phase 2a (they become `import!`s in 2b).
 //!
 //! This replaced evaluating the source at run time with
-//! `js_sys::Function::new_no_args(src).call0()`: no `eval`-class call (a
+//! `web_glue::js::Function::new_no_args(src).call0()`: no `eval`-class call (a
 //! CSP with no `unsafe-eval` now runs every shim), and the shim text is no
 //! longer a data-section string in the shipped wasm. The embedded copies
 //! are still build.rs-minified (`OUT_DIR/js-min/`).
@@ -136,7 +136,7 @@ impl WebBackend {
     /// (`__idealystRegisterStyledNode` / `__idealystApplyClassesBatch` /
     /// `__idealystReleaseStyledNode`). Lazy: only injected when the
     /// style apply path actually needs to queue a class update.
-    /// First-apply path also caches the `js_sys::Function` handles
+    /// First-apply path also caches the `web_glue::js::Function` handles
     /// so subsequent applies skip the `Reflect::get` lookup.
     pub(crate) fn ensure_class_batch_shim(&mut self) {
         if self.class_batch_shim_injected {
@@ -181,7 +181,7 @@ impl WebBackend {
     /// (`__idealystNodeId(node) -> u32`). Backs
     /// [`WebBackend::node_id`] with a `WeakMap` so the same JS DOM
     /// object always resolves to the same `u32` regardless of which
-    /// Rust `web_sys::Node` wrapper holds a reference to it.
+    /// Rust `web_glue::dom::Node` wrapper holds a reference to it.
     /// Auto-injected on first `node_id` call.
     pub(crate) fn ensure_node_id_shim(&mut self) {
         if self.node_id_shim_injected {

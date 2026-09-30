@@ -27,8 +27,8 @@
 use css::css_num;
 use runtime_shared::primitives::presence::PresenceState;
 use runtime_shared::Easing;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 use crate::WebBackend;
 
@@ -38,7 +38,7 @@ pub(crate) fn apply(
     state: PresenceState,
     transition: Option<(u32, Easing)>,
 ) {
-    let el = match node.dyn_ref::<web_sys::HtmlElement>() {
+    let el = match node.dyn_ref::<web_glue::dom::HtmlElement>() {
         Some(e) => e,
         None => return,
     };

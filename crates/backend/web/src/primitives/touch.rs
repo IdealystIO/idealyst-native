@@ -60,10 +60,9 @@ use runtime_shared::{
 use std::cell::{Cell, RefCell};
 use runtime_shared::collections::{SmallIdMap, SmallIdSet};
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 use web_glue::dom::{MouseEvent, PointerEvent};
-use web_glue::JsCast as _;
-use web_sys::{Element, Node};
+use web_glue::dom::{Element, Node};
 
 /// Install the pointer listeners on `node`. The element owns them, so their
 /// closures are released with it (`glue_dom::listen_for_element_lifetime`).
@@ -83,7 +82,7 @@ pub(crate) fn install(node: &Node, handler: TouchHandler) {
     // none is the Pointer Events knob for "I want all the events
     // myself"; CSS-cascadable so existing stylesheet rules can
     // override per-element if needed.
-    if let Ok(html) = element.clone().dyn_into::<web_sys::HtmlElement>() {
+    if let Ok(html) = element.clone().dyn_into::<web_glue::dom::HtmlElement>() {
         let _ = html.style().set_property("touch-action", "none");
     }
 
@@ -581,7 +580,7 @@ fn ensure_window_net() {
     if !first {
         return;
     }
-    let Some(win) = web_sys::window() else {
+    let Some(win) = web_glue::dom::window() else {
         return;
     };
     for (event, phase) in [
@@ -695,7 +694,7 @@ fn ensure_press_note() {
     if !first {
         return;
     }
-    let Some(win) = web_sys::window() else {
+    let Some(win) = web_glue::dom::window() else {
         return;
     };
     // Permanent for the same reason as `WINDOW_NET`'s pair: two listeners
@@ -742,7 +741,7 @@ pub(crate) fn window_net_stats() -> (usize, usize) {
 /// listeners all early-return (see `install`) and no ancestor tap is
 /// recognized. The control's OWN `click` is untouched — `stop_propagation`
 /// halts bubbling, not the browser's click synthesis.
-pub(crate) fn swallow_ancestor_touch(el: &web_sys::Element) {
+pub(crate) fn swallow_ancestor_touch(el: &web_glue::dom::Element) {
     crate::glue_dom::listen_for_element_lifetime(&el, "pointerdown", Default::default(), move |ev| {
         let ev: web_glue::dom::PointerEvent = web_glue::JsCast::unchecked_into(ev);
         ev.stop_propagation();
@@ -804,7 +803,7 @@ fn ctrl_click_is_secondary() -> bool {
         if let Some(v) = c.get() {
             return v;
         }
-        let v = web_sys::window()
+        let v = web_glue::dom::window()
             .map(|w| w.navigator().platform().unwrap_or_default().starts_with("Mac"))
             .unwrap_or(false);
         c.set(Some(v));
@@ -836,8 +835,6 @@ fn element_origin(ev: &MouseEvent) -> (f64, f64) {
     let Some(el) = target.dyn_ref::<web_glue::dom::Element>() else {
         return (0.0, 0.0);
     };
-    // The rect read is a DOM operation, still web-sys until phase 2b.
-    let el: web_sys::Element = crate::glue_dom::to_web_sys(el);
     let rect = el.get_bounding_client_rect();
     (rect.x(), rect.y())
 }
@@ -891,10 +888,7 @@ fn target_owns_its_selection(ev: &web_glue::dom::Event) -> bool {
     let Some(el) = target.dyn_ref::<web_glue::dom::Element>() else {
         return false;
     };
-    // The editability / computed-style reads are DOM operations, still
-    // web-sys until phase 2b.
-    let el: Element = crate::glue_dom::to_web_sys(el);
-    if let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() {
+    if let Some(html) = el.dyn_ref::<web_glue::dom::HtmlElement>() {
         if html.is_content_editable() {
             return true;
         }
@@ -902,7 +896,7 @@ fn target_owns_its_selection(ev: &web_glue::dom::Event) -> bool {
     if matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA") {
         return true;
     }
-    let Some(win) = web_sys::window() else {
+    let Some(win) = web_glue::dom::window() else {
         return false;
     };
     let Ok(Some(style)) = win.get_computed_style(&el) else {

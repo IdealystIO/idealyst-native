@@ -47,8 +47,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
+use web_glue::{JsCast, JsValue};
 
 use runtime_scene::Element;
 
@@ -70,14 +69,14 @@ thread_local! {
 /// `dev_http::ACK_URL`). Absent — a page served some other way — the
 /// outcome stays in the console, as it always did.
 fn ack(fields: &[(&str, JsValue)]) {
-    let Some(window) = web_sys::window() else { return };
-    let Ok(f) = js_sys::Reflect::get(&window, &JsValue::from_str("__idealyst_dev_ack")) else {
+    let Some(window) = web_glue::dom::window() else { return };
+    let Ok(f) = web_glue::js::Reflect::get(&window, &JsValue::from_str("__idealyst_dev_ack")) else {
         return;
     };
-    let Some(f) = f.dyn_ref::<js_sys::Function>() else { return };
-    let o = js_sys::Object::new();
+    let Some(f) = f.dyn_ref::<web_glue::js::Function>() else { return };
+    let o = web_glue::js::Object::new();
     for (k, v) in fields {
-        let _ = js_sys::Reflect::set(&o, &JsValue::from_str(k), v);
+        let _ = web_glue::js::Reflect::set(&o, &JsValue::from_str(k), v);
     }
     let _ = f.call1(&JsValue::NULL, &o);
 }
@@ -103,7 +102,7 @@ pub(crate) fn install(root: Rc<dyn Fn() -> Element>) {
             ack(&fields);
         }
         Err(e) => {
-            web_sys::console::error_2(&"[idealyst] hot patch: rebuild failed".into(), &e);
+            web_glue::dom::console::error_2(&"[idealyst] hot patch: rebuild failed".into(), &e);
             ack(&[
                 ("kind", JsValue::from_str("failed")),
                 ("what", JsValue::from_str("hot_patch")),
@@ -112,23 +111,22 @@ pub(crate) fn install(root: Rc<dyn Fn() -> Element>) {
         }
     });
 
-    let Some(window) = web_sys::window() else { return };
-    // `#[wasm_bindgen]` puts an export on the MODULE, and the livereload
-    // script is inline JS in the page that never imports the module. It
-    // has to find this on `window` or it cannot call it at all — the
-    // same reason `__idealyst_overlay_patch` is published this way.
-    //
-    // Leaked deliberately: it must stay callable for the life of the
-    // page, and a dev session's page is the only holder.
-    let apply = Closure::<dyn Fn(String, String)>::new(|url: String, table: String| {
+    let Some(window) = web_glue::dom::window() else { return };
+    // The livereload script is inline JS in the page that never imports
+    // the module, so the entry point lives on `window` — the same reason
+    // `__idealyst_overlay_patch` is published this way. `window` owns the
+    // function (and so the closure) for the life of the page.
+    let apply = web_glue::Closure::new_with_args(|args| {
+        let url = args.first().and_then(JsValue::as_string).unwrap_or_default();
+        let table = args.get(1).and_then(JsValue::as_string).unwrap_or_default();
         apply_patch(&url, &table);
+        JsValue::UNDEFINED
     });
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &window,
         &JsValue::from_str("__idealyst_hot_patch"),
-        apply.as_ref().unchecked_ref(),
+        &apply.into_js_value(),
     );
-    apply.forget();
 }
 
 /// The page's entry point: `window.__idealyst_hot_patch(url, tableJson)`.
@@ -137,13 +135,12 @@ pub(crate) fn install(root: Rc<dyn Fn() -> Element>) {
 /// the wire type so the dev server and the page cannot disagree about the
 /// shape. Its `map` and `ifunc_count` are what the loader uses; `url` is
 /// where the patch is served, which only the page knows how to reach.
-#[wasm_bindgen(js_name = __idealyst_hot_patch)]
 pub fn apply_patch(url: &str, table_json: &str) {
     let table: subsecond_types::JumpTable = match serde_json::from_str(table_json) {
         Ok(t) => t,
         Err(e) => {
             let msg = format!("[idealyst] hot patch: unreadable jump table: {e}");
-            web_sys::console::error_1(&msg.as_str().into());
+            web_glue::dom::console::error_1(&msg.as_str().into());
             ack(&[
                 ("kind", JsValue::from_str("failed")),
                 ("what", JsValue::from_str("hot_patch")),
@@ -153,7 +150,7 @@ pub fn apply_patch(url: &str, table_json: &str) {
         }
     };
     if table.map.is_empty() {
-        web_sys::console::warn_1(
+        web_glue::dom::console::warn_1(
             &"[idealyst] hot patch: the jump table redirects nothing — ignoring".into(),
         );
         return;
@@ -179,10 +176,10 @@ pub fn apply_patch(url: &str, table_json: &str) {
         ]);
     }
     #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_futures::spawn_local(async move {
+    web_glue::spawn_local(async move {
         match load(&url, &table).await {
             Ok(map) => {
-                web_sys::console::info_1(
+                web_glue::dom::console::info_1(
                     &format!("[idealyst] hot patch: {entries} function(s) redirected, rebuilding")
                         .into(),
                 );
@@ -194,8 +191,8 @@ pub fn apply_patch(url: &str, table_json: &str) {
                 unsafe { dev_hot::commit(map) };
             }
             Err(e) => {
-                web_sys::console::error_2(&"[idealyst] hot patch: apply failed:".into(), &e);
-                let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
+                web_glue::dom::console::error_2(&"[idealyst] hot patch: apply failed:".into(), &e);
+                let msg = e.as_string().unwrap_or_else(|| web_glue::JsError::from(e.clone()).message());
                 ack(&[
                     ("kind", JsValue::from_str("failed")),
                     ("what", JsValue::from_str("hot_patch")),
@@ -208,13 +205,47 @@ pub fn apply_patch(url: &str, table_json: &str) {
 
 // The hybrid glue module's hot-patch entry points (`wasm_carve::glue_js`,
 // `globalThis.__idealystGlue`). Dev-only, like this whole module.
+// The WebAssembly JS API the loader drives, plus the hybrid glue module's
+// hot-patch entry points (`wasm_carve::glue_js`, `globalThis.__idealystGlue`).
+// Dev-only, like this whole module.
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(catch, js_namespace = __idealystGlue, js_name = compileImport)]
-    fn glue_compile_import(name: &str) -> Result<JsValue, JsValue>;
-    #[wasm_bindgen(catch, js_namespace = __idealystGlue, js_name = registerRecords)]
-    fn glue_register_records(section: &JsValue) -> Result<(), JsValue>;
+web_glue::import! {
+    #[catch]
+    fn js_compile_import(p: usize, l: usize) -> u32 =
+        "(p, l) => G.add(globalThis.__idealystGlue.compileImport(G.str(p, l)))";
+    #[catch]
+    fn js_register_records(section: u32) = "(s) => { globalThis.__idealystGlue.registerRecords(G.get(s)); }";
+    // → a promise of [module, byteLength].
+    fn js_fetch_compile(p: usize, l: usize) -> u32 =
+        "(p, l) => { const url = G.str(p, l); return G.add(fetch(url).then(async (r) => { \
+           if (!r.ok) throw new Error(`fetching ${url}: HTTP ${r.status}`); \
+           const b = await r.arrayBuffer(); return [await WebAssembly.compile(b), b.byteLength]; })); }";
+    fn js_custom_sections(m: u32, p: usize, l: usize) -> u32 =
+        "(m, p, l) => G.add(WebAssembly.Module.customSections(G.get(m), G.str(p, l)))";
+    fn js_module_imports(m: u32) -> u32 = "(m) => G.add(WebAssembly.Module.imports(G.get(m)))";
+    fn js_memory_grow(pages: u32) -> u32 = "(n) => G.exports().memory.grow(n) >>> 0";
+    #[catch]
+    fn js_table_grow(n: u32) -> u32 = "(n) => G.exports().__indirect_function_table.grow(n) >>> 0";
+    fn js_table_get(slot: u32) -> u32 = "(s) => G.add(G.exports().__indirect_function_table.get(s))";
+    #[catch]
+    fn js_i32_global(v: i32, mutable: u32) -> u32 =
+        "(v, m) => G.add(new WebAssembly.Global({ value: 'i32', mutable: m !== 0 }, v))";
+    fn js_exports() -> u32 = "() => G.add(G.exports())";
+    fn js_instantiate(m: u32, imports: u32) -> u32 =
+        "(m, i) => G.add(WebAssembly.instantiate(G.get(m), G.get(i)))";
+    fn js_thrower(p: usize, l: usize) -> u32 =
+        "(p, l) => { const why = G.str(p, l); return G.add(function () { throw new Error(why); }); }";
+}
+
+#[cfg(target_arch = "wasm32")]
+fn glue_compile_import(name: &str) -> Result<JsValue, web_glue::JsError> {
+    let (p, l) = web_glue::string::abi(name);
+    unsafe { js_compile_import(p, l) }.map(|h| unsafe { JsValue::from_raw(h) })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn glue_register_records(section: &JsValue) -> Result<(), web_glue::JsError> {
+    unsafe { js_register_records(section.raw()) }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -300,21 +331,21 @@ async fn load(
     url: &str,
     table: &subsecond_types::JumpTable,
 ) -> Result<std::collections::HashMap<u64, u64>, JsValue> {
-    use js_sys::{Array, Object, Reflect, Uint8Array, WebAssembly};
-    use wasm_bindgen_futures::JsFuture;
+    use web_glue::js::{Array, Object, Reflect, Uint8Array};
+    use web_glue::{string, JsFuture};
 
-    let window = web_sys::window().ok_or("no window")?;
-    let response: web_sys::Response = JsFuture::from(window.fetch_with_str(url)).await?.dyn_into()?;
-    if !response.ok() {
-        return Err(format!("fetching {url}: HTTP {}", response.status()).into());
-    }
-    let bytes: js_sys::ArrayBuffer = JsFuture::from(response.array_buffer()?).await?.dyn_into()?;
-    let module: WebAssembly::Module = JsFuture::from(WebAssembly::compile(&bytes)).await?.dyn_into()?;
+    let (up, ul) = string::abi(url);
+    let compiled: Array =
+        JsFuture::new(&unsafe { JsValue::from_raw(js_fetch_compile(up, ul)) }).await?.unchecked_into();
+    let module = compiled.get(0);
+    let byte_length = compiled.get(1).as_f64().unwrap_or(0.0) as u32;
 
-    let sections = WebAssembly::Module::custom_sections(&module, PLAN_SECTION);
+    let (sp, sl) = string::abi(PLAN_SECTION);
+    let sections: Array = unsafe { JsValue::from_raw(js_custom_sections(module.raw(), sp, sl)) }.unchecked_into();
     if sections.length() != 1 {
         return Err(format!(
-            "the patch carries {} `{PLAN_SECTION}` section(s), expected one — a dev loop older              than this page built it",
+            "the patch carries {} `{PLAN_SECTION}` section(s), expected one — a dev loop older \
+             than this page built it",
             sections.length()
         )
         .into());
@@ -324,11 +355,13 @@ async fn load(
     // sources): registered before any of its glue imports can run. The
     // hybrid glue module refuses one that CHANGES what this page has —
     // that edit needs a reload, and failing the apply is what gets one.
-    let glue_records = WebAssembly::Module::custom_sections(&module, "__idealyst_glue");
+    let (gp, gl) = string::abi("__idealyst_glue");
+    let glue_records: Array =
+        unsafe { JsValue::from_raw(js_custom_sections(module.raw(), gp, gl)) }.unchecked_into();
     for section in glue_records.iter() {
         glue_register_records(&section)?;
     }
-    let descriptors: Array = WebAssembly::Module::imports(&module);
+    let descriptors: Array = unsafe { JsValue::from_raw(js_module_imports(module.raw())) }.unchecked_into();
     if descriptors.length() as usize != plan.imports.len() {
         return Err(format!(
             "the patch has {} imports but its plan describes {}",
@@ -347,26 +380,21 @@ async fn load(
     }
     // Without `dylink.0` mem-info, the module's own length is an upper
     // bound on its data — what subsecond always reserved.
-    let data = plan.memory_size.unwrap_or(bytes.byte_length());
-    let memory: WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
-    let prior_pages = memory.grow(data.div_ceil(PAGE) + 1);
+    let data = plan.memory_size.unwrap_or(byte_length);
+    let prior_pages = unsafe { js_memory_grow(data.div_ceil(PAGE) + 1) };
     // Page-aligned, so any alignment up to a page holds.
     let memory_base = (prior_pages + 1) * PAGE;
-    let funcs: WebAssembly::Table = wasm_bindgen::function_table().unchecked_into();
-    let table_base = funcs.grow(table.ifunc_count as u32)?;
+    let table_base = unsafe { js_table_grow(table.ifunc_count as u32) }?;
 
     // `env`: the base's exports, plus the two bases — what subsecond gave
     // every patch — and then whatever the plan adds.
     let env = Object::new();
-    let exports: Object = wasm_bindgen::exports().unchecked_into();
+    let exports: Object = unsafe { JsValue::from_raw(js_exports()) }.unchecked_into();
     for key in Object::keys(&exports).iter() {
         Reflect::set(&env, &key, &Reflect::get(&exports, &key)?)?;
     }
     let i32_global = |value: u32, mutable: bool| -> Result<JsValue, JsValue> {
-        let descriptor = Object::new();
-        Reflect::set(&descriptor, &"value".into(), &"i32".into())?;
-        Reflect::set(&descriptor, &"mutable".into(), &mutable.into())?;
-        Ok(WebAssembly::Global::new(&descriptor, &JsValue::from(value as i32))?.into())
+        Ok(unsafe { js_i32_global(value as i32, mutable as u32) }.map(|h| unsafe { JsValue::from_raw(h) })?)
     };
     Reflect::set(&env, &"__memory_base".into(), &i32_global(memory_base, false)?)?;
     Reflect::set(&env, &"__table_base".into(), &i32_global(table_base, false)?)?;
@@ -381,7 +409,8 @@ async fn load(
                 let ns = namespace.as_string().unwrap_or_default();
                 if ns != "env" || !Reflect::has(&env, &name)? {
                     return Err(format!(
-                        "{ns}.{}: the plan says the page supplies it, and the page has no such                          export",
+                        "{ns}.{}: the plan says the page supplies it, and the page has no such \
+                         export",
                         name.as_string().unwrap_or_default()
                     )
                     .into());
@@ -389,7 +418,7 @@ async fn load(
                 continue;
             }
             ImportSource::Slot(slot) => {
-                let f = funcs.get(*slot)?;
+                let f = unsafe { JsValue::from_raw(js_table_get(*slot)) };
                 if f.is_null() {
                     return Err(format!(
                         "{}: the base's table slot {slot} is empty",
@@ -397,21 +426,19 @@ async fn load(
                     )
                     .into());
                 }
-                f.into()
+                f
             }
             ImportSource::Global { value, mutable } => i32_global(*value, *mutable)?,
             ImportSource::Glue => {
                 let name = name.as_string().unwrap_or_default();
                 glue_compile_import(&name).map_err(|e| {
-                    JsValue::from_str(&format!("compiling glue import {name:?}: {e:?}"))
+                    JsValue::from_str(&format!("compiling glue import {name:?}: {}", e.message()))
                 })?
             }
             ImportSource::Trap(why) => {
-                let why = why.clone();
-                Closure::<dyn Fn() -> Result<(), JsValue>>::new(move || {
-                    Err(JsValue::from_str(&format!("[idealyst] hot patch: called {why}")))
-                })
-                .into_js_value()
+                let why = format!("[idealyst] hot patch: called {why}");
+                let (p, l) = string::abi(&why);
+                unsafe { JsValue::from_raw(js_thrower(p, l)) }
             }
         };
         let ns = match Reflect::get(&imports, &namespace)? {
@@ -425,16 +452,18 @@ async fn load(
         Reflect::set(&ns, &name, &value)?;
     }
 
-    let instance: WebAssembly::Instance =
-        JsFuture::from(WebAssembly::instantiate_module(&module, &imports)).await?.dyn_into()?;
+    // `WebAssembly.instantiate(module, imports)` with a Module resolves
+    // to the Instance itself.
+    let instance =
+        JsFuture::new(&unsafe { JsValue::from_raw(js_instantiate(module.raw(), imports.as_js().raw())) }).await?;
 
     // The patch's relocation thunks and constructors, in wasm-ld's order:
     // data relocs (pointers in the patch's data, relative to the two
     // bases), then global relocs — exported only when the plan dropped a
     // start function that would otherwise have run them — then ctors.
-    let instance_exports = instance.exports();
+    let instance_exports = Reflect::get(&instance, &"exports".into())?;
     for thunk in ["__wasm_apply_data_relocs", "__wasm_apply_global_relocs", "__wasm_call_ctors"] {
-        if let Ok(f) = Reflect::get(&instance_exports, &thunk.into())?.dyn_into::<js_sys::Function>() {
+        if let Ok(f) = Reflect::get(&instance_exports, &thunk.into())?.dyn_into::<web_glue::js::Function>() {
             f.call0(&JsValue::UNDEFINED)?;
         }
     }
@@ -474,7 +503,7 @@ fn remount() -> Result<usize, JsValue> {
     runtime_vocabulary::overlay::unstage_all();
 
     crate::newcore::mount_tree(&backend, &registry, &*root, world);
-    web_sys::console::info_1(
+    web_glue::dom::console::info_1(
         &format!("[idealyst] hot patch: rebuilt, carrying {count} signal value(s)").into(),
     );
     Ok(count)

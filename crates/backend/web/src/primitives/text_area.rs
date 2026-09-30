@@ -13,8 +13,8 @@ use runtime_shared::primitives::key::{KeyDownHandler, KeyEvent, KeyOutcome};
 use runtime_shared::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -27,10 +27,10 @@ pub(crate) fn create(
     on_key_down: Option<KeyDownHandler>,
 ) -> Node {
     // Hydration adoption — see `text_input::create` for the rationale.
-    let textarea: web_sys::HtmlTextAreaElement = if let Some(el) = b.hydrate_next("textarea") {
+    let textarea: web_glue::dom::HtmlTextAreaElement = if let Some(el) = b.hydrate_next("textarea") {
         el.unchecked_into()
     } else {
-        let fresh: web_sys::HtmlTextAreaElement = b
+        let fresh: web_glue::dom::HtmlTextAreaElement = b
             .doc
             .create_element("textarea")
             .expect("create_element textarea failed")
@@ -205,7 +205,7 @@ pub(crate) fn create(
 ///   - `position: absolute | fixed` — the box is placed/sized by the
 ///     author (e.g. the fiddle's `inset: 0` editor); an inline height
 ///     would fight that.
-fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
+fn autosize(textarea: &web_glue::dom::HtmlTextAreaElement) {
     // `wrap == "off"` is the code-editor shape — never autosize it.
     if textarea.wrap() == "off" {
         return;
@@ -232,7 +232,7 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
     let mut line_height = 0.0_f64;
     let mut css_max_height: Option<f64> = None;
     let mut css_min_height: Option<f64> = None;
-    if let Some(win) = web_sys::window() {
+    if let Some(win) = web_glue::dom::window() {
         if let Ok(Some(cs)) = win.get_computed_style(textarea) {
             let pos = cs.get_property_value("position").unwrap_or_default();
             if pos == "absolute" || pos == "fixed" {
@@ -289,7 +289,7 @@ fn autosize(textarea: &web_sys::HtmlTextAreaElement) {
 
 /// Read a `data-*` row-count attribute (`data-min-rows` / `data-max-rows`) set
 /// at create time, returning `None` when absent or unparseable.
-fn read_rows(textarea: &web_sys::HtmlTextAreaElement, attr: &str) -> Option<u32> {
+fn read_rows(textarea: &web_glue::dom::HtmlTextAreaElement, attr: &str) -> Option<u32> {
     textarea.get_attribute(attr).and_then(|v| v.trim().parse().ok())
 }
 
@@ -297,7 +297,7 @@ fn read_rows(textarea: &web_sys::HtmlTextAreaElement, attr: &str) -> Option<u32>
 /// returns a px value, but `normal` (and some engines) yield a keyword — fall
 /// back to `font-size × 1.2`, the conventional `normal` ratio, so the rows→px
 /// conversion still lands close to the real line box.
-fn resolve_line_height(cs: &web_sys::CssStyleDeclaration) -> f64 {
+fn resolve_line_height(cs: &web_glue::dom::CssStyleDeclaration) -> f64 {
     if let Some(px) = parse_px_opt(&cs.get_property_value("line-height").unwrap_or_default()) {
         return px;
     }
@@ -381,7 +381,7 @@ fn parse_px_opt(value: &str) -> Option<f64> {
 /// textarea-specific element type. See that function for the design
 /// notes — the only difference is the DOM type we read selection from.
 fn attach_key_listener_textarea(
-    textarea: &web_sys::HtmlTextAreaElement,
+    textarea: &web_glue::dom::HtmlTextAreaElement,
     id: u32,
     b: &mut WebBackend,
     handler: KeyDownHandler,
@@ -414,7 +414,7 @@ fn attach_key_listener_textarea(
 }
 
 pub(crate) fn update_value(node: &Node, value: &str) {
-    if let Ok(textarea) = node.clone().dyn_into::<web_sys::HtmlTextAreaElement>() {
+    if let Ok(textarea) = node.clone().dyn_into::<web_glue::dom::HtmlTextAreaElement>() {
         // Same cursor-jump avoidance as `text_input::update_value`:
         // skip the write when the signal-driven update would set
         // back the same value we just read off the `input` event.
@@ -431,7 +431,7 @@ pub(crate) fn update_value(node: &Node, value: &str) {
 }
 
 pub(crate) fn make_handle(node: &Node) -> TextAreaHandle {
-    let textarea: web_sys::HtmlTextAreaElement = node
+    let textarea: web_glue::dom::HtmlTextAreaElement = node
         .clone()
         .dyn_into()
         .expect("text_area node is not an HtmlTextAreaElement");
@@ -441,26 +441,26 @@ pub(crate) fn make_handle(node: &Node) -> TextAreaHandle {
 struct WebTextAreaOps;
 impl TextAreaOps for WebTextAreaOps {
     fn focus(&self, node: &dyn Any) {
-        if let Some(t) = node.downcast_ref::<web_sys::HtmlTextAreaElement>() {
+        if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
             let _ = t.focus();
         }
     }
     fn blur(&self, node: &dyn Any) {
-        if let Some(t) = node.downcast_ref::<web_sys::HtmlTextAreaElement>() {
+        if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
             let _ = t.blur();
         }
     }
     fn select_all(&self, node: &dyn Any) {
-        if let Some(t) = node.downcast_ref::<web_sys::HtmlTextAreaElement>() {
+        if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
             t.select();
         }
     }
     fn insert_text(&self, node: &dyn Any, text: &str) {
-        if let Some(t) = node.downcast_ref::<web_sys::HtmlTextAreaElement>() {
+        if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
             let start = t.selection_start().ok().flatten().unwrap_or(0);
             let end = t.selection_end().ok().flatten().unwrap_or(start);
             let _ = t.set_range_text_with_start_and_end(text, start, end);
-            if let Ok(event) = web_sys::Event::new("input") {
+            if let Ok(event) = web_glue::dom::Event::new("input") {
                 let _ = t.dispatch_event(&event);
             }
         }
@@ -470,7 +470,7 @@ impl TextAreaOps for WebTextAreaOps {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_bindgen::JsCast;
+    use web_glue::JsCast;
     use wasm_bindgen_test::*;
 
     #[wasm_bindgen_test]
@@ -508,9 +508,9 @@ mod tests {
             Rc::new(|_| {}),
             None,
         );
-        let doc = web_sys::window().unwrap().document().unwrap();
-        let ta: web_sys::HtmlTextAreaElement = node.clone().unchecked_into();
-        let el: web_sys::Element = node.clone().unchecked_into();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let ta: web_glue::dom::HtmlTextAreaElement = node.clone().unchecked_into();
+        let el: web_glue::dom::Element = node.clone().unchecked_into();
         doc.body().unwrap().append_child(&node).unwrap();
 
         let inline = ta.get_attribute("style").unwrap_or_default();
@@ -520,8 +520,8 @@ mod tests {
              outrank it: {inline}"
         );
 
-        let win = web_sys::window().unwrap();
-        let computed = |el: &web_sys::Element| {
+        let win = web_glue::dom::window().unwrap();
+        let computed = |el: &web_glue::dom::Element| {
             win.get_computed_style(el)
                 .unwrap()
                 .unwrap()
@@ -598,8 +598,8 @@ mod tests {
     /// `wasm-bindgen-test` provides.
     #[wasm_bindgen_test]
     fn regression_uncapped_textarea_never_shows_scrollbar() {
-        let doc = web_sys::window().unwrap().document().unwrap();
-        let ta: web_sys::HtmlTextAreaElement =
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let ta: web_glue::dom::HtmlTextAreaElement =
             doc.create_element("textarea").unwrap().unchecked_into();
         // Mirror the idea-ui Field input geometry: 1px border, `border-box`,
         // soft wrap, a fixed narrow width so content wraps to several lines,
@@ -640,16 +640,13 @@ mod tests {
 
     /// Await a single animation frame so a deferred (rAF) `autosize` has run.
     async fn next_animation_frame() {
-        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-            let win = web_sys::window().unwrap();
-            // `once_into_js` leaks the closure into JS — fine for a one-shot
-            // test rAF; the frame fires once and the closure is collected.
-            let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
-                let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+            let resolve = resolve.clone();
+            crate::glue_dom::next_frame(move || {
+                let _ = resolve.call0(&web_glue::JsValue::NULL);
             });
-            let _ = win.request_animation_frame(cb.unchecked_ref());
         });
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let _ = web_glue::JsFuture::new(&promise).await;
     }
 
     /// REGRESSION for "textarea very short on init" (the reported bug).
@@ -687,14 +684,14 @@ mod tests {
         );
         // Give it a known, non-collapsing line box so the 3-row floor is a
         // concrete pixel target regardless of UA form-control defaults.
-        let ta: web_sys::HtmlTextAreaElement = node.clone().unchecked_into();
+        let ta: web_glue::dom::HtmlTextAreaElement = node.clone().unchecked_into();
         let _ = ta.style().set_property("line-height", "20px");
         let _ = ta.style().set_property("font-size", "14px");
         let _ = ta.style().set_property("width", "200px");
 
         // Attach into the live document, then let one frame pass so the
         // deferred autosize fires against real layout.
-        let doc = web_sys::window().unwrap().document().unwrap();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
         doc.get_element_by_id("app").unwrap().append_child(&node).unwrap();
         next_animation_frame().await;
 
@@ -719,7 +716,7 @@ mod tests {
     async fn regression_detached_autosize_leaves_absolute_textarea_unpinned() {
         install_mount_body();
         let mut backend = crate::WebBackend::new("#app");
-        let doc = web_sys::window().unwrap().document().unwrap();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
 
         // A positioned 200×180 box, like the code editor's stack.
         let stack = doc.create_element("div").unwrap();
@@ -738,7 +735,7 @@ mod tests {
             Rc::new(|_| {}),
             None,
         );
-        let ta: web_sys::HtmlTextAreaElement = node.clone().unchecked_into();
+        let ta: web_glue::dom::HtmlTextAreaElement = node.clone().unchecked_into();
         // The editing layer's geometry (in the SDK it arrives as a class).
         for (prop, value) in [
             ("position", "absolute"),
@@ -764,7 +761,7 @@ mod tests {
     /// `#app` mount that survives an async test (the shared `tests::install_mount`
     /// isn't reachable from this module; inline the minimal equivalent).
     fn install_mount_body() {
-        let doc = web_sys::window().unwrap().document().unwrap();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
         if let Some(existing) = doc.get_element_by_id("app") {
             existing.remove();
         }
@@ -778,8 +775,8 @@ mod tests {
     /// suppress legitimate scrollbars.
     #[wasm_bindgen_test]
     fn capped_textarea_scrolls_when_content_exceeds_cap() {
-        let doc = web_sys::window().unwrap().document().unwrap();
-        let ta: web_sys::HtmlTextAreaElement =
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let ta: web_glue::dom::HtmlTextAreaElement =
             doc.create_element("textarea").unwrap().unchecked_into();
         ta.set_attribute(
             "style",

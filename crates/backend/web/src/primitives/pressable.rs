@@ -15,22 +15,22 @@ use crate::WebBackend;
 use runtime_shared::{PressableHandle, PressableOps, ViewportRect};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     // HYDRATION: adopt the SSR `<div role=button>` (role/tabindex already
     // set by the SSR `create_pressable`); just wire the handlers below.
     // Its children are adopted separately via cursor descent.
     let adopted = b.hydrate_next("div");
-    let el: web_sys::HtmlElement = match adopted {
+    let el: web_glue::dom::HtmlElement = match adopted {
         Some(el) => el.unchecked_into(),
         None => {
             let el = b
                 .doc
                 .create_element("div")
                 .expect("create pressable")
-                .unchecked_into::<web_sys::HtmlElement>();
+                .unchecked_into::<web_glue::dom::HtmlElement>();
             // Accessibility: announce as a button + make it Tab-focusable.
             // No inline `cursor` — that's now an author/component-driven
             // style property (`StyleRules::cursor`), so a bare pressable
@@ -64,7 +64,7 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     // submit. See `regression_web_pressable_ignores_descendant_key`.
     let on_click_for_key = on_click.clone();
     let el_for_key: Node = el.clone().unchecked_into();
-    let el_for_key = crate::glue_dom::target(&el_for_key);
+    let el_for_key: web_glue::dom::EventTarget = el_for_key.unchecked_into();
     // Element-lifetime: the element owns the listener, and its closure is
     // released when JS collects the element.
     crate::glue_dom::listen_for_element_lifetime(&el, "keydown", Default::default(), move |ev| {
@@ -93,7 +93,7 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
 }
 
 pub(crate) fn make_handle(node: &Node) -> PressableHandle {
-    let html: web_sys::HtmlElement = node
+    let html: web_glue::dom::HtmlElement = node
         .clone()
         .dyn_into()
         .expect("pressable node is not an HtmlElement");
@@ -103,19 +103,19 @@ pub(crate) fn make_handle(node: &Node) -> PressableHandle {
 struct WebPressableOps;
 impl PressableOps for WebPressableOps {
     fn click(&self, node: &dyn Any) {
-        if let Some(html) = node.downcast_ref::<web_sys::HtmlElement>() {
+        if let Some(html) = node.downcast_ref::<web_glue::dom::HtmlElement>() {
             html.click();
         }
     }
 
     fn rect(&self, node: &dyn Any) -> ViewportRect {
-        node.downcast_ref::<web_sys::HtmlElement>()
+        node.downcast_ref::<web_glue::dom::HtmlElement>()
             .map(measure_element_rect)
             .unwrap_or_default()
     }
 }
 
-fn measure_element_rect(el: &web_sys::HtmlElement) -> ViewportRect {
+fn measure_element_rect(el: &web_glue::dom::HtmlElement) -> ViewportRect {
     let r = el.get_bounding_client_rect();
     ViewportRect {
         x: r.x() as f32,

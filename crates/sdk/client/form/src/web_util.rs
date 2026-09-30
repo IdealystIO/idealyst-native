@@ -12,9 +12,10 @@ use wasm_bindgen::JsCast;
 /// `preventDefault()`. Silently no-ops when the node isn't a form
 /// (matches the ops-trait degradation contract).
 pub(crate) fn request_submit(node: &dyn Any) {
-    let Some(form) = node
-        .downcast_ref::<web_sys::Node>()
-        .and_then(|n| n.clone().dyn_into::<web_sys::HtmlFormElement>().ok())
+    // HYBRID-BRIDGE: the host node is a `web_glue::dom::Node` since phase
+    // 2b; this SDK's internals are still web-sys until phase 3.
+    let Some(form) = backend_web::bridge::node_to_web_sys(node)
+        .and_then(|n| n.dyn_into::<web_sys::HtmlFormElement>().ok())
     else {
         return;
     };

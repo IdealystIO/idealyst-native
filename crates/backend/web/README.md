@@ -3,29 +3,31 @@
 Web backend: drives DOM nodes. The reference backend, with the most complete
 primitive coverage. Every framework test and example targets it first.
 
-## Its JS boundary: web-glue, in hybrid mode
+## Its JS boundary: web-glue
 
-The backend is mid-way through moving off wasm-bindgen onto the
-framework-owned boundary, `web-glue`
-([`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md)).
-As of phase 2a:
+Since own-web-bindings phase 2b
+([`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md))
+every DOM operation, listener, timer, shim call and dev-tooling entry
+point in this crate goes through `web-glue`: `web_glue::dom` classes with
+web-sys's method names and signatures, `web_glue::js` for the JS
+built-ins. `Host::Node` is `web_glue::dom::Node`. The eight `runtime/js/`
+shims ship as `web_glue::js_module!`s (no run-time eval).
 
-- **On web-glue:** the scheduler (microtasks, rAF, timers), the render
-  loop, the async executor, the time source and wall clock, the logger and
-  panic hook, every event listener, and the eight `runtime/js/` shims
-  (shipped as `web_glue::js_module!`s, evaluated once — no run-time
-  `Function(src)` eval).
-- **Still web-sys / wasm-bindgen:** the DOM-operation surface (create,
-  attribute and style writes), `Host::Node` (`web_sys::Node`, which SDK
-  mount handlers receive), ResizeObserver callbacks, the virtualizer shim
-  callbacks, and the dev-only transports, robot, overlay and hot-patch
-  loader.
-
-So a page is **hybrid**: one module, both bindings. `idealyst build --web`
-extracts the glue before wasm-bindgen runs and writes
+The one exception is **`src/bridge.rs`** (`HYBRID-BRIDGE`, deleted in
+phase 3). SDKs that still build their DOM with web-sys (svg, video, maps,
+form, webview, canvas-native, file-picker) cross there: a mount handler
+hands its web-sys element to the host with `bridge::node_from_web_sys`,
+an ops impl recovers a web-sys node from the host node it receives as
+`&dyn Any` with `bridge::node_to_web_sys`, and a dropped file reaches the
+file-picker SDK as a `web_sys::File`. That module is why this crate still
+depends on `wasm-bindgen` and `web-sys` (with only the `Node` and `File`
+features) — and why a web page is still **hybrid**: `idealyst build
+--web` extracts the glue before wasm-bindgen runs and writes
 `pkg/__idealyst_glue.js` after (`build_web::own_glue`).
-`src/glue_dom.rs` is the one place the crate crosses between web-sys
-values and glue handles (`HYBRID-BRIDGE`, removed in phase 2b/3).
+
+A crate that uses web-sys types must enable the web-sys features it uses
+itself: this crate no longer enables ~60 of them for everyone, and code
+that compiled only because of that unification fails to build alone.
 
 Listener ownership, which the port made uniform:
 
@@ -81,7 +83,8 @@ the backend up by hand must call them.
 - **`defaults.rs`**: global baselines, including the `.ui-default` class,
   spinner keyframes, the JS shims (as web-glue modules), and dynamic-slot
   teardown.
-- **`glue_dom.rs`**: the listener helpers and the HYBRID-BRIDGE crossing.
+- **`glue_dom.rs`**: listener helpers, element-lifetime callbacks, the shim callback shapes.
+- **`bridge.rs`**: the HYBRID-BRIDGE for un-ported SDKs (see above).
 - **`primitives/`**: one module per primitive. Each owns its
   create/update functions, any `Ops` impl, and the `make_*_handle` builder.
 - **`newcore.rs`**: the `impl Host for WebBackend` block plus all ~30

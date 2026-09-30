@@ -2,8 +2,8 @@
 
 use crate::WebBackend;
 use runtime_shared::{AssetId, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler};
-use wasm_bindgen::JsCast;
-use web_sys::{HtmlImageElement, Node};
+use web_glue::JsCast;
+use web_glue::dom::{HtmlImageElement, Node};
 
 /// Sentinel URL the framework emits for asset-backed images.
 /// The shape is `asset://<u64-id>` — see `runtime_shared::image_asset`.
@@ -49,7 +49,7 @@ pub(crate) fn create(b: &mut WebBackend, src: &str, alt: Option<&str>) -> Node {
 }
 
 pub(crate) fn update_src(b: &WebBackend, node: &Node, src: &str) {
-    if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::Element>() {
         let resolved = resolve_src(b, src);
         let _ = el.set_attribute("src", &resolved);
     }
@@ -123,7 +123,7 @@ pub(crate) fn install_error(node: &Node, handler: ImageErrorHandler) {
 /// `None` removes the attribute. Mirrors `create`'s alt handling — the
 /// alt attribute IS the accessibility text for an image on web.
 pub(crate) fn update_alt(node: &Node, alt: Option<&str>) {
-    if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::Element>() {
         match alt {
             Some(a) => {
                 let _ = el.set_attribute("alt", a);

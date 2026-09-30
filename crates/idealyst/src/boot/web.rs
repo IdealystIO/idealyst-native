@@ -115,7 +115,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     backend_web::install_viewport_observer();
 
     let Some(url) = read_global_string("IDEALYST_RUNTIME_SERVER_URL") else {
-        web_sys::console::error_1(
+        web_glue::dom::console::error_1(
             &"[dev-client] runtime-server mode enabled but window.IDEALYST_RUNTIME_SERVER_URL \
               is missing — did the dev HTTP server fail to inject it? Falling back to local \
               mount."
@@ -126,7 +126,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
         return;
     };
 
-    web_sys::console::log_1(&format!("[dev-client] runtime-server mode: connecting to {url}").into());
+    web_glue::dom::console::log_1(&format!("[dev-client] runtime-server mode: connecting to {url}").into());
 
     let backend = backend_web::WebBackend::new(config.mount_selector);
     // `new_newcore` drives the backend's CAPABILITY surface (the
@@ -149,7 +149,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
         Rc::new(move || {
             let retry_url = url.clone();
             let give_up: Rc<dyn Fn()> = Rc::new(move || {
-                web_sys::console::warn_1(
+                web_glue::dom::console::warn_1(
                     &format!("[dev-client] reconnect to {retry_url} failed; will retry on next disconnect")
                         .into(),
                 );
@@ -157,7 +157,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
             match backend_web::connect_web(&url, wire.clone(), give_up) {
                 Ok(h) => HANDLE.with(|slot| *slot.borrow_mut() = Some(h)),
                 Err(e) => {
-                    web_sys::console::error_2(&"[dev-client] reconnect failed:".into(), &e)
+                    web_glue::dom::console::error_2(&"[dev-client] reconnect failed:".into(), &e)
                 }
             }
         })
@@ -165,7 +165,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
 
     match backend_web::connect_web(&url, wire, on_disconnect) {
         Ok(h) => HANDLE.with(|slot| *slot.borrow_mut() = Some(h)),
-        Err(e) => web_sys::console::error_2(
+        Err(e) => web_glue::dom::console::error_2(
             &"[dev-client] initial runtime-server connect failed:".into(),
             &e,
         ),
@@ -205,7 +205,7 @@ fn start_local<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     #[cfg(feature = "robot")]
     if let Some(url) = read_global_string("IDEALYST_ROBOT_RELAY_URL") {
         if let Err(e) = backend_web::install_robot_relay_client(&url) {
-            web_sys::console::error_2(&"[robot] relay connect failed:".into(), &e);
+            web_glue::dom::console::error_2(&"[robot] relay connect failed:".into(), &e);
         }
     }
 }

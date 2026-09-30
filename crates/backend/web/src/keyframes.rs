@@ -29,7 +29,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use runtime_shared::animation::AnimProp;
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 
 thread_local! {
     /// Content hashes of `@keyframes` rules already inserted.
@@ -40,7 +40,7 @@ const KEYFRAMES_STYLE_ID: &str = "iy-keyframes";
 
 /// The dedicated `<style>` hosting all generated `@keyframes` rules,
 /// created on first use.
-fn keyframes_sheet(document: &web_sys::Document) -> Option<web_sys::CssStyleSheet> {
+fn keyframes_sheet(document: &web_glue::dom::Document) -> Option<web_glue::dom::CssStyleSheet> {
     let el = match document.get_element_by_id(KEYFRAMES_STYLE_ID) {
         Some(el) => el,
         None => {
@@ -50,7 +50,7 @@ fn keyframes_sheet(document: &web_sys::Document) -> Option<web_sys::CssStyleShee
             el
         }
     };
-    let style_el: web_sys::HtmlStyleElement = el.dyn_into().ok()?;
+    let style_el: web_glue::dom::HtmlStyleElement = el.dyn_into().ok()?;
     style_el.sheet()?.dyn_into().ok()
 }
 
@@ -68,7 +68,7 @@ fn css_decl(prop: AnimProp, v: f32) -> Option<String> {
 /// Returns `true` when handled; `false` signals the framework to fall
 /// back to the per-frame clock path.
 pub(crate) fn install(
-    el: &web_sys::Element,
+    el: &web_glue::dom::Element,
     prop: AnimProp,
     keyframes: &[(f32, f32)],
     duration_ms: u32,
@@ -78,7 +78,7 @@ pub(crate) fn install(
     if keyframes.len() < 2 || duration_ms == 0 {
         return false;
     }
-    let Some(html): Option<&web_sys::HtmlElement> = el.dyn_ref() else {
+    let Some(html): Option<&web_glue::dom::HtmlElement> = el.dyn_ref() else {
         return false;
     };
 

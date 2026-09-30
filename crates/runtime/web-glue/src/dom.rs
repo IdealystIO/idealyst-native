@@ -10,6 +10,9 @@
 //! slots (`G.add`), `null`/`undefined` results come back as slot 0 and
 //! surface as `None`.
 
+pub use crate::dom_api::{
+    console, new_event, BinaryType, EventInit, KeyboardEventInit, MouseEventInit, PointerEventInit, Url,
+};
 use crate::cast::JsCast;
 use crate::{string, Closure, JsValue};
 
@@ -34,6 +37,78 @@ crate::js_class! {
     pub struct Window: EventTarget = "Window";
     /// `MediaQueryList`.
     pub struct MediaQueryList: EventTarget = "MediaQueryList";
+    /// `DocumentFragment`.
+    pub struct DocumentFragment: Node, EventTarget = "DocumentFragment";
+    /// `HTMLHeadElement`.
+    pub struct HtmlHeadElement: HtmlElement, Element, Node, EventTarget = "HTMLHeadElement";
+    /// `HTMLStyleElement`.
+    pub struct HtmlStyleElement: HtmlElement, Element, Node, EventTarget = "HTMLStyleElement";
+    /// `HTMLCanvasElement`.
+    pub struct HtmlCanvasElement: HtmlElement, Element, Node, EventTarget = "HTMLCanvasElement";
+    /// `HTMLAnchorElement`.
+    pub struct HtmlAnchorElement: HtmlElement, Element, Node, EventTarget = "HTMLAnchorElement";
+    /// `HTMLImageElement`.
+    pub struct HtmlImageElement: HtmlElement, Element, Node, EventTarget = "HTMLImageElement";
+    /// `HTMLIFrameElement`.
+    pub struct HtmlIFrameElement: HtmlElement, Element, Node, EventTarget = "HTMLIFrameElement";
+    /// `HTMLOptionElement`.
+    pub struct HtmlOptionElement: HtmlElement, Element, Node, EventTarget = "HTMLOptionElement";
+    /// `SVGElement`.
+    pub struct SvgElement: Element, Node, EventTarget = "SVGElement";
+    /// `NodeList`.
+    pub struct NodeList = "NodeList";
+    /// `HTMLCollection`.
+    pub struct HtmlCollection = "HTMLCollection";
+    /// `DOMTokenList`.
+    pub struct DomTokenList = "DOMTokenList";
+    /// `DOMRectReadOnly`.
+    pub struct DomRectReadOnly = "DOMRectReadOnly";
+    /// `DOMRect`.
+    pub struct DomRect: DomRectReadOnly = "DOMRect";
+    /// `CSSStyleDeclaration`.
+    pub struct CssStyleDeclaration = "CSSStyleDeclaration";
+    /// `StyleSheet`.
+    pub struct StyleSheet = "StyleSheet";
+    /// `CSSStyleSheet`.
+    pub struct CssStyleSheet: StyleSheet = "CSSStyleSheet";
+    /// `CSSRuleList`.
+    pub struct CssRuleList = "CSSRuleList";
+    /// `CSSRule`.
+    pub struct CssRule = "CSSRule";
+    /// `CSSStyleRule`.
+    pub struct CssStyleRule: CssRule = "CSSStyleRule";
+    /// `CSSMediaRule`.
+    pub struct CssMediaRule: CssRule = "CSSMediaRule";
+    /// `History`.
+    pub struct History = "History";
+    /// `Location`.
+    pub struct Location = "Location";
+    /// `Navigator`.
+    pub struct Navigator = "Navigator";
+    /// `ResizeObserver`.
+    pub struct ResizeObserver = "ResizeObserver";
+    /// `ResizeObserverEntry`.
+    pub struct ResizeObserverEntry = "ResizeObserverEntry";
+    /// `FontFace`.
+    pub struct FontFace = "FontFace";
+    /// `FontFaceSet`.
+    pub struct FontFaceSet: EventTarget = "FontFaceSet";
+    /// `WebSocket`.
+    pub struct WebSocket: EventTarget = "WebSocket";
+    /// `MessageEvent`.
+    pub struct MessageEvent: Event = "MessageEvent";
+    /// `CloseEvent`.
+    pub struct CloseEvent: Event = "CloseEvent";
+    /// `Response`.
+    pub struct Response = "Response";
+    /// `Performance`.
+    pub struct Performance = "Performance";
+    /// `XMLSerializer`.
+    pub struct XmlSerializer = "XMLSerializer";
+    /// `XMLHttpRequest`.
+    pub struct XmlHttpRequest: EventTarget = "XMLHttpRequest";
+    /// `CanvasRenderingContext2D`.
+    pub struct CanvasRenderingContext2d = "CanvasRenderingContext2D";
 
     /// `Event`.
     pub struct Event = "Event";
@@ -67,15 +142,10 @@ fn opt<T: JsCast>(idx: u32) -> Option<T> {
     (idx != 0).then(|| T::unchecked_from_js(unsafe { JsValue::from_raw(idx) }))
 }
 
-fn owned<T: JsCast>(idx: u32) -> T {
-    T::unchecked_from_js(unsafe { JsValue::from_raw(idx) })
-}
 
 crate::import! {
     // ---- globals ---------------------------------------------------------
     fn js_window() -> u32 = "() => typeof window === 'undefined' ? 0 : G.add(window)";
-    fn js_document(w: u32) -> u32 = "(w) => G.add(G.get(w).document)";
-    fn js_body(d: u32) -> u32 = "(d) => { const b = G.get(d).body; return b == null ? 0 : G.add(b); }";
 
     // ---- timers / frames --------------------------------------------------
     fn js_raf(w: u32, f: u32) -> i32 = "(w, f) => G.get(w).requestAnimationFrame(G.get(f))";
@@ -85,8 +155,6 @@ crate::import! {
     fn js_perf_now() -> f64 = "() => performance.now()";
     fn js_date_now() -> f64 = "() => Date.now()";
     fn js_tz_offset() -> f64 = "() => new Date().getTimezoneOffset()";
-    fn js_inner_width(w: u32) -> f64 = "(w) => G.get(w).innerWidth";
-    fn js_inner_height(w: u32) -> f64 = "(w) => G.get(w).innerHeight";
     fn js_match_media(w: u32, p: usize, l: usize) -> u32 =
         "(w, p, l) => { const m = G.get(w).matchMedia(G.str(p, l)); return m == null ? 0 : G.add(m); }";
     fn js_mql_matches(m: u32) -> u32 = "(m) => G.get(m).matches ? 1 : 0";
@@ -101,19 +169,6 @@ crate::import! {
         "(t, p, l, f, c) => { G.get(t).removeEventListener(G.str(p, l), G.get(f), c !== 0); }";
 
     // ---- Node / Element ------------------------------------------------------
-    fn js_text_content(n: u32, out: usize) -> u32 =
-        "(n, o) => { const t = G.get(n).textContent; if (t == null) return 0; G.retStr(t, o); return 1; }";
-    fn js_parent_element(n: u32) -> u32 = "(n) => { const p = G.get(n).parentElement; return p == null ? 0 : G.add(p); }";
-    fn js_is_same_node(a: u32, b: u32) -> u32 = "(a, b) => G.get(a) === G.get(b) ? 1 : 0";
-    fn js_contains(a: u32, b: u32) -> u32 = "(a, b) => G.get(a).contains(G.get(b)) ? 1 : 0";
-    fn js_tag_name(e: u32, out: usize) = "(e, o) => G.retStr(G.get(e).tagName, o)";
-    #[catch]
-    fn js_closest(e: u32, p: usize, l: usize) -> u32 =
-        "(e, p, l) => { const c = G.get(e).closest(G.str(p, l)); return c == null ? 0 : G.add(c); }";
-    fn js_class_name(e: u32, out: usize) =
-        "(e, o) => { const c = G.get(e).className; G.retStr(typeof c === 'string' ? c : (c && c.baseVal) || '', o); }";
-    fn js_get_attribute(e: u32, p: usize, l: usize, out: usize) -> u32 =
-        "(e, p, l, o) => { const v = G.get(e).getAttribute(G.str(p, l)); if (v == null) return 0; G.retStr(v, o); return 1; }";
 
     // ---- Event -----------------------------------------------------------------
     fn js_ev_type(e: u32, out: usize) = "(e, o) => G.retStr(G.get(e).type, o)";
@@ -143,10 +198,6 @@ pub fn window() -> Option<Window> {
 }
 
 impl Window {
-    pub fn document(&self) -> Document {
-        owned(unsafe { js_document(self.0.raw()) })
-    }
-
     /// `requestAnimationFrame(f)` → the frame handle.
     pub fn request_animation_frame(&self, f: &Closure) -> i32 {
         unsafe { js_raf(self.0.raw(), f.as_js().raw()) }
@@ -165,23 +216,10 @@ impl Window {
         unsafe { js_clear_timeout(self.0.raw(), handle) }
     }
 
-    pub fn inner_width(&self) -> f64 {
-        unsafe { js_inner_width(self.0.raw()) }
-    }
-
-    pub fn inner_height(&self) -> f64 {
-        unsafe { js_inner_height(self.0.raw()) }
-    }
-
-    pub fn match_media(&self, query: &str) -> Option<MediaQueryList> {
+    /// `matchMedia(query)` (web-sys shape).
+    pub fn match_media(&self, query: &str) -> Result<Option<MediaQueryList>, crate::JsError> {
         let (p, l) = string::abi(query);
-        opt(unsafe { js_match_media(self.0.raw(), p, l) })
-    }
-}
-
-impl Document {
-    pub fn body(&self) -> Option<HtmlElement> {
-        opt(unsafe { js_body(self.0.raw()) })
+        Ok(opt(unsafe { js_match_media(self.0.raw(), p, l) }))
     }
 }
 
@@ -315,52 +353,6 @@ impl Drop for Listener {
         // Runs before the fields drop, so the closure is still registered —
         // which is what `removeEventListener` needs to match.
         self.target.remove_event_listener(self.ty, &self.closure, self.capture);
-    }
-}
-
-impl Node {
-    /// `textContent`; `None` for a document or doctype.
-    pub fn text_content(&self) -> Option<String> {
-        let mut has = 0;
-        let s = string::receive(|o| has = unsafe { js_text_content(self.0.raw(), o) });
-        (has != 0).then_some(s)
-    }
-
-    pub fn parent_element(&self) -> Option<Element> {
-        opt(unsafe { js_parent_element(self.0.raw()) })
-    }
-
-    /// Identity (`===`).
-    pub fn is_same_node(&self, other: &Node) -> bool {
-        unsafe { js_is_same_node(self.0.raw(), other.0.raw()) != 0 }
-    }
-
-    pub fn contains(&self, other: &Node) -> bool {
-        unsafe { js_contains(self.0.raw(), other.0.raw()) != 0 }
-    }
-}
-
-impl Element {
-    pub fn tag_name(&self) -> String {
-        string::receive(|o| unsafe { js_tag_name(self.0.raw(), o) })
-    }
-
-    /// The `class` attribute (an SVG element's `className.baseVal`).
-    pub fn class_name(&self) -> String {
-        string::receive(|o| unsafe { js_class_name(self.0.raw(), o) })
-    }
-
-    /// `closest(selector)` — `Err` for an invalid selector.
-    pub fn closest(&self, selector: &str) -> Result<Option<Element>, crate::JsError> {
-        let (p, l) = string::abi(selector);
-        unsafe { js_closest(self.0.raw(), p, l) }.map(opt)
-    }
-
-    pub fn get_attribute(&self, name: &str) -> Option<String> {
-        let (p, l) = string::abi(name);
-        let mut has = 0;
-        let s = string::receive(|o| has = unsafe { js_get_attribute(self.0.raw(), p, l, o) });
-        (has != 0).then_some(s)
     }
 }
 

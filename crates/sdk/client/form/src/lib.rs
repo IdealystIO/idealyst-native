@@ -500,7 +500,7 @@ mod web_glue {
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<FormPrim>,
         children: Vec<Element>,
-    ) -> web_sys::Node {
+    ) -> backend_web::bridge::HostNode {
         let backend = cx.backend().clone();
         let document = web_sys::window()
             .expect("no window")
@@ -550,7 +550,8 @@ mod web_glue {
         // Children BEFORE style. They become real DOM descendants of
         // the `<form>`, which is what makes browser autofill +
         // submit-on-enter work.
-        let mut node: web_sys::Node = form.into();
+        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
+        let mut node = backend_web::bridge::node_from_web_sys(&form.into());
         cx.realize_children_into(&mut node, children);
         finish_mount(&backend, &node, prim);
         node

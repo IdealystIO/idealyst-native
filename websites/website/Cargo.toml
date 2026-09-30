@@ -148,6 +148,9 @@ web-sys = { version = "0.3", features = [
     # Needed by `responsive.rs`: imperative backdrop / hamburger
     # buttons + the reactive class-mirror effect.
     "DomTokenList", "EventTarget", "Event", "HtmlButtonElement", "Node",
+    # `Document::head()` — used to arrive through backend-web's own web-sys
+    # feature list (removed in own-web-bindings phase 2b).
+    "HtmlHeadElement",
 ] }
 
 # iOS / Android targets — proving the cross-platform claim by having

@@ -179,14 +179,14 @@ fn reflect() -> Result<(), String> {
 fn casts() -> Result<(), String> {
     use web_glue::dom::{self, Element, HtmlElement, HtmlInputElement, Node};
     use web_glue::JsCast;
-    let doc = dom::window().ok_or("no window")?.document();
+    let doc = dom::window().ok_or("no window")?.document().ok_or("no document")?;
     let body = doc.body().ok_or("no body")?;
     if body.tag_name() != "BODY" {
         return Err(format!("tag {}", body.tag_name()));
     }
     let as_node: Node = body.clone().into();
     let back = as_node.dyn_into::<HtmlElement>().map_err(|_| "Node -> HtmlElement refused")?;
-    if !back.is_same_node(&body) {
+    if !back.is_same_node(Some(&body)) {
         return Err("round trip is a different node".into());
     }
     let not_input = back.dyn_into::<HtmlInputElement>();
@@ -208,7 +208,7 @@ fn listener() -> Result<(), String> {
     use std::rc::Rc;
     use web_glue::dom::{self, EventTarget, Listener, ListenerOptions};
     use web_glue::JsCast;
-    let doc = dom::window().ok_or("no window")?.document();
+    let doc = dom::window().ok_or("no window")?.document().ok_or("no document")?;
     let body = doc.body().ok_or("no body")?;
     let host = crate::dom::child(&web_glue::JsValue::from(body), "button", "listener-target");
     let target: EventTarget = host.clone().unchecked_into();

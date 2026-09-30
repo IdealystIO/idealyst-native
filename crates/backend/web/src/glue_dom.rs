@@ -1,31 +1,18 @@
-//! The backend's side of the web-glue port (own-web-bindings phase 2a).
+//! Listener helpers over `web_glue::dom` (own-web-bindings phase 2).
 //!
-//! Event listeners, the scheduler, the executor, the time source and the
-//! JS shims run on web-glue; the DOM-operation surface (create / attribute
-//! / style writes) and the `Host::Node` type are still web-sys until phase
-//! 2b, because SDK mount handlers receive `web_sys::Node`s (phase 3). So a
-//! listener's TARGET arrives as a web-sys value and crosses once, here,
-//! through the HYBRID-BRIDGE (`web_glue::bridge`) — the one place this
-//! crate converts between the two handle spaces. Phase 2b removes the
-//! crossing when nodes are created as glue handles in the first place.
+//! Every value the backend holds is a glue handle, so a listener target is
+//! just the node itself — `AsRef<JsValue>` covers every typed class.
 
 use web_glue::dom::{Event, EventTarget, Listener, ListenerOptions};
+use web_glue::{JsCast, JsValue};
 
-/// A web-sys value (an element, `window`, `document`) as a glue
-/// `EventTarget`. HYBRID-BRIDGE.
-pub(crate) fn target(t: &impl AsRef<wasm_bindgen::JsValue>) -> EventTarget {
-    web_glue::bridge::from_bindgen(t.as_ref())
-}
-
-/// A glue handle as a web-sys value of type `T` (unchecked — the caller
-/// knows what the handle is). HYBRID-BRIDGE.
-pub(crate) fn to_web_sys<T: wasm_bindgen::JsCast>(v: &impl web_glue::JsCast) -> T {
-    wasm_bindgen::JsCast::unchecked_into(web_glue::bridge::to_bindgen(v))
+fn target(t: &impl AsRef<JsValue>) -> EventTarget {
+    t.as_ref().clone().unchecked_into()
 }
 
 /// Attach `f` to `t` for `ty`; the returned [`Listener`] detaches on drop.
 pub(crate) fn listen(
-    t: &impl AsRef<wasm_bindgen::JsValue>,
+    t: &impl AsRef<web_glue::JsValue>,
     ty: &'static str,
     options: ListenerOptions,
     f: impl FnMut(Event) + 'static,
@@ -40,7 +27,7 @@ pub(crate) fn listen(
 /// teardown record; anything that must detach earlier uses
 /// `WebBackend::track_listener`.
 pub(crate) fn listen_for_element_lifetime(
-    t: &impl AsRef<wasm_bindgen::JsValue>,
+    t: &impl AsRef<web_glue::JsValue>,
     ty: &'static str,
     options: ListenerOptions,
     f: impl FnMut(Event) + 'static,
@@ -56,12 +43,20 @@ pub(crate) fn capture(capture: bool) -> ListenerOptions {
 web_glue::import! {
     fn js_set_onclick(el: u32, f: u32) = "(e, f) => { G.get(e).onclick = G.get(f); }";
     fn js_raf_once(f: u32) = "(f) => { requestAnimationFrame(G.get(f)); }";
+    fn js_timeout_once(f: u32, ms: i32) = "(f, ms) => { setTimeout(G.get(f), ms); }";
 }
 
 /// Run `f` once, on the next animation frame. Fire-and-forget (nothing can
 /// cancel it): the closure frees itself when it runs. For "measure once
 /// the node is laid out" deferrals; anything cancellable goes through
 /// `runtime_shared::after_animation_frame`.
+/// Run `f` once after `ms` milliseconds. Fire-and-forget, like
+/// [`next_frame`].
+pub(crate) fn after_ms_once(ms: i32, f: impl FnOnce() + 'static) {
+    let func = web_glue::Closure::once_into_js(move |_| f());
+    unsafe { js_timeout_once(func.raw(), ms) }
+}
+
 pub(crate) fn next_frame(f: impl FnOnce() + 'static) {
     let func = web_glue::Closure::once_into_js(move |_| f());
     unsafe { js_raf_once(func.raw()) }
@@ -71,7 +66,7 @@ pub(crate) fn next_frame(f: impl FnOnce() + 'static) {
 /// replaces the old one, unlike `addEventListener`). The element owns the
 /// function; the Rust closure is released when JS collects it (see
 /// [`listen_for_element_lifetime`]).
-pub(crate) fn set_onclick(el: &impl AsRef<wasm_bindgen::JsValue>, f: impl FnMut() + 'static) {
+pub(crate) fn set_onclick(el: &impl AsRef<web_glue::JsValue>, f: impl FnMut() + 'static) {
     let mut f = f;
     let func = web_glue::Closure::new(move |_| f()).into_js_value();
     let el = target(el);
@@ -82,7 +77,7 @@ pub(crate) fn set_onclick(el: &impl AsRef<wasm_bindgen::JsValue>, f: impl FnMut(
 /// `scroll` handler whose body synchronously re-fires `scroll`) — see
 /// `web_glue::Closure::new_fn`.
 pub(crate) fn listen_fn_for_element_lifetime(
-    t: &impl AsRef<wasm_bindgen::JsValue>,
+    t: &impl AsRef<web_glue::JsValue>,
     ty: &'static str,
     f: impl Fn(Event) + 'static,
 ) {
@@ -92,10 +87,44 @@ pub(crate) fn listen_fn_for_element_lifetime(
 /// [`listen`] for a handler that may be re-entered (a focus trap whose own
 /// `.focus()` re-dispatches `focusin`) — see `web_glue::Closure::new_fn`.
 pub(crate) fn listen_fn(
-    t: &impl AsRef<wasm_bindgen::JsValue>,
+    t: &impl AsRef<web_glue::JsValue>,
     ty: &'static str,
     options: ListenerOptions,
     f: impl Fn(Event) + 'static,
 ) -> Listener {
     Listener::new_fn(target(t), ty, options, f)
+}
+
+// Callback shapes the JS shims take (virtualizer / virtual grid): each is
+// a `web_glue::Closure::new_with_args`, which receives every JS argument
+// and returns a value to the shim. The argument count is the shim's
+// contract; a missing argument reads as `undefined`.
+fn arg(a: &[JsValue], i: usize) -> JsValue {
+    a.get(i).cloned().unwrap_or_default()
+}
+pub(crate) fn fn0r(mut f: impl FnMut() -> JsValue + 'static) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |_| f())
+}
+pub(crate) fn fn1r(mut f: impl FnMut(JsValue) -> JsValue + 'static) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |a| f(arg(a, 0)))
+}
+pub(crate) fn fn1(mut f: impl FnMut(JsValue) + 'static) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |a| {
+        f(arg(a, 0));
+        JsValue::UNDEFINED
+    })
+}
+pub(crate) fn fn2(mut f: impl FnMut(JsValue, JsValue) + 'static) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |a| {
+        f(arg(a, 0), arg(a, 1));
+        JsValue::UNDEFINED
+    })
+}
+pub(crate) fn fn2r(mut f: impl FnMut(JsValue, JsValue) -> JsValue + 'static) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |a| f(arg(a, 0), arg(a, 1)))
+}
+pub(crate) fn fn4r(
+    mut f: impl FnMut(JsValue, JsValue, JsValue, JsValue) -> JsValue + 'static,
+) -> web_glue::Closure {
+    web_glue::Closure::new_with_args(move |a| f(arg(a, 0), arg(a, 1), arg(a, 2), arg(a, 3)))
 }

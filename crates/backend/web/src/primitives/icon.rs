@@ -16,8 +16,8 @@
 use css::css_num;
 use runtime_shared::primitives::icon::{FillRule, IconData};
 use runtime_shared::{Color, Easing};
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 use crate::WebBackend;
 
@@ -105,7 +105,7 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
 /// for the new `filled` flag (preserving the live paint color), and replace the
 /// `<path>` children from the new data. Mirrors `create`'s path-building.
 pub(crate) fn update_data(b: &WebBackend, node: &Node, data: &IconData) {
-    let Ok(svg) = node.clone().dyn_into::<web_sys::Element>() else { return };
+    let Ok(svg) = node.clone().dyn_into::<web_glue::dom::Element>() else { return };
     let (vw, vh) = data.view_box;
     let _ = svg.set_attribute("viewBox", &format!("0 0 {} {}", vw, vh));
 
@@ -144,7 +144,7 @@ pub(crate) fn update_data(b: &WebBackend, node: &Node, data: &IconData) {
 }
 
 pub(crate) fn update_color(node: &Node, color: &Color) {
-    if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::Element>() {
         // A filled icon set `stroke="none"` at create time, so the live
         // paint is `fill`; an outlined icon set `fill="none"`. Rewrite
         // whichever one is active so reactive `.color()` works for both.
@@ -163,7 +163,7 @@ pub(crate) fn update_stroke(node: &Node, progress: f32) {
     let offset = 1.0 - runtime_shared::num::clamp_f32(progress, 0.0, 1.0);
     let offset_str = format!("{}", css_num(offset));
 
-    if let Ok(svg) = node.clone().dyn_into::<web_sys::Element>() {
+    if let Ok(svg) = node.clone().dyn_into::<web_glue::dom::Element>() {
         // Apply to all <path> children by iterating child nodes.
         // Remove any transition so the snap is instant.
         let child = svg.first_element_child();
@@ -190,7 +190,7 @@ pub(crate) fn animate_stroke(
     let from_str = format!("{}", css_num(from_offset));
     let to_str = format!("{}", css_num(to_offset));
 
-    if let Ok(svg) = node.clone().dyn_into::<web_sys::Element>() {
+    if let Ok(svg) = node.clone().dyn_into::<web_glue::dom::Element>() {
         let child = svg.first_element_child();
         let mut current = child;
         while let Some(el) = current {

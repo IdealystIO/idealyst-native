@@ -30,9 +30,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{
+use web_glue::JsCast;
+use web_glue::dom::{
     CanvasRenderingContext2d, CssStyleSheet, HtmlCanvasElement, HtmlImageElement,
     HtmlInputElement, HtmlOptionElement, HtmlStyleElement, HtmlTextAreaElement,
 };
@@ -63,7 +62,7 @@ struct Prep {
 }
 
 fn build_svg_data_url() -> Result<Prep, String> {
-    let window = web_sys::window().ok_or("no window")?;
+    let window = web_glue::dom::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
     let target = document
         .query_selector("#app")
@@ -123,7 +122,7 @@ fn build_svg_data_url() -> Result<Prep, String> {
 
     // Percent-encode into a `data:` URL. (A `blob:` URL would taint the canvas
     // on the foreignObject draw — see the doc on `Prep::url`.)
-    let encoded = String::from(js_sys::encode_uri_component(&svg));
+    let encoded = String::from(web_glue::js::encode_uri_component(&svg));
     let url = format!("data:image/svg+xml;charset=utf-8,{encoded}");
 
     Ok(Prep {
@@ -147,15 +146,15 @@ fn build_svg_data_url() -> Result<Prep, String> {
 /// the CLONE's attributes, and serialize the clone — the user's live DOM is
 /// never mutated. `cloneNode(true)` copies attributes only (properties reset
 /// to attribute-derived state), so the mirroring must read from the live tree.
-fn serialize_with_live_input_state(target: &web_sys::Element) -> Result<String, String> {
-    let clone: web_sys::Element = target
+fn serialize_with_live_input_state(target: &web_glue::dom::Element) -> Result<String, String> {
+    let clone: web_glue::dom::Element = target
         .clone_node_with_deep(true)
         .map_err(|_| "cloning the capture subtree failed".to_string())?
         .dyn_into()
         .map_err(|_| "cloned capture subtree is not an element".to_string())?;
     mirror_input_props_into_attributes(target, &clone);
     let serializer =
-        web_sys::XmlSerializer::new().map_err(|_| "XMLSerializer unavailable".to_string())?;
+        web_glue::dom::XmlSerializer::new().map_err(|_| "XMLSerializer unavailable".to_string())?;
     serializer
         .serialize_to_string(&clone)
         .map_err(|_| "serializing the DOM subtree failed".to_string())
@@ -172,7 +171,7 @@ fn serialize_with_live_input_state(target: &web_sys::Element) -> Result<String, 
 /// - `<textarea>`: `value` property → child text (a textarea renders its
 ///   text content — it has no `value` attribute);
 /// - `<option>`: `selected` property → set/remove the `selected` attribute.
-fn mirror_input_props_into_attributes(live_root: &web_sys::Element, clone_root: &web_sys::Element) {
+fn mirror_input_props_into_attributes(live_root: &web_glue::dom::Element, clone_root: &web_glue::dom::Element) {
     const SELECTOR: &str = "input, textarea, option";
     let (Ok(live), Ok(cloned)) = (
         live_root.query_selector_all(SELECTOR),
@@ -222,7 +221,7 @@ fn render_to_png(prep: Prep, done: Box<dyn FnOnce(ShotResult)>) {
 
     let img_for_load = img.clone();
     let sink_load = sink.clone();
-    let on_load = Closure::once_into_js(move || {
+    let on_load = web_glue::Closure::once_into_js(move |_| {
         let result = draw_and_export(&img_for_load, prep.css_w, prep.css_h, prep.dpr);
         if let Some(cb) = sink_load.borrow_mut().take() {
             cb(result);
@@ -231,7 +230,7 @@ fn render_to_png(prep: Prep, done: Box<dyn FnOnce(ShotResult)>) {
     img.set_onload(Some(on_load.unchecked_ref()));
 
     let sink_err = sink.clone();
-    let on_error = Closure::once_into_js(move |_e: JsValue| {
+    let on_error = web_glue::Closure::once_into_js(move |_e| {
         if let Some(cb) = sink_err.borrow_mut().take() {
             cb(Err("the snapshot SVG failed to load (malformed markup?)".into()));
         }
@@ -243,7 +242,7 @@ fn render_to_png(prep: Prep, done: Box<dyn FnOnce(ShotResult)>) {
 }
 
 fn draw_and_export(img: &HtmlImageElement, css_w: f64, css_h: f64, dpr: f64) -> ShotResult {
-    let document = web_sys::window()
+    let document = web_glue::dom::window()
         .and_then(|w| w.document())
         .ok_or("no document")?;
     let canvas: HtmlCanvasElement = document
@@ -315,7 +314,7 @@ fn extract_urls(css: &str) -> Vec<String> {
 /// failure. The `x-user-defined` charset makes each response byte readable as a
 /// char in `0x00..=0xFF`, which `btoa` then base64-encodes.
 fn fetch_as_data_url(url: &str) -> Option<String> {
-    let xhr = web_sys::XmlHttpRequest::new().ok()?;
+    let xhr = web_glue::dom::XmlHttpRequest::new().ok()?;
     xhr.open_with_async("GET", url, false).ok()?;
     let _ = xhr.override_mime_type("text/plain; charset=x-user-defined");
     xhr.send().ok()?;
@@ -327,7 +326,7 @@ fn fetch_as_data_url(url: &str) -> Option<String> {
         .chars()
         .map(|c| char::from_u32((c as u32) & 0xFF).unwrap_or('\u{0}'))
         .collect();
-    let b64 = web_sys::window()?.btoa(&bytes).ok()?;
+    let b64 = web_glue::dom::window()?.btoa(&bytes).ok()?;
     let mime = match url.rsplit('.').next() {
         Some("woff2") => "font/woff2",
         Some("woff") => "font/woff",
@@ -353,14 +352,14 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::*;
 
-    fn doc() -> web_sys::Document {
-        web_sys::window().unwrap().document().unwrap()
+    fn doc() -> web_glue::dom::Document {
+        web_glue::dom::window().unwrap().document().unwrap()
     }
 
     /// Build a detached-from-`#app` scratch root attached to `<body>` (the
     /// serializer needs a connected tree for `querySelectorAll` parity with
     /// the real capture path) and clean it up via the returned guard.
-    fn scratch_root() -> web_sys::Element {
+    fn scratch_root() -> web_glue::dom::Element {
         let d = doc();
         let root = d.create_element("div").unwrap();
         d.body().unwrap().append_child(&root).unwrap();

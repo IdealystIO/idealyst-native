@@ -12,8 +12,8 @@
 //! props are plain blocks — cheap.
 
 use crate::WebBackend;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(b: &mut WebBackend) -> Node {
     if let Some(el) = b.hydrate_next("div") {
@@ -65,7 +65,7 @@ pub(crate) fn insert(parent: &mut Node, child: Node) {
     // stamps overlay-content containers with
     // `data-overlay-skip-insert`; treat that attribute as a "do
     // not parent me" marker.
-    if let Some(el) = child.dyn_ref::<web_sys::Element>() {
+    if let Some(el) = child.dyn_ref::<web_glue::dom::Element>() {
         if el.has_attribute("data-overlay-skip-insert") {
             return;
         }
@@ -96,7 +96,7 @@ pub(crate) fn insert_many(b: &mut crate::WebBackend, parent: &mut Node, children
     let children: Vec<Node> = children
         .into_iter()
         .filter(|c| {
-            c.dyn_ref::<web_sys::Element>()
+            c.dyn_ref::<web_glue::dom::Element>()
                 .map(|el| !el.has_attribute("data-overlay-skip-insert"))
                 .unwrap_or(true)
         })
@@ -133,7 +133,7 @@ pub(crate) fn insert_many(b: &mut crate::WebBackend, parent: &mut Node, children
 pub(crate) fn insert_at(parent: &mut Node, child: Node, index: usize) {
     // Same overlay guard as `insert`: portaled overlay content lives
     // under `<body>` and must not be yanked into the layout tree.
-    if let Some(el) = child.dyn_ref::<web_sys::Element>() {
+    if let Some(el) = child.dyn_ref::<web_glue::dom::Element>() {
         if el.has_attribute("data-overlay-skip-insert") {
             return;
         }
@@ -177,7 +177,7 @@ pub(crate) fn clear_children(node: &Node) {
     // mutation order here.
     let cleared = node
         .clone()
-        .dyn_into::<web_sys::Element>()
+        .dyn_into::<web_glue::dom::Element>()
         .map(|el| {
             el.set_inner_html("");
             true

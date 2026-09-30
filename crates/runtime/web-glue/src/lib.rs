@@ -41,6 +41,8 @@ pub mod bridge;
 pub mod callback;
 pub mod cast;
 pub mod dom;
+mod dom_api;
+pub mod js;
 pub mod error;
 mod ffi;
 mod macros;

@@ -22,11 +22,10 @@
 //! panic, but a less confusing one than a freed Signal).
 
 use crate::WebBackend;
+use web_glue::JsValue;
 use runtime_shared::{Lanes, VirtualizerCallbacks, VirtualLayout};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 /// Per-instance state held in `WebBackend::virtualizer_instances`.
 /// The `JsValue` is the JS-side `Virtualizer` instance (which the
@@ -38,7 +37,7 @@ use web_sys::Node;
 pub(crate) struct VirtualizerInstance {
     pub(crate) js: JsValue,
     // Type-erased Vec<Box<dyn Any>> so we can hold heterogeneously-
-    // typed `Closure<dyn FnMut(...)>`s in one collection. We never
+    // typed `Closure`s in one collection. We never
     // need to call into them from Rust — they're invoked exclusively
     // through the JS instance's bound function references.
     _closures: Vec<Box<dyn std::any::Any>>,
@@ -85,55 +84,55 @@ pub(crate) fn create(
 
     let item_count_cb = {
         let f = callbacks.item_count.clone();
-        Closure::<dyn FnMut() -> JsValue>::new(move || JsValue::from_f64(f() as f64))
+        crate::glue_dom::fn0r(move || JsValue::from_f64(f() as f64))
     };
-    let item_count_js = item_count_cb.as_ref().clone();
+    let item_count_js = item_count_cb.as_js().clone();
 
     let item_key_cb = {
         let f = callbacks.item_key.clone();
-        Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+        crate::glue_dom::fn1r(move |idx: JsValue| {
             let i = idx.as_f64().unwrap_or(0.0) as usize;
             // Item key is a u64; JS numbers handle up to 2^53.
             JsValue::from_f64(f(i) as f64)
         })
     };
-    let item_key_js = item_key_cb.as_ref().clone();
+    let item_key_js = item_key_cb.as_js().clone();
 
     let item_size_cb = {
         let f = callbacks.item_size.clone();
-        Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+        crate::glue_dom::fn1r(move |idx: JsValue| {
             let i = idx.as_f64().unwrap_or(0.0) as usize;
             JsValue::from_f64(f(i) as f64)
         })
     };
-    let item_size_js = item_size_cb.as_ref().clone();
+    let item_size_js = item_size_cb.as_js().clone();
 
     let mount_item_cb = {
         let f = callbacks.mount_item.clone();
-        Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+        crate::glue_dom::fn1r(move |idx: JsValue| {
             let i = idx.as_f64().unwrap_or(0.0) as usize;
             let (node, scope_id) = f(i);
             // Return a 2-element array: [node, scopeId].
-            let arr = js_sys::Array::new_with_length(2);
+            let arr = web_glue::js::Array::new_with_length(2);
             arr.set(0, node.into());
             arr.set(1, JsValue::from_f64(scope_id as f64));
             arr.into()
         })
     };
-    let mount_item_js = mount_item_cb.as_ref().clone();
+    let mount_item_js = mount_item_cb.as_js().clone();
 
     let release_item_cb = {
         let f = callbacks.release_item.clone();
-        Closure::<dyn FnMut(JsValue)>::new(move |scope_id: JsValue| {
+        crate::glue_dom::fn1(move |scope_id: JsValue| {
             let id = scope_id.as_f64().unwrap_or(0.0) as u64;
             f(id);
         })
     };
-    let release_item_js = release_item_cb.as_ref().clone();
+    let release_item_js = release_item_cb.as_js().clone();
 
     let set_measured_size_cb = {
         let f = callbacks.set_measured_size.clone();
-        Closure::<dyn FnMut(JsValue, JsValue)>::new(
+        crate::glue_dom::fn2(
             move |scope_id: JsValue, size: JsValue| {
                 let id = scope_id.as_f64().unwrap_or(0.0) as u64;
                 let sz = size.as_f64().unwrap_or(0.0) as f32;
@@ -141,7 +140,7 @@ pub(crate) fn create(
             },
         )
     };
-    let set_measured_size_js = set_measured_size_cb.as_ref().clone();
+    let set_measured_size_js = set_measured_size_cb.as_js().clone();
 
     // Author scroll observer. Built ONLY when the author asked for one
     // — the JS `_scrollHandler` checks `cb.onScroll` before calling, so
@@ -154,14 +153,14 @@ pub(crate) fn create(
     // the author's data has change detection (`flat_list`); absent, the
     // JS keeps every survivor exactly as before.
     let item_changed_cb = callbacks.item_changed.clone().map(|f| {
-        Closure::<dyn FnMut(JsValue) -> JsValue>::new(move |idx: JsValue| {
+        crate::glue_dom::fn1r(move |idx: JsValue| {
             let i = idx.as_f64().unwrap_or(0.0) as usize;
             JsValue::from_bool(f(i))
         })
     });
 
     let on_scroll_cb = callbacks.on_scroll.clone().map(|f| {
-        Closure::<dyn FnMut(JsValue, JsValue)>::new(move |x: JsValue, y: JsValue| {
+        crate::glue_dom::fn2(move |x: JsValue, y: JsValue| {
             f(
                 x.as_f64().unwrap_or(0.0) as f32,
                 y.as_f64().unwrap_or(0.0) as f32,
@@ -170,34 +169,34 @@ pub(crate) fn create(
     });
 
     // Build the callbacks object.
-    let cb_obj = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemCount"), &item_count_js);
-    let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemKey"), &item_key_js);
-    let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemSize"), &item_size_js);
-    let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("mountItem"), &mount_item_js);
-    let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("releaseItem"), &release_item_js);
-    let _ = js_sys::Reflect::set(
+    let cb_obj = web_glue::js::Object::new();
+    let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("itemCount"), &item_count_js);
+    let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("itemKey"), &item_key_js);
+    let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("itemSize"), &item_size_js);
+    let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("mountItem"), &mount_item_js);
+    let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("releaseItem"), &release_item_js);
+    let _ = web_glue::js::Reflect::set(
         &cb_obj,
         &JsValue::from_str("setMeasuredSize"),
         &set_measured_size_js,
     );
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &cb_obj,
         &JsValue::from_str("measureSizes"),
         &JsValue::from_bool(callbacks.measure_sizes),
     );
     if let Some(cb) = item_changed_cb.as_ref() {
-        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("itemChanged"), cb.as_ref());
+        let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("itemChanged"), cb.as_js());
     }
     if let Some(cb) = on_scroll_cb.as_ref() {
-        let _ = js_sys::Reflect::set(&cb_obj, &JsValue::from_str("onScroll"), cb.as_ref());
+        let _ = web_glue::js::Reflect::set(&cb_obj, &JsValue::from_str("onScroll"), cb.as_js());
     }
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &cb_obj,
         &JsValue::from_str("overscan"),
         &JsValue::from_f64(overscan as f64),
     );
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &cb_obj,
         &JsValue::from_str("horizontal"),
         &JsValue::from_bool(layout.axis.is_horizontal()),
@@ -210,37 +209,37 @@ pub(crate) fn create(
     // (between lanes).
     match layout.lanes {
         Lanes::Fixed(n) => {
-            let _ = js_sys::Reflect::set(
+            let _ = web_glue::js::Reflect::set(
                 &cb_obj,
                 &JsValue::from_str("lanesFixed"),
                 &JsValue::from_f64(n.max(1) as f64),
             );
         }
         Lanes::AutoFit { min_cross } => {
-            let _ = js_sys::Reflect::set(
+            let _ = web_glue::js::Reflect::set(
                 &cb_obj,
                 &JsValue::from_str("lanesMinCross"),
                 &JsValue::from_f64(min_cross as f64),
             );
         }
     }
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &cb_obj,
         &JsValue::from_str("mainSpacing"),
         &JsValue::from_f64(layout.main_spacing as f64),
     );
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         &cb_obj,
         &JsValue::from_str("crossSpacing"),
         &JsValue::from_f64(layout.cross_spacing as f64),
     );
 
     // 4) Construct the Virtualizer JS class.
-    let window = web_sys::window().expect("no window");
-    let ctor_raw = match js_sys::Reflect::get(&window, &JsValue::from_str("__idealystVirtualizer")) {
+    let window = web_glue::dom::window().expect("no window");
+    let ctor_raw = match web_glue::js::Reflect::get(&window, &JsValue::from_str("__idealystVirtualizer")) {
         Ok(v) => v,
         Err(e) => {
-            web_sys::console::error_2(
+            web_glue::dom::console::error_2(
                 &JsValue::from_str(
                     "[virtualizer] Reflect::get(window, __idealystVirtualizer) failed:",
                 ),
@@ -250,13 +249,13 @@ pub(crate) fn create(
         }
     };
     if ctor_raw.is_undefined() || ctor_raw.is_null() {
-        web_sys::console::error_1(&JsValue::from_str(
+        web_glue::dom::console::error_1(&JsValue::from_str(
             "[virtualizer] window.__idealystVirtualizer is undefined/null — shim never installed",
         ));
         panic!("shim missing");
     }
     if !ctor_raw.is_function() {
-        web_sys::console::error_2(
+        web_glue::dom::console::error_2(
             &JsValue::from_str(
                 "[virtualizer] window.__idealystVirtualizer is not a function. Value:",
             ),
@@ -264,14 +263,14 @@ pub(crate) fn create(
         );
         panic!("shim not a function");
     }
-    let ctor: js_sys::Function = ctor_raw.unchecked_into();
-    let args = js_sys::Array::new_with_length(2);
+    let ctor: web_glue::js::Function = ctor_raw.unchecked_into();
+    let args = web_glue::js::Array::new_with_length(2);
     args.set(0, container.clone().into());
     args.set(1, cb_obj.into());
-    let instance = match js_sys::Reflect::construct(&ctor, &args) {
+    let instance = match web_glue::js::Reflect::construct(&ctor, &args) {
         Ok(v) => v,
         Err(e) => {
-            web_sys::console::error_2(
+            web_glue::dom::console::error_2(
                 &JsValue::from_str("[virtualizer] Reflect::construct(Virtualizer) failed:"),
                 &e,
             );
@@ -285,12 +284,12 @@ pub(crate) fn create(
     //    (item_changed's closure is added with on_scroll's below)
     //    so `release()` can drop them deterministically when the
     //    surrounding scope tears down.
-    let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_count"), item_count_cb.as_ref());
-    let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_key"), item_key_cb.as_ref());
-    let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_size"), item_size_cb.as_ref());
-    let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_mount"), mount_item_cb.as_ref());
-    let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_release"), release_item_cb.as_ref());
-    let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_set_size"), set_measured_size_cb.as_ref());
+    let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_count"), item_count_cb.as_js());
+    let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_key"), item_key_cb.as_js());
+    let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_item_size"), item_size_cb.as_js());
+    let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_mount"), mount_item_cb.as_js());
+    let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_release"), release_item_cb.as_js());
+    let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_set_size"), set_measured_size_cb.as_js());
 
     // Store the JS instance + the closure handles. Drop order on
     // `release` (Vec drops in reverse insertion order, but order
@@ -312,7 +311,7 @@ pub(crate) fn create(
         closures.push(Box::new(cb));
     }
     if let Some(cb) = on_scroll_cb {
-        let _ = js_sys::Reflect::set(&instance, &JsValue::from_str("_rust_cb_on_scroll"), cb.as_ref());
+        let _ = web_glue::js::Reflect::set(&instance, &JsValue::from_str("_rust_cb_on_scroll"), cb.as_js());
         closures.push(Box::new(cb));
     }
     // Park the instance on its own container so `VirtualizerHandle`
@@ -320,7 +319,7 @@ pub(crate) fn create(
     // `JS_INSTANCE_PROP`). The resulting container↔instance cycle is
     // collectable — JS GC is a tracing collector — and `release`
     // deletes the property anyway.
-    let _ = js_sys::Reflect::set(&container, &JsValue::from_str(JS_INSTANCE_PROP), &instance);
+    let _ = web_glue::js::Reflect::set(&container, &JsValue::from_str(JS_INSTANCE_PROP), &instance);
 
     b.virtualizer_instances.insert(
         id,
@@ -360,8 +359,8 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     // it) would stay reachable through that container forever. The
     // handle's `scroll_offset` / `scroll_to` keep working — they only
     // touch element properties.
-    if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
-        let _ = js_sys::Reflect::delete_property(&el, &JsValue::from_str(JS_INSTANCE_PROP));
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::Element>() {
+        let _ = web_glue::js::Reflect::delete_property(&el, &JsValue::from_str(JS_INSTANCE_PROP));
     }
 
     // Step 1: flip `_released` on the JS instance synchronously, so
@@ -389,9 +388,9 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
         // proceed — dropping the closures below is the actual
         // safety contract.
         if let Ok(release_fn) =
-            js_sys::Reflect::get(&instance.js, &JsValue::from_str("release"))
+            web_glue::js::Reflect::get(&instance.js, &JsValue::from_str("release"))
         {
-            if let Ok(release_fn) = release_fn.dyn_into::<js_sys::Function>() {
+            if let Ok(release_fn) = release_fn.dyn_into::<web_glue::js::Function>() {
                 let _ = release_fn.call0(&instance.js);
             }
         }
@@ -408,7 +407,7 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
 /// through per-item unmount which can't run under our outer
 /// `borrow_mut()`.
 fn set_released_now(js_instance: &JsValue) {
-    let _ = js_sys::Reflect::set(
+    let _ = web_glue::js::Reflect::set(
         js_instance,
         &JsValue::from_str("_released"),
         &JsValue::from_bool(true),
@@ -418,9 +417,9 @@ fn set_released_now(js_instance: &JsValue) {
 pub(crate) fn data_changed(b: &mut WebBackend, node: &Node) {
     let Some(id) = virtualizer_id_of(node) else { return };
     let Some(instance) = b.virtualizer_instances.get(&id) else { return };
-    let _ = js_sys::Reflect::get(&instance.js, &JsValue::from_str("dataChanged"))
+    let _ = web_glue::js::Reflect::get(&instance.js, &JsValue::from_str("dataChanged"))
         .ok()
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .and_then(|f| f.dyn_into::<web_glue::js::Function>().ok())
         .map(|f| f.call0(&instance.js));
 }
 
@@ -445,32 +444,32 @@ pub(crate) struct WebVirtualizerOps;
 
 impl runtime_shared::primitives::virtualizer::VirtualizerOps for WebVirtualizerOps {
     fn scroll_to_index(&self, node: &dyn std::any::Any, index: usize) {
-        let Some(el) = node.downcast_ref::<web_sys::HtmlElement>() else {
+        let Some(el) = node.downcast_ref::<web_glue::dom::HtmlElement>() else {
             return;
         };
-        let Ok(instance) = js_sys::Reflect::get(el, &JsValue::from_str(JS_INSTANCE_PROP)) else {
+        let Ok(instance) = web_glue::js::Reflect::get(el, &JsValue::from_str(JS_INSTANCE_PROP)) else {
             return;
         };
         if instance.is_undefined() || instance.is_null() {
             return;
         }
-        let _ = js_sys::Reflect::get(&instance, &JsValue::from_str("scrollToIndex"))
+        let _ = web_glue::js::Reflect::get(&instance, &JsValue::from_str("scrollToIndex"))
             .ok()
-            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .and_then(|f| f.dyn_into::<web_glue::js::Function>().ok())
             .map(|f| f.call1(&instance, &JsValue::from_f64(index as f64)));
     }
 
     /// Plain element properties — no shim involvement, so this stays
     /// correct even after `release()` has made the instance inert.
     fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
-        match node.downcast_ref::<web_sys::HtmlElement>() {
+        match node.downcast_ref::<web_glue::dom::HtmlElement>() {
             Some(el) => (el.scroll_left() as f32, el.scroll_top() as f32),
             None => (0.0, 0.0),
         }
     }
 
     fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
-        if let Some(el) = node.downcast_ref::<web_sys::HtmlElement>() {
+        if let Some(el) = node.downcast_ref::<web_glue::dom::HtmlElement>() {
             el.set_scroll_left(x as i32);
             el.set_scroll_top(y as i32);
         }
@@ -485,7 +484,7 @@ pub(crate) static WEB_VIRTUALIZER_OPS: WebVirtualizerOps = WebVirtualizerOps;
 pub(crate) fn make_handle(
     node: &Node,
 ) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
-    let el: web_sys::HtmlElement = node
+    let el: web_glue::dom::HtmlElement = node
         .clone()
         .dyn_into()
         .expect("virtualizer node is not an HtmlElement");
@@ -501,7 +500,7 @@ pub(crate) fn make_handle(
 /// container that hasn't been mounted yet.
 fn virtualizer_id_of(node: &Node) -> Option<u32> {
     node.clone()
-        .dyn_into::<web_sys::Element>()
+        .dyn_into::<web_glue::dom::Element>()
         .ok()
         .and_then(|el| el.get_attribute("data-virtualizer-id"))
         .and_then(|s| s.parse::<u32>().ok())

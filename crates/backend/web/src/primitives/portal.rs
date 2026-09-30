@@ -37,8 +37,8 @@ use runtime_shared::primitives::portal::{
 use std::cell::RefCell;
 use runtime_shared::FxHashMap;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 /// Per-portal runtime state. Stored in `WebBackend::portal_instances`,
 /// keyed by the `data-portal-id` attribute stamped on the portal
@@ -53,7 +53,7 @@ pub(crate) struct PortalInstance {
     /// runtime — it's held purely for debugging (introspection from
     /// the instance map).
     #[allow(dead_code)]
-    portal_root: web_sys::Element,
+    portal_root: web_glue::dom::Element,
     /// Escape-key handler attached to the window. Removed in
     /// `release_portal`. Only populated when the portal has an
     /// `on_dismiss` callback.
@@ -168,7 +168,7 @@ pub(crate) fn create(
         if matches!(target, PortalTarget::Named(_)) {
             return None;
         }
-        let window = web_sys::window()?;
+        let window = web_glue::dom::window()?;
         let dismiss = dismiss.clone();
         Some(crate::glue_dom::listen(&window, "keydown", Default::default(), move |ev| {
             let ev: web_glue::dom::KeyboardEvent = web_glue::JsCast::unchecked_into(ev);
@@ -236,7 +236,7 @@ pub(crate) fn create(
 /// closures (Escape, focus trap, scroll/resize reposition), and
 /// removes the instance entry.
 pub(crate) fn release(b: &mut WebBackend, node: &Node) {
-    let portal_root = match node.dyn_ref::<web_sys::Element>() {
+    let portal_root = match node.dyn_ref::<web_glue::dom::Element>() {
         Some(el) => el,
         None => return,
     };
@@ -260,7 +260,7 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
 }
 
 pub(crate) fn make_handle(node: &Node) -> PortalHandle {
-    let el: web_sys::HtmlElement = node
+    let el: web_glue::dom::HtmlElement = node
         .clone()
         .dyn_into()
         .expect("portal node is not an HtmlElement");
@@ -396,7 +396,7 @@ fn anchor_vertical(rect: ViewportRect, align: ElementAlign) -> f32 {
 /// alive until `release_portal` removes them) and the one-shot rAF
 /// task for the initial measurement.
 fn install_anchor_reposition(
-    portal_root: &web_sys::Element,
+    portal_root: &web_glue::dom::Element,
     target: AnchorTarget,
     side: ElementSide,
     align: ElementAlign,
@@ -406,11 +406,11 @@ fn install_anchor_reposition(
     Option<web_glue::dom::Listener>,
     Option<runtime_shared::ScheduledTask>,
 ) {
-    let window = match web_sys::window() {
+    let window = match web_glue::dom::window() {
         Some(w) => w,
         None => return (None, None, None),
     };
-    let portal_html: web_sys::HtmlElement = portal_root.clone().unchecked_into();
+    let portal_html: web_glue::dom::HtmlElement = portal_root.clone().unchecked_into();
 
     // Measure-based reposition: read the portal's *rendered* rect via
     // `getBoundingClientRect`, pick the side with enough room for it,
@@ -478,7 +478,7 @@ fn install_anchor_reposition(
 /// The previous `left`/`top` are restored before returning, and the
 /// caller writes the resolved position in the same task, so the parked
 /// position never paints.
-fn measure_portal_size(el: &web_sys::HtmlElement) -> (f32, f32) {
+fn measure_portal_size(el: &web_glue::dom::HtmlElement) -> (f32, f32) {
     let style = el.style();
     let prev_left = style.get_property_value("left").unwrap_or_default();
     let prev_top = style.get_property_value("top").unwrap_or_default();
@@ -502,7 +502,7 @@ fn measure_portal_size(el: &web_sys::HtmlElement) -> (f32, f32) {
 
 /// Viewport size in CSS pixels.
 fn viewport_size() -> (f32, f32) {
-    let Some(window) = web_sys::window() else { return (1024.0, 768.0) };
+    let Some(window) = web_glue::dom::window() else { return (1024.0, 768.0) };
     let w = window
         .inner_width()
         .ok()
@@ -553,8 +553,8 @@ const FOCUSABLE_SELECTOR: &str = concat!(
 /// mutability — so the inner call runs the body and the
 /// `in_progress` flag cleanly bails it out.
 pub(crate) fn install_focus_trap(
-    doc: &web_sys::Document,
-    portal_root: web_sys::Element,
+    doc: &web_glue::dom::Document,
+    portal_root: web_glue::dom::Element,
 ) -> Option<web_glue::dom::Listener> {
     let in_progress: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let portal_root_for_listener = portal_root.clone();
@@ -569,10 +569,8 @@ pub(crate) fn install_focus_trap(
             if *in_progress.borrow() {
                 return;
             }
-            let target_node: Option<web_sys::Node> = ev.target().and_then(|t| {
-                web_glue::JsCast::dyn_ref::<web_glue::dom::Node>(&t)
-                    .map(crate::glue_dom::to_web_sys::<web_sys::Node>)
-            });
+            let target_node: Option<web_glue::dom::Node> =
+                ev.target().and_then(|t| web_glue::JsCast::dyn_into::<web_glue::dom::Node>(t).ok());
             let Some(target_node) = target_node else {
                 return;
             };
@@ -580,7 +578,7 @@ pub(crate) fn install_focus_trap(
             // to do. `Node.contains` returns true for the node
             // itself, so this also accepts focus landing on the
             // portal root.
-            let portal_node: &web_sys::Node = portal_root_for_listener.as_ref();
+            let portal_node: &web_glue::dom::Node = portal_root_for_listener.as_ref();
             if portal_node.contains(Some(&target_node)) {
                 return;
             }
@@ -594,10 +592,10 @@ pub(crate) fn install_focus_trap(
                 .flatten();
             *in_progress.borrow_mut() = true;
             if let Some(el) = first_focusable {
-                if let Ok(h) = el.dyn_into::<web_sys::HtmlElement>() {
+                if let Ok(h) = el.dyn_into::<web_glue::dom::HtmlElement>() {
                     let _ = h.focus();
                 }
-            } else if let Ok(h) = portal_root_for_listener.clone().dyn_into::<web_sys::HtmlElement>() {
+            } else if let Ok(h) = portal_root_for_listener.clone().dyn_into::<web_glue::dom::HtmlElement>() {
                 let _ = h.focus();
             }
             *in_progress.borrow_mut() = false;
@@ -618,12 +616,12 @@ mod tests {
     /// Build a portal-shaped element — `position: fixed`, no width, so it
     /// shrink-to-fits — holding wrappable text under the same 260px cap the
     /// Tooltip bubble uses. Parked `left` px from the viewport's left edge.
-    fn parked_portal(left: f64) -> web_sys::HtmlElement {
-        let doc = web_sys::window().unwrap().document().unwrap();
-        let el: web_sys::HtmlElement = doc
+    fn parked_portal(left: f64) -> web_glue::dom::HtmlElement {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let el: web_glue::dom::HtmlElement = doc
             .create_element("div")
             .unwrap()
-            .dyn_into::<web_sys::HtmlElement>()
+            .dyn_into::<web_glue::dom::HtmlElement>()
             .unwrap();
         el.set_attribute(
             "style",
@@ -679,11 +677,11 @@ mod tests {
     /// which is what the first (pre-position) measure pass sees.
     #[wasm_bindgen_test]
     fn measure_portal_size_restores_absent_inline_position() {
-        let doc = web_sys::window().unwrap().document().unwrap();
-        let el: web_sys::HtmlElement = doc
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let el: web_glue::dom::HtmlElement = doc
             .create_element("div")
             .unwrap()
-            .dyn_into::<web_sys::HtmlElement>()
+            .dyn_into::<web_glue::dom::HtmlElement>()
             .unwrap();
         el.set_attribute("style", PORTAL_ROOT_BASE_STYLE).unwrap();
         el.set_text_content(Some("hint"));

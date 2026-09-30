@@ -5,8 +5,8 @@ use crate::WebBackend;
 use runtime_shared::{ButtonHandle, ButtonOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -24,7 +24,7 @@ pub(crate) fn create(
     // is built internally (not via separate walker `create_*` calls), so
     // the cursor treats it as one node — we skip the content-build branch.
     if let Some(adopted) = b.hydrate_next("button") {
-        let button: web_sys::HtmlElement = adopted.unchecked_into();
+        let button: web_glue::dom::HtmlElement = adopted.unchecked_into();
         crate::glue_dom::set_onclick(&button, move || on_click());
         // See the fresh-create path below.
         super::touch::swallow_ancestor_touch(button.as_ref());
@@ -34,7 +34,7 @@ pub(crate) fn create(
         .doc
         .create_element("button")
         .expect("create button")
-        .unchecked_into::<web_sys::HtmlElement>();
+        .unchecked_into::<web_glue::dom::HtmlElement>();
 
     // If icons are present, build structured content; otherwise plain text.
     if leading_icon.is_some() || trailing_icon.is_some() {
@@ -76,7 +76,7 @@ pub(crate) fn create(
 /// `.click()` on it. The clone is cheap — it's a wasm-bindgen JsValue
 /// clone (refcount bump on the JS object handle, no DOM duplication).
 pub(crate) fn make_handle(node: &Node) -> ButtonHandle {
-    let html: web_sys::HtmlElement = node
+    let html: web_glue::dom::HtmlElement = node
         .clone()
         .dyn_into()
         .expect("button node is not an HtmlElement");
@@ -90,19 +90,19 @@ pub(crate) fn make_handle(node: &Node) -> ButtonHandle {
 struct WebButtonOps;
 impl ButtonOps for WebButtonOps {
     fn click(&self, node: &dyn Any) {
-        if let Some(html) = node.downcast_ref::<web_sys::HtmlElement>() {
+        if let Some(html) = node.downcast_ref::<web_glue::dom::HtmlElement>() {
             html.click();
         }
     }
 
     fn rect(&self, node: &dyn Any) -> runtime_shared::ViewportRect {
-        node.downcast_ref::<web_sys::HtmlElement>()
+        node.downcast_ref::<web_glue::dom::HtmlElement>()
             .map(measure_element_rect)
             .unwrap_or_default()
     }
 }
 
-fn measure_element_rect(el: &web_sys::HtmlElement) -> runtime_shared::ViewportRect {
+fn measure_element_rect(el: &web_glue::dom::HtmlElement) -> runtime_shared::ViewportRect {
     let r = el.get_bounding_client_rect();
     runtime_shared::ViewportRect {
         x: r.x() as f32,

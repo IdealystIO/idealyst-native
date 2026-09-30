@@ -17,8 +17,8 @@
 use runtime_shared::accessibility::{
     AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
-use wasm_bindgen::JsCast;
-use web_sys::{Element, Node};
+use web_glue::JsCast;
+use web_glue::dom::{Element, Node};
 
 /// Apply / refresh every ARIA attribute on `node` from `props`.
 ///
@@ -237,7 +237,7 @@ fn bool_or_remove(elem: &Element, attr: &str, on: bool) {
 /// Idempotent across calls; safe to invoke from any
 /// `Backend::announce_for_accessibility` site.
 pub(crate) fn announce(msg: &str, priority: LiveRegionPriority) {
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_glue::dom::window() else { return };
     let Some(document) = window.document() else { return };
     let Some(body) = document.body() else { return };
 

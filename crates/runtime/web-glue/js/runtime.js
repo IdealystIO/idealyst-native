@@ -19,8 +19,10 @@
 //   Every read/write goes through `G.u8()` / `G.u32()`, which re-create
 //   the view when it has been detached. `retStr` is the canonical case:
 //   it allocates FIRST and only then asks for the view it writes through.
-// * Handle 0 is `undefined`, permanently. `add(undefined)` returns 0,
-//   `drop(0)` is a no-op, so Rust never allocates a slot for undefined.
+// * Handle 0 is `undefined` and handle 1 is `null`, permanently.
+//   `add(undefined)` returns 0 and `add(null)` returns 1; dropping or
+//   cloning either is a no-op, so Rust never allocates a slot for them
+//   (`JsValue::UNDEFINED` / `JsValue::NULL` are constants).
 // * A released slot holds the FREE sentinel until reused; touching it is
 //   a thrown Error naming the handle — a Rust-side double release or
 //   use-after-release is loud, never a silent read of someone else's
@@ -39,7 +41,7 @@
 "use strict";
 
 const FREE = Symbol("web-glue:free");
-const heap = [undefined];
+const heap = [undefined, null];
 const freeList = [];
 let live = 0;
 
@@ -59,6 +61,7 @@ let finalizer = null;
 // Callback flags — must match `callback::FLAG_*` in Rust.
 const ONCE = 1;
 const SILENT = 2;
+const ARGS = 4;
 
 function attached() {
   if (ex === null) {
@@ -95,6 +98,11 @@ const G = {
   module(name, factory) {
     if (!modules.has(name)) modules.set(name, { factory, done: false, value: undefined });
   },
+  // The instance's raw exports (memory, the function table, …) — what the
+  // hot-patch loader grows and instantiates a patch against.
+  exports() {
+    return attached();
+  },
   m(name) {
     const rec = modules.get(name);
     if (rec === undefined) throw new Error(`web-glue: no JS module "${name}" in this bundle`);
@@ -109,6 +117,7 @@ const G = {
 
   add(v) {
     if (v === undefined) return 0;
+    if (v === null) return 1;
     let i;
     if (freeList.length !== 0) {
       i = freeList.pop();
@@ -130,7 +139,7 @@ const G = {
   },
   drop(i) {
     i >>>= 0;
-    if (i === 0) return;
+    if (i <= 1) return;
     if (i >= heap.length || heap[i] === FREE) {
       throw new Error(`web-glue: handle ${i} released twice`);
     }
@@ -144,6 +153,7 @@ const G = {
     return v;
   },
   clone(i) {
+    if ((i >>> 0) <= 1) return i >>> 0;
     return G.add(G.get(i));
   },
   get live() {
@@ -224,9 +234,12 @@ const G = {
         throw new Error(`web-glue: callback #${st.id} called after its Rust owner dropped it`);
       }
       if (st.flags & ONCE) st.dead = true;
-      const code = attached().__glue_invoke(st.id, G.add(arg));
+      const a = st.flags & ARGS ? G.add(Array.from(arguments)) : G.add(arg);
+      const code = attached().__glue_invoke(st.id, a) >>> 0;
       if (code === 1) throw new Error(`web-glue: callback #${st.id} is no longer registered`);
       if (code === 2) throw new Error(`web-glue: callback #${st.id} invoked recursively`);
+      // 3 + the return value's handle (Rust gave up ownership of it).
+      return G.take(code - 3);
     };
     fnState.set(f, st);
     return G.add(f);

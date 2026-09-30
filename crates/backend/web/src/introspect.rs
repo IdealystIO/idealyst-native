@@ -15,8 +15,8 @@
 //! equivalent behind its `robot` feature; doing the same here means deciding
 //! what a wasm release build should pay for a diagnostic it cannot serve.
 
-use wasm_bindgen::JsCast;
-use web_sys::Element;
+use web_glue::JsCast;
+use web_glue::dom::Element;
 
 use runtime_shared::introspect::{keys, collect_native_tree, NativeNode, NativeRect, NativeValue};
 
@@ -25,13 +25,13 @@ use crate::WebBackend;
 impl WebBackend {
     /// Record a framework primitive root for the introspection boundary walk.
     /// Backs `Backend::note_introspection_root`.
-    pub(crate) fn note_introspection_root_impl(&self, node: &web_sys::Node) {
+    pub(crate) fn note_introspection_root_impl(&self, node: &web_glue::dom::Node) {
         self.introspection_roots.add(node.as_ref());
     }
 
     /// Read the native render tree for `node`. Backs
     /// `Backend::introspect_native`.
-    pub(crate) fn introspect_native_impl(&self, node: &web_sys::Node) -> Option<NativeNode> {
+    pub(crate) fn introspect_native_impl(&self, node: &web_glue::dom::Node) -> Option<NativeNode> {
         let _t = crate::phase_timer::PhaseTimer::start("introspect_native");
         let root: Element = node.clone().dyn_into::<Element>().ok()?;
         // Not connected = not laid out; surface as "no data yet" (bridge → null).
@@ -76,7 +76,7 @@ fn read_element(el: &Element) -> NativeNode {
     if class == "input" {
         if let Ok(t) = el
             .clone()
-            .dyn_into::<web_sys::HtmlInputElement>()
+            .dyn_into::<web_glue::dom::HtmlInputElement>()
             .map(|i| i.type_())
         {
             class = format!("input[{t}]");
@@ -91,7 +91,7 @@ fn read_element(el: &Element) -> NativeNode {
     };
     let mut node = NativeNode::leaf(class, frame);
 
-    let style = match web_sys::window()
+    let style = match web_glue::dom::window()
         .and_then(|w| w.get_computed_style(el).ok().flatten())
     {
         Some(s) => s,
@@ -149,10 +149,10 @@ fn read_element(el: &Element) -> NativeNode {
     // Displayed text. Inputs/textareas report `.value`; otherwise, only leaf
     // elements (no element children) report `textContent` so we don't repeat
     // a container's text on every ancestor.
-    if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+    if let Some(input) = el.dyn_ref::<web_glue::dom::HtmlInputElement>() {
         node.set(keys::TEXT, Some(NativeValue::Text(input.value())));
         node.role = Some("text_input".to_string());
-    } else if let Some(ta) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+    } else if let Some(ta) = el.dyn_ref::<web_glue::dom::HtmlTextAreaElement>() {
         node.set(keys::TEXT, Some(NativeValue::Text(ta.value())));
         node.role = Some("text_input".to_string());
     } else if el.first_element_child().is_none() {

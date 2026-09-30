@@ -1,14 +1,14 @@
 //! Browser WebSocket transport for the runtime-server dev-client.
 //!
 //! Lives here, not in `dev-client`, because every wire-level piece
-//! it touches is a web platform implementation: `web_sys::WebSocket`,
+//! it touches is a web platform implementation: `web_glue::dom::WebSocket`,
 //! `ArrayBuffer`, `MessageEvent`, `requestAnimationFrame`-driven
 //! outbound pump, etc. `dev-client` exposes the platform-agnostic
 //! [`WireBackend`] replay engine; this file connects it to a
 //! browser.
 //!
 //! Lifecycle:
-//!   1. [`connect_web`] opens a `web_sys::WebSocket` with
+//!   1. [`connect_web`] opens a `web_glue::dom::WebSocket` with
 //!      `binaryType = "arraybuffer"` so incoming binary frames
 //!      arrive as `ArrayBuffer` (not `Blob`).
 //!   2. On `open`, ships an `AppToDev::Hello`.
@@ -45,7 +45,7 @@ thread_local! {
 /// has no equivalent of "iPhone 15 Pro Sim". Falls back to `None`
 /// when no window is reachable (worker context, etc.).
 fn browser_device_label() -> Option<String> {
-    let win = web_sys::window()?;
+    let win = web_glue::dom::window()?;
     let nav = win.navigator();
     nav.user_agent().ok().filter(|s| !s.is_empty())
 }
@@ -58,7 +58,7 @@ fn browser_device_label() -> Option<String> {
 /// there's no window (worker context) or `innerWidth/Height`
 /// reflection failed.
 fn browser_viewport() -> Option<wire::WireViewport> {
-    let win = web_sys::window()?;
+    let win = web_glue::dom::window()?;
     let w = win.inner_width().ok()?.as_f64()? as f32;
     let h = win.inner_height().ok()?.as_f64()? as f32;
     if w <= 0.0 || h <= 0.0 {
@@ -70,23 +70,26 @@ fn browser_viewport() -> Option<wire::WireViewport> {
 use dev_client::WireBackend;
 use runtime_shared::RafLoop;
 use runtime_vocabulary::caps::AllCaps;
-use js_sys::{ArrayBuffer, Uint8Array};
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket};
+use web_glue::js::{ArrayBuffer, Uint8Array};
+use web_glue::dom::{BinaryType, CloseEvent, Listener, MessageEvent, WebSocket};
+use web_glue::{JsCast, JsValue};
 use wire::{AppToDev, DevToApp};
 
 /// Handle returned by [`connect_web`]. Owns the socket + event
 /// closures + raf loop. Drop to disconnect.
 pub struct WebClientHandle {
     socket: WebSocket,
-    // Closures must outlive the WebSocket — JS keeps function refs
-    // to them; dropping invalidates the FFI pointer.
-    _on_open: Closure<dyn FnMut(JsValue)>,
-    _on_message: Closure<dyn FnMut(MessageEvent)>,
-    _on_error: Closure<dyn FnMut(Event)>,
-    _on_close: Closure<dyn FnMut(CloseEvent)>,
+    // The socket's listeners, detached (then released) when the handle
+    // drops.
+    _listeners: Vec<Listener>,
     _outbound_pump: RafLoop,
+}
+
+thread_local! {
+    /// The page's one `resize` listener for the runtime-server session,
+    /// replaced (the old one detaching) on every connect. It used to be
+    /// `.forget()`-ed per connect, adding a listener per reconnect.
+    static RESIZE_LISTENER: RefCell<Option<Listener>> = const { RefCell::new(None) };
 }
 
 impl Drop for WebClientHandle {
@@ -135,17 +138,20 @@ where
 
     let socket = WebSocket::new(url)?;
     socket.set_binary_type(BinaryType::Arraybuffer);
+    let listen = |ty: &'static str, f: Box<dyn FnMut(web_glue::dom::Event)>| {
+        crate::glue_dom::listen(&socket, ty, Default::default(), f)
+    };
 
     // --- on_open --------------------------------------------------
     let socket_for_open = socket.clone();
-    let on_open = Closure::wrap(Box::new(move |_evt: JsValue| {
+    let on_open = listen("open", Box::new(move |_evt| {
         let hello = AppToDev::Hello {
             app_name: env!("CARGO_PKG_NAME").to_string(),
             color_scheme: wire::WireColorScheme::Auto,
             // Web — tell the server our current URL so it can
             // reconcile its persisted nav stack with what the
             // browser preserved across reload.
-            initial_url: web_sys::window()
+            initial_url: web_glue::dom::window()
                 .and_then(|w| w.location().pathname().ok()),
             // Self-description for the server's logs and the future
             // session-picker dev tool. Session assignment itself is
@@ -171,8 +177,7 @@ where
             let arr = Uint8Array::from(&bytes[..]);
             let _ = socket_for_open.send_with_u8_array(&arr.to_vec());
         }
-    }) as Box<dyn FnMut(JsValue)>);
-    socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+    }));
 
     // --- resize listener ------------------------------------------
     // Web only — push a `ViewportChanged` whenever the browser
@@ -180,35 +185,28 @@ where
     // edge). The sidecar updates its per-session viewport and the
     // next raf tick's planet/orbit math sees the new size.
     let viewport_tx = raf_tx.clone();
-    let on_resize = Closure::wrap(Box::new(move |_evt: web_sys::Event| {
-        let Some(v) = browser_viewport() else { return };
-        let _ = viewport_tx.send(AppToDev::ViewportChanged {
-            width: v.width,
-            height: v.height,
+    if let Some(win) = web_glue::dom::window() {
+        let on_resize = crate::glue_dom::listen(&win, "resize", Default::default(), move |_| {
+            let Some(v) = browser_viewport() else { return };
+            let _ = viewport_tx.send(AppToDev::ViewportChanged {
+                width: v.width,
+                height: v.height,
+            });
         });
-    }) as Box<dyn FnMut(web_sys::Event)>);
-    if let Some(win) = web_sys::window() {
-        let _ = win.add_event_listener_with_callback(
-            "resize",
-            on_resize.as_ref().unchecked_ref(),
-        );
+        RESIZE_LISTENER.with(|l| *l.borrow_mut() = Some(on_resize));
     }
-    // Forget the closure so it stays alive for the page lifetime.
-    // The connection handle keeps the WS alive; the resize listener
-    // outlives one reconnect attempt cycle by design — re-attaching
-    // on every connect would leak listeners.
-    on_resize.forget();
 
     // --- on_message -----------------------------------------------
     let wire_for_msg = wire.clone();
-    let on_message = Closure::wrap(Box::new(move |evt: MessageEvent| {
+    let on_message = listen("message", Box::new(move |evt| {
+        let evt: MessageEvent = evt.unchecked_into();
         let data = evt.data();
-        let bytes = if let Some(buffer) = data.dyn_ref::<ArrayBuffer>() {
-            Uint8Array::new(buffer).to_vec()
+        let bytes = if data.dyn_ref::<ArrayBuffer>().is_some() {
+            Uint8Array::new(&data).to_vec()
         } else if let Some(s) = data.as_string() {
             s.into_bytes()
         } else {
-            web_sys::console::warn_1(
+            web_glue::dom::console::warn_1(
                 &"[dev-client] unsupported WebSocket frame type".into(),
             );
             return;
@@ -216,15 +214,14 @@ where
         let msg: DevToApp = match serde_json::from_slice(&bytes) {
             Ok(m) => m,
             Err(e) => {
-                web_sys::console::error_1(
+                web_glue::dom::console::error_1(
                     &format!("[dev-client] decode failed: {}", e).into(),
                 );
                 return;
             }
         };
         apply_dev_msg(&wire_for_msg, msg);
-    }) as Box<dyn FnMut(MessageEvent)>);
-    socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    }));
 
     // --- on_error -------------------------------------------------
     // WebSocket's `error` is a plain `Event`, NOT an `ErrorEvent` —
@@ -235,10 +232,9 @@ where
     // event's `.reason` is the property that actually carries the
     // human-readable disconnect cause, and the close handler below
     // already logs it.
-    let on_error = Closure::wrap(Box::new(move |_evt: Event| {
-        web_sys::console::error_1(&"[dev-client] websocket error".into());
-    }) as Box<dyn FnMut(Event)>);
-    socket.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    let on_error = listen("error", Box::new(move |_evt| {
+        web_glue::dom::console::error_1(&"[dev-client] websocket error".into());
+    }));
 
     // --- on_close -------------------------------------------------
     // When the dev server goes away (it likely just restarted itself
@@ -249,16 +245,16 @@ where
     // server and retargets `outbound` at the fresh channel.
     let on_disconnect_for_close = on_disconnect.clone();
     let wire_for_close = wire.clone();
-    let on_close = Closure::wrap(Box::new(move |evt: CloseEvent| {
-        web_sys::console::log_2(
+    let on_close = listen("close", Box::new(move |evt| {
+        let evt: CloseEvent = evt.unchecked_into();
+        web_glue::dom::console::log_2(
             &"[dev-client] websocket closed:".into(),
             &evt.reason().into(),
         );
         wire_for_close.borrow().outbound().clear();
         let cb = on_disconnect_for_close.clone();
         schedule_callback(100, move || cb());
-    }) as Box<dyn FnMut(CloseEvent)>);
-    socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    }));
 
     // --- outbound pump + animation tick driver --------------------
     // requestAnimationFrame-driven. Two jobs per tick:
@@ -284,7 +280,7 @@ where
         // — `send_with_u8_array` would throw `InvalidStateError` and
         // the raf would spam console errors until `onopen` fires.
         // `readyState` 1 = OPEN per the WHATWG spec.
-        if socket_for_pump.ready_state() != web_sys::WebSocket::OPEN {
+        if socket_for_pump.ready_state() != web_glue::dom::WebSocket::OPEN {
             return;
         }
         let now = now_ms();
@@ -303,7 +299,7 @@ where
                 Ok(msg) => {
                     if let Ok(bytes) = serde_json::to_vec(&msg) {
                         if let Err(e) = socket_for_pump.send_with_u8_array(&bytes) {
-                            web_sys::console::error_2(
+                            web_glue::dom::console::error_2(
                                 &"[dev-client] ws send error:".into(),
                                 &e,
                             );
@@ -318,17 +314,14 @@ where
 
     Ok(WebClientHandle {
         socket,
-        _on_open: on_open,
-        _on_message: on_message,
-        _on_error: on_error,
-        _on_close: on_close,
+        _listeners: vec![on_open, on_message, on_error, on_close],
         _outbound_pump: outbound_pump,
     })
 }
 
 /// Wall-clock now() in ms since Unix epoch, via JS `Date.now()`.
 fn now_ms() -> u64 {
-    js_sys::Date::now() as u64
+    web_glue::js::Date::now() as u64
 }
 
 /// Print a one-line summary of an incoming runtime-server command batch into
@@ -353,12 +346,12 @@ fn log_command_batch(cmds: &[wire::Command]) {
         .collect::<Vec<_>>()
         .join(", ");
     let header = format!("[aas] batch · {} commands · {}", cmds.len(), breakdown);
-    web_sys::console::group_collapsed_1(&header.into());
+    web_glue::dom::console::group_collapsed_1(&header.into());
     for c in cmds {
         let line = format_command(c);
-        web_sys::console::log_1(&line.into());
+        web_glue::dom::console::log_1(&line.into());
     }
-    web_sys::console::group_end();
+    web_glue::dom::console::group_end();
 
     // Special-case event-shaped commands (UpdateText / UpdateButtonLabel)
     // with a brief top-level line too, so you can see them in the
@@ -366,12 +359,12 @@ fn log_command_batch(cmds: &[wire::Command]) {
     for c in cmds {
         match c {
             Command::UpdateText { node, content } => {
-                web_sys::console::log_1(
+                web_glue::dom::console::log_1(
                     &format!("[aas]   {} → text {:?}", node, content).into(),
                 );
             }
             Command::UpdateButtonLabel { node, label } => {
-                web_sys::console::log_1(
+                web_glue::dom::console::log_1(
                     &format!("[aas]   {} → button label {:?}", node, label).into(),
                 );
             }
@@ -487,12 +480,7 @@ fn format_command(c: &wire::Command) -> String {
 /// browser a moment for the dev server to finish restarting before
 /// we attempt to reconnect.
 fn schedule_callback<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
-    let Some(window) = web_sys::window() else { return };
-    let cb = Closure::once_into_js(move || f());
-    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-        cb.as_ref().unchecked_ref(),
-        delay_ms,
-    );
+    crate::glue_dom::after_ms_once(delay_ms, f);
 }
 
 fn apply_dev_msg<B: AllCaps + 'static>(wire: &Rc<RefCell<WireBackend<B>>>, msg: DevToApp)
@@ -507,7 +495,7 @@ where
             ..
         } => {
             if protocol_version != wire::PROTOCOL_VERSION {
-                web_sys::console::warn_1(
+                web_glue::dom::console::warn_1(
                     &format!(
                         "[dev-client] protocol version mismatch: dev={}, app={}",
                         protocol_version,
@@ -523,7 +511,7 @@ where
             // the user verify in devtools that two tabs ended up on
             // the same / different sessions as intended.
             if !session.is_empty() {
-                web_sys::console::log_1(
+                web_glue::dom::console::log_1(
                     &format!("[dev-client] session: {}", session).into(),
                 );
             }
@@ -532,7 +520,7 @@ where
         DevToApp::Commands(cmds) => {
             log_command_batch(&cmds);
             if let Err(e) = wire.borrow_mut().apply_batch(cmds) {
-                web_sys::console::error_1(
+                web_glue::dom::console::error_1(
                     &format!("[dev-client] replay error: {:?}", e).into(),
                 );
             }
@@ -542,7 +530,7 @@ where
                 if let Some(started) = slot.take() {
                     let now = now_ms();
                     let elapsed = now.saturating_sub(started);
-                    web_sys::console::log_1(
+                    web_glue::dom::console::log_1(
                         &format!(
                             "[dev-client] hot-reload latency: change detected → apply = {}ms",
                             elapsed
@@ -553,10 +541,10 @@ where
             });
         }
         DevToApp::Rebuilding => {
-            web_sys::console::log_1(&"[dev-client] dev is rebuilding…".into());
+            web_glue::dom::console::log_1(&"[dev-client] dev is rebuilding…".into());
         }
         DevToApp::Error { message } => {
-            web_sys::console::error_2(&"[dev-client] dev error:".into(), &message.into());
+            web_glue::dom::console::error_2(&"[dev-client] dev error:".into(), &message.into());
         }
         DevToApp::ThemeChanged { .. } => {
             // Theme application is a follow-up.

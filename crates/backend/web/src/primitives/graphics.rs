@@ -40,10 +40,9 @@ use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::JsValue;
+use web_glue::dom::Node;
 
 // ---------------------------------------------------------------------------
 // SurfaceProvider impl — wraps a canvas and produces raw-window-handle
@@ -56,7 +55,7 @@ use web_sys::Node;
 /// `display_handle()` once during surface creation; we don't need
 /// to cache the values.
 pub(crate) struct CanvasSurfaceProvider {
-    canvas: web_sys::HtmlCanvasElement,
+    canvas: web_glue::dom::HtmlCanvasElement,
 }
 
 // SAFETY: wasm32 is single-threaded. The web's `HtmlCanvasElement`
@@ -126,8 +125,8 @@ pub(crate) struct GraphicsInstance {
     ready_fired: bool,
     /// Owned closures whose lifetime must match the instance.
     /// Dropped on `release` so DOM listeners stop firing.
-    resize_observer: Option<web_sys::ResizeObserver>,
-    resize_closure: Option<Closure<dyn FnMut(JsValue, JsValue)>>,
+    resize_observer: Option<web_glue::dom::ResizeObserver>,
+    resize_closure: Option<web_glue::Closure>,
     /// Detaches from the canvas as it drops (`release`).
     context_lost_closure: Option<web_glue::dom::Listener>,
 }
@@ -146,10 +145,10 @@ pub(crate) fn create(
     // SSR emits a placeholder `<canvas>`; reuse it so the cursor
     // advances past it and the post-hydration GPU surface attaches to
     // the same DOM element.
-    let canvas: web_sys::HtmlCanvasElement = if let Some(el) = b.hydrate_next("canvas") {
+    let canvas: web_glue::dom::HtmlCanvasElement = if let Some(el) = b.hydrate_next("canvas") {
         el.dyn_into().expect("hydrated canvas is not an HtmlCanvasElement")
     } else {
-        let fresh: web_sys::HtmlCanvasElement = b
+        let fresh: web_glue::dom::HtmlCanvasElement = b
             .doc
             .create_element("canvas")
             .expect("create_element canvas failed")
@@ -225,7 +224,7 @@ const DPR_DESKTOP_MAX: f64 = 2.0;
 const DPR_MOBILE_CAP: f64 = 1.5;
 
 fn effective_dpr() -> f64 {
-    let raw = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
+    let raw = web_glue::dom::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
     if raw > DPR_DESKTOP_MAX {
         DPR_MOBILE_CAP
     } else {
@@ -279,14 +278,14 @@ fn fire_ready(instance: &Rc<RefCell<GraphicsInstance>>) {
 
 fn install_resize_observer(instance: Rc<RefCell<GraphicsInstance>>) {
     let weak = Rc::downgrade(&instance);
-    let cb = Closure::<dyn FnMut(JsValue, JsValue)>::new(move |_entries, _observer| {
+    let cb = web_glue::Closure::new(move |_entries| {
         let Some(inst) = weak.upgrade() else { return };
         fire_resize(&inst);
     });
-    let observer = match web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref()) {
+    let observer = match web_glue::dom::ResizeObserver::new(cb.as_js().unchecked_ref()) {
         Ok(o) => o,
         Err(e) => {
-            web_sys::console::warn_1(
+            web_glue::dom::console::warn_1(
                 &format!("[graphics] ResizeObserver::new failed: {e:?}").into(),
             );
             return;
@@ -416,7 +415,7 @@ pub(crate) fn make_handle(b: &WebBackend, node: &Node) -> GraphicsHandle {
     // survive return-by-value.
     let id = node
         .clone()
-        .dyn_into::<web_sys::Element>()
+        .dyn_into::<web_glue::dom::Element>()
         .ok()
         .and_then(|el| el.get_attribute("data-graphics-id"))
         .and_then(|s| s.parse::<u32>().ok());
@@ -426,7 +425,7 @@ pub(crate) fn make_handle(b: &WebBackend, node: &Node) -> GraphicsHandle {
         None => {
             // Unreachable in practice — `make_*_handle` is called
             // immediately after `create_*`. Hand back a dummy.
-            let canvas: web_sys::HtmlCanvasElement = b
+            let canvas: web_glue::dom::HtmlCanvasElement = b
                 .doc
                 .create_element("canvas")
                 .expect("create_element canvas failed")
@@ -459,7 +458,7 @@ impl GraphicsOps for WebGraphicsOps {}
 pub(crate) fn release(b: &mut WebBackend, node: &Node) {
     let id = match node
         .clone()
-        .dyn_into::<web_sys::Element>()
+        .dyn_into::<web_glue::dom::Element>()
         .ok()
         .and_then(|el| el.get_attribute("data-graphics-id"))
         .and_then(|s| s.parse::<u32>().ok())

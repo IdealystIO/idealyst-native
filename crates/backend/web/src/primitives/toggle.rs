@@ -2,8 +2,8 @@
 
 use crate::WebBackend;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -18,10 +18,10 @@ pub(crate) fn create(
     // back to a fresh `create_element` (recorded via `hydrate_note_fresh`
     // so the framework can armor a subtree remount if the cursor was
     // misaligned).
-    let input: web_sys::HtmlInputElement = if let Some(el) = b.hydrate_next("input") {
+    let input: web_glue::dom::HtmlInputElement = if let Some(el) = b.hydrate_next("input") {
         el.unchecked_into()
     } else {
-        let el: web_sys::HtmlInputElement = b
+        let el: web_glue::dom::HtmlInputElement = b
             .doc
             .create_element("input")
             .expect("create_element input failed")
@@ -61,7 +61,7 @@ pub(crate) fn create(
 }
 
 pub(crate) fn update_value(node: &Node, value: bool) {
-    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+    if let Ok(input) = node.clone().dyn_into::<web_glue::dom::HtmlInputElement>() {
         if input.checked() != value {
             input.set_checked(value);
         }

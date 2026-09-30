@@ -5,8 +5,8 @@ use crate::WebBackend;
 use runtime_shared::primitives::scroll_view::{EndReach, ScrollViewHandle, ScrollViewOps};
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -19,7 +19,7 @@ pub(crate) fn create(
     // was left for the next primitive (the content panel) to mis-adopt —
     // diverging the whole scrolled subtree and cascading to later siblings.
     // Mirrors `view::create`. Off hydration both arms create a fresh div.
-    let div: web_sys::Element = match b.hydrate_next("div") {
+    let div: web_glue::dom::Element = match b.hydrate_next("div") {
         Some(el) => el,
         None => {
             let el = b
@@ -65,7 +65,7 @@ pub(crate) fn create(
     if let Some(cb) = on_scroll {
         let element_for_handler = div.clone();
         crate::glue_dom::listen_fn_for_element_lifetime(&div, "scroll", move |_| {
-            if let Some(html) = element_for_handler.dyn_ref::<web_sys::HtmlElement>() {
+            if let Some(html) = element_for_handler.dyn_ref::<web_glue::dom::HtmlElement>() {
                 let x = html.scroll_left() as f32;
                 let y = html.scroll_top() as f32;
                 cb(x, y);
@@ -93,13 +93,13 @@ pub(crate) fn observe_end(
     threshold: f32,
     on_end: Rc<dyn Fn()>,
 ) {
-    let el: web_sys::Element = node.clone().unchecked_into();
+    let el: web_glue::dom::Element = node.clone().unchecked_into();
     let el_for_handler = el.clone();
     let reach = std::cell::RefCell::new(EndReach::new(threshold));
     // Re-entrant and element-owned, for the same reasons as the
     // `on_scroll` listener above — see the note there.
     crate::glue_dom::listen_fn_for_element_lifetime(&el, "scroll", move |_| {
-            if let Some(html) = el_for_handler.dyn_ref::<web_sys::HtmlElement>() {
+            if let Some(html) = el_for_handler.dyn_ref::<web_glue::dom::HtmlElement>() {
                 let (offset, viewport, content) = if horizontal {
                     (
                         html.scroll_left() as f32,
@@ -121,7 +121,7 @@ pub(crate) fn observe_end(
 }
 
 pub(crate) fn make_handle(node: &Node) -> ScrollViewHandle {
-    let el: web_sys::HtmlElement = node
+    let el: web_glue::dom::HtmlElement = node
         .clone()
         .dyn_into()
         .expect("scroll_view node is not an HtmlElement");
@@ -131,7 +131,7 @@ pub(crate) fn make_handle(node: &Node) -> ScrollViewHandle {
 struct WebScrollViewOps;
 impl ScrollViewOps for WebScrollViewOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
-        if let Some(html) = node.downcast_ref::<web_sys::HtmlElement>() {
+        if let Some(html) = node.downcast_ref::<web_glue::dom::HtmlElement>() {
             html.set_scroll_left(x as i32);
             html.set_scroll_top(y as i32);
         }
@@ -161,8 +161,8 @@ impl ScrollViewOps for WebScrollViewOps {
 /// Written with `set_property` rather than `set_attribute`: the mount
 /// above writes the style ATTRIBUTE wholesale for the overflow, and a
 /// second attribute write would drop it.
-pub(crate) fn apply_bounces(el: &web_sys::Element, bounces: bool) {
-    let Some(html) = el.dyn_ref::<web_sys::HtmlElement>() else {
+pub(crate) fn apply_bounces(el: &web_glue::dom::Element, bounces: bool) {
+    let Some(html) = el.dyn_ref::<web_glue::dom::HtmlElement>() else {
         return;
     };
     let style = html.style();

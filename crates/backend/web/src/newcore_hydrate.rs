@@ -336,7 +336,7 @@ mod tests {
     use runtime_vocabulary::builders::IntoSceneElement;
     use runtime_vocabulary::{button, text, view};
     use runtime_world::signal;
-    use wasm_bindgen::{JsCast, JsValue};
+    use web_glue::{JsCast, JsValue};
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -345,8 +345,8 @@ mod tests {
     /// hand-built stand-in for SSR output (server-shaped DOM: the same
     /// tags, in the same pre-order, that `backend_ssr` emits for the
     /// fixture tree — anchors included, since SSR renders anchored).
-    fn setup_prerendered(inner_html: &str) -> web_sys::Element {
-        let document = web_sys::window().unwrap().document().unwrap();
+    fn setup_prerendered(inner_html: &str) -> web_glue::dom::Element {
+        let document = web_glue::dom::window().unwrap().document().unwrap();
         if let Some(prior) = document.get_element_by_id("app") {
             prior.remove();
         }
@@ -360,13 +360,13 @@ mod tests {
     /// Await one microtask checkpoint (lets the flush driver's queued
     /// `Promise.then` run).
     async fn microtask() {
-        let promise = js_sys::Promise::resolve(&JsValue::UNDEFINED);
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let promise = web_glue::js::Promise::resolve(&JsValue::UNDEFINED);
+        let _ = web_glue::JsFuture::new(&promise).await;
     }
 
     /// `el.children[i]` without the `HtmlCollection` web-sys feature
     /// (element-sibling walk; panics past the end — tests only).
-    fn nth_child(el: &web_sys::Element, i: usize) -> web_sys::Element {
+    fn nth_child(el: &web_glue::dom::Element, i: usize) -> web_glue::dom::Element {
         let mut cur = el.first_element_child().expect("no element children");
         for _ in 0..i {
             cur = cur.next_element_sibling().expect("index past the end");
@@ -434,7 +434,7 @@ mod tests {
         let root = mount
             .first_element_child()
             .unwrap()
-            .unchecked_into::<web_sys::Node>();
+            .unchecked_into::<web_glue::dom::Node>();
         WebBackend::finish_impl(&mut b, root);
         assert!(
             Host::supports_splice(&b),
@@ -509,7 +509,7 @@ mod tests {
 
         hydrate(|| fixture_tree().1);
 
-        let button: web_sys::HtmlElement =
+        let button: web_glue::dom::HtmlElement =
             nth_child(&mount.first_element_child().unwrap(), 2).unchecked_into();
         button.click();
         // The adopted button's closure is the caps-impl WRAPPED author

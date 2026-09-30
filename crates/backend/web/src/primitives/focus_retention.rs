@@ -38,8 +38,8 @@
 //! protect.
 
 use crate::WebBackend;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 /// Controls whose own focus-on-press must survive the region's cancel.
 const TEXT_ENTRY: &str = "input,textarea,select,[contenteditable=''],[contenteditable='true']";
@@ -58,7 +58,7 @@ pub(crate) fn lands_on_text_entry(ev: &web_glue::dom::Event) -> bool {
 }
 
 pub(crate) fn mark(b: &mut WebBackend, node: &Node) {
-    let el: web_sys::Element = match node.clone().dyn_into() {
+    let el: web_glue::dom::Element = match node.clone().dyn_into() {
         Ok(e) => e,
         Err(_) => return,
     };

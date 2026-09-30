@@ -38,7 +38,7 @@ use runtime_shared::FxHashMap;
 // core's ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
 use css::css_num;
 use runtime_shared::animation::AnimProp;
-use wasm_bindgen::JsCast;
+use web_glue::JsCast;
 
 use crate::WebBackend;
 
@@ -111,7 +111,7 @@ impl WebBackend {
     /// [`AnimProp`] family.
     pub(crate) fn impl_set_animated_f32(
         &mut self,
-        node: &web_sys::Node,
+        node: &web_glue::dom::Node,
         prop: AnimProp,
         value: f32,
     ) {
@@ -121,7 +121,7 @@ impl WebBackend {
         // animation support is opt-in.
         let Some(element) = node
             .clone()
-            .dyn_into::<web_sys::HtmlElement>()
+            .dyn_into::<web_glue::dom::HtmlElement>()
             .ok()
         else {
             return;
@@ -193,13 +193,13 @@ impl WebBackend {
     /// `Backend::set_animated_color` implementation.
     pub(crate) fn impl_set_animated_color(
         &mut self,
-        node: &web_sys::Node,
+        node: &web_glue::dom::Node,
         prop: AnimProp,
         value: [f32; 4],
     ) {
         let Some(element) = node
             .clone()
-            .dyn_into::<web_sys::HtmlElement>()
+            .dyn_into::<web_glue::dom::HtmlElement>()
             .ok()
         else {
             return;
@@ -257,7 +257,7 @@ impl WebBackend {
 /// Re-emit the `translate` CSS property from the node's current
 /// pair. Unset axes default to `0px` so a single-axis animation
 /// reads as "move only on this axis."
-fn write_translate(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
+fn write_translate(element: &web_glue::dom::HtmlElement, state: &AnimatedNodeState) {
     if !state.any_translate_set() {
         // Nothing to write yet (all axes still default).
         return;
@@ -271,7 +271,7 @@ fn write_translate(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
 
 /// Re-emit the `scale` CSS property from the node's current pair.
 /// Unset axes default to `1.0`.
-fn write_scale(element: &web_sys::HtmlElement, state: &AnimatedNodeState) {
+fn write_scale(element: &web_glue::dom::HtmlElement, state: &AnimatedNodeState) {
     if !state.any_scale_set() {
         return;
     }

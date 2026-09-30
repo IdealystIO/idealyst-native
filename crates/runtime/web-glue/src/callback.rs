@@ -44,17 +44,23 @@ pub const FLAG_ONCE: u32 = 1;
 /// reactions of a dropped `JsFuture`).
 pub const FLAG_SILENT: u32 = 2;
 
-/// `__glue_invoke` statuses.
-pub const INVOKE_OK: u32 = 0;
+/// JS passes EVERY argument, as one array, instead of only the first
+/// ([`Closure::new_with_args`]).
+pub const FLAG_ARGS: u32 = 4;
+
+/// `__glue_invoke` statuses. Success is `INVOKE_RETURNED + handle`: the
+/// callback's return value rides in the status, so a returning callback
+/// costs no second call (`undefined` is handle 0, i.e. status 3).
 pub const INVOKE_UNKNOWN: u32 = 1;
 pub const INVOKE_RECURSIVE: u32 = 2;
+pub const INVOKE_RETURNED: u32 = 3;
 
 enum Kind {
-    Mut(Box<dyn FnMut(JsValue)>),
-    Once(Box<dyn FnOnce(JsValue)>),
+    Mut(Box<dyn FnMut(JsValue) -> JsValue>),
+    Once(Box<dyn FnOnce(JsValue) -> JsValue>),
     /// Stays in the registry while it runs (a clone of the `Rc` is what
     /// runs), so a re-entrant call finds it `Idle` and runs too.
-    Shared(std::rc::Rc<dyn Fn(JsValue)>),
+    Shared(std::rc::Rc<dyn Fn(JsValue) -> JsValue>),
 }
 
 enum Slot {
@@ -112,7 +118,26 @@ impl Closure {
     /// A callback JS may call any number of times with one argument
     /// (missing arguments arrive as `undefined`).
     pub fn new(f: impl FnMut(JsValue) + 'static) -> Closure {
-        Closure::with_flags(Kind::Mut(Box::new(f)), 0)
+        let mut f = f;
+        Closure::with_flags(Kind::Mut(Box::new(move |a| {
+            f(a);
+            JsValue::UNDEFINED
+        })), 0)
+    }
+
+    /// A callback that receives EVERY argument JS passes (as a slice) and
+    /// returns a value to its JS caller — the shape of the virtualizer
+    /// shims' row factories and measure callbacks. Refuses re-entry like
+    /// [`Closure::new`].
+    pub fn new_with_args(f: impl FnMut(&[JsValue]) -> JsValue + 'static) -> Closure {
+        let mut f = f;
+        Closure::with_flags(
+            Kind::Mut(Box::new(move |args: JsValue| {
+                let args: crate::js::Array = crate::JsCast::unchecked_into(args);
+                f(&args.to_vec())
+            })),
+            FLAG_ARGS,
+        )
     }
 
     /// A callback JS may call any number of times — INCLUDING from inside
@@ -120,13 +145,19 @@ impl Closure {
     /// only where that re-entry is expected; [`Closure::new`] refuses it
     /// loudly, which catches accidental recursion.
     pub fn new_fn(f: impl Fn(JsValue) + 'static) -> Closure {
-        Closure::with_flags(Kind::Shared(std::rc::Rc::new(f)), 0)
+        Closure::with_flags(Kind::Shared(std::rc::Rc::new(move |a| {
+            f(a);
+            JsValue::UNDEFINED
+        })), 0)
     }
 
     /// A callback JS may call at most once; the JS function is dead after
     /// the first call.
     pub fn once(f: impl FnOnce(JsValue) + 'static) -> Closure {
-        Closure::with_flags(Kind::Once(Box::new(f)), FLAG_ONCE)
+        Closure::with_flags(Kind::Once(Box::new(move |a| {
+            f(a);
+            JsValue::UNDEFINED
+        })), FLAG_ONCE)
     }
 
     /// A one-shot JS function with no Rust owner (`setTimeout`-style
@@ -134,7 +165,10 @@ impl Closure {
     /// that is never called stays registered — the same trade as
     /// `wasm_bindgen::Closure::once_into_js`.
     pub fn once_into_js(f: impl FnOnce(JsValue) + 'static) -> JsValue {
-        let id = register(Kind::Once(Box::new(f)));
+        let id = register(Kind::Once(Box::new(move |a| {
+            f(a);
+            JsValue::UNDEFINED
+        })));
         unsafe { JsValue::from_raw(ffi::make_fn(id, FLAG_ONCE)) }
     }
 
@@ -154,7 +188,10 @@ impl Closure {
     }
 
     pub(crate) fn once_silent(f: impl FnOnce(JsValue) + 'static) -> Closure {
-        Closure::with_flags(Kind::Once(Box::new(f)), FLAG_ONCE | FLAG_SILENT)
+        Closure::with_flags(Kind::Once(Box::new(move |a| {
+            f(a);
+            JsValue::UNDEFINED
+        })), FLAG_ONCE | FLAG_SILENT)
     }
 
     fn with_flags(kind: Kind, flags: u32) -> Closure {
@@ -203,8 +240,9 @@ pub extern "C" fn __glue_release(id: u32) {
 }
 
 /// The one entry point JS calls callbacks through. Takes ownership of the
-/// `arg` slot. Returns [`INVOKE_OK`], [`INVOKE_UNKNOWN`] (not registered:
-/// dropped, or a once-callback already spent) or [`INVOKE_RECURSIVE`].
+/// `arg` slot. Returns [`INVOKE_RETURNED`] `+` the handle of the callback's
+/// return value (JS takes it), [`INVOKE_UNKNOWN`] (not registered: dropped,
+/// or a once-callback already spent) or [`INVOKE_RECURSIVE`].
 #[unsafe(no_mangle)]
 pub extern "C" fn __glue_invoke(id: u32, arg: u32) -> u32 {
     // Owned from here on, so every early return releases it.
@@ -229,18 +267,12 @@ pub extern "C" fn __glue_invoke(id: u32, arg: u32) -> u32 {
     });
     match taken {
         Err(status) => status,
-        Ok(Kind::Once(f)) => {
-            f(arg);
-            INVOKE_OK
-        }
+        Ok(Kind::Once(f)) => INVOKE_RETURNED + f(arg).into_raw(),
         // The registry keeps its own `Rc`; this clone is dropped here, so
         // an owner that dropped the closure mid-call frees it now.
-        Ok(Kind::Shared(f)) => {
-            f(arg);
-            INVOKE_OK
-        }
+        Ok(Kind::Shared(f)) => INVOKE_RETURNED + f(arg).into_raw(),
         Ok(Kind::Mut(mut f)) => {
-            f(arg);
+            let ret = f(arg);
             let discard = REGISTRY.with(|r| {
                 let mut r = r.borrow_mut();
                 match r.map.get_mut(&id) {
@@ -259,7 +291,7 @@ pub extern "C" fn __glue_invoke(id: u32, arg: u32) -> u32 {
                 }
             });
             drop(discard);
-            INVOKE_OK
+            INVOKE_RETURNED + ret.into_raw()
         }
     }
 }

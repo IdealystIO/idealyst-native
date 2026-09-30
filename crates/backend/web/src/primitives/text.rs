@@ -3,8 +3,8 @@
 //! attributes, so styling would be silently dropped.
 
 use crate::WebBackend;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(b: &mut WebBackend, content: &str) -> Node {
     if let Some(span) = b.hydrate_next("span") {

@@ -168,17 +168,29 @@ macro_rules! js_class {
             }
         }
 
-        $(
-            impl ::core::ops::Deref for $name {
-                type Target = $parent;
-                fn deref(&self) -> &$parent {
-                    <$parent as $crate::cast::JsCast>::unchecked_from_js_ref(&self.0)
-                }
-            }
-            $crate::js_class!(@up $name, $parent $(, $ancestor)*);
-        )?
+        $crate::js_class!(@deref $name $(: $parent $(, $ancestor)*)?);
 
         $crate::js_class! { $($rest)* }
+    };
+    // A root class derefs to `JsValue`, so — as with web-sys — every class
+    // derefs down its chain to `JsValue` and `&window` passes where a
+    // `&JsValue` is wanted.
+    (@deref $name:ident) => {
+        impl ::core::ops::Deref for $name {
+            type Target = $crate::JsValue;
+            fn deref(&self) -> &$crate::JsValue {
+                &self.0
+            }
+        }
+    };
+    (@deref $name:ident : $parent:ident $(, $ancestor:ident)*) => {
+        impl ::core::ops::Deref for $name {
+            type Target = $parent;
+            fn deref(&self) -> &$parent {
+                <$parent as $crate::cast::JsCast>::unchecked_from_js_ref(&self.0)
+            }
+        }
+        $crate::js_class!(@up $name, $parent $(, $ancestor)*);
     };
     (@up $name:ident, $($up:ident),*) => {
         $(

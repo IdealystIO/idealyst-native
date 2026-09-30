@@ -16,8 +16,8 @@
 //! same pattern as touch/wheel.
 
 use runtime_shared::HoverHandler;
-use wasm_bindgen::JsCast;
-use web_sys::{Element, Node};
+use web_glue::JsCast;
+use web_glue::dom::{Element, Node};
 
 /// Install `pointerenter` (→ `true`) and `pointerleave` (→ `false`)
 /// listeners on `node`.

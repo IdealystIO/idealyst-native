@@ -117,13 +117,15 @@ pub(crate) fn apply_none(video: &web_sys::Element) {
 // `VideoOps` impl.
 // ============================================================================
 
-/// The framework hands us a `Rc<dyn Any>` whose concrete type is
-/// `web_sys::Node` (what the registry handler returned). Both `<video>`
+/// The framework hands us a `Rc<dyn Any>` whose concrete type is the
+/// backend's node (`web_glue::dom::Node`, what the registry handler
+/// returned); HYBRID-BRIDGE turns it back into a web-sys node until phase 3
+/// ports this SDK. Both `<video>`
 /// and `<audio>` are `HtmlMediaElement` subclasses, so we downcast the
 /// node to that for the playback ops.
 pub(crate) fn downcast_media(node: &dyn Any) -> Option<web_sys::HtmlMediaElement> {
-    node.downcast_ref::<Node>()
-        .and_then(|n| n.clone().dyn_into::<web_sys::HtmlMediaElement>().ok())
+    backend_web::bridge::node_to_web_sys(node)
+        .and_then(|n| n.dyn_into::<web_sys::HtmlMediaElement>().ok())
 }
 
 /// Start (or resume) playback on the mounted media element.

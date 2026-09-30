@@ -27,7 +27,7 @@ thread_local! {
 }
 
 fn pathname() -> String {
-    web_sys::window()
+    web_glue::dom::window()
         .and_then(|w| w.location().pathname().ok())
         .unwrap_or_else(|| "/".to_string())
 }
@@ -48,16 +48,16 @@ pub fn install_url_provider() {
     if INSTALLED.with(|c| c.get()) {
         return;
     }
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_glue::dom::window() else { return };
     INSTALLED.with(|c| c.set(true));
 
     nav::install_url_provider(UrlProvider {
         current_path: Box::new(pathname),
         push_state: Box::new(|url| {
-            if let Some(w) = web_sys::window() {
+            if let Some(w) = web_glue::dom::window() {
                 if let Ok(h) = w.history() {
                     let _ = h.push_state_with_url(
-                        &wasm_bindgen::JsValue::NULL,
+                        &web_glue::JsValue::NULL,
                         "",
                         Some(url),
                     );
@@ -65,10 +65,10 @@ pub fn install_url_provider() {
             }
         }),
         replace_state: Box::new(|url| {
-            if let Some(w) = web_sys::window() {
+            if let Some(w) = web_glue::dom::window() {
                 if let Ok(h) = w.history() {
                     let _ = h.replace_state_with_url(
-                        &wasm_bindgen::JsValue::NULL,
+                        &web_glue::JsValue::NULL,
                         "",
                         Some(url),
                     );
@@ -76,7 +76,7 @@ pub fn install_url_provider() {
             }
         }),
         history_back: Box::new(|| {
-            if let Some(w) = web_sys::window() {
+            if let Some(w) = web_glue::dom::window() {
                 if let Ok(h) = w.history() {
                     let _ = h.back();
                 }

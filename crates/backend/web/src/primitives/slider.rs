@@ -8,8 +8,8 @@ use crate::WebBackend;
 // is ample for range-input attributes and values.
 use css::css_num;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -19,7 +19,7 @@ pub(crate) fn create(
     step: Option<f32>,
     on_change: Rc<dyn Fn(f32)>,
 ) -> Node {
-    let input: web_sys::HtmlInputElement = b
+    let input: web_glue::dom::HtmlInputElement = b
         .doc
         .create_element("input")
         .expect("create_element input failed")
@@ -49,7 +49,7 @@ pub(crate) fn create(
 }
 
 pub(crate) fn update_value(node: &Node, value: f32) {
-    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+    if let Ok(input) = node.clone().dyn_into::<web_glue::dom::HtmlInputElement>() {
         let s = css_num(value).to_string();
         if input.value() != s {
             input.set_value(&s);

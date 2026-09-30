@@ -33,8 +33,8 @@
 //! [`@font-face`]: https://developer.mozilla.org/en-US/docs/Web/CSS/@font-face
 
 use runtime_shared::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
-use js_sys::{Array, Uint8Array};
-use wasm_bindgen::JsValue;
+use web_glue::js::{Array, Uint8Array};
+use web_glue::JsValue;
 
 use crate::WebBackend;
 
@@ -76,14 +76,11 @@ fn mime_for(extension: &str) -> &'static str {
 /// rejects the call — extremely rare; the caller falls back to the
 /// "broken image" path so the failure is visible rather than silent.
 fn blob_url_for(bytes: &[u8], mime: &str) -> Option<String> {
-    let chunk = Uint8Array::new_with_length(bytes.len() as u32);
-    chunk.copy_from(bytes);
+    let chunk = Uint8Array::from(bytes);
     let parts = Array::new();
     parts.push(&JsValue::from(chunk));
-    let options = web_sys::BlobPropertyBag::new();
-    options.set_type(mime);
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).ok()?;
-    web_sys::Url::create_object_url_with_blob(&blob).ok()
+    let blob = web_glue::dom::Blob::new_with_parts_and_type(&parts, mime).ok()?;
+    web_glue::dom::Url::create_object_url_with_blob(&blob).ok()
 }
 
 impl WebBackend {
@@ -124,7 +121,7 @@ impl WebBackend {
                         url
                     }
                     None => {
-                        web_sys::console::warn_1(
+                        web_glue::dom::console::warn_1(
                             &format!(
                                 "register_asset({id:?}): failed to mint blob URL for {} bytes",
                                 bytes.len()
@@ -146,7 +143,7 @@ impl WebBackend {
             // Remote URLs are owned by the page/CDN — leave them
             // alone.
             if self.blob_asset_urls.remove(&id) {
-                let _ = web_sys::Url::revoke_object_url(&url);
+                let _ = web_glue::dom::Url::revoke_object_url(&url);
             }
         }
     }
@@ -186,7 +183,7 @@ impl WebBackend {
                 // per-face assets have been registered already. Log
                 // and skip the face so the rest of the family still
                 // works.
-                web_sys::console::warn_1(
+                web_glue::dom::console::warn_1(
                     &format!(
                         "register_typeface({family_name}): face asset {:?} not registered; skipping",
                         face.asset
@@ -242,7 +239,7 @@ impl WebBackend {
 /// CSS Font Loading API's `document.fonts` set; the `family()` value
 /// may come back quoted, so compare with quotes stripped.
 fn document_declares_family(family: &str) -> bool {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+    let Some(doc) = web_glue::dom::window().and_then(|w| w.document()) else {
         return false;
     };
     // Primary: the `data-iy-font-families` attribute the CLI stamps on
@@ -261,11 +258,11 @@ fn document_declares_family(family: &str) -> bool {
     // that link a premint stylesheet without the attribute (only
     // reliable once the sheet has loaded).
     let fonts = doc.fonts();
-    let Ok(Some(iter)) = js_sys::try_iter(&fonts) else {
+    let Ok(Some(iter)) = web_glue::js::try_iter(&fonts) else {
         return false;
     };
     for entry in iter.flatten() {
-        let face: web_sys::FontFace = entry.into();
+        let face: web_glue::dom::FontFace = web_glue::JsCast::unchecked_into(entry);
         let fam = face.family();
         if fam.trim_matches('"').trim_matches('\'') == family {
             return true;

@@ -753,7 +753,7 @@ mod web_glue {
         cx: &mut MountCx<'_, WebBackend>,
         prim: &Rc<VideoPrim>,
         _children: Vec<Element>,
-    ) -> web_sys::Node {
+    ) -> backend_web::bridge::HostNode {
         let backend = cx.backend().clone();
         let fit = match prim.props.object_fit {
             ObjectFit::Contain => "contain",
@@ -789,7 +789,8 @@ mod web_glue {
             }
         });
 
-        let node: web_sys::Node = video.into();
+        // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
+        let node = backend_web::bridge::node_from_web_sys(&video.into());
         finish_mount(&backend, &node, prim);
         node
     }

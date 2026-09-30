@@ -8,8 +8,8 @@ use runtime_shared::primitives::text_input::{
 };
 use std::any::Any;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -25,10 +25,10 @@ pub(crate) fn create(
     // input next to the SSR one and the divergence cascade leaves
     // both in the DOM. Even a leaf input must register with the
     // adoption cursor or every sibling element after it desyncs.
-    let input: web_sys::HtmlInputElement = if let Some(el) = b.hydrate_next("input") {
+    let input: web_glue::dom::HtmlInputElement = if let Some(el) = b.hydrate_next("input") {
         el.unchecked_into()
     } else {
-        let fresh: web_sys::HtmlInputElement = b
+        let fresh: web_glue::dom::HtmlInputElement = b
             .doc
             .create_element("input")
             .expect("create_element input failed")
@@ -77,7 +77,7 @@ pub(crate) fn create(
 /// light its bordered shell's ring for an adorned (borderless-input) layout —
 /// the bare `<input>`'s own `:focus` can't style the wrapping shell `<div>`.
 pub(crate) fn set_focus_handler(b: &mut WebBackend, node: &Node, handler: Rc<dyn Fn(bool)>) {
-    let el: web_sys::HtmlElement = match node.clone().dyn_into() {
+    let el: web_glue::dom::HtmlElement = match node.clone().dyn_into() {
         Ok(e) => e,
         Err(_) => return,
     };
@@ -97,7 +97,7 @@ pub(crate) fn set_focus_handler(b: &mut WebBackend, node: &Node, handler: Rc<dyn
 /// The listener receives a plain glue `Event`; it is checked into a
 /// `KeyboardEvent` inside.
 pub(crate) fn attach_key_listener_input(
-    input: &web_sys::HtmlInputElement,
+    input: &web_glue::dom::HtmlInputElement,
     id: u32,
     b: &mut WebBackend,
     handler: KeyDownHandler,
@@ -119,7 +119,7 @@ pub(crate) use super::keyboard::key_event_from;
 
 
 pub(crate) fn update_value(node: &Node, value: &str) {
-    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+    if let Ok(input) = node.clone().dyn_into::<web_glue::dom::HtmlInputElement>() {
         // Only write if different — avoids cursor-jump artifacts
         // when our own on_change wrote back to the signal.
         if input.value() != value {
@@ -129,7 +129,7 @@ pub(crate) fn update_value(node: &Node, value: &str) {
 }
 
 pub(crate) fn update_secure(node: &Node, secure: bool) {
-    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+    if let Ok(input) = node.clone().dyn_into::<web_glue::dom::HtmlInputElement>() {
         // Swap the input type to toggle masking. Browsers preserve the
         // value across a type change; guard against a needless write so a
         // no-op toggle doesn't perturb the field.
@@ -141,13 +141,13 @@ pub(crate) fn update_secure(node: &Node, secure: bool) {
 }
 
 pub(crate) fn update_placeholder(node: &Node, placeholder: Option<&str>) {
-    if let Ok(input) = node.clone().dyn_into::<web_sys::HtmlInputElement>() {
+    if let Ok(input) = node.clone().dyn_into::<web_glue::dom::HtmlInputElement>() {
         input.set_placeholder(placeholder.unwrap_or(""));
     }
 }
 
 pub(crate) fn make_handle(node: &Node) -> TextInputHandle {
-    let input: web_sys::HtmlInputElement = node
+    let input: web_glue::dom::HtmlInputElement = node
         .clone()
         .dyn_into()
         .expect("text_input node is not an HtmlInputElement");
@@ -157,22 +157,22 @@ pub(crate) fn make_handle(node: &Node) -> TextInputHandle {
 struct WebTextInputOps;
 impl TextInputOps for WebTextInputOps {
     fn focus(&self, node: &dyn Any) {
-        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+        if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
             let _ = input.focus();
         }
     }
     fn blur(&self, node: &dyn Any) {
-        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+        if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
             let _ = input.blur();
         }
     }
     fn select_all(&self, node: &dyn Any) {
-        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+        if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
             input.select();
         }
     }
     fn insert_text(&self, node: &dyn Any, text: &str) {
-        if let Some(input) = node.downcast_ref::<web_sys::HtmlInputElement>() {
+        if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
             // Splice `text` into the active selection. `setRangeText`
             // is the modern API that does this in one call and
             // dispatches the implicit `input` event the framework's
@@ -183,7 +183,7 @@ impl TextInputOps for WebTextInputOps {
             let _ = input.set_range_text_with_start_and_end(text, start, end);
             // Dispatch an `input` event so the on_change closure
             // wired in `create()` runs and Signals get notified.
-            if let Ok(event) = web_sys::Event::new("input") {
+            if let Ok(event) = web_glue::dom::Event::new("input") {
                 let _ = input.dispatch_event(&event);
             }
         }

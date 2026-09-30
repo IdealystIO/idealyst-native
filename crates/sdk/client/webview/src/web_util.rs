@@ -140,8 +140,10 @@ fn wire_on_error(
 
 /// Downcast the type-erased handle node to the mounted `<iframe>`.
 fn as_iframe(node: &dyn Any) -> Option<web_sys::HtmlIFrameElement> {
-    node.downcast_ref::<web_sys::Node>()
-        .and_then(|n| n.clone().dyn_into::<web_sys::HtmlIFrameElement>().ok())
+    // HYBRID-BRIDGE: the host node is a `web_glue::dom::Node` since phase
+    // 2b; this SDK's internals are still web-sys until phase 3.
+    backend_web::bridge::node_to_web_sys(node)
+        .and_then(|n| n.dyn_into::<web_sys::HtmlIFrameElement>().ok())
 }
 
 /// `WebViewOps::post_message` body: route to

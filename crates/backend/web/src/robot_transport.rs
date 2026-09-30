@@ -22,9 +22,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{MessageEvent, WebSocket};
+use web_glue::{JsCast, JsValue};
+use web_glue::dom::{MessageEvent, WebSocket};
 
 // ---------------------------------------------------------------------------
 // Core selection — old registry vs the new-core vocabulary registry
@@ -89,8 +88,7 @@ pub(crate) fn clear_newcore_driver_env() {
 /// dropped (which would tear the connection down).
 struct RobotRelayState {
     _socket: WebSocket,
-    _on_open: Closure<dyn FnMut(JsValue)>,
-    _on_message: Closure<dyn FnMut(MessageEvent)>,
+    _listeners: [web_glue::dom::Listener; 2],
     _push_pump: runtime_shared::scheduling::RafLoop,
 }
 
@@ -111,13 +109,12 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
 
     // --- on_open: announce identity -----------------------------------------
     let socket_for_open = socket.clone();
-    let on_open = Closure::wrap(Box::new(move |_evt: JsValue| {
+    let on_open = crate::glue_dom::listen(&socket, "open", Default::default(), move |_evt| {
         let hello = serde_json::json!({
             "hello": { "name": env!("CARGO_PKG_NAME"), "platform": "web" }
         });
         let _ = socket_for_open.send_with_str(&hello.to_string());
-    }) as Box<dyn FnMut(JsValue)>);
-    socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+    });
 
     // --- subscription state (shared with the push pump) ---------------------
     let subscribed = Rc::new(Cell::new(false));
@@ -125,7 +122,8 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
     // --- on_message: dispatch forwarded verbs -------------------------------
     let socket_for_msg = socket.clone();
     let subscribed_msg = subscribed.clone();
-    let on_message = Closure::wrap(Box::new(move |evt: MessageEvent| {
+    let on_message = crate::glue_dom::listen(&socket, "message", Default::default(), move |evt| {
+        let evt: MessageEvent = evt.unchecked_into();
         let Some(text) = evt.data().as_string() else {
             return;
         };
@@ -179,8 +177,7 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
             ),
         };
         let _ = socket_for_msg.send_with_str(&resp);
-    }) as Box<dyn FnMut(MessageEvent)>);
-    socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    });
 
     // --- push pump: emit {event:changed,rev} when the registry advances -----
     let socket_for_push = socket.clone();
@@ -200,8 +197,7 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
     INSTALLED.with(|s| {
         *s.borrow_mut() = Some(RobotRelayState {
             _socket: socket,
-            _on_open: on_open,
-            _on_message: on_message,
+            _listeners: [on_open, on_message],
             _push_pump: push_pump,
         });
     });
@@ -222,8 +218,8 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    fn setup_mount() -> web_sys::Element {
-        let document = web_sys::window().unwrap().document().unwrap();
+    fn setup_mount() -> web_glue::dom::Element {
+        let document = web_glue::dom::window().unwrap().document().unwrap();
         if let Some(prior) = document.get_element_by_id("app") {
             prior.remove();
         }
@@ -295,8 +291,8 @@ mod tests {
         // Drain the batched-text microtask before stop() so no stale
         // flush lands inside a later test's boot window (test hygiene —
         // same await the newcore boot tests do).
-        let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED);
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let promise = web_glue::js::Promise::resolve(&web_glue::JsValue::UNDEFINED);
+        let _ = web_glue::JsFuture::new(&promise).await;
         crate::newcore::stop();
     }
 
@@ -374,8 +370,8 @@ mod tests {
         // rather than returning the pre-wave P5 error.
         assert_eq!(dispatch_verb("list_navigators", &json!({})).unwrap(), "[]");
 
-        let promise = js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED);
-        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        let promise = web_glue::js::Promise::resolve(&web_glue::JsValue::UNDEFINED);
+        let _ = web_glue::JsFuture::new(&promise).await;
         crate::newcore::stop();
         // The keepalive died with the world: the vocabulary registry is
         // empty. (Asserted on the registry directly — post-stop,

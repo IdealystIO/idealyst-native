@@ -4,8 +4,8 @@
 
 use crate::WebBackend;
 use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
-use wasm_bindgen::JsCast;
-use web_sys::Node;
+use web_glue::JsCast;
+use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -53,7 +53,7 @@ pub(crate) fn create(
 /// properties via the style object — leaving the rest of the inline
 /// style (and any author `.with_style` override) untouched.
 pub(crate) fn update_size(node: &Node, size: ActivityIndicatorSize) {
-    if let Ok(el) = node.clone().dyn_into::<web_sys::HtmlElement>() {
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::HtmlElement>() {
         let diameter = match size {
             ActivityIndicatorSize::Small => 16,
             ActivityIndicatorSize::Large => 36,

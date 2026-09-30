@@ -61,8 +61,6 @@ hot-reload = [
     "dev-hot/hot",
     "dep:subsecond-types",
     "runtime-world/hot-reload",
-    # The patch loader awaits fetch / compile / instantiate.
-    "dep:wasm-bindgen-futures",
 ]
 # Stamp a `data-idealyst-id="N"` attribute on every Element the
 # framework has minted a node id for. Pure developer ergonomic —
@@ -102,18 +100,16 @@ runtime-vocabulary = { workspace = true }
 runtime-template = { workspace = true, optional = true }
 css = { workspace = true }
 inventory = "0.3"
-# The framework-owned JS boundary (docs/proposals/own-web-bindings.md).
-# Phase 2a: the backend's scheduler, executor, time source, listeners and
-# JS shims run on it; the DOM-operation surface and the SDKs are still on
-# web-sys, so the page is HYBRID and the bridge feature (HYBRID-BRIDGE,
-# deleted in phase 3) crosses between the two handle spaces.
+# The framework-owned JS boundary (docs/proposals/own-web-bindings.md):
+# every DOM operation, listener, timer and shim call in this crate goes
+# through it (phase 2b).
 web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
+# HYBRID-BRIDGE only (`src/bridge.rs`, deleted in phase 3): SDKs that still
+# build their DOM with web-sys cross to and from the backend's glue nodes
+# there, and a dropped file reaches the file-picker SDK as a
+# `web_sys::File`. Nothing else in this crate names wasm-bindgen or web-sys.
 wasm-bindgen = "0.2"
-js-sys = "0.3"
 serde_json = { workspace = true }
-# Drives `runtime_shared::driver::spawn_async` on web. Only required
-# when this backend's `async-driver` feature is on (the host opts in).
-wasm-bindgen-futures = { version = "0.4", optional = true }
 # runtime-server dev-client replay engine + wire protocol. Only pulled in when
 # the `runtime-server` feature is on; the WebSocket transport itself
 # lives in this crate's `dev_transport` module.
@@ -138,105 +134,10 @@ raw-window-handle = "0.6"
 # for tests that need real DOM (the `node_id` identity invariant
 # can't be verified without it).
 wasm-bindgen-test = "0.3"
-# Await a `requestAnimationFrame` in async browser tests (the textarea
-# autosize regression needs to observe the deferred post-attach measure).
-wasm-bindgen-futures = "0.4"
+# The HYBRID-BRIDGE regression test inspects the web-sys side of a crossing.
+web-sys = { version = "0.3", features = ["Element"] }
 
+# HYBRID-BRIDGE only — see the `wasm-bindgen` dependency above.
 [dependencies.web-sys]
 version = "0.3"
-features = [
-    "BinaryType",
-    "Blob",
-    "BlobPropertyBag",
-    "CloseEvent",
-    "console",
-    "CssRule",
-    "CssRuleList",
-    # `CssMediaRule` is only consumed by the breakpoint-overlay cascade-order
-    # regression test (identifying a class's `@media` overlay in the CSSOM),
-    # but web-sys features aren't test-scoped.
-    "CssMediaRule",
-    "CssStyleDeclaration",
-    "CssStyleRule",
-    "CssStyleSheet",
-    # OS file drag-and-drop (`install_file_drop_handler`): `DragEvent` carries the
-    # `DataTransfer`, whose `.files()` yields a `FileList` of dropped `File`s.
-    "DataTransfer",
-    "DragEvent",
-    "File",
-    "FileList",
-    "Document",
-    "FontFace",
-    "FontFaceSet",
-    "DocumentFragment",
-    "DomRect",
-    "DomTokenList",
-    "Element",
-    "ErrorEvent",
-    "Event",
-    # `EventInit` is test-only today: the gesture-press selection tests
-    # fabricate the cancelable, bubbling `selectstart` the browser fires when
-    # a press starts anchoring a highlight. web-sys features aren't
-    # test-scoped, so it lives here with the rest.
-    "EventInit",
-    "History",
-    "HtmlAnchorElement",
-    "HtmlElement",
-    "HtmlHeadElement",
-    # Inline-layer application on icon nodes: an `<svg>` is NOT an
-    # HtmlElement, so `apply_inline_style` needs the SVG cast too.
-    "SvgElement",
-    "HtmlCanvasElement",
-    # Robot DOM screenshot: serialize #app → SVG <foreignObject> → <img> →
-    # <canvas> 2d → PNG. `CanvasRenderingContext2d` draws the snapshot image,
-    # `HtmlImageElement` loads the SVG, `XmlSerializer` serializes the subtree,
-    # `StyleSheet`/`CssStyleSheet` read the class rules to embed inline.
-    "CanvasRenderingContext2d",
-    "HtmlImageElement",
-    "XmlSerializer",
-    "StyleSheet",
-    # Fetch + inline @font-face fonts as data URLs (a foreignObject SVG renders
-    # in an isolated context without the page's loaded web fonts → falls back to
-    # a default). Synchronous XHR keeps this inside the non-async capture path.
-    "XmlHttpRequest",
-    "HtmlIFrameElement",
-    "HtmlInputElement",
-    # Robot DOM screenshot: live `option.selected` state is mirrored into the
-    # serialized clone's `selected` attribute (property→attribute sync).
-    "HtmlOptionElement",
-    "HtmlStyleElement",
-    "HtmlTextAreaElement",
-    "KeyboardEvent",
-    "KeyboardEventInit",
-    "Location",
-    "MediaQueryList",
-    "MessageEvent",
-    "MouseEvent",
-    # `MouseEventInit` is test-only today: the Ctrl-click regression tests
-    # fabricate the plain-MouseEvent `contextmenu` Firefox delivers.
-    "MouseEventInit",
-    "Node",
-    # `NodeList` + `Node::child_nodes` resolve the reference node for
-    # `insert_at` (keyed `Each` reconciliation splicing).
-    "NodeList",
-    "Performance",
-    "PointerEvent",
-    "PointerEventInit",
-    "WheelEvent",
-    "Text",
-    "PopStateEvent",
-    "Url",
-    "ResizeObserver",
-    "ResizeObserverEntry",
-    "DomRectReadOnly",
-    # `Response` powers the `Primitive::Lazy` web loader's
-    # `chunk_manifest.json` fetch.
-    "Response",
-    "WebSocket",
-    "Window",
-    # `Navigator` powers `browser_device_label()`'s `userAgent` read;
-    # `EventTarget` is what the runtime-server resize listener attaches to
-    # (Window implements EventTarget).
-    "Navigator",
-    "EventTarget",
-]
+features = ["Node", "File"]

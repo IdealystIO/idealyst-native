@@ -10,7 +10,9 @@ use wasm_bindgen::JsCast;
 /// size. This is the whole body of `SvgOps::intrinsic_size` on web,
 /// shared by the crate's web ops impls.
 pub(crate) fn intrinsic_size_of_node(node: &dyn Any) -> Option<(f32, f32)> {
-    let wrapper = node.downcast_ref::<web_sys::Node>()?;
+    // HYBRID-BRIDGE: the host node is a `web_glue::dom::Node` since phase
+    // 2b; this SDK's internals are still web-sys until phase 3.
+    let wrapper = backend_web::bridge::node_to_web_sys(node)?;
     let wrapper_el: &web_sys::Element = wrapper.dyn_ref::<web_sys::Element>()?;
     // `querySelector` is enabled by web-sys's base `Element`
     // feature. Iterating `children()` would also work but needs
