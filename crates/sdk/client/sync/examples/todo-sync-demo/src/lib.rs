@@ -22,7 +22,6 @@
 //! That builds the wasm client, starts the server (serving both the bundle
 //! and the `/_srv/*` API at `http://127.0.0.1:3000`), and rebuilds on save.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 // `Arc` is only used by the server fns' `Arc<AppState>` extractor.
 #[cfg(feature = "server")]
@@ -33,7 +32,7 @@ use idea_ui::{
     CardPadding, Field, Stack, StackAlign, StackAxis, StackGap, StackPadding, Typography,
 };
 use runtime_core::driver::spawn_async;
-use runtime_core::{component, rx, signal, ui, Element};
+use runtime_core::{component, rx, signal, spawn_then, ui, Element};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
 use sync::{
@@ -352,8 +351,8 @@ fn TodoList(props: &TodoListProps) -> Element {
     }
 }
 
-/// Root component. Builds the engine, kicks off the async load + initial
-/// download, and renders the status-aware list once ready.
+/// Root component. Builds the engine, opens the shared partition, and
+/// renders the status-aware list once it has loaded.
 ///
 /// `#[component]` is load-bearing: it gives the root an owning reactive
 /// scope so the list's keyed `for` loop keeps its subscription alive and
@@ -370,52 +369,35 @@ pub fn app() -> Element {
     // storage; followers proxy through it (no shared-store clobber). The
     // transport reaches the server via the generated `TodoTransport`.
     let engine = SyncEngine::with_kv(storage::platform_storage("todo-sync"), device_id());
-    let transport = Rc::new(TodoTransport);
 
-    let loaded = signal(false);
+    // Opened HERE, during the build, because opening creates the
+    // partition's signals and only a build can create reactive state. It
+    // returns at once: loading, leader election and the first download run
+    // in the background and fill those signals in.
+    let sp = SharedPartition::<Todo>::open(engine.clone(), "todos", Rc::new(TodoTransport));
+    // Periodic auto-sync (only the leader tab does work).
+    engine.start_auto_sync(Rc::new(PollingTrigger::new(POLL_INTERVAL_MS)));
+
+    let loaded = sp.loaded();
+    let is_leader = sp.leader_signal();
     let online = signal(true);
     let new_title = signal(String::new());
-    let status = signal("starting…".to_string());
-    let role = signal("connecting…".to_string());
-    let part_cell: Rc<RefCell<Option<SharedPartition<Todo>>>> = Rc::new(RefCell::new(None));
+    let status = signal("loading…".to_string());
 
-    // Async bootstrap: open the multi-tab-coordinated partition (becomes
-    // leader or follower), reveal the UI, and start the auto-sync poller.
-    {
-        let cell = part_cell.clone();
-        let engine = engine.clone();
-        spawn_async(async move {
-            match SharedPartition::open(engine.clone(), "todos", transport).await {
-                Ok(sp) => {
-                    // Leadership is acquired asynchronously (the lock callback
-                    // fires later), so mirror the reactive flag into `role`
-                    // rather than reading it once. This runs in an async
-                    // callback — outside any component scope — so it's a
-                    // caller-owned `watch`; `.leak()` pins it for the session
-                    // (the mirror should live as long as the app).
-                    let ls = sp.leader_signal();
-                    runtime_core::watch(move || {
-                        role.set(if ls.get() { "leader".into() } else { "follower".into() });
-                    })
-                    .leak();
-                    *cell.borrow_mut() = Some(sp);
-                    loaded.set(true);
-                    status.set("ready".to_string());
-                    // Periodic auto-sync (only the leader tab does work).
-                    engine.start_auto_sync(Rc::new(PollingTrigger::new(POLL_INTERVAL_MS)));
-                }
-                Err(e) => status.set(format!("open failed: {e}")),
-            }
-        });
-    }
+    spawn_then(
+        {
+            let sp = sp.clone();
+            async move { sp.ready().await }
+        },
+        move |result| match result {
+            Ok(()) => status.set("ready".to_string()),
+            Err(e) => status.set(format!("load failed: {e}")),
+        },
+    );
 
     let add: Rc<dyn Fn()> = {
-        let cell = part_cell.clone();
+        let sp = sp.clone();
         Rc::new(move || {
-            let Some(sp) = cell.borrow().clone() else {
-                status.set("not ready".to_string());
-                return;
-            };
             let title = new_title.get();
             if title.trim().is_empty() {
                 return;
@@ -434,9 +416,11 @@ pub fn app() -> Element {
             };
             new_title.set(String::new());
             status.set(format!("adding {id}…"));
-            spawn_async(async move {
-                let todo = Todo { title, done: false, updated_at: now_millis() };
-                match sp.upsert(id.clone(), todo).await {
+            let todo = Todo { title, done: false, updated_at: now_millis() };
+            let sp = sp.clone();
+            let upsert_id = id.clone();
+            spawn_then(async move { sp.upsert(upsert_id, todo).await }, move |result| {
+                match result {
                     Ok(()) => status.set(format!("added {id}")),
                     Err(e) => status.set(format!("{id}: error: {e}")),
                 }
@@ -445,30 +429,23 @@ pub fn app() -> Element {
     };
 
     let toggle_online: Rc<dyn Fn()> = {
-        let cell = part_cell.clone();
+        let sp = sp.clone();
         Rc::new(move || {
             let now = !online.get();
             online.set(now);
             status.set(if now { "online".to_string() } else { "offline".to_string() });
-            if let Some(sp) = cell.borrow().clone() {
-                sp.set_online(now); // routed to the leader
-            }
+            sp.set_online(now); // routed to the leader
         })
     };
 
     let sync_now: Rc<dyn Fn()> = {
-        let cell = part_cell.clone();
+        let sp = sp.clone();
         Rc::new(move || {
-            let Some(sp) = cell.borrow().clone() else {
-                status.set("not ready".to_string());
-                return;
-            };
             status.set("syncing…".to_string());
-            spawn_async(async move {
-                match sp.sync_now().await {
-                    Ok(()) => status.set("synced".to_string()),
-                    Err(e) => status.set(format!("sync failed: {e}")),
-                }
+            let sp = sp.clone();
+            spawn_then(async move { sp.sync_now().await }, move |result| match result {
+                Ok(()) => status.set("synced".to_string()),
+                Err(e) => status.set(format!("sync failed: {e}")),
             });
         })
     };
@@ -493,7 +470,14 @@ pub fn app() -> Element {
                 Button(label = "Sync now".to_string(), on_click = sync_now, tone = tone::Primary, variant = variant::Soft)
             }
 
-            Typography(content = rx!(format!("this tab: {} · status: {}", role.get(), status.get())), muted = true)
+            Typography(
+                content = rx!(format!(
+                    "this tab: {} · status: {}",
+                    if is_leader.get() { "leader" } else { "follower" },
+                    status.get()
+                )),
+                muted = true,
+            )
 
             Stack(axis = StackAxis::Row, gap = StackGap::Sm, align = StackAlign::End) {
                 Field(
@@ -506,7 +490,7 @@ pub fn app() -> Element {
             }
 
             if loaded.get() {
-                TodoList(partition = part_cell.borrow().clone())
+                TodoList(partition = Some(sp.clone()))
             } else {
                 Typography(content = "Loading…".to_string(), muted = true)
             }

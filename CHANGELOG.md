@@ -11,6 +11,19 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`sync`: getting a partition is synchronous** (`sync`).
+  `SyncEngine::partition` and `SharedPartition::open` were `async fn`s
+  that created their signals when the task first resumed, and a tab
+  becoming leader created the owner partition's signals from the Web
+  Lock callback. Neither place has the reactive world entered, so both
+  panicked with `signal()/effect() called outside World::enter` on every
+  platform — `todo-sync-demo` could not start. Both now return the
+  handle at once, with its signals created and empty, and load in the
+  background; every async operation waits for the load. New:
+  `loaded()`, `ready()` and (on `Partition`) `load_error()`. *Migration:*
+  drop the `.await?` and the surrounding `spawn_async`, and call them in
+  a component body or `app()` instead of from a task or event handler;
+  read the load outcome from `loaded()` / `ready()`.
 - **Release web builds move lazy-only data out of the main bundle**
   (`wasm-carve`, `build-web`, `idealyst-cli`). Data only lazy code reads —
   an SDK's embedded tables, a lazy area's constants — is zeroed in

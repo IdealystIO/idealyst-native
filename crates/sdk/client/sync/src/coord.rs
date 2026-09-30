@@ -11,22 +11,30 @@
 //! and a follower is promoted automatically — the storage is already
 //! durable, so nothing is lost.
 //!
-//! The API mirrors [`Partition`] (`entries()`, `items()`, `upsert`,
-//! `delete`, `sync_now`, `set_online`), so app code is identical whether a
-//! tab is leader or follower. On **native** there's only ever one instance,
-//! so `SharedPartition` is just an owner with no coordination.
+//! The API mirrors [`Partition`] (`entries()`, `items()`, `loaded()`,
+//! `ready()`, `upsert`, `delete`, `sync_now`, `set_online`), so app code is
+//! identical whether a tab is leader or follower. On **native** there's
+//! only ever one instance, so `SharedPartition` is just an owner with no
+//! coordination.
+//!
+//! [`SharedPartition::open`] is synchronous and creates every signal the
+//! handle will ever expose, for the reason in the `partition` module docs:
+//! a tab becomes leader from the Web Lock callback, and nothing reactive
+//! can be *created* there. So the leader's owner [`Partition`] publishes
+//! into the signals `open` made, and the broadcast to followers hangs off a
+//! plain publish listener instead of an effect.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{signal, unscope, Signal};
+use runtime_core::{signal, unscope, ReadSignal, Signal};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SyncError;
 use crate::merge::Merge;
 use crate::model::{Entry, Id};
-use crate::partition::Partition;
+use crate::partition::{LoadGate, Partition, PartitionSignals};
 use crate::protocol::Transport;
 use crate::SyncEngine;
 
@@ -53,13 +61,15 @@ enum CoordMsg {
 /// Shared state behind a [`SharedPartition`], captured by both the public
 /// handle and the (web) message/lock callbacks.
 struct SharedInner<T> {
-    /// Stable signals the UI binds to — written by the owner-mirror effect
+    /// Stable signals the UI binds to — written by the owner partition
     /// (leader) or by incoming `State` messages (follower).
-    entries_sig: Signal<Vec<Entry<T>>>,
-    items_sig: Signal<Vec<T>>,
+    signals: PartitionSignals<T>,
     /// Reactive leadership flag — flips to `true` when this tab becomes the
     /// leader (initially or via promotion), so the UI can show its role.
     leader_sig: Signal<bool>,
+    /// Finished by the first state this tab gets: its own load as leader,
+    /// or the leader's broadcast as follower.
+    gate: Rc<LoadGate>,
     /// `Some` once this tab is the leader.
     owner: RefCell<Option<Partition<T>>>,
     engine: SyncEngine,
@@ -71,6 +81,23 @@ struct SharedInner<T> {
 }
 
 impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedInner<T> {
+    /// Create the shared state, signals included. Runs inside `open`, which
+    /// is called during a build, so the world is entered here and nowhere
+    /// later.
+    fn new(engine: SyncEngine, name: &str, transport: Rc<dyn Transport<T>>) -> Self {
+        SharedInner {
+            signals: PartitionSignals::new(),
+            leader_sig: unscope(|| signal(false)),
+            gate: LoadGate::new(),
+            owner: RefCell::new(None),
+            engine,
+            name: name.to_string(),
+            transport,
+            #[cfg(target_arch = "wasm32")]
+            bus: RefCell::new(None),
+        }
+    }
+
     fn set_state(&self, entries: Vec<Entry<T>>) {
         let items = entries
             .iter()
@@ -82,8 +109,16 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
         // STAGES the write and the flush commits every staged write in one
         // pass, so these two coalesce into a single fan-out by
         // construction.
-        self.items_sig.set_always(items);
-        self.entries_sig.set_always(entries);
+        self.signals.items.set_always(items);
+        self.signals.entries.set_always(entries);
+        self.mark_loaded(Ok(()));
+    }
+
+    fn mark_loaded(&self, result: Result<(), SyncError>) {
+        if result.is_ok() {
+            self.signals.loaded.set(true);
+        }
+        self.gate.finish_once(result);
     }
 
     fn is_owner(&self) -> bool {
@@ -117,12 +152,25 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
     /// The reactive entries view (status-aware), identical to
     /// [`Partition::entries`]. Stable across a leader handoff.
     pub fn entries(&self) -> Signal<Vec<Entry<T>>> {
-        self.inner.entries_sig
+        self.inner.signals.entries
     }
 
     /// The reactive values view, identical to [`Partition::items`].
     pub fn items(&self) -> Signal<Vec<T>> {
-        self.inner.items_sig
+        self.inner.signals.items
+    }
+
+    /// `true` once this tab has state to show: its own load as leader, or
+    /// the leader's first broadcast as follower. Until then
+    /// [`items`](Self::items) and [`entries`](Self::entries) are empty.
+    pub fn loaded(&self) -> ReadSignal<bool> {
+        self.inner.signals.loaded.read_only()
+    }
+
+    /// Wait until [`loaded`](Self::loaded), and get the error if this tab
+    /// became leader and failed to load its partition from storage.
+    pub async fn ready(&self) -> Result<(), SyncError> {
+        self.inner.gate.clone().wait().await
     }
 
     /// Create or update a record. Leader: applies + flushes directly.
@@ -202,27 +250,19 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> SharedPartition<T> {
     /// Open the partition. On native this is just an owner with no
-    /// coordination.
-    pub async fn open(
-        engine: SyncEngine,
-        name: &str,
-        transport: Rc<dyn Transport<T>>,
-    ) -> Result<Self, SyncError> {
-        let (entries_sig, items_sig, leader_sig) =
-            unscope(|| (signal(Vec::new()), signal(Vec::new()), signal(false)));
-        let inner = Rc::new(SharedInner {
-            entries_sig,
-            items_sig,
-            leader_sig,
-            owner: RefCell::new(None),
-            engine,
-            name: name.to_string(),
-            transport,
-            #[cfg(target_arch = "wasm32")]
-            bus: RefCell::new(None),
+    /// coordination: it starts loading right away.
+    ///
+    /// **Call it during a build** (a component body, or `app()`): it
+    /// creates the handle's signals, which needs the reactive world
+    /// entered. Watch [`loaded`](Self::loaded) or await
+    /// [`ready`](Self::ready) for the load.
+    pub fn open(engine: SyncEngine, name: &str, transport: Rc<dyn Transport<T>>) -> Self {
+        let inner = Rc::new(SharedInner::new(engine, name, transport));
+        let owner = inner.clone();
+        runtime_core::driver::spawn_async(async move {
+            let _ = become_owner(owner).await;
         });
-        become_owner(inner.clone()).await?;
-        Ok(SharedPartition { inner })
+        SharedPartition { inner }
     }
 
     // Native never proxies (always owner); these are unreachable.
@@ -241,23 +281,13 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
     /// Open the partition with multi-tab coordination. Starts as a follower
     /// and requests leadership; the first tab to acquire the lock becomes
     /// the owner, and a follower is promoted when the owner's tab closes.
-    pub async fn open(
-        engine: SyncEngine,
-        name: &str,
-        transport: Rc<dyn Transport<T>>,
-    ) -> Result<Self, SyncError> {
-        let (entries_sig, items_sig, leader_sig) =
-            unscope(|| (signal(Vec::new()), signal(Vec::new()), signal(false)));
-        let inner = Rc::new(SharedInner {
-            entries_sig,
-            items_sig,
-            leader_sig,
-            owner: RefCell::new(None),
-            engine,
-            name: name.to_string(),
-            transport,
-            bus: RefCell::new(None),
-        });
+    ///
+    /// **Call it during a build** (a component body, or `app()`): it
+    /// creates the handle's signals, which needs the reactive world
+    /// entered. Watch [`loaded`](Self::loaded) or await
+    /// [`ready`](Self::ready) for the first state.
+    pub fn open(engine: SyncEngine, name: &str, transport: Rc<dyn Transport<T>>) -> Self {
+        let inner = Rc::new(SharedInner::new(engine, name, transport));
 
         // Wire the cross-tab bus: dispatch incoming messages.
         let inner_for_bus = inner.clone();
@@ -280,7 +310,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
             });
         });
 
-        Ok(SharedPartition { inner })
+        SharedPartition { inner }
     }
 
     fn proxy_upsert(&self, id: &Id, value: &T) {
@@ -302,37 +332,59 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Shar
     }
 }
 
-/// Build the real owner partition for this tab, mirror its signals into the
-/// shared signals (and broadcast on every change), then announce + initial
-/// sync. Used by both native open and the web leadership callback.
+/// Build the real owner partition for this tab, publish its state into the
+/// shared signals (and broadcast it on every change), then announce + run an
+/// initial sync. Used by both native `open` and the web leadership callback.
+///
+/// Runs from an async task (native) or the Web Lock callback (web), so it
+/// must not create anything reactive: the owner partition publishes into
+/// the signals `open` already made, and the broadcast is a publish listener.
 async fn become_owner<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
     inner: Rc<SharedInner<T>>,
 ) -> Result<(), SyncError> {
-    let partition = inner
-        .engine
-        .partition::<T>(&inner.name, inner.transport.clone())
-        .await?;
+    let partition =
+        inner
+            .engine
+            .partition_into::<T>(&inner.name, inner.transport.clone(), inner.signals);
+    // `false` when the app already had a plain `Partition` of this name on
+    // the same engine: it has its own signals, so mirror them.
+    let publishes_here = partition.publishes_into(&inner.signals);
     *inner.owner.borrow_mut() = Some(partition.clone());
     inner.leader_sig.set(true);
 
-    // Mirror the owner partition's entries into the shared signals, and
-    // (web) broadcast them to followers, on every change. This runs in an
-    // async leadership callback — outside any render scope — so it's a
-    // caller-owned `watch`; `.leak()` pins it for the app lifetime (the
-    // mirror lives as long as this tab owns the partition).
-    let inner_for_effect = inner.clone();
-    let pe = partition.entries();
-    runtime_core::watch(move || {
-        let entries = pe.get();
-        inner_for_effect.set_state(entries.clone());
+    // The listener keeps `inner` alive through the partition the engine
+    // holds: both live as long as the app, which is the lifetime of the
+    // mirror too.
+    let for_listener = inner.clone();
+    partition.add_publish_listener(Rc::new(move |entries: &[Entry<T>]| {
+        if !publishes_here {
+            for_listener.set_state(entries.to_vec());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Ok(json) = serde_json::to_string(entries) {
+                for_listener.post(&CoordMsg::State { entries: json });
+            }
+        }
+    }));
+
+    let loaded = partition.ready().await;
+    if loaded.is_ok() {
+        // The load may have published before the listener existed (native
+        // with no executor runs it inline), so push the current state once.
+        let entries = partition.entries_snapshot();
         #[cfg(target_arch = "wasm32")]
         {
             if let Ok(json) = serde_json::to_string(&entries) {
-                inner_for_effect.post(&CoordMsg::State { entries: json });
+                inner.post(&CoordMsg::State { entries: json });
             }
         }
-    })
-    .leak();
+        if !publishes_here {
+            inner.set_state(entries);
+        }
+    }
+    inner.mark_loaded(loaded.clone());
+    loaded?;
 
     // Announce leadership + run an initial sync.
     #[cfg(target_arch = "wasm32")]

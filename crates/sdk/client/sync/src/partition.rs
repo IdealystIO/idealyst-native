@@ -23,6 +23,21 @@
 //! Recovery needs no special path: re-loading the persisted cache +
 //! outbox + cursor and replaying is exactly the steady-state startup. The
 //! idempotency key makes the at-least-once replay safe.
+//!
+//! ## Signals are created up front; loading fills them
+//!
+//! Getting a partition is synchronous: the call creates its signals
+//! (empty) and starts loading the persisted state in the background. Every
+//! async operation waits for that load first, so an edit made before it
+//! finishes lands on top of the loaded state instead of racing it.
+//!
+//! This split is forced by the kernel, not a style choice. Creating a
+//! signal needs the reactive world to be entered, and only a build enters
+//! it: an async task resumes from the executor (a microtask on web, the
+//! run loop on Apple, the looper on Android) with no world entered, and so
+//! does a platform callback such as the Web Lock grant. Creating the
+//! signals after the first `.await` panicked "signal()/effect() called
+//! outside World::enter" on every platform.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -31,9 +46,10 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::{Poll, Waker};
 
 use runtime_core::driver::spawn_async;
-use runtime_core::{signal, unscope, Signal};
+use runtime_core::{signal, unscope, ReadSignal, Signal};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use storage::Storage;
@@ -77,14 +93,121 @@ struct PartitionReg {
 /// it; the client always follows `has_more` regardless.
 const DEFAULT_PULL_LIMIT: u32 = 500;
 
+/// The reactive state a partition publishes into. Created synchronously,
+/// in a build, because signal creation needs the entered world (see the
+/// module docs); everything after that only *writes* these handles, which
+/// is legal from any context.
+pub(crate) struct PartitionSignals<T> {
+    pub(crate) items: Signal<Vec<T>>,
+    pub(crate) entries: Signal<Vec<Entry<T>>>,
+    pub(crate) loaded: Signal<bool>,
+}
+
+impl<T> Clone for PartitionSignals<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for PartitionSignals<T> {}
+
+impl<T: Clone + PartialEq + 'static> PartitionSignals<T> {
+    /// Create the signals, empty and not yet loaded. Panics outside a build
+    /// (no world entered), like every signal creation.
+    ///
+    /// `unscope`: a partition lives as long as the app, but it is often
+    /// first requested from inside a component, whose scope would otherwise
+    /// own these slots and free them on unmount while the engine's registry
+    /// still hands out the handles.
+    pub(crate) fn new() -> Self {
+        unscope(|| PartitionSignals {
+            items: signal(Vec::new()),
+            entries: signal(Vec::new()),
+            loaded: signal(false),
+        })
+    }
+}
+
+/// The outcome of a partition's initial load, awaited by every async
+/// operation (see [`Partition::ready`]).
+///
+/// A hand-rolled one-shot rather than a channel: the SDK has no async
+/// runtime dependency, and the only needs are "park until done" and "hand
+/// every waiter the same `Result`".
+pub(crate) struct LoadGate {
+    state: RefCell<GateState>,
+}
+
+enum GateState {
+    Loading(Vec<Waker>),
+    Done(Result<(), SyncError>),
+}
+
+impl LoadGate {
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(LoadGate {
+            state: RefCell::new(GateState::Loading(Vec::new())),
+        })
+    }
+
+    fn finish(&self, result: Result<(), SyncError>) {
+        let prev = self.state.replace(GateState::Done(result));
+        if let GateState::Loading(wakers) = prev {
+            for w in wakers {
+                w.wake();
+            }
+        }
+    }
+
+    /// [`finish`](Self::finish) unless already finished: the first outcome
+    /// sticks. A `SharedPartition` can be told it has state twice (the
+    /// leader's own load, then a mirrored publish).
+    pub(crate) fn finish_once(&self, result: Result<(), SyncError>) {
+        if self.outcome().is_none() {
+            self.finish(result);
+        }
+    }
+
+    fn outcome(&self) -> Option<Result<(), SyncError>> {
+        match &*self.state.borrow() {
+            GateState::Done(r) => Some(r.clone()),
+            GateState::Loading(_) => None,
+        }
+    }
+
+    pub(crate) async fn wait(self: Rc<Self>) -> Result<(), SyncError> {
+        std::future::poll_fn(move |cx| {
+            let mut state = self.state.borrow_mut();
+            match &mut *state {
+                GateState::Done(r) => Poll::Ready(r.clone()),
+                GateState::Loading(wakers) => {
+                    if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                        wakers.push(cx.waker().clone());
+                    }
+                    Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// Called with the new entries every time a partition publishes. How a
+/// [`SharedPartition`](crate::SharedPartition) leader mirrors and
+/// broadcasts without creating an effect (it becomes leader from a
+/// platform callback, where effect creation panics just like signal
+/// creation does).
+pub(crate) type PublishListener<T> = Rc<dyn Fn(&[Entry<T>])>;
+
 /// A handle to one cached, syncable partition. Cheap to clone (shares the
 /// underlying state, store, transport, and reactive signal).
 pub struct Partition<T> {
     inner: Rc<RefCell<PartitionInner<T>>>,
     store: Rc<PartitionStore>,
     transport: Rc<dyn Transport<T>>,
-    signal: Signal<Vec<T>>,
-    entries_signal: Signal<Vec<Entry<T>>>,
+    signals: PartitionSignals<T>,
+    gate: Rc<LoadGate>,
+    listeners: Rc<RefCell<Vec<PublishListener<T>>>>,
     online: Rc<Cell<bool>>,
     /// Serializes this partition's network operations (pull vs. flush) so a
     /// pull can't apply while a push for the same partition is in flight.
@@ -98,8 +221,9 @@ impl<T> Clone for Partition<T> {
             inner: self.inner.clone(),
             store: self.store.clone(),
             transport: self.transport.clone(),
-            signal: self.signal,
-            entries_signal: self.entries_signal,
+            signals: self.signals,
+            gate: self.gate.clone(),
+            listeners: self.listeners.clone(),
             online: self.online.clone(),
             busy: self.busy.clone(),
             partition: self.partition.clone(),
@@ -108,53 +232,107 @@ impl<T> Clone for Partition<T> {
 }
 
 impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Partition<T> {
-    /// Load a partition's persisted state and build its handle. Reading the
-    /// store *is* the crash-recovery path — whatever was durable comes
-    /// back, and pending ops replay on the next flush.
-    async fn load(
+    /// Build the handle over `signals` and start loading its persisted
+    /// state. Reading the store *is* the crash-recovery path: whatever was
+    /// durable comes back, and pending ops replay on the next flush.
+    ///
+    /// Synchronous on purpose, see the module docs. The load runs on
+    /// `spawn_async`; on native with no executor installed that is
+    /// `pollster` inline, so it may already be done when this returns.
+    fn start(
         store: Arc<dyn SyncStore>,
         client_id: String,
         partition: String,
         transport: Rc<dyn Transport<T>>,
         online: Rc<Cell<bool>>,
-    ) -> Result<Self, SyncError> {
-        let store = PartitionStore::new(store, partition.clone());
-        let records = store.load_cache::<T>().await?;
-        let outbox = store.load_outbox().await?;
-        let cursor = store.load_cursor().await?;
-
-        let inner = PartitionInner::new(client_id, partition.clone(), records, outbox, cursor);
-        // Anchor the signal to the thread lifetime: `partition()` may first
-        // be called inside a transient render scope, and a scope-owned
-        // signal would dangle when that scope drops and its arena slot
-        // recycles (see `runtime_core::unscope`). Partitions are
-        // app-lifetime, so thread-lifetime ownership is correct here.
-        let (items_signal, entries_signal) =
-            unscope(|| (signal(inner.live_values()), signal(inner.entry_views())));
-
-        Ok(Partition {
-            inner: Rc::new(RefCell::new(inner)),
-            store: Rc::new(store),
+        signals: PartitionSignals<T>,
+    ) -> Self {
+        let empty = PartitionInner::new(
+            client_id.clone(),
+            partition.clone(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let me = Partition {
+            inner: Rc::new(RefCell::new(empty)),
+            store: Rc::new(PartitionStore::new(store, partition.clone())),
             transport,
-            signal: items_signal,
-            entries_signal,
+            signals,
+            gate: LoadGate::new(),
+            listeners: Rc::new(RefCell::new(Vec::new())),
             online,
             busy: Rc::new(Cell::new(false)),
             partition,
-        })
+        };
+        let loader = me.clone();
+        spawn_async(async move {
+            let result = loader.load_persisted(client_id).await;
+            if result.is_ok() {
+                loader.publish();
+                loader.signals.loaded.set(true);
+            }
+            loader.gate.finish(result);
+        });
+        me
+    }
+
+    async fn load_persisted(&self, client_id: String) -> Result<(), SyncError> {
+        let records = self.store.load_cache::<T>().await?;
+        let outbox = self.store.load_outbox().await?;
+        let cursor = self.store.load_cursor().await?;
+        *self.inner.borrow_mut() =
+            PartitionInner::new(client_id, self.partition.clone(), records, outbox, cursor);
+        Ok(())
+    }
+
+    /// Wait for the initial load from storage. Every async operation here
+    /// waits for it on its own, so call this only to learn the outcome (to
+    /// show a load failure, say). A failed load fails every later operation
+    /// with the same error.
+    pub async fn ready(&self) -> Result<(), SyncError> {
+        self.gate.clone().wait().await
+    }
+
+    /// `true` once the initial load from storage has succeeded. Until then
+    /// [`items`](Self::items) and [`entries`](Self::entries) are empty.
+    pub fn loaded(&self) -> ReadSignal<bool> {
+        self.signals.loaded.read_only()
+    }
+
+    /// The initial load's error, if it failed. `None` while loading or
+    /// after a successful load.
+    pub fn load_error(&self) -> Option<SyncError> {
+        self.gate.outcome().and_then(Result::err)
     }
 
     /// The reactive handle the UI binds to (`partition.items().get()` from
     /// a component effect re-renders on every change).
     pub fn items(&self) -> Signal<Vec<T>> {
-        self.signal
+        self.signals.items
     }
 
     /// The status-aware reactive view: each live entry with its
     /// [`EntryStatus`](crate::EntryStatus) (Synced / Pending / Conflicted),
     /// so a list can render a per-item sync indicator.
     pub fn entries(&self) -> Signal<Vec<Entry<T>>> {
-        self.entries_signal
+        self.signals.entries
+    }
+
+    /// Non-reactive snapshot of the entries, for callers outside a
+    /// tracking context.
+    pub(crate) fn entries_snapshot(&self) -> Vec<Entry<T>> {
+        self.inner.borrow().entry_views()
+    }
+
+    /// Whether this partition publishes into exactly `signals` (it was
+    /// created with them rather than with its own).
+    pub(crate) fn publishes_into(&self, signals: &PartitionSignals<T>) -> bool {
+        self.signals.entries == signals.entries
+    }
+
+    pub(crate) fn add_publish_listener(&self, listener: PublishListener<T>) {
+        self.listeners.borrow_mut().push(listener);
     }
 
     /// A non-reactive snapshot of the live values.
@@ -192,18 +370,24 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
         // though `publish()` runs from inside an async task (after `await`s
         // for storage / the network) whose executor establishes no reactive
         // window of its own.
-        self.signal.set_always(live);
-        self.entries_signal.set_always(entries);
+        let listeners = self.listeners.borrow().clone();
+        for l in &listeners {
+            l(&entries);
+        }
+        self.signals.items.set_always(live);
+        self.signals.entries.set_always(entries);
     }
 
     // -----------------------------------------------------------------
     // Local mutations
     // -----------------------------------------------------------------
 
-    /// Create or update a record locally. Reflected in the signal
-    /// immediately; the outbox commit (the durable "saved" point) lands
-    /// first, then the cache snapshot.
+    /// Create or update a record locally. Reflected in the signal as soon
+    /// as the initial load has finished (it waits for it); the outbox
+    /// commit (the durable "saved" point) lands first, then the cache
+    /// snapshot.
     pub async fn upsert(&self, id: impl Into<Id>, value: T) -> Result<(), SyncError> {
+        self.ready().await?;
         let (outbox, records) = {
             let mut inner = self.inner.borrow_mut();
             inner.enqueue_upsert(id.into(), value);
@@ -217,6 +401,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
 
     /// Delete a record locally.
     pub async fn delete(&self, id: impl Into<Id>) -> Result<(), SyncError> {
+        self.ready().await?;
         let (outbox, records) = {
             let mut inner = self.inner.borrow_mut();
             inner.enqueue_delete(id.into());
@@ -230,6 +415,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
 
     /// Resolve a conflicted record with the app's decision, then persist.
     pub async fn resolve(&self, id: impl Into<Id>, resolution: Resolution<T>) -> Result<(), SyncError> {
+        self.ready().await?;
         let (outbox, records) = {
             let mut inner = self.inner.borrow_mut();
             inner.resolve(id.into(), resolution);
@@ -251,6 +437,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
     /// snapshot if the cursor expired). Pages are followed to completion
     /// before the cursor advances.
     pub async fn sync(&self) -> Result<(), SyncError> {
+        self.ready().await?;
         if self.busy.get() {
             return Ok(());
         }
@@ -317,6 +504,7 @@ impl<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static> Part
     /// another network op is in flight, when the partition has an
     /// unresolved conflict, or when there's nothing pending.
     pub async fn flush(&self) -> Result<(), SyncError> {
+        self.ready().await?;
         if !self.online.get() || self.busy.get() {
             return Ok(());
         }
@@ -499,31 +687,69 @@ impl SyncEngine {
         trigger.start(SyncHandle::new(self.clone()));
     }
 
-    /// Get (or lazily load) the partition `name` for entity type `T`,
-    /// wired to `transport`. The first call loads persisted state from the
-    /// store (the crash-recovery path) and caches the handle; later calls
-    /// return a clone of the same handle (same signal), and `transport` is
-    /// used only on that first construction.
-    pub async fn partition<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
+    /// Get the partition `name` for entity type `T`, wired to `transport`.
+    ///
+    /// The first call creates the partition's signals and starts loading
+    /// its persisted state (the crash-recovery path) in the background;
+    /// later calls return a clone of the same handle (same signals), and
+    /// `transport` is used only on that first construction. Watch
+    /// [`Partition::loaded`] or await [`Partition::ready`] for the load.
+    ///
+    /// **Call it during a build** (a component body, or `app()`) the first
+    /// time for a given name: creating the signals needs the reactive world
+    /// entered, so a first call from an async task or an event handler
+    /// panics "signal()/effect() called outside World::enter". Later calls
+    /// only look the handle up and work anywhere.
+    pub fn partition<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
         &self,
         name: &str,
         transport: Rc<dyn Transport<T>>,
-    ) -> Result<Partition<T>, SyncError> {
-        if let Some(existing) = self.partitions.borrow().get(name) {
-            if let Some(p) = existing.any.downcast_ref::<Partition<T>>() {
-                return Ok(p.clone());
-            }
+    ) -> Partition<T> {
+        if let Some(existing) = self.registered::<T>(name) {
+            return existing;
         }
+        self.register(name, transport, PartitionSignals::new())
+    }
 
-        let partition = Partition::<T>::load(
+    /// Like [`partition`](Self::partition), but a newly created partition
+    /// publishes into `signals`, created earlier by the caller. How a
+    /// `SharedPartition` builds its owner from a platform callback, where
+    /// it cannot create signals. If `name` is already registered, the
+    /// existing partition is returned unchanged; check
+    /// [`Partition::publishes_into`] to see which case happened.
+    pub(crate) fn partition_into<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
+        &self,
+        name: &str,
+        transport: Rc<dyn Transport<T>>,
+        signals: PartitionSignals<T>,
+    ) -> Partition<T> {
+        if let Some(existing) = self.registered::<T>(name) {
+            return existing;
+        }
+        self.register(name, transport, signals)
+    }
+
+    fn registered<T: 'static>(&self, name: &str) -> Option<Partition<T>> {
+        self.partitions
+            .borrow()
+            .get(name)
+            .and_then(|r| r.any.downcast_ref::<Partition<T>>().cloned())
+    }
+
+    fn register<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'static>(
+        &self,
+        name: &str,
+        transport: Rc<dyn Transport<T>>,
+        signals: PartitionSignals<T>,
+    ) -> Partition<T> {
+        let partition = Partition::<T>::start(
             self.store.clone(),
             self.client_id.clone(),
             name.to_string(),
             transport,
             self.online.clone(),
-        )
-        .await?;
-
+            signals,
+        );
         self.partitions.borrow_mut().insert(
             name.to_string(),
             PartitionReg {
@@ -531,7 +757,7 @@ impl SyncEngine {
                 handle: Rc::new(partition.clone()) as Rc<dyn AnyPartition>,
             },
         );
-        Ok(partition)
+        partition
     }
 
     /// Forget a partition entirely: drop its persisted cache, outbox, and
@@ -710,14 +936,12 @@ mod tests {
         }
     }
 
-    /// Run an async test body inside a fresh reactive world.
-    ///
-    /// Creating a `Partition` mints signals, and `signal()` panics outside
-    /// `World::enter`. The world's "entered" flag is thread-local and
-    /// `block_on` drives the future on THIS thread, so the world stays
-    /// ambient across the body's `await`s — which a bare `#[tokio::test]`
-    /// cannot express (the enter scope would close at the first await
-    /// point).
+    /// Run an async test body inside a fresh reactive world, with no
+    /// executor installed: every spawned task runs inline, still inside the
+    /// world. Convenient for testing sync logic, but it is NOT device timing.
+    /// On device, tasks run later with no world entered;
+    /// `tests/deferred_tasks.rs` covers that, and anything that creates
+    /// reactive state must be tested there.
     fn in_world(body: impl std::future::Future<Output = ()>) {
         runtime_core::__with_fresh_world(|| {
             tokio::runtime::Builder::new_current_thread()
@@ -786,10 +1010,9 @@ mod tests {
     }
 
     async fn part(engine: &SyncEngine, tr: &MockTransport) -> Partition<Note> {
-        engine
-            .partition::<Note>("p", Rc::new(tr.clone()))
-            .await
-            .unwrap()
+        let p = engine.partition::<Note>("p", Rc::new(tr.clone()));
+        p.ready().await.unwrap();
+        p
     }
 
     /// A mutation must notify reactive subscribers of the partition's
@@ -888,9 +1111,8 @@ mod tests {
                 let eng = SyncEngine::with_kv(storage.clone(), "device-1");
                 eng.set_online(false);
                 let p = eng
-                    .partition::<Note>("p", Rc::new(tr.clone()))
-                    .await
-                    .unwrap();
+                    .partition::<Note>("p", Rc::new(tr.clone()));
+                p.ready().await.unwrap();
                 p.upsert("a", note("queued")).await.unwrap();
             }
 
@@ -898,9 +1120,8 @@ mod tests {
             // partition from disk — the queued op is still there and replays.
             let eng2 = SyncEngine::with_kv(storage.clone(), "device-1");
             let p2 = eng2
-                .partition::<Note>("p", Rc::new(tr.clone()))
-                .await
-                .unwrap();
+                .partition::<Note>("p", Rc::new(tr.clone()));
+            p2.ready().await.unwrap();
             assert_eq!(p2.snapshot(), vec![note("queued")], "pending edit restored");
             assert!(p2.has_pending());
             p2.flush().await.unwrap();
@@ -955,8 +1176,10 @@ mod tests {
     fn sync_all_flushes_every_partition() {
         in_world(async {
             let (eng, tr) = engine();
-            let pa = eng.partition::<Note>("a", Rc::new(tr.clone())).await.unwrap();
-            let pb = eng.partition::<Note>("b", Rc::new(tr.clone())).await.unwrap();
+            let pa = eng.partition::<Note>("a", Rc::new(tr.clone()));
+            pa.ready().await.unwrap();
+            let pb = eng.partition::<Note>("b", Rc::new(tr.clone()));
+            pb.ready().await.unwrap();
             eng.set_online(false);
             pa.upsert("x", note("ax")).await.unwrap();
             pb.upsert("y", note("by")).await.unwrap();
@@ -1016,18 +1239,16 @@ mod tests {
             let tr = MockTransport::new();
             let eng = SyncEngine::with_kv(storage.clone(), "device-1");
             let p = eng
-                .partition::<Note>("p", Rc::new(tr.clone()))
-                .await
-                .unwrap();
+                .partition::<Note>("p", Rc::new(tr.clone()));
+            p.ready().await.unwrap();
             p.upsert("a", note("v")).await.unwrap();
             eng.forget("p").await.unwrap();
 
             // A fresh load sees nothing.
             let eng2 = SyncEngine::with_kv(storage.clone(), "device-1");
             let p2 = eng2
-                .partition::<Note>("p", Rc::new(tr.clone()))
-                .await
-                .unwrap();
+                .partition::<Note>("p", Rc::new(tr.clone()));
+            p2.ready().await.unwrap();
             assert!(p2.snapshot().is_empty());
             assert!(!p2.has_pending());
         });

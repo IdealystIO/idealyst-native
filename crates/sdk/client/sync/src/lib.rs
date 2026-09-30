@@ -87,7 +87,7 @@ pub use sync_store::{KvSyncStore, MemorySyncStore, StoreFuture, SyncStore};
 /// sync::sync_transport!(ProjectTransport, Project, pull = pull_projects, push = push_projects);
 ///
 /// let transport = std::rc::Rc::new(ProjectTransport);
-/// let projects = engine.partition::<Project>("project:123", transport).await?;
+/// let projects = engine.partition::<Project>("project:123", transport);
 /// ```
 ///
 /// Any error from the server fn (network, server 5xx, schema drift) is

@@ -121,17 +121,17 @@ sync::sync_transport!(ProjectTransport, Project,
 let engine = sync::SyncEngine::new(storage::platform_storage("sync"), device_id);
 runtime_core::provide(engine.clone());
 
-// Anywhere below (ideally a long-lived provider component):
+// Anywhere below, in a component body (ideally a long-lived provider):
 let engine = runtime_core::inject::<sync::SyncEngine>().unwrap();
-let projects = engine
-    .partition::<Project>("project:123", std::rc::Rc::new(ProjectTransport))
-    .await?;
+let projects = engine.partition::<Project>("project:123", std::rc::Rc::new(ProjectTransport));
 
-// Bind the UI reactively:
+// Bind the UI reactively. Empty until the persisted state has loaded:
 let items = projects.items();          // Signal<Vec<Project>>
-// ... ui! { for p in items.get() { ProjectRow(project = p) } }
+let loaded = projects.loaded();        // ReadSignal<bool>
+// ... ui! { if loaded.get() { for p in items.get() { ProjectRow(project = p) } } }
 
-// Mutate (queues to the durable outbox; flushes when online):
+// Mutate (queues to the durable outbox; flushes when online). Every async
+// operation waits for the load first, so an early edit lands on top of it:
 projects.upsert("p1", Project { /* ... */ }).await?;
 projects.delete("p2").await?;
 
@@ -145,6 +145,18 @@ for id in projects.conflicts() {
     projects.resolve(id, Resolution::TakeIncoming).await?;
 }
 ```
+
+### Get partitions during a build
+
+`engine.partition(...)` and `SharedPartition::open(...)` are synchronous:
+they create the handle's signals on the spot and load in the background.
+Call them from a component body or `app()`, not from inside an async task
+or an event handler — creating a signal needs the reactive world entered,
+and only a build enters it, so those calls panic with
+`signal()/effect() called outside World::enter`. (For a given name, only
+the *first* `partition` call creates anything; later calls just look the
+handle up and work anywhere.) To react to the load finishing or failing,
+bind `loaded()` or run `spawn_then(async move { p.ready().await }, |r| …)`.
 
 ## Pluggable storage
 

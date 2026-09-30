@@ -23,13 +23,12 @@ use sync::{
     SyncError, Transport, TransportFuture,
 };
 
-/// Run an async test body inside a fresh reactive world.
-///
-/// Creating a `Partition` mints signals, and `signal()` panics outside
-/// `World::enter`. The world's "entered" flag is thread-local and
-/// `block_on` drives the future on THIS thread, so the world stays ambient
-/// across the body's `await`s — which a bare `#[tokio::test]` cannot
-/// express (the enter scope would close at the first await point).
+/// Run an async test body inside a fresh reactive world, with no
+/// executor installed: every spawned task runs inline, still inside the
+/// world. Convenient for testing sync logic, but it is NOT device timing.
+/// On device, tasks run later with no world entered;
+/// `tests/deferred_tasks.rs` covers that, and anything that creates
+/// reactive state must be tested there.
 fn in_world(body: impl Future<Output = ()>) {
     runtime_core::__with_fresh_world(|| {
         tokio::runtime::Builder::new_current_thread()
@@ -155,7 +154,8 @@ fn cursor_write_lost_after_records_recovers_by_reapply() {
         {
             let faulty: Arc<dyn Storage> = Arc::new(FaultStorage::new(backing.clone(), "/cursor", 0));
             let eng = SyncEngine::with_kv(faulty, "dev");
-            let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
+            let p = eng.partition::<Item>("p", transport(&authority));
+            p.ready().await.unwrap();
             let err = p.sync().await.unwrap_err();
             assert!(matches!(err, SyncError::Storage(_)), "cursor write failed");
         }
@@ -163,7 +163,8 @@ fn cursor_write_lost_after_records_recovers_by_reapply() {
         // Session 2: fresh engine over the surviving storage. The cursor never
         // persisted, so it re-downloads and re-applies the same records.
         let eng2 = SyncEngine::with_kv(backing.clone(), "dev");
-        let p2 = eng2.partition::<Item>("p", transport(&authority)).await.unwrap();
+        let p2 = eng2.partition::<Item>("p", transport(&authority));
+        p2.ready().await.unwrap();
         p2.sync().await.unwrap();
 
         let mut live = p2.snapshot();
@@ -187,7 +188,8 @@ fn cache_write_lost_after_outbox_still_reaches_server() {
             let faulty: Arc<dyn Storage> = Arc::new(FaultStorage::new(backing.clone(), "/cache", 0));
             let eng = SyncEngine::with_kv(faulty, "dev");
             eng.set_online(false);
-            let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
+            let p = eng.partition::<Item>("p", transport(&authority));
+            p.ready().await.unwrap();
             let err = p.upsert("x", item("queued")).await.unwrap_err();
             assert!(matches!(err, SyncError::Storage(_)));
         }
@@ -196,7 +198,8 @@ fn cache_write_lost_after_outbox_still_reaches_server() {
         // snapshot didn't. Flushing replays it to the server (no data loss),
         // and the local view heals from the ack.
         let eng2 = SyncEngine::with_kv(backing.clone(), "dev");
-        let p2 = eng2.partition::<Item>("p", transport(&authority)).await.unwrap();
+        let p2 = eng2.partition::<Item>("p", transport(&authority));
+        p2.ready().await.unwrap();
         assert!(p2.has_pending(), "mutation survived in the outbox");
         p2.flush().await.unwrap();
         assert_eq!(authority.borrow().live_count(), 1, "reached the server");
@@ -221,7 +224,8 @@ fn outbox_pop_lost_after_ack_does_not_double_apply() {
             // seal (1), flush post-ack pop (2). Drop the pop.
             let faulty: Arc<dyn Storage> = Arc::new(FaultStorage::new(backing.clone(), "/outbox", 2));
             let eng = SyncEngine::with_kv(faulty, "dev");
-            let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
+            let p = eng.partition::<Item>("p", transport(&authority));
+            p.ready().await.unwrap();
             p.upsert("x", item("v")).await.unwrap();
             // Flush: seal-write (ok) → push (server applies) → cache (ok) →
             // outbox-pop (dropped).
@@ -232,7 +236,8 @@ fn outbox_pop_lost_after_ack_does_not_double_apply() {
 
         // Session 2: the un-popped op replays; the server dedups it.
         let eng2 = SyncEngine::with_kv(backing.clone(), "dev");
-        let p2 = eng2.partition::<Item>("p", transport(&authority)).await.unwrap();
+        let p2 = eng2.partition::<Item>("p", transport(&authority));
+        p2.ready().await.unwrap();
         assert!(p2.has_pending(), "op still queued (pop was lost)");
         p2.flush().await.unwrap();
         assert_eq!(authority.borrow().live_count(), 1, "no double-apply");
@@ -252,7 +257,8 @@ fn offline_create_after_download_reaches_server_on_reconnect() {
         authority.borrow_mut().seed("seed-a", item("seeded"));
 
         let eng = SyncEngine::with_kv(backing.clone(), "dev");
-        let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
+        let p = eng.partition::<Item>("p", transport(&authority));
+        p.ready().await.unwrap();
         p.sync().await.unwrap(); // initial download → cursor persisted
         assert_eq!(p.snapshot(), vec![item("seeded")]);
 
@@ -282,7 +288,8 @@ fn full_offline_edit_then_reconcile_cycle() {
         authority.borrow_mut().seed("doc", item("original"));
 
         let eng = SyncEngine::with_kv(backing.clone(), "dev");
-        let p = eng.partition::<Item>("p", transport(&authority)).await.unwrap();
+        let p = eng.partition::<Item>("p", transport(&authority));
+        p.ready().await.unwrap();
         p.sync().await.unwrap();
         assert_eq!(p.snapshot(), vec![item("original")]);
 
