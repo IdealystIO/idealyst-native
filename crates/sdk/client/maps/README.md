@@ -50,7 +50,7 @@ leaves). The *mechanism* differs per platform:
 
 | Target | Mechanism |
 | --- | --- |
-| Web (wasm32) | OpenStreetMap embed `<iframe>` (POC; a production leaf would bind Leaflet/MapLibre via wasm-bindgen) |
+| Web (wasm32) | OpenStreetMap embed `<iframe>` (POC, built with web-glue; sized by the author's style; a production leaf would bind Leaflet/MapLibre through web-glue `import!` bindings) |
 | iOS | native `MKMapView` via raw `msg_send`; `zoom` → camera altitude |
 | Other (Android, macOS, wgpu desktop, terminal, …) | umbrella `register` installs the External-placeholder handler; the host's "not supported" box renders at mount |
 
@@ -80,6 +80,7 @@ item as you exercise it.
 **Automated**
 - [ ] `cargo test -p maps` — the placeholder-arm op-log suite
 - [ ] `cargo check -p maps --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p maps --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_maps.rs`: the embed iframe mounts as the host node and the author's width/height reach it
 - [ ] `cargo check -p maps --target aarch64-apple-ios-sim` — iOS target
 
 **Rendering / behavior**

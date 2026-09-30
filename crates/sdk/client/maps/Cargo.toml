@@ -38,9 +38,15 @@ host-mock = { path = "../../../dev/host-mock" }
 maps-web = { workspace = true }
 # The wasm32 register is `WebBackend`-concrete (the leaf's iframe DOM has
 # no caps-trait expression), so `Registry<WebBackend>` needs the
-# backend's `Host` impl; web-sys names the node type the handler returns.
+# backend's `Host` impl; web-glue names the node type the handler returns.
 backend-web = { workspace = true }
-web-sys = { version = "0.3", features = ["Element", "Node"] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_maps.rs`) — run with
+# `cargo test -p maps --target wasm32-unknown-unknown` (the workspace runner
+# supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 maps-ios = { workspace = true }

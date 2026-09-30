@@ -7,6 +7,10 @@
 //! handlers are backend-concrete and are covered by the per-target check
 //! gates.
 
+// Host-only: `maps::register` is `WebBackend`-concrete on wasm32, where the
+// browser suite (`tests/web_maps.rs`) covers the real handler instead.
+#![cfg(not(target_arch = "wasm32"))]
+
 use host_mock::Harness;
 use maps::{MapView, MapViewProps};
 use runtime_shared::{StyleRules, Tokenized};

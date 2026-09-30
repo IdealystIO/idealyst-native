@@ -5,11 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 # Web leaf for the `maps` umbrella. Provides
-# `pub fn build_map_iframe(&Rc<MapViewProps>) -> web_sys::Element`, the
-# node builder the umbrella's scene handler mounts. Renders an
+# `pub fn build_map_element(&Rc<MapViewProps>) -> web_glue::dom::Element`,
+# the node builder the umbrella's scene handler mounts (the web backend's
+# node type is a web-glue handle). Renders an
 # OpenStreetMap embed iframe — simple proof of the pipeline without an
 # FFI binding story for Leaflet / MapLibre.
 
 [dependencies]
 maps-core = { workspace = true }
-web-sys = { version = "0.3", features = ["Document", "Element", "HtmlIFrameElement", "Window"] }
+web-glue = { workspace = true }
+# Only for the deprecated `build_map_iframe -> web_sys::Element`, kept so
+# this published crate's API does not change. Nothing in the framework
+# calls it.
+web-sys = { version = "0.3", features = ["Document", "Element", "Window"] }

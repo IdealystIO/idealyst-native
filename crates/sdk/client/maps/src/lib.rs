@@ -206,10 +206,9 @@ fn mount_map_web(
     cx: &mut MountCx<'_, backend_web::WebBackend>,
     prim: &Rc<MapsPrim>,
     _children: Vec<Element>,
-) -> backend_web::bridge::HostNode {
+) -> web_glue::dom::Node {
     let backend = cx.backend().clone();
-    // HYBRID-BRIDGE: this SDK still builds its DOM with web-sys (phase 3).
-    let node = backend_web::bridge::node_from_web_sys(&maps_web::build_map_iframe(&prim.props).into());
+    let node: web_glue::dom::Node = maps_web::build_map_element(&prim.props).into();
     finish_mount(&backend, &node, prim);
     node
 }

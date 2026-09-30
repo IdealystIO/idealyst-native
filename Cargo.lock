@@ -7304,7 +7304,8 @@ dependencies = [
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
- "web-sys",
+ "wasm-bindgen-test",
+ "web-glue",
 ]
 
 [[package]]
@@ -7330,6 +7331,7 @@ name = "maps-web"
 version = "1.5.2"
 dependencies = [
  "maps-core",
+ "web-glue",
  "web-sys",
 ]
 
