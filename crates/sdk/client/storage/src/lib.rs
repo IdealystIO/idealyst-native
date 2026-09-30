@@ -38,6 +38,20 @@
 //! store.set("theme", "dark").await?;
 //! assert_eq!(store.get("theme").await?, Some("dark".to_string()));
 //! ```
+//!
+//! # Values needed before the first frame
+//!
+//! A saved theme read asynchronously boots in the default and flips a tick
+//! later — a visible flash. [`Storage::get_now`] / [`Storage::set_now`] /
+//! [`Storage::remove_now`] answer synchronously instead. Every store this
+//! crate ships is synchronous underneath, so they always answer; a custom
+//! store that would have to wait returns [`StorageError::NotSupported`]
+//! rather than blocking.
+//!
+//! ```ignore
+//! let store = platform_storage("my_app");
+//! let dark = store.get_now("theme").ok().flatten().as_deref() == Some("dark");
+//! ```
 
 #![deny(missing_docs)]
 
@@ -105,6 +119,60 @@ pub trait Storage: Send + Sync {
     fn remove(&self, key: &str) -> StorageFuture<'_, ()>;
     /// Remove every key owned by this store.
     fn clear(&self) -> StorageFuture<'_, ()>;
+
+    /// [`get`](Self::get), answered **now** instead of awaited — for a
+    /// value that has to be known before the first frame: a saved theme
+    /// (booting light and flipping to dark a tick later is a visible
+    /// flash), a collapsed sidebar, a remembered layout.
+    ///
+    /// Every store this crate ships is synchronous underneath
+    /// (`localStorage`, `NSUserDefaults`, `SharedPreferences`, a file, a
+    /// map) and returns a future that is already complete, so this always
+    /// answers for them. A store that genuinely has to wait (your own
+    /// `Storage` over a network, say) answers
+    /// [`StorageError::NotSupported`] rather than blocking — there is no
+    /// executor to block on in a browser, and a UI thread must not.
+    ///
+    /// Prefer [`get`](Self::get) (or `persisted_signal`) for anything that
+    /// can arrive after first paint; this is for the handful of values
+    /// that can't.
+    fn get_now(&self, key: &str) -> Result<Option<String>, StorageError> {
+        resolve_now(self.get(key))
+    }
+
+    /// [`set`](Self::set), completed **now** — the write-side twin of
+    /// [`get_now`](Self::get_now), so a preference toggled in an event
+    /// handler is persisted before anything reacting to it runs (and a
+    /// reload in the same tick cannot come back with the old value).
+    /// Same [`StorageError::NotSupported`] contract for a store that
+    /// would have to wait.
+    fn set_now(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        resolve_now(self.set(key, value))
+    }
+
+    /// [`remove`](Self::remove), completed **now**. Same contract as
+    /// [`get_now`](Self::get_now).
+    fn remove_now(&self, key: &str) -> Result<(), StorageError> {
+        resolve_now(self.remove(key))
+    }
+}
+
+/// Poll a storage future exactly once and take its answer if it has one.
+///
+/// Sound for any future — a `Pending` result just means "this store
+/// can't answer synchronously", reported as
+/// [`StorageError::NotSupported`]. The no-op waker is correct precisely
+/// because we never poll again: nothing waits on the wake-up. (The
+/// dropped future may leave a write half-done only for a store that
+/// suspends mid-write, and that store already told the caller it could
+/// not do this synchronously.)
+fn resolve_now<T>(fut: StorageFuture<'_, T>) -> Result<T, StorageError> {
+    let mut fut = fut;
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => Err(StorageError::NotSupported),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +379,47 @@ mod tests {
         assert_eq!(s.get("k").await.unwrap(), None);
     }
 
+    /// The synchronous accessors answer for the shipped stores (whose
+    /// futures complete on first poll) and see the same data as the
+    /// async API — they are views of one store, not a second one.
+    #[test]
+    fn now_accessors_round_trip_and_share_state_with_async() {
+        let s = MemoryStorage::new();
+        assert_eq!(s.get_now("k"), Ok(None));
+        s.set_now("k", "v").unwrap();
+        assert_eq!(s.get_now("k"), Ok(Some("v".to_string())));
+        assert_eq!(pollster::block_on(s.get("k")), Ok(Some("v".to_string())));
+        pollster::block_on(s.set("k", "w")).unwrap();
+        assert_eq!(s.get_now("k"), Ok(Some("w".to_string())));
+        s.remove_now("k").unwrap();
+        assert_eq!(s.get_now("k"), Ok(None));
+    }
+
+    /// A store that genuinely has to wait must say so, not block the UI
+    /// thread and not pretend the key is absent (`Ok(None)` would boot
+    /// the app with the default and silently drop the user's choice).
+    #[test]
+    fn now_accessors_report_not_supported_for_a_store_that_would_wait() {
+        struct Slow;
+        impl Storage for Slow {
+            fn get(&self, _: &str) -> StorageFuture<'_, Option<String>> {
+                Box::pin(std::future::pending())
+            }
+            fn set(&self, _: &str, _: &str) -> StorageFuture<'_, ()> {
+                Box::pin(std::future::pending())
+            }
+            fn remove(&self, _: &str) -> StorageFuture<'_, ()> {
+                Box::pin(std::future::pending())
+            }
+            fn clear(&self) -> StorageFuture<'_, ()> {
+                Box::pin(std::future::pending())
+            }
+        }
+        assert_eq!(Slow.get_now("k"), Err(StorageError::NotSupported));
+        assert_eq!(Slow.set_now("k", "v"), Err(StorageError::NotSupported));
+        assert_eq!(Slow.remove_now("k"), Err(StorageError::NotSupported));
+    }
+
     #[tokio::test]
     async fn memory_clear() {
         let s = MemoryStorage::new();
@@ -339,6 +448,21 @@ mod tests {
             s.remove("token").await.unwrap();
             assert_eq!(s.get("token").await.unwrap(), None);
         }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The file store's synchronous accessors hit the same file: a
+    /// value written with `set_now` is on disk for the next instance.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_now_accessors_persist_across_instances() {
+        let path = std::env::temp_dir().join("idealyst_storage_test_now.json");
+        let _ = std::fs::remove_file(&path);
+        FileStorage::new(&path).set_now("theme", "dark").unwrap();
+        let reopened = FileStorage::new(&path);
+        assert_eq!(reopened.get_now("theme"), Ok(Some("dark".to_string())));
+        reopened.remove_now("theme").unwrap();
+        assert_eq!(FileStorage::new(&path).get_now("theme"), Ok(None));
         let _ = std::fs::remove_file(&path);
     }
 

@@ -37,6 +37,25 @@ string values — encode structured data (e.g. JSON) caller-side:
 - `set(key, value)` — store, replacing any existing value.
 - `remove(key)` — idempotent.
 - `clear()` — remove every key owned by *this* store (its namespace only).
+- `get_now(key)` / `set_now(key, value)` / `remove_now(key)` — the same
+  operations answered **synchronously**, for the few values that must be
+  known before the first frame (a saved theme read asynchronously boots
+  light and flips to dark a tick later — a visible flash). Every store this
+  crate ships is synchronous underneath, so these always answer for them;
+  a custom `Storage` whose future would have to wait returns
+  `StorageError::NotSupported` instead of blocking. Everything else should
+  stay on the async calls or `persisted_signal`.
+
+```rust
+# fn boot() {
+let store = storage::platform_storage("my_app");
+// Before installing the theme — no flash of the default.
+let dark = store.get_now("theme").ok().flatten().as_deref() == Some("dark");
+# let _ = dark;
+// In the toggle handler: persisted before anything reacting to it runs.
+let _ = store.set_now("theme", "dark");
+# }
+```
 
 Three ways to get a `Storage`:
 
@@ -88,6 +107,8 @@ verification note above). Tick each item as you exercise it.
 **Automated**
 - [ ] `cargo test -p storage` — `MemoryStorage`/`FileStorage` round-trip, namespaced `clear`, idempotent `remove`
 - [ ] `cargo build -p storage --target wasm32-unknown-unknown` — web (`localStorage`) target compiles
+- [x] `cargo test -p storage` — `get_now`/`set_now`/`remove_now` share state with the async API (memory + file), and a store whose future would wait reports `NotSupported`
+- [x] `wasm-pack test --headless --chrome --package storage` — `tests/web_now.rs`: the `localStorage` store answers `*_now` under its `name:` prefix
 
 **Behavior**
 
