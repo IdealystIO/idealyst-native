@@ -58,9 +58,12 @@ objc2 = "0.5"
 jni = "0.21"
 ndk-context = "0.1"
 
-# Web (wasm): navigator.vibrate via web-sys; js-sys/wasm-bindgen build the
-# JS array the pattern overload (`vibrate([on, off, …])`) expects.
+# Web (wasm): navigator.vibrate through a web-glue binding (`src/web.rs`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_vibrate.rs`) — run with
+# `cargo test -p haptics --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

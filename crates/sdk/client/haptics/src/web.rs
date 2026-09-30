@@ -1,4 +1,5 @@
-//! Web haptics — `navigator.vibrate(...)`.
+//! Web haptics — `navigator.vibrate(...)`, through a web-glue binding
+//! declared here (own-web-bindings phase 3).
 //!
 //! The Vibration API is the only web haptics primitive, and it's
 //! duration-only: there is **no** impact-style or notification-type concept,
@@ -39,37 +40,40 @@ fn impact_ms(style: ImpactStyle) -> u32 {
     }
 }
 
-/// The browser's `Navigator`, or `None` outside a window context (e.g. a
-/// worker without one) — in which case every call is a no-op.
-fn navigator() -> Option<web_sys::Navigator> {
-    web_sys::window().map(|w| w.navigator())
+web_glue::import! {
+    // 1 in a window context (which always has a `navigator`).
+    fn js_has_navigator() -> u32 = "() => typeof window === 'undefined' ? 0 : 1";
+    // `navigator.vibrate(...)` over `n` u32 ms values at `ptr`: the array
+    // (pattern) overload when `arr` is 1, else the single-duration one
+    // with the first value. The values are copied out of
+    // wasm memory before the call, never retained. A browser without the
+    // Vibration API (Safari, Firefox desktop) has no `vibrate` at all, so
+    // calling it would throw a TypeError through the wasm frames — the
+    // guard is what makes those browsers the no-op this SDK promises
+    // (regression: `tests/web_vibrate.rs`). Its boolean
+    // result is dropped: `false` just means the device/browser won't
+    // vibrate, which is the best-effort no-op.
+    fn js_vibrate(ptr: usize, n: usize, arr: u32) =
+        "(p, n, arr) => { if (typeof window === 'undefined' || typeof navigator.vibrate !== 'function') return; \
+           const w = G.u32(); const b = (p >>> 0) >>> 2; \
+           navigator.vibrate(arr ? Array.from(w.subarray(b, b + (n >>> 0))) : w[b]); }";
 }
 
-/// `navigator.vibrate(ms)` — a single pulse. Ignored result: `false` just
-/// means the device/browser won't vibrate, which is the best-effort no-op.
+/// Whether a `Navigator` exists — `false` outside a window context (e.g. a
+/// worker), in which case every call is a no-op.
+fn has_navigator() -> bool {
+    unsafe { js_has_navigator() != 0 }
+}
+
+/// `navigator.vibrate(ms)` — a single pulse.
 fn vibrate_once(ms: u32) {
-    if let Some(nav) = navigator() {
-        let _ = nav.vibrate_with_duration(ms);
-    }
+    let one = [ms];
+    unsafe { js_vibrate(one.as_ptr() as usize, 1, 0) }
 }
 
 /// `navigator.vibrate([on, off, on, …])` — a multi-pulse pattern.
 fn vibrate_pattern(pattern: &[u32]) {
-    if let Some(nav) = navigator() {
-        // web-sys wants the pattern as a JS array of numbers.
-        let arr = js_pattern(pattern);
-        let _ = nav.vibrate_with_pattern(&arr);
-    }
-}
-
-/// Build the JS `Array` of ms values the pattern overload expects.
-fn js_pattern(pattern: &[u32]) -> wasm_bindgen::JsValue {
-    use wasm_bindgen::JsValue;
-    let arr = js_sys::Array::new();
-    for &ms in pattern {
-        arr.push(&JsValue::from_f64(ms as f64));
-    }
-    arr.into()
+    unsafe { js_vibrate(pattern.as_ptr() as usize, pattern.len(), 1) }
 }
 
 pub(crate) fn impact(style: ImpactStyle) {
@@ -95,5 +99,5 @@ pub(crate) fn is_supported() -> bool {
     // that buys little here — on a browser without the Vibration API the
     // `vibrate_*` calls return `false` and do nothing, so the effect functions
     // stay correct no-ops regardless of what this predicate says.
-    navigator().is_some()
+    has_navigator()
 }
