@@ -364,12 +364,13 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------
-// Web arm: the browser's EventSource.
+// Web arm: the browser's EventSource, through web-glue.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
     use crate::error::Error;
+    use crate::web_glue_events as js;
 
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -377,14 +378,12 @@ mod imp {
     use futures_channel::mpsc as fut_mpsc;
     use futures_channel::oneshot;
     use futures_util::StreamExt;
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::{JsCast, JsValue};
-    use web_sys::{EventSource as WebEventSource, MessageEvent};
+    use web_glue::{Closure, JsError, JsValue};
 
     type SenderCell = Rc<RefCell<Option<fut_mpsc::UnboundedSender<Result<String, Error>>>>>;
 
     pub struct EventSourceImpl {
-        es: WebEventSource,
+        es: JsValue,
         inbound: fut_mpsc::UnboundedReceiver<Result<String, Error>>,
         _handlers: Handlers,
     }
@@ -395,40 +394,40 @@ mod imp {
     ///
     /// It matters more here: an `EventSource` RECONNECTS by itself after
     /// an error, so a stream whose closures were dropped without
-    /// detaching keeps firing into dead shims on a browser-chosen
-    /// retry timer — `closure invoked recursively or after being
-    /// dropped`, once per retry, forever.
+    /// detaching keeps firing into revoked functions on a browser-chosen
+    /// retry timer — `called after its Rust owner dropped it`, once per
+    /// retry, forever.
     ///
     /// Regression: `tests/web_closure_lifetime.rs` (browser).
     struct Handlers {
-        es: WebEventSource,
-        _onmessage: Closure<dyn FnMut(MessageEvent)>,
-        _onerror: Closure<dyn FnMut(web_sys::Event)>,
+        es: JsValue,
+        _onmessage: Closure,
+        _onerror: Closure,
     }
 
     impl Drop for Handlers {
         fn drop(&mut self) {
-            self.es.set_onmessage(None);
-            self.es.set_onerror(None);
+            js::set_handler(&self.es, "onmessage", None);
+            js::set_handler(&self.es, "onerror", None);
             // `onopen` is dropped once the stream opens, so its slot can
             // be stale too.
-            self.es.set_onopen(None);
+            js::set_handler(&self.es, "onopen", None);
         }
     }
 
     #[derive(Clone)]
     pub struct CloserImpl {
-        es: WebEventSource,
+        es: JsValue,
     }
 
     impl CloserImpl {
         pub fn close(&self) {
-            self.es.close();
+            js::close(&self.es);
         }
     }
 
     pub async fn connect(url: &str) -> Result<EventSourceImpl, Error> {
-        let es = WebEventSource::new(url).map_err(js_err)?;
+        let es = js::event_source_new(url).map_err(js_err)?;
         let (in_tx, in_rx) = fut_mpsc::unbounded::<Result<String, Error>>();
         let sender: SenderCell = Rc::new(RefCell::new(Some(in_tx)));
         let (open_tx, open_rx) = oneshot::channel::<Result<(), Error>>();
@@ -437,43 +436,43 @@ mod imp {
         let onmessage = {
             let sender = sender.clone();
             let open_tx = open_tx.clone();
-            Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+            Closure::new(move |e: JsValue| {
                 // First message also confirms the connection is open.
                 if let Some(t) = open_tx.borrow_mut().take() {
                     let _ = t.send(Ok(()));
                 }
-                if let Some(data) = e.data().as_string() {
+                if let Some(data) = js::data_text(&e) {
                     if let Some(tx) = sender.borrow().as_ref() {
                         let _ = tx.unbounded_send(Ok(data));
                     }
                 }
             })
         };
-        es.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+        js::set_handler(&es, "onmessage", Some(&onmessage));
 
         let onopen = {
             let open_tx = open_tx.clone();
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            Closure::new(move |_| {
                 if let Some(t) = open_tx.borrow_mut().take() {
                     let _ = t.send(Ok(()));
                 }
             })
         };
-        es.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+        js::set_handler(&es, "onopen", Some(&onopen));
 
         // EventSource fires `error` both on transient reconnects and on
         // fatal failure; treat it as fatal here (close + end the stream).
         let onerror = {
             let sender = sender.clone();
             let open_tx = open_tx.clone();
-            Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            Closure::new(move |_| {
                 if let Some(t) = open_tx.borrow_mut().take() {
                     let _ = t.send(Err(Error::Network("event source error".into())));
                 }
                 *sender.borrow_mut() = None;
             })
         };
-        es.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+        js::set_handler(&es, "onerror", Some(&onerror));
 
         let handlers = Handlers {
             es: es.clone(),
@@ -484,14 +483,14 @@ mod imp {
         let result = open_rx
             .await
             .unwrap_or_else(|_| Err(Error::Network("event source open cancelled".into())));
-        es.set_onopen(None);
+        js::set_handler(&es, "onopen", None);
         drop(onopen);
         if let Err(e) = result {
             // The stream never opened, and an unclosed `EventSource`
             // retries on its own — detach before dropping the closures,
             // then close so there is no retry at all.
             drop(handlers);
-            es.close();
+            js::close(&es);
             return Err(e);
         }
 
@@ -507,7 +506,7 @@ mod imp {
             self.inbound.next().await
         }
         pub fn close(&self) {
-            self.es.close();
+            js::close(&self.es);
         }
         pub fn closer(&self) -> CloserImpl {
             CloserImpl { es: self.es.clone() }
@@ -519,12 +518,12 @@ mod imp {
     /// browser might deliver.
     impl Drop for EventSourceImpl {
         fn drop(&mut self) {
-            self.es.close();
+            js::close(&self.es);
         }
     }
 
-    fn js_err(e: JsValue) -> Error {
-        Error::Network(format!("{e:?}"))
+    fn js_err(e: JsError) -> Error {
+        Error::Network(e.message())
     }
 }
 

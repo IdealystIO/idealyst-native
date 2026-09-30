@@ -72,7 +72,7 @@ diverge in mechanism, not in what you observe.
 | macOS / Windows / Linux / terminal | `reqwest` (rustls) | `tungstenite` on an I/O thread (`ws://` + `wss://`) | `reqwest::blocking` on an I/O thread |
 | iOS / macOS / tvOS | `NSURLSession` (objc2) | `tungstenite` (shared native arm) | `NSURLSession` + `NSURLSessionDataDelegate` |
 | Android | `HttpURLConnection` (JNI) | `tungstenite`, `ws://` only | `HttpURLConnection.getInputStream()` (JNI) |
-| Web (wasm32) | `fetch` (gloo-net) | `web_sys::WebSocket` | the browser's `EventSource` |
+| Web (wasm32) | `fetch` (gloo-net) | the browser's `WebSocket` (web-glue bindings) | the browser's `EventSource` (web-glue bindings) |
 
 No async runtime is introduced anywhere (the framework's execution-model
 invariant): native arms drive a blocking I/O worker thread and bridge to
@@ -131,11 +131,12 @@ verification note above). Tick each item as you exercise it.
 **Automated**
 - [ ] `cargo test -p net` — body codecs, header map, builder, error mapping
 - [ ] `cargo test -p net --test native_transport` — live HTTP / WebSocket / SSE / cancellation integration suite (reqwest + tungstenite arms)
-- [ ] `cargo build -p net --target wasm32-unknown-unknown` — web (fetch / `web_sys::WebSocket` / browser `EventSource`)
+- [ ] `cargo build -p net --target wasm32-unknown-unknown` — web (fetch / browser `WebSocket` / browser `EventSource`)
+- [x] `cargo test -p net --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_closure_lifetime.rs`: a refused WebSocket / EventSource connect leaves no dead handler; `tests/web_socket_glue.rs`: text + binary frames both ways, close status, malformed URL → `Error::Network`, SSE messages and close-on-drop (stand-in socket / stream)
 - [x] `cargo test -p net --test websocket` — `close_status`: peer code + reason, normal 1000, 1006 on a dropped connection, 1005 after a local `close()`
 
 **Behavior**
-- [ ] **Web** — GET/POST to a live endpoint over `fetch`; WebSocket echo over `web_sys::WebSocket`; SSE stream over the browser's `EventSource`; cancel mid-flight aborts (`Error::Cancelled`)
+- [ ] **Web** — GET/POST to a live endpoint over `fetch`; WebSocket echo over the browser `WebSocket`; SSE stream over the browser's `EventSource`; cancel mid-flight aborts (`Error::Cancelled`)
 - [ ] **iOS** — same over `NSURLSession` (HTTP + SSE) and the shared `tungstenite` WebSocket arm
 - [ ] **Android** — GET/POST over `HttpURLConnection`; SSE over `getInputStream()`; WebSocket echo (`ws://` only — `wss://` is the documented future path); cancel mid-flight aborts
 - [ ] **macOS** — HTTP/SSE over `NSURLSession` or `reqwest`; WebSocket echo (`ws://` + `wss://`); cancel mid-flight aborts

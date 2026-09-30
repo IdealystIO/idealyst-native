@@ -126,6 +126,8 @@ use native as transport;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]
+mod web_glue_events;
+#[cfg(target_arch = "wasm32")]
 use web as transport;
 
 // NSURLSession transport for every Apple platform (the module's own doc covers

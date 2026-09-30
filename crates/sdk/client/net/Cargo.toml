@@ -64,26 +64,19 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
-# Web (wasm) target: fetch via gloo-net + AbortController for cancel.
-# WebSocket via web_sys::WebSocket (callback-driven, marshalled into
-# async through futures-channel — the browser event loop is the runtime).
+# Web (wasm) target: fetch via gloo-net + AbortController for cancel
+# (`src/web.rs` — phase 4 of the own-web-bindings plan replaces gloo-net, and
+# with it the web-sys / js-sys lines below, which only the HTTP arm uses).
+# WebSocket and EventSource run on web-glue bindings
+# (`src/web_glue_events.rs`); their callbacks are marshalled into async
+# through futures-channel — the browser event loop is the runtime.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-net = { version = "0.6", features = ["http"] }
 js-sys = "0.3"
-wasm-bindgen = "0.2"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-web-sys = { version = "0.3", features = [
-    "AbortController",
-    "AbortSignal",
-    "WebSocket",
-    "MessageEvent",
-    "BinaryType",
-    "CloseEvent",
-    "ErrorEvent",
-    "Event",
-    "EventSource",
-] }
+web-glue = { workspace = true }
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal"] }
 
 # iOS / macOS / tvOS target: NSURLSession via objc2 + block2.
 # `futures-channel` bridges the completion callback to async/await.
@@ -140,10 +133,7 @@ futures-util = "0.3"
 # Browser-side harness for the event-closure lifetime regressions
 # (`tests/web_closure_lifetime.rs`), which need a real JS WebSocket /
 # EventSource and the window `error` event. Runs via
-# `wasm-pack test --headless --chrome --package net`.
+# `cargo test -p net --target wasm32-unknown-unknown` (the workspace runner
+# supplies web-glue's JS; `wasm-pack test` cannot load it).
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["ErrorEvent", "EventTarget", "Window"] }

@@ -7,11 +7,11 @@
 //!
 //! | target                         | backend                              |
 //! |--------------------------------|--------------------------------------|
-//! | web (wasm32)                   | `web_sys::WebSocket`                 |
+//! | web (wasm32)                   | the browser `WebSocket` (web-glue)   |
 //! | iOS / macOS / desktop / terminal | sync `tungstenite` on an I/O thread (`ws://` + `wss://`) |
 //! | Android                        | sync `tungstenite`, `ws://` only (no bundled TLS — see `Cargo.toml`) |
 //!
-//! Two arms ship: web (`web_sys::WebSocket`) and a shared native arm used by
+//! Two arms ship: web (the browser `WebSocket`) and a shared native arm used by
 //! every non-wasm target. iOS/Android reuse the native arm because they're
 //! native Rust targets with TCP sockets; platform-native
 //! `URLSessionWebSocketTask` / OkHttp (for OS proxy / background
@@ -501,13 +501,15 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------
-// Web arm: web_sys::WebSocket (callback-driven, no Rust runtime).
+// Web arm: the browser's WebSocket through web-glue (callback-driven, no
+// Rust runtime).
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
     use super::{WsClose, WsMessage};
     use crate::error::Error;
+    use crate::web_glue_events as js;
 
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -515,16 +517,14 @@ mod imp {
     use futures_channel::mpsc as fut_mpsc;
     use futures_channel::oneshot;
     use futures_util::StreamExt;
-    use wasm_bindgen::closure::Closure;
-    use wasm_bindgen::{JsCast, JsValue};
-    use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket as WebSysWs};
+    use web_glue::{Closure, JsError, JsValue};
 
     /// Single inbound sender, shared by the event closures. `onclose`
     /// drops it (sets `None`) so the consumer's `recv()` yields `None`.
     type SenderCell = Rc<RefCell<Option<fut_mpsc::UnboundedSender<Result<WsMessage, Error>>>>>;
 
     pub struct WebSocketImpl {
-        ws: WebSysWs,
+        ws: JsValue,
         inbound: fut_mpsc::UnboundedReceiver<Result<WsMessage, Error>>,
         /// Written by `onclose` BEFORE it drops the inbound sender, so
         /// it is set by the time `recv` yields `None`.
@@ -537,15 +537,14 @@ mod imp {
     /// Owns the socket's event closures and clears the JS handler slots
     /// when they die.
     ///
-    /// Dropping a `Closure` invalidates the JS shim that forwards into
+    /// Dropping a `Closure` revokes the JS function that forwards into
     /// wasm, but it does not unregister anything: the slot on the JS
-    /// `WebSocket` still points at the dead shim. A socket that can
+    /// `WebSocket` still points at the dead function. A socket that can
     /// still emit — one whose handshake just failed, or one dropped
-    /// while open — then throws `closure invoked recursively or after
-    /// being dropped` into the event loop on its next `error`/`close`.
-    /// It does not trap the module, so nothing user-visible breaks; it
-    /// buries the console in exceptions on exactly the connections
-    /// someone is debugging.
+    /// while open — then throws `called after its Rust owner dropped it`
+    /// into the event loop on its next `error`/`close`. It does not trap
+    /// the module, so nothing user-visible breaks; it buries the console
+    /// in exceptions on exactly the connections someone is debugging.
     ///
     /// Tying the detach to the closures' own `Drop` makes the mistake
     /// unrepresentable rather than path-by-path: `connect`'s `?` early
@@ -554,26 +553,25 @@ mod imp {
     ///
     /// Regression: `tests/web_closure_lifetime.rs` (browser).
     struct Handlers {
-        ws: WebSysWs,
-        _onmessage: Closure<dyn FnMut(MessageEvent)>,
-        _onclose: Closure<dyn FnMut(CloseEvent)>,
-        _onerror: Closure<dyn FnMut(Event)>,
+        ws: JsValue,
+        _onmessage: Closure,
+        _onclose: Closure,
+        _onerror: Closure,
     }
 
     impl Drop for Handlers {
         fn drop(&mut self) {
-            self.ws.set_onmessage(None);
-            self.ws.set_onclose(None);
-            self.ws.set_onerror(None);
+            js::set_handler(&self.ws, "onmessage", None);
+            js::set_handler(&self.ws, "onclose", None);
+            js::set_handler(&self.ws, "onerror", None);
             // `onopen` is dropped as soon as the handshake resolves, so
             // its slot can be stale too.
-            self.ws.set_onopen(None);
+            js::set_handler(&self.ws, "onopen", None);
         }
     }
 
     pub async fn connect(url: &str) -> Result<WebSocketImpl, Error> {
-        let ws = WebSysWs::new(url).map_err(js_err)?;
-        ws.set_binary_type(BinaryType::Arraybuffer);
+        let ws = js::websocket_new(url).map_err(js_err)?;
 
         let (in_tx, in_rx) = fut_mpsc::unbounded::<Result<WsMessage, Error>>();
         let sender: SenderCell = Rc::new(RefCell::new(Some(in_tx)));
@@ -583,32 +581,29 @@ mod imp {
         // onmessage → decode + push into the inbound channel.
         let onmessage = {
             let sender = sender.clone();
-            Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
-                let data = e.data();
-                let msg = if let Some(txt) = data.as_string() {
+            Closure::new(move |e: JsValue| {
+                let msg = if let Some(txt) = js::data_text(&e) {
                     Some(WsMessage::Text(txt))
-                } else if let Ok(buf) = data.dyn_into::<js_sys::ArrayBuffer>() {
-                    Some(WsMessage::Binary(js_sys::Uint8Array::new(&buf).to_vec()))
                 } else {
-                    None
+                    js::data_bytes(&e).map(WsMessage::Binary)
                 };
                 if let (Some(m), Some(tx)) = (msg, sender.borrow().as_ref()) {
                     let _ = tx.unbounded_send(Ok(m));
                 }
             })
         };
-        ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+        js::set_handler(&ws, "onmessage", Some(&onmessage));
 
         // onopen → resolve `connect` once.
         let onopen = {
             let open_tx = open_tx.clone();
-            Closure::<dyn FnMut(Event)>::new(move |_| {
+            Closure::new(move |_| {
                 if let Some(t) = open_tx.borrow_mut().take() {
                     let _ = t.send(Ok(()));
                 }
             })
         };
-        ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+        js::set_handler(&ws, "onopen", Some(&onopen));
 
         // onclose → record how it ended, then drop the sender so
         // `recv()` ends with `None`. The browser already synthesizes
@@ -617,26 +612,27 @@ mod imp {
         let onclose = {
             let sender = sender.clone();
             let close_status = close_status.clone();
-            Closure::<dyn FnMut(CloseEvent)>::new(move |e: CloseEvent| {
+            Closure::new(move |e: JsValue| {
+                let (code, reason) = js::close_code_and_reason(&e);
                 close_status
                     .borrow_mut()
-                    .get_or_insert_with(|| WsClose::new(e.code(), e.reason()));
+                    .get_or_insert_with(|| WsClose::new(code, reason));
                 *sender.borrow_mut() = None;
             })
         };
-        ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+        js::set_handler(&ws, "onclose", Some(&onclose));
 
         // onerror → fail `connect` if still pending; otherwise it precedes
         // an onclose which ends the stream.
         let onerror = {
             let open_tx = open_tx.clone();
-            Closure::<dyn FnMut(Event)>::new(move |_| {
+            Closure::new(move |_| {
                 if let Some(t) = open_tx.borrow_mut().take() {
                     let _ = t.send(Err(Error::Network("websocket error".into())));
                 }
             })
         };
-        ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+        js::set_handler(&ws, "onerror", Some(&onerror));
 
         let handlers = Handlers {
             ws: ws.clone(),
@@ -649,15 +645,15 @@ mod imp {
         let result = open_rx
             .await
             .unwrap_or_else(|_| Err(Error::Network("websocket open cancelled".into())));
-        ws.set_onopen(None);
+        js::set_handler(&ws, "onopen", None);
         drop(onopen);
         if let Err(e) = result {
             // The handshake failed, but the JS socket is still live and
             // WILL deliver `close` after this `error`. Detach first, then
             // close, so that event finds an empty slot instead of the
-            // dead shims of the closures we are about to drop.
+            // revoked functions of the closures we are about to drop.
             drop(handlers);
-            let _ = ws.close();
+            js::close(&ws);
             return Err(e);
         }
 
@@ -677,7 +673,7 @@ mod imp {
             self.inbound.next().await
         }
         pub fn close(&self) {
-            let _ = self.ws.close();
+            js::close(&self.ws);
         }
         pub fn close_status(&self) -> Option<WsClose> {
             self.close_status.borrow().clone()
@@ -690,21 +686,19 @@ mod imp {
     }
 
     /// Close-on-drop, matching the type's documented contract and the
-    /// native arm's `Drop`. The web arm had none: a dropped socket
-    /// stayed open in the browser AND lost its handlers, which is the
-    /// dropped-closure throw again on the close that eventually came.
-    /// Closing here happens BEFORE `handlers` drops (fields drop after
-    /// the body), so the detach still lands ahead of the close event.
+    /// native arm's `Drop`. Closing here happens BEFORE `handlers` drops
+    /// (fields drop after the body), so the detach still lands ahead of
+    /// the close event.
     impl Drop for WebSocketImpl {
         fn drop(&mut self) {
-            let _ = self.ws.close();
+            js::close(&self.ws);
         }
     }
 
     /// Cloneable send handle — a clone of the JS `WebSocket` (a handle).
     #[derive(Clone)]
     pub struct WsSenderImpl {
-        ws: WebSysWs,
+        ws: JsValue,
     }
 
     impl WsSenderImpl {
@@ -712,19 +706,19 @@ mod imp {
             send_on(&self.ws, msg)
         }
         pub fn close(&self) {
-            let _ = self.ws.close();
+            js::close(&self.ws);
         }
     }
 
-    fn send_on(ws: &WebSysWs, msg: WsMessage) -> Result<(), Error> {
+    fn send_on(ws: &JsValue, msg: WsMessage) -> Result<(), Error> {
         match msg {
-            WsMessage::Text(s) => ws.send_with_str(&s).map_err(js_err),
-            WsMessage::Binary(b) => ws.send_with_u8_array(&b).map_err(js_err),
+            WsMessage::Text(s) => js::send_text(ws, &s).map_err(js_err),
+            WsMessage::Binary(b) => js::send_bytes(ws, &b).map_err(js_err),
         }
     }
 
-    fn js_err(e: JsValue) -> Error {
-        Error::Network(format!("{e:?}"))
+    fn js_err(e: JsError) -> Error {
+        Error::Network(e.message())
     }
 }
 

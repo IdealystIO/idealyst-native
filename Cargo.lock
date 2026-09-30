@@ -7912,9 +7912,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tungstenite 0.21.0",
- "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-glue",
  "web-sys",
 ]
 
