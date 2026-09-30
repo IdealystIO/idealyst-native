@@ -11,8 +11,10 @@
 //! rewriting. See `emit` for the output shapes.
 
 pub mod append;
+pub mod command_exports;
 pub mod data;
 pub mod emit;
+pub mod glue;
 pub mod graph;
 pub mod liveness;
 pub mod module;

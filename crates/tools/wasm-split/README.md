@@ -56,6 +56,25 @@ one whole-program parse per output being built.
 `wasm-carve/examples/carve.rs` runs the splitter on a real app's modules
 outside the build, for measuring.
 
+### Own-bindings passes (not part of splitting)
+
+Two more streaming passes live here because they are the same kind of
+byte-range rewrite, for [`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md)
+(phase 1; driven by `build_web::own_glue`, nothing in the normal build
+calls them yet):
+
+- `glue.rs` — pulls `web-glue`'s JS out of a linked module (snippets
+  carried in `./__idealyst_glue.js` import names, the runtime and crate
+  modules in the `__idealyst_glue` custom section), renames those imports
+  to `g0…`, strips the section. Re-encodes the import section only.
+- `command_exports.rs` — repoints every export except `main` past LLD's
+  command-export wrapper (`call __wasm_call_ctors; forward args; call
+  inner`), so JS → Rust calls stop re-running static constructors. Only
+  the export section changes.
+
+`wasm-carve/examples/glue_pass.rs` runs both over one module and prints
+their cost.
+
 ## Local changes from the upstream snapshot
 
 - **`wasm-split-macro`: the split export name is derived from
