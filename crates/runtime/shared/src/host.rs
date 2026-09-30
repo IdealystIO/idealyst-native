@@ -319,7 +319,8 @@ thread_local! {
 }
 
 /// Open `url` in the host platform's external handler — a new browser
-/// tab on web, Safari/Chrome via `UIApplication.open` on iOS, an
+/// tab on web (opened `noopener`: the page gets no `window.opener`
+/// handle back into the app), Safari/Chrome via `UIApplication.open` on iOS, an
 /// `ACTION_VIEW` intent on Android, the default browser via
 /// `NSWorkspace` on macOS.
 ///

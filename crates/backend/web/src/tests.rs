@@ -3644,3 +3644,40 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
         "deferred on_load must fire on the next microtask",
     );
 }
+
+// ---------------------------------------------------------------------------
+// open_url — the backend's external URL opener.
+// ---------------------------------------------------------------------------
+
+/// REGRESSION TEST: `open_url` opened a new tab with a live
+/// `window.opener` back into the app (`window.open(url, "_blank")` does
+/// NOT imply noopener the way an anchor's `target=_blank` does), so any
+/// page an app sent people to could navigate the app's own tab. Apps
+/// worked around it with raw `web_sys` calls; the opener now passes
+/// `noopener` itself.
+#[wasm_bindgen_test]
+fn open_url_opens_a_new_tab_without_an_opener() {
+    use wasm_bindgen::JsValue;
+    install_mount();
+    let backend = WebBackend::new("#app");
+    let window = web_sys::window().unwrap();
+
+    // Swap `window.open` for a recorder so no real tab opens.
+    let real_open = js_sys::Reflect::get(&window, &JsValue::from_str("open")).unwrap();
+    let recorder = js_sys::Function::new_with_args(
+        "url, target, features",
+        "window.__idealystOpenCall = [url, target, features]; return null;",
+    );
+    js_sys::Reflect::set(&window, &JsValue::from_str("open"), &recorder).unwrap();
+
+    let opener = backend.url_opener_impl().expect("web has an opener");
+    opener("https://example.com/docs");
+
+    let call = js_sys::Reflect::get(&window, &JsValue::from_str("__idealystOpenCall")).unwrap();
+    js_sys::Reflect::set(&window, &JsValue::from_str("open"), &real_open).unwrap();
+    let call: js_sys::Array = call.dyn_into().expect("window.open was called");
+    let arg = |i: u32| call.get(i).as_string().unwrap_or_default();
+    assert_eq!(arg(0), "https://example.com/docs");
+    assert_eq!(arg(1), "_blank", "open_url leaves the app for a NEW tab");
+    assert_eq!(arg(2), "noopener", "the opened page must not get window.opener");
+}

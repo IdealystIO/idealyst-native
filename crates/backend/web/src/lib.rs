@@ -2306,9 +2306,17 @@ impl WebBackend {
         // — `open_url` is for *leaving* to an external page, so a new
         // tab is the right default (in-app navigation goes through the
         // `Link` primitive, which stays single-page).
+        //
+        // `noopener` is not politeness. `window.open` (unlike an
+        // `<a target=_blank>`, which browsers now default to noopener)
+        // hands the opened page a live `window.opener` back into this
+        // app — an external page could navigate the app's own tab
+        // (reverse tabnabbing). The cost is only that `window.open`
+        // returns `null`, which a fire-and-forget opener never read.
+        // Regression: `open_url_opens_a_new_tab_without_an_opener`.
         Some(std::rc::Rc::new(|url: &str| {
             if let Some(win) = web_sys::window() {
-                let _ = win.open_with_url_and_target(url, "_blank");
+                let _ = win.open_with_url_and_target_and_features(url, "_blank", "noopener");
             }
         }))
     }
