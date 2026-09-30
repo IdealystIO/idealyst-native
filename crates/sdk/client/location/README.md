@@ -114,6 +114,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo test -p location` — portable logic (`Position` value, error `Display`, `watch` install+drop on the host stub)
 - [ ] `cargo build -p location --features catalog` — recipes/docs compile
 - [ ] `cargo build -p location --target wasm32-unknown-unknown` — web target
+- [x] `cargo test -p location --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_geolocation.rs`: `current()` decodes a fix (nullable fields, NaN heading) and passes the high-accuracy options; position errors map to `NotAuthorized` / `Unavailable`; no geolocation → `NotSupported`; `watch` delivers positions and its guard clears the watch
 
 **Behavior**
 - [ ] **Web** — `current()` prompts the browser; returns a plausible lat/long; the demo updates as `watchPosition` fires; deny → `NotAuthorized` with no crash.

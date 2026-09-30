@@ -47,20 +47,15 @@ permissions = { workspace = true }
 runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 
-# Web (wasm): navigator.geolocation via web-sys.
+# Web (wasm): navigator.geolocation through web-glue bindings (`src/web.rs`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Navigator",
-    "Geolocation",
-    "Position",
-    "Coordinates",
-    "PositionError",
-    "PositionOptions",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_geolocation.rs`) — run with
+# `cargo test -p location --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # iOS / macOS / tvOS: CLLocationManager + delegate via objc2.
 [target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
