@@ -87,6 +87,7 @@ Tick each item as you exercise it.
 **Automated**
 - [ ] `cargo test -p file-export` — portable request/outcome types
 - [ ] `cargo build -p file-export --target wasm32-unknown-unknown` — web target compiles
+- [x] `cargo test -p file-export --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_save.rs`: the picker path writes the Blob (stand-in picker); dismissal → `Cancelled`; a failed write → `Backend`; no picker → an `<a download>` of a `blob:` URL is clicked; a `Path` source → `Unsupported`
 
 **Behavior**
 

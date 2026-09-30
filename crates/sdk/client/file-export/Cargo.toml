@@ -44,21 +44,16 @@ ndk-context = "0.1"
 futures-channel = "0.3"
 
 # Web: showSaveFilePicker() (File System Access API) with an anchor-download
-# fallback for browsers without it (Safari/Firefox).
+# fallback for browsers without it (Safari/Firefox), through web-glue
+# bindings (`src/web.rs`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Window",
-    "Document",
-    "Blob",
-    "BlobPropertyBag",
-    "Url",
-    "HtmlAnchorElement",
-    "HtmlElement",
-    "Element",
-] }
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_save.rs`) — run with
+# `cargo test -p file-export --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 # Windows: the native Save dialog (IFileSaveDialog) via the COM Shell API.
 [target.'cfg(target_os = "windows")'.dependencies]

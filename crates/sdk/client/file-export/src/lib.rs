@@ -18,6 +18,9 @@
 //! match outcome {
 //!     SaveOutcome::Saved { location } => { /* user saved it (location may be known) */ }
 //!     SaveOutcome::Cancelled => { /* user dismissed the picker */ }
+//!     // `SaveOutcome` is `#[non_exhaustive]`: a downstream `match` needs a
+//!     // wildcard arm.
+//!     _ => {}
 //! }
 //! # let _ = SaveOutcome::Cancelled;
 //! # Ok(())
