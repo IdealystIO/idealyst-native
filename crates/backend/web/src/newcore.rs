@@ -2972,25 +2972,81 @@ mod tests {
         setup_mount();
     }
 
-    /// Force `window.innerWidth` to report `w` (headless Chrome won't
-    /// actually resize) so a synthetic `resize` event exercises the
-    /// viewport source end-to-end.
-    fn force_inner_width(w: f64) {
-        let win = web_glue::dom::window().unwrap();
-        let desc = web_glue::js::Object::new();
-        web_glue::js::Reflect::set(&desc, &"configurable".into(), &true.into()).unwrap();
-        web_glue::js::Reflect::set(
-            &desc,
-            &"get".into(),
-            &web_glue::js::Function::new_no_args(&format!("return {w};")),
-        )
-        .unwrap();
-        web_glue::js::Object::define_property(
-            win.unchecked_ref::<web_glue::js::Object>(),
-            &"innerWidth".into(),
-            &desc,
-        )
-        .expect("override window.innerWidth");
+    /// Overrides `window.innerWidth` (headless Chrome won't actually
+    /// resize) so a synthetic `resize` event exercises the viewport source
+    /// end-to-end, and puts the browser's own property back on drop.
+    ///
+    /// Restoring is not optional. Every test in this binary shares one
+    /// page, and a leaked override is a lie every later test inherits:
+    /// `primitives::portal`'s right-edge measure test parks its box at
+    /// `innerWidth - 60` and read 500 against a real 756px viewport, so the
+    /// box had 316px of room, never squeezed, and the test failed with
+    /// "got 260". It only failed in builds where this test ran first —
+    /// wasm-bindgen-test runs tests in reverse wasm export order, and that
+    /// order moves with codegen-unit partitioning, so the leak looked like
+    /// a flake. A panic mid-test aborts the wasm instance without running
+    /// `Drop`; that only matters to a test that has already failed.
+    struct InnerWidthOverride {
+        /// `Object.getOwnPropertyDescriptor(window, "innerWidth")` taken
+        /// before the first override: the accessor Chrome installs on the
+        /// window object itself, or `undefined` if the property lives on
+        /// the prototype chain (then restoring means deleting ours).
+        original: JsValue,
+    }
+
+    impl InnerWidthOverride {
+        fn new(w: f64) -> Self {
+            let win = web_glue::dom::window().unwrap();
+            let original = web_glue::js::Function::new_with_args(
+                "w",
+                "return Object.getOwnPropertyDescriptor(w, 'innerWidth');",
+            )
+            .call1(&JsValue::undefined(), win.as_ref())
+            .expect("read window.innerWidth descriptor");
+            let guard = Self { original };
+            guard.set(w);
+            guard
+        }
+
+        fn set(&self, w: f64) {
+            let win = web_glue::dom::window().unwrap();
+            let desc = web_glue::js::Object::new();
+            web_glue::js::Reflect::set(&desc, &"configurable".into(), &true.into()).unwrap();
+            web_glue::js::Reflect::set(
+                &desc,
+                &"get".into(),
+                &web_glue::js::Function::new_no_args(&format!("return {w};")),
+            )
+            .unwrap();
+            web_glue::js::Object::define_property(
+                win.unchecked_ref::<web_glue::js::Object>(),
+                &"innerWidth".into(),
+                &desc,
+            )
+            .expect("override window.innerWidth");
+        }
+    }
+
+    impl Drop for InnerWidthOverride {
+        fn drop(&mut self) {
+            let win = web_glue::dom::window().unwrap();
+            if self.original.is_undefined() {
+                web_glue::js::Reflect::delete_property(win.as_ref(), &"innerWidth".into())
+                    .expect("drop the window.innerWidth override");
+            } else {
+                web_glue::js::Object::define_property(
+                    win.unchecked_ref::<web_glue::js::Object>(),
+                    &"innerWidth".into(),
+                    self.original.unchecked_ref::<web_glue::js::Object>(),
+                )
+                .expect("restore window.innerWidth");
+            }
+        }
+    }
+
+    /// The real `window.innerWidth`, through the same getter the backend reads.
+    fn real_inner_width() -> f64 {
+        web_glue::dom::window().unwrap().inner_width().unwrap().as_f64().unwrap()
     }
 
     /// Regression (the idea-ui-docs "hamburger visible at desktop
@@ -3006,9 +3062,10 @@ mod tests {
         use runtime_vocabulary::glue;
 
         let mount = setup_mount();
+        let real_width = real_inner_width();
         // Pin a known starting bucket BEFORE boot: the boot seed reads
         // the (forced) window size.
-        force_inner_width(500.0); // Xs
+        let inner_width = InnerWidthOverride::new(500.0); // Xs
         start(move || {
             view()
                 .child(text().content(move || {
@@ -3025,7 +3082,7 @@ mod tests {
         );
 
         // Cross the Lg threshold and fire the resize source.
-        force_inner_width(1280.0); // Xl
+        inner_width.set(1280.0); // Xl
         let win = web_glue::dom::window().unwrap();
         win.dispatch_event(&web_glue::dom::Event::new("resize").unwrap())
             .unwrap();
@@ -3043,10 +3100,19 @@ mod tests {
 
         // `stop` removes the listener: further resizes are inert.
         stop();
-        force_inner_width(500.0);
+        inner_width.set(500.0);
         win.dispatch_event(&web_glue::dom::Event::new("resize").unwrap())
             .unwrap();
         microtask().await;
         setup_mount();
+
+        // Regression: the override leaked into every later test in the
+        // page (see `InnerWidthOverride`). The real width must be back.
+        drop(inner_width);
+        assert_eq!(
+            real_inner_width(),
+            real_width,
+            "window.innerWidth must report the real viewport once the test is done"
+        );
     }
 }
