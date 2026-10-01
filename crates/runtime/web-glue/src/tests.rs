@@ -374,3 +374,18 @@ fn regression_dropping_a_js_future_before_settle_makes_the_settle_silent() {
     // throw "called after drop" into the page.
     mock::settle(p.raw(), Ok(V::Num(1.0))).unwrap();
 }
+
+#[test]
+fn glue_realloc_grows_and_shrinks_a_buffer_string_can_adopt() {
+    // What `G.retStr` does for a non-ASCII tail: grow to the worst case,
+    // write, shrink to the written length; Rust adopts capacity == len.
+    let p = crate::string::__glue_alloc(2);
+    unsafe {
+        std::ptr::copy_nonoverlapping(b"ab".as_ptr(), p, 2);
+        let p = crate::string::__glue_realloc(p, 2, 2 + 3);
+        std::ptr::copy_nonoverlapping("é".as_ptr(), p.add(2), 2);
+        let p = crate::string::__glue_realloc(p, 5, 4);
+        let s = String::from_raw_parts(p, 4, 4);
+        assert_eq!(s, "abé");
+    }
+}

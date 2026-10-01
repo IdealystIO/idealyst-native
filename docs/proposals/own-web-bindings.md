@@ -184,11 +184,17 @@ version byte the pass checks.
   tests.
 - **Strings.** Rust → JS is a borrow: `(ptr, len)`, decoded with
   `TextDecoder` from a subarray view. JS → Rust uses a Rust-owned buffer:
-  JS encodes, calls the exported `__glue_alloc(len)`, copies, and writes
-  `[ptr, len]` into an out-slot; Rust adopts it as a `String`. That is one
-  crossing plus a re-entry, where length-then-copy needs two crossings and
-  a second encode or a JS-side stash (wasm-bindgen's `__wbindgen_malloc`
-  is the same shape). **Invariant:** the alloc may grow memory, which
+  JS calls the exported `__glue_alloc(s.length)`, writes ASCII straight
+  into it (`charCodeAt`), and — from the first non-ASCII unit — grows it to
+  the worst case with `__glue_realloc`, `encodeInto`s the rest in place and
+  shrinks it to the written length; then it writes `[ptr, len]` into an
+  out-slot and Rust adopts the buffer as a `String`. An ASCII string is
+  one crossing plus one re-entry and no temporary array (the first version
+  `TextEncoder.encode`d into a temporary and copied it in: ~8× slower per
+  short string, visible on the theme toggle). Length-then-copy would need
+  two crossings and a second encode or a JS-side stash (wasm-bindgen's
+  `__wbindgen_malloc` / `__wbindgen_realloc` is the same shape).
+  **Invariant:** the alloc and the realloc may grow memory, which
   detaches every JS view of the old buffer, so no view is ever held across
   a call into wasm; `G.u8()`/`G.u32()` re-create a detached view. The E2E
   forces growth inside the alloc and fails with `TypeError: Cannot perform
