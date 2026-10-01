@@ -9,9 +9,11 @@
 //! * [`hybrid_glue_js`] — **hybrid mode**, wasm-bindgen owns
 //!   `pkg/<lib>.js`: `pkg/__idealyst_glue.js`, the ES module
 //!   wasm-bindgen's output imports for the `./__idealyst_glue.js`
-//!   namespace. It also publishes `globalThis.__idealystGlue` — the
-//!   HYBRID-BRIDGE (`web_glue::bridge`) and the hot-patch loader's two
-//!   entry points (`compileImport`, `registerRecords`).
+//!   namespace.
+//!
+//! Both publish `globalThis.__idealystGlue` — the hot-patch loader's two
+//! entry points (`compileImport`, `registerRecords`) and, for a hybrid
+//! page, the HYBRID-BRIDGE (`web_glue::bridge`).
 //!
 //! Both shapes also carry the worker contract `web_glue::worker` relies
 //! on: the file reports its own URL to the runtime (`G.entry`) and exports
@@ -118,6 +120,7 @@ pub fn loader_js(glue: &Glue, lib_name: &str) -> String {
         let _ = writeln!(js, "import * as __foreign{i} from {};", json_string(m));
     }
     js.push_str(&prelude_js(glue));
+    js.push_str(&global_js(glue));
     js.push_str("const __glue = {\n");
     js.push_str(&snippet_entries(glue, "  ", ": ", ","));
     js.push_str("};\n");
@@ -140,7 +143,10 @@ function __finalize(instance) {{
   if (wasm !== undefined) return wasm;
   wasm = instance.exports;
   if (G !== null) G.attach(wasm);
-  // Reactor module: constructors run once, here, never per export call.
+  // Constructors run exactly once. A reactor exports `__wasm_call_ctors`
+  // and it runs here; a command module (how `idealyst build` links a bin)
+  // runs them inside `main`'s LLD wrapper, the one export the build leaves
+  // wrapped (`wasm_carve::command_exports`).
   if (typeof wasm.__wasm_call_ctors === "function") wasm.__wasm_call_ctors();
   if (typeof wasm.main === "function") wasm.main(0, 0);
   return wasm;
@@ -234,15 +240,24 @@ pub fn hybrid_glue_js(glue: &Glue, bindgen_js: &str) -> String {
     js.push_str("if (G !== null) G.lazyAttach(() => initSync(undefined));\n");
     let stem = bindgen_js.strip_suffix(".js").unwrap_or(bindgen_js);
     js.push_str(&HYBRID_WORKER_JS.replace("__WASM__", &json_string(&format!("{stem}_bg.wasm"))));
-    js.push_str("const __moduleHash = new Map([");
+    js.push_str(&global_js(glue));
+    js.push_str(&snippet_entries(glue, "export const ", " = ", ";"));
+    js
+}
+
+/// `globalThis.__idealystGlue` plus the record hashes it compares a hot
+/// patch's records against. Both shapes carry it: the hot-patch loader
+/// (`backend_web::hot_patch`) reaches the page's runtime only through it,
+/// in an own-mode dev session as much as in a hybrid one.
+fn global_js(glue: &Glue) -> String {
+    let mut js = String::from("const __moduleHash = new Map([");
     for m in &glue.modules {
         let _ = write!(js, "[{}, {}], ", json_string(&m.name), source_hash(&m.source));
     }
     js.push_str("]);\n");
     let runtime_hash = glue.runtime.as_deref().map(source_hash).unwrap_or(0);
     let _ = write!(js, "const __runtimeHash = {runtime_hash};\n");
-    js.push_str(HYBRID_GLOBAL_JS);
-    js.push_str(&snippet_entries(glue, "export const ", " = ", ";"));
+    js.push_str(GLOBAL_JS);
     js
 }
 
@@ -265,17 +280,17 @@ export function __glueWorkerInit(module) {
 }
 "#;
 
-/// `globalThis.__idealystGlue`. The record framing below is
+/// `globalThis.__idealystGlue` (see [`global_js`]). The record framing below is
 /// `web_glue::record`'s (magic `IGLU`, version 1, kind, name, source) —
 /// the same one [`crate::glue::parse_records`] reads.
-const HYBRID_GLOBAL_JS: &str = r#"function __fnv(s) {
+const GLOBAL_JS: &str = r#"function __fnv(s) {
   let h = 0x811c9dc5;
   for (const b of new TextEncoder().encode(s)) h = Math.imul(h ^ b, 0x01000193) >>> 0;
   return h >>> 0;
 }
 globalThis.__idealystGlue = {
   // HYBRID-BRIDGE (`web_glue::bridge`): a wasm-bindgen value into the glue
-  // slab, and a glue handle back out. Deleted with the bridge in phase 3.
+  // slab, and a glue handle back out. Only a hybrid page has a caller.
   add: (v) => G.add(v),
   get: (h) => G.get(h),
   // Hot patch: a patch module's glue import, compiled from the JS its
@@ -339,6 +354,7 @@ mod tests {
             modules: vec![GlueRecord { kind: KIND_MODULE, name: "m\"x".into(), source: "return 1;".into() }],
             foreign_import_modules: vec!["./__wasm_split.js".into()],
             section_bytes: 0,
+            wasm_bindgen: None,
         }
     }
 
@@ -353,6 +369,11 @@ mod tests {
         assert!(js.contains("G.module(\"m\\\"x\", function (G) {"));
         assert!(js.contains("g0: (\n(x) => x\n),"));
         assert!(js.contains("g1: G.catching(("));
+        // The hot-patch loader's entry points, in an own-mode page too.
+        assert!(js.contains("globalThis.__idealystGlue = {"));
+        assert!(js.contains("compileImport(name)") && js.contains("registerRecords(bytes)"));
+        assert!(js.contains(&format!("[\"m\\\"x\", {}]", source_hash("return 1;"))));
+        assert!(js.find("const G = ").unwrap() < js.find("globalThis.__idealystGlue").unwrap());
         let attach = js.find("G.attach(wasm)").unwrap();
         let ctors = js.find("wasm.__wasm_call_ctors()").unwrap();
         let main = js.find("wasm.main(0, 0)").unwrap();
@@ -416,7 +437,7 @@ mod tests {
             assert!(st.status.success(), "{name}: {}", String::from_utf8_lossy(&st.stderr));
         }
         let src = "é ✓ 🦀 return 1;";
-        let fnv = HYBRID_GLOBAL_JS.split("globalThis.__idealystGlue").next().unwrap();
+        let fnv = GLOBAL_JS.split("globalThis.__idealystGlue").next().unwrap();
         let probe = format!("{fnv}\nprocess.stdout.write(String(__fnv({})));", json_string(src));
         let out = std::process::Command::new("node").args(["-e", &probe]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), source_hash(src).to_string());

@@ -84,6 +84,58 @@ pub struct Glue {
     pub foreign_import_modules: Vec<String>,
     /// Bytes of glue section content that were stripped.
     pub section_bytes: usize,
+    /// Why this module needs wasm-bindgen's CLI, or `None` when it carries
+    /// no wasm-bindgen metadata at all — see [`WasmBindgenUse`]. The build
+    /// packages a `None` module in OWN mode (this pass alone writes the
+    /// page's JS) and a `Some` module in HYBRID mode (wasm-bindgen runs over
+    /// the stripped module and this pass supplies `__idealyst_glue.js`).
+    pub wasm_bindgen: Option<WasmBindgenUse>,
+}
+
+/// The custom section `#[wasm_bindgen]` writes its program description
+/// into (wasm-bindgen's `__wasm_bindgen_unstable`): one record per
+/// exported fn / class / import block the macro expanded.
+pub const WASM_BINDGEN_SECTION: &str = "__wasm_bindgen_unstable";
+
+/// Evidence that a linked module uses wasm-bindgen, as [`extract`] saw it.
+///
+/// Either signal alone decides HYBRID mode, because each one alone breaks
+/// a module packaged without wasm-bindgen:
+///
+/// * **an import from a `__wbindgen*` module** (`__wbindgen_placeholder__`,
+///   `__wbindgen_externref_xform__`) — the module cannot instantiate
+///   without wasm-bindgen's generated JS: those namespaces exist only for
+///   its CLI to resolve, and nothing else supplies them;
+/// * **the [`WASM_BINDGEN_SECTION`] custom section** — a `#[wasm_bindgen]`
+///   item survived the link. An exported fn takes no import, so the import
+///   test alone misses it, and its JS wrapper (string / object marshalling,
+///   `#[wasm_bindgen(start)]`) only exists if wasm-bindgen generates it.
+///
+/// Having wasm-bindgen in the CRATE GRAPH is not evidence: LLD loads an
+/// rlib member only when a symbol in it is referenced, so a dependency
+/// that names wasm-bindgen without calling it links neither signal, and
+/// such a module is correctly own-mode.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WasmBindgenUse {
+    /// Imports from `__wbindgen*` modules.
+    pub imports: usize,
+    /// Whether the [`WASM_BINDGEN_SECTION`] custom section is present.
+    pub section: bool,
+}
+
+impl std::fmt::Display for WasmBindgenUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.imports, self.section) {
+            (0, true) => write!(f, "a `{WASM_BINDGEN_SECTION}` section"),
+            (n, false) => write!(f, "{n} `__wbindgen*` import(s)"),
+            (n, true) => write!(f, "{n} `__wbindgen*` import(s) and a `{WASM_BINDGEN_SECTION}` section"),
+        }
+    }
+}
+
+/// Whether an import module is one only wasm-bindgen's CLI resolves.
+pub fn is_wasm_bindgen_import_module(module: &str) -> bool {
+    module.starts_with("__wbindgen")
 }
 
 /// Parse `<key>\n<flags>\n<js>`.
@@ -140,6 +192,7 @@ pub fn extract(wasm: &[u8]) -> Result<Glue> {
     let mut records = Vec::new();
     let mut foreign = Vec::<String>::new();
     let mut section_bytes = 0usize;
+    let mut bindgen = WasmBindgenUse::default();
 
     for payload in Parser::new(0).parse_all(wasm) {
         let payload = payload.context("parse wasm")?;
@@ -157,6 +210,9 @@ pub fn extract(wasm: &[u8]) -> Result<Glue> {
                         section.import(IMPORT_MODULE, &short, ty);
                         imports.push(GlueImport { short, key, catch, js });
                     } else {
+                        if is_wasm_bindgen_import_module(import.module) {
+                            bindgen.imports += 1;
+                        }
                         if import.module != "env" && !foreign.iter().any(|m| m == import.module) {
                             foreign.push(import.module.to_string());
                         }
@@ -170,6 +226,11 @@ pub fn extract(wasm: &[u8]) -> Result<Glue> {
                 records.extend(parse_records(c.data())?);
             }
             other => {
+                if let Payload::CustomSection(c) = other
+                    && c.name() == WASM_BINDGEN_SECTION
+                {
+                    bindgen.section = true;
+                }
                 if let Some((id, range)) = other.as_section() {
                     module.section(&RawSection { id, data: &wasm[range] });
                 }
@@ -215,6 +276,7 @@ pub fn extract(wasm: &[u8]) -> Result<Glue> {
             .collect(),
         foreign_import_modules: foreign,
         section_bytes,
+        wasm_bindgen: (bindgen.imports > 0 || bindgen.section).then_some(bindgen),
     })
 }
 
@@ -341,6 +403,51 @@ mod tests {
     fn an_import_not_declared_with_the_macro_is_named_in_the_error() {
         assert!(parse_import_name("bare").unwrap_err().to_string().contains("\"bare\""));
         assert!(parse_import_name("k\nwat\nx").unwrap_err().to_string().contains("unknown flag"));
+    }
+
+    /// The build's own-vs-hybrid decision. A web-glue-only module carries
+    /// neither signal; each signal alone makes it hybrid.
+    #[test]
+    fn wasm_bindgen_use_is_detected_from_either_signal_alone() {
+        assert_eq!(extract(&fixture()).unwrap().wasm_bindgen, None, "glue + split loader only: own mode");
+
+        let ty = || EntityType::Function(0);
+        let module = |import: Option<&str>, section: bool| {
+            let mut m = Module::new();
+            let mut types = TypeSection::new();
+            types.ty().function([ValType::I32], [ValType::I32]);
+            m.section(&types);
+            let mut imports = ImportSection::new();
+            imports.import(IMPORT_MODULE, "demo::a(u32) -> u32\n\n(x) => x", ty());
+            if let Some(module) = import {
+                imports.import(module, "__wbindgen_describe", ty());
+            }
+            m.section(&imports);
+            m.section(&CustomSection { name: SECTION.into(), data: record(KIND_RUNTIME, "runtime", "r").into() });
+            if section {
+                m.section(&CustomSection { name: WASM_BINDGEN_SECTION.into(), data: b"x".as_slice().into() });
+            }
+            m.finish()
+        };
+        let placeholder = extract(&module(Some("__wbindgen_placeholder__"), false)).unwrap();
+        assert_eq!(placeholder.wasm_bindgen, Some(WasmBindgenUse { imports: 1, section: false }));
+        let xform = extract(&module(Some("__wbindgen_externref_xform__"), false)).unwrap();
+        assert_eq!(xform.wasm_bindgen, Some(WasmBindgenUse { imports: 1, section: false }));
+        // An exported `#[wasm_bindgen]` fn imports nothing; its section alone
+        // must still select hybrid.
+        let export_only = extract(&module(None, true)).unwrap();
+        assert_eq!(export_only.wasm_bindgen, Some(WasmBindgenUse { imports: 0, section: true }));
+        // The section is wasm-bindgen's to read: it survives extraction.
+        let customs: Vec<String> = Parser::new(0)
+            .parse_all(&export_only.wasm)
+            .filter_map(|p| match p.unwrap() {
+                Payload::CustomSection(c) => Some(c.name().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(customs, [WASM_BINDGEN_SECTION]);
+        // A module that merely imports something else is still own mode.
+        assert_eq!(extract(&module(Some("./__wasm_split.js"), false)).unwrap().wasm_bindgen, None);
     }
 
     #[test]
