@@ -31,4 +31,6 @@ pub use decide::{
     advance_archive, decide, load_archive, load_archive_from, wire_payload, ChangedFile,
     Decision, Reason, SitePatch,
 };
-pub use workspace::{HotPatchPlan, Route, SavedFile, Workspace, WorkspaceCrate, WorkspaceDecision};
+pub use workspace::{
+    HotPatchPlan, Route, SavedFile, ScanMemo, Workspace, WorkspaceCrate, WorkspaceDecision,
+};

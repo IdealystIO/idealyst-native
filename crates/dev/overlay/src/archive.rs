@@ -195,20 +195,34 @@ impl DescriptorSet {
     /// rescan — so a patch built from the save can be keyed by the
     /// sources it compiled.
     pub fn build_key_with(&self, changed: &BTreeMap<String, String>) -> String {
-        let mut h = Sha256::new();
-        h.update(self.split_version.to_le_bytes());
-        for (path, digest) in &self.files {
-            let content = match changed.get(path) {
-                Some(text) => self::digest(text.as_bytes()),
-                None => digest.content.clone(),
-            };
-            h.update(path.as_bytes());
-            h.update([0u8]);
-            h.update(content.as_bytes());
-            h.update([0u8]);
-        }
-        hex(&h.finalize())
+        key_of(
+            self.split_version,
+            self.files.iter().map(|(path, digest)| {
+                let content = match changed.get(path) {
+                    Some(text) => self::digest(text.as_bytes()),
+                    None => digest.content.clone(),
+                };
+                (path.as_str(), content)
+            }),
+        )
     }
+}
+
+/// The build key over `(path, content digest)` pairs, in path order.
+/// One function for [`DescriptorSet::build_key`] and
+/// [`CrateSources::build_key`]: the two must agree byte for byte, or a
+/// scan the dev loop could have reused is redone (or worse, one it must
+/// redo is reused).
+fn key_of<'a>(split_version: u32, files: impl Iterator<Item = (&'a str, String)>) -> String {
+    let mut h = Sha256::new();
+    h.update(split_version.to_le_bytes());
+    for (path, content) in files {
+        h.update(path.as_bytes());
+        h.update([0u8]);
+        h.update(content.as_bytes());
+        h.update([0u8]);
+    }
+    hex(&h.finalize())
 }
 
 /// Scan one crate directory into a [`DescriptorSet`].
@@ -229,6 +243,25 @@ pub struct CrateSources {
     /// `(package-relative path, text)`, sorted by path. A file that could
     /// not be read is left out, as the scan always did.
     pub files: Vec<(String, String)>,
+}
+
+impl CrateSources {
+    /// The [`DescriptorSet::build_key`] a scan of these sources would
+    /// have — without scanning them, which is the slow half.
+    ///
+    /// A scan is a pure function of the sources (the package, each file's
+    /// path and text) and the scanner, so a set already scanned from
+    /// sources with this key IS the set a scan would produce now. That is
+    /// what lets the dev loop skip re-scanning the crates a rebuild did
+    /// not touch ([`crate::ScanMemo`]).
+    pub fn build_key(&self) -> String {
+        // Path order, as the set's `files` map holds them: `files` is
+        // sorted by `PathBuf`, which orders `a/b` and `a-b` differently
+        // from the string the set is keyed by.
+        let files: BTreeMap<&str, &str> =
+            self.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        key_of(SPLIT_VERSION, files.into_iter().map(|(p, t)| (p, digest(t.as_bytes()))))
+    }
 }
 
 /// Read `dir`'s sources (see [`CrateSources`]).
@@ -440,7 +473,7 @@ pub fn write_scanned_cancellable(
     Ok(Some(set))
 }
 
-fn write_set(dir: &Path, set: &DescriptorSet) -> Result<PathBuf> {
+pub(crate) fn write_set(dir: &Path, set: &DescriptorSet) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(format!("{}.json", set.build_key()));
     let json = serde_json::to_string(set)?;
@@ -658,6 +691,27 @@ fn Login(count: i32) -> Element {
         let text = std::fs::read_to_string(&login).unwrap().replace("Sign in", "Sign in.");
         std::fs::write(&login, text).unwrap();
         assert_ne!(first, scan_crate(dir.path()).expect("scan").build_key());
+    }
+
+    /// The key of sources read but not scanned is the key their scan
+    /// gets — the dev loop reuses a scan on that equality, so a mismatch
+    /// would rescan every crate on every rebuild (or, the other way, reuse
+    /// a set for sources it does not describe). Covers an unparseable file
+    /// (still hashed) and paths whose `PathBuf` order differs from their
+    /// string order (`a/b.rs` vs `a-b.rs`).
+    #[test]
+    fn read_sources_key_like_their_scan() {
+        let dir = fixture_crate();
+        std::fs::write(dir.path().join("src/broken.rs"), "fn oops( {").unwrap();
+        std::fs::create_dir_all(dir.path().join("src/a")).unwrap();
+        std::fs::write(dir.path().join("src/a/b.rs"), "pub fn b() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/a-b.rs"), "pub fn ab() {}\n").unwrap();
+        let read = read_crate(dir.path()).unwrap();
+        assert_eq!(read.build_key(), scan_sources(&read).build_key());
+        std::fs::write(dir.path().join("src/a-b.rs"), "pub fn ab() { }\n").unwrap();
+        let moved = read_crate(dir.path()).unwrap();
+        assert_ne!(read.build_key(), moved.build_key());
+        assert_eq!(moved.build_key(), scan_sources(&moved).build_key());
     }
 
     /// One unparseable file costs its own descriptors and nothing else.

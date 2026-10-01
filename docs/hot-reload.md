@@ -883,6 +883,30 @@ patched since the last rebuild is re-emitted by each later patch, even
 when the save touched only the app — otherwise an app-only save would
 silently undo the earlier library edit.
 
+**A rebuild re-describes the workspace without holding the reload.** A
+rebuild compiles every crate the save touched, so afterwards each
+crate's archive must describe the sources it compiled, not the last
+patch. The sources are read the moment the build starts and scanned on
+a thread beside it. A crate whose sources are byte-identical to the ones
+an earlier scan in this session saw takes that scan's set instead of
+being scanned again (`dev_overlay::ScanMemo`, keyed by
+`CrateSources::build_key`), so after the session's first scan a rebuild
+rescans only the crates whose sources moved. The memo holds scans only,
+never a live archive: an overlay patch moves an archive's digests to the
+new sources but keeps the old build's site keys, which is not what a
+scan of those sources says.
+
+The page's reload does not wait for that scan. Only the next save's
+decision needs it, and the loop takes no save until the scan is
+installed. A scan still running when the reload goes out is reported as
+an `archive-scan` stage of `web` (`stage_started` / `stage_finished`,
+whose `ms` is the time spent waiting for it). Before this, every rebuild
+rescanned all 32 of CrewForge's crates (13–15 s) and waited for the scan
+before reloading, with no event in between: the page reloaded 13 s
+after a save whose build was done in 6 s. Measured on the same machine,
+the reload now follows the build's `timing` line by 0.2–0.3 s, where it
+trailed it by 4.6–5.6 s.
+
 That is not a full recompile of the dependents' graph, for three
 reasons:
 
@@ -1404,7 +1428,7 @@ The event types, by what they say:
 | `decided` | the tier: `overlay`, `hot_patch`, `rebuild` (with the reason), `unchanged` |
 | `overlay_pushed` / `patch_built` / `patch_failed` | a patch was sent (with timings, functions redirected, bytes), or could not be built |
 | `superseded` | a newer save arrived while a save's `overlay`, `hot_patch` or `rebuild` was in flight. That work is abandoned and never reaches a page, and a new `change_detected` follows with every file changed since. It ends the episode, so a superseded rebuild has no `build_finished` |
-| `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome |
+| `build_started` / `stage_started` / `stage_finished` / `build_timed` / `build_finished` | a build: cause, each stage (`cargo`, `hotpatch-base-prep`, `wasm-bindgen`, `wasm-split`, `stage+fingerprint`, …), the summary, the outcome. After a rebuild's `build_finished`, an `archive-scan` stage of `web` covers any wait for the rebuild's archive scan, which the next save's decision needs (see [Workspace crates](#workspace-crates)) |
 | `cargo_progress` | packages compiled so far, of the build's total; the crate in flight |
 | `diagnostic` | a rustc diagnostic: level, message, code, primary `file:line:column`, rendered text |
 | `page_ack` | the page (or, in runtime-server mode, the sidecar) applied something: `connected`, `reloading`, `overlay` (updated / waiting), `hot_patch` (redirected / carried), `failed` |

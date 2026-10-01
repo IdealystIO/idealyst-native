@@ -75,6 +75,47 @@ pub struct WorkspaceCrate {
     pub archive: Option<DescriptorSet>,
 }
 
+/// The descriptor sets this process SCANNED, newest per package — for
+/// [`Workspace::scan_read_reusing`] to hand back instead of scanning the
+/// same sources again.
+///
+/// Only scans go in, never a workspace's archives: an archive an overlay
+/// patch advanced ([`Workspace::advance`]) has the NEW sources' digests
+/// but the OLD build's site keys, so it is not what a scan of those
+/// sources produces, and a rebuild that took it would address the next
+/// patch at keys the new binary no longer carries.
+#[derive(Debug, Default)]
+pub struct ScanMemo {
+    sets: std::sync::Mutex<BTreeMap<String, DescriptorSet>>,
+}
+
+impl ScanMemo {
+    /// The memoized set for these sources, if one was scanned from
+    /// byte-identical ones (same package, same file paths and contents —
+    /// [`crate::archive::CrateSources::build_key`]). Written under `dir`
+    /// again when its document is gone, so the archive directory holds
+    /// it exactly as a scan would have left it.
+    fn reuse(&self, dir: &Path, sources: &crate::archive::CrateSources) -> Option<DescriptorSet> {
+        let key = sources.build_key();
+        let set = {
+            let sets = self.sets.lock().unwrap();
+            let set = sets.get(&sources.package)?;
+            if set.build_key() != key {
+                return None;
+            }
+            set.clone()
+        };
+        if !dir.join(format!("{key}.json")).is_file() {
+            crate::archive::write_set(dir, &set).ok()?;
+        }
+        Some(set)
+    }
+
+    fn record(&self, set: &DescriptorSet) {
+        self.sets.lock().unwrap().insert(set.package.clone(), set.clone());
+    }
+}
+
 /// The app's workspace, as the dev loop decides saves against it.
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -639,21 +680,43 @@ impl Workspace {
         read: Vec<(String, Option<crate::archive::CrateSources>)>,
         cancel: &(dyn Fn() -> bool + Sync),
     ) -> Option<Vec<(String, Option<DescriptorSet>)>> {
+        Self::scan_read_reusing(project_root, tip, read, cancel, &ScanMemo::default())
+    }
+
+    /// [`Self::scan_read_cancellable`], taking a crate's set from `memo`
+    /// instead of scanning it when its sources are byte-identical to the
+    /// ones that set was scanned from — and recording every set it does
+    /// scan there, for the next call.
+    ///
+    /// For the rescan after a rebuild, which covers EVERY crate of the
+    /// workspace although a save typically moved one: 13–15 s on
+    /// CrewForge's 32 crates, which held its page's reload that long.
+    pub fn scan_read_reusing(
+        project_root: &Path,
+        tip: &str,
+        read: Vec<(String, Option<crate::archive::CrateSources>)>,
+        cancel: &(dyn Fn() -> bool + Sync),
+        memo: &ScanMemo,
+    ) -> Option<Vec<(String, Option<DescriptorSet>)>> {
         let mut out = Vec::with_capacity(read.len());
         for (package, sources) in read {
             let dir = crate::archive::crate_overlay_dir(project_root, tip, &package);
             let set = match sources {
                 None => None,
-                Some(sources) => {
-                    match crate::archive::write_scanned_cancellable(&dir, &sources, cancel) {
-                        Ok(Some(set)) => Some(set),
+                Some(sources) => match memo.reuse(&dir, &sources) {
+                    Some(set) => Some(set),
+                    None => match crate::archive::write_scanned_cancellable(&dir, &sources, cancel) {
+                        Ok(Some(set)) => {
+                            memo.record(&set);
+                            Some(set)
+                        }
                         Ok(None) => return None,
                         Err(e) => {
                             eprintln!("[dev-reload] no descriptor set for {package}: {e}");
                             None
                         }
-                    }
-                }
+                    },
+                },
             };
             out.push((package, set));
         }

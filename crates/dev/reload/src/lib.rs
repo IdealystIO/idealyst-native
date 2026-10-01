@@ -849,9 +849,13 @@ fn cargo_metadata(manifest_path: &Path) -> Result<serde_json::Value> {
 /// Falls back to the app crate alone when `cargo metadata` cannot be
 /// read — exactly the single-crate behavior, where a save in any other
 /// crate rebuilds.
-fn load_workspace(dir: &Path) -> dev_overlay::Workspace {
+fn load_workspace(dir: &Path, memo: &dev_overlay::ScanMemo) -> dev_overlay::Workspace {
     let mut ws = unscanned_workspace(dir);
-    ws.rescan_all(dir);
+    let all: Vec<String> = ws.crates.keys().cloned().collect();
+    let read = ws.read_sources(all.iter().map(String::as_str));
+    let scanned = dev_overlay::Workspace::scan_read_reusing(dir, &ws.tip, read, &|| false, memo)
+        .expect("a scan that is never cancelled finishes");
+    ws.install(scanned);
     ws
 }
 
@@ -1184,7 +1188,10 @@ fn watch_loop(
     // Kept across saves and advanced after each decided patch, so the
     // NEXT save diffs against what is actually running rather than
     // against the source the last compiler saw.
-    let mut ws = load_workspace(&dir);
+    // Every scan this loop makes, so the rescan after a rebuild redoes
+    // only the crates whose sources moved (see `RebuildScan`).
+    let memo = Arc::new(dev_overlay::ScanMemo::default());
+    let mut ws = load_workspace(&dir, &memo);
     base.warm(tip_seed(&ws));
     if ws.crates.len() > 1 {
         let libs: Vec<&str> =
@@ -1313,61 +1320,71 @@ fn watch_loop(
             // next page load; a SIGKILLed cargo also orphans the rustc
             // processes under it. So it runs to the end and, if a newer
             // save arrived meanwhile, pages are simply not reloaded onto it.
-            let built = rebuild_with_snapshot(&mut ws, &dir, || build_wasm(&dir, &opts));
             let premint_any = opts.premint || opts.premint_only || opts.premint_report;
-            if is_superseded() {
-                // On disk now, whatever pages run: the base and `ws` (which
-                // `rebuild_with_snapshot` already advanced) describe it, and
-                // the restart must reload onto its own rebuild.
-                if let Ok(a) = built {
-                    reload_owed |= a.wasm_changed || premint_any;
-                    base.rebuilt(a);
-                }
-                return superseded(dev_events::SupersededWork::Rebuild);
-            }
-            let finished = |outcome| {
-                reporter.emit(dev_events::DevEvent::BuildFinished {
-                    target: TARGET.into(),
-                    outcome,
-                    ms: started.elapsed().as_millis() as u64,
-                })
-            };
-            let failed = match built.map(|a| {
-                let changed = a.wasm_changed;
-                base.rebuilt(a);
-                changed
-            }) {
-                // Reported before the generation moves: see `bump_after`.
-                // A reload owed by a superseded rebuild counts as a change:
-                // its bundle moved even if this build's did not.
-                Ok(changed) if changed || reload_owed => {
-                    signal.bump_after(|gen| finished(dev_events::BuildOutcome::Reloaded { gen }));
-                    false
-                }
-                // Cargo produced nothing new and the packaging passes were
-                // skipped, so the served bundle is the one the browser
-                // already has. A premint session is the exception: its
-                // `pkg/premint.css` is regenerated from a native dump on
-                // every rebuild and can move without the wasm moving.
-                Ok(_) if !premint_any => {
-                    finished(dev_events::BuildOutcome::Unchanged);
-                    false
-                }
-                Ok(_) => {
-                    signal.bump_after(|gen| {
-                        finished(dev_events::BuildOutcome::PremintRefreshed { gen })
-                    });
-                    false
-                }
-                Err(e) => {
-                    finished(dev_events::BuildOutcome::Failed { error: e.to_string() });
-                    // The newest good bundle is the superseded rebuild's,
-                    // and `ws` already describes it: reload pages onto it.
-                    if reload_owed {
-                        signal.bump();
+            // The archive scan runs beside the build and is joined only
+            // AFTER `then` has published the reload: the page must not
+            // wait on it. See `rebuild_with_snapshot`.
+            let scan = RebuildScan::start(&ws, &dir, &memo);
+            // `None`: superseded. `Some(failed)` otherwise.
+            let outcome = rebuild_with_snapshot(&mut ws, scan, &reporter, || build_wasm(&dir, &opts), |built| {
+                if is_superseded() {
+                    // On disk now, whatever pages run: the base and `ws`
+                    // (which `rebuild_with_snapshot` advances once this
+                    // returns) describe it, and the restart must reload
+                    // onto its own rebuild.
+                    if let Ok(a) = built {
+                        reload_owed |= a.wasm_changed || premint_any;
+                        base.rebuilt(a);
                     }
-                    true
+                    return None;
                 }
+                let finished = |outcome| {
+                    reporter.emit(dev_events::DevEvent::BuildFinished {
+                        target: TARGET.into(),
+                        outcome,
+                        ms: started.elapsed().as_millis() as u64,
+                    })
+                };
+                Some(match built.map(|a| {
+                    let changed = a.wasm_changed;
+                    base.rebuilt(a);
+                    changed
+                }) {
+                    // Reported before the generation moves: see `bump_after`.
+                    // A reload owed by a superseded rebuild counts as a change:
+                    // its bundle moved even if this build's did not.
+                    Ok(changed) if changed || reload_owed => {
+                        signal.bump_after(|gen| finished(dev_events::BuildOutcome::Reloaded { gen }));
+                        false
+                    }
+                    // Cargo produced nothing new and the packaging passes were
+                    // skipped, so the served bundle is the one the browser
+                    // already has. A premint session is the exception: its
+                    // `pkg/premint.css` is regenerated from a native dump on
+                    // every rebuild and can move without the wasm moving.
+                    Ok(_) if !premint_any => {
+                        finished(dev_events::BuildOutcome::Unchanged);
+                        false
+                    }
+                    Ok(_) => {
+                        signal.bump_after(|gen| {
+                            finished(dev_events::BuildOutcome::PremintRefreshed { gen })
+                        });
+                        false
+                    }
+                    Err(e) => {
+                        finished(dev_events::BuildOutcome::Failed { error: e.to_string() });
+                        // The newest good bundle is the superseded rebuild's,
+                        // and `ws` already describes it: reload pages onto it.
+                        if reload_owed {
+                            signal.bump();
+                        }
+                        true
+                    }
+                })
+            });
+            let Some(failed) = outcome else {
+                return superseded(dev_events::SupersededWork::Rebuild);
             };
             if !failed || reload_owed {
                 // After the reload is signalled: the page reloads while the
@@ -1624,41 +1641,109 @@ fn handle_save(
 /// re-read from `cargo metadata` (the save may have moved the workspace
 /// itself), which also forgets every crate an earlier patch carried, and
 /// scanned from the sources as read just before the build started — for
-/// the reason [`handle_save`] gives.
+/// the reason [`handle_save`] gives. `scan` is that read and scan,
+/// already running ([`RebuildScan::start`]).
+///
+/// `then` gets the build's result BEFORE the scan is waited for: it is
+/// where the caller publishes the reload, and the page must not wait on
+/// the scan. It used to: the rebuild joined the scan first, and on
+/// CrewForge (32 crates, every one rescanned) that held the reload ~7 s
+/// past a 6 s build, with nothing in the event stream to say why. The
+/// scan describes the build for the NEXT save's decision, which is the
+/// only thing that needs it — and the loop takes no save until this
+/// returns, so no decision is made against a half-installed workspace.
 ///
 /// A FAILED rebuild leaves the archives alone. The page still runs the
 /// old build (and any patches on it), and an archive advanced to the
 /// failed source would decide the next save against code that never ran:
 /// a shape edit that failed to compile, then a body-only fix to it, was
 /// a "body-only" hot patch over a base that never had the new shape.
-fn rebuild_with_snapshot<T>(
+fn rebuild_with_snapshot<T, R>(
     ws: &mut dev_overlay::Workspace,
-    dir: &Path,
+    scan: RebuildScan,
+    reporter: &dev_events::Reporter,
     build: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let packages: Vec<String> = ws.crates.keys().cloned().collect();
-    let read: BTreeMap<String, Option<dev_overlay::archive::CrateSources>> =
-        ws.read_sources(packages.iter().map(String::as_str)).into_iter().collect();
-    let (built, fresh) = std::thread::scope(|scope| {
-        let scan = scope.spawn(move || {
-            let mut fresh = unscanned_workspace(dir);
+    then: impl FnOnce(Result<T>) -> R,
+) -> R {
+    let built = build();
+    let ok = built.is_ok();
+    let r = then(built);
+    let fresh = scan.finish(reporter);
+    if ok {
+        *ws = fresh;
+    }
+    r
+}
+
+/// The archive scan a rebuild starts beside its compile: every crate's
+/// sources read at the moment the build starts, scanned on a thread of
+/// its own. Crates whose sources a memoized scan already covers are not
+/// scanned again ([`dev_overlay::ScanMemo`]), so after the first rebuild
+/// this is the crates the save touched, not the whole workspace.
+struct RebuildScan {
+    handle: std::thread::JoinHandle<dev_overlay::Workspace>,
+}
+
+/// The stage name a rebuild's archive scan reports under when it outlives
+/// the reload (see [`RebuildScan::finish`]).
+const ARCHIVE_SCAN_STAGE: &str = "archive-scan";
+
+impl RebuildScan {
+    fn start(ws: &dev_overlay::Workspace, dir: &Path, memo: &Arc<dev_overlay::ScanMemo>) -> Self {
+        let packages: Vec<String> = ws.crates.keys().cloned().collect();
+        // Read NOW, on this thread: the archive must describe the sources
+        // the build is about to compile, not whatever a save made since.
+        let read: BTreeMap<String, Option<dev_overlay::archive::CrateSources>> =
+            ws.read_sources(packages.iter().map(String::as_str)).into_iter().collect();
+        let dir = dir.to_path_buf();
+        let memo = memo.clone();
+        Self::spawn(move || {
+            let mut fresh = unscanned_workspace(&dir);
             // A crate the save just added has not been read yet; it is
             // read now.
             let missing: Vec<String> =
                 fresh.crates.keys().filter(|p| !read.contains_key(*p)).cloned().collect();
-            let mut all: Vec<_> = read.into_iter().filter(|(p, _)| fresh.crates.contains_key(p)).collect();
+            let mut all: Vec<_> =
+                read.into_iter().filter(|(p, _)| fresh.crates.contains_key(p)).collect();
             all.extend(fresh.read_sources(missing.iter().map(String::as_str)));
-            let scanned = dev_overlay::Workspace::scan_read(dir, &fresh.tip.clone(), all);
+            let scanned =
+                dev_overlay::Workspace::scan_read_reusing(&dir, &fresh.tip.clone(), all, &|| false, &memo)
+                    .expect("a scan that is never cancelled finishes");
             fresh.install(scanned);
             fresh
-        });
-        let built = build();
-        (built, scan.join().expect("the archive scan panicked"))
-    });
-    if built.is_ok() {
-        *ws = fresh;
+        })
     }
-    built
+
+    fn spawn(scan: impl FnOnce() -> dev_overlay::Workspace + Send + 'static) -> Self {
+        let handle = std::thread::Builder::new()
+            .name("idealyst-archive-scan".into())
+            .spawn(scan)
+            .expect("spawn the archive scan thread");
+        Self { handle }
+    }
+
+    /// Wait for the scan. When it is still running — the reload already
+    /// went out, and the next save cannot be decided without it — the
+    /// wait is reported as an `archive-scan` stage of the web target, so
+    /// a save that lands meanwhile is not left sitting with nothing on
+    /// the stream to say why.
+    fn finish(self, reporter: &dev_events::Reporter) -> dev_overlay::Workspace {
+        if self.handle.is_finished() {
+            return self.handle.join().expect("the archive scan panicked");
+        }
+        reporter.emit(dev_events::DevEvent::StageStarted {
+            target: TARGET.into(),
+            stage: ARCHIVE_SCAN_STAGE.into(),
+        });
+        let waited = std::time::Instant::now();
+        let fresh = self.handle.join().expect("the archive scan panicked");
+        reporter.emit(dev_events::DevEvent::StageFinished {
+            target: TARGET.into(),
+            stage: ARCHIVE_SCAN_STAGE.into(),
+            ms: waited.elapsed().as_millis() as u64,
+        });
+        fresh
+    }
 }
 
 /// The paths one watcher batch names.
@@ -2789,7 +2874,11 @@ mod tests {
         let file = root.join("lab-shared/src/lib.rs");
         // A shape edit that (in this story) does not compile.
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 1 }\n").unwrap();
-        let built: Result<()> = rebuild_with_snapshot(&mut ws, &root, || anyhow::bail!("E0308"));
+        let memo = Arc::new(dev_overlay::ScanMemo::default());
+        let reporter = dev_events::Reporter::new();
+        let scan = RebuildScan::start(&ws, &root, &memo);
+        let built: Result<()> =
+            rebuild_with_snapshot(&mut ws, scan, &reporter, || anyhow::bail!("E0308"), |b| b);
         assert!(built.is_err());
         // The fix is body-only relative to the FAILED source...
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 2 }\n").unwrap();
@@ -2800,11 +2889,148 @@ mod tests {
         );
 
         // A rebuild that succeeds installs what it compiled.
-        rebuild_with_snapshot(&mut ws, &root, || Ok(())).unwrap();
+        let scan = RebuildScan::start(&ws, &root, &memo);
+        rebuild_with_snapshot(&mut ws, scan, &reporter, || Ok(()), |b| b).unwrap();
         assert!(ws.crates.contains_key("lab-shared"), "the reload kept the workspace");
         std::fs::write(&file, "pub fn v(n: u32) -> u32 { n + 3 }\n").unwrap();
         let saved = read_saved(&ws, &[file]);
         assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::HotPatch(_)));
+    }
+
+    /// Regression: a rebuild-tier save on CrewForge reloaded the page
+    /// ~13 s after the save although its build was done in ~6 s. The
+    /// rebuild joined the archive scan (every crate of the workspace,
+    /// rescanned) BEFORE it published the reload, and nothing on the event
+    /// stream covered the wait. The reload (`then`) now runs while the
+    /// scan is still going; the scan is joined after it, and installed.
+    #[test]
+    fn regression_a_rebuild_publishes_its_reload_before_the_archive_scan_finishes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let fresh = ws.clone();
+        // The scan cannot finish until `then` has run — or, when `then`
+        // waits on the scan (the bug), until the gate times out.
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let scan_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = scan_done.clone();
+        let scan = RebuildScan::spawn(move || {
+            let _ = gate_rx.recv_timeout(Duration::from_secs(5));
+            done.store(true, Ordering::SeqCst);
+            fresh
+        });
+        let (reporter, q) = capture();
+        let published_while_scanning = rebuild_with_snapshot(&mut ws, scan, &reporter, || Ok(()), |b| {
+            b.unwrap();
+            let scanning = !scan_done.load(Ordering::SeqCst);
+            // Ignored: a scan that already timed out has hung up.
+            let _ = gate_tx.send(());
+            scanning
+        });
+        assert!(published_while_scanning, "the reload waited on the archive scan");
+        assert!(scan_done.load(Ordering::SeqCst), "the scan is joined before the rebuild returns");
+        // The wait for the scan, past the reload, is on the stream.
+        let evs = events(&q);
+        let stage = |e: &dev_events::DevEvent, started: bool| match e {
+            dev_events::DevEvent::StageStarted { target, stage } => {
+                started && target == TARGET && stage == ARCHIVE_SCAN_STAGE
+            }
+            dev_events::DevEvent::StageFinished { target, stage, .. } => {
+                !started && target == TARGET && stage == ARCHIVE_SCAN_STAGE
+            }
+            _ => false,
+        };
+        let started = evs.iter().position(|e| stage(e, true)).expect("archive-scan stage started");
+        let finished = evs.iter().position(|e| stage(e, false)).expect("archive-scan stage finished");
+        assert!(started < finished, "{evs:?}");
+    }
+
+    /// A scan that finished before the reload went out is not a wait:
+    /// no stage is reported for it.
+    #[test]
+    fn a_scan_done_before_the_reload_reports_no_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut ws = two_crate_workspace(&root);
+        let fresh = ws.clone();
+        let scan = RebuildScan::spawn(move || fresh);
+        let (reporter, q) = capture();
+        rebuild_with_snapshot(&mut ws, scan, &reporter, || Ok(()), |b| {
+            b.unwrap();
+            // Let the (instant) scan thread finish first.
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        assert!(
+            !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::StageStarted { .. })),
+            "nothing was waited for"
+        );
+    }
+
+    /// After a rebuild, only the crates whose sources moved are scanned
+    /// again; the rest come from the memo, byte-identical to a fresh scan.
+    /// A crate whose sources DID move is never served from the memo.
+    #[test]
+    fn a_rebuild_rescans_only_the_crates_whose_sources_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        two_crate_workspace(&root);
+        let memo = Arc::new(dev_overlay::ScanMemo::default());
+        let mut ws = load_workspace(&root, &memo);
+        let app_before = ws.crates["app"].archive.clone().expect("app scanned");
+
+        let file = root.join("lab-shared/src/lib.rs");
+        std::fs::write(&file, "pub fn v() -> u32 { 2 }\npub fn w() {}\n").unwrap();
+        let scan = RebuildScan::start(&ws, &root, &memo);
+        rebuild_with_snapshot(&mut ws, scan, &dev_events::Reporter::new(), || Ok(()), |b| b).unwrap();
+
+        let fresh = |dir: &Path| dev_overlay::scan_crate(dir).unwrap();
+        // The moved crate: what a scan of the new source produces.
+        assert_eq!(ws.crates["lab-shared"].archive.as_ref(), Some(&fresh(&root.join("lab-shared"))));
+        // The untouched one: reused, and identical to a fresh scan.
+        assert_eq!(ws.crates["app"].archive.as_ref(), Some(&app_before));
+        assert_eq!(app_before, fresh(&root));
+    }
+
+    /// The memo hands back only SCANS. An overlay patch advances a
+    /// workspace archive to the new sources' digests but keeps the old
+    /// build's site keys; a rebuild must re-key it from a fresh scan, so
+    /// an archive must never be served as the scan of its sources.
+    #[test]
+    fn the_scan_memo_never_serves_an_advanced_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"memo-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let lib = root.join("src/lib.rs");
+        let b = "fn b() -> Element { ui! { text(\"b\") } }\n";
+        std::fs::write(&lib, format!("fn a() -> Element {{ ui! {{ text(\"a\") }} }}\n{b}")).unwrap();
+        let memo = dev_overlay::ScanMemo::default();
+        let read = |ws: &dev_overlay::Workspace| ws.read_sources(["memo-probe"]);
+        let ws = dev_overlay::Workspace::single("memo-probe", &root, "memo_probe");
+        let first = dev_overlay::Workspace::scan_read_reusing(&root, "memo-probe", read(&ws), &|| false, &memo)
+            .unwrap();
+        // `a`'s body gains a line — an overlay-tier edit — which shifts
+        // `b` a line down: a fresh scan re-keys `b`, the advanced archive
+        // keeps the key the running binary has.
+        std::fs::write(&lib, format!("fn a() -> Element {{ ui! {{\n text(\"a\") }} }}\n{b}")).unwrap();
+        let mut advanced = first[0].1.clone().unwrap();
+        dev_overlay::advance_archive(
+            &mut advanced,
+            &[dev_overlay::ChangedFile {
+                path: "src/lib.rs".into(),
+                text: std::fs::read_to_string(&lib).unwrap(),
+            }],
+        );
+        let again = dev_overlay::Workspace::scan_read_reusing(&root, "memo-probe", read(&ws), &|| false, &memo)
+            .unwrap();
+        let rescanned = again[0].1.clone().unwrap();
+        assert_eq!(rescanned, dev_overlay::scan_crate(&root).unwrap(), "a moved crate is scanned");
+        assert_eq!(advanced.build_key(), rescanned.build_key(), "same sources, same key...");
+        assert_ne!(advanced, rescanned, "...but the advanced archive is not the scan");
     }
 
     /// Regression: `IDEALYST_HOTPATCH_NO_SEED=` (exported empty) turned
