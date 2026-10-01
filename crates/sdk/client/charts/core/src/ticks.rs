@@ -5,7 +5,9 @@
 //!
 //! - [`linear`] — "nice numbers": the step is 1, 2 or 5 times a power of
 //!   ten, chosen as the finest step that still yields at most `max_ticks`
-//!   ticks. Labels print the shortest decimal that is exact to 5 places.
+//!   ticks. Labels carry the step's precision (trailing zeros trimmed, at
+//!   least one decimal); an axis of magnitudes below 1e-4 whose step needs
+//!   more than five places prints in scientific notation.
 //! - [`log`] — one tick per decade (or per every n-th decade when there are
 //!   too many), plus evenly spaced in-decade ticks when the budget allows.
 //! - [`time`] — milliseconds since the Unix epoch, UTC. Spans shorter than
@@ -25,10 +27,10 @@
 //! the web. Owning a few hundred lines of arithmetic is cheaper.
 //!
 //! The port was diffed against plotters over a corpus of ~2,700 inputs and
-//! produces identical values AND labels on every input where plotters
-//! returned at all. It deliberately departs from plotters only where
-//! plotters did not return — the cases are pinned by tests in
-//! `tests/ticks.rs`:
+//! produced identical values AND labels on every input where plotters
+//! returned at all. Beyond the label contract below, it departs from
+//! plotters only where plotters did not return — the cases are pinned by
+//! tests in `tests/ticks.rs`:
 //!
 //! - **Non-finite linear spans** (an infinite bound, both bounds NaN, or a
 //!   span that overflows f64): plotters either hung forever (its step loop
@@ -45,6 +47,22 @@
 //!   return no ticks. Date arithmetic that would leave chrono's
 //!   representable range — a panic in plotters — stops the tick run there.
 //!
+//! # Label contract (where we deliberately differ from plotters)
+//!
+//! Adjacent labels on an axis are always distinct, and no label reads as
+//! negative zero. plotters broke both, and the outputs that changed to
+//! honour them are rewritten in the corpus (`tests/goldens`), each one a
+//! line whose plotters output broke the contract:
+//!
+//! - **Linear ranges narrower than ~1e-5**: plotters printed every value to
+//!   at most five places, so `1e-9..2e-9` was labelled `"0.0"` throughout,
+//!   a negative value that rounded away printed `"-0.0"`, and even `-1e-5`
+//!   itself came out `"0.0"`. Labels now take their precision from the
+//!   step (69 corpus lines).
+//!
+//! `tests/ticks.rs` sweeps ranges for each axis kind asserting the
+//! contract.
+//!
 //! Every function here takes `f64` and returns plain values; positioning is
 //! the scale's job ([`ResolvedAxis::map`](crate::ResolvedAxis::map)), done
 //! in `f32` without quantizing to whole pixels.
@@ -58,12 +76,11 @@ use crate::scale::Tick;
 // ---------------------------------------------------------------------------
 
 /// Ticks for a linear axis over `[min, max]` (either order), at most
-/// `max_ticks` of them.
+/// `max_ticks` of them. Labels are formatted by [`linear_labels`].
 pub fn linear(min: f64, max: f64, max_ticks: usize) -> Vec<Tick> {
-    linear_values(min, max, max_ticks)
-        .into_iter()
-        .map(|v| Tick { value: v, label: format_decimal(v) })
-        .collect()
+    let values = linear_values(min, max, max_ticks);
+    let labels = linear_labels(&values);
+    values.into_iter().zip(labels).map(|(value, label)| Tick { value, label }).collect()
 }
 
 /// The nice-number key points. Port of plotters'
@@ -154,70 +171,111 @@ fn linear_values(a: f64, b: f64, max_points: usize) -> Vec<f64> {
     ret
 }
 
-/// Print a tick value as the shortest decimal within 1e-5 of it, never in
-/// scientific notation, always with at least one decimal (`"2.0"`,
-/// `"0.25"`, `"-0.00001"`). Port of plotters' `FloatPrettyPrinter` with
-/// `allow_scientific: false, min_decimal: 1, max_decimal: 5` — the
-/// formatter its `f64` range used.
-fn format_decimal(n: f64) -> String {
-    const MAX_DECIMAL: i32 = 5;
-    const MIN_DECIMAL: usize = 1;
-    let (tn, p) = find_minimal_repr(n, 10f64.powi(-MAX_DECIMAL));
-    float_to_string(tn, p, MIN_DECIMAL)
-}
+/// Below this magnitude an axis whose step needs more than
+/// [`PLOTTERS_DECIMALS`] places is labelled in scientific notation
+/// (`"1.5e-9"`): `"0.0000000015"` is the same number, but nobody reads it.
+/// Offset ranges (`0.999999..1.000001`) stay in fixed notation — their
+/// magnitude is ordinary, only the step is fine.
+const SCIENTIFIC_BELOW: f64 = 1e-4;
 
-/// The fewest decimal digits `p` such that `n` rounded to `p` places is
-/// within `eps` of `n`, and that rounded value.
-fn find_minimal_repr(n: f64, eps: f64) -> (f64, usize) {
-    if eps >= 1.0 {
-        return (n, 0);
-    }
-    if n - n.floor() < eps {
-        (n.floor(), 0)
-    } else if n.ceil() - n < eps {
-        (n.ceil(), 0)
-    } else {
-        let (rem, pre) = find_minimal_repr((n - n.floor()) * 10.0, eps * 10.0);
-        (n.floor() + rem / 10.0, pre + 1)
-    }
-}
+/// The places plotters' printer always stopped at (`max_decimal: 5`). Any
+/// step at or above `10^-PLOTTERS_DECIMALS` labels exactly as plotters did.
+const PLOTTERS_DECIMALS: usize = 5;
 
-fn float_to_string(n: f64, max_precision: usize, min_decimal: usize) -> String {
-    let (mut result, mut count) = {
-        let (sign, n) = if n < 0.0 { ("-", -n) } else { ("", n) };
-        let int_part = n.floor();
+/// Past this many places f64 has no digits left to show (its 17
+/// significant digits are spent); the distinct-label search stops here.
+const MAX_LABEL_DECIMALS: usize = 20;
 
-        let dec_part =
-            ((n.abs() - int_part.abs()) * 10f64.powi(max_precision as i32)).round() as u64;
+/// Labels for a run of evenly spaced linear ticks.
+///
+/// The precision comes from the STEP, not from a fixed cap: a step of
+/// `5e-7` needs seven places, so every label gets up to seven (trailing
+/// zeros trimmed, at least one decimal kept — `"2.0"`, `"0.25"`). plotters
+/// printed every value to at most five places, so any range narrower than
+/// ~1e-5 came out as a column of `"0.0"`; for steps of 1e-5 and coarser
+/// the output here is identical to plotters'.
+///
+/// Two guarantees every axis gets, whatever the range:
+/// - adjacent labels differ — if float noise ever makes two collide at the
+///   step's precision, the precision grows until they don't;
+/// - no label reads as negative zero (`"-0.0"` was plotters' output for a
+///   small negative value: `format!("{:.0}", -0.0)` keeps the sign).
+fn linear_labels(values: &[f64]) -> Vec<String> {
+    let [first, second, ..] = values else {
+        return values.iter().map(|&v| lone_linear_label(v)).collect();
+    };
+    let step = (second - first).abs();
+    // Tick values carry float noise (`0.30000000000000004`), and the zero
+    // tick of a symmetric range can come out as `±1e-29`; snap anything
+    // that small relative to the step to an exact zero before printing.
+    let snap = |v: f64| if v.abs() < step * 1e-6 { 0.0 } else { v };
+    // Steps are 1, 2 or 5 times a power of ten; the `+ 1e-9` absorbs a
+    // step of `9.999999999e-11` that is really `1e-10`.
+    let step_exp = (step.log10() + 1e-9).floor() as i32;
+    let decimals = usize::try_from(-step_exp).unwrap_or(0);
+    let max_abs = values.iter().fold(0.0f64, |m, v| m.max(v.abs()));
 
-        if dec_part == 0 || max_precision == 0 {
-            (format!("{sign}{int_part:.0}"), 0)
+    let render = |extra: usize| -> Vec<String> {
+        if decimals > PLOTTERS_DECIMALS && max_abs < SCIENTIFIC_BELOW {
+            // One mantissa precision for the whole axis: enough digits to
+            // reach the step from the largest tick's exponent.
+            let max_exp = max_abs.log10().floor() as i32;
+            let mantissa = usize::try_from(max_exp - step_exp).unwrap_or(0) + extra;
+            values
+                .iter()
+                .map(|&v| match snap(v) {
+                    0.0 => "0".to_string(),
+                    v => format!("{v:.mantissa$e}"),
+                })
+                .collect()
         } else {
-            let mut dec_result = format!("{dec_part}");
-            // `saturating_sub`: plotters wrote a plain `-`, which underflows
-            // (a panic in debug) if the fraction rounds up to a whole
-            // `10^max_precision`. Identical output otherwise.
-            let leading = "0".repeat(max_precision.saturating_sub(dec_result.len()));
-
-            while let Some(c) = dec_result.pop() {
-                if c != '0' {
-                    dec_result.push(c);
-                    break;
-                }
-            }
-
-            (format!("{sign}{int_part:.0}.{leading}{dec_result}"), leading.len() + dec_result.len())
+            let places = (decimals + extra).min(MAX_LABEL_DECIMALS);
+            values.iter().map(|&v| fixed_label(snap(v), places)).collect()
         }
     };
 
-    if count == 0 && min_decimal > 0 {
-        result.push('.');
+    let mut extra = 0;
+    loop {
+        let labels = render(extra);
+        let distinct = labels.windows(2).all(|p| p[0] != p[1]);
+        if distinct || decimals + extra >= MAX_LABEL_DECIMALS {
+            return labels;
+        }
+        extra += 1;
     }
-    while count < min_decimal {
-        result.push('0');
-        count += 1;
+}
+
+/// `v` to `places` decimals, trailing zeros trimmed to a minimum of one
+/// decimal, and a zero that rounded from a negative value printed
+/// unsigned.
+fn fixed_label(v: f64, places: usize) -> String {
+    let mut s = format!("{v:.places$}");
+    if s.contains('.') {
+        let keep = s.trim_end_matches('0').len();
+        s.truncate(keep);
+    } else {
+        s.push('.');
     }
-    result
+    if s.ends_with('.') {
+        s.push('0');
+    }
+    if s.starts_with('-') && s[1..].chars().all(|c| c == '0' || c == '.') {
+        s.remove(0);
+    }
+    s
+}
+
+/// A single tick has no step to take precision from. It keeps plotters'
+/// five-place label unless that would print a nonzero value as zero (a
+/// subnormal one-tick range), in which case it prints the value itself in
+/// scientific notation.
+fn lone_linear_label(v: f64) -> String {
+    let fixed = fixed_label(v, PLOTTERS_DECIMALS);
+    if v != 0.0 && fixed.chars().all(|c| c == '0' || c == '.') {
+        format!("{v:e}")
+    } else {
+        fixed
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -15,7 +15,8 @@ description = "Renderer-agnostic charting: a chart spec in, a vector mark IR + l
 #
 # Tick selection (nice-number linear steps, log decades, UTC-midnight-aligned
 # time ticks) is in-house, in `src/ticks.rs` — a port of what this crate
-# used to take from `plotters`, diffed against it for identical output.
+# used to take from `plotters`, diffed against it for identical output
+# except where plotters' labels repeated or read "-0" (see the module docs).
 # `plotters` was dropped because on wasm32 it links `wasm-bindgen` and
 # `web-sys` unconditionally (target-specific deps, not behind any feature),
 # and its `datetime` feature enables chrono with DEFAULT features —

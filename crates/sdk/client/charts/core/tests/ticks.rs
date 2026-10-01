@@ -1,5 +1,7 @@
 //! Tick selection (`charts_core::ticks`): parity with the plotters 0.3.7
-//! output it replaced, plus the edge cases where plotters never returned.
+//! output it replaced, the edge cases where plotters never returned, and
+//! the label contract (adjacent labels distinct, never "-0") where plotters
+//! broke it.
 
 use charts_core::ticks;
 use charts_core::Tick;
@@ -29,6 +31,28 @@ fn clamp_log_range(min: f64, max: f64) -> (f64, f64) {
     }
 }
 
+/// `"-0"`, `"-0.0"`, `"-0.000"`… — a zero that kept its sign.
+fn is_negative_zero(label: &str) -> bool {
+    label.strip_prefix('-').is_some_and(|rest| rest.chars().all(|c| c == '0' || c == '.'))
+}
+
+/// The axis-label contract: adjacent labels differ, values strictly
+/// advance, and nothing reads as `-0`.
+fn assert_distinct_labels(t: &[Tick], what: &str) {
+    for pair in t.windows(2) {
+        assert!(
+            pair[0].label != pair[1].label,
+            "{what}: adjacent labels repeat {:?}: {:?}",
+            pair[0].label,
+            labels(t)
+        );
+        assert!(pair[0].value != pair[1].value, "{what}: repeated value {}", pair[0].value);
+    }
+    for l in labels(t) {
+        assert!(!is_negative_zero(l), "{what}: negative zero {l:?}");
+    }
+}
+
 fn dump(t: Vec<Tick>) -> String {
     let mut s = format!("n={} ", t.len());
     for t in t {
@@ -41,7 +65,9 @@ fn dump(t: Vec<Tick>) -> String {
 /// linear, log, and time axes across spans from a millisecond to a
 /// millennium, tick budgets 0–20, negative/reversed/tiny/huge/one-sided-NaN
 /// ranges) and requires byte-identical values and labels. This is the
-/// evidence that the in-house port is a drop-in replacement.
+/// evidence that the in-house port is a drop-in replacement — except on
+/// the lines the corpus header lists as deliberate departures, where
+/// plotters broke the label contract and the line holds the fixed output.
 #[test]
 fn matches_plotters_corpus() {
     let corpus = include_str!("goldens/ticks_plotters_0_3_7.txt");
@@ -109,15 +135,88 @@ fn linear_reversed_range_matches_forward() {
 
 #[test]
 fn linear_tiny_and_huge_ranges() {
-    // Values are right; labels stop at 5 decimals (plotters' printer).
     let tiny = ticks::linear(1e-9, 2e-9, 5);
     assert_eq!(tiny.len(), 3);
     assert_eq!(tiny[0].value, 1e-9);
-    assert_eq!(labels(&tiny), ["0.0", "0.0", "0.0"]);
 
     let huge = ticks::linear(0.0, 1e15, 5);
     assert_eq!(values(&huge), [0.0, 5e14, 1e15]);
     assert_eq!(labels(&huge), ["0.0", "500000000000000.0", "1000000000000000.0"]);
+}
+
+/// plotters' printer stopped at 5 decimals, so every tick of a range
+/// narrower than 1e-5 printed `"0.0"`. Labels now carry the step's
+/// precision; an axis of tiny magnitudes switches to scientific notation.
+#[test]
+fn regression_linear_sub_1e5_range_labels_are_distinct() {
+    assert_eq!(labels(&ticks::linear(1e-9, 2e-9, 5)), ["1.0e-9", "1.5e-9", "2.0e-9"]);
+    assert_eq!(
+        labels(&ticks::linear(-1e-12, 1e-12, 5)),
+        ["-1.0e-12", "-5.0e-13", "0", "5.0e-13", "1.0e-12"]
+    );
+    // An offset range keeps fixed notation, at the step's precision.
+    assert_eq!(
+        labels(&ticks::linear(0.999999, 1.000001, 5)),
+        ["0.999999", "0.9999995", "1.0", "1.0000005", "1.000001"]
+    );
+    assert_eq!(
+        labels(&ticks::linear(1.0, 1.00000000000001, 5)),
+        ["1.0", "1.000000000000005", "1.00000000000001"]
+    );
+    // The printer also rounded `-1e-5` itself to `"0.0"`.
+    assert_eq!(
+        labels(&ticks::linear(-1e-5, 1e-5, 5)),
+        ["-1.0e-5", "-5.0e-6", "0", "5.0e-6", "1.0e-5"]
+    );
+    // Steps of 1e-5 and coarser keep plotters' labels exactly.
+    assert_eq!(labels(&ticks::linear(0.0, 3e-5, 5)), ["0.0", "0.00001", "0.00002", "0.00003"]);
+}
+
+/// A negative value that rounded to zero printed as `"-0.0"` (`{:.0}` of
+/// `-0.0` keeps the sign).
+#[test]
+fn regression_linear_never_labels_negative_zero() {
+    for t in [
+        ticks::linear(-1e-12, 1e-12, 20),
+        ticks::linear(-1e-5, 0.0, 5),
+        ticks::linear(-1e-310, 1e-310, 5),
+        ticks::linear(-0.0, 0.0, 5),
+    ] {
+        for l in labels(&t) {
+            assert!(!is_negative_zero(l), "{l:?} in {:?}", labels(&t));
+        }
+    }
+    // A lone subnormal tick is labelled with its value, not `"-0.0"`.
+    assert_eq!(labels(&ticks::linear(-1e-310, 1e-310, 5)), ["-1e-310"]);
+    assert_eq!(labels(&ticks::linear(1e-320, 3e-320, 5)), ["1e-320"]);
+}
+
+/// The general rule, swept: over any range f64 can resolve, adjacent
+/// linear tick labels differ and none reads as negative zero.
+#[test]
+fn linear_labels_are_distinct_over_a_sweep_of_ranges() {
+    let centers: [f64; 10] = [0.0, 1e-9, -1e-9, 1.0, -1.0, 123.456, -7.25, 1e6, -1e9, 1e12];
+    let mut checked = 0;
+    for &c in &centers {
+        for e in -12..=12 {
+            for m in [1.0, 1.7, 3.3, 7.9] {
+                let span = m * 10f64.powi(e);
+                // Past ~1e-12 relative, the endpoints are a few ulps apart
+                // and no labelling can tell them apart.
+                if span < c.abs() * 1e-12 {
+                    continue;
+                }
+                for (lo, hi) in [(c, c + span), (c - span / 2.0, c + span / 2.0)] {
+                    for w in 2..=20 {
+                        let t = ticks::linear(lo, hi, w);
+                        assert_distinct_labels(&t, &format!("linear({lo:?}, {hi:?}, {w})"));
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 10_000);
 }
 
 #[test]
