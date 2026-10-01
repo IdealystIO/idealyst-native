@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "dev-events",
  "schemars",
@@ -6086,7 +6086,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6095,7 +6095,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6106,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6123,7 +6123,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6163,7 +6163,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6173,7 +6173,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6193,7 +6193,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -10755,7 +10755,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "axum",
  "futures-channel",
@@ -11355,7 +11355,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",

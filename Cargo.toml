@@ -487,7 +487,7 @@ robot-test-macros = { path = "crates/dev/robot-test-macros" }
 native-parity = { path = "crates/dev/native-parity" }
 dev-http = { path = "crates/dev/http" }
 dev-overlay = { path = "crates/dev/overlay", version = "1.8.0", registry = "idealyst" }
-dev-events = { path = "crates/dev/events", version = "1.7.0", registry = "idealyst" }
+dev-events = { path = "crates/dev/events", version = "1.7.1", registry = "idealyst" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }
 build-ios = { path = "crates/tools/build/ios" }
@@ -534,7 +534,7 @@ backend-windows = { path = "crates/backend/windows", version = "1.6.0", registry
 backend-linux = { path = "crates/backend/linux", version = "1.6.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.2", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.6.1", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.6.2", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "1.5.2", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "2.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -558,11 +558,11 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
-idea-theme = { path = "crates/ui/idea-theme", version = "1.7.0", registry = "idealyst" }
-idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.3", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "2.0.0", registry = "idealyst" }
+idea-theme = { path = "crates/ui/idea-theme", version = "1.7.1", registry = "idealyst" }
+idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.4", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "3.0.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
-idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.4", registry = "idealyst" }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.5", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "1.5.2", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "1.5.2", registry = "idealyst" }
@@ -625,7 +625,7 @@ connectivity = { path = "crates/sdk/client/connectivity", version = "1.6.0", reg
 haptics = { path = "crates/sdk/client/haptics", version = "1.5.3", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.5.2", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "1.6.0", registry = "idealyst" }
-server = { path = "crates/api/server", version = "1.8.0", registry = "idealyst" }
+server = { path = "crates/api/server", version = "1.8.1", registry = "idealyst" }
 server-macros = { path = "crates/api/server-macros", version = "1.5.2", registry = "idealyst" }
 server-kit = { path = "crates/api/server-kit", version = "1.6.0", registry = "idealyst" }
 server-aws = { path = "crates/api/server-aws", version = "1.5.2", registry = "idealyst" }
@@ -636,7 +636,7 @@ email = { path = "crates/sdk/server/email", version = "1.5.2", registry = "ideal
 cache = { path = "crates/sdk/server/cache", version = "1.5.2", registry = "idealyst" }
 idealyst-config = { path = "crates/sdk/server/config", version = "1.5.2", registry = "idealyst" }
 swap-navigator = { path = "crates/sdk/client/navigators/swap", version = "1.5.2", registry = "idealyst" }
-stack-navigator = { path = "crates/sdk/client/navigators/stack", version = "1.5.3", registry = "idealyst" }
+stack-navigator = { path = "crates/sdk/client/navigators/stack", version = "1.6.0", registry = "idealyst" }
 android-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/android", version = "1.5.2", registry = "idealyst" }
 ios-navigator-helpers = { path = "crates/sdk/client/navigators/helpers/ios", version = "1.5.3", registry = "idealyst" }
 
@@ -685,8 +685,8 @@ file-drop-demo = { path = "crates/sdk/client/file-picker/examples/file-drop-demo
 file-picker-demo = { path = "crates/sdk/client/file-picker/examples/file-picker-demo", version = "1.5.2", registry = "idealyst" }
 graphql-demo = { path = "crates/sdk/client/graphql/examples/graphql-demo", version = "1.5.2", registry = "idealyst" }
 i18n-demo = { path = "crates/sdk/client/i18n/examples/i18n-demo", version = "1.5.2", registry = "idealyst" }
-idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.5", registry = "idealyst" }
-idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.4", registry = "idealyst" }
+idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.6", registry = "idealyst" }
+idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.5", registry = "idealyst" }
 idealyst-macros = { path = "crates/idealyst-macros", version = "1.5.2", registry = "idealyst" }
 jobs-demo = { path = "crates/sdk/server/jobs/examples/jobs-demo", version = "1.5.2", registry = "idealyst" }
 kanban-demo = { path = "crates/sdk/client/dnd/examples/kanban-demo", version = "1.5.2", registry = "idealyst" }
