@@ -110,3 +110,10 @@ pollster = { version = "0.4", optional = true }
 log = { version = "0.4", optional = true }
 libc = { version = "0.2", optional = true }
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+
+# Browser regression test for the robot log clock (`tests/robot_logs_web.rs`):
+# `cargo test -p runtime-shared --features robot --target
+# wasm32-unknown-unknown --test robot_logs_web`. Dev-only; never reaches an
+# app's graph.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

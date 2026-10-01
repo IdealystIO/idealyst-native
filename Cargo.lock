@@ -10144,6 +10144,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tungstenite 0.24.0",
+ "wasm-bindgen-test",
  "wasm-splitter",
 ]
 

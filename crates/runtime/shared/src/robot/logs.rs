@@ -22,7 +22,6 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_ENTRIES: usize = 4096;
 
@@ -138,9 +137,27 @@ pub fn start_stdio_capture() {
     }
 }
 
+/// Entry timestamp, ms since the Unix epoch.
+///
+/// wasm32 reads the core wall clock (`js Date`, installed by the web
+/// backend's bootstrap before the robot relay dials out):
+/// `SystemTime::now()` panics on `wasm32-unknown-unknown`, so the
+/// first `push` / `robot_log!` in a web robot build used to abort the
+/// app (regression: `tests/robot_logs_web.rs`). Native keeps
+/// `SystemTime`, which is real there and — unlike the core wall clock,
+/// which reads 0 until `mount` installs a source — already correct for
+/// lines captured before mount.
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::time::epoch_millis().max(0) as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
 }
