@@ -21,7 +21,9 @@ something regresses here, the surface area to bisect is small.
 - `lazy-chunk-handoff/` — minimal app wrapping a `lazy! { … }` block;
   verifies the main bundle ↔ chunk boundary survives release-mode
   pruning (chunks reach into main-bundle data symbols for shared
-  vtables, statics, panic strings).
+  vtables, statics, panic strings). The chunk also calls a `web-glue`
+  binding nothing in main calls (its marker reads `glue in chunk: 42`):
+  in an own-mode build a chunk must still reach main's glue namespace.
 - `lazy-many-splits/` — 30 `#[component(lazy)]` pages dispatched through
   a static fn-pointer catalog (the idea-ui-docs shape). Guards the
   many-split-point pipeline end-to-end; added for the splitter's
@@ -110,8 +112,9 @@ artifacts exist. In order, it performs:
 
 1. **Build smoke** — `idealyst build --web --release --data-prune` must
    exit 0 for every app. Catches splitter (`wasm-carve`) crashes, linker errors
-   from a chunk that lost a symbol it imports from main, and
-   wasm-bindgen failures on the post-split bundle.
+   from a chunk that lost a symbol it imports from main, and packaging
+   failures. These apps link no wasm-bindgen, so they build in own mode
+   (the web-glue pass writes the JS; no wasm-bindgen CLI).
 2. **Artifact shape** — `index.html`, a > 1 KiB `{stem}_bg[.hash].wasm`,
    and a matching `{stem}[.hash].js` shim must exist in `dist/web/pkg`
    (matched by prefix/suffix, since release bundles are

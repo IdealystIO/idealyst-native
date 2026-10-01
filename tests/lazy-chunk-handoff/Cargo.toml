@@ -22,6 +22,8 @@ runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
+# A binding only the lazy chunk calls (see src/lib.rs).
+web-glue = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Lazy Chunk Handoff Test"

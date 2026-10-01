@@ -113,8 +113,10 @@ const APPS: &[AppCfg] = &[
         wasm_stem: "lazy_chunk_handoff_test",
         // This text lives inside the fixture's `lazy!` body (that app
         // deliberately still exercises the deprecated block form), so
-        // seeing it means the chunk loaded, instantiated, and mounted.
-        expected_marker: "Loaded from a separate wasm chunk",
+        // seeing it means the chunk loaded, instantiated, and mounted —
+        // and the `42` is a web-glue binding only the chunk calls, so the
+        // chunk reached main's glue namespace.
+        expected_marker: "glue in chunk: 42",
         marker_wait_ms: 15_000,
     },
     AppCfg {

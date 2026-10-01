@@ -21,6 +21,8 @@
 //! - A brief placeholder shows ("Loading chunk…").
 //! - The chunk's subtree mounts with a working button: each click
 //!   increments the displayed count. No console errors.
+//! - "glue in chunk: 42" — a web-glue binding only the chunk calls ran
+//!   (own mode's split chunks reach main's glue namespace).
 
 // `lazy!` is deprecated in favor of `#[component(lazy)]`, but this fixture
 // deliberately keeps exercising it: the block form must keep splitting
@@ -44,6 +46,16 @@ pub fn app() -> Element {
     // path, the panic infrastructure, and the reactive scheduler — all
     // the things data-pruning could plausibly damage.
     let chunk = lazy! {
+        // A web-glue binding ONLY the chunk calls. Its import (and the JS in
+        // its name) is declared by main's module — the splitter keeps every
+        // import in main and the chunk reaches it through a table
+        // trampoline — so in an own-mode build (no wasm-bindgen) the chunk
+        // still gets main's glue namespace. A chunk that could not reach it
+        // traps here and never renders the marker below.
+        web_glue::import! {
+            fn chunk_only_triple(n: u32) -> u32 = "(n) => n * 3";
+        }
+        let tripled = unsafe { chunk_only_triple(14) };
         let count: Signal<u32> = signal(0);
         let inc: Rc<dyn Fn()> = Rc::new(move || count.update(|n| n + 1));
         ui! {
@@ -53,6 +65,7 @@ pub fn app() -> Element {
                         content = "Loaded from a separate wasm chunk".to_string(),
                         kind = idea_ui::typography_kind::H3,
                     )
+                    Typography(content = format!("glue in chunk: {tripled}"))
                     Typography(content = rx!(format!("count = {}", count.get())))
                     Button(
                         label = "Increment (chunk handler)".to_string(),
