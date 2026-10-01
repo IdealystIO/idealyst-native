@@ -1130,13 +1130,47 @@ reactive-style:
 | anim-bounce | 10k | 952 ms | +0.3% [−30.7…+37.5] | −1.1% [−9.7…+3.3] |
 
 The fix closes D→L (−7.5% [−12.0…−4.3] against the unfixed build).
-L→D stays ~13% slower in the medians but within +2% in the per-round
-minimums, and it is not in the toggle's own work: both directions run
-the same code, the crossings and the tight loop (JIT and interpreter)
-are at parity, and the page's DOM (1009 elements) and stylesheet
-(11 rules, the same `:root` rule) are identical. Most of a toggle's
-~120 µs in the suite is Blink invalidating `:root`'s custom properties
-(a toggle after a forced layout takes 50–100 µs against ~6 µs in a
-tight loop). rebuild, hierarchy, reactive-style and anim-bounce show no
-difference the noise does not cover; reactive-style's point update is
-0.05 ms, a few timer ticks (5 µs resolution, cross-origin isolated).
+rebuild, hierarchy, reactive-style and anim-bounce show no difference
+the noise does not cover; reactive-style's point update is 0.05 ms, a
+few timer ticks (5 µs resolution, cross-origin isolated).
+
+The toggle rows above are from the suite as it was then, and their
+L→D +12.8% is the suite's warm-up, not the toggle. Both directions make
+the same 31 imports, with the same string lengths, against the same DOM
+(1009 elements) and the same `:root` rule. With 100 iterations, neither
+build shows a direction gap past toggle ~30.
+
+V8 compiles a function up a tier after it has run a fixed amount, so
+the one-off compiles land on the same toggle numbers in every page load.
+A browser trace of three loads per build gave the same schedule each
+time: lazy Liftoff compiles at toggle 1, a wasm TurboFan unit at 6, a
+Sparkplug batch finalized on the main thread at 9 (web-glue only), and
+Maglev at 19 (web-glue) or 22 (web-sys). The page starts light, so a
+toggle is light→dark exactly when its number is odd. With two warmup
+toggles, the ten measured toggles were 3–12, all inside that schedule;
+toggle 9 is iteration 7, an L→D sample. Starting the same suite dark
+(one extra unmeasured toggle) moves web-glue's excess off L→D: L→D
+against D→L goes from +5.8% [+0.0…+8.1] to −1.9% [−6.9…+2.5] (mean of
+the middle 3 of each direction's 5 samples, 30 rounds, 95% CI). So the
+gap came from where V8's compiles fell, which both builds go through;
+no direction is slower. Which toggles the compiles hit depends on the
+build's code, which is why the gap showed only on web-glue.
+
+The suite now runs `jitWarmup` (default 50) untimed toggles, one frame
+each, before the paced warmup. Paired against web-sys, 95% CI:
+
+| toggle, `jitWarmup` 50 | web-sys | web-glue | L→D vs D→L (web-glue) |
+|---|---:|---:|---:|
+| 10 iterations, 30 rounds, L→D (median) | 0.115 ms | −4.3% [−8.3…+2.2] | −1.4% [−4.1…+4.1] |
+| 10 iterations, 30 rounds, D→L (median) | 0.118 ms | +0.0% [−4.2…+2.2] | |
+| 100 iterations, 12 rounds, L→D (10% trimmed mean) | 0.118 ms | −0.8% [−3.3…+2.1] | +0.5% [−1.5…+1.7] |
+| 100 iterations, 12 rounds, D→L (10% trimmed mean) | 0.115 ms | +0.2% [−2.1…+2.8] | |
+
+A toggle's ~115 µs in the suite is mostly cold code, and Blink's share
+is smaller than it looks. Timing every import and the export per toggle
+(iterations 21–100, 6 rounds) gives an export of 114–120 µs in both
+builds: `setProperty` ×7 ≈ 38 µs, `removeProperty` ×2 ≈ 7–9 µs, the
+other 20 imports ≈ 15 µs, and ≈ 52 µs inside the wasm itself. The same
+toggle takes 6 µs in a tight loop. In the suite, each toggle runs after
+350 ms of frames and verification, so the Rust and the Blink calls both
+start cold.
