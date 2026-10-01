@@ -627,7 +627,7 @@ harness). camera, microphone, media-stream, media-writer, screen-recorder,
 video-compose and file-picker run entirely on web-glue (crate-local
 `import!`s for getUserMedia / getDisplayMedia, the canvas pumps, WebAudio,
 MediaRecorder, `requestVideoFrameCallback`, `showOpenFilePicker` and the
-Blob reader); `files` stays on idb until phase 4.
+Blob reader); `files` stayed on idb until phase 4 ([below](#phase-4--fetch--indexeddb)).
 
 **What still crosses `web_glue::bridge`** is wgpu's, marked
 `HYBRID-BRIDGE: wgpu`: canvas-native's public `make_2d_rasterizer` /
@@ -683,3 +683,56 @@ preview showed are `ended` and `srcObject` is cleared) and whiteboard-demo (a
 pointer stroke painted on the Canvas2D board, still painted after a window
 resize shrank the canvas's backing store). No console errors beyond a missing
 favicon.
+
+## Phase 4 — fetch / IndexedDB
+
+**net's HTTP arm and files' IndexedDB store run on web-glue; gloo-net,
+gloo-utils and idb are out of the graph.** Each is one crate-local
+`js_module!` that owns the whole browser exchange and settles one promise,
+so the Rust side is a single `JsFuture` and one error match:
+
+- `net/fetch` (`crates/sdk/client/net/src/web.rs`) builds the `Headers`,
+  calls `fetch` with an `AbortController` signal, buffers the body and
+  resolves `{ status, headers, body }`, or rejects `{ kind, message }` with
+  `kind` = `abort` / `timeout` / `network`. A cancel token, an expired
+  timeout and a dropped `send` future all abort the browser request.
+- `files/idb` (`crates/sdk/client/files/src/web.rs`) opens the database at
+  its current version, adds the `blobs` store by a one-version upgrade only
+  when it is missing, runs one transaction to completion and closes the
+  connection. Connections close on `versionchange`; a blocked upgrade is an
+  error, not a hang.
+
+net and files depend on web-glue alone for the browser (wasm-bindgen-test
+stays as the browser-test harness). No public API changed, and nothing was
+added to web-glue core. None of net's dependents (graphql, auto-update,
+i18n, server, server-kit, jobs, sync) used gloo or web-sys for HTTP.
+
+**Bugs fixed on the way** (each with a browser regression test that fails
+on the old arm):
+
+- net ignored `timeout` on web, so a request to a server that never
+  answered hung forever. It is now `Error::Timeout`, and the deadline
+  covers the body read, as with reqwest.
+- net sent only the last value of a repeated request header, because
+  gloo's `Headers` wrapper only had `set`.
+- net threw out of `send` on an invalid header name (gloo's
+  `unwrap_throw`). It is now `Error::Network`.
+- Dropping net's `send` future left the browser request running.
+- files opened at a fixed version 1. A database past version 1 failed with
+  `VersionError`, and one without the `blobs` store never got it.
+- files read a value that was not bytes as `Ok(Some(empty))`.
+
+**Found, not fixed here:** net's iOS (NSURLSession) and Android
+(HttpURLConnection) arms ignore `timeout` too. Only reqwest and web apply
+it, as net's README now says.
+
+**Verification:** net's browser suites through the workspace runner
+(headless Chrome 154): `web_fetch` 16 (real `fetch` against `blob:` /
+`data:` URLs, the runner's own server for a 404, and loopback port 1 for a
+refused connection; a stand-in `fetch` that normalises through
+`new Request` and honours the `AbortSignal` for the sent request and for a
+server that never answers), plus `web_socket_glue` 3 and
+`web_closure_lifetime` 2. files' browser suite 9 (`src/web/tests.rs`). Host
+`cargo test` for both crates; `cargo check` for aarch64-apple-ios and
+aarch64-linux-android for both; media-writer's browser suite (it writes
+through files); wasm32 `cargo check` of net's dependents.
