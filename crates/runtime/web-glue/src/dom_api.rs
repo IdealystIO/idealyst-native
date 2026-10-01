@@ -4,10 +4,11 @@
 //! `Window::document -> Option<Document>`, …) so ported call sites change
 //! paths, not shapes. Errors are [`JsError`].
 //!
-//! Hot operations (creation, attributes, text, tree edits, inline style,
-//! class lists, measurement) each have their own snippet. The long tail of
-//! plain property reads and writes goes through the generic accessors at
-//! the top, which cost one extra string decode for the property name.
+//! Every operation is its own snippet: hot ones (creation, attributes,
+//! text, tree edits, inline style, class lists, measurement) hand-written,
+//! and plain property reads and writes through the `prop_*!` / `set_*!`
+//! macros, which bake the property name into the snippet — no operation
+//! decodes a name string per call.
 
 use crate::cast::JsCast;
 use crate::dom::*;
@@ -27,18 +28,6 @@ fn h(v: &impl JsCast) -> u32 {
 }
 
 crate::import! {
-    // ---- generic property access -----------------------------------------
-    fn js_get_num(o: u32, p: usize, l: usize) -> f64 = "(o, p, l) => +G.get(o)[G.str(p, l)]";
-    fn js_get_bool(o: u32, p: usize, l: usize) -> u32 = "(o, p, l) => G.get(o)[G.str(p, l)] ? 1 : 0";
-    fn js_get_str(o: u32, p: usize, l: usize, out: usize) -> u32 =
-        "(o, p, l, r) => { const v = G.get(o)[G.str(p, l)]; if (v == null) return 0; G.retStr(String(v), r); return 1; }";
-    fn js_get_obj(o: u32, p: usize, l: usize) -> u32 = "(o, p, l) => G.add(G.get(o)[G.str(p, l)])";
-    fn js_set_num(o: u32, p: usize, l: usize, n: f64) = "(o, p, l, n) => { G.get(o)[G.str(p, l)] = n; }";
-    fn js_set_bool(o: u32, p: usize, l: usize, b: u32) = "(o, p, l, b) => { G.get(o)[G.str(p, l)] = b !== 0; }";
-    fn js_set_str(o: u32, p: usize, l: usize, vp: usize, vl: usize) =
-        "(o, p, l, vp, vl) => { G.get(o)[G.str(p, l)] = G.str(vp, vl); }";
-    fn js_set_obj(o: u32, p: usize, l: usize, v: u32) = "(o, p, l, v) => { G.get(o)[G.str(p, l)] = G.get(v); }";
-
     // ---- Window / Document -------------------------------------------------
     fn js_document(w: u32) -> u32 = "(w) => G.add(G.get(w).document)";
     #[catch]
@@ -61,8 +50,6 @@ crate::import! {
     fn js_history_state(hi: u32, st: u32, up: usize, ul: usize, replace: u32) =
         "(h, s, up, ul, r) => { const x = G.get(h); \
            if (r) x.replaceState(G.get(s), '', G.str(up, ul)); else x.pushState(G.get(s), '', G.str(up, ul)); }";
-    #[catch]
-    fn js_call0(o: u32, p: usize, l: usize) -> u32 = "(o, p, l) => G.add(G.get(o)[G.str(p, l)]())";
 
     // ---- Node --------------------------------------------------------------
     #[catch]
@@ -173,47 +160,101 @@ crate::import! {
         "(cp, cl, tp, tl, i) => G.add(new globalThis[G.str(cp, cl)](G.str(tp, tl), G.get(i)))";
 }
 
-fn prop_num(o: &impl JsCast, k: &str) -> f64 {
-    let (p, l) = string::abi(k);
-    unsafe { js_get_num(h(o), p, l) }
+// ---- plain property access ----------------------------------------------
+//
+// Each accessor is its OWN import with the property name baked into its
+// JS (`(o) => G.add(G.get(o)["cssRules"])`), the shape wasm-bindgen
+// emits as `__wbg_cssRules_<hash>`. They were one generic import per
+// kind taking the name as `(ptr, len)`, which cost a `TextDecoder`
+// decode of the name on EVERY access: measured on the benchmark's theme
+// toggle (Chrome 154, 30 k toggles, CPU profile), the five name decodes
+// (`sheet`, `cssRules`, `style` ×2, `documentElement`) were ~0.8 µs of
+// a ~7.7 µs toggle, which was the whole gap to the pre-port web-sys
+// build (~7.1 µs; boundary crossings were 31 against web-sys's 34).
+//
+// Same-JS, same-signature imports from different call sites get the
+// same import name, so LLD merges them; an accessor nothing calls is
+// dropped with its JS. The key must be a literal: `stringify!` of it is
+// the (quoted) JS property name.
+
+macro_rules! prop_num {
+    ($o:expr, $k:literal) => {{
+        crate::import! { fn get(o: u32) -> f64 = concat!("(o) => +G.get(o)[", stringify!($k), "]"); }
+        unsafe { get(h($o)) }
+    }};
 }
-fn prop_bool(o: &impl JsCast, k: &str) -> bool {
-    let (p, l) = string::abi(k);
-    unsafe { js_get_bool(h(o), p, l) != 0 }
+macro_rules! prop_bool {
+    ($o:expr, $k:literal) => {{
+        crate::import! { fn get(o: u32) -> u32 = concat!("(o) => G.get(o)[", stringify!($k), "] ? 1 : 0"); }
+        unsafe { get(h($o)) != 0 }
+    }};
 }
-fn prop_str_opt(o: &impl JsCast, k: &str) -> Option<String> {
-    let (p, l) = string::abi(k);
-    let mut has = 0;
-    let s = string::receive(|out| has = unsafe { js_get_str(h(o), p, l, out) });
-    (has != 0).then_some(s)
+macro_rules! prop_str_opt {
+    ($o:expr, $k:literal) => {{
+        crate::import! {
+            fn get(o: u32, out: usize) -> u32 = concat!(
+                "(o, r) => { const v = G.get(o)[", stringify!($k),
+                "]; if (v == null) return 0; G.retStr(String(v), r); return 1; }"
+            );
+        }
+        let mut has = 0;
+        let s = string::receive(|out| has = unsafe { get(h($o), out) });
+        (has != 0).then_some(s)
+    }};
 }
-fn prop_str(o: &impl JsCast, k: &str) -> String {
-    prop_str_opt(o, k).unwrap_or_default()
+macro_rules! prop_str {
+    ($o:expr, $k:literal) => {
+        prop_str_opt!($o, $k).unwrap_or_default()
+    };
 }
-fn prop_obj<T: JsCast>(o: &impl JsCast, k: &str) -> Option<T> {
-    let (p, l) = string::abi(k);
-    opt(unsafe { js_get_obj(h(o), p, l) })
+/// `Option<T>`: `null` / `undefined` are `None`; `T` is inferred.
+macro_rules! prop_obj {
+    ($o:expr, $k:literal) => {{
+        crate::import! { fn get(o: u32) -> u32 = concat!("(o) => G.add(G.get(o)[", stringify!($k), "])"); }
+        opt(unsafe { get(h($o)) })
+    }};
 }
-fn set_num(o: &impl JsCast, k: &str, n: f64) {
-    let (p, l) = string::abi(k);
-    unsafe { js_set_num(h(o), p, l, n) }
+macro_rules! set_num {
+    ($o:expr, $k:literal, $v:expr) => {{
+        crate::import! { fn set(o: u32, n: f64) = concat!("(o, n) => { G.get(o)[", stringify!($k), "] = n; }"); }
+        let v: f64 = $v;
+        unsafe { set(h($o), v) }
+    }};
 }
-fn set_bool(o: &impl JsCast, k: &str, b: bool) {
-    let (p, l) = string::abi(k);
-    unsafe { js_set_bool(h(o), p, l, b as u32) }
+macro_rules! set_bool {
+    ($o:expr, $k:literal, $v:expr) => {{
+        crate::import! { fn set(o: u32, b: u32) = concat!("(o, b) => { G.get(o)[", stringify!($k), "] = b !== 0; }"); }
+        let v: bool = $v;
+        unsafe { set(h($o), v as u32) }
+    }};
 }
-fn set_str(o: &impl JsCast, k: &str, v: &str) {
-    let (p, l) = string::abi(k);
-    let (vp, vl) = string::abi(v);
-    unsafe { js_set_str(h(o), p, l, vp, vl) }
+macro_rules! set_str {
+    ($o:expr, $k:literal, $v:expr) => {{
+        crate::import! {
+            fn set(o: u32, p: usize, l: usize) =
+                concat!("(o, p, l) => { G.get(o)[", stringify!($k), "] = G.str(p, l); }");
+        }
+        let v: &str = $v;
+        let (p, l) = string::abi(v);
+        unsafe { set(h($o), p, l) }
+    }};
 }
-fn set_obj(o: &impl JsCast, k: &str, v: &JsValue) {
-    let (p, l) = string::abi(k);
-    unsafe { js_set_obj(h(o), p, l, v.raw()) }
+macro_rules! set_obj {
+    ($o:expr, $k:literal, $v:expr) => {{
+        crate::import! { fn set(o: u32, v: u32) = concat!("(o, v) => { G.get(o)[", stringify!($k), "] = G.get(v); }"); }
+        // Inline, not a `let`: the argument may borrow a temporary.
+        unsafe { set(h($o), JsValue::raw($v)) }
+    }};
 }
-fn call0(o: &impl JsCast, name: &str) -> Result<JsValue, JsError> {
-    let (p, l) = string::abi(name);
-    unsafe { js_call0(h(o), p, l) }.map(|i| unsafe { JsValue::from_raw(i) })
+/// `o[name]()`; a throw is the `Err`.
+macro_rules! call0 {
+    ($o:expr, $k:literal) => {{
+        crate::import! {
+            #[catch]
+            fn call(o: u32) -> u32 = concat!("(o) => G.add(G.get(o)[", stringify!($k), "]())");
+        }
+        unsafe { call(h($o)) }.map(|i| unsafe { JsValue::from_raw(i) })
+    }};
 }
 
 /// Declares plain property accessors: `getter: kind = "jsName"` and
@@ -222,55 +263,55 @@ macro_rules! props {
     ($ty:ty { $($body:tt)* }) => { impl $ty { props!(@items $($body)*); } };
     (@items) => {};
     (@items $name:ident : i32 = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> i32 { prop_num(self, $js) as i32 }
+        pub fn $name(&self) -> i32 { prop_num!(self, $js) as i32 }
         props!(@items $($rest)*);
     };
     (@items $name:ident : u32 = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> u32 { prop_num(self, $js) as u32 }
+        pub fn $name(&self) -> u32 { prop_num!(self, $js) as u32 }
         props!(@items $($rest)*);
     };
     (@items $name:ident : f64 = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> f64 { prop_num(self, $js) }
+        pub fn $name(&self) -> f64 { prop_num!(self, $js) }
         props!(@items $($rest)*);
     };
     (@items $name:ident : bool = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> bool { prop_bool(self, $js) }
+        pub fn $name(&self) -> bool { prop_bool!(self, $js) }
         props!(@items $($rest)*);
     };
     (@items $name:ident : String = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> String { prop_str(self, $js) }
+        pub fn $name(&self) -> String { prop_str!(self, $js) }
         props!(@items $($rest)*);
     };
     (@items $name:ident : Option<String> = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> Option<String> { prop_str_opt(self, $js) }
+        pub fn $name(&self) -> Option<String> { prop_str_opt!(self, $js) }
         props!(@items $($rest)*);
     };
     (@items $name:ident : Option<$t:ident> = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> Option<$t> { prop_obj(self, $js) }
+        pub fn $name(&self) -> Option<$t> { prop_obj!(self, $js) }
         props!(@items $($rest)*);
     };
     (@items $name:ident : obj $t:ident = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self) -> $t { prop_obj(self, $js).expect(concat!($js, " is null")) }
+        pub fn $name(&self) -> $t { prop_obj!(self, $js).expect(concat!($js, " is null")) }
         props!(@items $($rest)*);
     };
     (@items $name:ident <= i32 = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self, v: i32) { set_num(self, $js, v as f64) }
+        pub fn $name(&self, v: i32) { set_num!(self, $js, v as f64) }
         props!(@items $($rest)*);
     };
     (@items $name:ident <= u32 = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self, v: u32) { set_num(self, $js, v as f64) }
+        pub fn $name(&self, v: u32) { set_num!(self, $js, v as f64) }
         props!(@items $($rest)*);
     };
     (@items $name:ident <= f64 = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self, v: f64) { set_num(self, $js, v) }
+        pub fn $name(&self, v: f64) { set_num!(self, $js, v) }
         props!(@items $($rest)*);
     };
     (@items $name:ident <= bool = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self, v: bool) { set_bool(self, $js, v) }
+        pub fn $name(&self, v: bool) { set_bool!(self, $js, v) }
         props!(@items $($rest)*);
     };
     (@items $name:ident <= &str = $js:literal ; $($rest:tt)*) => {
-        pub fn $name(&self, v: &str) { set_str(self, $js, v) }
+        pub fn $name(&self, v: &str) { set_str!(self, $js, v) }
         props!(@items $($rest)*);
     };
 }
@@ -289,22 +330,22 @@ impl Window {
     }
     /// `innerWidth` (web-sys shape: a number in a `JsValue`).
     pub fn inner_width(&self) -> Result<JsValue, JsError> {
-        Ok(JsValue::from_f64(prop_num(self, "innerWidth")))
+        Ok(JsValue::from_f64(prop_num!(self, "innerWidth")))
     }
     pub fn inner_height(&self) -> Result<JsValue, JsError> {
-        Ok(JsValue::from_f64(prop_num(self, "innerHeight")))
+        Ok(JsValue::from_f64(prop_num!(self, "innerHeight")))
     }
     pub fn history(&self) -> Result<History, JsError> {
-        Ok(prop_obj(self, "history").expect("window.history"))
+        Ok(prop_obj!(self, "history").expect("window.history"))
     }
     pub fn location(&self) -> Location {
-        prop_obj(self, "location").expect("window.location")
+        prop_obj!(self, "location").expect("window.location")
     }
     pub fn navigator(&self) -> Navigator {
-        prop_obj(self, "navigator").expect("window.navigator")
+        prop_obj!(self, "navigator").expect("window.navigator")
     }
     pub fn performance(&self) -> Option<Performance> {
-        prop_obj(self, "performance")
+        prop_obj!(self, "performance")
     }
     /// `setTimeout(f, ms)` with a JS function (web-sys shape).
     pub fn set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -355,10 +396,10 @@ props!(Document {
 
 impl Document {
     pub fn exit_fullscreen(&self) {
-        let _ = call0(self, "exitFullscreen");
+        let _ = call0!(self, "exitFullscreen");
     }
     pub fn fullscreen_element(&self) -> Option<Element> {
-        prop_obj(self, "fullscreenElement")
+        prop_obj!(self, "fullscreenElement")
     }
     pub fn create_element(&self, tag: &str) -> Result<Element, JsError> {
         let (p, l) = string::abi(tag);
@@ -438,8 +479,8 @@ impl Node {
     }
     pub fn set_node_value(&self, v: Option<&str>) {
         match v {
-            Some(v) => set_str(self, "nodeValue", v),
-            None => set_obj(self, "nodeValue", &JsValue::NULL),
+            Some(v) => set_str!(self, "nodeValue", v),
+            None => set_obj!(self, "nodeValue", &JsValue::NULL),
         }
     }
     /// `this.contains(other)`; `None` is `false`, as in the DOM.
@@ -480,10 +521,10 @@ impl HtmlCollection {
 
 impl Text {
     pub fn data(&self) -> String {
-        prop_str(self, "data")
+        prop_str!(self, "data")
     }
     pub fn set_data(&self, v: &str) {
-        set_str(self, "data", v)
+        set_str!(self, "data", v)
     }
 }
 
@@ -518,7 +559,7 @@ props!(Element {
 
 impl Element {
     pub fn request_fullscreen(&self) -> Result<(), JsError> {
-        call0(self, "requestFullscreen").map(drop)
+        call0!(self, "requestFullscreen").map(drop)
     }
     pub fn set_attribute(&self, name: &str, value: &str) -> Result<(), JsError> {
         let (np, nl) = string::abi(name);
@@ -557,7 +598,7 @@ impl Element {
         unsafe { js_matches(h(self), p, l) }.map(|r| r != 0)
     }
     pub fn tag_name(&self) -> String {
-        prop_str(self, "tagName")
+        prop_str!(self, "tagName")
     }
     /// The `class` attribute (an SVG element's `className.baseVal`).
     pub fn class_name(&self) -> String {
@@ -729,7 +770,7 @@ props!(HtmlCanvasElement {
 impl HtmlCanvasElement {
     /// `getContext(kind)`.
     pub fn get_context(&self, kind: &str) -> Result<Option<Object>, JsError> {
-        let f: JsValue = prop_obj::<JsValue>(self, "getContext").unwrap_or_default();
+        let f: JsValue = prop_obj!(self, "getContext").unwrap_or_default();
         let r = f.call(self.as_js(), &[&JsValue::from_str(kind)])?;
         Ok((!r.is_null() && !r.is_undefined()).then(|| r.unchecked_into()))
     }
@@ -818,7 +859,7 @@ impl StyleSheet {
 
 impl CssStyleSheet {
     pub fn css_rules(&self) -> Result<CssRuleList, JsError> {
-        Ok(prop_obj(self, "cssRules").expect("cssRules"))
+        Ok(prop_obj!(self, "cssRules").expect("cssRules"))
     }
     pub fn insert_rule_with_index(&self, rule: &str, index: u32) -> Result<u32, JsError> {
         let (p, l) = string::abi(rule);
@@ -859,59 +900,59 @@ impl History {
         unsafe { js_history_state(h(self), state.raw(), p, l, 1) }
     }
     pub fn back(&self) -> Result<(), JsError> {
-        call0(self, "back").map(drop)
+        call0!(self, "back").map(drop)
     }
     pub fn forward(&self) -> Result<(), JsError> {
-        call0(self, "forward").map(drop)
+        call0!(self, "forward").map(drop)
     }
     pub fn state(&self) -> Result<JsValue, JsError> {
-        Ok(prop_obj::<JsValue>(self, "state").unwrap_or(JsValue::NULL))
+        Ok(prop_obj!(self, "state").unwrap_or(JsValue::NULL))
     }
     pub fn length(&self) -> Result<u32, JsError> {
-        Ok(prop_num(self, "length") as u32)
+        Ok(prop_num!(self, "length") as u32)
     }
 }
 
 impl Location {
     pub fn pathname(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "pathname"))
+        Ok(prop_str!(self, "pathname"))
     }
     pub fn search(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "search"))
+        Ok(prop_str!(self, "search"))
     }
     pub fn hash(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "hash"))
+        Ok(prop_str!(self, "hash"))
     }
     pub fn href(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "href"))
+        Ok(prop_str!(self, "href"))
     }
     pub fn origin(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "origin"))
+        Ok(prop_str!(self, "origin"))
     }
     pub fn host(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "host"))
+        Ok(prop_str!(self, "host"))
     }
     pub fn protocol(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "protocol"))
+        Ok(prop_str!(self, "protocol"))
     }
     pub fn set_href(&self, v: &str) -> Result<(), JsError> {
-        set_str(self, "href", v);
+        set_str!(self, "href", v);
         Ok(())
     }
     pub fn reload(&self) -> Result<(), JsError> {
-        call0(self, "reload").map(drop)
+        call0!(self, "reload").map(drop)
     }
 }
 
 impl Navigator {
     pub fn user_agent(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "userAgent"))
+        Ok(prop_str!(self, "userAgent"))
     }
     pub fn platform(&self) -> Result<String, JsError> {
-        Ok(prop_str(self, "platform"))
+        Ok(prop_str!(self, "platform"))
     }
     pub fn language(&self) -> Option<String> {
-        prop_str_opt(self, "language")
+        prop_str_opt!(self, "language")
     }
 }
 
@@ -944,7 +985,7 @@ props!(ResizeObserverEntry {
 props!(FontFace { family: String = "family"; status: String = "status"; });
 impl FontFace {
     pub fn load(&self) -> Result<crate::js::Promise, JsError> {
-        call0(self, "load").map(JsCast::unchecked_into)
+        call0!(self, "load").map(JsCast::unchecked_into)
     }
 }
 impl FontFaceSet {
@@ -952,7 +993,7 @@ impl FontFaceSet {
         self.as_js().call_method("add", &[face.as_js()]).map(drop)
     }
     pub fn ready(&self) -> Result<crate::js::Promise, JsError> {
-        Ok(prop_obj(self, "ready").expect("fonts.ready"))
+        Ok(prop_obj!(self, "ready").expect("fonts.ready"))
     }
     pub fn values(&self) -> JsValue {
         self.as_js().call_method("values", &[]).unwrap_or_default()
@@ -1048,7 +1089,7 @@ impl MediaStreamTrack {
     }
     /// `readyState`.
     pub fn ready_state(&self) -> MediaStreamTrackState {
-        if prop_str(self, "readyState") == "live" {
+        if prop_str!(self, "readyState") == "live" {
             MediaStreamTrackState::Live
         } else {
             MediaStreamTrackState::Ended
@@ -1088,7 +1129,7 @@ impl WebSocket {
         unsafe { js_ws_new(p, l) }.map(owned)
     }
     pub fn set_binary_type(&self, t: BinaryType) {
-        set_str(self, "binaryType", if t == BinaryType::Arraybuffer { "arraybuffer" } else { "blob" })
+        set_str!(self, "binaryType", if t == BinaryType::Arraybuffer { "arraybuffer" } else { "blob" })
     }
     pub fn ready_state(&self) -> u16 {
         self.ready_state_f64() as u16
@@ -1102,25 +1143,25 @@ impl WebSocket {
         unsafe { js_ws_send_str(h(self), p, l) }
     }
     pub fn close(&self) -> Result<(), JsError> {
-        call0(self, "close").map(drop)
+        call0!(self, "close").map(drop)
     }
 }
 
 impl MessageEvent {
     pub fn data(&self) -> JsValue {
-        prop_obj::<JsValue>(self, "data").unwrap_or_default()
+        prop_obj!(self, "data").unwrap_or_default()
     }
 }
 
 impl CloseEvent {
     pub fn code(&self) -> u16 {
-        prop_num(self, "code") as u16
+        prop_num!(self, "code") as u16
     }
     pub fn reason(&self) -> String {
-        prop_str(self, "reason")
+        prop_str!(self, "reason")
     }
     pub fn was_clean(&self) -> bool {
-        prop_bool(self, "wasClean")
+        prop_bool!(self, "wasClean")
     }
 }
 
@@ -1156,10 +1197,10 @@ impl HtmlImageElement {
         construct("Image")
     }
     pub fn set_onload(&self, f: Option<&Function>) {
-        set_obj(self, "onload", f.map_or(&JsValue::NULL, |f| f.as_js()))
+        set_obj!(self, "onload", f.map_or(&JsValue::NULL, |f| f.as_js()))
     }
     pub fn set_onerror(&self, f: Option<&Function>) {
-        set_obj(self, "onerror", f.map_or(&JsValue::NULL, |f| f.as_js()))
+        set_obj!(self, "onerror", f.map_or(&JsValue::NULL, |f| f.as_js()))
     }
 }
 
@@ -1192,10 +1233,10 @@ impl XmlHttpRequest {
         call(self, "send", &[]).map(drop)
     }
     pub fn status(&self) -> Result<u16, JsError> {
-        Ok(prop_num(self, "status") as u16)
+        Ok(prop_num!(self, "status") as u16)
     }
     pub fn response_text(&self) -> Result<Option<String>, JsError> {
-        Ok(prop_str_opt(self, "responseText"))
+        Ok(prop_str_opt!(self, "responseText"))
     }
 }
 
@@ -1296,12 +1337,6 @@ impl Default for JsValue {
     fn default() -> JsValue {
         JsValue::UNDEFINED
     }
-}
-
-// Keep the dead-code lint quiet for accessors not every build reaches.
-#[allow(dead_code)]
-fn _unused(o: &Object) {
-    set_obj(o, "", &JsValue::UNDEFINED);
 }
 
 /// `console.*` — the web-sys `console::log_1`-style free functions.
