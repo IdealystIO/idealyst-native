@@ -112,6 +112,16 @@ pub fn app() -> Element {
         });
     };
 
+    // Dropping the app's clone of the stream (the last one) runs the camera's
+    // stopper: its tracks end, and the preview's `srcObject` is cleared.
+    let on_stop = move || {
+        if stream_sig.get().is_some() {
+            stream_sig.set(None);
+            started.set(false);
+            status.set("Stopped — camera released".to_string());
+        }
+    };
+
     ui! {
         Stack(gap = StackGap::Md, padding = StackPadding::Lg) {
             Typography(content = "Camera → Video".to_string(), kind = idea_ui::typography_kind::H1)
@@ -124,6 +134,7 @@ pub fn app() -> Element {
             text { move || status.get() }
             preview
             button(label = "Start camera".to_string(), on_click = on_start)
+            button(label = "Stop camera".to_string(), on_click = on_stop)
         }
     }
 }
