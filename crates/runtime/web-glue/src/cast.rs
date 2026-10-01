@@ -26,7 +26,8 @@
 use crate::{string, JsValue};
 
 crate::import! {
-    // Constructors cached by name: `instanceof` is on every checked cast.
+    // The by-name check behind [`instance_of`]. NOT what a declared class
+    // uses — see `js_class!` for why each class has its own import.
     fn js_instance_of(h: u32, p: usize, l: usize) -> u32 =
         "(() => { const cache = new Map(); return (h, p, l) => { \
            const name = G.str(p, l); let C = cache.get(name); \
@@ -95,9 +96,14 @@ impl JsCast for JsValue {
     }
 }
 
-/// `v instanceof globalThis[class]` — what every class's
-/// [`JsCast::is_type_of`] calls. A class the page's global scope lacks
-/// (e.g. `PointerEvent` in an old engine) is never matched.
+/// `v instanceof globalThis[class]`, for a class known only at run time
+/// (or one not worth declaring, like a once-per-flow WebAuthn check). A
+/// class the page's global scope lacks (e.g. `PointerEvent` in an old
+/// engine) is never matched.
+///
+/// Every call ships `class` across the boundary and decodes it in JS, so a
+/// [`js_class!`](crate::js_class) type's [`JsCast::is_type_of`] does NOT
+/// come through here: each declared class has its own `instanceof` import.
 pub fn instance_of(v: &JsValue, class: &str) -> bool {
     let (p, l) = string::abi(class);
     unsafe { js_instance_of(v.raw(), p, l) != 0 }
@@ -117,6 +123,21 @@ pub fn instance_of(v: &JsValue, class: &str) -> bool {
 /// of them. The string is the global constructor `instanceof` checks
 /// against. Each class is `#[repr(transparent)]` over [`JsValue`], which
 /// is what makes the reference casts sound.
+///
+/// # One `instanceof` import per class
+///
+/// [`JsCast::is_type_of`] is generated as its own glue import whose JS
+/// names the constructor (`globalThis.HTMLElement`), the way wasm-bindgen
+/// emits `__wbg_instanceof_<Class>`. It used to call [`instance_of`] with
+/// the class name, which made every checked cast decode that name with a
+/// `TextDecoder` in JS before the `instanceof`: ~110 ns per cast against
+/// ~13 ns (measured in Chrome 154), and `dyn_into::<Node>()` runs once per
+/// mounted node — it took backend-web's batch decode from 7 ms to 31 ms
+/// over the benchmark's 67 k-row rebuild. The constructor is read from
+/// `globalThis` on each call rather than captured: a global the engine
+/// lacks stays a clean `false`, and the load is an inline-cached property
+/// read. Only classes something actually casts to keep their import —
+/// LLD drops the rest, and their JS with them.
 #[macro_export]
 macro_rules! js_class {
     () => {};
@@ -132,7 +153,16 @@ macro_rules! js_class {
 
         impl $crate::cast::JsCast for $name {
             fn is_type_of(v: &$crate::JsValue) -> bool {
-                $crate::cast::instance_of(v, $class)
+                // One import per class, its constructor named in the JS —
+                // no class-name string per call (see the macro docs).
+                $crate::import! {
+                    fn instance_of(h: u32) -> u32 = concat!(
+                        "(h) => { const C = globalThis.", $class,
+                        "; return typeof C === 'function' && G.get(h) instanceof C ? 1 : 0; }"
+                    );
+                }
+                // SAFETY: the snippet only reads the handle's slot.
+                unsafe { instance_of(v.raw()) != 0 }
             }
             fn unchecked_from_js(v: $crate::JsValue) -> Self {
                 $name(v)
