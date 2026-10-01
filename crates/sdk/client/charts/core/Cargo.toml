@@ -13,17 +13,19 @@ description = "Renderer-agnostic charting: a chart spec in, a vector mark IR + l
 # crate. The idealyst SDK (`charts`) owns the IR -> `canvas_core::Scene`
 # adapter instead; the IR is designed to map onto it losslessly.
 #
-# The one dependency is `plotters`, and only for its scale/tick machinery
-# (`coord::ranged1d`) — NOT its `DrawingBackend`. That trait is raster-first
-# (`BackendCoord = (i32, i32)`, a required `draw_pixel`, polyline-only paths,
-# and text delivered as a per-pixel callback with no font handle), all of
-# which we reject. `Ranged::key_points()` is backend-free and returns plain
-# values, so we take tick SELECTION from plotters and do our own f32
-# positioning. `default-features = false` keeps font-kit, `image`, and
-# pathfinder-geometry out of the tree — the graph is 7 crates total.
+# Tick selection (nice-number linear steps, log decades, UTC-midnight-aligned
+# time ticks) is in-house, in `src/ticks.rs` — a port of what this crate
+# used to take from `plotters`, diffed against it for identical output.
+# `plotters` was dropped because on wasm32 it links `wasm-bindgen` and
+# `web-sys` unconditionally (target-specific deps, not behind any feature),
+# and its `datetime` feature enables chrono with DEFAULT features —
+# `clock` + `wasmbind`, i.e. `js-sys`/`wasm-bindgen` again. The framework
+# owns its web boundary; a portable charting crate must not pull it in.
 [dependencies]
-plotters = { version = "0.3.7", default-features = false, features = ["datetime"] }
-# Already in the tree via plotters' `datetime` feature, so this is a
-# no-cost direct dep. Needed to build the `DateTime<Utc>` range plotters'
-# calendar-aware tick selection wants, and to format the resulting ticks.
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Calendar math (UTC midnight, day/week stepping) and strftime-style label
+# formatting for time axes. Pure computation: NO `clock` (no "now", no
+# local time zone — the `iana-time-zone` / `wasm-bindgen` path on wasm32),
+# NO `wasmbind`, NO `std`. `alloc` is what `DateTime::format(..).to_string()`
+# needs. Keep it that way: `cargo tree --target wasm32-unknown-unknown -i
+# wasm-bindgen -p charts-core` must stay empty.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }

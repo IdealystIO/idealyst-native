@@ -63,6 +63,7 @@ pub mod scale;
 pub mod scene;
 pub mod spec;
 pub mod svg;
+pub mod ticks;
 pub mod tween;
 
 pub use hit::{HitIndex, HitResult, MarkBounds};

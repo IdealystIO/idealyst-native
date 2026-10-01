@@ -103,6 +103,12 @@ Axis::log()                             // non-positive data is dropped
 ```
 
 `Domain::Auto` fits the data, rounded outward to tick boundaries.
+`tick_count` is a ceiling, not a target. Linear ticks step by 1, 2 or 5 times
+a power of ten; log ticks fall on decades (every n-th decade when they do not
+fit, with in-decade ticks when there is room); time ticks are UTC — a fixed
+period from milliseconds up to 12 hours, aligned to midnight, or whole days /
+weeks for longer spans, labelled `%H:%M`, `%b %d` or `%Y` by span. The
+selection lives in `charts_core::ticks` and can be called directly.
 `Domain::Fixed { min, max }` is what a pan/zoom addon writes — `Domain::translate`
 and `Domain::zoom` produce one, and `ChartOutput::x.domain()` reads the current
 window back.
@@ -497,7 +503,9 @@ with no runtime can use `charts_core::ease_in_out` for the old default curve.
 
 ## Non-idealyst use
 
-`charts-core` is standalone by contract — no runtime crates, no toolkit. It
+`charts-core` is standalone by contract — no runtime crates, no toolkit, and
+its only dependency is `chrono` with no default features (so nothing
+platform-bound, and no `wasm-bindgen`, on the web). It
 ships an SVG reference renderer that doubles as the worked example for a new
 consumer:
 

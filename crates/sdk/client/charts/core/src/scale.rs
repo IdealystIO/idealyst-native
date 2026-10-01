@@ -1,21 +1,13 @@
 //! Domain resolution, tick selection, and value <-> pixel mapping.
 //!
-//! This is the one place plotters is used, and only for what it is good at.
-//! `Ranged::key_points()` is backend-free, returns plain values, and encodes
-//! a lot of hard-won judgement about human-friendly intervals — especially
-//! `types/datetime.rs`, which is ~1300 lines of calendar-aware month/quarter/
-//! year bucketing that would be genuinely unwise to reimplement.
-//!
-//! What we do NOT use is `Ranged::map`, whose signature is
-//! `fn map(&self, value, limit: (i32, i32)) -> i32`. The integer return is
-//! not a backend detail — it is baked into the scale trait itself, so
-//! adopting it would quantize every mark to whole logical pixels and produce
-//! visible snapping on high-DPR displays and during pan/zoom animation. We
-//! take the tick VALUES from plotters and do our own `f32` positioning.
-
-use plotters::coord::ranged1d::{AsRangedCoord, Ranged, ValueFormatter};
+//! Tick VALUES and labels come from [`crate::ticks`]; this module settles
+//! the domain (auto-fit, outward rounding, log clamping) and owns the
+//! value <-> pixel mapping. Mapping is `f64` in, `f32` out, with no
+//! quantization: snapping marks to whole logical pixels would show as
+//! jitter on high-DPR displays and during pan/zoom animation.
 
 use crate::spec::{Axis, AxisKind, Domain};
+use crate::ticks;
 
 /// One tick: where it sits in data space, and its rendered label.
 #[derive(Clone, PartialEq, Debug)]
@@ -143,33 +135,23 @@ fn ensure_width(lo: f64, hi: f64) -> (f64, f64) {
     }
 }
 
-/// Choose ticks for a numeric range using plotters' key-point selection.
+/// Choose ticks for a numeric range.
 fn numeric_ticks(min: f64, max: f64, want: usize) -> Vec<Tick> {
-    let coord: <std::ops::Range<f64> as AsRangedCoord>::CoordDescType = (min..max).into();
-    coord
-        .key_points(want)
-        .into_iter()
-        .map(|v| Tick { value: v, label: ValueFormatter::<f64>::format_ext(&coord, &v) })
-        .collect()
+    ticks::linear(min, max, want)
 }
 
-/// The widest log span we will hand to plotters, in decades.
-///
-/// plotters 0.3.7 hangs outright above ~308 decades. `LogCoord::key_points`
-/// computes `bold_count = ((end / start).ln().abs() / base.ln()).floor()`;
-/// once `end / start` exceeds `f64::MAX` that division is `+inf`, `.floor()`
-/// stays `inf`, and `inf as usize` SATURATES to `usize::MAX` rather than
-/// wrapping. The next line is
-/// `while max_points < bold_count / cnt { multiplier *= base; cnt += 1; }`,
-/// which then needs `cnt` to climb past 3.7e18 before it can exit — an
-/// effectively infinite loop, with no panic and no diagnostic.
+/// The widest log span an axis may have, in decades.
 ///
 /// 12 decades is already far past any real chart (a picoamp-to-amp axis is
-/// 12), so clamping here costs nothing and removes the cliff entirely,
-/// including for a caller who sets an absurd `Domain::Fixed` by hand.
+/// 12). Without a cap, an all-non-positive data set or an absurd hand-set
+/// `Domain::Fixed` produces a ~308-decade domain, for which `end / start`
+/// overflows f64 — the log tick walk used to hang outright on it (plotters
+/// 0.3.7 saturated `inf as usize` into a ~3.7e18-iteration loop; the
+/// in-house [`ticks::log`] returns no ticks instead). Clamping keeps the
+/// domain meaningful AND the ticks present.
 const MAX_LOG_DECADES: f64 = 12.0;
 
-/// Constrain a log range to something plotters can handle, keeping the top
+/// Constrain a log range to at most [`MAX_LOG_DECADES`], keeping the top
 /// of the range (the large values are the ones a reader is looking at).
 fn clamp_log_range(min: f64, max: f64) -> (f64, f64) {
     let hi = if max > 0.0 { max } else { 1.0 };
@@ -183,65 +165,16 @@ fn clamp_log_range(min: f64, max: f64) -> (f64, f64) {
     }
 }
 
-/// Choose ticks for a log range. Plotters' `LogCoord` picks decade and
-/// mantissa points appropriately rather than spacing linearly in log space.
+/// Choose ticks for a log range: decade points, plus in-decade points when
+/// the tick budget allows.
 fn log_ticks(min: f64, max: f64, want: usize) -> Vec<Tick> {
-    use plotters::coord::combinators::IntoLogRange;
     let (lo, hi) = clamp_log_range(min, max);
-    let coord: plotters::coord::combinators::LogCoord<f64> = (lo..hi).log_scale().into();
-    coord
-        .key_points(want)
-        .into_iter()
-        .map(|v| Tick { value: v, label: format_number(v) })
-        .collect()
+    ticks::log(lo, hi, want)
 }
 
 /// Choose ticks for a time range (milliseconds since the Unix epoch).
-///
-/// Handing this to plotters is the single biggest reason to depend on it at
-/// all: it produces calendar-aligned boundaries (month starts, year starts)
-/// rather than fixed-size buckets, which is what makes a time axis read
-/// correctly across DST shifts and unequal month lengths.
 fn time_ticks(min_ms: f64, max_ms: f64, want: usize) -> Vec<Tick> {
-    use chrono::{DateTime, Utc};
-
-    let to_dt = |ms: f64| DateTime::<Utc>::from_timestamp_millis(ms as i64);
-    let (Some(start), Some(end)) = (to_dt(min_ms), to_dt(max_ms)) else {
-        // Out of chrono's representable range — fall back to plain numbers
-        // rather than dropping the axis entirely.
-        return numeric_ticks(min_ms, max_ms, want);
-    };
-
-    let coord: <std::ops::Range<DateTime<Utc>> as AsRangedCoord>::CoordDescType =
-        (start..end).into();
-    let points = coord.key_points(want);
-    let span_ms = max_ms - min_ms;
-    // Pick a format matching the resolution actually being shown, so a
-    // multi-year axis does not print times and an intraday one does.
-    let fmt = if span_ms > 3.0 * 365.0 * 86_400_000.0 {
-        "%Y"
-    } else if span_ms > 2.0 * 86_400_000.0 {
-        "%b %d"
-    } else {
-        "%H:%M"
-    };
-    points
-        .into_iter()
-        .map(|dt| Tick {
-            value: dt.timestamp_millis() as f64,
-            label: dt.format(fmt).to_string(),
-        })
-        .collect()
-}
-
-/// Format a number for a tick label without trailing noise.
-fn format_number(v: f64) -> String {
-    if v == v.trunc() && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        let s = format!("{v:.3}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    }
+    ticks::time(min_ms, max_ms, want)
 }
 
 /// Resolve one axis: settle its domain, then choose ticks within it.
