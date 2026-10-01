@@ -651,12 +651,35 @@ headless Chrome fake media devices (`--use-fake-device-for-media-stream`) or
 relax the autoplay policy (camera, microphone, media-stream, media-writer).
 
 
-**Verification so far:** new wasm32 browser suites through the workspace
-runner (headless Chrome 154) — web-glue 3, media-stream 4, camera 2,
-microphone 2, screen-recorder 2, video 3, video-compose 1, media-writer 3,
-canvas-native 3, file-picker 2; `cargo check` for wasm32 of every touched
-crate and every workspace dependent alone (denoise-demo fails only on its
-un-fetched model asset); iOS / Android `cargo check` of the nine SDKs. Not
-yet run (the work stopped at the disk floor): host `cargo test` of the
-touched crates, backend-web's browser suite, the CLI E2Es, and a real app
-(camera-preview-demo, whiteboard-demo) in headless Chrome.
+**Found by verification — the build still needs wasm-bindgen's runtime.**
+With backend-web off wasm-bindgen, an app with no other wasm-bindgen user
+(both hot-patch E2E apps; a plain framework app without files / net / wgpu)
+linked none of it. Every web build still runs the wasm-bindgen CLI, whose
+externref pass (on whenever the module has `reference-types`, rustc's wasm32
+default) needs the runtime's `__externref_table_alloc` exports and failed with
+"failed to find intrinsics to enable `clone_ref` function" — the dev session
+never served. `WebBackend::new_in` now calls
+`wasm_bindgen::__rt::link_mem_intrinsics()` (the hook wasm-bindgen's own
+generated code uses), so backend-web depends on wasm-bindgen again for the
+build only; no wasm-bindgen type crosses its API. Own mode (phase 6) removes
+it. Also fixed on the way: backend-web's host tests did not compile on macOS
+(a wasm-only `.init_array` probe), and screen-recorder's host tests (a
+misplaced dev-dependency, and a stale `Element::External` test).
+
+**Verification:** new wasm32 browser suites through the workspace runner
+(headless Chrome 154) — web-glue 3, media-stream 4, camera 2, microphone 2,
+screen-recorder 2, video 3, video-compose 1, media-writer 3, canvas-native 3,
+file-picker 2; backend-web's browser suite 118/118 (incl.
+`regression_dropped_file_source_is_the_glue_file_file_picker_reads`); host
+`cargo test` of every touched crate (screen-recorder and
+backend-web's lib tests after the fixes above); `cargo check` for wasm32 of
+every touched crate and every workspace dependent alone (denoise-demo fails
+only on its un-fetched model asset); iOS / Android `cargo check` of the nine
+SDKs; `wasm_hot_patch_e2e` 2/2 (0/2 before the runtime fix) and
+`dev_events_e2e` 1/1. Real apps built with `idealyst build --web` and driven
+in headless Chrome over WebDriver: camera-preview-demo with fake media
+devices (Start → the `<video>` plays the 640×480 feed; Stop → the tracks the
+preview showed are `ended` and `srcObject` is cleared) and whiteboard-demo (a
+pointer stroke painted on the Canvas2D board, still painted after a window
+resize shrank the canvas's backing store). No console errors beyond a missing
+favicon.
