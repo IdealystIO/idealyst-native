@@ -1,14 +1,13 @@
 # `offload-macro`
 
-The proc-macro that backs [`offload`](../offload)'s `#[offload::job]` attribute
-on **native** targets. You almost certainly don't depend on this crate directly —
-use `offload`, which re-exports the right `#[job]` for the current target.
+The proc-macro that backs [`offload`](../offload)'s `#[offload::job]` attribute.
+You almost certainly don't depend on this crate directly — use `offload`, which
+re-exports it.
 
-On web, `offload` re-exports `wasmworker`'s real `#[webworker_fn]`, which
-generates the worker-side dispatch entry so a job can be invoked by name inside a
-Web Worker. On native there is no worker — the job runs on a `std::thread` and is
-called through an ordinary function pointer — so the attribute has nothing to
-generate.
+The attribute is a marker that generates nothing, on every target. A job is
+dispatched through the function pointer `offload::handle!` captures: natively
+it is called on a `std::thread`; on web its function-table index is sent to a
+Web Worker running the same module, where it names the same function.
 
 ## What you get
 
@@ -16,9 +15,7 @@ generate.
   verbatim.
 
 This crate exists only because attribute macros must live in a `proc-macro`
-crate. Keeping the attribute present (rather than asking callers to `#[cfg]` it
-away) means a job is annotated **once** and the call site is identical on every
-platform.
+crate.
 
 See [`offload`](../offload) for the full API and usage.
 
@@ -30,14 +27,13 @@ compile/expansion, exercised through `offload`.
 
 **Automated**
 - [ ] `cargo build -p offload-macro` — the proc-macro crate compiles
-- [ ] `cargo test -p offload` — the downstream crate that actually invokes
-  `#[offload_macro::job]` builds and its native job runs (this crate has no
-  tests of its own; its correctness is that the annotated fn is emitted
-  verbatim, observed via the `offload` native path)
+- [x] `cargo test -p offload` (native) and `cargo test -p offload --target
+  wasm32-unknown-unknown` (browser) — the downstream crate whose tests annotate
+  jobs with `#[offload::job]` builds and runs them (this crate has no tests of
+  its own; its correctness is that the annotated fn is emitted verbatim)
 
 **Behavior**
 
-Pure compile-time, no native backend. The only observable property is that
-`#[offload::job]` on a native target leaves the annotated function unchanged so
-the call site is identical to the web build — confirmed by `offload`'s native
-tests above.
+Pure compile-time. The only observable property is that `#[offload::job]`
+leaves the annotated function unchanged on every target — confirmed by
+`offload`'s tests above.

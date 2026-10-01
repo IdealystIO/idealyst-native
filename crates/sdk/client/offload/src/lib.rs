@@ -19,53 +19,31 @@
 //! }
 //! ```
 //!
-//! On web the job runs in a Web Worker (background thread) via `wasmworker` — no
-//! `SharedArrayBuffer`, so no COOP/COEP headers and embedding keeps working. On
-//! native it runs on a `std::thread`. The public surface (`job`, `handle!`,
-//! `run`, [`OffloadError`]) is backend-agnostic so the web implementation can be
-//! replaced later without touching callers.
+//! On web the job runs in a Web Worker that instantiates the same app module
+//! (`web_glue::worker`), with the argument and result postcard-encoded — no
+//! `SharedArrayBuffer`, so no COOP/COEP headers and embedding keeps working, and
+//! no wasm-bindgen. On native it runs on a `std::thread`. A job that panics
+//! resolves to [`OffloadError::Canceled`] on both.
 //!
-//! ## Consumer dependency note (web)
-//!
-//! On `wasm32`, `#[offload::job]` re-exports wasmworker's `#[webworker_fn]`, whose
-//! generated code references the `wasmworker` and `wasm_bindgen` crates **by
-//! name**. A crate that *defines* a job must therefore add both as direct
-//! `wasm32` dependencies:
-//!
-//! ```toml
-//! [target.'cfg(target_arch = "wasm32")'.dependencies]
-//! wasmworker = { version = "0.4", features = ["macros"] }
-//! wasm-bindgen = "0.2"
-//! ```
-//!
-//! The call site (`offload::run(offload::handle!(f), &req)`) still only names
-//! `offload`; only the `#[job]` expansion needs the two crates in scope.
+//! The crate that defines a job needs no extra dependencies: `#[offload::job]`
+//! generates nothing on any target (the handle carries the function pointer), and
+//! call sites only name `offload`.
 
 mod error;
-pub use error::OffloadError;
+mod handle;
 
-// ── Web ─────────────────────────────────────────────────────────────────────
-// `#[offload::job]` IS wasmworker's `#[webworker_fn]` (registers the fn for the
-// worker); `offload::handle!` IS wasmworker's `webworker!` (builds the typed
-// handle). `run` dispatches to the global worker pool. See `web.rs`.
-#[cfg(target_arch = "wasm32")]
-pub use wasmworker::{webworker as handle, webworker_fn as job};
+pub use error::OffloadError;
+pub use handle::Handle;
+/// Marks a free function as an offload job. A no-op marker on every target:
+/// [`handle!`] carries the function pointer, which is all either backend needs.
+pub use offload_macro::job;
 
 #[cfg(target_arch = "wasm32")]
 #[path = "web.rs"]
 mod imp;
-
-// ── Native ──────────────────────────────────────────────────────────────────
-// `#[offload::job]` is a no-op (the job is an ordinary fn run on a thread);
-// `offload::handle!` is defined in `native.rs` (exported at the crate root via
-// `#[macro_export]`). `run` spawns a `std::thread`. See `native.rs`.
-#[cfg(not(target_arch = "wasm32"))]
-pub use offload_macro::job;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native.rs"]
 mod imp;
 
 pub use imp::run;
-#[cfg(not(target_arch = "wasm32"))]
-pub use imp::Handle;

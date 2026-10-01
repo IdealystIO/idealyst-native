@@ -219,6 +219,7 @@ members = [
     "crates/sdk/client/auto-update",
     "crates/sdk/client/offload",
     "crates/sdk/client/offload-macro",
+    "crates/sdk/client/offload/examples/offload-demo",
     "crates/sdk/client/credentials",
     "crates/sdk/client/biometrics",
     "crates/sdk/client/screen-recorder",

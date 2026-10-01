@@ -1,20 +1,17 @@
-//! Proc-macro backing [`offload`](../offload)'s `#[offload::job]` attribute on
-//! **native** targets.
+//! Proc-macro backing [`offload`](../offload)'s `#[offload::job]` attribute.
 //!
-//! On web, `offload` re-exports `wasmworker::webworker_fn`, which generates the
-//! worker-side dispatch entry so the function can be invoked by name inside a Web
-//! Worker. On native there is no worker — the job runs on a `std::thread` and is
-//! called through an ordinary function pointer — so the attribute has nothing to
-//! generate: it returns the annotated function unchanged.
+//! The attribute is a marker that generates nothing, on every target: a job is
+//! dispatched through its function pointer, which `offload::handle!` captures.
+//! Natively that pointer is called on a `std::thread`; on web its
+//! function-table index is sent to a Web Worker running the same module
+//! (`web_glue::worker`), where the pointer names the same function.
 //!
-//! Keeping the attribute present (rather than asking callers to `#[cfg]` it away)
-//! means a job is annotated **once** and the call site is identical on every
-//! platform.
+//! Keeping the attribute (rather than asking callers to drop it) means a job
+//! reads as one at its definition, and existing code keeps compiling.
 
 use proc_macro::TokenStream;
 
-/// No-op passthrough: emits the annotated item verbatim. See the crate docs for
-/// why this exists only on native.
+/// No-op passthrough: emits the annotated item verbatim. See the crate docs.
 #[proc_macro_attribute]
 pub fn job(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item

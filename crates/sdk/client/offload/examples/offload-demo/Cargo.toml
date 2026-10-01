@@ -1,0 +1,30 @@
+[package]
+name = "offload-demo"
+version = "1.5.2"
+edition.workspace = true
+license.workspace = true
+description = "offload demo — a CPU-heavy #[offload::job] run off the main thread: a Web Worker running the same app wasm on web, a std::thread natively."
+# A runnable example, not a library consumers depend on.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The platform surface, used by `src/main.rs` only.
+idealyst = { workspace = true }
+# `async-driver` for `driver::spawn_async`; `runtime-vocabulary` for the
+# `ui!` emission's absolute paths and the registration seam's bounds;
+# `runtime-scene` for the `Registry` the seam takes.
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+offload = { workspace = true }
+serde = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Offload"
+bundle_id = "ai.truday.idealyst.offloaddemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

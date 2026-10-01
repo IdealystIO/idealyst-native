@@ -4,11 +4,10 @@ version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 
-# The `#[offload::job]` attribute on NATIVE targets. On web, `offload` re-exports
-# wasmworker's real `#[webworker_fn]` (which registers the function for the
-# worker); on native there is no worker, so the attribute is a no-op passthrough
-# and the job runs on a `std::thread`. This crate exists only to provide that
-# native no-op (attribute macros must be proc-macros).
+# The `#[offload::job]` attribute: a no-op marker on every target (a job is
+# dispatched through the function pointer `offload::handle!` captures; on web
+# the pointer's table index reaches a Web Worker running the same module).
+# Attribute macros must be proc-macros, hence this crate.
 
 [lib]
 proc-macro = true
