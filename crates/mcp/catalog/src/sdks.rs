@@ -487,6 +487,12 @@ sdk!(
     "Tactile feedback — `impact`/`notify`/`selection`. Fire-and-forget, best-effort. UIFeedbackGenerator / Vibrator / `navigator.vibrate`."
 );
 sdk!(
+    "datetime",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "The current date and time on every target — `now_utc()` (a `Timestamp`, µs since the Unix epoch), `local_offset_at(t)` (the local UTC offset at that instant, DST-correct), `local_offset()`, `local_timezone()` (IANA name). Feature `chrono`: `now_chrono_utc()` replaces `chrono::Utc::now()`, `now_chrono_local()` (a `DateTime<FixedOffset>`) replaces `chrono::Local::now()`, `to_chrono_local(t)`. Use these instead of chrono's clock: on web `Utc::now()` needs chrono's `wasmbind` (wasm-bindgen in the app, hybrid build) and without it PANICS (SystemTime on wasm32). Turn chrono's `clock`/`wasmbind` features off. Works without a mounted backend (server code, tests). Fake time: `with_clock(FixedClock::new(t), || ..)` per thread, `set_clock` process-wide. `Date`/`Intl` on web, libc localtime_r / Win32 natively."
+);
+sdk!(
     "auto-update",
     SdkCategory::Device,
     SdkKind::Api,

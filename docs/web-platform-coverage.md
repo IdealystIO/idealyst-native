@@ -92,6 +92,18 @@ the call this change removes.
 | --- | --- | --- | --- | --- | --- |
 | One-shot and repeating timers | `app-checkin/src/clock.rs` (already on the framework) | `after_ms_scoped` / `after_ms_detached` / `raf_loop_scoped` | `setTimeout` / rAF | platform run loop | covered |
 | Current time for animations and instrumentation | none | `runtime_core::time::now_micros()` | `performance.now()` (needs `install_time_source`) | monotonic clock | covered |
+| The current date and time (`chrono::Utc::now()`): stamp a check-in, default a report or roster to today, measure elapsed minutes | `app-checkin/src/clock.rs`, `app-checkin/src/overrides/state.rs`, `app-checkin/src/roster/mod.rs`, `api/src/domains/attendance.rs`, `api/src/domains/safety_tips.rs`, `core/src/domains/attendance.rs`, `core/src/domains/completeness.rs` | `datetime::now_utc()` (a `Timestamp`); with the `chrono` feature, `datetime::now_chrono_utc()` returns a `DateTime<Utc>` | `Date.now()` | `SystemTime`. Works without a mounted backend, so server code and tests get the real time too | added |
+| The local time zone (`chrono::Local::now()`): the device's UTC offset at an instant, correct across DST changes, and the zone's IANA name | `app-checkin/src/clock.rs` (the device offset, as `Local::now().offset()`) | `datetime::local_offset_at(t)`, `datetime::local_offset()`, `datetime::local_timezone()`; with `chrono`, `datetime::now_chrono_local()` returns a `DateTime<FixedOffset>` | `new Date(ms).getTimezoneOffset()`, `Intl.DateTimeFormat().resolvedOptions().timeZone` | `localtime_r` (Apple, Android, Linux), `SystemTimeToTzSpecificLocalTimeEx` (Windows); zone name from `$TZ`, else the system setting | added |
+
+chrono's own clock is the other way an app ends up in hybrid mode
+without calling `web-sys` itself. `Utc::now()` and `Local::now()` reach
+the browser only through chrono's `wasmbind` feature, which links
+`wasm-bindgen` and `js-sys`. Without `wasmbind` they call
+`std::time::SystemTime::now()`, which panics on
+`wasm32-unknown-unknown`. The fix is to turn off chrono's `clock` and
+`wasmbind` features in the web-compiled crates and read the clock
+through `datetime`. The datetime README has the replacement for each
+call.
 
 ## Text input
 

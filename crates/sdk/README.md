@@ -87,6 +87,7 @@ an OS grant flow.
 | `deep-link` | [`deep-link/`](./client/deep-link) | Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). |
 | `connectivity` | [`connectivity/`](./client/connectivity) | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport. |
 | `haptics` | [`haptics/`](./client/haptics) | Tactile feedback — `impact` / `notify` / `selection`. Best-effort, fire-and-forget. |
+| `datetime` | [`datetime/`](./client/datetime) | The current date and time — `now_utc()`, `local_offset_at(t)` (DST-correct), `local_timezone()`; `chrono` feature replaces `Utc::now()` / `Local::now()` without chrono's `wasmbind`. |
 | `audio` | [`audio/`](./client/audio) | Sound playback — `load(AudioSource)` → a `Sound` you `play()`. The playback peer of the capture SDKs. |
 
 ## Navigator SDKs
@@ -199,6 +200,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `deep-link` | 🧪 unit (URL parse, dedupe, dispatch, RAII unsubscribe) | 🟢 web `location.href` run-exercised; ⚠️ **Apple/Android launch-URL forwarding is a host seam (the parse/dispatch core is pure Rust)** |
 | `connectivity` | 🧪 unit (snapshot consistency, transport) | 🟢 web `navigator.onLine` run-exercised; ⚠️ **Apple `NWPathMonitor` + Android `ConnectivityManager` compile-checked only**; Android `watch` needs a host `NetworkCallback` shim |
 | `haptics` | 🧪 unit (style mapping) | 🟢 web `navigator.vibrate` where supported; ⚠️ **Apple `UIFeedbackGenerator`/`NSHapticFeedbackManager` + Android `Vibrator` compile-checked only** |
+| `datetime` | 🧪 unit + fake clocks; macOS `$TZ` child-process suite (DST transitions, historic rules) | 🟢 web `Date`/`Intl` run-exercised in Chrome (also under `TZ=America/New_York`); 🟢 macOS `localtime_r` run-exercised; ⚠️ **iOS / Android / Linux / Windows compile-checked only** (iOS and Linux share the run-exercised libc path) |
 | `audio` | 🧪 unit (source/handle, async load) | 🟢 web `HTMLAudioElement` run-exercised; ⚠️ **Apple `AVAudioPlayer` + Android `MediaPlayer` compile-checked only**; desktop = `NotSupported` fallback |
 
 ### Navigator SDKs

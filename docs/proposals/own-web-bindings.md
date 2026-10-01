@@ -1036,3 +1036,19 @@ on CrewForge's 305 MB hot-reload base and 0.04–0.05 s / 0.21 GB on a 68 MB
 module, most of it file I/O (the build now keeps the module in memory
 between extraction and `pkg/`). Porting
 CrewForge's 15 web-sys files onto the SDKs is app work, not framework work.
+
+The web-sys files are not the only thing keeping CrewForge hybrid. A
+dependency can link wasm-bindgen for the app: chrono's `Utc::now()` /
+`Local::now()` reach the browser through chrono's `wasmbind` feature
+(wasm-bindgen + js-sys), and without it they panic on
+`SystemTime::now()`. CrewForge reads the clock this way in app-checkin
+(clock, overrides, roster) and in the shared api/core domains
+(attendance, safety tips). The framework had no date/time API, so this
+was a gap; it is now the `datetime` SDK (`crates/sdk/client/datetime`:
+`now_utc()`, `local_offset_at(t)`, `local_timezone()`, and
+`now_chrono_utc()` / `now_chrono_local()` behind its `chrono` feature),
+bound through web-glue. Once CrewForge switches those calls and drops
+chrono's `clock` and `wasmbind` features from its web-compiled crates,
+chrono no longer links wasm-bindgen. The full list of browser
+capabilities and the framework API for each is
+[`docs/web-platform-coverage.md`](../web-platform-coverage.md).
