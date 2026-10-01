@@ -320,8 +320,9 @@ learn glue imports (see risks).
   `unsafe`. A debug-build generation tag on the slab is cheap if it is
   ever needed.
 - **Single-threaded executor.** Wakers hold `Rc`s; like
-  `wasm_bindgen_futures` without atomics. The Worker-based offload SDK
-  gets its own bootstrap in phase 4.
+  `wasm_bindgen_futures` without atomics. Workers are separate instances
+  sharing no memory (`web_glue::worker`, phase 4), each with its own
+  executor.
 - **Code size.** The generic `JsValue` reflect surface and the runtime
   cost a little: after `wasm-opt -Oz` and brotli the demo is 313 bytes
   (1.4%) larger than its web-sys twin. Measured, small, and it has not
@@ -365,10 +366,11 @@ learn glue imports (see risks).
      links no wasm-bindgen at all (after phases 3–4).
 3. **SDKs** (the 35 crates' remaining web-sys/js-sys use), each onto
    `import!` and the handle type.
-4. **Third-party replacements**: fetch (gloo-net), IndexedDB (idb), the
-   Worker bootstrap (wasmworker); drop plotters' web backend and
-   web-time. (`console_error_panic_hook` went in 2a:
-   `backend_web::install_panic_hook`.)
+4. **Third-party replacements (done)**: fetch (gloo-net), IndexedDB (idb),
+   the Worker bootstrap (wasmworker → `web_glue::worker`); plotters and
+   web-time dropped — see [fetch / IndexedDB](#phase-4--fetch--indexeddb)
+   and [Workers / charts / web-time](#phase-4--workers--charts--web-time).
+   (`console_error_panic_hook` went in 2a: `backend_web::install_panic_hook`.)
 5. **Hybrid mode as a supported configuration** for wgpu (the GPU host's
    WebGPU canvas) and for apps that use wasm-bindgen themselves.
 6. **Pipeline cleanup**: remove the wasm-bindgen-only machinery listed
@@ -736,3 +738,91 @@ server that never answers), plus `web_socket_glue` 3 and
 `cargo test` for both crates; `cargo check` for aarch64-apple-ios and
 aarch64-linux-android for both; media-writer's browser suite (it writes
 through files); wasm32 `cargo check` of net's dependents.
+
+## Phase 4 — Workers / charts / web-time
+
+**Workers: `web_glue::worker`, and offload on it.** `worker::spawn(entry:
+fn())` starts a module Worker that instantiates the same wasm (no shared
+memory) and calls `entry` there. A Rust `fn` pointer is a function-table
+index, and every instance of one module has the same table, so the index
+is the whole message; the engine type-checks `call_indirect`, so a stale
+index traps rather than misbehaving. The generated JS that embeds the
+runtime (own: `<lib>.js`; hybrid: `__idealyst_glue.js`) reports its
+`import.meta.url` to the runtime (`G.entry`) and exports
+`__glueWorkerInit(module?)`; the runtime's blob-URL bootstrap imports that
+URL, instantiates, and calls the new `__glue_worker_start(entry)` export.
+Own mode hands the worker the compiled `WebAssembly.Module`; hybrid mode
+gives wasm-bindgen's `init` an explicit `"<stem>_bg.wasm"` URL, which
+`fingerprint_pkg` rewrites like any other wasm name. Nothing new is
+emitted: a build without offload is unchanged except for those two lines of
+JS. The runtime itself already avoided `window`/`document`; the new browser
+tests prove it in a `WorkerGlobalScope`.
+
+offload (`crates/sdk/client/offload`) drops `wasmworker` and
+`serde-wasm-bindgen`. A job crosses as two table indices — the job fn and
+a monomorphized `dispatch::<T, R>` — and postcard bytes (transferred, not
+copied twice). Workers start lazily up to `hardwareConcurrency`, one job
+each, the rest queued. Public API unchanged (`#[job]`, `handle!`, `run`,
+`OffloadError`); `Handle<T, R>` is now the handle type on web too (it was
+wasmworker's `WebWorkerFn`, nameable only through a wasmworker dependency),
+`handle!` accepts a path on web as it did natively, and `#[job]` is a no-op
+marker everywhere, so a job-defining crate no longer needs `wasmworker` /
+`wasm-bindgen` dependencies. offload's wasm32 graph has no wasm-bindgen.
+
+**Bug fixed:** a panicking job hung its caller forever under wasmworker
+(its worker script awaited the job export with no `catch`, so no response
+was ever posted). Now a panic — reported by a worker panic hook before the
+trap — or any other trap (the Worker's `error` event) resolves the caller
+with `OffloadError::Canceled`, the same variant native returns, logs the
+job's name and cause, and replaces the worker. A worker that never starts
+cancels the queued jobs instead of respawning in a loop.
+
+**Limits (traps → `Canceled`, documented in offload's README):** a job only
+reachable from a wasm-split chunk the worker never loaded, and a job a dev
+hot patch added (an edited body of an existing job keeps its index, so
+workers run the base build's body until a reload — as under wasmworker).
+
+**web-time:** render-wgpu, ios-sim and android-sim read a crate-local
+`render_wgpu::time::Instant` over `runtime_shared::time::now_micros()`
+(and `epoch_millis()` for the sim status-bar clock). `Host::new` installs
+the platform default source (first install wins) so the clock can never
+read a frozen 0; host-web installs backend-web's sources before it. The
+`Painter` trait's `now` parameter type changed accordingly.
+
+**Charts:** charts-core took only tick selection from plotters (linear key
+points, `LogCoord`, the `DateTime<Utc>` range, the f64 label printer), but
+on wasm32 plotters links wasm-bindgen + web-sys unconditionally and its
+`datetime` feature turns on chrono's `clock` + `wasmbind`. The new
+`charts_core::ticks` (linear / log / time) is a line-for-line port of
+plotters 0.3.7's algorithms; chrono stays for UTC calendar math and
+strftime labels with `default-features = false, features = ["alloc"]`. Over
+2,976 harness inputs (every axis kind, spans from 1 ms to 1,000 years,
+budgets 0–20, zero / negative / reversed / tiny / huge / NaN / inf bounds,
+plus `scale::resolve` over 416 combinations) every input on which plotters
+returned gives byte-identical ticks and labels; the 229 that differ are
+inputs where plotters hung or panicked (non-finite linear spans, a log
+bound of 0 or ∞, `max_ticks = 0` on a time axis under ~292 years,
+a time range reversed by ≥ a week), where the port returns no ticks.
+`tests/ticks.rs` replays 1,409 recorded plotters outputs and pins each
+divergence.
+
+**What remains on wasm-bindgen** (normal edges, wasm32): offload, charts,
+charts-core, web-glue — none (wasm-bindgen-test is a dev-dependency only).
+render-wgpu — wgpu's own (phase 5, hybrid).
+
+**Verification:** browser suites through the workspace runner (headless
+Chrome 154): web-glue `web_worker` 3 (+ `web_media` 3), offload
+`web_worker` 5 (a job's result from a worker, a 4 MB payload, a panicking
+and a trapping job each `Canceled` with the pool still serving, parallel
+workers with results routed to the right callers), backend-web 118/118.
+`own_glue_e2e` 2/2 (own mode now spawns a worker that reports
+`in_worker=true window=false ctors=1`), `wasm_hot_patch_e2e` 2/2,
+`dev_events_e2e` 1/1. A real app: `examples/offload-demo` (under
+`crates/sdk/client/offload/examples`) built by `idealyst build --web` and
+driven in headless Chrome — 148,933 primes below 2·10⁶ counted in a worker
+while the page animated, a panicking job answered with `Canceled` and the
+console naming it, a later job still served; no console errors besides a
+missing favicon. Host tests of offload, web-glue, wasm-carve, build-web
+(fingerprint), render-wgpu (46), charts-core / charts; iOS / Android
+`cargo check` of offload, offload-macro, web-glue, render-wgpu / ios-sim /
+android-sim, charts; wasm32 checks of render-wgpu + host-web.
