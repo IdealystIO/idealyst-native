@@ -29,6 +29,11 @@ thread_local! {
 }
 
 fn main() {
+    // The same module also runs inside the self-check's Worker
+    // (`web_glue::worker`), where there is no DOM to build.
+    if web_glue::worker::in_worker() {
+        return;
+    }
     let body = dom::body();
     let title = dom::child(&body, "h1", "title");
     dom::set_text(&title, "own-glue demo ✓");
@@ -73,6 +78,8 @@ fn main() {
         dom::set_text(&async_el, &format!("timer {slept}ms; rejection {rejection}"));
         #[cfg(all(feature = "selftest", target_arch = "wasm32"))]
         selftest::run(&body);
+        #[cfg(all(feature = "selftest", target_arch = "wasm32"))]
+        selftest::worker(&body).await;
         dom::set_text(&status, "ready");
     });
 

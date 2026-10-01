@@ -10,7 +10,8 @@
 //!   → Rust string, handle-slab accounting, listener detach, stale-callback
 //!   refusal, the custom-section JS module), that a benchmark's 10 000 retained
 //!   row handles are all released afterwards, and that static constructors
-//!   ran once. Also asserts the crate graph and
+//!   ran once, and a `web_glue::worker` Worker running a Rust fn in a fresh
+//!   instance of the module. Also asserts the crate graph and
 //!   the output carry no trace of wasm-bindgen.
 //! * `hybrid_module_runs_with_both_namespaces` — `tests/own-glue/hybrid`,
 //!   which uses web-glue AND wasm-bindgen, packaged in hybrid mode: both
@@ -360,6 +361,10 @@ fn own_glue_demo_runs_in_chrome_without_wasm_bindgen() {
     for check in ["strings", "growth", "handles", "callbacks", "module", "reflect", "casts", "listener"] {
         assert!(selftest.contains(&format!("{check}=ok")), "self-check {check} failed: {selftest}");
     }
+    // `web_glue::worker` in own mode: a Worker re-imported pkg/<lib>.js,
+    // instantiated the same module (its own constructors ran once there)
+    // and ran the entry fn by its table index.
+    assert_eq!(page.text("worker"), "worker=ok in_worker=true window=false ctors=1 ✓");
 
     // Events: JS click → Rust closure → Rust state → DOM.
     for _ in 0..3 {

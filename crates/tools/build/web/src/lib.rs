@@ -4775,6 +4775,34 @@ mod fingerprint_tests {
         );
     }
 
+    /// The hybrid glue file is what a `web_glue::worker` Worker imports and
+    /// instantiates the module through, by an explicit wasm URL. After
+    /// fingerprinting, both its import of the bindgen JS AND that wasm URL
+    /// must name the hashed files — a stale `demo_bg.wasm` would 404 in
+    /// every worker of a deployed bundle.
+    #[test]
+    fn fingerprint_rewrites_the_hybrid_glue_files_worker_wasm_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = fake_pkg(tmp.path());
+        let glue = wasm_carve::glue::Glue {
+            wasm: Vec::new(),
+            imports: Vec::new(),
+            runtime: Some("return { lazyAttach() {}, module() {}, entry() {} };".into()),
+            modules: Vec::new(),
+            foreign_import_modules: Vec::new(),
+            section_bytes: 0,
+        };
+        own_glue::write_hybrid_glue_file(&pkg, &glue, "demo").unwrap();
+        let fp = fingerprint_pkg(&pkg, "demo").unwrap();
+        let file = pkg.join(hashed(own_glue::HYBRID_GLUE_FILE, &fp.hash));
+        let js = fs::read_to_string(&file).unwrap();
+        assert!(js.contains(&format!("from \"./{}\"", fp.entry_js)), "{js}");
+        assert!(
+            js.contains(&format!("new URL(\"{}\", import.meta.url)", hashed("demo_bg.wasm", &fp.hash))),
+            "the worker's wasm URL must be the hashed wasm:\n{js}",
+        );
+    }
+
     #[test]
     fn fingerprint_is_deterministic_and_change_sensitive() {
         let tmp_a = tempfile::tempdir().unwrap();

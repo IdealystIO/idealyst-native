@@ -15,6 +15,7 @@
 //! | promises / executor      | [`JsFuture`], [`spawn_local`]          |
 //! | microtasks               | [`queue_microtask`]                    |
 //! | typed DOM handles, casts | [`dom`], [`JsCast`], [`js_class!`]     |
+//! | workers on this module   | [`worker`]                             |
 //!
 //! # How the JS gets to the page
 //!
@@ -52,6 +53,7 @@ pub mod record;
 pub mod string;
 pub mod task;
 pub mod value;
+pub mod worker;
 
 pub use callback::Closure;
 pub use cast::JsCast;

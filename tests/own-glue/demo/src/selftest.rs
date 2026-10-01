@@ -240,3 +240,42 @@ fn listener() -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Own mode's half of `web_glue::worker`: a Worker re-imports
+/// `pkg/<lib>.js` (the URL the loader reported through `G.entry`),
+/// instantiates from the compiled module the loader kept, runs
+/// [`worker_entry`] and posts back what it saw. Writes `#worker`.
+pub async fn worker(body: &JsValue) {
+    let out = dom::child(body, "div", "worker");
+    let text = match worker_round_trip().await {
+        Ok(s) => s,
+        Err(e) => format!("worker=FAIL({e})"),
+    };
+    dom::set_text(&out, &text);
+}
+
+async fn worker_round_trip() -> Result<String, String> {
+    let w = web_glue::worker::spawn(worker_entry).map_err(|e| e.message())?;
+    // The worker's first message, or its error event.
+    let next = web_glue::js::Function::new_with_args(
+        "w",
+        "return new Promise((res, rej) => { \
+           w.onmessage = (e) => res(e.data); \
+           w.onerror = (e) => { e.preventDefault(); rej(new Error(e.message)); }; })",
+    );
+    let promise = next.call1(&JsValue::undefined(), w.as_js()).map_err(|e| e.message())?;
+    let reply = web_glue::JsFuture::from(promise).await.map_err(|e| e.message())?;
+    w.terminate();
+    reply.as_string().ok_or_else(|| "reply is not a string".into())
+}
+
+/// Runs in the worker's instance of this module.
+fn worker_entry() {
+    let msg = format!(
+        "worker=ok in_worker={} window={} ctors={} \u{2713}",
+        web_glue::worker::in_worker(),
+        web_glue::dom::window().is_some(),
+        crate::ctor_runs(),
+    );
+    web_glue::worker::post_to_parent(&JsValue::from_str(&msg)).expect("postMessage");
+}
