@@ -836,7 +836,14 @@ inputs where plotters hung or panicked (non-finite linear spans, a log
 bound of 0 or ∞, `max_ticks = 0` on a time axis under ~292 years,
 a time range reversed by ≥ a week), where the port returns no ticks.
 `tests/ticks.rs` replays 1,409 recorded plotters outputs and pins each
-divergence.
+divergence. *Later:* the port also stopped reproducing three plotters label
+quirks — linear ranges under ~1e-5 labelled `"0.0"` / `"-0.0"`, log axes
+repeating a decade tick (`"10", "10"`) and labelling small decades `"0"`,
+and time axes labelled by span rather than step (a multi-year axis stepped
+in weeks read `"2024", "2024", "2025"`; sub-minute steps read `"13:47"`
+repeatedly). Adjacent labels are now always distinct and never `-0`; 454 of
+the 1,409 corpus lines were rewritten for it, each category listed in the
+corpus header.
 
 **What remains on wasm-bindgen** (normal edges, wasm32): offload, charts,
 charts-core, web-glue — none (wasm-bindgen-test is a dev-dependency only).

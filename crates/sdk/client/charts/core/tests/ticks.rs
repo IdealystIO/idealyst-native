@@ -358,6 +358,104 @@ fn time_multi_year_uses_year_labels() {
     assert_eq!(labels(&y), ["2024", "2026", "2028", "2030", "2032"]);
 }
 
+/// 2024-01-01T00:00:00Z.
+const JAN_1_2024: f64 = 1_704_067_200_000.0;
+
+/// A multi-year axis is labelled `%Y`, but plotters stepped it in whole
+/// weeks: 52-week steps from Jan 1 2024 land on Dec 30 2024, so the axis
+/// read `"2024", "2024", "2025", …`. Long spans now step in calendar years
+/// (or months, when the budget allows), aligned to Jan 1 / the 1st.
+#[test]
+fn regression_time_multi_year_axis_steps_in_calendar_years() {
+    let five_years = 1826.0 * MS_PER_DAY; // Jan 1 2024 -> Dec 31 2028
+    let y = ticks::time(JAN_1_2024, JAN_1_2024 + five_years, 5);
+    assert_eq!(labels(&y), ["2024", "2025", "2026", "2027", "2028"]);
+    assert_eq!(values(&y)[1], 1_735_689_600_000.0, "2025-01-01T00:00:00Z");
+    // One day more and five yearly ticks no longer fit: every other year.
+    let y = ticks::time(JAN_1_2024, JAN_1_2024 + five_years + MS_PER_DAY, 5);
+    assert_eq!(labels(&y), ["2024", "2026", "2028"]);
+
+    // A budget with room for finer steps gets quarters, labelled with the
+    // month so the year repeats are distinguishable.
+    let q = ticks::time(JAN_1_2024 + 40.0 * MS_PER_DAY, JAN_1_2024 + four_years(), 20);
+    assert_eq!(&labels(&q)[..3], ["Apr 2024", "Jul 2024", "Oct 2024"]);
+    assert_eq!(labels(&q).last(), Some(&"Jan 2028"));
+
+    // Centuries: 1, 2, 5 x 10^k years, on years divisible by the step.
+    let c = ticks::time(-631_152_000_000.0, -631_152_000_000.0 + 300.0 * 365.25 * MS_PER_DAY, 5);
+    assert_eq!(labels(&c), ["2000", "2100", "2200"]);
+}
+
+fn four_years() -> f64 {
+    1461.0 * MS_PER_DAY
+}
+
+/// Sub-minute steps were labelled `%H:%M`, so a 5-second axis read
+/// `"13:47"` five times. Labels now carry the step's resolution.
+#[test]
+fn regression_time_sub_minute_steps_label_seconds() {
+    let s = ticks::time(T0, T0 + 5_000.0, 5);
+    assert_eq!(labels(&s), ["13:47:13", "13:47:14", "13:47:15", "13:47:16", "13:47:17"]);
+
+    let ms = ticks::time(T0, T0 + 1_000.0, 5);
+    assert_eq!(
+        labels(&ms),
+        ["13:47:12.400", "13:47:12.600", "13:47:12.800", "13:47:13.000", "13:47:13.200"]
+    );
+}
+
+/// The period ladder went below a millisecond, but tick values are whole
+/// milliseconds — a 1 ms axis got five ticks with the SAME value.
+#[test]
+fn regression_time_sub_millisecond_period_has_no_duplicate_ticks() {
+    let t = ticks::time(T0, T0 + 1.0, 5);
+    assert_eq!(values(&t), [T0]);
+    let t = ticks::time(T0, T0 + 7.0, 5);
+    assert_eq!(values(&t), [T0 + 1.0, T0 + 3.0, T0 + 5.0]);
+}
+
+/// A multi-day span with an hourly step was labelled `%b %d`, repeating
+/// the date for every tick of the day. Midnights now carry the date and
+/// the ticks between them the time of day.
+#[test]
+fn regression_time_hourly_steps_over_days_label_time_of_day() {
+    let t = ticks::time(T0, T0 + 3.0 * MS_PER_DAY, 10);
+    assert_eq!(
+        labels(&t),
+        ["16:00", "Mar 11", "08:00", "16:00", "Mar 12", "08:00", "16:00", "Mar 13", "08:00"]
+    );
+}
+
+/// Whole-day steps on a span of two days or less were labelled `%H:%M` —
+/// every tick is a midnight, so every label was `"00:00"`.
+#[test]
+fn regression_time_day_steps_on_short_span_label_dates() {
+    assert_eq!(labels(&ticks::time(T0, T0 + 2.0 * MS_PER_DAY, 1)), ["Mar 11", "Mar 12"]);
+}
+
+/// The general rule, swept: spans from a millisecond to a millennium,
+/// several epochs (including pre-1970), budgets 1-20.
+#[test]
+fn time_labels_are_distinct_over_a_sweep_of_spans() {
+    let bases = [T0, 0.0, JAN_1_2024, -631_152_000_000.0, 951_782_400_000.0 + 12_345.0];
+    let mut checked = 0;
+    let mut span = 1.0;
+    while span < 1000.0 * 365.25 * MS_PER_DAY {
+        for &base in &bases {
+            for w in 1..=20 {
+                let t = ticks::time(base, base + span, w);
+                assert_distinct_labels(&t, &format!("time({base:?}, +{span:?}, {w})"));
+                // plotters' day/week stepping counts both ends, so it can
+                // return one tick over budget; that is unchanged here.
+                assert!(t.len() <= w + 1, "time({base:?}, +{span:?}, {w}): {} ticks", t.len());
+                checked += 1;
+            }
+        }
+        span *= 1.37;
+    }
+    assert!(checked > 5_000);
+}
+
 #[test]
 fn time_zero_span_is_empty() {
     assert!(ticks::time(T0, T0, 5).is_empty());

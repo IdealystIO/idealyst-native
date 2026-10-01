@@ -10,10 +10,11 @@
 //!   more than five places prints in scientific notation.
 //! - [`log`] — one tick per decade (or per every n-th decade when there are
 //!   too many), plus evenly spaced in-decade ticks when the budget allows.
-//! - [`time`] — milliseconds since the Unix epoch, UTC. Spans shorter than
-//!   ~292 years get a fixed period from a ladder of human units (1/2/5 ms…,
-//!   1/2/5/10/15/20/30 s and min, 1/2/4/8/12 h) aligned to UTC midnight;
-//!   longer spans fall back to whole days or whole weeks.
+//! - [`time`] — milliseconds since the Unix epoch, UTC. A span gets a
+//!   fixed period from a ladder of human units (1/2/5 ms…, 1/2/5/10/15/20/
+//!   30 s and min, 1/2/4/8/12 h) aligned to UTC midnight, or whole days /
+//!   weeks; spans over three years step in calendar months (1/2/3/6) or
+//!   years (1/2/5 x 10^k). Labels carry the step's resolution.
 //!
 //! # Provenance
 //!
@@ -65,6 +66,19 @@
 //!   under 0.0005 read `"0"`. The in-decade run now stops short of the next
 //!   decade, and small values print in scientific notation (`"1e-5"`) (85
 //!   corpus lines).
+//! - **Time axes**: labels were picked by span (`%Y` over three years,
+//!   `%b %d` over two days, else `%H:%M`), not by step. A multi-year axis
+//!   stepped in whole weeks, so 52-week steps from Jan 1 read `"2024",
+//!   "2024", "2025"`; a 5-second axis read `"13:47"` five times; hourly
+//!   steps over three days repeated each date; day steps on a short span
+//!   all read `"00:00"`; and periods under a millisecond produced ticks
+//!   with the same (whole-millisecond) value. Spans over three years now
+//!   step in calendar months/years aligned to the 1st / Jan 1, the period
+//!   never drops below 1 ms, and labels follow the step: `%H:%M:%S%.3f`,
+//!   `%H:%M:%S`, `%H:%M` (with `%b %d` on midnights over multi-day spans),
+//!   `%b %d`, `%b %Y`, `%Y`. A zero budget over a multi-year span now
+//!   returns no ticks, like every other zero budget (300 corpus lines; the
+//!   corpus header breaks them down).
 //!
 //! `tests/ticks.rs` sweeps ranges for each axis kind asserting the
 //! contract.
@@ -73,7 +87,7 @@
 //! the scale's job ([`ResolvedAxis::map`](crate::ResolvedAxis::map)), done
 //! in `f32` without quantizing to whole pixels.
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, TimeDelta, Timelike, Utc};
 
 use crate::scale::Tick;
 
@@ -431,19 +445,53 @@ fn format_number(v: f64) -> String {
 // Time
 // ---------------------------------------------------------------------------
 
+const NS_PER_MS: u64 = 1_000_000;
 const NS_PER_SEC: u64 = 1_000_000_000;
+const NS_PER_MIN: u64 = 60 * NS_PER_SEC;
 const NS_PER_HOUR: u64 = 3_600 * NS_PER_SEC;
 const NS_PER_DAY: u64 = 24 * NS_PER_HOUR;
-const MS_PER_DAY: f64 = 86_400_000.0;
-const MS_PER_YEAR: f64 = 365.0 * MS_PER_DAY;
+const MS_PER_DAY: i64 = 86_400_000;
+/// Spans longer than this (three 365-day years) step in calendar months or
+/// years. It is the threshold at which labels always switched to `%Y`.
+const CALENDAR_SPAN_MS: i64 = 3 * 365 * MS_PER_DAY;
+/// On spans longer than this, sub-daily ticks that fall on midnight are
+/// labelled with the date (the threshold where labels used to switch to
+/// `%b %d` wholesale).
+const DATED_MIDNIGHT_SPAN_MS: i64 = 2 * MS_PER_DAY;
+
+/// The month steps tried, finest first, before stepping in whole years.
+const MONTH_STEPS: [i32; 4] = [1, 2, 3, 6];
+
+/// What one step of a time axis is, which decides how its ticks are
+/// labelled: the label carries exactly the resolution that distinguishes
+/// one tick from the next.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Resolution {
+    /// A step under a second (whole milliseconds): `13:47:12.400`.
+    Millis,
+    /// A step of 1-30 seconds: `13:47:12`.
+    Seconds,
+    /// A step of a minute to 12 hours: `13:45`, with the date (`Mar 11`)
+    /// on midnights when the axis spans more than two days.
+    TimeOfDay,
+    /// Whole days or weeks: `Mar 11`.
+    Days,
+    /// Whole months: `Apr 2024`.
+    Months,
+    /// Whole years: `2024`.
+    Years,
+}
 
 /// Ticks for a time axis over `[min_ms, max_ms]` (milliseconds since the
-/// Unix epoch, UTC), at most `max_ticks` of them.
+/// Unix epoch, UTC), at most `max_ticks` of them (day/week steps can run
+/// one over, as plotters' did).
 ///
-/// Labels match the resolution being shown: `%Y` above three years,
-/// `%b %d` above two days, `%H:%M` otherwise. Bounds outside chrono's
-/// representable range fall back to [`linear`] so the axis still has
-/// ticks.
+/// Labels carry the resolution of the STEP, so adjacent labels always
+/// differ: `%H:%M:%S%.3f` under a second, `%H:%M:%S` under a minute,
+/// `%H:%M` under a day (midnights dated `%b %d` on spans over two days),
+/// `%b %d` for day/week steps, `%b %Y` for month steps, `%Y` for year
+/// steps. Bounds outside chrono's representable range fall back to
+/// [`linear`] so the axis still has ticks.
 pub fn time(min_ms: f64, max_ms: f64, max_ticks: usize) -> Vec<Tick> {
     // `as i64` saturates (and maps NaN to 0) — the conversion the axis has
     // always used.
@@ -452,18 +500,25 @@ pub fn time(min_ms: f64, max_ms: f64, max_ticks: usize) -> Vec<Tick> {
         return linear(min_ms, max_ms, max_ticks);
     };
 
-    let points = time_values(start, end, max_ticks);
-    let span_ms = max_ms - min_ms;
-    let fmt = if span_ms > 3.0 * MS_PER_YEAR {
-        "%Y"
-    } else if span_ms > 2.0 * MS_PER_DAY {
-        "%b %d"
-    } else {
-        "%H:%M"
+    let (points, resolution) = time_values(start, end, max_ticks);
+    let dated_midnights = (end - start).num_milliseconds() > DATED_MIDNIGHT_SPAN_MS;
+    let label = |dt: DateTime<Utc>| -> String {
+        let fmt = match resolution {
+            Resolution::Millis => "%H:%M:%S%.3f",
+            Resolution::Seconds => "%H:%M:%S",
+            Resolution::TimeOfDay if dated_midnights && dt.num_seconds_from_midnight() == 0 => {
+                "%b %d"
+            }
+            Resolution::TimeOfDay => "%H:%M",
+            Resolution::Days => "%b %d",
+            Resolution::Months => "%b %Y",
+            Resolution::Years => "%Y",
+        };
+        dt.format(fmt).to_string()
     };
     points
         .into_iter()
-        .map(|dt| Tick { value: dt.timestamp_millis() as f64, label: dt.format(fmt).to_string() })
+        .map(|dt| Tick { value: dt.timestamp_millis() as f64, label: label(dt) })
         .collect()
 }
 
@@ -472,8 +527,14 @@ fn midnight(date: NaiveDate) -> DateTime<Utc> {
     date.and_time(chrono::NaiveTime::MIN).and_utc()
 }
 
-/// Port of plotters' `RangedDateTime::key_points` for `DateTime<Utc>`.
-fn time_values(start: DateTime<Utc>, end: DateTime<Utc>, max_points: usize) -> Vec<DateTime<Utc>> {
+/// Port of plotters' `RangedDateTime::key_points` for `DateTime<Utc>`,
+/// with two departures (module docs): the period never drops below a
+/// millisecond, and spans over three years step in calendar months/years.
+fn time_values(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    max_points: usize,
+) -> (Vec<DateTime<Utc>>, Resolution) {
     let total_span = end - start;
 
     // Sub-daily path: a fixed period, aligned so ticks land on multiples of
@@ -482,6 +543,21 @@ fn time_values(start: DateTime<Utc>, end: DateTime<Utc>, max_points: usize) -> V
     if let Some(total_ns) = total_span.num_nanoseconds() {
         match period_per_point(total_ns as u64, max_points) {
             Period::Every(p) => {
+                // Tick values are whole milliseconds (`timestamp_millis`),
+                // so a finer period — plotters' ladder goes down to 1 ns —
+                // produced runs of ticks with the SAME value and label.
+                let p = p.max(NS_PER_MS);
+                let resolution = if p < NS_PER_SEC {
+                    Resolution::Millis
+                } else if p < NS_PER_MIN {
+                    Resolution::Seconds
+                } else if p < NS_PER_DAY {
+                    Resolution::TimeOfDay
+                } else {
+                    // The hour ladder can climb to a whole day (`1 x 24h`);
+                    // its ticks are then all midnights, i.e. dates.
+                    Resolution::Days
+                };
                 let start_time_ns = u64::from(start.num_seconds_from_midnight()) * NS_PER_SEC
                     + u64::from(start.nanosecond());
                 let first = if !start_time_ns.is_multiple_of(p) {
@@ -493,7 +569,7 @@ fn time_values(start: DateTime<Utc>, end: DateTime<Utc>, max_points: usize) -> V
                 let Some(mut t) = midnight(start.date_naive())
                     .checked_add_signed(TimeDelta::nanoseconds(first as i64))
                 else {
-                    return ret;
+                    return (ret, resolution);
                 };
                 while t < end {
                     ret.push(t);
@@ -502,13 +578,21 @@ fn time_values(start: DateTime<Utc>, end: DateTime<Utc>, max_points: usize) -> V
                         None => break,
                     }
                 }
-                return ret;
+                return (ret, resolution);
             }
             // plotters panicked here (`10u64.pow` overflow with zero ticks
             // requested); see module docs.
-            Period::Unrepresentable => return vec![],
+            Period::Unrepresentable => return (vec![], Resolution::TimeOfDay),
             Period::LongerThanADay => {}
         }
+    }
+
+    // A multi-year span is labelled by year, so it must step by whole
+    // years (or by months, labelled with the month). plotters stepped it
+    // in whole weeks, and 52-week steps from Jan 1 land on Dec 30: the
+    // axis read "2024", "2024", "2025".
+    if total_span.num_milliseconds() > CALENDAR_SPAN_MS {
+        return calendar_values(start, end, max_points);
     }
 
     // Otherwise whole dates: the first midnight at or after `start`, to the
@@ -518,8 +602,74 @@ fn time_values(start: DateTime<Utc>, end: DateTime<Utc>, max_points: usize) -> V
     } else {
         Some(start.date_naive())
     };
-    let Some(first) = ceil else { return vec![] };
-    date_values(first, end.date_naive(), max_points).into_iter().map(midnight).collect()
+    let Some(first) = ceil else { return (vec![], Resolution::Days) };
+    let dates = date_values(first, end.date_naive(), max_points);
+    (dates.into_iter().map(midnight).collect(), Resolution::Days)
+}
+
+/// Calendar ticks for a span of over three years: the finest of 1/2/3/6
+/// months, then 1/2/5 x 10^k years, that yields at most `max_points`
+/// ticks. Month ticks fall on the 1st of months whose index (counted from
+/// January of year 0) is a multiple of the step — quarters on Jan/Apr/Jul/
+/// Oct; year ticks on Jan 1 of years divisible by the step.
+fn calendar_values(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    max_points: usize,
+) -> (Vec<DateTime<Utc>>, Resolution) {
+    if max_points == 0 {
+        return (vec![], Resolution::Years);
+    }
+    let max_points = i64::try_from(max_points).unwrap_or(i64::MAX);
+    // Run of `month_index` values `first, first + step, ..` up to `last`,
+    // as midnights on the 1st. Stops early if chrono runs out of range.
+    let month_start = |index: i64| -> Option<DateTime<Utc>> {
+        let year = i32::try_from(index.div_euclid(12)).ok()?;
+        let month = u32::try_from(index.rem_euclid(12)).ok()? + 1;
+        NaiveDate::from_ymd_opt(year, month, 1).map(midnight)
+    };
+    let run = |first: i64, last: i64, step: i64| -> Vec<DateTime<Utc>> {
+        (0..=(last - first) / step).map_while(|k| month_start(first + k * step)).collect()
+    };
+    let ceil_to = |v: i64, step: i64| v + (step - v.rem_euclid(step)) % step;
+
+    let month_index = |d: NaiveDate| i64::from(d.year()) * 12 + i64::from(d.month0());
+    // First 1st-of-month at or after `start`; the 1st of `end`'s month is
+    // always at or before `end`.
+    let mut first_month = month_index(start.date_naive());
+    if month_start(first_month).is_none_or(|t| t < start) {
+        first_month += 1;
+    }
+    let last_month = month_index(end.date_naive());
+
+    for step in MONTH_STEPS.map(i64::from) {
+        let first = ceil_to(first_month, step);
+        if first <= last_month && (last_month - first) / step < max_points {
+            return (run(first, last_month, step), Resolution::Months);
+        }
+    }
+
+    // Years, in months: a year tick is a month index divisible by 12*step.
+    let mut step_years: i64 = 1;
+    loop {
+        let step = step_years.saturating_mul(12);
+        let first = ceil_to(first_month, step);
+        if first > last_month {
+            // The step outgrew the span without ever fitting (only possible
+            // for a budget of one): show the first Jan 1 in range alone.
+            let first_jan = ceil_to(first_month, 12);
+            return (month_start(first_jan).into_iter().collect(), Resolution::Years);
+        }
+        if (last_month - first) / step < max_points {
+            return (run(first, last_month, step), Resolution::Years);
+        }
+        // 1, 2, 5, 10, 20, 50, ...
+        step_years = match step_years / 10i64.pow(step_years.ilog10()) {
+            1 => step_years * 2,
+            2 => step_years / 2 * 5,
+            _ => step_years * 2,
+        };
+    }
 }
 
 enum Period {

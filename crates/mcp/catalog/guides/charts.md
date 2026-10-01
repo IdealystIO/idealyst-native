@@ -106,9 +106,13 @@ Axis::log()                             // non-positive data is dropped
 `tick_count` is a ceiling, not a target. Linear ticks step by 1, 2 or 5 times
 a power of ten; log ticks fall on decades (every n-th decade when they do not
 fit, with in-decade ticks when there is room); time ticks are UTC — a fixed
-period from milliseconds up to 12 hours, aligned to midnight, or whole days /
-weeks for longer spans, labelled `%H:%M`, `%b %d` or `%Y` by span. The
-selection lives in `charts_core::ticks` and can be called directly.
+period from milliseconds up to 12 hours, aligned to midnight, whole days /
+weeks for longer spans, and calendar months or years (on the 1st / Jan 1) for
+spans over three years. Labels follow the step, so adjacent labels always
+differ: `13:47:12.400`, `13:47:12`, `13:45` (midnights read `Mar 11` on
+multi-day axes), `Mar 11`, `Apr 2024`, `2024`. Linear labels carry the step's
+precision (`0.9999995`; scientific for tiny axes, `1.5e-9`) and never read
+`-0.0`. The selection lives in `charts_core::ticks` and can be called directly.
 `Domain::Fixed { min, max }` is what a pan/zoom addon writes — `Domain::translate`
 and `Domain::zoom` produce one, and `ChartOutput::x.domain()` reads the current
 window back.
