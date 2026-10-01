@@ -434,9 +434,9 @@ license = "MIT OR Apache-2.0"
 # The app-facing facade. An app depends on this, writes
 # `idealyst::entry!(<lib>)` in `src/main.rs`, and builds with plain
 # cargo — there is no CLI-generated web wrapper crate any more.
-idealyst = { path = "crates/idealyst", version = "1.6.0", registry = "idealyst" }
+idealyst = { path = "crates/idealyst", version = "1.7.0", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "1.8.0", registry = "idealyst" }
-runtime-shared = { path = "crates/runtime/shared", version = "1.12.0", registry = "idealyst" }
+runtime-shared = { path = "crates/runtime/shared", version = "1.13.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.7.1", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.7.0", registry = "idealyst" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.17.0", registry = "idealyst" }
@@ -464,7 +464,7 @@ linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.12.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.9.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.13.1", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.14.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
@@ -472,12 +472,12 @@ web-glue = { path = "crates/runtime/web-glue", version = "1.5.2", registry = "id
 zone-offset = { path = "crates/runtime/zone-offset", version = "1.5.2", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.7.0", registry = "idealyst" }
 dev-client = { path = "crates/dev/client", version = "1.7.0", registry = "idealyst" }
-dev-server = { path = "crates/dev/server", version = "1.7.0", registry = "idealyst" }
+dev-server = { path = "crates/dev/server", version = "1.7.1", registry = "idealyst" }
 mock-backend = { path = "crates/dev/mock-backend" }
 host-mock = { path = "crates/dev/host-mock", version = "1.6.1", registry = "idealyst" }
 parity-goldens = { path = "crates/dev/parity-goldens" }
 ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
-headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.2", registry = "idealyst" }
+headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.3", registry = "idealyst" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
 robot-relay = { path = "crates/dev/robot-relay" }
 inspector-protocol = { path = "crates/dev/inspector-protocol" }
@@ -514,9 +514,9 @@ lint = { path = "crates/tools/lint" }
 configure = { path = "crates/tools/configure" }
 icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core", version = "1.7.0", registry = "idealyst" }
-backend-macos = { path = "crates/backend/macos", version = "1.8.0", registry = "idealyst" }
+backend-macos = { path = "crates/backend/macos", version = "1.8.1", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "1.6.0", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.9.0", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.9.1", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "1.5.2", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "1.5.2", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "1.5.2", registry = "idealyst" }
@@ -527,30 +527,30 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.6.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.6.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "1.8.1", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "2.0.0", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.4", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.3", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.6.0", registry = "idealyst" }
 backend-linux = { path = "crates/backend/linux", version = "1.6.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.2", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.6.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.6.1", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "1.5.2", registry = "idealyst" }
-render-wgpu = { path = "crates/gpu-backend/engine", version = "1.6.0", registry = "idealyst" }
+render-wgpu = { path = "crates/gpu-backend/engine", version = "2.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
 android-sim = { path = "crates/gpu-backend/painter/android-sim" }
-host-winit = { path = "crates/gpu-backend/host/winit", version = "1.5.2", registry = "idealyst" }
-host-web = { path = "crates/gpu-backend/host/web", version = "1.5.2", registry = "idealyst" }
-host-ios-mobile = { path = "crates/gpu-backend/host/ios-mobile", version = "1.5.2", registry = "idealyst" }
-host-android-mobile = { path = "crates/gpu-backend/host/android-mobile", version = "1.5.2", registry = "idealyst" }
-host-macos-desktop = { path = "crates/gpu-backend/host/macos-desktop", version = "1.5.2", registry = "idealyst" }
-host-windows-desktop = { path = "crates/gpu-backend/host/windows-desktop", version = "1.5.2", registry = "idealyst" }
-host-wgpu = { path = "crates/gpu-backend/host/wgpu", version = "1.5.2", registry = "idealyst" }
-host-linux-desktop = { path = "crates/gpu-backend/host/linux-desktop", version = "1.5.2", registry = "idealyst" }
+host-winit = { path = "crates/gpu-backend/host/winit", version = "1.5.3", registry = "idealyst" }
+host-web = { path = "crates/gpu-backend/host/web", version = "1.5.3", registry = "idealyst" }
+host-ios-mobile = { path = "crates/gpu-backend/host/ios-mobile", version = "1.5.3", registry = "idealyst" }
+host-android-mobile = { path = "crates/gpu-backend/host/android-mobile", version = "1.5.3", registry = "idealyst" }
+host-macos-desktop = { path = "crates/gpu-backend/host/macos-desktop", version = "1.5.3", registry = "idealyst" }
+host-windows-desktop = { path = "crates/gpu-backend/host/windows-desktop", version = "1.5.3", registry = "idealyst" }
+host-wgpu = { path = "crates/gpu-backend/host/wgpu", version = "1.5.3", registry = "idealyst" }
+host-linux-desktop = { path = "crates/gpu-backend/host/linux-desktop", version = "1.5.3", registry = "idealyst" }
 host-appkit = { path = "crates/gpu-backend/host/appkit", version = "1.6.0", registry = "idealyst" }
 host-win32 = { path = "crates/host/win32", version = "1.5.2", registry = "idealyst" }
 host-terminal = { path = "crates/gpu-backend/host/terminal", version = "1.5.4", registry = "idealyst" }
-host-wgpu-accesskit = { path = "crates/gpu-backend/host/wgpu-accesskit", version = "1.5.2", registry = "idealyst" }
+host-wgpu-accesskit = { path = "crates/gpu-backend/host/wgpu-accesskit", version = "1.5.3", registry = "idealyst" }
 variant-phone = { path = "crates/gpu-backend/variant/phone" }
 variant-tablet = { path = "crates/gpu-backend/variant/tablet" }
 variant-tv = { path = "crates/gpu-backend/variant/tv" }
@@ -569,62 +569,62 @@ pan = { path = "crates/sdk/client/pan", version = "1.5.2", registry = "idealyst"
 zoom = { path = "crates/sdk/client/zoom", version = "1.5.2", registry = "idealyst" }
 dnd = { path = "crates/sdk/client/dnd", version = "1.5.5", registry = "idealyst" }
 gesture = { path = "crates/sdk/client/gesture", version = "1.5.4", registry = "idealyst" }
-maps = { path = "crates/sdk/client/maps", version = "1.5.2", registry = "idealyst" }
+maps = { path = "crates/sdk/client/maps", version = "1.6.0", registry = "idealyst" }
 maps-core = { path = "crates/sdk/client/maps/core", version = "1.5.2", registry = "idealyst" }
-maps-web = { path = "crates/sdk/client/maps/web", version = "1.5.2", registry = "idealyst" }
+maps-web = { path = "crates/sdk/client/maps/web", version = "1.6.0", registry = "idealyst" }
 maps-ios = { path = "crates/sdk/client/maps/ios", version = "1.5.2", registry = "idealyst" }
 codeblock = { path = "crates/sdk/client/codeblock", version = "1.6.0", registry = "idealyst" }
-markdown = { path = "crates/sdk/client/markdown", version = "1.5.2", registry = "idealyst" }
-webview = { path = "crates/sdk/client/webview", version = "1.5.2", registry = "idealyst" }
-video = { path = "crates/sdk/client/video", version = "1.5.2", registry = "idealyst" }
-svg = { path = "crates/sdk/client/svg", version = "1.5.2", registry = "idealyst" }
-canvas = { path = "crates/sdk/client/canvas", version = "1.5.3", registry = "idealyst" }
+markdown = { path = "crates/sdk/client/markdown", version = "1.5.3", registry = "idealyst" }
+webview = { path = "crates/sdk/client/webview", version = "1.6.0", registry = "idealyst" }
+video = { path = "crates/sdk/client/video", version = "1.6.0", registry = "idealyst" }
+svg = { path = "crates/sdk/client/svg", version = "1.6.0", registry = "idealyst" }
+canvas = { path = "crates/sdk/client/canvas", version = "1.6.0", registry = "idealyst" }
 canvas-core = { path = "crates/sdk/client/canvas/core", version = "1.6.0", registry = "idealyst" }
-charts-core = { path = "crates/sdk/client/charts/core", version = "1.5.2", registry = "idealyst" }
-charts = { path = "crates/sdk/client/charts", version = "1.5.3", registry = "idealyst" }
-canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.5.3", registry = "idealyst" }
-canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.5.3", registry = "idealyst" }
+charts-core = { path = "crates/sdk/client/charts/core", version = "1.6.0", registry = "idealyst" }
+charts = { path = "crates/sdk/client/charts", version = "1.5.4", registry = "idealyst" }
+canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.6.0", registry = "idealyst" }
+canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.6.0", registry = "idealyst" }
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.3", registry = "idealyst" }
-form = { path = "crates/sdk/client/form", version = "1.5.2", registry = "idealyst" }
+form = { path = "crates/sdk/client/form", version = "1.6.0", registry = "idealyst" }
 table = { path = "crates/sdk/client/table", version = "1.6.0", registry = "idealyst" }
 virtualized = { path = "crates/sdk/client/virtualized", version = "1.5.2", registry = "idealyst" }
-offload = { path = "crates/sdk/client/offload", version = "1.5.3", registry = "idealyst" }
+offload = { path = "crates/sdk/client/offload", version = "2.0.0", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "1.5.2", registry = "idealyst" }
-net = { path = "crates/sdk/client/net", version = "1.6.0", registry = "idealyst" }
-storage = { path = "crates/sdk/client/storage", version = "1.6.0", registry = "idealyst" }
-sync = { path = "crates/sdk/client/sync", version = "2.0.0", registry = "idealyst" }
+net = { path = "crates/sdk/client/net", version = "1.7.0", registry = "idealyst" }
+storage = { path = "crates/sdk/client/storage", version = "1.7.0", registry = "idealyst" }
+sync = { path = "crates/sdk/client/sync", version = "2.0.1", registry = "idealyst" }
 graphql = { path = "crates/sdk/client/graphql", version = "1.5.2", registry = "idealyst" }
-microphone = { path = "crates/sdk/client/microphone", version = "1.5.2", registry = "idealyst" }
-camera = { path = "crates/sdk/client/camera", version = "1.5.2", registry = "idealyst" }
-media-stream = { path = "crates/sdk/client/media-stream", version = "1.5.2", registry = "idealyst" }
-media-writer = { path = "crates/sdk/client/media-writer", version = "1.5.2", registry = "idealyst" }
-video-compose = { path = "crates/sdk/client/video-compose", version = "1.5.2", registry = "idealyst" }
+microphone = { path = "crates/sdk/client/microphone", version = "1.6.0", registry = "idealyst" }
+camera = { path = "crates/sdk/client/camera", version = "1.6.0", registry = "idealyst" }
+media-stream = { path = "crates/sdk/client/media-stream", version = "1.6.0", registry = "idealyst" }
+media-writer = { path = "crates/sdk/client/media-writer", version = "1.6.0", registry = "idealyst" }
+video-compose = { path = "crates/sdk/client/video-compose", version = "1.6.0", registry = "idealyst" }
 denoise = { path = "crates/sdk/client/denoise", version = "1.5.2", registry = "idealyst" }
-video-decode = { path = "crates/sdk/client/video-decode", version = "1.5.2", registry = "idealyst" }
-file-export = { path = "crates/sdk/client/file-export", version = "1.5.2", registry = "idealyst" }
-file-picker = { path = "crates/sdk/client/file-picker", version = "1.5.2", registry = "idealyst" }
+video-decode = { path = "crates/sdk/client/video-decode", version = "1.6.0", registry = "idealyst" }
+file-export = { path = "crates/sdk/client/file-export", version = "1.6.0", registry = "idealyst" }
+file-picker = { path = "crates/sdk/client/file-picker", version = "1.6.0", registry = "idealyst" }
 auto-update = { path = "crates/sdk/client/auto-update", version = "1.5.2", registry = "idealyst" }
 credentials = { path = "crates/sdk/client/credentials", version = "1.5.2", registry = "idealyst" }
-biometrics = { path = "crates/sdk/client/biometrics", version = "1.5.2", registry = "idealyst" }
-screen-recorder = { path = "crates/sdk/client/screen-recorder", version = "1.5.2", registry = "idealyst" }
-files = { path = "crates/sdk/client/files", version = "1.5.2", registry = "idealyst" }
-i18n = { path = "crates/sdk/client/i18n", version = "1.5.2", registry = "idealyst" }
+biometrics = { path = "crates/sdk/client/biometrics", version = "1.6.0", registry = "idealyst" }
+screen-recorder = { path = "crates/sdk/client/screen-recorder", version = "1.6.0", registry = "idealyst" }
+files = { path = "crates/sdk/client/files", version = "1.6.0", registry = "idealyst" }
+i18n = { path = "crates/sdk/client/i18n", version = "1.6.0", registry = "idealyst" }
 i18n-macros = { path = "crates/sdk/client/i18n/macros", version = "1.5.2", registry = "idealyst" }
 # Device / platform-integration capability SDKs (Tier 1). `permissions` is
 # the shared runtime-grant substrate; capability SDKs that prompt the user
 # (notifications, location, camera, microphone, …) depend on it rather than
 # re-implementing an OS grant flow.
-permissions = { path = "crates/sdk/client/permissions", version = "1.5.2", registry = "idealyst" }
-notifications = { path = "crates/sdk/client/notifications", version = "1.5.2", registry = "idealyst" }
-clipboard = { path = "crates/sdk/client/clipboard", version = "1.5.2", registry = "idealyst" }
-location = { path = "crates/sdk/client/location", version = "1.5.2", registry = "idealyst" }
-share = { path = "crates/sdk/client/share", version = "1.5.2", registry = "idealyst" }
-deep-link = { path = "crates/sdk/client/deep-link", version = "1.6.0", registry = "idealyst" }
-connectivity = { path = "crates/sdk/client/connectivity", version = "1.5.2", registry = "idealyst" }
-haptics = { path = "crates/sdk/client/haptics", version = "1.5.2", registry = "idealyst" }
+permissions = { path = "crates/sdk/client/permissions", version = "1.5.3", registry = "idealyst" }
+notifications = { path = "crates/sdk/client/notifications", version = "1.6.0", registry = "idealyst" }
+clipboard = { path = "crates/sdk/client/clipboard", version = "1.5.3", registry = "idealyst" }
+location = { path = "crates/sdk/client/location", version = "1.5.3", registry = "idealyst" }
+share = { path = "crates/sdk/client/share", version = "1.6.0", registry = "idealyst" }
+deep-link = { path = "crates/sdk/client/deep-link", version = "1.7.0", registry = "idealyst" }
+connectivity = { path = "crates/sdk/client/connectivity", version = "1.6.0", registry = "idealyst" }
+haptics = { path = "crates/sdk/client/haptics", version = "1.5.3", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.5.2", registry = "idealyst" }
-audio = { path = "crates/sdk/client/audio", version = "1.5.2", registry = "idealyst" }
+audio = { path = "crates/sdk/client/audio", version = "1.6.0", registry = "idealyst" }
 server = { path = "crates/api/server", version = "1.8.0", registry = "idealyst" }
 server-macros = { path = "crates/api/server-macros", version = "1.5.2", registry = "idealyst" }
 server-kit = { path = "crates/api/server-kit", version = "1.6.0", registry = "idealyst" }
@@ -685,8 +685,8 @@ file-drop-demo = { path = "crates/sdk/client/file-picker/examples/file-drop-demo
 file-picker-demo = { path = "crates/sdk/client/file-picker/examples/file-picker-demo", version = "1.5.2", registry = "idealyst" }
 graphql-demo = { path = "crates/sdk/client/graphql/examples/graphql-demo", version = "1.5.2", registry = "idealyst" }
 i18n-demo = { path = "crates/sdk/client/i18n/examples/i18n-demo", version = "1.5.2", registry = "idealyst" }
-idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.4", registry = "idealyst" }
-idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.3", registry = "idealyst" }
+idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.5", registry = "idealyst" }
+idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.4", registry = "idealyst" }
 idealyst-macros = { path = "crates/idealyst-macros", version = "1.5.2", registry = "idealyst" }
 jobs-demo = { path = "crates/sdk/server/jobs/examples/jobs-demo", version = "1.5.2", registry = "idealyst" }
 kanban-demo = { path = "crates/sdk/client/dnd/examples/kanban-demo", version = "1.5.2", registry = "idealyst" }
@@ -696,7 +696,7 @@ media-sources-demo = { path = "crates/sdk/client/media-stream/examples/media-sou
 menu-demo = { path = "crates/sdk/client/menu/examples/menu-demo", version = "1.5.2", registry = "idealyst" }
 mic-demo = { path = "crates/sdk/client/microphone/examples/mic-demo", version = "1.5.2", registry = "idealyst" }
 nested-nav-demo = { path = "crates/sdk/client/navigators/swap/examples/nested-nav-demo", version = "1.5.2", registry = "idealyst" }
-offload-macro = { path = "crates/sdk/client/offload-macro", version = "1.5.2", registry = "idealyst" }
+offload-macro = { path = "crates/sdk/client/offload-macro", version = "1.6.0", registry = "idealyst" }
 pdf-demo = { path = "crates/sdk/client/pdf/examples/pdf-demo", version = "1.5.2", registry = "idealyst" }
 pubsub-demo = { path = "crates/sdk/server/pubsub/examples/pubsub-demo", version = "1.5.2", registry = "idealyst" }
 screen-recorder-demo = { path = "crates/sdk/client/screen-recorder/examples/screen-recorder-demo", version = "1.5.2", registry = "idealyst" }

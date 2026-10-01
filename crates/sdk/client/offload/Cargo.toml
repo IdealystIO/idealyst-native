@@ -1,6 +1,6 @@
 [package]
 name = "offload"
-version = "1.5.3"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 
@@ -29,7 +29,7 @@ license.workspace = true
 serde = { workspace = true }
 thiserror = { workspace = true }
 # `#[offload::job]` — a no-op marker attribute on every target.
-offload-macro = { path = "../offload-macro", version = "1.5.2", registry = "idealyst" }
+offload-macro = { path = "../offload-macro", version = "1.6.0", registry = "idealyst" }
 # The oneshot each backend resolves the awaited future through.
 futures-channel = "0.3"
 
