@@ -13,8 +13,14 @@ web-sys's method names and signatures, `web_glue::js` for the JS
 built-ins. `Host::Node` is `web_glue::dom::Node`. The eight `runtime/js/`
 shims ship as `web_glue::js_module!`s (no run-time eval).
 
-Nothing in this crate names web-sys or wasm-bindgen (`wasm-bindgen-test`
-stays as the browser-test harness, a dev-dependency): a dropped file reaches
+No web-sys or wasm-bindgen type crosses this crate's seams (web-sys is gone
+from its dependencies; `wasm-bindgen-test` stays as the browser-test harness).
+It still depends on `wasm-bindgen` for one reason, the build: every web build
+runs the wasm-bindgen CLI (hybrid mode), whose externref pass fails on a
+module without wasm-bindgen's runtime intrinsics ("failed to find intrinsics
+to enable `clone_ref` function"), so `link_wasm_bindgen_runtime` keeps them
+linked for an app with no other wasm-bindgen user. That goes with own mode.
+A dropped file reaches
 the file-picker SDK as a `web_glue::dom::File` (the type its
 `picked_from_dropped` downcasts `DroppedFile.source` to), and SDKs return /
 downcast `web_glue::dom::Node` as the host node — the generic node bridge used

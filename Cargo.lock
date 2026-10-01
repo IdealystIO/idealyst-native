@@ -1585,6 +1585,7 @@ dependencies = [
  "runtime-world",
  "serde_json",
  "subsecond-types",
+ "wasm-bindgen",
  "wasm-bindgen-test",
  "web-glue",
  "wire",

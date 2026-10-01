@@ -106,6 +106,12 @@ inventory = "0.3"
 # A dropped file reaches the file-picker SDK as a `web_glue::dom::File` in
 # `DroppedFile::source`; no crate boundary here names web-sys.
 web-glue = { workspace = true }
+# Linked for the BUILD, not called: every web build still runs the
+# wasm-bindgen CLI (hybrid mode), whose externref pass needs wasm-bindgen's
+# runtime intrinsics in the module. `link_wasm_bindgen_runtime` (src/lib.rs)
+# keeps them linked for an app with no other wasm-bindgen user. Goes with
+# own mode (docs/proposals/own-web-bindings.md, phase 6).
+wasm-bindgen = "0.2"
 serde_json = { workspace = true }
 # runtime-server dev-client replay engine + wire protocol. Only pulled in when
 # the `runtime-server` feature is on; the WebSocket transport itself
