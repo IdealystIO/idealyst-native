@@ -2424,22 +2424,25 @@ fn build_chrome_glyph_cache(
 /// compares this against `chrome_clock_minute` each tick to
 /// decide whether to re-shape the clock buffer.
 pub(crate) fn current_clock_minute() -> i64 {
-    // The framework wall clock (`runtime_shared::time::epoch_millis`)
-    // rather than `std::time::SystemTime::now()`, which panics on wasm32
-    // and would take down any snippet that mounts the simulator chrome
-    // (status bar + clock). Web installs a `js Date` source, native the
+    // The framework wall clock (`runtime_shared::time`) rather than
+    // `std::time::SystemTime::now()`, which panics on wasm32 and would
+    // take down any snippet that mounts the simulator chrome (status bar
+    // + clock). Web installs a `js Date` source, native the zone-aware
     // `SystemTime` default (`Host::new`). Reads 0 (→ "0:00") only if no
     // wall clock is installed yet.
-    let secs_since_epoch = runtime_shared::time::epoch_millis().div_euclid(1000);
-    // Hour/minute of the epoch reading as-is (UTC; the local offset
-    // is not applied). `chrono` would be the right dep for a real
-    // local clock; rolling a tiny calculator avoids pulling it in
-    // just for the status bar — good enough for a frozen-design
-    // simulator clock.
-    let secs_of_day = secs_since_epoch.rem_euclid(86_400);
-    let hour = secs_of_day / 3600;
-    let minute = (secs_of_day % 3600) / 60;
-    hour * 60 + minute
+    clock_minute_of(
+        runtime_shared::time::epoch_millis(),
+        runtime_shared::time::local_offset_minutes(),
+    )
+}
+
+/// The local minute-of-day for a Unix instant and a UTC offset. Pure so
+/// the offset handling is testable without a process-wide clock install.
+/// The offset MUST be applied: the status bar showed the UTC time before
+/// (`regression_status_bar_clock_applies_local_offset`).
+fn clock_minute_of(epoch_millis: i64, offset_minutes: i32) -> i64 {
+    let local_minutes = epoch_millis.div_euclid(60_000) + i64::from(offset_minutes);
+    local_minutes.rem_euclid(24 * 60)
 }
 
 /// Render the current local wall-clock as `"H:MM"` (24-hour, no
@@ -2849,5 +2852,20 @@ mod tests {
         };
         let origin = absolute_origin(&backend.borrow(), &node);
         assert_eq!(origin, (0.0, 0.0));
+    }
+
+    /// The simulator status-bar clock rendered the UTC time: the epoch
+    /// reading was split into hour/minute with the local offset never
+    /// applied, so a New York user at 08:05 EDT saw "12:05".
+    #[test]
+    fn regression_status_bar_clock_applies_local_offset() {
+        // 2024-07-15T12:05:00Z.
+        let t = 1_721_045_100_000;
+        assert_eq!(super::clock_minute_of(t, 0), 12 * 60 + 5);
+        assert_eq!(super::clock_minute_of(t, -240), 8 * 60 + 5);
+        assert_eq!(super::clock_minute_of(t, 330), 17 * 60 + 35);
+        // Wraps across midnight both ways.
+        assert_eq!(super::clock_minute_of(t, 12 * 60), 5);
+        assert_eq!(super::clock_minute_of(t, -13 * 60), 23 * 60 + 5);
     }
 }
