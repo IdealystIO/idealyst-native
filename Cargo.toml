@@ -238,6 +238,7 @@ members = [
     "crates/sdk/client/deep-link",
     "crates/sdk/client/connectivity",
     "crates/sdk/client/haptics",
+    "crates/sdk/client/datetime",
     "crates/sdk/client/audio",
 
     # API — full-stack server-functions layer. `server` is the primitive
@@ -618,6 +619,7 @@ share = { path = "crates/sdk/client/share", version = "1.5.2", registry = "ideal
 deep-link = { path = "crates/sdk/client/deep-link", version = "1.6.0", registry = "idealyst" }
 connectivity = { path = "crates/sdk/client/connectivity", version = "1.5.2", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "1.5.2", registry = "idealyst" }
+datetime = { path = "crates/sdk/client/datetime", version = "1.5.2", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "1.5.2", registry = "idealyst" }
 server = { path = "crates/api/server", version = "1.8.0", registry = "idealyst" }
 server-macros = { path = "crates/api/server-macros", version = "1.5.2", registry = "idealyst" }

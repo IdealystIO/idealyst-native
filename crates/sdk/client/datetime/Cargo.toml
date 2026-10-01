@@ -1,0 +1,75 @@
+[package]
+name = "datetime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Current wall-clock time and the local UTC offset / IANA zone on every target, with optional chrono conversions. No wasm-bindgen."
+
+# The current date and time, on every target the framework builds for.
+#
+#   - `now_utc()`                the current instant (µs since the Unix epoch)
+#   - `local_offset_at(t)`       the local UTC offset at an instant (DST-correct)
+#   - `local_timezone()`         the local IANA zone name, when the platform knows it
+#   - `now_chrono_utc()` / `now_chrono_local()`   behind the `chrono` feature
+#
+# Why an SDK and not `runtime_core::time`: see the README ("Where it lives").
+# In short, this must work with no backend mounted (server code, tests, CLI
+# tools, code that runs before `mount`), which the core wall clock cannot —
+# it reads 0 until a backend installs a source — and it needs per-target
+# timezone code, which core keeps out.
+#
+# Mechanism per target (the observable answer is the same everywhere):
+#   - web (wasm32):   `Date.now()`, `new Date(ms).getTimezoneOffset()`,
+#                     `Intl.DateTimeFormat().resolvedOptions().timeZone`,
+#                     bound through web-glue (no wasm-bindgen, no js-sys)
+#   - unix (iOS, macOS, Android, Linux, BSD):
+#                     `SystemTime` + libc `localtime_r` (`tm_gmtoff`)
+#   - Windows:        `SystemTime` + `SystemTimeToTzSpecificLocalTimeEx`
+#   - zone name on native: `$TZ` when it names an IANA zone, else the
+#                     `iana-time-zone` crate (CFTimeZone / Android system
+#                     property / `/etc/localtime` / WinRT)
+
+[features]
+# `chrono` conversions: `now_chrono_utc()`, `now_chrono_local()`,
+# `to_chrono_local(t)`, and `From` impls between `Timestamp` / `UtcOffset`
+# and chrono's types. chrono is pulled with NO default features: no
+# `clock` (its `now()` and `Local`, which reach `iana-time-zone` →
+# js-sys/wasm-bindgen on wasm32) and no `wasmbind`. This crate is the
+# clock; chrono only does the calendar math and formatting. Keep
+# `cargo tree --target wasm32-unknown-unknown -i wasm-bindgen -p datetime
+# --features chrono -e normal` empty.
+chrono = ["dep:chrono"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, optional = true }
+
+# The chrono-feature integration tests (`tests/portable.rs`) name chrono
+# types directly; same no-default-features line as the optional dep.
+[dev-dependencies]
+chrono = { version = "0.4", default-features = false }
+
+# Unix: `localtime_r` / `tzset` for the offset at an instant.
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+libc = "0.2"
+
+# Windows: the offset at an instant through the dynamic (historical DST
+# rule) zone APIs.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Time"] }
+
+# Native: the IANA zone name. Native-only on purpose — on wasm32 this crate
+# pulls js-sys + wasm-bindgen, and the web arm reads `Intl` through
+# web-glue instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iana-time-zone = "0.1"
+
+# Web (wasm): `Date` and `Intl` through web-glue bindings (`src/web.rs`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_clock.rs`) — run with
+# `cargo test -p datetime --target wasm32-unknown-unknown --features chrono`
+# (the workspace runner supplies web-glue's JS; `wasm-pack test` cannot load
+# it). A dev-dependency only: it never reaches an app's graph.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
