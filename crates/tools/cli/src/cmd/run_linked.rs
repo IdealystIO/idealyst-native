@@ -61,7 +61,9 @@ pub fn run(args: Args) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let status = cmd.status().with_context(|| format!("run {}", target.display()))?;
+        let status = cmd
+            .status()
+            .with_context(|| format!("run {}", target.display()))?;
         std::process::exit(status.code().unwrap_or(1));
     }
 }
@@ -73,7 +75,10 @@ pub fn run(args: Args) -> Result<()> {
 pub fn linker_output(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?.join("deps");
     let stem = exe.file_stem()?.to_str()?.replace('-', "_");
-    let ext = exe.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}"));
+    let ext = exe
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"));
     let ext = ext.as_deref().unwrap_or("");
     let want = std::fs::metadata(exe).ok()?;
     let want_mtime = want.modified().ok()?;
@@ -130,7 +135,10 @@ pub fn configured_runner(
     host: &str,
     env: impl Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let var = format!("CARGO_TARGET_{}_RUNNER", host.to_uppercase().replace(['-', '.'], "_"));
+    let var = format!(
+        "CARGO_TARGET_{}_RUNNER",
+        host.to_uppercase().replace(['-', '.'], "_")
+    );
     if env(&var).is_some_and(|v| !v.is_empty()) {
         return Some(var);
     }
@@ -144,9 +152,15 @@ pub fn configured_runner(
         files.push(home.join("config"));
     }
     for file in files {
-        let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        let Ok(doc) = text.parse::<toml::Table>() else { continue };
-        let Some(targets) = doc.get("target").and_then(|t| t.as_table()) else { continue };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(doc) = text.parse::<toml::Table>() else {
+            continue;
+        };
+        let Some(targets) = doc.get("target").and_then(|t| t.as_table()) else {
+            continue;
+        };
         for (key, table) in targets {
             let matches = key == host || key.starts_with("cfg(");
             if matches && table.get("runner").is_some() {
@@ -183,10 +197,22 @@ mod tests {
         let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
         let other = t + std::time::Duration::from_secs(5);
         touch(&debug.join("crewforge-server"), b"binary", t);
-        touch(&debug.join("deps/crewforge_server-aba181ee2de9277e"), b"binary", t);
+        touch(
+            &debug.join("deps/crewforge_server-aba181ee2de9277e"),
+            b"binary",
+            t,
+        );
         // An older link of the same bin, and the lib's dep-info.
-        touch(&debug.join("deps/crewforge_server-2e099f7336f2771f"), b"old-binary", other);
-        touch(&debug.join("deps/crewforge_server-2e099f7336f2771f.d"), b"binary", t);
+        touch(
+            &debug.join("deps/crewforge_server-2e099f7336f2771f"),
+            b"old-binary",
+            other,
+        );
+        touch(
+            &debug.join("deps/crewforge_server-2e099f7336f2771f.d"),
+            b"binary",
+            t,
+        );
         assert_eq!(
             linker_output(&debug.join("crewforge-server")),
             Some(debug.join("deps/crewforge_server-aba181ee2de9277e"))
@@ -200,7 +226,11 @@ mod tests {
         std::fs::create_dir_all(debug.join("deps")).unwrap();
         let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
         touch(&debug.join("srv"), b"binary", t);
-        touch(&debug.join("deps/srv-aba181ee2de9277e"), b"binary", t + std::time::Duration::from_secs(1));
+        touch(
+            &debug.join("deps/srv-aba181ee2de9277e"),
+            b"binary",
+            t + std::time::Duration::from_secs(1),
+        );
         assert_eq!(linker_output(&debug.join("srv")), None);
         assert_eq!(linker_output(&tmp.path().join("nowhere/srv")), None);
     }
@@ -240,10 +270,14 @@ mod tests {
         let project = tmp.path().join("app/crates/main");
         std::fs::create_dir_all(&project).unwrap();
         let none = |_: &str| None;
-        assert_eq!(configured_runner(&project, None, "aarch64-apple-darwin", none), None);
+        assert_eq!(
+            configured_runner(&project, None, "aarch64-apple-darwin", none),
+            None
+        );
 
         let host = "aarch64-apple-darwin";
-        let env = |k: &str| (k == "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER").then(|| "x".to_string());
+        let env =
+            |k: &str| (k == "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER").then(|| "x".to_string());
         assert!(configured_runner(&project, None, host, env).is_some());
 
         std::fs::create_dir_all(tmp.path().join("app/.cargo")).unwrap();
@@ -252,7 +286,11 @@ mod tests {
             "[target.aarch64-unknown-linux-gnu]\nrustflags = [\"-Cfoo\"]\n",
         )
         .unwrap();
-        assert_eq!(configured_runner(&project, None, host, none), None, "rustflags are not a runner");
+        assert_eq!(
+            configured_runner(&project, None, host, none),
+            None,
+            "rustflags are not a runner"
+        );
         std::fs::write(
             tmp.path().join("app/.cargo/config.toml"),
             "[target.'cfg(target_os = \"macos\")']\nrunner = \"sudo\"\n",
@@ -263,7 +301,11 @@ mod tests {
         let home = tmp.path().join("cargo-home");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::remove_file(tmp.path().join("app/.cargo/config.toml")).unwrap();
-        std::fs::write(home.join("config.toml"), format!("[target.{host}]\nrunner = \"x\"\n")).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            format!("[target.{host}]\nrunner = \"x\"\n"),
+        )
+        .unwrap();
         assert!(configured_runner(&project, Some(&home), host, none).is_some());
     }
 }

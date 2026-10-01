@@ -80,7 +80,13 @@ later(500, () => process.stdout.write(JSON.stringify({ applied, reloads, acks })
 "##;
 
 fn run(scenario: &str) -> Option<serde_json::Value> {
-    Command::new("node").arg("--version").output().ok()?.status.success().then_some(())?;
+    Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()?
+        .status
+        .success()
+        .then_some(())?;
     let mut child = Command::new("node")
         .args(["-e", HARNESS, scenario])
         .stdin(Stdio::piped())
@@ -89,7 +95,12 @@ fn run(scenario: &str) -> Option<serde_json::Value> {
         .spawn()
         .ok()?;
     let script = dev_http::reload_script_tag("/__idealyst/reload");
-    child.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "node failed");
     Some(serde_json::from_slice(&out.stdout).expect("harness output"))
@@ -105,14 +116,24 @@ fn regression_a_patch_replayed_before_the_module_boots_waits_for_it() {
         return eprintln!("node not on PATH; skipped");
     };
     assert_eq!(out["reloads"], 0, "{out}");
-    assert_eq!(out["applied"], serde_json::json!(["overlay o2", "hot /p3"]), "{out}");
+    assert_eq!(
+        out["applied"],
+        serde_json::json!(["overlay o2", "hot /p3"]),
+        "{out}"
+    );
 }
 
 #[test]
 fn a_reconnect_does_not_apply_a_patch_twice() {
-    let Some(out) = run("reconnect-replays-what-it-holds") else { return };
+    let Some(out) = run("reconnect-replays-what-it-holds") else {
+        return;
+    };
     assert_eq!(out["reloads"], 0, "{out}");
-    assert_eq!(out["applied"], serde_json::json!(["hot /p3", "hot /p5"]), "{out}");
+    assert_eq!(
+        out["applied"],
+        serde_json::json!(["hot /p3", "hot /p5"]),
+        "{out}"
+    );
 }
 
 /// The generation restarts at 1 every session, so it could not tell a
@@ -120,7 +141,9 @@ fn a_reconnect_does_not_apply_a_patch_twice() {
 /// patches pair with a bundle the page may not run.
 #[test]
 fn a_stream_from_a_restarted_session_reloads_the_page() {
-    let Some(out) = run("restarted-session") else { return };
+    let Some(out) = run("restarted-session") else {
+        return;
+    };
     assert_eq!(out["reloads"], 1, "{out}");
     assert_eq!(out["applied"], serde_json::json!([]), "{out}");
 }
@@ -129,7 +152,16 @@ fn a_stream_from_a_restarted_session_reloads_the_page() {
 /// the dev loop decided not to rebuild, so the page reloads.
 #[test]
 fn a_booted_page_without_the_applier_still_reloads() {
-    let Some(out) = run("booted-without-hot-applier") else { return };
+    let Some(out) = run("booted-without-hot-applier") else {
+        return;
+    };
     assert_eq!(out["reloads"], 1, "{out}");
-    assert!(out["acks"].as_array().unwrap().iter().any(|a| a == "failed"), "{out}");
+    assert!(
+        out["acks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "failed"),
+        "{out}"
+    );
 }
