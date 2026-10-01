@@ -32,7 +32,7 @@ store.delete("recordings/note1.wav").await?;
 | Linux | `$XDG_DATA_HOME` (or `~/.local/share`)`/<name>/…` |
 | iOS | the app sandbox's Application Support dir (via NSFileManager) |
 | Android | `Context.getFilesDir()/<name>/…` |
-| web (wasm32) | IndexedDB — blobs keyed by path (no filesystem in a browser) |
+| web (wasm32) | IndexedDB — blobs keyed by path (no filesystem in a browser), through web-glue bindings |
 
 On native, [`FileStore::local_path`] returns the real filesystem path, so you
 can hand it to a native API (an audio encoder, an image loader). On web it
@@ -59,6 +59,15 @@ work is synchronous `std::fs` inside the returned future (fine for the modest
 blobs this is meant for; a high-throughput caller should front it with its own
 offloading); on web it's genuinely async IndexedDB.
 
+On web the database is `idealyst.files.<name>`, object store `blobs`. Each
+operation opens the database at its current version, runs one transaction,
+waits for it to commit, and closes the connection. A database that exists
+under that name without the `blobs` store is upgraded by one version to add
+it (other stores are left alone). Connections close on `versionchange`, so
+they never block another tab's upgrade; if a connection held elsewhere
+blocks the upgrade the store needs, the operation fails with
+`FileError::Backend` instead of waiting.
+
 ## Scope
 
 Whole-blob read/write (no streaming) and a flat per-store namespace are the
@@ -72,7 +81,10 @@ and richer directory operations are natural follow-ons behind the same trait.
   rejection (`cargo test -p files`).
 - **iOS / Android** — compile-checked; the app-dir resolution (objc2 /
   JNI) isn't device-run here.
-- **web (IndexedDB)** — compile-checked for `wasm32`; not browser-run here.
+- **web (IndexedDB)** — browser-tested in headless Chrome
+  (`cargo test -p files --lib --target wasm32-unknown-unknown`): round trip,
+  `list`, a store-less and a version-3 database, a connection yielding to
+  another upgrade, a blocked upgrade, a non-bytes value, `loadable_url`.
 
 [`FileStore::local_path`]: src/lib.rs
 
@@ -84,7 +96,7 @@ compiles for that target but isn't confirmed on real hardware yet (see
 
 **Automated**
 - [ ] `cargo test -p files` — round-trip read/write/delete, overwrite, idempotent delete, `list`, `local_path`, unsafe-path (`..` / absolute) rejection
-- [ ] `cargo build -p files --target wasm32-unknown-unknown` — web (IndexedDB) target compiles
+- [ ] `cargo test -p files --lib --target wasm32-unknown-unknown` — web (IndexedDB) browser suite
 
 **Behavior**
 

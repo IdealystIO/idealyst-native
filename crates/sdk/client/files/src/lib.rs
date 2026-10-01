@@ -162,6 +162,7 @@ mod tests {
     /// store's real path (it addresses the blob, independent of whether the file
     /// exists yet). The web override — bytes → object URL — is exercised in the
     /// browser, not here.
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn native_loadable_url_is_file_scheme() {
         let store = app_files("files-test-loadable").expect("app dir resolves on the test host");

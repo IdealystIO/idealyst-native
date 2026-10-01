@@ -13,7 +13,7 @@ license.workspace = true
 #       the app's private data directory (sandbox / Application Support /
 #       %APPDATA% / XDG data dir / getFilesDir()).
 #   - web (wasm32) : IndexedDB (a browser has no filesystem), blobs keyed by
-#       their path.
+#       their path, through web-glue bindings.
 #
 # One async object-safe `FileStore` trait, so an app holds an
 # `Arc<dyn FileStore>` and the backend is chosen per platform. Async because
@@ -34,13 +34,18 @@ objc2-foundation = { version = "0.2", features = ["NSString"] }
 jni = "0.21"
 ndk-context = "0.1"
 
-# Web: IndexedDB via the `idb` async wrapper (a browser has no filesystem).
+# Web: IndexedDB (a browser has no filesystem) and the `loadable_url` object
+# URL — web-glue bindings declared in `src/web.rs`
+# (docs/proposals/own-web-bindings.md).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-idb = "0.6"
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-# `loadable_url` wraps stored bytes in an object URL the browser can load.
-web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url"] }
+web-glue = { workspace = true }
 
-[dev-dependencies]
+# Host tests (`#[tokio::test]` in src/lib.rs).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# Browser tests (`src/web/tests.rs`) — run with
+# `cargo test -p files --lib --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
