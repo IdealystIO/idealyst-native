@@ -3754,3 +3754,92 @@ fn regression_dropped_file_source_is_the_glue_file_file_picker_reads() {
     let dropped = ev.data_transfer().unwrap().files().unwrap().get(0).unwrap();
     assert!(file.as_js().strict_eq(dropped.as_js()), "the dropped File itself, not a copy");
 }
+
+// ---- the graphics surface's window handle -----------------------------------
+
+/// Await a real macrotask boundary (`setTimeout(ms)`).
+async fn sleep_ms(ms: i32) {
+    let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+        web_glue::dom::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .unwrap();
+    });
+    let _ = web_glue::JsFuture::new(&promise).await;
+}
+
+/// REGRESSION TEST: the graphics surface used to hand out a
+/// `WebCanvasWindowHandle` whose `obj` pointed at the canvas's WEB-GLUE
+/// handle. raw-window-handle defines that pointer as a wasm-bindgen
+/// `JsValue`, and every consumer (wgpu, canvas-vello, host-web) read it as
+/// one — an index into a different heap — so canvas-vello found no canvas
+/// and drew nothing (`hybrid_web_e2e`), and wgpu would have bound its
+/// surface to whatever object sat at that index. The handle is now the id
+/// form, matched by the canvas's `data-raw-handle` attribute — which is how
+/// wgpu itself resolves it — and the ids are page-unique and non-zero
+/// across backends.
+#[wasm_bindgen_test]
+async fn regression_graphics_window_handle_names_the_canvas_by_its_raw_handle_id() {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use runtime_shared::primitives::graphics::OnReadyEvent;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let mount = backend.mount.clone();
+    let ready: Rc<RefCell<Vec<OnReadyEvent>>> = Rc::default();
+    let mut canvases = Vec::new();
+    for _ in 0..2 {
+        let sink = ready.clone();
+        let canvas = crate::primitives::graphics::create(
+            &mut backend,
+            Box::new(move |ev| sink.borrow_mut().push(ev)),
+            Box::new(|_| {}),
+            Box::new(|| {}),
+        );
+        mount.append_child(&canvas).unwrap();
+        canvases.push(canvas);
+    }
+    // A second backend on the same page must not reuse an id.
+    let mut other = WebBackend::new("#app");
+    let other_canvas = crate::primitives::graphics::create(&mut other, Box::new(|_| {}), Box::new(|_| {}), Box::new(|| {}));
+    mount.append_child(&other_canvas).unwrap();
+
+    for _ in 0..50 {
+        if ready.borrow().len() == 2 {
+            break;
+        }
+        sleep_ms(20).await;
+    }
+    let events = ready.borrow();
+    assert_eq!(events.len(), 2, "on_ready fired for both canvases");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mut ids = Vec::new();
+    for (ev, canvas) in events.iter().zip(&canvases) {
+        let handle = ev.surface().expect("a raw-window surface").window_handle().unwrap();
+        let RawWindowHandle::Web(web) = handle.as_raw() else {
+            panic!("expected the id handle, got {:?}", handle.as_raw());
+        };
+        assert_ne!(web.id, 0, "raw-window-handle reserves id 0");
+        // Exactly the lookup wgpu's `create_surface` does.
+        let found = doc
+            .query_selector(&format!("[data-raw-handle=\"{}\"]", web.id))
+            .unwrap()
+            .expect("the id names an element in the document");
+        assert!(found.as_js().strict_eq(canvas.as_js()), "the id names THIS canvas");
+        ids.push(web.id);
+    }
+    let other_id: u32 = other_canvas
+        .clone()
+        .dyn_into::<web_glue::dom::Element>()
+        .unwrap()
+        .get_attribute("data-raw-handle")
+        .unwrap()
+        .parse()
+        .unwrap();
+    ids.push(other_id);
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 3, "page-unique across canvases and backends: {ids:?}");
+}

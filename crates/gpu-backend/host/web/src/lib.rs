@@ -10,8 +10,8 @@
 //! What this crate does, in order:
 //!
 //! 1. Extracts the underlying `HtmlCanvasElement` from the framework's
-//!    `GraphicsSurface` (via `raw_window_handle::WebCanvasWindowHandle`'s
-//!    JS-value pointer).
+//!    `GraphicsSurface` (backend-web's `raw_window_handle::WebWindowHandle`
+//!    id, matched by the canvas's `data-raw-handle` attribute).
 //! 2. Runs the async wgpu init — instance, adapter, device, queue,
 //!    surface configure. WebGL2-only — wgpu 22 unconditionally
 //!    serializes `maxInterStageShaderComponents` into `requestDevice`,

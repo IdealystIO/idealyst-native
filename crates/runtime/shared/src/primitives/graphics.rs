@@ -30,8 +30,11 @@
 //!
 //! # Per-backend strategy
 //!
-//! - **Web**: a `<canvas>` element, exposed as `WebCanvasWindowHandle`
-//!   + `WebDisplayHandle`. Author creates whatever context they want
+//! - **Web**: a `<canvas>` element, exposed as `WebWindowHandle` (the id
+//!   form: the canvas carries `data-raw-handle="<id>"`, which is how wgpu
+//!   resolves it — the backend's canvas is a web-glue handle, not the
+//!   wasm-bindgen `JsValue` a `WebCanvasWindowHandle` must point at),
+//!   and `WebDisplayHandle`. Author creates whatever context they want
 //!   (`wgpu::Instance::create_surface(&handle)`,
 //!   `canvas.getContext("webgl2")`, `canvas.getContext("2d")`).
 //! - **Android**: a `SurfaceView`, exposed as `AndroidNdkWindowHandle`

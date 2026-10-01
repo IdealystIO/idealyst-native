@@ -393,18 +393,32 @@ async fn build_render_fn(ev: OnReadyEvent, props: Rc<CanvasProps>) -> RenderFn {
     canvas_native::make_2d_rasterizer(canvas, &props)
 }
 
-/// Reconstruct the graphics primitive's `<canvas>` from its
-/// `WebCanvasWindowHandle`, so the Canvas2D fallback (and the GPU path's resize
-/// size-read) can reach the element.
+/// Reconstruct the graphics primitive's `<canvas>` from its window handle,
+/// so the Canvas2D fallback (and the GPU path's resize size-read) can reach
+/// the element.
+///
+/// backend-web hands out raw-window-handle's id form (`WebWindowHandle`): the
+/// canvas carries `data-raw-handle="<id>"`, looked up here exactly as wgpu's
+/// `create_surface` looks it up. Its canvas is a web-glue handle, so it cannot
+/// hand out the wasm-bindgen `JsValue` pointer `WebCanvasWindowHandle` is
+/// defined to carry (the pointer it once passed named an unrelated object in
+/// wasm-bindgen's heap, and this renderer drew nothing). A provider that does
+/// hold a wasm-bindgen value may still use `WebCanvasWindowHandle`.
 fn canvas_from_surface(surface: &GraphicsSurface) -> Option<HtmlCanvasElement> {
     let handle = surface.window_handle().ok()?;
     match handle.as_raw() {
+        RawWindowHandle::Web(h) => web_sys::window()?
+            .document()?
+            .query_selector(&format!("[data-raw-handle=\"{}\"]", h.id))
+            .ok()??
+            .dyn_into::<HtmlCanvasElement>()
+            .ok(),
         RawWindowHandle::WebCanvas(h) => {
-            // SAFETY: the web backend's surface provider builds this handle from
-            // the canvas's `&JsValue` (see backend-web graphics primitive). The
-            // `GraphicsSurface` `Arc` (held by the live `OnReadyEvent`) keeps the
-            // canvas alive for this call, and wasm32 is single-threaded, so the
-            // pointer is valid and unaliased. We clone out an owned handle.
+            // SAFETY: raw-window-handle defines `obj` as a pointer to a
+            // wasm-bindgen `JsValue` holding the canvas. The `GraphicsSurface`
+            // `Arc` (held by the live `OnReadyEvent`) keeps the provider —
+            // and so the value — alive for this call, and wasm32 is
+            // single-threaded. We clone out an owned handle.
             let js: &JsValue = unsafe { &*(h.obj.as_ptr() as *const JsValue) };
             js.dyn_ref::<HtmlCanvasElement>().cloned()
         }

@@ -121,8 +121,8 @@ web-sys = { version = "0.3", features = [
     # (read via `js_sys::Reflect` to avoid the unstable web-sys WebGPU bindings).
     "Window",
     "Navigator",
-    # Reconstructing the graphics primitive's `<canvas>` from its
-    # `WebCanvasWindowHandle` for the Canvas2D fallback path.
+    # Reconstructing the graphics primitive's `<canvas>` from its window
+    # handle (`data-raw-handle` lookup) for the Canvas2D fallback path.
     "HtmlCanvasElement",
     # `console.log` marker of which renderer engaged (GPU vs Canvas2D fallback).
     "console",

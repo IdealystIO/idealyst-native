@@ -15,7 +15,9 @@
 //!    inserted into the DOM and laid out), `fire_ready` reads the
 //!    canvas's size, sizes the drawable buffer to match the CSS box
 //!    × `devicePixelRatio`, and invokes `on_ready` with a
-//!    `GraphicsSurface` wrapping a `CanvasSurfaceProvider`.
+//!    `GraphicsSurface` wrapping a `CanvasSurfaceProvider`, whose window
+//!    handle is raw-window-handle's id form (`WebWindowHandle`, matched by
+//!    the canvas's `data-raw-handle` attribute — see the provider for why).
 //! 3. A `ResizeObserver` calls `fire_resize` on every box change,
 //!    which re-sizes the buffer and invokes `on_resize`.
 //! 4. A `webglcontextlost` listener fires `on_lost`. (Web doesn't
@@ -33,15 +35,13 @@ use runtime_shared::primitives::graphics::{
 };
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
-    RawWindowHandle, WebCanvasWindowHandle, WebDisplayHandle, WindowHandle,
+    RawWindowHandle, WebDisplayHandle, WebWindowHandle, WindowHandle,
 };
 use std::any::Any;
 use std::cell::RefCell;
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use web_glue::JsCast;
-use web_glue::JsValue;
 use web_glue::dom::Node;
 
 // ---------------------------------------------------------------------------
@@ -50,13 +50,38 @@ use web_glue::dom::Node;
 
 /// Surface provider for a `<canvas>` element. Holds the canvas alive
 /// for as long as the user keeps the `GraphicsSurface` (via `Arc`)
-/// and produces fresh `WebCanvasWindowHandle` / `WebDisplayHandle`
-/// values on demand. wgpu and friends call `window_handle()` /
-/// `display_handle()` once during surface creation; we don't need
-/// to cache the values.
+/// and produces fresh `WebWindowHandle` / `WebDisplayHandle` values on
+/// demand. wgpu and friends call `window_handle()` / `display_handle()`
+/// once during surface creation; we don't need to cache the values.
+///
+/// # Why the id handle, not `WebCanvasWindowHandle`
+///
+/// raw-window-handle's `WebCanvasWindowHandle.obj` is defined as a pointer
+/// to a **wasm-bindgen** `JsValue`, and every consumer (wgpu's
+/// `create_surface`, canvas-vello, host-web) dereferences it as one. This
+/// crate holds the canvas as a web-glue handle — a different slab — so a
+/// pointer to it named whatever object sat at the same index in
+/// wasm-bindgen's heap: canvas-vello found no canvas and drew nothing, and
+/// wgpu would have bound a surface to the wrong object (broken since the
+/// web-glue port, phase 2b; found by `hybrid_web_e2e`). The id form,
+/// `WebWindowHandle`, is the handle raw-window-handle defines for exactly
+/// this — the canvas carries `data-raw-handle="<id>"` and the consumer looks
+/// it up in the document (wgpu does so itself) — so it needs no value
+/// shared between the two JS boundaries.
 pub(crate) struct CanvasSurfaceProvider {
     canvas: web_glue::dom::HtmlCanvasElement,
+    /// The canvas's `data-raw-handle` id: page-unique and never 0
+    /// (raw-window-handle reserves 0).
+    raw_handle: u32,
 }
+
+/// Next `data-raw-handle` id. Process-wide, not per backend: several
+/// backends can share one document (each exported web component mounts
+/// its own), and the id is looked up document-wide.
+static NEXT_RAW_HANDLE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// The attribute raw-window-handle's `WebWindowHandle` names a canvas by.
+pub(crate) const RAW_HANDLE_ATTR: &str = "data-raw-handle";
 
 // SAFETY: wasm32 is single-threaded. The web's `HtmlCanvasElement`
 // is structurally `!Send + !Sync` (JS handles can't cross threads),
@@ -71,12 +96,10 @@ unsafe impl Sync for CanvasSurfaceProvider {}
 
 impl HasWindowHandle for CanvasSurfaceProvider {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        let value: &JsValue = self.canvas.as_ref();
-        let obj = NonNull::from(value).cast();
-        let raw = RawWindowHandle::WebCanvas(WebCanvasWindowHandle::new(obj));
-        // SAFETY: `self.canvas` is held alive for the duration of
-        // `&self`, and `WindowHandle<'_>` is a borrow from `&self`,
-        // so the obj pointer can't outlive the canvas.
+        let raw = RawWindowHandle::Web(WebWindowHandle::new(self.raw_handle));
+        // SAFETY: the handle is an id, not a pointer; `self.canvas` (which
+        // carries the matching attribute) lives at least as long as
+        // `&self`, which `WindowHandle<'_>` borrows from.
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }
 }
@@ -172,8 +195,19 @@ pub(crate) fn create(
     let id = b.next_graphics_id;
     b.next_graphics_id += 1;
     let _ = canvas.set_attribute("data-graphics-id", &id.to_string());
+    // A hydrated canvas keeps the id it was first given (an SSR-emitted
+    // one has none).
+    let raw_handle = canvas
+        .get_attribute(RAW_HANDLE_ATTR)
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v != 0)
+        .unwrap_or_else(|| {
+            let fresh = NEXT_RAW_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _ = canvas.set_attribute(RAW_HANDLE_ATTR, &fresh.to_string());
+            fresh
+        });
 
-    let provider = Arc::new(CanvasSurfaceProvider { canvas: canvas.clone() });
+    let provider = Arc::new(CanvasSurfaceProvider { canvas: canvas.clone(), raw_handle });
 
     let instance = Rc::new(RefCell::new(GraphicsInstance {
         provider,
@@ -432,7 +466,7 @@ pub(crate) fn make_handle(b: &WebBackend, node: &Node) -> GraphicsHandle {
                 .dyn_into()
                 .expect("not a canvas");
             Rc::new(RefCell::new(GraphicsInstance {
-                provider: Arc::new(CanvasSurfaceProvider { canvas }),
+                provider: Arc::new(CanvasSurfaceProvider { canvas, raw_handle: 0 }),
                 on_ready: Box::new(|_| {}),
                 on_resize: Box::new(|_| {}),
                 on_lost: Box::new(|| {}),

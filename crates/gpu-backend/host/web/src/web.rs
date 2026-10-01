@@ -19,7 +19,7 @@ use wasm_bindgen::{JsCast, JsValue};
 
 #[derive(Debug)]
 pub enum MountError {
-    /// The `GraphicsSurface` didn't expose a `WebCanvasWindowHandle`
+    /// The `GraphicsSurface`'s window handle named no `<canvas>`
     /// — happens if a caller wires a non-web backend's surface
     /// through. The web `Graphics` primitive always uses
     /// `CanvasSurfaceProvider`, so this should only fire on a misuse.
@@ -41,7 +41,7 @@ pub enum MountError {
 impl std::fmt::Display for MountError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MountError::NoCanvas => write!(f, "host-web: GraphicsSurface has no WebCanvas window handle"),
+            MountError::NoCanvas => write!(f, "host-web: GraphicsSurface's window handle names no canvas"),
             MountError::CreateSurface => write!(f, "host-web: wgpu create_surface failed"),
             MountError::NoAdapter => write!(f, "host-web: no compatible WebGL2 adapter"),
             MountError::RequestDevice => write!(f, "host-web: wgpu request_device failed"),
@@ -487,26 +487,35 @@ impl Drop for EventListener {
 }
 
 /// Pull the underlying `HtmlCanvasElement` out of the framework's
-/// opaque `GraphicsSurface`. The web backend's
-/// `CanvasSurfaceProvider::window_handle()` packs the canvas's
-/// `JsValue` pointer into `WebCanvasWindowHandle.obj` (see
-/// `backend-web/src/primitives/graphics.rs`); we read it back here.
+/// opaque `GraphicsSurface`.
 ///
-/// The reverse cast is the standard pattern — wgpu's web backend
-/// does the same to bind a surface to a canvas.
+/// The web backend's `CanvasSurfaceProvider::window_handle()` hands out
+/// raw-window-handle's id form (`WebWindowHandle`): the canvas carries
+/// `data-raw-handle="<id>"`, looked up here exactly as wgpu's
+/// `create_surface` looks it up (see `backend-web/src/primitives/graphics.rs`
+/// for why it is not a `WebCanvasWindowHandle` — its canvas is a web-glue
+/// handle, not the wasm-bindgen `JsValue` that handle's pointer must name).
+/// A provider that does hold a wasm-bindgen value may still use
+/// `WebCanvasWindowHandle`.
 fn extract_canvas(surface: &GraphicsSurface) -> Option<web_sys::HtmlCanvasElement> {
     let handle = surface.window_handle().ok()?;
-    let RawWindowHandle::WebCanvas(h) = handle.as_raw() else { return None };
-    // SAFETY: `WebCanvasWindowHandle::new` stored a pointer to the
-    // canvas's `JsValue` (in `CanvasSurfaceProvider::window_handle`)
-    // whose lifetime is tied to the surface we hold. Treating it as
-    // `&JsValue` is sound for the duration of this function; the
-    // clone bumps the refcount before the borrow ends.
-    let js_val: &JsValue = unsafe { &*(h.obj.as_ptr() as *const JsValue) };
-    js_val
-        .clone()
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .ok()
+    match handle.as_raw() {
+        RawWindowHandle::Web(h) => web_sys::window()?
+            .document()?
+            .query_selector(&format!("[data-raw-handle=\"{}\"]", h.id))
+            .ok()??
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .ok(),
+        RawWindowHandle::WebCanvas(h) => {
+            // SAFETY: raw-window-handle defines `obj` as a pointer to a
+            // wasm-bindgen `JsValue` holding the canvas, alive as long as the
+            // surface we hold. The clone bumps the refcount before the borrow
+            // ends.
+            let js_val: &JsValue = unsafe { &*(h.obj.as_ptr() as *const JsValue) };
+            js_val.clone().dyn_into::<web_sys::HtmlCanvasElement>().ok()
+        }
+        _ => None,
+    }
 }
 
 fn draw_frame(inner: &mut HostInner) {
