@@ -21,7 +21,8 @@ docs! {
         list(
             ["Native (macOS / Linux / Windows / wgpu / terminal): ",
              code("reqwest"), " + rustls"],
-            ["Web (wasm32): ", code("fetch"), " via ", code("gloo-net")],
+            ["Web (wasm32): the browser's ", code("fetch"), " via the framework's own \
+              web-glue bindings"],
             ["iOS / macOS / tvOS: ", code("NSURLSession"), " via ",
              code("objc2"), " + ", code("block2")],
             ["Android: ", code("HttpURLConnection"),
@@ -229,10 +230,12 @@ docs! {
         p("For the most part, you don't have to think about which transport is \
            running. A few platform-specific notes for the people who care:"),
         list(
-            ["Web: ", code("gloo-net::Request"),
-             " underneath. The cancel mechanism is ",
-             code("web_sys::AbortController"), ". Binary bodies go through ",
-             code("Uint8Array"), " to avoid UTF-8 lossy decoding."],
+            ["Web: the browser's ", code("fetch"),
+             ", called through web-glue bindings. Every request carries an ",
+             code("AbortController"), ": a cancel, an expired ", code("timeout"),
+             ", or dropping the ", code("send"),
+             " future aborts the browser request. Bodies cross as raw bytes, \
+              never decoded as text."],
             ["iOS: each request gets a ", code("NSURLSessionDataTask"),
              " against ", code("NSURLSession.sharedSession"),
              ". The completion block bridges back to Rust via a ",

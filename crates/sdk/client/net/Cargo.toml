@@ -8,7 +8,7 @@ license.workspace = true
 #
 # Provides one async API — `Client::get(url).send().await?.json()` — that
 # compiles to the platform-native HTTP stack on each target:
-#   - web (wasm32):           fetch via gloo-net
+#   - web (wasm32):           fetch via web-glue bindings
 #   - iOS / macOS / tvOS:     NSURLSession via objc2
 #   - Android:                HttpURLConnection via JNI
 #   - everything else:        reqwest (rustls)
@@ -64,19 +64,15 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
-# Web (wasm) target: fetch via gloo-net + AbortController for cancel
-# (`src/web.rs` — phase 4 of the own-web-bindings plan replaces gloo-net, and
-# with it the web-sys / js-sys lines below, which only the HTTP arm uses).
-# WebSocket and EventSource run on web-glue bindings
-# (`src/web_glue_events.rs`); their callbacks are marshalled into async
-# through futures-channel — the browser event loop is the runtime.
+# Web (wasm) target: every browser call is a web-glue binding
+# (docs/proposals/own-web-bindings.md) — `fetch` + AbortController for the
+# HTTP arm (`src/web.rs`), WebSocket and EventSource for the streaming arms
+# (`src/web_glue_events.rs`). Callbacks are marshalled into async through
+# futures-channel — the browser event loop is the runtime.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo-net = { version = "0.6", features = ["http"] }
-js-sys = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 web-glue = { workspace = true }
-web-sys = { version = "0.3", features = ["AbortController", "AbortSignal"] }
 
 # iOS / macOS / tvOS target: NSURLSession via objc2 + block2.
 # `futures-channel` bridges the completion callback to async/await.

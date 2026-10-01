@@ -38,7 +38,7 @@
 //! | macOS / Windows / Linux / terminal | [`reqwest`] (rustls — no native-tls / OpenSSL) |
 //! | iOS / macOS / tvOS | `NSURLSession` via `objc2` |
 //! | Android | `HttpURLConnection` via JNI on a worker thread |
-//! | web (wasm32) | `fetch` via `gloo-net` |
+//! | web (wasm32) | `fetch` via web-glue bindings (AbortController for cancel and timeout) |
 //!
 //! [`WebSocket`] and [`EventSource`] follow the same split — see their
 //! module docs for the per-target byte sources. No target spins up an async

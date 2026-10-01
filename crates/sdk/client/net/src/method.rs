@@ -2,7 +2,7 @@
 ///
 /// Kept as a closed enum (rather than `&'static str`) so the per-platform
 /// transports can lower to whatever native representation they need
-/// (`reqwest::Method`, `gloo_net::http::Method`, an `NSString`, a
+/// (`reqwest::Method`, the fetch method string, an `NSString`, a
 /// Java string) without each one re-parsing strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Method {

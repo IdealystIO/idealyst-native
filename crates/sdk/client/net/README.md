@@ -72,7 +72,12 @@ diverge in mechanism, not in what you observe.
 | macOS / Windows / Linux / terminal | `reqwest` (rustls) | `tungstenite` on an I/O thread (`ws://` + `wss://`) | `reqwest::blocking` on an I/O thread |
 | iOS / macOS / tvOS | `NSURLSession` (objc2) | `tungstenite` (shared native arm) | `NSURLSession` + `NSURLSessionDataDelegate` |
 | Android | `HttpURLConnection` (JNI) | `tungstenite`, `ws://` only | `HttpURLConnection.getInputStream()` (JNI) |
-| Web (wasm32) | `fetch` (gloo-net) | the browser's `WebSocket` (web-glue bindings) | the browser's `EventSource` (web-glue bindings) |
+| Web (wasm32) | `fetch` (web-glue bindings; `AbortController` for cancel, timeout and a dropped future) | the browser's `WebSocket` (web-glue bindings) | the browser's `EventSource` (web-glue bindings) |
+
+A request `timeout` (per request or the client default) is a deadline on
+the whole exchange, body included, and resolves `Error::Timeout` on the
+reqwest and web arms. The NSURLSession and HttpURLConnection arms currently
+ignore it.
 
 No async runtime is introduced anywhere (the framework's execution-model
 invariant): native arms drive a blocking I/O worker thread and bridge to

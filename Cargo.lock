@@ -241,7 +241,6 @@ dependencies = [
  "glyphon",
  "render-wgpu",
  "runtime-shared",
- "web-time",
 ]
 
 [[package]]
@@ -4694,40 +4693,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
-name = "gloo-net"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c06f627b1a58ca3d42b45d6104bf1e1a03799df472df00988b6ba21accc10580"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-sink",
- "gloo-utils",
- "http 1.4.1",
- "js-sys",
- "pin-project",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "gloo-utils"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5555354113b18c547c1d3a98fbf7fb32a9ff4f6fa112ce823a21641a0ba3aa"
-dependencies = [
- "js-sys",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6551,7 +6516,6 @@ dependencies = [
  "glyphon",
  "render-wgpu",
  "runtime-shared",
- "web-time",
 ]
 
 [[package]]
@@ -7877,12 +7841,10 @@ dependencies = [
  "block2 0.5.1",
  "futures-channel",
  "futures-util",
- "gloo-net",
  "http-body-util",
  "hyper 1.10.1",
  "hyper-util",
  "jni 0.21.1",
- "js-sys",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -7896,7 +7858,6 @@ dependencies = [
  "tungstenite 0.21.0",
  "wasm-bindgen-test",
  "web-glue",
- "web-sys",
 ]
 
 [[package]]
@@ -9873,7 +9834,6 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "web-time",
  "wgpu",
 ]
 

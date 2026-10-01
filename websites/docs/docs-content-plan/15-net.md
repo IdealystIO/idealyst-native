@@ -6,7 +6,7 @@ transports underneath:
 | Target | Backend |
 |---|---|
 | Native (macOS / Linux / Windows / wgpu / terminal) | `reqwest` + rustls |
-| Web (wasm32) | `fetch` via `gloo-net` |
+| Web (wasm32) | `fetch` via web-glue bindings |
 | iOS / macOS / tvOS | `NSURLSession` via `objc2` + `block2` |
 | Android | `HttpURLConnection` via JNI on a worker thread |
 
@@ -215,9 +215,10 @@ api.post("/upload")
 For the most part, you don't have to think about which transport is
 running. A few platform-specific notes for the people who care:
 
-- **Web**: `gloo-net::Request` underneath. The cancel mechanism is
-  `web_sys::AbortController`. Binary bodies go through
-  `Uint8Array` to avoid UTF-8 lossy decoding.
+- **Web**: the browser's `fetch`, called through web-glue bindings.
+  Every request carries an `AbortController`: a cancel, an expired
+  `timeout`, or dropping the `send` future aborts the browser request.
+  Bodies cross as raw bytes, never decoded as text.
 - **iOS**: Each request gets a `NSURLSessionDataTask` against
   `NSURLSession.sharedSession`. The completion block bridges back
   to Rust via a `futures-channel` oneshot. Cancellation sends

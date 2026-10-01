@@ -2,8 +2,7 @@
 //! (own-web-bindings phase 3): constructing the JS object, assigning and
 //! clearing its `on<event>` handler slots, and reading an event's payload.
 //!
-//! The HTTP arm (`web.rs`) is NOT here: it runs on gloo-net, which is
-//! phase 4, and keeps its own web-sys dependency until then.
+//! The HTTP arm (`web.rs`) declares its own fetch module (phase 4).
 
 use web_glue::{string, Closure, JsError, JsValue};
 
