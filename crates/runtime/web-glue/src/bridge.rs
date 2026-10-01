@@ -15,7 +15,8 @@
 //!
 //! * canvas-native's public `make_2d_rasterizer` / `publish_capture_stream`
 //!   take a `web_sys::HtmlCanvasElement`, because canvas-vello calls them with
-//!   its wgpu graphics canvas;
+//!   its wgpu graphics canvas (behind canvas-native's `web-sys-canvas`
+//!   feature, which canvas-vello turns on);
 //! * canvas-vello's texture-layer `<video>` is a `web_sys::HtmlVideoElement`
 //!   (wgpu's `ExternalImageSource` takes one), so a layer's glue
 //!   `MediaStream` crosses out to become its `srcObject`.
@@ -24,8 +25,9 @@
 //! `wasm_carve::glue_js::hybrid_glue_js`) publishes
 //! `globalThis.__idealystGlue = { add, get, … }`, and the two imports below
 //! reach it through wasm-bindgen's `js_namespace`. Each crossing is one
-//! extra JS call; nothing else is copied. Only hybrid builds define the
-//! global — an own-mode page has no wasm-bindgen heap to cross into.
+//! extra JS call; nothing else is copied. A crate enabling this feature
+//! links wasm-bindgen, so its page always builds in hybrid mode — an
+//! own-mode page has no wasm-bindgen heap to cross into.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 

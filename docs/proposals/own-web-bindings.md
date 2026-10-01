@@ -7,9 +7,12 @@ turns it into the page's JS without post-processing the whole module.
 Apps may keep using wasm-bindgen themselves; the framework stops relying
 on it.
 
-> **Status: phase 2 done — backend-web runs entirely on web-glue
-> (2a: foundation; 2b: the DOM-operation surface, `Host::Node`, the dev
-> tooling). The page is still hybrid because the SDKs are (phase 3).** Phase 1 (the proof of concept) is
+> **Status: all six phases done. A framework-only app builds in OWN mode
+> — no wasm-bindgen anywhere, CLI included — and an app that still links
+> wasm-bindgen (wgpu, its own web-sys) builds in the supported HYBRID
+> mode; the build decides per linked module
+> ([Phases 5 + 6](#phases-5--6--own-mode-by-default-hybrid-supported)).**
+> Phase 1 (the proof of concept) is
 > `crates/runtime/web-glue`, the passes `wasm_carve::{glue, glue_js,
 > command_exports}` and `build_web::own_glue`, and the demos under
 > `tests/own-glue/`, driven in headless Chrome by
@@ -230,12 +233,15 @@ section — the code section included — as bytes. It then writes:
   `env` (e.g. `./__wasm_split.js`) are passed through as static ES
   imports, as wasm-bindgen does.
 
-The entry is `G.attach(exports)`, then `__wasm_call_ctors()` once, then
-`main(0, 0)`. That requires linking the bin as a **reactor**:
-`-C link-arg=--export=__wasm_call_ctors` (`own_glue::link_args()`).
-Without it LLD builds a command module and wraps every export in a ctor
-call (see [Why](#why)). The pass refuses a module that was linked without
-it.
+The entry is `G.attach(exports)`, then `__wasm_call_ctors()` once if the
+module exports it, then `main(0, 0)`. Phase 1 linked the bin as a
+**reactor** (`-C link-arg=--export=__wasm_call_ctors`,
+`own_glue::link_args()`), where that order runs constructors once. The
+build (phase 6) instead links every web app as the command module LLD
+makes by default — own or hybrid is only known after the link, and hybrid
+cannot be a reactor — and the pass points every export but `main` past
+LLD's constructor wrapper; `main`'s wrapper is then the one constructor
+run. Both are tested (`own_glue_e2e`).
 
 ## Hybrid mode
 
@@ -265,10 +271,12 @@ glue namespace composes with wasm-bindgen instead of replacing it:
    (`web_glue::bridge`) and the hot-patch loader's `compileImport` /
    `registerRecords`.
 
-In 2a this runs in every web build (`own_glue::hybrid_extract` /
-`write_hybrid_glue_file`), in `idealyst export`, and — through the
-workspace's wasm32 test runner (`scripts/wasm-glue-test-runner.sh`) — for
-every wasm-bindgen browser test of a crate that links web-glue.
+Since phase 6 the build takes this path only for a module that carries
+wasm-bindgen metadata (`own_glue::extract_for_build`); everything else is
+own mode. `idealyst export` (its bridge is `#[wasm_bindgen]` classes) and
+— through the workspace's wasm32 test runner
+(`scripts/wasm-glue-test-runner.sh`) — every wasm-bindgen browser test of
+a crate that links web-glue always take it.
 
 The same precedent already exists: `wasm-split-macro` emits
 `#[link(wasm_import_module = "./__wasm_split.js")]` imports that
@@ -276,9 +284,10 @@ wasm-bindgen passes through.
 
 ## Pipeline: what goes, what stays
 
-Once backend-web and the SDKs are off wasm-bindgen (phases 2–4), a
-framework-only app builds with **cargo → `glue::extract` → (wasm-split)
-→ (wasm-opt)**. What that removes from the default path:
+Done in phase 6 ([below](#phases-5--6--own-mode-by-default-hybrid-supported)):
+a framework-only app builds with **cargo → `glue::extract` → (hot-patch
+base prep) → (wasm-split) → (wasm-opt)**. What that removed from the
+default path:
 
 - the wasm-bindgen CLI invocation and its flag matrix
   (`--keep-lld-exports`, `--no-demangle`);
@@ -293,10 +302,11 @@ framework-only app builds with **cargo → `glue::extract` → (wasm-split)
 - the CLI/crate version lock-step, and the `wasm-bindgen` install
   requirement for building a framework-only app.
 
-What stays, for hybrid only: the wasm-bindgen invocation,
-`unwrap_command_exports`, and whichever of the above the app's own
-wasm-bindgen use still triggers. The hot-patch and split machinery must
-learn glue imports (see risks).
+What stays, for hybrid only: the wasm-bindgen invocation and every item
+above except the install requirement for framework-only apps. Own mode
+keeps the table rooting (the patch tier needs a slot for every function),
+`__idealyst_shim_*` trampolines for `./__wasm_split.js` imports only, and
+`unwrap_command_exports` (every export but `main`).
 
 ## Risks and mitigations
 
@@ -311,9 +321,12 @@ learn glue imports (see risks).
   the JS in its name (`new Function`, dev only), and the patch's glue
   records are registered first — a record that CHANGES a module the page
   already runs fails the apply, i.e. reloads. Nothing is pre-declared.
-- **Split chunks import glue too.** A chunk whose code uses a binding main
-  does not use imports it from `./__idealyst_glue.js`; the split loader
-  must supply the namespace to chunk instantiation. Phase 6.
+- **Split chunks import glue too.** Did not materialize: wasm-carve gives
+  a split module no function imports at all — every import, glue ones
+  included, stays in main and a chunk reaches it through a table
+  trampoline — so a chunk-only binding is an import of main's module and
+  its JS is in main's `pkg/<lib>.js`. Pinned in a browser by
+  `tests/lazy-chunk-handoff` (phase 6).
 - **Handle aliasing through raw indices.** Slots are reused, so a raw
   index kept past its release can alias a newer object. The Rust API
   makes that unrepresentable through RAII (`JsValue`); `from_raw` is
@@ -371,11 +384,12 @@ learn glue imports (see risks).
    web-time dropped — see [fetch / IndexedDB](#phase-4--fetch--indexeddb)
    and [Workers / charts / web-time](#phase-4--workers--charts--web-time).
    (`console_error_panic_hook` went in 2a: `backend_web::install_panic_hook`.)
-5. **Hybrid mode as a supported configuration** for wgpu (the GPU host's
-   WebGPU canvas) and for apps that use wasm-bindgen themselves.
-6. **Pipeline cleanup**: remove the wasm-bindgen-only machinery listed
-   above from the default path; teach wasm-split chunks the glue
-   namespace.
+5. **Hybrid mode as a supported configuration (done)** for wgpu (the GPU
+   host's WebGPU canvas, canvas-vello) and for apps that use wasm-bindgen
+   themselves — chosen per module, covered by `hybrid_web_e2e`.
+6. **Pipeline cleanup (done)**: own mode by default; the
+   wasm-bindgen-only machinery listed above is skipped for it; split
+   chunks needed nothing. [Results below.](#phases-5--6--own-mode-by-default-hybrid-supported)
 
 ## Phase 1 results
 
@@ -663,8 +677,8 @@ default) needs the runtime's `__externref_table_alloc` exports and failed with
 never served. `WebBackend::new_in` now calls
 `wasm_bindgen::__rt::link_mem_intrinsics()` (the hook wasm-bindgen's own
 generated code uses), so backend-web depends on wasm-bindgen again for the
-build only; no wasm-bindgen type crosses its API. Own mode (phase 6) removes
-it. Also fixed on the way: backend-web's host tests did not compile on macOS
+build only; no wasm-bindgen type crosses its API. Own mode (phase 6) removed
+it again — such a module no longer reaches the CLI. Also fixed on the way: backend-web's host tests did not compile on macOS
 (a wasm-only `.init_array` probe), and screen-recorder's host tests (a
 misplaced dev-dependency, and a stale `Element::External` test).
 
@@ -826,3 +840,181 @@ missing favicon. Host tests of offload, web-glue, wasm-carve, build-web
 (fingerprint), render-wgpu (46), charts-core / charts; iOS / Android
 `cargo check` of offload, offload-macro, web-glue, render-wgpu / ios-sim /
 android-sim, charts; wasm32 checks of render-wgpu + host-web.
+
+## Phases 5 + 6 — own mode by default, hybrid supported
+
+**The build decides per linked module.** `build_web::own_glue::extract_for_build`
+reads cargo's artifact once (the glue extraction it always ran) and reports
+wasm-bindgen use (`wasm_carve::glue::Glue::wasm_bindgen`). Either signal makes
+the module HYBRID; neither makes it OWN:
+
+- an import from a `__wbindgen*` module (`__wbindgen_placeholder__`,
+  `__wbindgen_externref_xform__`) — the module cannot instantiate without
+  wasm-bindgen's generated JS;
+- the `__wasm_bindgen_unstable` custom section — a `#[wasm_bindgen]` item
+  survived the link. An exported fn takes no import, so the import test
+  alone would miss it.
+
+Having wasm-bindgen in the crate graph is not evidence: LLD loads an rlib
+member only when it is referenced, so a dependency that names wasm-bindgen
+without calling it links neither signal. The decision is logged
+(`own mode: … no wasm-bindgen CLI` / `hybrid mode: … (5 __wbindgen* imports
+and a … section)`) and the stages differ (`glue-package` vs `wasm-bindgen`),
+which is what the E2Es assert.
+
+**Own mode** writes `pkg/<lib>.js` (`loader_js`) and `pkg/<lib>_bg.wasm`
+itself, with wasm-bindgen's entry contract (default `init`, `initSync`,
+idempotent re-init returning the raw exports), so `index.html`, SSR/SSG,
+fingerprinting and the split loaders are unchanged. Every app is linked the
+same way (a command module) — the mode is known only after the link, a
+reactor would break hybrid's start, and one RUSTFLAGS set keeps the cargo
+cache shared — and own mode unwraps every export but `main` past LLD's
+constructor wrapper, which is a reactor's behaviour (constructors once, in
+`main`'s wrapper; once in a worker too). It strips `linking`, `reloc.*` and
+DWARF as wasm-bindgen used to (the splitter and the hot-patch alias map read
+cargo's artifact, not this one), and removes a previous hybrid build's glue
+file, `.d.ts` files and `snippets/` from `pkg/`. The loader now also publishes
+`globalThis.__idealystGlue`, which the hot-patch loader needs in both modes.
+
+**What own mode skips, and what hybrid keeps:**
+
+| | own | hybrid |
+|---|---|---|
+| wasm-bindgen CLI (`--keep-lld-exports`, `--no-demangle`) | — | yes |
+| command-export unwrap | every export but `main` | web-glue's `__glue_*` |
+| `command_export` neutralize pass (0.2.122) | — | yes |
+| hot-patch table rooting | yes | yes (before wasm-bindgen's GC) |
+| `__idealyst_shim_*` trampolines | `./__wasm_split.js` imports only | every JS-shim import |
+| `wbg_cast` forwarders, `is_bindgen_internal` exclusions | — (`hotpatch_base::Flavor::Own`) | yes |
+| stranded `__wbindgen_placeholder__` imports (`wasm_carve::strand`) | — | yes |
+| JSTag support in wasm-carve | unused | yes |
+
+An edit that makes an own-mode app start using wasm-bindgen cannot be hot
+patched (its `__wbindgen_*` imports resolve to nothing); it falls back to a
+rebuild, which builds hybrid. The patch link keeps `--no-demangle` — that is
+wasm-ld's flag, pairing the patch's mangled names with the base's.
+
+**Lazy chunks need nothing.** wasm-carve gives a split module no function
+imports — every import, glue ones included, stays in main, and a chunk reaches
+it through a table trampoline — so the split loader supplies no glue namespace
+and `initSync(undefined, undefined)` answers it in both modes.
+`tests/lazy-chunk-handoff` now calls a `web_glue::import!` only its chunk
+uses (marker `glue in chunk: 42`).
+
+**Dependencies removed.** backend-web's `wasm-bindgen` dependency and its
+`link_mem_intrinsics` hook (3f9131e8, which existed only so the CLI could
+process an app that links no wasm-bindgen). canvas-native's `wasm-bindgen` /
+`web-sys` are optional behind a new `web-sys-canvas` feature that canvas-vello
+enables: its two web-sys-typed entry points (HYBRID-BRIDGE: wgpu) put
+wasm-bindgen into every canvas app, so `examples/whiteboard-demo`, which has
+no GPU renderer, still built hybrid. `idealyst doctor` lists the wasm-bindgen
+CLI as optional (hybrid builds and `idealyst export` only).
+
+**Bugs found and fixed (each with a regression test):**
+
+- **Every GPU canvas on the DOM backend was blank since 2b.** The Graphics
+  surface handed out a `WebCanvasWindowHandle` pointing at the canvas's
+  WEB-GLUE handle; raw-window-handle defines that pointer as a wasm-bindgen
+  `JsValue`, and canvas-vello, host-web and wgpu read it as one — an index
+  into a different heap. canvas-vello found no canvas and drew nothing. The
+  surface now hands out `WebWindowHandle` (the canvas carries
+  `data-raw-handle`, page-unique and non-zero), which wgpu resolves itself;
+  canvas-vello and host-web look it up the same way. Limitation, as with
+  wgpu's own lookup: a canvas inside a shadow root is not found. Found by
+  `hybrid_web_e2e`; pinned by backend-web's
+  `regression_graphics_window_handle_names_the_canvas_by_its_raw_handle_id`.
+- **`--data-prune` did nothing in own mode.** The splitter read the
+  data-symbol table from the packaged module's `linking` section, which
+  wasm-bindgen carried through and own mode strips. It now falls back to the
+  rustc module's table (the same table — packaging never renumbers symbols
+  or moves data). lazy-payload-split's lazy main: 1409 KiB before the fix,
+  897 KiB after (eager 1408; the pre-change hybrid pipeline gave 898 / 1410).
+  Pinned by wasm-carve's
+  `regression_data_prune_works_on_a_packaged_module_without_linking`.
+
+**What still builds hybrid** (and so still needs the CLI at the version in
+the app's `Cargo.lock`): anything linking wgpu — canvas-vello (charts-demo
+`--features vello`, pdf-demo), the GPU host (`host-web`, the website
+simulator); apps calling web-sys / `#[wasm_bindgen]` themselves
+(examples/inspector, login-demo, CrewForge); `idealyst export`; the dev smoke
+crates; and, likely, any app on the `maps` SDK, whose `maps-web` still exports
+the deprecated `build_map_iframe -> web_sys::Element` (no example app uses
+maps on web, so this was not measured).
+
+### Phases 5 + 6 verification
+
+Machine and toolchain as phase 1; Chrome 154 with a matching chromedriver.
+
+- Host tests: wasm-carve (incl. the detection, the own loader's
+  `__idealystGlue`, the data-prune fallback), build-web 154 (incl. own vs
+  hybrid extraction on command modules, stale-file cleanup, the own hot-patch
+  flavor), the CLI's doctor tests, canvas-native's graph test.
+- `own_glue_e2e` 3/3 — the demo packaged as `idealyst build` links it
+  (command module; constructors once in the page and in a worker, thousands
+  of calls) and as a reactor, plus the hybrid demo.
+- `wasm_hot_patch_e2e` 2/2 and `dev_events_e2e` 1/1, both own mode: no
+  `wasm-bindgen` / `hotpatch-strand-imports` / `command-export-neutralize`
+  stage in any build of either session (asserted). The base-prep stage is
+  0.03 s.
+- `hybrid_web_e2e` 1/1 (new): a canvas-vello app builds hybrid (wasm-bindgen
+  stage, fingerprinted glue file), three glue-listener clicks render through
+  wasm-bindgen's instance, canvas-vello logs `web GPU (WebGPU)` in headless
+  Chrome on Apple Silicon (`--enable-unsafe-webgpu`; WebGPU's own output is
+  not read back), and the forced Canvas2D fallback reads back the scene's red
+  through the HYBRID-BRIDGE into canvas-native. It failed before the
+  window-handle fix (no renderer marker, transparent canvas).
+- `wasm_patch_roundtrip` 2/2 (the hybrid hot-patch path), backend-web's
+  browser suite 119/119, canvas-native's browser suite 3/3 with
+  `web-sys-canvas` and 2/2 without.
+- `prune-regression --browser` (release, `--data-prune`): every app builds in
+  own mode and renders; lazy main 511 KiB smaller than eager.
+- Real apps in headless Chrome: `examples/nav-showcase` with `idealyst build
+  --web` and `dev --web --local` (own mode; tabs, a stack push, browser back,
+  settings → about, wizard; no console errors), `examples/whiteboard-demo`
+  (own mode after the canvas-native change; a pointer stroke paints the
+  board), `offload-demo` (own mode; 148,933 primes in a worker while the page
+  animates, a panicking job answered `Canceled` and a later job served — the
+  only console error is that job's deliberate panic report),
+  `tests/lazy-chunk-handoff` in a dev build (the chunk's glue binding
+  renders, its button works).
+
+**Build time.** `examples/nav-showcase`, `idealyst build --web` (dev profile,
+split on), warm rebuild after touching `lib.rs`, 3 runs each; hybrid is
+master `4a42486d`'s CLI on that commit's tree (this tree's nav-showcase can no
+longer be built hybrid — it links no wasm-bindgen runtime, which is the
+point):
+
+| | own (this change) | hybrid (`4a42486d`) |
+|---|---:|---:|
+| total | 0.66–0.68 s (first run 0.98) | 0.81–0.82 s |
+| cargo | 0.52–0.54 s | 0.55–0.57 s |
+| wasm-bindgen | — | 0.09–0.10 s |
+| glue-extract + glue-package | 0.01 + 0.00 s | 0.01 s (+ neutralize 0.00) |
+| wasm-split | 0.11–0.12 s | 0.12 s |
+| `_bg.wasm` + JS | 3,065,258 + 59,038 B | 3,066,540 + 15,754 + 58,164 B |
+
+On that small app wasm-bindgen was ~0.1 s, so own mode saves ~0.15 s (18%)
+per warm rebuild and ships one JS file fewer. On a large app the CLI's cost
+is the one this proposal started from. CrewForge (the `crewforge-hotpatch`
+bench copy, framework `[patch]`ed to this checkout) still calls web-sys /
+`#[wasm_bindgen]` in 15 app files, so it builds HYBRID — 67 `__wbindgen*`
+imports and the section — and shows what own mode would remove once those
+move to SDKs (`crates/app-main`, `idealyst build --web`, dev profile, split
+on, Rust 1.97.1 aarch64, wasm-bindgen 0.2.126):
+
+| | cold | warm (touch `app.rs`, 3 runs) |
+|---|---:|---:|
+| total | 71.0 s | 10.7–10.9 s |
+| cargo | 61.2 s | 2.2 s |
+| wasm-split | 4.7 s | 4.3–4.4 s |
+| **wasm-bindgen** | **4.3 s** | **3.2–3.4 s** |
+| stage + fingerprint | 0.66 s | 0.66–0.68 s |
+| command-export neutralize + glue-extract | 0.13 + 0.09 s | 0.11–0.13 + 0.09–0.11 s |
+| peak RSS (`/usr/bin/time -l`, the build's process tree) | 4.6 GB | 4.6 GB |
+
+wasm-bindgen is a third of every warm CrewForge rebuild. The own-mode
+replacement is the glue pass, measured in phase 1 at 0.45–0.83 s / 0.92 GB
+on CrewForge's 305 MB hot-reload base and 0.04–0.05 s / 0.21 GB on a 68 MB
+module, most of it file I/O (the build now keeps the module in memory
+between extraction and `pkg/`). Porting
+CrewForge's 15 web-sys files onto the SDKs is app work, not framework work.

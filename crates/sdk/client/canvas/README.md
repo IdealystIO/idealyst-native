@@ -158,7 +158,7 @@ renderers (CLAUDE.md §7), so verify the **GPU (`canvas-vello`)** and **CPU
 **Automated**
 - [ ] `cargo test -p canvas` — scene-model logic (paths, paint, `ShapeInstance` batches, glyph runs, blend/mask ops)
 - [ ] `cargo build -p canvas --target wasm32-unknown-unknown` — web target
-- [x] `cargo test -p canvas-native --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `native/tests/web_canvas.rs`: the web Canvas2D replay (on web-glue) read back pixel by pixel — solid / gradient / image / even-odd fills, persistent layer, transform + clip — image and live-stream texture layers, the `captureStream` self-capture's native source (a `web_glue::dom::MediaStream`), and `make_2d_rasterizer` on a `web_sys` canvas (canvas-vello's fallback entry, the one HYBRID-BRIDGE: wgpu seam)
+- [x] `cargo test -p canvas-native --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `native/tests/web_canvas.rs`: the web Canvas2D replay (on web-glue) read back pixel by pixel — solid / gradient / image / even-odd fills, persistent layer, transform + clip — image and live-stream texture layers, the `captureStream` self-capture's native source (a `web_glue::dom::MediaStream`), and (`--features web-sys-canvas`) `make_2d_rasterizer` on a `web_sys` canvas (canvas-vello's fallback entry, the one HYBRID-BRIDGE: wgpu seam — behind that feature so a canvas app without canvas-vello links no wasm-bindgen and builds in own mode; `native/tests/no_wasm_bindgen.rs` pins it)
 
 **Behavior**
 - [ ] **Web** — register `canvas-native`; a `draw` scene renders via Canvas2D; reactive `Signal` reads re-render on change; self-capture records via `captureStream()`.
