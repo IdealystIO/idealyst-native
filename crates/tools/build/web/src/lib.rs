@@ -594,6 +594,39 @@ pub fn web_target_dir(project_dir: &Path, opts: &BuildOptions) -> PathBuf {
 }
 
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
+    build_inner(project_dir, opts, true)
+}
+
+/// Why [`restage`] refused: the packaged module is not cargo's current
+/// output, so serving it without a build would serve something the last
+/// build did not produce. The caller builds instead.
+#[derive(Debug)]
+pub struct RestageRefused(pub String);
+
+impl std::fmt::Display for RestageRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RestageRefused {}
+
+/// Stage the bundle the LAST build packaged, without running cargo: what
+/// [`build`] does when cargo finds nothing to do and the packaging passes
+/// are skipped, minus the cargo step.
+///
+/// For a dev session resuming the previous one's base (`dev_reload`'s
+/// resume): the base and the patches on it are reused as they are, and a
+/// cargo build would compile the patched sources into a NEW base —
+/// correct, but a reload and the whole cost the resume exists to skip.
+/// The caller is responsible for knowing nothing cargo reads has moved.
+/// Refuses ([`RestageRefused`]) when the packaged module is not the one
+/// cargo last produced — the passes never finished over it.
+pub fn restage(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
+    build_inner(project_dir, opts, false)
+}
+
+fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Result<BuildArtifact> {
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
@@ -686,27 +719,29 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let passes = passes_key(&opts);
     let before = WasmStamp::of(&original_wasm, passes);
     let mut timings = BuildTimings::new(&reporter);
-    timings.time("cargo", || {
-        cargo_build_wasm(
-            &reporter,
-            &project_dir,
-            &bin_name,
-            &target_dir,
-            opts.release,
-            opts.wasm_split,
-            opts.hot_patch,
-            opts.debuginfo,
-            opts.dev_opt,
-            opts.strip_panics,
-            opts.premint,
-            opts.premint_only,
-            opts.premint_report,
-            opts.hydrate,
-            &opts.user_features,
-            &opts.source,
-            &project_dir,
-        )
-    })?;
+    if run_cargo {
+        timings.time("cargo", || {
+            cargo_build_wasm(
+                &reporter,
+                &project_dir,
+                &bin_name,
+                &target_dir,
+                opts.release,
+                opts.wasm_split,
+                opts.hot_patch,
+                opts.debuginfo,
+                opts.dev_opt,
+                opts.strip_panics,
+                opts.premint,
+                opts.premint_only,
+                opts.premint_report,
+                opts.hydrate,
+                &opts.user_features,
+                &opts.source,
+                &project_dir,
+            )
+        })?;
+    }
     let after = WasmStamp::of(&original_wasm, passes);
     let outputs_present = wrapper_pkg
         .join(format!("{}_bg.wasm", manifest.lib_name))
@@ -720,6 +755,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         WasmStamp::read(&stamp_file).as_ref(),
         outputs_present,
     );
+    if !run_cargo && !skip_passes {
+        return Err(RestageRefused(format!(
+            "the packaged {bin_name} module is not cargo's last output (the passes never \
+             finished over it)"
+        ))
+        .into());
+    }
     if skip_passes {
         let bytes = after.as_ref().map(|s| s.len).unwrap_or(0);
         reporter.log(

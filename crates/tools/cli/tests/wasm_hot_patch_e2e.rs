@@ -619,6 +619,98 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
     );
 }
 
+// ── a restart resumes the patched base ─────────────────────────────
+
+/// A restart after hot patches used to compile the patched sources into a
+/// new base before the page came up — on CrewForge 11–18 s, against 3–7 s
+/// with nothing changed. The last session's base, its patches and its
+/// archives are reused instead when nothing outside the workspace's `.rs`
+/// sources moved (`dev_reload::resume`): no cargo, and the page is
+/// replayed the patch. An edit made while no session ran is decided as a
+/// save of the resumed session.
+#[test]
+#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
+fn regression_a_restart_after_a_hot_patch_resumes_the_patched_base() {
+    let repo = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_resume_e2e");
+    materialize(&project, &repo);
+    // Settle the seeded lockfile now. The first build would prune it, and
+    // a base whose `Cargo.lock` was written during its build is — rightly
+    // — never recorded for a resume: the lock may or may not be in it.
+    let settled = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .arg(project.join("Cargo.toml"))
+        .stdout(Stdio::null())
+        .status()
+        .expect("run cargo metadata");
+    assert!(settled.success(), "cargo metadata failed on the materialized app");
+    let app_rs = project.join("src/app.rs");
+
+    // Session 1: the base, then a hot patch on it.
+    {
+        let (session, mut page) = start(&project, tmp.path().join("one").as_path());
+        assert!(page.wait_for_text("logic v1 -> 0", Duration::from_secs(60)), "{:?}", page.text());
+        let source = std::fs::read_to_string(&app_rs).unwrap();
+        std::fs::write(&app_rs, source.replace("logic v1 ->", "logic v2 ->")).unwrap();
+        assert!(
+            page.wait_for_text("logic v2 -> 0", Duration::from_secs(120)),
+            "the body edit never reached the page:\n{}",
+            tail(&session.log())
+        );
+        assert!(session.log().contains("[hotpatch] src/app.rs ·"), "{}", tail(&session.log()));
+        // The record is written off the loop's thread right after the
+        // push; give it a moment before the session is killed.
+        std::thread::sleep(Duration::from_secs(3));
+    }
+
+    // Session 2: nothing moved — resumed, no cargo, the page patched.
+    {
+        let (session, mut page) = start(&project, tmp.path().join("two").as_path());
+        assert!(
+            page.wait_for_text("logic v2 -> 0", Duration::from_secs(60)),
+            "the resumed page does not run the patched code: {:?}\n{}",
+            page.text(),
+            tail(&session.log())
+        );
+        let log = session.log();
+        assert!(log.contains("resumed the last session's base"), "not resumed:\n{}", tail(&log));
+        assert!(
+            !log.contains("cargo build --target wasm32-unknown-unknown"),
+            "a resumed session must not run cargo:\n{}",
+            tail(&log)
+        );
+        // The resumed session patches on: its builder continues the
+        // numbering, so no URL a page fetched names new code.
+        let source = std::fs::read_to_string(&app_rs).unwrap();
+        std::fs::write(&app_rs, source.replace("logic v2 ->", "logic v3 ->")).unwrap();
+        assert!(
+            page.wait_for_text("logic v3 -> 0", Duration::from_secs(120)),
+            "a save in the resumed session never reached the page:\n{}",
+            tail(&session.log())
+        );
+        assert!(project.join("pkg/hotpatch/patch-2.wasm").is_file(), "{}", tail(&session.log()));
+        std::thread::sleep(Duration::from_secs(3));
+    }
+
+    // Session 3: an edit made while no session ran is decided as a save.
+    let source = std::fs::read_to_string(&app_rs).unwrap();
+    std::fs::write(&app_rs, source.replace("logic v3 ->", "logic v4 ->")).unwrap();
+    {
+        let (session, mut page) = start(&project, tmp.path().join("three").as_path());
+        assert!(
+            page.wait_for_text("logic v4 -> 0", Duration::from_secs(120)),
+            "the offline edit never reached the page: {:?}\n{}",
+            page.text(),
+            tail(&session.log())
+        );
+        let log = session.log();
+        assert!(log.contains("resumed the last session's base"), "{}", tail(&log));
+        assert!(log.contains("changed since the last session"), "{}", tail(&log));
+        assert!(!log.contains("cargo build --target wasm32-unknown-unknown"), "{}", tail(&log));
+    }
+}
+
 // ── the two-crate workspace ──────────────────────────────────────────
 
 const WS_SHARED_RS: &str = r#"

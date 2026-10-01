@@ -329,6 +329,59 @@ impl WasmPatchBuilder {
         self
     }
 
+    /// Number this builder's patches after `serial`: the first one it
+    /// writes is `patch-<serial + 1>.wasm`.
+    ///
+    /// For a dev session resuming the previous one's base, whose patches
+    /// a page may still hold under their URLs: a builder counting from 1
+    /// again would serve NEW code at a URL the browser has seen.
+    pub fn numbered_after(self, serial: u64) -> Self {
+        self.serial.set(serial);
+        self
+    }
+
+    /// Every crate's replayed objects this builder would reuse, with the
+    /// source key they were compiled from: `(crate, key, objects)`.
+    ///
+    /// For a dev session resuming this base: the objects stay on disk in
+    /// each crate's replay dir until that crate is replayed again, and a
+    /// resumed builder given them ([`Self::reusing_objects`]) skips the
+    /// replay of every carried crate whose sources have not moved — where
+    /// a fresh one replayed them all on its first patch (8 s for the 12
+    /// crates a CrewForge session had patched).
+    ///
+    /// A seed still running is not waited for: its objects are filed by
+    /// the next patch, and recorded with the next call after it.
+    pub fn reusable_objects(&self) -> Vec<(String, String, Vec<PathBuf>)> {
+        let mut out: Vec<_> = self
+            .objects
+            .borrow()
+            .iter()
+            .map(|(name, (key, objs))| (name.clone(), key.clone(), objs.clone()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Reuse objects an earlier builder over the SAME base replayed (see
+    /// [`Self::reusable_objects`]). Each is reused only under its source
+    /// key, and only while every one of its files is still there.
+    pub fn reusing_objects(
+        self,
+        entries: impl IntoIterator<Item = (String, String, Vec<PathBuf>)>,
+    ) -> Self {
+        self.objects
+            .borrow_mut()
+            .extend(entries.into_iter().map(|(name, key, objs)| (name, (key, objs))));
+        self
+    }
+
+    /// The number of the last patch this builder wrote (or was numbered
+    /// after).
+    pub fn serial(&self) -> u64 {
+        self.serial.get()
+    }
+
     /// How many functions the base left reachable through its table.
     /// Near-zero means `hotpatch_base` did not run, and every patch is
     /// about to fail on its first `env` import.

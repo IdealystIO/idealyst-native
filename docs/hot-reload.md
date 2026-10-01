@@ -1109,6 +1109,83 @@ RUSTUP_TOOLCHAIN=1.97.1-aarch64-apple-darwin \
   idealyst dev --web --local --port 3150
 ```
 
+### A restart resumes the patched base
+
+A hot patch never rebuilds the base, so a session stopped after patches
+leaves sources the last built base does not contain. The next session's
+start used to compile that difference before the page came up: on
+CrewForge, with one screen crate patched, launch → page 11–18 s, where a
+start with nothing changed takes 3–7 s. Hot-patching the same edit had
+taken 1–3 s, and everything that patch needed — the base, its captured
+rustc invocations, the patch module — was still on disk.
+
+So the session keeps a record beside the base's captures
+(`<web target>/idealyst-hotpatch/resume.json`, written off the loop's
+thread after the base build and after every save): the archives the next
+save would be decided against, the crates patched since the base, the
+patches a page loading the base is replayed (see step 5 of
+[The web save loop](#the-web-save-loop)), and the newest hot patch's
+module, hard-linked into `idealyst-hotpatch/resume/` because restaging
+clears the served bundle. The next session RESUMES from it — restages
+that bundle without running cargo (`build_web::restage`), puts the patch
+module back, and replays the patches to every page — when nothing an
+uninterrupted session would have had to rebuild for has moved:
+
+- the same `idealyst` executable (path, length, mtime), the same
+  `rustc -vV` (run in the project, so `rust-toolchain.toml` and
+  `RUSTUP_TOOLCHAIN` count), and the same `CARGO_*` / `RUST*`
+  environment, logging variables aside;
+- every other file under the watch roots — each crate's `Cargo.toml`,
+  non-`.rs` files under a workspace crate's `src/`, every source of a
+  path dependency outside the workspace (a `[patch]`ed framework
+  included) — and every `Cargo.lock`, `.cargo/config(.toml)` and
+  `rust-toolchain(.toml)` from the project up, at the same length and
+  modification time;
+- the packaged base module unchanged, and cargo's output still the one
+  it was packaged from (`restage` refuses otherwise).
+
+Anything else builds, as before, with a `[dev-reload] building: the last
+session's base cannot be resumed (…)` line naming what moved. Workspace
+`.rs` files are compared by CONTENT against the archives instead: the
+ones edited while no session ran are handed to the resumed loop as a
+save, so they are decided like any save — an overlay patch, a hot patch,
+or the rebuild a shape edit needs (the page shows the resumed state until
+that rebuild reloads it, as it would during a session).
+
+A base is only recorded when every one of those inputs is older than
+its build's start (and, for a session's first base, whose archives are
+scanned after the build, every workspace source too): a file written
+mid-build may or may not be in it. The record is cleared before every
+rebuild and rewritten once the result is known, so a session killed
+mid-build never leaves one describing a base it was overwriting. The
+patch numbering continues across a resume
+(`WasmPatchBuilder::numbered_after`), so a patch URL a page fetched never
+names other code.
+
+Measured on CrewForge (aarch64, scenarios as in
+[What a save costs on the web](#what-a-save-costs-on-the-web)), launch →
+page connected, and → the page running the patched code:
+
+| Restart scenario | before (HEAD 04fdcb0d) | server and scan fixes only | resumed |
+|---|---|---|---|
+| nothing changed | 10.1–17.9 | 4.5–7.1 | 3.0–3.7 |
+| one body edit made while stopped | 14.7–18.6 | 11.0–15.2 | page 3.1–3.4 (last state), edit on screen 6.4–6.9 |
+| one crate hot-patched, then restarted | 12.6–21.4 | 11.8–18.5 | page 3.1–3.3, patch applied 3.7–3.8 |
+| three crates hot-patched (eleven re-emitted), then restarted | 14.9–48.1 | 17.8–29.4 | page 3.6–4.0, patch applied 4.2–4.8 |
+
+The machine was shared with other builds, so compare columns rather than
+reading single values; the "before" and "fixes only" builds compiled the
+patched crates and their dependents (cargo 7–16 s for one crate, 12–40 s
+for three, then ~2 s of packaging). The resumed builder also starts with
+the replayed objects the last one could reuse
+(`WasmPatchBuilder::reusable_objects`), so the first save after resuming that eleven-crate
+session took 1.6–2.6 s where it took 6.4 s replaying every carried crate.
+A resumed session keeps carrying what was patched since the last REBUILD
+— the price of not compiling it into the base — until a shape edit or
+`r` rebuilds.
+
+`IDEALYST_DEV_NO_RESUME=1` builds anyway; the record is still kept.
+
 ### Rebuilding the tree without losing the page
 
 Applying a patch changes nothing on screen — the DOM in front of the user
@@ -1599,6 +1676,9 @@ terminal host's own `.idealyst/terminal.log`.
 - `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replay that warms
   the replay cache after each base build (see
   [What a save costs on the web](#what-a-save-costs-on-the-web)).
+- `IDEALYST_DEV_NO_RESUME=1` makes a web session build its base even
+  when the last session's could be resumed (see
+  [A restart resumes the patched base](#a-restart-resumes-the-patched-base)).
 - `IDEALYST_HOTPATCH_KEEP_NAMES=1` serves the web patch WITH its `name`
   section, so a stack trace through patched code is readable in the
   browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
