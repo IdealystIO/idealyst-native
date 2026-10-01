@@ -37,7 +37,16 @@
 //! A test binary with no glue at all is passed through untouched, so this
 //! is safe as the workspace-wide wasm32 runner (`.cargo/config.toml`).
 //! `WASM_BINDGEN_TEST_RUNNER` names a different underlying runner.
+//!
+//! cargo hands a wasm32 runner the libtest harness flags it would give a
+//! native test binary, and wasm-bindgen-test-runner rejects the ones it
+//! does not know. `cargo test -q` passes `--quiet`, which it answers with
+//! `Error: unexpected argument '--quiet'` and an exit before any test runs —
+//! cargo then reports only "test failed" with no result line, which read
+//! as a flaky browser start-up through two release sweeps. `harness_args`
+//! translates it to the runner's own spelling of terse output.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -47,7 +56,7 @@ use wasm_carve::{glue, glue_js};
 fn main() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let wasm = PathBuf::from(args.next().context("usage: wasm-glue-test-runner <test.wasm> [args…]")?);
-    let rest: Vec<_> = args.collect();
+    let rest = harness_args(args);
     let runner = std::env::var_os("WASM_BINDGEN_TEST_RUNNER").unwrap_or_else(|| "wasm-bindgen-test-runner".into());
 
     let bytes = std::fs::read(&wasm).with_context(|| format!("read {}", wasm.display()))?;
@@ -98,4 +107,47 @@ fn main() -> Result<()> {
         .with_context(|| format!("run {} — is wasm-bindgen-cli installed?", runner.to_string_lossy()))?;
     // The runner's own exit code (test failures) is the result cargo reports.
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// The harness flags after the test binary, in wasm-bindgen-test-runner's
+/// spelling: libtest's `--quiet`/`-q` is its `--format terse` (added once,
+/// and not when the caller already chose a format). Everything else passes
+/// through unchanged, so the runner still rejects what it cannot honor.
+fn harness_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut out = Vec::new();
+    let mut quiet = false;
+    for a in args {
+        if a == "--quiet" || a == "-q" {
+            quiet = true;
+        } else {
+            out.push(a);
+        }
+    }
+    let has_format = out.iter().any(|a| a == "--format" || a.to_string_lossy().starts_with("--format="));
+    if quiet && !has_format {
+        out.extend(["--format".into(), "terse".into()]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::harness_args;
+    use std::ffi::OsString;
+
+    fn args(a: &[&str]) -> Vec<OsString> {
+        a.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn regression_cargo_test_quiet_becomes_terse_format() {
+        assert_eq!(harness_args(args(&["--quiet"])), args(&["--format", "terse"]));
+        assert_eq!(harness_args(args(&["-q", "my_filter"])), args(&["my_filter", "--format", "terse"]));
+    }
+
+    #[test]
+    fn an_explicit_format_wins_and_other_flags_pass_through() {
+        assert_eq!(harness_args(args(&["--quiet", "--format", "terse"])), args(&["--format", "terse"]));
+        assert_eq!(harness_args(args(&["--nocapture", "--skip", "x"])), args(&["--nocapture", "--skip", "x"]));
+    }
 }
