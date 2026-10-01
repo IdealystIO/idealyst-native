@@ -2054,6 +2054,40 @@ mod tests {
         let _ = web_glue::JsFuture::new(&promise).await;
     }
 
+    /// Await the next `requestAnimationFrame` callback.
+    async fn next_frame() {
+        let resolve: Rc<RefCell<Option<web_glue::js::Function>>> = Rc::new(RefCell::new(None));
+        let promise = web_glue::js::Promise::new(&mut |res, _rej| {
+            *resolve.borrow_mut() = Some(res);
+        });
+        let on_frame = web_glue::Closure::once(move |_| {
+            if let Some(r) = resolve.borrow_mut().take() {
+                let _ = r.call0(&JsValue::UNDEFINED);
+            }
+        });
+        web_glue::dom::window().unwrap().request_animation_frame(&on_frame);
+        let _ = web_glue::JsFuture::new(&promise).await;
+    }
+
+    /// Await until every `ResizeObserver` delivery for layout changed
+    /// BEFORE this call has run, plus the flush it queues.
+    ///
+    /// The HTML "update the rendering" step runs rAF callbacks, THEN
+    /// style/layout, THEN broadcasts active resize observations — all in
+    /// one frame. So once the callback of the frame AFTER the next one
+    /// runs, the next frame's broadcast (which measured the change) is
+    /// done, and the microtask flush its `on_layout` write queued ran
+    /// before that later frame began. Counting frames instead of sleeping
+    /// keeps this exact under load: the fixed 50/100 ms sleeps it
+    /// replaces assume a frame lands inside them, which a renderer
+    /// starved by concurrent suites does not honour (the on_layout
+    /// regression failed once that way). The frame waits are no flush
+    /// source of their own — each only resolves a promise.
+    async fn resize_observations_delivered() {
+        next_frame().await;
+        next_frame().await;
+    }
+
     /// Await a real macrotask boundary (`setTimeout(ms)`) so scheduler
     /// timer callbacks — and the flush microtask the post-dispatch hook
     /// queues after them — have run.
@@ -2209,14 +2243,14 @@ mod tests {
         microtask().await;
         // The observer's initial delivery (0-height box) lands a frame
         // later; let it settle so the resize below is the one under test.
-        sleep_ms(50).await;
+        resize_observations_delivered().await;
         assert!(body_text().contains("h=0"), "boot mounted the tree: {}", body_text());
 
         let el = el_slot.borrow().clone().expect("view handle filled at mount");
         el.style().set_property("height", "37px").unwrap();
         // ResizeObserver delivers in the next rendering step; no DOM
         // event, timer body or other flush source runs in between.
-        sleep_ms(100).await;
+        resize_observations_delivered().await;
         assert!(
             body_text().contains("h=37"),
             "on_layout write committed without an unrelated event: {}",

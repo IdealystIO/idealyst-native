@@ -32,6 +32,10 @@
 //!   up, so a navigator mounting later reads the live address bar
 //!   through `UrlSyncService::current_url` (implemented below over the
 //!   same [`HistoryPort`], which is what lets the tests drive it).
+//! - A programmatic pop's `history.back()` is ASYNCHRONOUS (Chrome
+//!   round-trips it through the browser process; 80–200 ms under CPU
+//!   load), so every history write issued while one is in flight is
+//!   serialized behind its echo — see [`HistoryOp`].
 //! - Popstate dispatch only STAGES commands, so the listener calls
 //!   [`crate::newcore::schedule_flush`] afterwards — popstate is a raw
 //!   DOM event outside every wrapped author callback (the residual the
@@ -138,6 +142,75 @@ fn replace_state(url: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Serialized history ops (writes wait out an in-flight self-initiated back)
+// ---------------------------------------------------------------------------
+//
+// WHY (bug: `pop()` then `push()` in one turn left the address bar on the
+// screen BELOW the one shown): `history.back()` only QUEUES a traversal —
+// the browser moves `location` and fires `popstate` later, after a
+// browser-process round trip. A `pushState`/`replaceState` issued in that
+// window lands on the entry being LEFT, and then the traversal moves the
+// browser off it. Measured in headless Chrome: `back(); pushState("/p2")`
+// from `/p1` over `/p0` ends on `/p0` with one popstate (and
+// `back(); replaceState(..)` likewise), which the echo swallow then
+// accepted as our own pop — the UI showed the pushed screen while the
+// URL named the popped-to one, and the next browser Back went wrong.
+// A user hits it with any handler that pops and then navigates (the
+// common "replace this screen" shape), or by tapping a link while a
+// back is still traversing — a window CPU load stretches past 200 ms.
+//
+// So while a self-initiated back is pending, browser history ops are
+// queued in issue order and replayed when its echo arrives; a queued
+// `Back` re-arms the wait, so `pop, push, pop` plays out as three
+// sequential moves rather than two backs racing one push. Nothing is
+// deferred in the steady state: with no back in flight each op applies
+// synchronously, exactly as before (one TLS read per op).
+
+/// One browser History API call, deferred while a self-initiated
+/// `history.back()` has not traversed yet.
+enum HistoryOp {
+    Push(String),
+    Replace(String),
+    /// A programmatic pop's `history.back()`; applying it arms
+    /// [`PENDING_SELF_POPS`] so its echo is swallowed.
+    Back,
+}
+
+/// Issue `op` now, or queue it behind the pending self-initiated back.
+fn history_op(op: HistoryOp) {
+    if PENDING_SELF_POPS.with(|c| c.get()) > 0 {
+        QUEUED_HISTORY_OPS.with(|q| q.borrow_mut().push(op));
+        return;
+    }
+    apply_history_op(op);
+}
+
+fn apply_history_op(op: HistoryOp) {
+    match op {
+        HistoryOp::Push(url) => push_state(&url),
+        HistoryOp::Replace(url) => replace_state(&url),
+        HistoryOp::Back => {
+            PENDING_SELF_POPS.with(|c| c.set(c.get() + 1));
+            history_back();
+        }
+    }
+}
+
+/// The last pending self-back has traversed: replay the queued ops in
+/// issue order, stopping after a `Back` (its own echo resumes the
+/// replay).
+fn drain_queued_history_ops() {
+    while PENDING_SELF_POPS.with(|c| c.get()) == 0 {
+        let next = QUEUED_HISTORY_OPS.with(|q| {
+            let mut q = q.borrow_mut();
+            (!q.is_empty()).then(|| q.remove(0))
+        });
+        let Some(op) = next else { break };
+        apply_history_op(op);
+    }
+}
+
 fn history_back() {
     if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.history_back)())).is_some() {
         return;
@@ -219,6 +292,9 @@ thread_local! {
     /// `history.back()` calls we initiated whose `popstate` hasn't
     /// arrived yet — those events are bookkeeping-only, never dispatch.
     static PENDING_SELF_POPS: Cell<u32> = const { Cell::new(0) };
+    /// History ops issued while a self-initiated back was in flight, in
+    /// issue order (see [`HistoryOp`]).
+    static QUEUED_HISTORY_OPS: RefCell<Vec<HistoryOp>> = const { RefCell::new(Vec::new()) };
     /// True while the popstate reconciler dispatches commands — those
     /// dispatches must not write history for their own echoes
     /// (`before_command` returns the suppress bit instead).
@@ -262,6 +338,7 @@ pub(crate) fn reset() {
     runtime_vocabulary::handlers::nav_url_sync::clear_url_sync_service();
     REGISTRY.with(|r| r.borrow_mut().clear());
     PENDING_SELF_POPS.with(|c| c.set(0));
+    QUEUED_HISTORY_OPS.with(|q| q.borrow_mut().clear());
     RECONCILING.with(|c| c.set(false));
     HISTORY_PORT.with(|p| *p.borrow_mut() = None);
 }
@@ -402,27 +479,29 @@ impl UrlSyncService for WebUrlSync {
                 });
                 *entry.active_owned.borrow_mut() = owned;
                 *entry.active_query.borrow_mut() = query.clone();
-                push_state(&with_query(url, query));
+                history_op(HistoryOp::Push(with_query(url, query)));
             }
             NavCommand::Replace { url, query, .. } => {
                 *entry.active_owned.borrow_mut() = entry.owned_of(url);
                 *entry.active_query.borrow_mut() = query.clone();
-                replace_state(&with_query(url, query));
+                history_op(HistoryOp::Replace(with_query(url, query)));
             }
             NavCommand::Reset { url, query, .. } => {
                 entry.history.borrow_mut().clear();
                 *entry.active_owned.borrow_mut() = entry.owned_of(url);
                 *entry.active_query.borrow_mut() = query.clone();
-                replace_state(&with_query(url, query));
+                history_op(HistoryOp::Replace(with_query(url, query)));
             }
             NavCommand::Pop => {
                 // The handler commits the pop on the flush; we move the
                 // browser back NOW and swallow the echoed popstate.
                 // Guarded on our own recorded history so a root pop (a
-                // handler no-op) never backs out of the app.
+                // handler no-op) never backs out of the app. Queued like
+                // any write when an earlier back is still in flight: an
+                // op queued before it (a push) must reach the browser
+                // first or this back would undo the wrong entry.
                 if !entry.history.borrow().is_empty() {
-                    PENDING_SELF_POPS.with(|c| c.set(c.get() + 1));
-                    history_back();
+                    history_op(HistoryOp::Back);
                 }
             }
             NavCommand::Custom(_) => {}
@@ -474,6 +553,8 @@ pub(crate) fn handle_popstate(new_path: &str) {
     // bookkeeping (and after_commit restores scroll on the flush).
     if PENDING_SELF_POPS.with(|c| c.get()) > 0 {
         PENDING_SELF_POPS.with(|c| c.set(c.get() - 1));
+        // The browser has landed: writes issued meanwhile can apply now.
+        drain_queued_history_ops();
         return;
     }
 
@@ -634,6 +715,55 @@ mod tests {
         let _ = web_glue::JsFuture::new(&promise).await;
     }
 
+    /// Run `trigger` and await the `popstate` it causes.
+    ///
+    /// WHY (bug: these real-history tests flaked under CPU load with
+    /// `left: "/detail", right: "/"`): `history.back()` only queues a
+    /// traversal; Chrome moves `location` and fires `popstate` after a
+    /// browser-process round trip. The tests used to sleep a fixed 60–80
+    /// ms and assert; instrumented runs under load (six concurrent
+    /// suites + CPU burners) measured back→`location` change at 83, 125,
+    /// 142 and 202 ms, always arriving eventually. Awaiting the event
+    /// itself removes the race, and also guarantees no test ends — and
+    /// hands the page to the next test — with its traversal still in
+    /// flight.
+    ///
+    /// Registered after the module's page-lifetime listener (installed
+    /// by the first `start`), so `handle_popstate` and the flush it
+    /// queues as a microtask have both run by the time this resolves.
+    /// The deadline is a hang guard, not a timing assumption: missing it
+    /// is a failure.
+    async fn await_popstate(trigger: impl FnOnce()) {
+        const DEADLINE_MS: i32 = 5_000;
+        let window = web_glue::dom::window().unwrap();
+        let resolve: Rc<RefCell<Option<web_glue::js::Function>>> = Rc::new(RefCell::new(None));
+        let promise = web_glue::js::Promise::new(&mut |res, _rej| {
+            *resolve.borrow_mut() = Some(res);
+        });
+        let fired = Rc::new(Cell::new(false));
+        let settle = {
+            let resolve = resolve.clone();
+            move || {
+                if let Some(r) = resolve.borrow_mut().take() {
+                    let _ = r.call0(&web_glue::JsValue::UNDEFINED);
+                }
+            }
+        };
+        let _listener = {
+            let (fired, settle) = (fired.clone(), settle.clone());
+            crate::glue_dom::listen(&window, "popstate", web_glue::dom::ListenerOptions::default(), move |_| {
+                fired.set(true);
+                settle();
+            })
+        };
+        let deadline = web_glue::Closure::once(move |_| settle());
+        let timer = window.set_timeout(&deadline, DEADLINE_MS);
+        trigger();
+        let _ = web_glue::JsFuture::new(&promise).await;
+        window.clear_timeout(timer);
+        assert!(fired.get(), "no popstate within {DEADLINE_MS} ms of the history move");
+    }
+
     // -----------------------------------------------------------------
     // Simulated browser history (port of the fake in the deleted
     // `mock-backend/tests/navigator_url_sync.rs`, which was the ONLY
@@ -642,15 +772,21 @@ mod tests {
     // page away. Same shape, same assertions.
     // -----------------------------------------------------------------
 
-    /// A fake History API: entry list + index + an op log. `history_back`
-    /// only moves the index and logs — the popstate the real browser
-    /// would fire is delivered by the TEST calling [`handle_popstate`],
-    /// mirroring the async delivery order.
+    /// A fake History API: entry list + index + an op log.
+    /// `history_back` behaves as Chrome's does: it only QUEUES a
+    /// traversal — `location` (the index) stays put until the TEST
+    /// delivers it with [`deliver_self_back`], which moves the index and
+    /// fires the popstate. The target is fixed when `back()` is called
+    /// (measured: `back(); pushState(x)` from `/p1` over `/p0` lands on
+    /// `/p0`), so a write slipped in before delivery is exposed exactly
+    /// as the real browser exposes it.
     #[derive(Default)]
     struct SimHistory {
         entries: Vec<String>,
         index: usize,
         log: Vec<String>,
+        /// Queued `back()` traversals, by target index, oldest first.
+        pending_backs: Vec<usize>,
     }
 
     impl SimHistory {
@@ -676,6 +812,7 @@ mod tests {
             entries: vec![initial.to_string()],
             index: 0,
             log: Vec::new(),
+            pending_backs: Vec::new(),
         }));
         arm_sim_history(&sim);
         sim
@@ -706,9 +843,10 @@ mod tests {
             }),
             history_back: Box::new(move || {
                 let mut h = s4.borrow_mut();
-                if h.index > 0 {
-                    h.index -= 1;
-                }
+                // Relative to where the browser will be once the backs
+                // already queued have traversed.
+                let from = h.pending_backs.last().copied().unwrap_or(h.index);
+                h.pending_backs.push(from.saturating_sub(1));
                 h.log.push("back".to_string());
             }),
         });
@@ -732,6 +870,21 @@ mod tests {
             let mut h = sim.borrow_mut();
             assert!(h.index > 0, "browser_back below the first entry");
             h.index -= 1;
+        }
+        let path = sim.borrow().current();
+        handle_popstate(&path);
+        crate::newcore::flush_sync();
+    }
+
+    /// Deliver the oldest queued programmatic `history.back()`: the
+    /// browser lands on its target and fires the popstate (the echo the
+    /// module must swallow), then the driver turn runs.
+    fn deliver_self_back(sim: &Rc<RefCell<SimHistory>>) {
+        {
+            let mut h = sim.borrow_mut();
+            assert!(!h.pending_backs.is_empty(), "no history.back() in flight, log: {:?}", h.log);
+            let target = h.pending_backs.remove(0);
+            h.index = target;
         }
         let path = sim.borrow().current();
         handle_popstate(&path);
@@ -809,14 +962,47 @@ mod tests {
         );
 
         // Programmatic pop: history.back() + swallowed popstate echo.
-        nav.pop();
-        crate::newcore::flush_sync();
-        sleep_ms(60).await; // history.back() → async popstate (swallowed)
+        await_popstate(|| {
+            nav.pop();
+            crate::newcore::flush_sync();
+        })
+        .await;
         assert_eq!(pathname(), "/", "programmatic pop moved the browser back");
         assert!(
             mount.text_content().unwrap().contains("root-screen"),
             "pop revealed the root"
         );
+        stop();
+    }
+
+    /// Regression (pop then push in one turn left the address bar on the
+    /// popped-to screen): `pop()`'s `history.back()` had not traversed
+    /// when `push()` wrote `pushState`, so the push landed on the entry
+    /// being left and the traversal then moved the REAL browser to `/`
+    /// under the detail screen — its popstate swallowed as the pop's
+    /// echo. Drives real Chrome history; fails pre-fix with
+    /// `left: "/", right: "/detail"`.
+    #[wasm_bindgen_test]
+    async fn regression_pop_then_push_in_one_turn_keeps_the_url_on_the_pushed_screen() {
+        let mount = setup_mount();
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert_eq!(pathname(), "/detail");
+
+        await_popstate(|| {
+            nav.pop();
+            nav.push(&DETAIL, ());
+            crate::newcore::flush_sync();
+        })
+        .await;
+        assert!(text_of(&mount).contains("detail-screen"), "push committed: {}", text_of(&mount));
+        assert_eq!(pathname(), "/detail", "the URL names the screen on show");
+
+        // The browser's history agrees with the stack: Back reveals root.
+        await_popstate(|| web_glue::dom::window().unwrap().history().unwrap().back().unwrap()).await;
+        assert_eq!(pathname(), "/", "back from the re-pushed detail");
+        assert!(text_of(&mount).contains("root-screen"), "back popped to root: {}", text_of(&mount));
         stop();
     }
 
@@ -831,8 +1017,8 @@ mod tests {
         crate::newcore::flush_sync();
         assert!(mount.text_content().unwrap().contains("detail-screen"));
 
-        web_glue::dom::window().unwrap().history().unwrap().back().unwrap();
-        sleep_ms(80).await; // popstate → reconciler → staged Pop → flush
+        // popstate → reconciler → staged Pop → microtask flush
+        await_popstate(|| web_glue::dom::window().unwrap().history().unwrap().back().unwrap()).await;
         assert_eq!(pathname(), "/", "browser back landed on the root URL");
         assert!(
             mount.text_content().unwrap().contains("root-screen"),
@@ -861,8 +1047,7 @@ mod tests {
         assert_eq!(pathname(), "/detail", "URL untouched by the seed");
 
         // The seed placed the index entry under us: browser back reveals it.
-        web_glue::dom::window().unwrap().history().unwrap().back().unwrap();
-        sleep_ms(80).await;
+        await_popstate(|| web_glue::dom::window().unwrap().history().unwrap().back().unwrap()).await;
         assert_eq!(pathname(), "/", "back landed on the seeded index entry");
         assert!(
             mount.text_content().unwrap().contains("root-screen"),
@@ -1109,9 +1294,7 @@ mod tests {
         assert_eq!(sim.borrow().backs(), 1, "one history.back(), log: {:?}", sim.borrow().log);
 
         // The browser delivers the popstate for OUR back — must be inert.
-        let path = sim.borrow().current();
-        handle_popstate(&path);
-        crate::newcore::flush_sync();
+        deliver_self_back(&sim);
         assert!(
             text_of(&mount).contains("root-screen"),
             "echo did not pop again: {}",
@@ -1128,6 +1311,89 @@ mod tests {
             "root pop must not history.back() out of the app, log: {:?}",
             sim.borrow().log
         );
+        stop();
+    }
+
+    /// Regression (pop then push before the back traverses): the push's
+    /// `pushState` must wait for the in-flight `history.back()` to land,
+    /// or the traversal moves the browser off the pushed entry. Pre-fix
+    /// the fake ends on `/` under the detail screen.
+    #[wasm_bindgen_test]
+    fn regression_push_issued_while_self_back_in_flight_lands_after_it() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+
+        nav.pop();
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("detail-screen"), "push committed");
+        assert_eq!(
+            sim.borrow().pushes(),
+            1,
+            "the second pushState waits for the back to traverse, log: {:?}",
+            sim.borrow().log
+        );
+
+        deliver_self_back(&sim);
+        assert_eq!(sim.borrow().current(), "/detail", "log: {:?}", sim.borrow().log);
+        assert!(text_of(&mount).contains("detail-screen"), "echo was inert");
+
+        browser_back(&sim);
+        assert_eq!(sim.borrow().current(), "/");
+        assert!(text_of(&mount).contains("root-screen"), "back popped to root: {}", text_of(&mount));
+        stop();
+    }
+
+    /// Same race for `replace`: a `replaceState` issued while a self back
+    /// is in flight rewrote the entry being LEFT, so the address bar
+    /// ended on the popped-to URL instead of the replacement.
+    #[wasm_bindgen_test]
+    fn regression_replace_issued_while_self_back_in_flight_lands_after_it() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+
+        nav.pop();
+        nav.replace(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("detail-screen"), "replace committed");
+
+        deliver_self_back(&sim);
+        assert_eq!(sim.borrow().current(), "/detail", "log: {:?}", sim.borrow().log);
+        assert_eq!(sim.borrow().index, 0, "rewrote the popped-to entry in place, log: {:?}", sim.borrow().log);
+        stop();
+    }
+
+    /// A `pop` issued behind a queued write must queue too: issuing its
+    /// `back()` immediately would race the first back and undo an entry
+    /// the queued push has not created yet. `pop, push, pop` plays out
+    /// as three sequential browser moves and ends on the root.
+    #[wasm_bindgen_test]
+    fn regression_pop_queued_behind_a_pending_write_waits_its_turn() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+
+        nav.pop();
+        nav.push(&DETAIL, ());
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("root-screen"), "stack back at root");
+        assert_eq!(sim.borrow().backs(), 1, "second back queued, log: {:?}", sim.borrow().log);
+
+        deliver_self_back(&sim);
+        assert_eq!(
+            sim.borrow().log[sim.borrow().log.len() - 2..],
+            ["push:/detail".to_string(), "back".to_string()],
+            "the push reaches the browser before the second back"
+        );
+        deliver_self_back(&sim);
+        assert_eq!(sim.borrow().current(), "/", "log: {:?}", sim.borrow().log);
+        assert!(text_of(&mount).contains("root-screen"), "both echoes inert");
         stop();
     }
 
