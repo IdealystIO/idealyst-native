@@ -1,0 +1,23 @@
+# stream-spike — measures and tests the streamed-component boundary end to
+# end: builds `spike-guest` to wasm32 (build.rs), loads it through
+# stream-host into a host-mock scene, and compares against the same tree
+# built natively. A spike: not published, not depended on.
+
+[package]
+name = "stream-spike"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+stream-host = { path = "../host" }
+spike-camera = { path = "camera" }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[dev-dependencies]
+host-mock = { workspace = true }
+stream-abi = { path = "../abi" }
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch"] }

@@ -1,0 +1,22 @@
+# stream-host — loads a streamed bundle into wasmi and binds it to the
+# app's reactive graph and scene. The guest's signals live HERE, in the
+# host's runtime-world; the guest only ever holds handles.
+
+[package]
+name = "stream-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+stream-abi = { path = "../abi" }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+# `async-driver` for `spawn_then`, which async host functions run under so
+# they get the framework's scope guarantee rather than a second one.
+runtime-vocabulary = { workspace = true, features = ["async-driver"] }
+rustc-hash = { workspace = true }
+# Pure-Rust interpreter: no JIT, so it runs where executable memory is
+# forbidden (iOS). `wat` is off — bundles arrive as binary wasm.
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch"] }
