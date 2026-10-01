@@ -73,8 +73,10 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let stripped = dir.join(&stem).with_extension("wasm");
         std::fs::write(&stripped, &extracted.wasm).with_context(|| format!("write {}", stripped.display()))?;
-        std::fs::write(dir.join("__idealyst_glue.js"), glue_js::hybrid_glue_js(&extracted, "wasm-bindgen-test"))
-            .context("write __idealyst_glue.js")?;
+        // Minified — the release shape — so every browser test of a
+        // web-glue crate also runs the minified runtime.
+        let js = glue_js::hybrid_glue_js_with(&extracted, "wasm-bindgen-test", glue_js::JsLayout::Minified);
+        std::fs::write(dir.join("__idealyst_glue.js"), js).context("write __idealyst_glue.js")?;
         // The package's browser capabilities, if it has any (see the module
         // docs). A stale copy from an earlier run goes when the file does.
         let caps = dir.join("webdriver.json");

@@ -92,7 +92,7 @@ pub struct PackageReport {
     pub unwrapped_command_exports: usize,
 }
 
-pub use wasm_carve::glue_js::{hybrid_glue_js, loader_js};
+pub use wasm_carve::glue_js::{hybrid_glue_js, hybrid_glue_js_with, loader_js, loader_js_with, JsLayout};
 
 /// The hybrid glue file's name in `pkg/` — what wasm-bindgen's output
 /// imports the `./__idealyst_glue.js` namespace from.
@@ -138,13 +138,13 @@ pub fn hybrid_extract(linked: &Path) -> Result<(PathBuf, Glue)> {
 pub const GLUE_EXPORT_PREFIX: &str = "__glue_";
 
 /// Hybrid pipeline, after wasm-bindgen wrote `pkg_dir`: the
-/// `__idealyst_glue.js` its output imports. No-op for a module without
-/// glue.
-pub fn write_hybrid_glue_file(pkg_dir: &Path, glue: &Glue, lib_name: &str) -> Result<()> {
+/// `__idealyst_glue.js` its output imports, in `layout`
+/// ([`JsLayout::for_release`]). No-op for a module without glue.
+pub fn write_hybrid_glue_file(pkg_dir: &Path, glue: &Glue, lib_name: &str, layout: JsLayout) -> Result<()> {
     if !wasm_carve::glue_js::needs_glue_file(glue) {
         return Ok(());
     }
-    write(&pkg_dir.join(HYBRID_GLUE_FILE), hybrid_glue_js(glue, &format!("{lib_name}.js")))
+    write(&pkg_dir.join(HYBRID_GLUE_FILE), hybrid_glue_js_with(glue, &format!("{lib_name}.js"), layout))
 }
 
 /// What [`extract_for_build`] read out of the linked module.
@@ -267,9 +267,15 @@ fn read_u32_leb(bytes: &[u8], mut at: usize) -> Result<(u32, usize)> {
 /// `out_dir/<lib>.js` ([`loader_js`]). Also removes what an earlier HYBRID
 /// build of the same app left in `out_dir` (the glue file, wasm-bindgen's
 /// `.d.ts` files and `snippets/`): `fingerprint_pkg` digests and stages
-/// every file under `pkg/`, so a leftover would ship. Returns the bytes of
-/// JS written.
-pub fn write_own_pkg(module: &[u8], glue: &Glue, out_dir: &Path, lib_name: &str) -> Result<usize> {
+/// every file under `pkg/`, so a leftover would ship. `layout` is
+/// [`JsLayout::for_release`]. Returns the bytes of JS written.
+pub fn write_own_pkg(
+    module: &[u8],
+    glue: &Glue,
+    out_dir: &Path,
+    lib_name: &str,
+    layout: JsLayout,
+) -> Result<usize> {
     fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
     for stale in [
         HYBRID_GLUE_FILE.to_string(),
@@ -285,7 +291,7 @@ pub fn write_own_pkg(module: &[u8], glue: &Glue, out_dir: &Path, lib_name: &str)
     if snippets.is_dir() {
         fs::remove_dir_all(&snippets).with_context(|| format!("remove {}", snippets.display()))?;
     }
-    let js = loader_js(glue, lib_name);
+    let js = loader_js_with(glue, lib_name, layout);
     write(&out_dir.join(format!("{lib_name}_bg.wasm")), module)?;
     write(&out_dir.join(format!("{lib_name}.js")), &js)?;
     Ok(js.len())
@@ -299,7 +305,7 @@ fn write(path: &Path, bytes: impl AsRef<[u8]>) -> Result<()> {
 /// No wasm-bindgen anywhere. Refuses a module that uses wasm-bindgen.
 /// Accepts a reactor ([`link_args`]) or a command module (unwrapped as the
 /// build does — see the module docs).
-pub fn package_own(linked: &Path, out_dir: &Path, lib_name: &str) -> Result<PackageReport> {
+pub fn package_own(linked: &Path, out_dir: &Path, lib_name: &str, layout: JsLayout) -> Result<PackageReport> {
     let start = Instant::now();
     let bytes = fs::read(linked).with_context(|| format!("read {}", linked.display()))?;
     let Extracted { mode, glue, unwrapped_command_exports } = extract_bytes(&bytes)?;
@@ -322,7 +328,7 @@ pub fn package_own(linked: &Path, out_dir: &Path, lib_name: &str) -> Result<Pack
         linked.display(),
         link_args().join(" "),
     );
-    let js_bytes = write_own_pkg(&glue.wasm, &glue, out_dir, lib_name)?;
+    let js_bytes = write_own_pkg(&glue.wasm, &glue, out_dir, lib_name, layout)?;
     Ok(PackageReport {
         unwrapped_command_exports,
         glue_imports: glue.imports.len(),
@@ -344,6 +350,7 @@ pub fn package_hybrid(
     linked: &Path,
     out_dir: &Path,
     lib_name: &str,
+    layout: JsLayout,
 ) -> Result<PackageReport> {
     let start = Instant::now();
     let bytes = fs::read(linked).with_context(|| format!("read {}", linked.display()))?;
@@ -369,7 +376,7 @@ pub fn package_hybrid(
     let bindgen_time = bindgen_start.elapsed();
 
     let js_start = Instant::now();
-    let js = hybrid_glue_js(&glue, &format!("{lib_name}.js"));
+    let js = hybrid_glue_js_with(&glue, &format!("{lib_name}.js"), layout);
     write(&out_dir.join(HYBRID_GLUE_FILE), &js)?;
     let wasm_bytes = fs::metadata(out_dir.join(format!("{lib_name}_bg.wasm")))?.len() as usize;
     Ok(PackageReport {
@@ -465,8 +472,10 @@ pub fn build_crate(reporter: &dev_events::Reporter, b: &CrateBuild) -> Result<Cr
         .join(format!("{}.wasm", b.bin));
     let lib_name = b.bin.replace('-', "_");
     let package = match b.mode {
-        Mode::Own => package_own(&linked, &b.out_dir, &lib_name)?,
-        Mode::Hybrid => package_hybrid(reporter, &linked, &b.out_dir, &lib_name)?,
+        Mode::Own => package_own(&linked, &b.out_dir, &lib_name, JsLayout::for_release(b.release))?,
+        Mode::Hybrid => {
+            package_hybrid(reporter, &linked, &b.out_dir, &lib_name, JsLayout::for_release(b.release))?
+        }
     };
     Ok(CrateBuildReport { cargo_time, package, linked_wasm: linked })
 }
@@ -599,7 +608,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let linked = tmp.path().join("app.wasm");
         fs::write(&linked, command_module(true)).unwrap();
-        let err = package_own(&linked, &tmp.path().join("pkg"), "app").unwrap_err().to_string();
+        let err = package_own(&linked, &tmp.path().join("pkg"), "app", JsLayout::Readable).unwrap_err().to_string();
         assert!(err.contains("hybrid"), "{err}");
     }
 
@@ -617,7 +626,7 @@ mod tests {
         }
         fs::write(pkg.join("premint.css"), "keep").unwrap();
         let x = extract_bytes(&command_module(false)).unwrap();
-        write_own_pkg(&x.glue.wasm, &x.glue, &pkg, "app").unwrap();
+        write_own_pkg(&x.glue.wasm, &x.glue, &pkg, "app", JsLayout::Readable).unwrap();
         let mut left: Vec<String> = fs::read_dir(&pkg)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

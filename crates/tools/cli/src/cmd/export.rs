@@ -119,7 +119,7 @@ pub fn run(args: Args) -> Result<()> {
 
     // 3. Build wasm + run wasm-bindgen into the staging dir.
     let wasm = build_wasm(&bridge_dir, &source, &project, args.release)?;
-    run_wasm_bindgen(&wasm, &stage_pkg)?;
+    run_wasm_bindgen(&wasm, &stage_pkg, args.release)?;
 
     // 4 + 5. Generate the JS/TS surface and the demo page.
     let frameworks = resolve_frameworks(&args.frameworks);
@@ -331,7 +331,7 @@ fn build_wasm(
 /// extract the glue, bindgen the stripped module, then write
 /// `pkg/__idealyst_glue.js` for the namespace wasm-bindgen's output
 /// imports (`build_web::own_glue`).
-fn run_wasm_bindgen(wasm: &Path, pkg_dir: &Path) -> Result<()> {
+fn run_wasm_bindgen(wasm: &Path, pkg_dir: &Path, release: bool) -> Result<()> {
     println!("[idealyst export] running wasm-bindgen…");
     let (input, glue) = build_web::own_glue::hybrid_extract(wasm)?;
     // Named explicitly: the stripped input is `external_bridge.glue.wasm`,
@@ -350,7 +350,12 @@ fn run_wasm_bindgen(wasm: &Path, pkg_dir: &Path) -> Result<()> {
     if !status.success() {
         bail!("wasm-bindgen failed");
     }
-    build_web::own_glue::write_hybrid_glue_file(pkg_dir, &glue, out_name)
+    build_web::own_glue::write_hybrid_glue_file(
+        pkg_dir,
+        &glue,
+        out_name,
+        build_web::own_glue::JsLayout::for_release(release),
+    )
 }
 
 /// Generate every JS/TS artifact + the demo page into `out_dir`.

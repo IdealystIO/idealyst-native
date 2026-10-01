@@ -24,7 +24,8 @@
 //! 2. `own_glue::hybrid_extract` — take the glue out of the linked module
 //!    (and repoint web-glue's own exports past LLD's constructor wrapper);
 //! 3. `wasm-bindgen --target web` over the stripped module;
-//! 4. `own_glue::write_hybrid_glue_file` — `pkg/__idealyst_glue.js`;
+//! 4. `own_glue::write_hybrid_glue_file` — `pkg/__idealyst_glue.js`,
+//!    minified as a release `idealyst build --web` writes it;
 //! 5. `wasm-opt` with the crate's own
 //!    `[package.metadata.wasm-pack.profile.release] wasm-opt` flags, so the
 //!    optimisation level is exactly what wasm-pack applied before.
@@ -88,7 +89,7 @@ fn main() -> Result<()> {
         .arg(&out_dir)
         .arg(&input))
     .context("wasm-bindgen — is wasm-bindgen-cli installed at the Cargo.lock version?")?;
-    own_glue::write_hybrid_glue_file(&out_dir, &glue, &lib_name)
+    own_glue::write_hybrid_glue_file(&out_dir, &glue, &lib_name, own_glue::JsLayout::Minified)
         .context("write pkg/__idealyst_glue.js")?;
 
     let wasm = out_dir.join(format!("{lib_name}_bg.wasm"));

@@ -779,7 +779,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                 };
                 timings
                     .time("glue-package", || {
-                        own_glue::write_own_pkg(&served, &glue, &wrapper_pkg, &manifest.lib_name)
+                        own_glue::write_own_pkg(
+                            &served,
+                            &glue,
+                            &wrapper_pkg,
+                            &manifest.lib_name,
+                            own_glue::JsLayout::for_release(opts.release),
+                        )
                     })
                     .with_context(|| "write the own-mode pkg/")?;
             }
@@ -823,7 +829,12 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
                     )
                 })
                 .with_context(|| "wasm-bindgen")?;
-                own_glue::write_hybrid_glue_file(&wrapper_pkg, &glue, &manifest.lib_name)
+                own_glue::write_hybrid_glue_file(
+                    &wrapper_pkg,
+                    &glue,
+                    &manifest.lib_name,
+                    own_glue::JsLayout::for_release(opts.release),
+                )
                     .with_context(|| "write pkg/__idealyst_glue.js")?;
                 // Rooting every function keeps wasm-bindgen's descriptor
                 // machinery alive, and it emits no JS binding for the
@@ -4859,7 +4870,7 @@ mod fingerprint_tests {
             section_bytes: 0,
             wasm_bindgen: None,
         };
-        own_glue::write_hybrid_glue_file(&pkg, &glue, "demo").unwrap();
+        own_glue::write_hybrid_glue_file(&pkg, &glue, "demo", own_glue::JsLayout::Readable).unwrap();
         let fp = fingerprint_pkg(&pkg, "demo").unwrap();
         let file = pkg.join(hashed(own_glue::HYBRID_GLUE_FILE, &fp.hash));
         let js = fs::read_to_string(&file).unwrap();

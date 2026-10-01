@@ -239,6 +239,18 @@ section — the code section included — as bytes. It then writes:
   `env` (e.g. `./__wasm_split.js`) are passed through as static ES
   imports, as wasm-bindgen does.
 
+A release build writes either file (`<lib>.js`, or hybrid's
+`__idealyst_glue.js`) in `wasm_carve::glue_js::JsLayout::Minified`:
+web-glue's runtime and the loader boilerplate go through the same
+comment/whitespace minifier backend-web runs over its shims, the
+per-import `// key` comments and the indentation are dropped, and import
+snippets and `js_module!` sources are emitted verbatim (the minifier
+cannot tokenize a regex literal, and those come from any crate). On the
+benchmark variant that took the glue file from 13.0 KB to 9.7 KB brotli,
+which with the smaller wasm leaves the bundle ~1% under the web-sys build.
+Dev builds stay readable. The wasm32 test runner writes the minified shape,
+so every browser test runs it.
+
 The entry is `G.attach(exports)`, then `__wasm_call_ctors()` once if the
 module exports it, then `main(0, 0)`. Phase 1 linked the bin as a
 **reactor** (`-C link-arg=--export=__wasm_call_ctors`,

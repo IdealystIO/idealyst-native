@@ -16,6 +16,7 @@ pub mod data;
 pub mod emit;
 pub mod glue;
 pub mod glue_js;
+pub mod js_min;
 pub mod graph;
 pub mod liveness;
 pub mod module;
