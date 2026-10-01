@@ -1417,9 +1417,28 @@ usable at the later of the two columns:
 
 With both building at once the server answers ~40 s sooner after a
 change both sides see, and before the bundle is done; the bundle's own
-build is unchanged within noise. A session start with nothing to build
-is dominated by the server process's own startup (~6 s for CrewForge),
-which no build order changes.
+build is unchanged within noise.
+
+**The server runs the linker's file, not cargo's copy.** A session start
+with nothing to build was dominated by what looked like the server's own
+startup: 7.5–10 s for CrewForge between cargo's `Running` line and the
+server's first output, where running the binary by hand took 0.14 s. The
+process sat at `_dyld_start` while `XprotectService` read it. Cargo
+uplifts a binary from `deps/<crate>-<hash>` to `<profile>/<bin>` on every
+`cargo build` and `cargo run`, fresh or not, and on macOS it COPIES it
+(a clone with a new inode — hard links raced Gatekeeper,
+rust-lang/cargo#10060); macOS assesses each new executable file on its
+first exec, reading all of it (527 MB here). So `cargo run` is given
+`idealyst run-linked` as its runner (`--config target.<host>.runner`):
+cargo keeps its environment, and the runner execs the `deps/` file with
+the same length and modification time — the linker's output, whose
+identity survives every build that does not relink it, as `cargo test`
+runs its binaries from `deps/` too. A project that configures its own
+runner for the host (`CARGO_TARGET_<HOST>_RUNNER`, or `runner` under a
+matching `[target.<host>]` or any `[target.'cfg(…)']` in a cargo config
+file) keeps it. Measured on CrewForge, nothing changed, launch → page
+connected: 10.1–17.9 s before, 2.9–7.1 s after; the server answers
+0.7–1.6 s after its build instead of 7–13 s.
 
 - The header: the app, the mode, where it is served, and whether the hot
   tier is armed (and if not, why).

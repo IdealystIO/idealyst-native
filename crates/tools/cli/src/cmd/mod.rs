@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod new;
 pub mod publish;
 pub mod run;
+pub mod run_linked;
 pub mod rustc_capture;
 pub mod scaffold;
 pub mod scaffold_template;

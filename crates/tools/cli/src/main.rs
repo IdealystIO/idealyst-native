@@ -115,6 +115,11 @@ enum Command {
     // Users never call it directly.
     #[command(hide = true)]
     RustcCapture(cmd::rustc_capture::Args),
+    // Hidden — `idealyst dev` makes it cargo's runner for the project's
+    // server, so the linker's output is exec'd rather than cargo's fresh
+    // copy (see `cmd::run_linked`).
+    #[command(hide = true, name = "run-linked")]
+    RunLinked(cmd::run_linked::Args),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -178,5 +183,6 @@ fn main() -> anyhow::Result<()> {
         Command::Brs(args) => cmd::brs::run(args),
         Command::Mcp(args) => cmd::mcp::run(args),
         Command::RustcCapture(args) => cmd::rustc_capture::run(args),
+        Command::RunLinked(args) => cmd::run_linked::run(args),
     }
 }

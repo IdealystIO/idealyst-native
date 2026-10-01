@@ -3489,6 +3489,51 @@ fn dev_server_port(args: &Args, app: &build_ios::AppMetadata) -> u16 {
     args.port.unwrap_or(app.server_port)
 }
 
+/// `cargo run`, with `idealyst run-linked` as cargo's runner for the host,
+/// so the process started is the binary the linker wrote, not the copy
+/// cargo makes of it on every run — which macOS scans on first exec, 8 s
+/// for a large debug server on every session start (see
+/// [`super::run_linked`]). A project that configures its own runner keeps
+/// it.
+fn cargo_run_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.arg("run");
+    if let Some(config) = linked_runner_config() {
+        cmd.arg("--config").arg(config);
+    }
+    cmd
+}
+
+/// The `--config` for [`cargo_run_command`], decided once per session.
+fn linked_runner_config() -> Option<&'static str> {
+    static CONFIG: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let host = host_triple()?;
+            let idealyst = std::env::current_exe().ok()?;
+            let cwd = std::env::current_dir().ok()?;
+            let cargo_home = std::env::var_os("CARGO_HOME")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")));
+            if let Some(at) = super::run_linked::configured_runner(
+                &cwd,
+                cargo_home.as_deref(),
+                &host,
+                |k| std::env::var(k).ok(),
+            ) {
+                crate::dlog!(
+                    "dev web",
+                    "the server runs through the runner configured at {at}, as `cargo run` \
+                     would; on macOS each session's first start then pays a scan of the \
+                     binary cargo copied",
+                );
+                return None;
+            }
+            Some(super::run_linked::runner_config(&idealyst, &host))
+        })
+        .as_deref()
+}
+
 fn spawn_backend(
     dir: &Path,
     manifest: &build_ios::Manifest,
@@ -3499,8 +3544,8 @@ fn spawn_backend(
     log: &Path,
 ) -> Result<std::process::Child> {
     let app = &manifest.app;
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("run").arg("--target-dir").arg(target_dir);
+    let mut cmd = cargo_run_command();
+    cmd.arg("--target-dir").arg(target_dir);
     if let Some(rel) = &app.server_manifest {
         let joined = dir.join(rel);
         if !joined.is_file() {
@@ -3632,8 +3677,7 @@ fn spawn_worker(
     server_port: u16,
 ) -> Result<std::process::Child> {
     let app = &manifest.app;
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("run");
+    let mut cmd = cargo_run_command();
     if let Some(rel) = &app.worker_manifest {
         let joined = dir.join(rel);
         if !joined.is_file() {
