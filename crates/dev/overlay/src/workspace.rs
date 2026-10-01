@@ -526,6 +526,9 @@ impl Workspace {
                     });
                 }
             }
+            if let Some(why) = self.library_const_rebuild(package, &by_package) {
+                return WorkspaceDecision::Rebuild(why);
+            }
         }
 
         // What this save touched, plus everything an earlier patch of
@@ -785,6 +788,88 @@ impl Workspace {
 
     /// A reason decided within one crate, with its file named so a log
     /// line says which crate it is in.
+    /// A LIBRARY crate's const value edit, against everything that could
+    /// carry the old value into a dependent.
+    ///
+    /// The per-crate decision already rebuilt any const the library reads
+    /// at compile time. What is left is the dependents: a patch replays
+    /// them against the BASE build's metadata, so a const value they read
+    /// — or that a generic / `#[inline]` body of the library reads, which
+    /// they instantiate from that metadata — stays old in their code.
+    /// `runtime_macros_parse::library_reach` computes those names from
+    /// the mentions of every workspace crate that depends on the library,
+    /// directly or not (the tip included; a local package outside the
+    /// workspace is a dependency of it, never a dependent), and the
+    /// library's own downstream reads. A const outside
+    /// that set is read only by the library's plain bodies, which the
+    /// patch re-emits: it patches.
+    ///
+    /// Saved files of any crate count with their NEW text, so a save that
+    /// edits the const and adds a read of it in the app is decided on the
+    /// read. A crate with no archive cannot say what it reads: rebuild.
+    fn library_const_rebuild(
+        &self,
+        package: &str,
+        by_package: &BTreeMap<&str, Vec<&SavedFile>>,
+    ) -> Option<Reason> {
+        let saved_now = |pkg: &str, path: &str| {
+            by_package
+                .get(pkg)
+                .and_then(|files| files.iter().find(|s| s.file.path == path))
+                .map(|s| crate::archive::ConstDigest::of(&s.file.text))
+        };
+        let archive = self.crates[package].archive.as_ref()?;
+        let mut edited: Vec<(String, String, String)> = Vec::new(); // (file, label, name)
+        for s in by_package.get(package).into_iter().flatten() {
+            let now = crate::archive::ConstDigest::of(&s.file.text);
+            let recorded = archive.files.get(&s.file.path);
+            for (label, (name, value)) in &now.values {
+                if recorded.and_then(|r| r.consts.values.get(label)).map(|(_, v)| v) != Some(value) {
+                    edited.push((s.file.path.clone(), label.clone(), name.clone()));
+                }
+            }
+        }
+        let (first_file, first_label, _) = edited.first()?;
+        let rebuild = |file: &str, label: &str| Reason::DownstreamBody {
+            file: self.display(package, file),
+            item: label.to_string(),
+        };
+
+        let digests_of = |pkg: &str| -> Option<Vec<crate::archive::ConstDigest>> {
+            let archive = self.crates.get(pkg)?.archive.as_ref()?;
+            Some(
+                archive
+                    .files
+                    .iter()
+                    .map(|(path, d)| saved_now(pkg, path).unwrap_or_else(|| d.consts.clone()))
+                    .collect(),
+            )
+        };
+        let Some(own) = digests_of(package) else {
+            return Some(rebuild(first_file, first_label));
+        };
+        let own: Vec<runtime_macros_parse::ConstFacts> = own.iter().map(|d| d.uses()).collect();
+        // Only a DEPENDENT can read the library's consts. Restricting to
+        // them (rather than every crate) matters on a real workspace:
+        // CrewForge's screen crates each have a `HEADLINE`, and by name
+        // alone one screen's would read as another's.
+        let dependents = self.replay_set(&BTreeSet::from([package.to_string()]));
+        let mut others = Vec::new();
+        for other in dependents.iter().filter(|p| p.as_str() != package) {
+            let Some(digests) = digests_of(other) else {
+                return Some(rebuild(first_file, first_label));
+            };
+            others.extend(digests.iter().map(|d| d.uses()));
+        }
+        let Some(reach) = runtime_macros_parse::library_reach(&own, &others) else {
+            return Some(rebuild(first_file, first_label));
+        };
+        edited
+            .iter()
+            .find(|(_, _, name)| reach.contains(name))
+            .map(|(file, label, _)| rebuild(file, label))
+    }
+
     fn qualify(&self, package: &str, why: Reason) -> Reason {
         if package == self.tip {
             return why;
@@ -833,9 +918,11 @@ mod tests {
     const SHARED: &str = r#"
 use runtime_core::*;
 
+const CARD_HEADLINE: &str = "card v1";
+
 #[component]
 pub fn SharedCard(title: String) -> Element {
-    ui! { view() { text { "shared {title}" } } }
+    ui! { view() { text { "shared {title}" } text { CARD_HEADLINE } } }
 }
 
 pub fn shared_line(n: i32) -> String {
@@ -859,7 +946,7 @@ use runtime_core::*;
 
 #[component]
 fn Root() -> Element {
-    ui! { view() { text { "root" } } }
+    ui! { view() { text { "root" } text { lab_shared::SHARED_TAG } } }
 }
 
 pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
@@ -921,10 +1008,14 @@ const APP_TAG: &str = "app v1";
     }
 
     fn fixture() -> Fixture {
+        fixture_with(SHARED, APP)
+    }
+
+    fn fixture_with(shared: &str, app: &str) -> Fixture {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        write_crate(&root, "app", APP);
-        write_crate(&root.join("lab-shared"), "lab-shared", SHARED);
+        write_crate(&root, "app", app);
+        write_crate(&root.join("lab-shared"), "lab-shared", shared);
         write_crate(&root.join("fw"), "runtime-core", "pub fn f() {}\n");
         let mut ws = Workspace::from_metadata(&metadata(&root), &root).expect("the tip is found");
         ws.rescan_all(&root);
@@ -1128,15 +1219,13 @@ const APP_TAG: &str = "app v1";
         );
     }
 
-    /// A library's const is evaluated INTO each dependent from the base
-    /// build's metadata, which a patch's replay of the dependent still
-    /// reads — so the dependent would keep the old value. Rebuild, naming
-    /// the const. (Before consts were downstream items this was a
-    /// ShapeChanged rebuild; the shape no longer holds a const's value,
-    /// so without this the edit would have patched the library alone and
-    /// left the app showing the old text.)
+    /// A library's const the APP reads is evaluated into the app from the
+    /// base build's metadata, which a patch's replay of the app still
+    /// reads — so the app would keep the old value. Rebuild, naming the
+    /// const. (The shape no longer holds a const's value, so without this
+    /// the edit would patch and leave the app showing the old text.)
     #[test]
-    fn regression_a_const_value_edit_in_a_library_crate_rebuilds() {
+    fn regression_a_library_const_a_dependent_reads_rebuilds() {
         let f = fixture();
         let edit = SHARED.replace("\"tag v1\"", "\"tag v2\"");
         let decision = f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false);
@@ -1151,6 +1240,71 @@ const APP_TAG: &str = "app v1";
         assert!(why.to_string().contains("changed the value of `const SHARED_TAG`"), "{why}");
     }
 
+    /// The CrewForge landing screen: a library crate's PRIVATE const read
+    /// only by its own `#[component]` body, which is codegened once, in
+    /// the library — so the patch of the library carries it. (Regression:
+    /// "every library const rebuilds" left the reported edit rebuilding.)
+    #[test]
+    fn regression_a_library_const_read_only_by_its_component_hot_patches() {
+        let f = fixture();
+        let edit = SHARED.replace("\"card v1\"", "\"card v2\"");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+    }
+
+    /// The same const, also read by a GENERIC fn of the library: the app
+    /// instantiates that fn from metadata MIR, with the old value.
+    #[test]
+    fn a_library_const_also_read_by_a_generic_body_rebuilds() {
+        let base = SHARED.replace("vec![t]\n", "let _ = CARD_HEADLINE;\n    vec![t]\n");
+        assert_ne!(base, SHARED);
+        let f = fixture_with(&base, APP);
+        let edit = base.replace("\"card v1\"", "\"card v2\"");
+        assert_eq!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::DownstreamBody {
+                file: "lab-shared/src/lib.rs".into(),
+                item: "const CARD_HEADLINE".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_library_const_read_by_an_inline_body_rebuilds() {
+        let base = SHARED.replace("pub fn quick() -> u32 {\n    1\n}", "pub fn quick() -> u32 {\n    CARD_HEADLINE.len() as u32\n}");
+        assert_ne!(base, SHARED);
+        let f = fixture_with(&base, APP);
+        let edit = base.replace("\"card v1\"", "\"card v2\"");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::DownstreamBody { .. })
+        ));
+    }
+
+    /// Making the private const `pub` changes nothing until another crate
+    /// READS it; a dependent reading it is what rebuilds.
+    #[test]
+    fn a_library_const_read_from_a_dependent_rebuilds_and_pub_alone_does_not() {
+        let base = SHARED.replace("const CARD_HEADLINE", "pub const CARD_HEADLINE");
+        let edit = base.replace("\"card v1\"", "\"card v2\"");
+        let f = fixture_with(&base, APP);
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit.clone()), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+        let app = APP.replace("text { \"root\" }", "text { \"root\" } text { lab_shared::CARD_HEADLINE }");
+        let f = fixture_with(&base, &app);
+        assert_eq!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::DownstreamBody {
+                file: "lab-shared/src/lib.rs".into(),
+                item: "const CARD_HEADLINE".into(),
+            })
+        );
+    }
+
     /// The same const edit in the TIP is a hot patch: nothing depends on
     /// it, and every body that reads it is re-emitted.
     #[test]
@@ -1160,6 +1314,41 @@ const APP_TAG: &str = "app v1";
         assert!(matches!(
             f.ws.decide(&saved(&f, "src/lib.rs", edit), false),
             WorkspaceDecision::HotPatch(_)
+        ));
+    }
+
+    /// Only a crate that DEPENDS on the library can read its consts. A
+    /// sibling crate that merely uses the same name (CrewForge's screen
+    /// crates each have a `HEADLINE`) must not turn the edit into a
+    /// rebuild; a dependent that uses it must.
+    #[test]
+    fn only_dependents_count_as_readers() {
+        let mut f = fixture();
+        let sibling = f.root.join("sibling");
+        write_crate(&sibling, "sibling", "pub const CARD_HEADLINE: &str = \"mine\";\n");
+        let archive = crate::archive::scan_crate(&sibling).expect("scan");
+        let mut add = |deps: BTreeSet<String>, ws: &mut Workspace| {
+            ws.crates.insert(
+                "sibling".into(),
+                WorkspaceCrate {
+                    package: "sibling".into(),
+                    dir: sibling.clone(),
+                    crate_name: "sibling".into(),
+                    deps,
+                    archive: Some(archive.clone()),
+                },
+            );
+        };
+        let edit = SHARED.replace("\"card v1\"", "\"card v2\"");
+        add(BTreeSet::new(), &mut f.ws);
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit.clone()), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+        add(BTreeSet::from(["lab-shared".to_string()]), &mut f.ws);
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::Rebuild(Reason::DownstreamBody { .. })
         ));
     }
 

@@ -25,15 +25,11 @@
 //! - **`async fn`**: the future is such a hidden type;
 //! - **`const fn`**: evaluated at compile time inside the dependent's own
 //!   constants;
-//! - **`const` items** — not a function, but the same story: a const's
-//!   value is evaluated from the library's metadata wherever a dependent
-//!   reads it, and copied into the dependent's code. Every const counts,
-//!   a private one included (it reaches a dependent through any of the
-//!   bodies above, or through a `pub` const that reads it), at item
-//!   level, in an `impl`, or as a trait's default. A const VALUE edit
-//!   keeps the shape (`crate::shape_of`), so this is what rebuilds it in
-//!   a library crate. Labelled `const NAME`, `impl Type::const NAME`,
-//!   `trait Name::const NAME`.
+//!
+//! A `const` item's VALUE reaches dependents the same way when one reads
+//! it, or when one of the bodies above does — but whether it does depends
+//! on where it is READ, not on the item, so it is not listed here:
+//! `crate::consts::library_reach` decides it.
 //!
 //! A replay of a dependent reads the library's metadata from the BASE
 //! build, which still carries the old bodies — the replay only emits
@@ -49,7 +45,7 @@ use std::collections::BTreeMap;
 
 use quote::ToTokens;
 
-/// Every function (and const) in `text` whose body a dependent may compile, keyed by
+/// Every function in `text` whose body a dependent may compile, keyed by
 /// a label (`fn name`, `impl Type::name`, `trait Name::name`, prefixed
 /// with enclosing `mod`s), valued by the function's token text.
 ///
@@ -65,9 +61,6 @@ pub fn downstream_bodies(text: &str) -> Option<BTreeMap<String, String>> {
 fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>) {
     for item in items {
         match item {
-            syn::Item::Const(c) if c.ident != "_" => {
-                insert(out, format!("{prefix}const {}", c.ident), c.to_token_stream().to_string());
-            }
             syn::Item::Fn(f) => {
                 if downstream_sig(&f.sig, &f.attrs) {
                     insert(out, format!("{prefix}fn {}", f.sig.ident), f.to_token_stream().to_string());
@@ -98,11 +91,6 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
                                 );
                             }
                         }
-                        syn::ImplItem::Const(c) => insert(
-                            out,
-                            format!("{label}::const {}", c.ident),
-                            c.to_token_stream().to_string(),
-                        ),
                         _ => {}
                     }
                 }
@@ -117,11 +105,6 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
                             out,
                             format!("{prefix}trait {}::{}", t.ident, f.sig.ident),
                             f.to_token_stream().to_string(),
-                        ),
-                        syn::TraitItem::Const(c) if c.default.is_some() => insert(
-                            out,
-                            format!("{prefix}trait {}::const {}", t.ident, c.ident),
-                            c.to_token_stream().to_string(),
                         ),
                         _ => {}
                     }
@@ -146,7 +129,7 @@ fn insert(out: &mut BTreeMap<String, String>, label: String, tokens: String) {
 
 /// Whether a function with this signature and these attributes has its
 /// body compiled by dependents. See the module docs for each rule.
-fn downstream_sig(sig: &syn::Signature, attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn downstream_sig(sig: &syn::Signature, attrs: &[syn::Attribute]) -> bool {
     has_type_or_const_params(&sig.generics)
         || sig.constness.is_some()
         || sig.asyncness.is_some()
@@ -157,7 +140,7 @@ fn downstream_sig(sig: &syn::Signature, attrs: &[syn::Attribute]) -> bool {
 /// Lifetime parameters do not count: lifetimes are erased before
 /// codegen, so a lifetime-generic function is compiled once, in its own
 /// crate, like any other.
-fn has_type_or_const_params(generics: &syn::Generics) -> bool {
+pub(crate) fn has_type_or_const_params(generics: &syn::Generics) -> bool {
     generics
         .params
         .iter()
@@ -266,27 +249,11 @@ mod tests {
         assert_eq!(before, downstream_bodies(&src.replace("{ 2 }", "{ 4 }")).unwrap());
     }
 
-    /// A library's const value is evaluated INTO its dependents, from
-    /// metadata the replay does not regenerate — so every const is a
-    /// downstream item, and a value edit moves its entry.
+    /// A const's reach into dependents depends on where it is read, so
+    /// it is `consts::library_reach`'s question, not an item here.
     #[test]
-    fn every_const_is_downstream_and_a_value_edit_moves_it() {
-        let src = r#"
-            pub const TAG: &str = "v1";
-            const PRIVATE: u8 = 1;
-            const _: () = ();
-            pub struct S;
-            impl S { pub const LABEL: &str = "a"; }
-            pub trait T { const D: u8 = 1; const R: u8; }
-        "#;
-        assert_eq!(
-            labels(src),
-            vec!["const PRIVATE", "const TAG", "impl S::const LABEL", "trait T::const D"]
-        );
-        let before = downstream_bodies(src).unwrap();
-        let after = downstream_bodies(&src.replace("\"v1\"", "\"v2\"")).unwrap();
-        assert_ne!(before["const TAG"], after["const TAG"]);
-        assert_eq!(before["const PRIVATE"], after["const PRIVATE"]);
+    fn consts_are_not_downstream_items() {
+        assert!(labels("pub const TAG: &str = \"v1\"; pub struct S; impl S { const L: u8 = 1; }").is_empty());
     }
 
     #[test]

@@ -232,13 +232,29 @@ a patch that should have rebuilt. A crate with a `#[path]` module or an
 `include!` has source the scan cannot read, so in that crate every const
 value edit rebuilds.
 
-A const in a LIBRARY crate of the workspace always rebuilds. Its
-dependents copy its value into their own code from the library's
-metadata, and a patch replays them against the base build's metadata,
-which still has the old value. That holds for a private const too, since
-one can reach dependents through an `#[inline]` or generic body. The
-rebuild names the const: ``changed the value of `const NAME`, which the
-crates depending on it copy into their own code``.
+A const in a LIBRARY crate of the workspace has one more way to go
+stale. A patch replays the library's dependents against the base build's
+metadata, which still has the old value. So the edit also rebuilds when
+the value reaches a dependent (`runtime_macros_parse::library_reach`):
+
+- a crate that depends on the library, directly or not, reads it, by
+  path, through a `use` or a glob, or through a re-export (matched by
+  name, like the rest of the check);
+- a body of the library that dependents compile themselves reads it: a
+  generic function or method, a trait's default method, an `#[inline]`,
+  `const`, `async` or `impl Trait` function, or a closure inside one;
+- another const that one of those reads reads it.
+
+A const read only in the library's plain bodies patches like one in the
+app crate: `#[component]` bodies (the macro moves the body into a
+non-generic `#[inline(never)]` function), plain `fn`s, and closures in
+them. Those are compiled once, in the library, and the patch re-emits
+them. CrewForge's landing screen is this case: a private `HEADLINE` read
+only by the screen's component. `pub` alone does not force a rebuild;
+another crate has to read the const. Only the workspace's crates are
+checked, since they are the only ones in the running program. A rebuild
+names the const: ``changed the value of `const NAME`, which the crates
+depending on it copy into their own code``.
 
 The overlay tier never handles a const edit. A const's literal is not a
 `ui!` literal, so no compiled tag points at it.
@@ -270,7 +286,8 @@ A decision table, by example:
 | A function body in a library crate of the app's cargo workspace (a path dependency that is a member) | Hot patch — the library AND every workspace crate depending on it are re-emitted ([Workspace crates](#workspace-crates)) |
 | A literal in a `ui!` body of such a library crate | Overlay patch |
 | The body of a generic, `#[inline]`, `const`, `async` or `impl Trait` fn, or a trait's default method, in such a library crate | Rebuild — its dependents compile that body themselves |
-| A `const`'s value in such a library crate | Rebuild — its dependents copied the old value from the base build's metadata |
+| A `const`'s value in such a library crate, read only by its own plain bodies (a `#[component]`, a plain `fn`) | Hot patch |
+| A `const`'s value in such a library crate that a dependent reads, or that a generic / `#[inline]` body of the library reads | Rebuild — the dependent copies the old value from the base build's metadata |
 | Any shape edit in such a library crate (a new prop on a shared component) | Rebuild |
 | Edit a file of a local package outside the app's workspace (a `[patch]` checkout of the framework), or a `Cargo.toml` | Rebuild |
 
@@ -995,10 +1012,9 @@ moves one rebuilds, naming it:
 [dev] rebuilding: crewforge-ui-shared/src/grid.rs changed the body of `fn sort_rows`, which the crates depending on it compile themselves (generic, `#[inline]`, `const`, `async` or `impl Trait`)
 ```
 
-A `const`'s value is the same case: a dependent evaluates the const
-from the library's metadata and copies the value into its own code, so
-the archive records every const (item level, an `impl`'s, a trait's
-default) beside those functions, and a value edit rebuilds:
+A `const`'s value is the same case when it reaches a dependent: a
+dependent reads it, or one of those bodies does ([Const
+values](#const-values)). Then a value edit rebuilds:
 
 ```text
 [dev] rebuilding: crewforge-ui-shared/src/copy.rs changed the value of `const HEADLINE`, which the crates depending on it copy into their own code

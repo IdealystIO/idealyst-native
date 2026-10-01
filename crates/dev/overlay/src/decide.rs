@@ -109,9 +109,10 @@ pub enum Reason {
     /// A LIBRARY crate of the app's workspace changed the body of a
     /// function its dependents compile themselves, from its metadata:
     /// a generic, `#[inline]`, `const`, `async` or `impl Trait` function,
-    /// or a trait's default method — or the VALUE of a `const`, which
-    /// dependents copy into their own code the same way
-    /// (`runtime_macros_parse::downstream_bodies`). A patch re-emits the
+    /// or a trait's default method (`runtime_macros_parse::downstream_bodies`)
+    /// — or the VALUE of a `const` that reaches a dependent: one a
+    /// dependent reads, or one such a body reads
+    /// (`runtime_macros_parse::library_reach`). A patch re-emits the
     /// dependents against the BASE build's metadata, which still carries
     /// the old body, so their copies would stay old with nothing to say
     /// so. `item` names the function.
@@ -147,7 +148,7 @@ impl std::fmt::Display for Reason {
             Reason::DownstreamBody { file, item } if is_const_label(item) => write!(
                 f,
                 "{file} changed the value of `{item}`, which the crates depending on it copy into \
-                 their own code"
+                 their own code (they read it, or a generic / `#[inline]` body of its crate does)"
             ),
             Reason::DownstreamBody { file, item } => write!(
                 f,

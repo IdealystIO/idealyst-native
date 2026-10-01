@@ -30,6 +30,7 @@
 //! directly. A body edit in the library lands as a patch (the app's
 //! direct call and the component's click handler both run the new code),
 //! a later edit of the app alone still carries the library's edit, a
+//! private const read only by the library's component is a hot patch, a
 //! `pub const` value edit in the library (read by the app) rebuilds and
 //! reloads, and a shape edit in the library rebuilds and reloads.
 //!
@@ -629,6 +630,11 @@ fn shared_step() -> i32 {
     1
 }
 
+// Private, and read only by `SharedCounter`'s body — codegened once, in
+// THIS crate — so editing it is a hot patch of this crate (the CrewForge
+// landing screen's `HEADLINE` shape).
+const CARD_HEADLINE: &str = "card headline v1";
+
 #[component]
 pub fn SharedCounter(title: String) -> Element {
     let clicks = signal(0i32);
@@ -636,6 +642,7 @@ pub fn SharedCounter(title: String) -> Element {
     ui! {
         view {
             text { "{title}" }
+            text { CARD_HEADLINE }
             text { move || format!("shared clicks = {}", clicks.get()) }
             button(label = "shared +".to_string(), on_click = press)
         }
@@ -849,7 +856,27 @@ fn a_workspace_library_edit_patches_the_running_page() {
     assert!(page.text().contains("shared line v2 -> 2"), "{:?}", page.text());
     assert_eq!(page.eval("window.__e2e_marker"), json!("still-here"), "the page reloaded");
 
-    // ── a const VALUE edit in the library ─────────────────────────────
+    // ── a PRIVATE const read only by the library's component ──────────
+    let patches_before = session.log().matches("[hotpatch] e2e-shared/src/lib.rs ·").count();
+    let source = std::fs::read_to_string(&shared_rs).unwrap();
+    std::fs::write(&shared_rs, source.replace("\"card headline v1\"", "\"card headline v2\"")).unwrap();
+    assert!(
+        page.wait_for_text("card headline v2", Duration::from_secs(180)),
+        "the library's private const edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert!(
+        session.log().matches("[hotpatch] e2e-shared/src/lib.rs ·").count() > patches_before,
+        "the library const edit arrived, but not through a hot patch:\n{}",
+        tail(&session.log())
+    );
+    assert_eq!(page.eval("window.__e2e_marker"), json!("still-here"), "the page reloaded");
+    let text = page.text();
+    assert!(text.contains("shared clicks = 23"), "the library component's state was lost: {text:?}");
+    assert!(text.contains("logic v2 -> 4"), "the app's earlier patch was dropped: {text:?}");
+
+    // ── a const VALUE edit in the library, read by the APP ────────────
     // The app reads it, and a patch would re-emit the app against the
     // BASE metadata, old value included: this has to rebuild.
     let source = std::fs::read_to_string(&shared_rs).unwrap();

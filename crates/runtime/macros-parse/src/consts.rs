@@ -87,10 +87,22 @@
 //!
 //! # Across crates
 //!
-//! All of this is about ONE crate. A const of a LIBRARY crate is also
-//! inlined into its dependents, which a patch re-emits against the base
-//! build's metadata — old value included. That case is
-//! `crate::downstream_bodies`'s: every const there is a downstream item.
+//! All of this is about ONE crate. A const of a LIBRARY crate of the
+//! app's workspace can also reach its DEPENDENTS, which a patch re-emits
+//! against the base build's metadata — old value included: when a
+//! dependent reads it, or when a body the dependent compiles itself (a
+//! generic or `#[inline]` one) does. [`library_reach`] computes that from
+//! [`ConstFacts::mentions`] of the other crates and
+//! [`ConstFacts::downstream_reads`] of the library. A const read only in
+//! the library's plain bodies — CrewForge's landing screen reading its
+//! private `HEADLINE` in a `#[component]` — patches like one in the app.
+//!
+//! A `#[component]` body counts as a plain body: the macro moves it into
+//! a non-generic `#[inline(never)]` `__<Name>_hot_impl` (it even drops an
+//! author's `#[inline]`), and `ui!` expands to expressions in that body.
+//! A generic component keeps its generics and is downstream like any
+//! generic fn. A `macro_rules!` that reads a const — exported or not — is
+//! already a compile-time read (an unknown macro), so it rebuilds.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -127,6 +139,18 @@ pub struct ConstFacts {
     /// The file pulls in source the scan cannot read (`#[path]`,
     /// `include!`).
     pub opaque: bool,
+    /// Names read inside a body a DEPENDENT crate compiles from this
+    /// crate's metadata: a generic function or method (the `impl`'s
+    /// generics count), a trait's default method, an `#[inline]`,
+    /// `const`, `async` or `impl Trait` function — closures and async
+    /// blocks inside one included (`crate::downstream`'s rules). Only a
+    /// LIBRARY crate needs it: see [`library_reach`].
+    pub downstream_reads: BTreeSet<String>,
+    /// Every identifier in the file, and every identifier-shaped word in
+    /// its string literals: everything ANOTHER crate's file could be
+    /// reading of this crate's. Over-collected on purpose; see
+    /// [`library_reach`].
+    pub mentions: BTreeSet<String>,
 }
 
 /// The const facts of `text`. `None` when it does not parse.
@@ -136,8 +160,10 @@ pub fn const_facts(text: &str) -> Option<ConstFacts> {
         facts: ConstFacts::default(),
         in_body: 0,
         labels: Vec::new(),
+        generic_impls: Vec::new(),
     };
     c.visit_file(&file);
+    c.facts.mentions = names_in(file.to_token_stream());
     Some(c.facts)
 }
 
@@ -167,6 +193,13 @@ pub fn compile_time_reach<'a>(
         }
         renames.extend(f.renames.iter().map(|(a, o)| (a.as_str(), o.as_str())));
     }
+    close(&mut reach, &reads, &renames);
+    Some(reach)
+}
+
+/// Add to `reach` every name a const in it reads, and every original a
+/// renaming `use` in it stands for, until nothing changes.
+fn close(reach: &mut BTreeSet<String>, reads: &BTreeMap<&str, Vec<&str>>, renames: &[(&str, &str)]) {
     let mut stack: Vec<String> = reach.iter().cloned().collect();
     while let Some(name) = stack.pop() {
         let mut next: Vec<&str> = reads.get(name.as_str()).cloned().unwrap_or_default();
@@ -177,6 +210,58 @@ pub fn compile_time_reach<'a>(
             }
         }
     }
+}
+
+/// For a LIBRARY crate of the app's workspace: every name of `own` (the
+/// library's files) whose value reaches a DEPENDENT crate's code, which a
+/// hot patch re-emits against the BASE build's metadata — the old value.
+///
+/// A dependent gets a library const's value two ways, and both are
+/// roots here:
+///
+/// - it READS the const (by path, through a `use`, a glob, a re-export,
+///   a macro): rustc evaluates the const from the library's metadata and
+///   copies the value into the dependent's code. Any name `others` (every
+///   file of every OTHER crate of the workspace) mentions counts;
+/// - a body of the library's that the dependent compiles itself reads it
+///   ([`ConstFacts::downstream_reads`]): a generic or `#[inline]`
+///   function is instantiated in the dependent, from metadata MIR.
+///
+/// Then closed over the library's own const-to-const reads and renames:
+/// a `pub const B = A` a dependent reads carries `A`'s old value too.
+///
+/// A const read ONLY inside the library's non-generic, non-inline
+/// bodies — a `#[component]` body, a plain `fn`, a closure in one — is
+/// codegened once, in the library's own objects, and a patch re-emits
+/// those: it is not in the result. `pub` alone does not put a const
+/// here; what matters is whether another crate reads it, and in the dev
+/// loop the only crates that can are the workspace's, which `others`
+/// covers. (A crate published for outside consumers would also have
+/// readers this cannot see — they are not part of the running program,
+/// so they do not matter to a patch.)
+///
+/// `None` when a file of `others` is opaque: what it reads is unknown.
+pub fn library_reach<'a>(
+    own: impl IntoIterator<Item = &'a ConstFacts>,
+    others: impl IntoIterator<Item = &'a ConstFacts>,
+) -> Option<BTreeSet<String>> {
+    let mut reach: BTreeSet<String> = BTreeSet::new();
+    for f in others {
+        if f.opaque {
+            return None;
+        }
+        reach.extend(f.mentions.iter().cloned());
+    }
+    let mut reads: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut renames: Vec<(&str, &str)> = Vec::new();
+    for f in own {
+        reach.extend(f.downstream_reads.iter().cloned());
+        for (name, names) in &f.reads {
+            reads.entry(name).or_default().extend(names.iter().map(String::as_str));
+        }
+        renames.extend(f.renames.iter().map(|(a, o)| (a.as_str(), o.as_str())));
+    }
+    close(&mut reach, &reads, &renames);
     Some(reach)
 }
 
@@ -263,6 +348,10 @@ struct Collector {
     /// there is a body edit, not a tracked value.
     in_body: usize,
     labels: Vec<String>,
+    /// Per enclosing `impl`/`trait`: whether a method body in it is
+    /// compiled by dependents regardless of its own signature (a generic
+    /// `impl`, or a trait's default methods).
+    generic_impls: Vec<bool>,
 }
 
 impl Collector {
@@ -303,6 +392,15 @@ impl Collector {
         self.facts.compile_time.extend(names_in(tokens));
     }
 
+    /// Record a function body's reads as downstream when dependents
+    /// compile it (see [`ConstFacts::downstream_reads`]).
+    fn maybe_downstream(&mut self, sig: &syn::Signature, attrs: &[syn::Attribute], block: &syn::Block) {
+        let in_generic_impl = self.generic_impls.last().copied().unwrap_or(false);
+        if in_generic_impl || crate::downstream::downstream_sig(sig, attrs) {
+            self.facts.downstream_reads.extend(names_in(block.to_token_stream()));
+        }
+    }
+
     fn body<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.in_body += 1;
         let out = f(self);
@@ -341,13 +439,18 @@ impl<'ast> Visit<'ast> for Collector {
             Some((_, path, _)) => format!("impl {} for {self_ty}::", path.to_token_stream()),
             None => format!("impl {self_ty}::"),
         });
+        self.generic_impls.push(crate::downstream::has_type_or_const_params(&imp.generics));
         syn::visit::visit_item_impl(self, imp);
+        self.generic_impls.pop();
         self.labels.pop();
     }
 
     fn visit_item_trait(&mut self, t: &'ast syn::ItemTrait) {
         self.labels.push(format!("trait {}::", t.ident));
+        // A default body is generic over `Self`.
+        self.generic_impls.push(true);
         syn::visit::visit_item_trait(self, t);
+        self.generic_impls.pop();
         self.labels.pop();
     }
 
@@ -355,6 +458,10 @@ impl<'ast> Visit<'ast> for Collector {
         if f.sig.constness.is_some() {
             self.compile_time(f.block.to_token_stream());
         }
+        // A free fn is never inside an impl, whatever encloses it.
+        self.generic_impls.push(false);
+        self.maybe_downstream(&f.sig, &f.attrs, &f.block);
+        self.generic_impls.pop();
         for a in &f.attrs {
             self.visit_attribute(a);
         }
@@ -366,6 +473,7 @@ impl<'ast> Visit<'ast> for Collector {
         if f.sig.constness.is_some() {
             self.compile_time(f.block.to_token_stream());
         }
+        self.maybe_downstream(&f.sig, &f.attrs, &f.block);
         for a in &f.attrs {
             self.visit_attribute(a);
         }
@@ -378,6 +486,7 @@ impl<'ast> Visit<'ast> for Collector {
             if f.sig.constness.is_some() {
                 self.compile_time(block.to_token_stream());
             }
+            self.maybe_downstream(&f.sig, &f.attrs, block);
         }
         for a in &f.attrs {
             self.visit_attribute(a);
@@ -676,6 +785,81 @@ mod tests {
             labels,
             ["impl X::const Y", "m::const V", "trait T::const Z"]
         );
+    }
+
+    fn lib_reach(own: &str, other: &str) -> Option<BTreeSet<String>> {
+        library_reach([&const_facts(own).unwrap()], [&const_facts(other).unwrap()])
+    }
+
+    /// The CrewForge landing screen: a library crate's private const read
+    /// only by a `#[component]` body. The body is codegened once, in the
+    /// library, so a patch of the library carries the new value.
+    #[test]
+    fn a_library_const_read_only_by_a_plain_body_does_not_reach_dependents() {
+        let own = r#"
+            const HEADLINE: &str = "Run your crews";
+            #[component]
+            pub fn Landing() -> Element {
+                let on = move || HEADLINE.len();
+                ui! { view { text { HEADLINE } } }
+            }
+            pub struct S;
+            impl S { pub fn title(&self) -> &'static str { HEADLINE } }
+        "#;
+        let other = "fn app() -> Element { ui! { Landing() } }";
+        assert!(!lib_reach(own, other).unwrap().contains("HEADLINE"));
+    }
+
+    #[test]
+    fn a_library_const_a_dependent_reads_reaches_it_in_every_spelling() {
+        let own = r#"pub const TAG: &str = "v1";"#;
+        for other in [
+            "fn f() -> &'static str { lib::TAG }",
+            "use lib::TAG; fn f() -> &'static str { TAG }",
+            "use lib::TAG as T; fn f() -> &'static str { T }",
+            "use lib::*; fn f() -> String { format!(\"{TAG}\") }",
+        ] {
+            assert!(lib_reach(own, other).unwrap().contains("TAG"), "{other}");
+        }
+    }
+
+    /// A body a dependent compiles itself, from metadata MIR, carries the
+    /// old value into the dependent — closures and async blocks in it too.
+    #[test]
+    fn a_library_const_read_by_a_downstream_body_reaches_dependents() {
+        let other = "fn app() {}";
+        for own in [
+            "const H: &str = \"a\"; pub fn f<T>(_: T) -> &'static str { H }",
+            "const H: &str = \"a\"; #[inline] pub fn f() -> &'static str { H }",
+            "const H: &str = \"a\"; #[inline(always)] pub fn f() -> usize { let c = || H.len(); c() }",
+            "const H: &str = \"a\"; pub async fn f() -> usize { H.len() }",
+            "const H: &str = \"a\"; pub fn f() -> impl Fn() -> usize { || H.len() }",
+            "const H: &str = \"a\"; pub struct W<T>(T); impl<T> W<T> { pub fn h(&self) -> &str { H } }",
+            "const H: &str = \"a\"; pub trait Tr { fn h(&self) -> &str { H } }",
+        ] {
+            assert!(lib_reach(own, other).unwrap().contains("H"), "{own}");
+        }
+        // `#[inline(never)]` and a lifetime-only generic stay in the crate.
+        for own in [
+            "const H: &str = \"a\"; #[inline(never)] pub fn f() -> &'static str { H }",
+            "const H: &str = \"a\"; pub fn f<'a>(s: &'a str) -> &'a str { if s.is_empty() { H } else { s } }",
+        ] {
+            assert!(!lib_reach(own, other).unwrap().contains("H"), "{own}");
+        }
+    }
+
+    /// A private const a `pub const` reads: a dependent reading the
+    /// `pub` one evaluates both from metadata.
+    #[test]
+    fn a_library_const_reached_through_another_const_reaches_dependents() {
+        let own = "const BASE: &str = \"a\"; pub const TAG: &str = BASE;";
+        assert!(lib_reach(own, "fn f() -> &'static str { lib::TAG }").unwrap().contains("BASE"));
+        assert!(!lib_reach(own, "fn f() {}").unwrap().contains("BASE"));
+    }
+
+    #[test]
+    fn an_opaque_dependent_hides_its_reads() {
+        assert!(lib_reach("pub const T: u8 = 1;", "include!(\"gen.rs\");").is_none());
     }
 
     #[test]

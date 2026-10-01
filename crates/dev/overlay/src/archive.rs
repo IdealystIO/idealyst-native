@@ -153,6 +153,15 @@ pub struct ConstDigest {
     /// nothing about the crate's const reads can be trusted.
     #[serde(default)]
     pub opaque: bool,
+    /// Names read in bodies a dependent compiles itself — what a LIBRARY
+    /// crate's const value edit is checked against, with the other
+    /// crates' `mentions` (`runtime_macros_parse::library_reach`).
+    #[serde(default)]
+    pub downstream_reads: BTreeSet<String>,
+    /// Every identifier in the file: what it could be reading of another
+    /// crate's.
+    #[serde(default)]
+    pub mentions: BTreeSet<String>,
 }
 
 impl ConstDigest {
@@ -173,6 +182,8 @@ impl ConstDigest {
             sheet_reads: facts.sheet_reads,
             renames: facts.renames,
             opaque: facts.opaque,
+            downstream_reads: facts.downstream_reads,
+            mentions: facts.mentions,
         }
     }
 
@@ -186,6 +197,8 @@ impl ConstDigest {
             sheet_reads: self.sheet_reads.clone(),
             renames: self.renames.clone(),
             opaque: self.opaque,
+            downstream_reads: self.downstream_reads.clone(),
+            mentions: self.mentions.clone(),
         }
     }
 }
