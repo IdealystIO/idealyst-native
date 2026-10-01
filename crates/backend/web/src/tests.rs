@@ -3673,12 +3673,16 @@ fn open_url_opens_a_new_tab_without_an_opener() {
 
 static CTOR_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+#[cfg(target_arch = "wasm32")]
 extern "C" fn count_ctor_run() {
     CTOR_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What `inventory::submit!` expands to: a static in `.init_array`, run by
-/// LLD's `__wasm_call_ctors`.
+/// LLD's `__wasm_call_ctors`. wasm32 only: `.init_array.NNNNN` is not a valid
+/// Mach-O section specifier, so on a macOS host this static made the whole
+/// test module (and every host test in it) fail to compile.
+#[cfg(target_arch = "wasm32")]
 #[used]
 #[unsafe(link_section = ".init_array.00099")]
 static COUNT_CTOR: extern "C" fn() = count_ctor_run;
