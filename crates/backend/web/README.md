@@ -13,14 +13,8 @@ web-sys's method names and signatures, `web_glue::js` for the JS
 built-ins. `Host::Node` is `web_glue::dom::Node`. The eight `runtime/js/`
 shims ship as `web_glue::js_module!`s (no run-time eval).
 
-No web-sys or wasm-bindgen type crosses this crate's seams (web-sys is gone
-from its dependencies; `wasm-bindgen-test` stays as the browser-test harness).
-It still depends on `wasm-bindgen` for one reason, the build: every web build
-runs the wasm-bindgen CLI (hybrid mode), whose externref pass fails on a
-module without wasm-bindgen's runtime intrinsics ("failed to find intrinsics
-to enable `clone_ref` function"), so `link_wasm_bindgen_runtime` keeps them
-linked for an app with no other wasm-bindgen user. That goes with own mode.
-A dropped file reaches
+No web-sys or wasm-bindgen type crosses this crate's seams, and it depends on
+neither (`wasm-bindgen-test` stays as the browser-test harness). A dropped file reaches
 the file-picker SDK as a `web_glue::dom::File` (the type its
 `picked_from_dropped` downcasts `DroppedFile.source` to), and SDKs return /
 downcast `web_glue::dom::Node` as the host node — the generic node bridge used
@@ -28,9 +22,12 @@ during the port (`backend_web::bridge::{node_from_web_sys, node_to_web_sys}`)
 and the dropped-file `HYBRID-BRIDGE` crossing are gone (own-web-bindings
 phase 3).
 
-A web page is still **hybrid** while any crate in it uses wasm-bindgen:
-`idealyst build --web` extracts the glue before wasm-bindgen runs and writes
-`pkg/__idealyst_glue.js` after (`build_web::own_glue`).
+An app whose linked module carries no wasm-bindgen metadata builds in **own
+mode**: `idealyst build --web` / `dev --web` writes `pkg/<lib>.js` from the glue
+alone and never runs the wasm-bindgen CLI. A page is **hybrid** while any crate
+in it still uses wasm-bindgen (wgpu, an app's own web-sys): the build extracts
+the glue before wasm-bindgen runs and writes `pkg/__idealyst_glue.js` after
+(`build_web::own_glue`).
 
 A crate that uses web-sys types must enable the web-sys features it uses
 itself: this crate no longer enables ~60 of them for everyone, and code

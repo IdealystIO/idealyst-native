@@ -2,9 +2,10 @@
 //! boundary (`web_glue::dom` / `web_glue::js`). No web-sys / wasm-bindgen
 //! type crosses any of its seams: SDKs downcast the host node to
 //! `web_glue::dom::Node`, and a dropped file reaches the file-picker SDK as a
-//! `web_glue::dom::File`. The one wasm-bindgen use left is
-//! `link_wasm_bindgen_runtime`, which keeps its runtime linked for the build's
-//! wasm-bindgen step.
+//! `web_glue::dom::File`. The crate does not depend on wasm-bindgen
+//! (`wasm-bindgen-test` is only its browser-test harness), so an app with no
+//! other wasm-bindgen user builds in own mode: no wasm-bindgen CLI
+//! (docs/proposals/own-web-bindings.md).
 //!
 //! # File layout
 //!
@@ -780,29 +781,6 @@ pub(crate) struct DynamicRule {
 
 
 
-/// Keeps wasm-bindgen's runtime in every web app's linked module.
-///
-/// Every `idealyst build --web` / `dev --web` is still a HYBRID build: it
-/// runs the wasm-bindgen CLI over the module (own mode, which skips it, is
-/// phase 6 of docs/proposals/own-web-bindings.md). wasm-bindgen 0.2.128
-/// turns on its externref pass whenever the module's target features include
-/// `reference-types` (rustc's wasm32 default), and that pass rewrites every
-/// function against the runtime's `__externref_table_alloc` /
-/// `__externref_table_dealloc` exports — a module without them fails with
-/// "failed to find intrinsics to enable `clone_ref` function". Once this
-/// crate and the media / file SDKs stopped using wasm-bindgen (phase 3), an
-/// app with no other wasm-bindgen user (the hot-patch E2E's apps, a plain
-/// framework app) linked none, and every web build of it failed there.
-///
-/// `link_mem_intrinsics` is the hook wasm-bindgen's own generated code
-/// calls for the same reason: calling it pulls in the object file holding
-/// the runtime's intrinsics. It is a no-op at run time. Goes with own mode.
-#[inline(never)]
-fn link_wasm_bindgen_runtime() {
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen::__rt::link_mem_intrinsics();
-}
-
 impl WebBackend {
     /// Constructs a backend that will mount its root under `mount_selector`
     /// (e.g. `"#app"`). Panics if the element is not found.
@@ -1296,7 +1274,6 @@ impl WebBackend {
     /// tree into its own host node, so multiple independent trees can
     /// coexist on a page the framework doesn't own.
     pub fn new_in(mount: web_glue::dom::Element) -> Self {
-        link_wasm_bindgen_runtime();
         let window = web_glue::dom::window().expect("no window");
         let doc = window.document().expect("no document");
         let mut backend = Self {
