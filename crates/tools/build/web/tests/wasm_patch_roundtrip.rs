@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use build_web::hotpatch_aliases;
-use build_web::hotpatch_base::prepare_base_module;
+use build_web::hotpatch_base::{prepare_base_module, Flavor};
 use build_web::hotpatch_patch::BaseIndex;
 use build_web::hotpatch_prepare::{prepare, ImportSource, Plan, PLAN_SECTION};
 use build_web::hotpatch_wasm::build_jump_table;
@@ -158,7 +158,7 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     let linked = dir.join("target/wasm32-unknown-unknown/debug/roundtrip_probe.wasm");
 
     // ── 2. Root every function, then let wasm-bindgen run ────────────
-    let (prepared, _census) = prepare_base_module(&std::fs::read(&linked).unwrap()).unwrap();
+    let (prepared, _census) = prepare_base_module(&std::fs::read(&linked).unwrap(), Flavor::Hybrid).unwrap();
     let prepared_path = dir.join("base.prepared.wasm");
     std::fs::write(&prepared_path, &prepared).unwrap();
 
@@ -603,7 +603,7 @@ fn a_library_crates_patch_carries_its_dependents() {
     let data = hotpatch_aliases::read_data_symbols_from_linked(&linked_bytes).unwrap();
     let data_path = dir.join("rt_app.datasyms.tsv");
     hotpatch_aliases::write_data_symbols(&data_path, &data).unwrap();
-    let (prepared, _) = prepare_base_module(&linked_bytes).unwrap();
+    let (prepared, _) = prepare_base_module(&linked_bytes, Flavor::Hybrid).unwrap();
     let prepared_path = dir.join("base.prepared.wasm");
     std::fs::write(&prepared_path, &prepared).unwrap();
     run(

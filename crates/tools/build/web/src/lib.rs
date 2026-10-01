@@ -16,12 +16,18 @@
 //! `Element`, found `Element`" at a boundary the author never wrote.
 //!
 //! What's left here is packaging, which `cargo build` does not do:
-//! `cargo build --target wasm32-unknown-unknown` against the app,
-//! then the web-glue extraction (`own_glue::hybrid_extract` — backend-web's
-//! own bindings ride inside the wasm), then `wasm-bindgen` over the
-//! stripped `.wasm` plus `pkg/__idealyst_glue.js`, then `wasm-split`
-//! (unless `--no-split`, which is refused when the app has lazy
-//! boundaries — see [`BuildOptions::wasm_split`]), then (release)
+//! `cargo build --target wasm32-unknown-unknown` against the app, then the
+//! web-glue extraction (`own_glue::extract_for_build` — the framework's
+//! bindings ride inside the wasm), which also decides the mode:
+//!
+//! * **own** (no wasm-bindgen metadata in the module — every
+//!   framework-only app): the glue pass writes `pkg/<lib>.js` and
+//!   `pkg/<lib>_bg.wasm` itself; the wasm-bindgen CLI never runs;
+//! * **hybrid** (wgpu, an app's own web-sys): `wasm-bindgen` over the
+//!   stripped `.wasm`, plus `pkg/__idealyst_glue.js`.
+//!
+//! Then `wasm-split` (unless `--no-split`, which is refused when the app
+//! has lazy boundaries — see [`BuildOptions::wasm_split`]), then (release)
 //! `wasm-opt`, then staging `pkg/` + `index.html` + assets into
 //! `dist/web`.
 //!
@@ -249,13 +255,14 @@ pub struct BuildOptions {
     /// the macro emitted get answered without a chunk.
     ///
     /// The flag changes the whole pipeline, not just one pass. A
-    /// splitting build emits relocations from rustc and runs wasm-bindgen
-    /// with `--keep-lld-exports --no-demangle` so the splitter can match
-    /// references — which also pins every export as a
+    /// splitting build emits relocations from rustc (and, in hybrid mode,
+    /// runs wasm-bindgen with `--keep-lld-exports --no-demangle`) so the
+    /// splitter can match references — which also pins every export as a
     /// GC root, so the splitter is then the only thing that compacts the
-    /// module. A non-splitting build emits no relocations and lets
-    /// wasm-bindgen's own dead-code pass and debug-strip do the
-    /// compaction. Measured on crewforge (a 217 MB dev module with
+    /// module. A non-splitting build emits no relocations; in hybrid mode
+    /// wasm-bindgen's own dead-code pass and debug-strip do the compaction,
+    /// in own mode LLD's `--gc-sections` already did and the glue pass
+    /// strips DWARF. Measured on crewforge (hybrid, before own mode) (a 217 MB dev module with
     /// relocations, 157 MB without; ~200 K lines of app code; interleaved
     /// UI-edit rebuilds on one loaded machine):
     ///
@@ -566,10 +573,11 @@ pub fn resolve_primitive_set(spec: Option<&[String]>) -> Result<Option<Vec<Strin
 
 /// Build the user's project at `project_dir` for the web target.
 ///
-/// Builds the app crate's own binary for `wasm32-unknown-unknown`, runs
-/// `wasm-bindgen` (plus `wasm-split` + `wasm-opt` on release) over the
-/// result, and stages the `pkg/` bundle into `project_dir/pkg/` and
-/// `dist/web`. No wrapper crate is involved — see the module docs.
+/// Builds the app crate's own binary for `wasm32-unknown-unknown`, packages
+/// it (own mode, or `wasm-bindgen` in hybrid mode — see the module docs;
+/// plus `wasm-split`, and `wasm-opt` on release), and stages the `pkg/`
+/// bundle into `project_dir/pkg/` and `dist/web`. No wrapper crate is
+/// involved.
 /// The cargo target dir a web build of `project_dir` with `opts` compiles
 /// into: `<framework target dir>/idealyst-web-<config key>` (see
 /// [`config_key`] for what the key separates).
@@ -724,116 +732,129 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         );
         timings.record("passes-skipped", std::time::Duration::ZERO);
     } else {
-        // Root every function in the element table BEFORE wasm-bindgen
-        // runs. wasm-bindgen's dead-code pass keeps only what the
-        // exports and the table reach — measured, 2993 functions in and
-        // 560 out — so this is what decides whether a patch can call
-        // anything at all.
-        //
-        // The result goes to a SIBLING file, never over cargo's own
-        // artifact. Cargo's freshness check is on mtime and it does not
-        // hash what it produced: overwriting `app.wasm` in place would
-        // leave a later non-hot-patch build reusing a module with
-        // thousands of extra table entries, considering it fresh, and
-        // shipping it.
         // web-glue (backend-web's bindings) rides in the linked module:
         // snippets in its `./__idealyst_glue.js` import names, the runtime
         // and JS modules in a custom section. Pull it out FIRST, so
-        // everything downstream — hot-patch base prep, wasm-bindgen — sees
-        // short `g<N>` imports and no glue section; `pkg/__idealyst_glue.js`
-        // is written after wasm-bindgen. See `own_glue::hybrid_extract`.
-        let (glue_input, glue) = timings
-            .time("glue-extract", || own_glue::hybrid_extract(&original_wasm))
+        // everything downstream sees short `g<N>` imports and no glue
+        // section — and learn whether anything in the app still uses
+        // wasm-bindgen, which decides the rest of the pipeline. See
+        // `own_glue`'s module docs.
+        let extracted = timings
+            .time("glue-extract", || own_glue::extract_for_build(&original_wasm))
             .with_context(|| "web-glue extraction")?;
-        let mut bindgen_input = glue_input.clone();
-        if opts.hot_patch {
-            let prepared_path = original_wasm.with_extension("hotbase.wasm");
-            let alias_path = original_wasm.with_extension("aliases.tsv");
-            let data_path = original_wasm.with_extension("datasyms.tsv");
-            timings.time("hotpatch-base-prep", || {
-                let linked = fs::read(&original_wasm).with_context(|| {
-                    format!("read {} for hot-patch prep", original_wasm.display())
-                })?;
-                // Read BEFORE the prep: the map is built from the
-                // `linking` section, which the prep drops, and whose
-                // function indices wasm-bindgen renumbers anyway.
-                let aliases = hotpatch_aliases::read_from_linked(&linked)
-                    .context("reading the base module's symbol aliases")?;
-                hotpatch_aliases::write(&alias_path, &aliases)?;
-                // The only other thing anything reads from `linking`;
-                // the prep drops that section from the served base.
-                let data = hotpatch_aliases::read_data_symbols_from_linked(&linked)
-                    .context("reading the base module's data symbols")?;
-                hotpatch_aliases::write_data_symbols(&data_path, &data)?;
-                // The prep works on the glue-stripped module (the aliases
-                // above came from cargo's own: extraction renames imports
-                // only, so no function index or symbol differs).
-                let stripped = if glue_input == original_wasm {
-                    None
+        let own_glue::Extracted { mode, glue, .. } = extracted;
+        match (&mode, &glue.wasm_bindgen) {
+            (own_glue::Mode::Hybrid, Some(why)) => reporter.log(
+                "build-web",
+                format!(
+                    "hybrid mode: {bin_name}.wasm carries wasm-bindgen metadata ({why}) — \
+                     running the wasm-bindgen CLI over it",
+                ),
+            ),
+            _ => reporter.log(
+                "build-web",
+                format!(
+                    "own mode: {bin_name}.wasm carries no wasm-bindgen metadata — \
+                     packaging with web-glue alone, no wasm-bindgen CLI",
+                ),
+            ),
+        }
+        match mode {
+            own_glue::Mode::Own => {
+                // Root every function in the element table, so a patch can
+                // reach any of them by index (`hotpatch_base`). No GC runs
+                // after it in own mode — the table is only what the patch
+                // tier itself needs.
+                let served = if opts.hot_patch {
+                    timings.time("hotpatch-base-prep", || {
+                        hotpatch_prepare_base(
+                            &reporter,
+                            &original_wasm,
+                            &glue.wasm,
+                            hotpatch_base::Flavor::Own,
+                        )
+                    })?
                 } else {
-                    Some(fs::read(&glue_input).with_context(|| {
-                        format!("read {} for hot-patch prep", glue_input.display())
-                    })?)
+                    glue.wasm.clone()
                 };
-                let (prepared, census) =
-                    hotpatch_base::prepare_base_module(stripped.as_deref().unwrap_or(&linked))
-                    .context("preparing the base module for hot patching")?;
-                reporter.log(
-                    "build-web",
-                    format!(
-                        "hot-patch base: {} → {} bytes; {}; {} symbol aliases",
-                        linked.len(),
-                        prepared.len(),
-                        census.summary(),
-                        aliases.len(),
-                    ),
-                );
-                fs::write(&prepared_path, prepared)
-                    .with_context(|| format!("write {}", prepared_path.display()))
-            })?;
-            bindgen_input = prepared_path;
-        }
-        timings.time("wasm-bindgen", || {
-            wasm_bindgen_build(
-                &reporter,
-                &bindgen_input,
-                &wrapper_pkg,
-                &manifest.lib_name,
-                opts.wasm_split,
-                opts.hot_patch,
-            )
-        })
-        .with_context(|| "wasm-bindgen")?;
-        own_glue::write_hybrid_glue_file(&wrapper_pkg, &glue, &manifest.lib_name)
-            .with_context(|| "write pkg/__idealyst_glue.js")?;
-        // Rooting every function keeps wasm-bindgen's descriptor
-        // machinery alive, and it emits no JS binding for the
-        // `__wbindgen_placeholder__` import that machinery calls. Give
-        // the leftovers a trapping body so the module can instantiate.
-        if opts.hot_patch {
-            timings.time("hotpatch-strand-imports", || {
-                let path = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
-                let bindgened =
-                    fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-                match hotpatch_base::neutralize_unsupplied_imports(&bindgened)
-                    .context("neutralizing the imports wasm-bindgen did not supply")?
-                {
-                    Some(fixed) => {
-                        reporter.log(
-                            "build-web",
-                            "hot-patch: gave wasm-bindgen's unsupplied imports a trapping body",
-                        );
-                        fs::write(&path, fixed)
-                            .with_context(|| format!("write {}", path.display()))
-                    }
-                    None => Ok(()),
+                timings
+                    .time("glue-package", || {
+                        own_glue::write_own_pkg(&served, &glue, &wrapper_pkg, &manifest.lib_name)
+                    })
+                    .with_context(|| "write the own-mode pkg/")?;
+            }
+            own_glue::Mode::Hybrid => {
+                // The stripped module goes to a SIBLING file, never over
+                // cargo's own artifact. Cargo's freshness check is on mtime
+                // and it does not hash what it produced: overwriting
+                // `app.wasm` in place would leave a later build reusing a
+                // module it considers fresh — with thousands of extra table
+                // entries, after a hot-patch prep — and shipping it.
+                let bindgen_input = if opts.hot_patch {
+                    // Root every function in the element table BEFORE
+                    // wasm-bindgen runs. wasm-bindgen's dead-code pass keeps
+                    // only what the exports and the table reach — measured,
+                    // 2993 functions in and 560 out — so this is what decides
+                    // whether a patch can call anything at all.
+                    let prepared = timings.time("hotpatch-base-prep", || {
+                        hotpatch_prepare_base(
+                            &reporter,
+                            &original_wasm,
+                            &glue.wasm,
+                            hotpatch_base::Flavor::Hybrid,
+                        )
+                    })?;
+                    let path = original_wasm.with_extension("hotbase.wasm");
+                    fs::write(&path, prepared).with_context(|| format!("write {}", path.display()))?;
+                    path
+                } else {
+                    let path = original_wasm.with_extension("glue.wasm");
+                    fs::write(&path, &glue.wasm).with_context(|| format!("write {}", path.display()))?;
+                    path
+                };
+                timings.time("wasm-bindgen", || {
+                    wasm_bindgen_build(
+                        &reporter,
+                        &bindgen_input,
+                        &wrapper_pkg,
+                        &manifest.lib_name,
+                        opts.wasm_split,
+                        opts.hot_patch,
+                    )
+                })
+                .with_context(|| "wasm-bindgen")?;
+                own_glue::write_hybrid_glue_file(&wrapper_pkg, &glue, &manifest.lib_name)
+                    .with_context(|| "write pkg/__idealyst_glue.js")?;
+                // Rooting every function keeps wasm-bindgen's descriptor
+                // machinery alive, and it emits no JS binding for the
+                // `__wbindgen_placeholder__` import that machinery calls. Give
+                // the leftovers a trapping body so the module can instantiate.
+                if opts.hot_patch {
+                    timings.time("hotpatch-strand-imports", || {
+                        let path = wrapper_pkg.join(format!("{}_bg.wasm", manifest.lib_name));
+                        let bindgened =
+                            fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+                        match hotpatch_base::neutralize_unsupplied_imports(&bindgened)
+                            .context("neutralizing the imports wasm-bindgen did not supply")?
+                        {
+                            Some(fixed) => {
+                                reporter.log(
+                                    "build-web",
+                                    "hot-patch: gave wasm-bindgen's unsupplied imports a trapping body",
+                                );
+                                fs::write(&path, fixed)
+                                    .with_context(|| format!("write {}", path.display()))
+                            }
+                            None => Ok(()),
+                        }
+                    })?;
                 }
-            })?;
+                timings.time("command-export-neutralize", || {
+                    neutralize_command_export_wrappers(&reporter, &wrapper_pkg, &manifest.lib_name)
+                })
+                .with_context(|| "wasm-bindgen command_export neutralize")?;
+            }
         }
-        timings.time("command-export-neutralize", || {
-            neutralize_command_export_wrappers(&reporter, &wrapper_pkg, &manifest.lib_name)
-        })
-        .with_context(|| "wasm-bindgen command_export neutralize")?;
         if opts.wasm_split {
             timings.time("wasm-split", || {
                 run_wasm_split(
@@ -1074,6 +1095,50 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         bundle_dir,
         entry_js,
     })
+}
+
+/// Hot-patch base prep, for either packaging mode: read the linked
+/// module's symbol aliases and data symbols (from its `linking` section,
+/// which the prep drops), write them beside cargo's artifact for the dev
+/// loop's base index, and return `module` (the glue-extracted module) with
+/// every function rooted in the table (`hotpatch_base::prepare_base_module`).
+fn hotpatch_prepare_base(
+    reporter: &dev_events::Reporter,
+    original_wasm: &Path,
+    module: &[u8],
+    flavor: hotpatch_base::Flavor,
+) -> Result<Vec<u8>> {
+    let alias_path = original_wasm.with_extension("aliases.tsv");
+    let data_path = original_wasm.with_extension("datasyms.tsv");
+    let linked = fs::read(original_wasm)
+        .with_context(|| format!("read {} for hot-patch prep", original_wasm.display()))?;
+    // Read BEFORE the prep: the map is built from the `linking` section,
+    // which the prep drops (and whose function indices wasm-bindgen, in
+    // hybrid mode, renumbers anyway).
+    let aliases = hotpatch_aliases::read_from_linked(&linked)
+        .context("reading the base module's symbol aliases")?;
+    hotpatch_aliases::write(&alias_path, &aliases)?;
+    // The only other thing anything reads from `linking`; the prep drops
+    // that section from the served base.
+    let data = hotpatch_aliases::read_data_symbols_from_linked(&linked)
+        .context("reading the base module's data symbols")?;
+    hotpatch_aliases::write_data_symbols(&data_path, &data)?;
+    // The prep works on the glue-extracted module (the aliases above came
+    // from cargo's own: extraction renames imports and repoints exports
+    // only, so no function index or symbol differs).
+    let (prepared, census) = hotpatch_base::prepare_base_module(module, flavor)
+        .context("preparing the base module for hot patching")?;
+    reporter.log(
+        "build-web",
+        format!(
+            "hot-patch base: {} → {} bytes; {}; {} symbol aliases",
+            linked.len(),
+            prepared.len(),
+            census.summary(),
+            aliases.len(),
+        ),
+    );
+    Ok(prepared)
 }
 
 /// Stage a deployable static-site bundle at `out_dir`. `pkg/` is
@@ -2545,7 +2610,8 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
 /// does not exist there. Reading it from the staged dir is how the first
 /// body edit on CrewForge was refused with "No such file or directory".
 /// The wrapper copy is the same bytes: staging only renames and
-/// compresses, after wasm-bindgen and the neutralize pass have run.
+/// compresses, after packaging finished (own mode's glue pass, or
+/// wasm-bindgen and the neutralize pass in hybrid mode).
 pub fn served_wasm_path(wrapper_pkg: &Path, lib_name: &str) -> PathBuf {
     wrapper_pkg.join(format!("{lib_name}_bg.wasm"))
 }
@@ -4791,6 +4857,7 @@ mod fingerprint_tests {
             modules: Vec::new(),
             foreign_import_modules: Vec::new(),
             section_bytes: 0,
+            wasm_bindgen: None,
         };
         own_glue::write_hybrid_glue_file(&pkg, &glue, "demo").unwrap();
         let fp = fingerprint_pkg(&pkg, "demo").unwrap();

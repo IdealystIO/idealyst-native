@@ -37,10 +37,11 @@
 //! it resolved to. Grouping symbols by index and pairing them against
 //! the name section gives `alias -> canonical` — a name-to-name map with
 //! no index in it, which matters because the index is the one part that
-//! does not survive: wasm-bindgen's GC renumbers every function, so by
-//! the time the page is running the `linking` section's indices name
-//! different functions. The map is read once, from the LINKED module,
-//! before base prep drops that section and wasm-bindgen runs.
+//! does not survive: base prep appends functions and, in a hybrid build,
+//! wasm-bindgen's GC renumbers every function, so by the time the page is
+//! running the `linking` section's indices may name different functions.
+//! The map is read once, from the LINKED module, before base prep drops
+//! that section (and before wasm-bindgen, when it runs at all).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -56,9 +57,9 @@ pub type AliasMap = BTreeMap<String, String>;
 ///
 /// Must be the module cargo's linker produced, before
 /// [`crate::hotpatch_base::prepare_base_module`] and before
-/// wasm-bindgen: both renumber functions, and the `linking` section they
-/// carry forward keeps the OLD indices, so reading it later pairs
-/// symbols with unrelated functions.
+/// wasm-bindgen (hybrid mode): a `linking` section carried forward keeps
+/// the OLD indices, so reading it later can pair symbols with unrelated
+/// functions.
 pub fn read_from_linked(linked: &[u8]) -> Result<AliasMap> {
     let names = function_names(linked).context("reading the linked module's name section")?;
 

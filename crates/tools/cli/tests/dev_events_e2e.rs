@@ -25,8 +25,13 @@
 //! build dirs with a session already running there, with its `[patch]`
 //! pointed at this checkout.
 //!
+//! The app links no wasm-bindgen, so every build of the session is an
+//! own-mode build (no wasm-bindgen CLI) — asserted from the stage events.
+//! A lab copy (`IDEALYST_E2E_LAB`) that still uses web-sys builds hybrid
+//! and fails that check; run it with `IDEALYST_E2E_HYBRID=1`.
+//!
 //! `#[ignore]`d: it compiles the framework for wasm32 and needs Chrome (or
-//! `IDEALYST_BROWSER`) and `wasm-bindgen` on `PATH`:
+//! `IDEALYST_BROWSER`):
 //!
 //! ```text
 //! cargo test -p idealyst-cli --test dev_events_e2e -- --ignored --nocapture
@@ -903,9 +908,34 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
         std::fs::copy(&session.events, out).expect("copy the events file");
     }
 
+    // Own mode: a framework-only app links no wasm-bindgen, so no build of
+    // the session — the initial one or the rebuild — ran the wasm-bindgen
+    // CLI. The glue pass wrote `pkg/` instead (docs/proposals/
+    // own-web-bindings.md, phase 6). A stage that ran is a stage that
+    // reported; the hybrid-only stages must not appear at all.
+    let stages: Vec<String> = session
+        .events()
+        .iter()
+        .filter(|e| e["type"] == "stage_finished" && e["target"] == "web")
+        .filter_map(|e| e["stage"].as_str().map(str::to_string))
+        .collect();
+    let log = session.log();
+    if std::env::var_os("IDEALYST_E2E_HYBRID").is_some() {
+        assert!(stages.iter().filter(|s| *s == "wasm-bindgen").count() >= 2, "{stages:?}");
+        assert!(log.contains("hybrid mode: "), "{}", tail(&log));
+    } else {
+        assert!(
+            stages.iter().filter(|s| *s == "glue-package").count() >= 2,
+            "both web builds packaged in own mode: {stages:?}"
+        );
+        for hybrid_only in ["wasm-bindgen", "hotpatch-strand-imports", "command-export-neutralize"] {
+            assert!(!stages.iter().any(|s| s == hybrid_only), "{hybrid_only} ran: {stages:?}");
+        }
+        assert!(log.contains("own mode: "), "{}", tail(&log));
+    }
+
     // The plain lines a terminal (and this test's older sibling) reads
     // are still there.
-    let log = session.log();
     assert!(log.contains("[dev] patched 1 site(s) in"), "{}", tail(&log));
     assert!(log.contains("function(s) redirected"), "{}", tail(&log));
     assert!(log.contains("[dev] rebuilding: "), "{}", tail(&log));

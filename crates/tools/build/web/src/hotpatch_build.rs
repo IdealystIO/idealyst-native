@@ -274,10 +274,11 @@ impl Drop for WasmPatchBuilder {
 }
 
 impl WasmPatchBuilder {
-    /// `served_wasm` must be the module the BROWSER actually runs —
-    /// after wasm-bindgen and after the command-export neutralize pass.
-    /// Both rewrite the module, and a table index read before either one
-    /// names a different function than the one the page will call.
+    /// `served_wasm` must be the module the BROWSER actually runs — in
+    /// hybrid mode after wasm-bindgen and after the command-export
+    /// neutralize pass, which both rewrite the module (a table index read
+    /// before either one names a different function than the one the page
+    /// will call); in own mode the prepared base `pkg/` holds as written.
     /// `symbol_aliases` is the file the base build wrote from the LINKED
     /// module (see [`crate::hotpatch_aliases`]). A base built without one
     /// still patches; it just cannot resolve a symbol the linker knew by

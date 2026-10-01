@@ -31,9 +31,12 @@
 //! a later edit of the app alone still carries the library's edit, and a
 //! shape edit in the library rebuilds and reloads.
 //!
+//! Both apps link no wasm-bindgen, so they build in own mode — the
+//! wasm-bindgen CLI never runs, and the test asserts it from the build's
+//! timing line.
+//!
 //! `#[ignore]`d: it compiles the framework for wasm32 and needs Chrome
-//! (or `IDEALYST_BROWSER`) and `wasm-bindgen` on `PATH`. Run it
-//! deliberately:
+//! (or `IDEALYST_BROWSER`). Run it deliberately:
 //!
 //! ```text
 //! cargo test -p idealyst-cli --test wasm_hot_patch_e2e -- --ignored --nocapture
@@ -460,6 +463,7 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
         "the new text arrived, but not through a hot patch:\n{}",
         tail(&log_now)
     );
+    assert_own_mode(&log_now);
     assert_eq!(
         page.eval("window.__e2e_marker"),
         json!("still-here"),
@@ -739,6 +743,7 @@ fn a_workspace_library_edit_patches_the_running_page() {
         "the session did not pick up the library crate:\n{}",
         tail(&session.log())
     );
+    assert_own_mode(&session.log());
 
     // State in BOTH crates, and a marker only a reload clears.
     click(&mut page, "+1", 2);
@@ -834,6 +839,20 @@ fn a_workspace_library_edit_patches_the_running_page() {
         Value::Null,
         "a library shape edit has to reload the page; the marker survived"
     );
+}
+
+/// The apps here link no wasm-bindgen, so the base build is an own-mode
+/// build: the glue pass wrote `pkg/` and the wasm-bindgen CLI never ran —
+/// no wasm-bindgen GC, no stranded placeholder imports, no command-export
+/// neutralize; the hot-patch base is the prepared module as written.
+fn assert_own_mode(log: &str) {
+    assert!(log.contains("own mode: "), "the base build was not own-mode:\n{}", tail(log));
+    assert!(!log.contains("hybrid mode: "), "{}", tail(log));
+    for stage in ["wasm-bindgen ", "hotpatch-strand-imports ", "command-export-neutralize "] {
+        let timing = log.lines().filter(|l| l.contains("timing: total")).collect::<Vec<_>>().join("\n");
+        assert!(!timing.contains(stage), "{stage}ran: {timing}");
+    }
+    assert!(log.contains("glue-package "), "{}", tail(log));
 }
 
 fn tail(log: &str) -> String {

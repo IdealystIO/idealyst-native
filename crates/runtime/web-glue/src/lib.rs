@@ -27,15 +27,19 @@
 //! copied as bytes, never parsed), strips both, and writes `pkg/<lib>.js`
 //! with the same entry contract wasm-bindgen's `--target web` output has.
 //!
-//! # Link requirement (own mode)
+//! # Constructors (own mode)
 //!
-//! Link with `-C link-arg=--export=__wasm_call_ctors`. Without it, LLD
-//! builds a *command* module and wraps EVERY export — `__glue_invoke`,
-//! `__glue_alloc`, … — in a call to `__wasm_call_ctors`, so every JS → Rust
-//! call re-runs static constructors (measured: a ctor-bumped counter read
-//! 1, 2, 4 across three calls). Exporting it makes the module a reactor;
-//! the generated loader then runs constructors exactly once, before `main`.
-//! `build_web::own_glue::link_args()` supplies the flag.
+//! A wasm32 bin is linked by LLD as a *command* module, which wraps EVERY
+//! export — `__glue_invoke`, `__glue_alloc`, … — in a call to
+//! `__wasm_call_ctors`, so every JS → Rust call would re-run static
+//! constructors (measured: a ctor-bumped counter read 1, 2, 4 across three
+//! calls). `idealyst build --web` links the command module and its glue
+//! pass then points every export but `main` past its wrapper
+//! (`build_web::own_glue::extract_for_build`), so constructors run once,
+//! inside `main`. Linking with `-C link-arg=--export=__wasm_call_ctors`
+//! (`build_web::own_glue::link_args()`) makes a reactor instead; the
+//! generated loader then runs `__wasm_call_ctors()` itself, once, before
+//! `main`. Either way, never per call.
 
 #[cfg(feature = "wasm-bindgen-bridge")]
 pub mod bridge;

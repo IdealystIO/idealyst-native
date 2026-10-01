@@ -78,9 +78,10 @@
 //! # What still needs a tool
 //!
 //! `cargo build` produces the artifact for every platform. It does not
-//! *package* one: a web app still needs `wasm-bindgen` run over the
-//! `.wasm`, plus `index.html` and asset staging (and `wasm-split` +
-//! `wasm-opt` for release); iOS and Android need their bundles
+//! *package* one: a web app needs its JS written from the `.wasm` (the
+//! web-glue pass; the `wasm-bindgen` CLI too, only for an app that still
+//! links wasm-bindgen), plus `index.html` and asset staging (and
+//! `wasm-split` + `wasm-opt` for release); iOS and Android need their bundles
 //! assembled. That work moved to the dev/bundle server, which watches,
 //! runs `cargo build`, post-processes and serves. It is a *consumer* of
 //! the build rather than a precondition for it — which is the whole

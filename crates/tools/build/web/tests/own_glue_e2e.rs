@@ -3,7 +3,9 @@
 //! real browser.
 //!
 //! * `own_glue_demo_runs_in_chrome_without_wasm_bindgen` — builds
-//!   `tests/own-glue/demo` (web-glue only) through the own-mode pass and
+//!   `tests/own-glue/demo` (web-glue only) linked exactly as
+//!   `idealyst build --web` links an app (a command module), through the
+//!   own-mode pass, and
 //!   asserts DOM creation, attributes/text, an event listener mutating Rust
 //!   state, an awaited timer Promise and a rejection, a caught JS exception,
 //!   the in-page self-checks (non-ASCII strings, memory growth during a JS
@@ -13,6 +15,8 @@
 //!   ran once, and a `web_glue::worker` Worker running a Rust fn in a fresh
 //!   instance of the module. Also asserts the crate graph and
 //!   the output carry no trace of wasm-bindgen.
+//!   `own_glue_demo_runs_in_chrome_linked_as_a_reactor` is the same page
+//!   from a reactor link (`own_glue::link_args`).
 //! * `hybrid_module_runs_with_both_namespaces` — `tests/own-glue/hybrid`,
 //!   which uses web-glue AND wasm-bindgen, packaged in hybrid mode: both
 //!   namespaces supplied, glue callbacks/strings reach web-glue's exports
@@ -68,10 +72,32 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// How the own-mode module is linked: the command module every
+/// `idealyst build --web` links (its exports unwrapped by the pass), or a
+/// reactor (`own_glue::link_args`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Command,
+    Reactor,
+}
+
 fn build(package: &str, mode: Mode, release: bool, extra: &[&str], site: &Path) -> CrateBuildReport {
-    let mode_dir = match mode {
-        Mode::Own => "own",
-        Mode::Hybrid => "bindgen",
+    build_linked(package, mode, Link::Command, release, extra, site)
+}
+
+fn build_linked(
+    package: &str,
+    mode: Mode,
+    link: Link,
+    release: bool,
+    extra: &[&str],
+    site: &Path,
+) -> CrateBuildReport {
+    // Hybrid and a command-linked own build use the same RUSTFLAGS; the
+    // reactor flag changes every fingerprint.
+    let mode_dir = match (mode, link) {
+        (Mode::Own, Link::Reactor) => "own",
+        _ => "bindgen",
     };
     build_crate(
         &dev_events::Reporter::default(),
@@ -81,6 +107,7 @@ fn build(package: &str, mode: Mode, release: bool, extra: &[&str], site: &Path) 
             bin: package.into(),
             release,
             mode,
+            reactor: link == Link::Reactor,
             target_dir: target_dir(mode_dir),
             out_dir: site.join("pkg"),
             extra_cargo_args: extra.iter().map(|s| s.to_string()).collect(),
@@ -318,6 +345,18 @@ fn open_site(site: &Path, name: &str) -> Browser {
 #[test]
 #[ignore = "compiles a crate for wasm32 and drives headless Chrome; run with --ignored"]
 fn own_glue_demo_runs_in_chrome_without_wasm_bindgen() {
+    own_demo(Link::Command);
+}
+
+/// The same page from a reactor link (`own_glue::link_args`), where the
+/// loader runs `__wasm_call_ctors` itself instead of `main`'s wrapper.
+#[test]
+#[ignore = "compiles a crate for wasm32 and drives headless Chrome; run with --ignored"]
+fn own_glue_demo_runs_in_chrome_linked_as_a_reactor() {
+    own_demo(Link::Reactor);
+}
+
+fn own_demo(link: Link) {
     // The crate graph: no wasm-bindgen, web-sys or js-sys at all.
     let tree = Command::new("cargo")
         .current_dir(repo_root())
@@ -329,9 +368,19 @@ fn own_glue_demo_runs_in_chrome_without_wasm_bindgen() {
         assert!(!tree.contains(banned), "own-glue-demo depends on {banned}:\n{tree}");
     }
 
-    let site = scratch("own-site");
-    let report = build("own-glue-demo", Mode::Own, true, &[], &site);
+    let site = scratch(if link == Link::Reactor { "own-reactor-site" } else { "own-site" });
+    let report = build_linked("own-glue-demo", Mode::Own, link, true, &[], &site);
     assert!(report.package.bindgen_time.is_none());
+    match link {
+        // `idealyst build`'s link: every export but `main` (web-glue's own
+        // and the demo's `#[no_mangle]` probes) moved past its wrapper.
+        Link::Command => assert!(
+            report.package.unwrapped_command_exports >= 5,
+            "{} exports unwrapped",
+            report.package.unwrapped_command_exports
+        ),
+        Link::Reactor => assert_eq!(report.package.unwrapped_command_exports, 0),
+    }
     let js = std::fs::read_to_string(site.join("pkg/own_glue_demo.js")).unwrap();
     let wasm = std::fs::read(site.join("pkg/own_glue_demo_bg.wasm")).unwrap();
     for (what, hay) in [("js", js.as_bytes()), ("wasm", wasm.as_slice())] {
@@ -396,8 +445,9 @@ fn own_glue_demo_runs_in_chrome_without_wasm_bindgen() {
     let after = page.eval("[__wasm.live_handles(), __wasm.js_live_handles()]");
     assert_eq!(before, after, "benchmark handles all released");
 
-    // Reactor linkage: constructors ran once, at boot, not once per
-    // JS → Rust call (thousands happened above).
+    // Constructors ran once, at boot, not once per JS → Rust call
+    // (thousands happened above) — through `main`'s wrapper in a command
+    // module, through the loader's `__wasm_call_ctors()` in a reactor.
     assert_eq!(page.eval("__wasm.ctor_runs()"), json!(1), "static constructors ran exactly once");
 }
 

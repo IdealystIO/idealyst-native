@@ -24,9 +24,10 @@ use super::{AppConfig, SceneExtensions};
 /// Boot the app in the browser.
 ///
 /// Called from the binary's `main`. For a `wasm32-unknown-unknown` bin
-/// target, wasm-bindgen's generated `init()` calls `__wbindgen_start`,
-/// which runs `main` — so no `#[wasm_bindgen(start)]` shim is needed
-/// (the old wrapper was a `cdylib` and did need one).
+/// target the generated `pkg/<lib>.js`'s `init()` runs `main` — the
+/// web-glue loader calls it directly (own mode), wasm-bindgen's through
+/// `__wbindgen_start` (hybrid mode) — so no `#[wasm_bindgen(start)]` shim
+/// is needed (the old wrapper was a `cdylib` and did need one).
 pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     app: impl Fn() -> Element + 'static,
     config: AppConfig,

@@ -105,12 +105,34 @@ impl BasePrep {
     }
 }
 
+/// Which packaging the base module goes on to (`own_glue::Mode`), which
+/// decides how much of [`prepare_base_module`] applies.
+///
+/// The rooting itself is the patch tier's own need in both: a patch
+/// reaches every base function it calls through a table slot. Everything
+/// else the prep does exists because of wasm-bindgen, and is skipped in
+/// own mode, where no wasm-bindgen machinery is linked and no wasm-bindgen
+/// GC runs afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flavor {
+    /// Packaged without wasm-bindgen. Only `./__wasm_split.js` imports (a
+    /// `--no-split` build's lazy loaders) get trampolines — web-glue
+    /// imports never need one, since a patch's glue imports are compiled by
+    /// the page from their own names (`hotpatch_prepare`'s `Glue`) — and
+    /// there are no cast intrinsics or descriptor functions to handle.
+    Own,
+    /// wasm-bindgen runs over the result: every JS-shim import gets a
+    /// trampoline, cast intrinsics get forwarders, descriptor functions stay
+    /// unrooted for wasm-bindgen to consume.
+    Hybrid,
+}
+
 /// Rewrite a freshly linked base module so a patch can resolve against
 /// it. Returns the new module's bytes and the census of what it did.
 ///
-/// Must run BEFORE wasm-bindgen: the whole point is to be holding the
-/// GC roots when wasm-bindgen's pass runs.
-pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
+/// In hybrid mode it must run BEFORE wasm-bindgen: the whole point there
+/// is to be holding the GC roots when wasm-bindgen's pass runs.
+pub fn prepare_base_module(wasm: &[u8], flavor: Flavor) -> Result<(Vec<u8>, BasePrep)> {
     let source = ModuleIndex::parse(wasm).context("parsing the linked base module")?;
     let mut report = BasePrep::default();
     let total = source.total_funcs();
@@ -152,10 +174,18 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
         }
         let index = func_import;
         func_import += 1;
-        if import.module == "env"
-            || import.module == "__wbindgen_externref_xform__"
-            || is_bindgen_internal(import.name)
-        {
+        let skip = match flavor {
+            // The only foreign imports a framework-only module has are web-glue's
+            // (compiled by the page for a patch, never called through the base)
+            // and the split loaders'.
+            Flavor::Own => import.module == "env" || import.module == wasm_carve::glue::IMPORT_MODULE,
+            Flavor::Hybrid => {
+                import.module == "env"
+                    || import.module == "__wbindgen_externref_xform__"
+                    || is_bindgen_internal(import.name)
+            }
+        };
+        if skip {
             continue;
         }
         forwarders.push(Forwarder { name: shim_trampoline_name(import.name), target: index });
@@ -177,7 +207,8 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
     // body's call at the import it generates (it replaces the callee,
     // not the call sites), and `BaseIndex` resolves the mangled name to
     // the forwarder's slot.
-    for f in source.func_imports..total {
+    let hybrid = flavor == Flavor::Hybrid;
+    for f in (source.func_imports..total).filter(|_| hybrid) {
         if let Some(name) = name_of(f).filter(|n| is_bindgen_cast(n)) {
             forwarders.push(Forwarder { name: cast_trampoline_name(name), target: f });
             report.cast_trampolines += 1;
@@ -216,7 +247,7 @@ pub fn prepare_base_module(wasm: &[u8]) -> Result<(Vec<u8>, BasePrep)> {
             report.already_indirect += 1;
             continue;
         }
-        if name_of(f).is_some_and(is_bindgen_internal) {
+        if hybrid && name_of(f).is_some_and(is_bindgen_internal) {
             report.bindgen_internal += 1;
             continue;
         }
@@ -424,7 +455,7 @@ mod tests {
     #[test]
     fn every_local_function_ends_up_in_the_table() {
         let (mut module, _) = module_with(5, 2);
-        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, census) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         // The census is what a failed patch's investigation starts from,
         // so its arithmetic has to hold: nothing dropped, nothing
         // double-counted.
@@ -450,7 +481,7 @@ mod tests {
     #[test]
     fn a_function_already_in_the_table_is_not_added_twice() {
         let (mut module, _) = module_with(4, 3);
-        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         let entries = table_entries(&out);
         assert_eq!(entries.len(), 4);
         let mut sorted = entries.clone();
@@ -465,7 +496,7 @@ mod tests {
     #[test]
     fn the_table_grows_to_fit_what_was_added() {
         let (mut module, _) = module_with(6, 1);
-        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         let module = Module::from_buffer(&out).unwrap();
         let table = module.tables.iter().next().unwrap();
         // One entry was in the segment at offset 1; five were added.
@@ -506,7 +537,7 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         let module = Module::from_buffer(&out).unwrap();
         assert!(
             !module
@@ -557,7 +588,7 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, census) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         assert_eq!(census.shim_trampolines, 1, "{census:?}");
         let entries = table_entries(&out);
         assert!(
@@ -598,7 +629,7 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, census) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         assert_eq!(census.cast_trampolines, 1, "{census:?}");
         let entries = table_entries(&out);
         assert!(entries.contains(&cast_trampoline_name(cast_name)), "{entries:?}");
@@ -640,7 +671,7 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let (out, census) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, census) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         let entries = table_entries(&out);
         assert!(
             entries.contains(&shim_trampoline_name("__wasm_split_00_lazy_body")),
@@ -650,6 +681,54 @@ mod tests {
             census.shim_trampolines, 1,
             "wasm-bindgen's externref transform is its own business: {entries:?}"
         );
+    }
+
+    /// Own mode (no wasm-bindgen): only the split loaders' imports get a
+    /// trampoline — web-glue imports are compiled by the page for a patch,
+    /// so a trampoline for each would only bloat the table — and nothing is
+    /// treated as wasm-bindgen machinery: a local whose name happens to
+    /// match a descriptor or cast pattern is rooted like any other, with no
+    /// forwarder.
+    #[test]
+    fn own_flavor_skips_every_wasm_bindgen_step() {
+        let mut module = Module::default();
+        let table = module
+            .tables
+            .add_local(false, 0, Some(64), walrus::RefType::FUNCREF);
+        let ty = module.types.add(&[ValType::I32], &[]);
+        module.add_import_func("./__wasm_split.js", "__wasm_split_00_lazy_body", ty);
+        module.add_import_func(wasm_carve::glue::IMPORT_MODULE, "g0", ty);
+        let cast = "_RINvNvNtCs8e_12wasm_bindgen4___rt8wbg_cast17breaks_if_inlinedReNtB6_7JsValueEB6_";
+        for name in ["__wbindgen_describe_foo", cast, "__F_hot_impl"] {
+            let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+            builder.name(name.to_string()).func_body();
+            module.funcs.add_local(builder.local_func(vec![]));
+        }
+        module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(vec![]),
+        );
+        let wasm = module.emit_wasm();
+
+        let (out, census) = prepare_base_module(&wasm, Flavor::Own).unwrap();
+        let entries = table_entries(&out);
+        assert_eq!(census.shim_trampolines, 1, "{entries:?}");
+        assert!(entries.contains(&shim_trampoline_name("__wasm_split_00_lazy_body")), "{entries:?}");
+        assert!(!entries.contains(&shim_trampoline_name("g0")), "{entries:?}");
+        assert_eq!(census.cast_trampolines, 0, "{entries:?}");
+        assert_eq!(census.bindgen_internal, 0, "{entries:?}");
+        for name in ["__wbindgen_describe_foo", cast, "__F_hot_impl"] {
+            assert!(entries.iter().any(|e| e == name), "{name} not rooted: {entries:?}");
+        }
+
+        // The same module in hybrid mode takes every wasm-bindgen step.
+        let (_, census) = prepare_base_module(&wasm, Flavor::Hybrid).unwrap();
+        assert_eq!(census.shim_trampolines, 2, "split loader + glue import");
+        assert_eq!(census.cast_trampolines, 1);
+        assert_eq!(census.bindgen_internal, 1, "the descriptor stays unrooted for wasm-bindgen");
     }
 
     /// Descriptor functions are consumed by wasm-bindgen and expected to
@@ -673,7 +752,7 @@ mod tests {
             ElementItems::Functions(vec![]),
         );
 
-        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         assert!(
             table_entries(&out).is_empty(),
             "descriptor fn was rooted: {:?}",
@@ -772,7 +851,7 @@ mod tests {
         for name in ["linking", "reloc.CODE", "reloc..debug_info", "producers_kept"] {
             module.customs.add(walrus::RawCustomSection { name: name.to_string(), data: vec![0] });
         }
-        let (out, _) = prepare_base_module(&module.emit_wasm()).unwrap();
+        let (out, _) = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap();
         let customs: Vec<String> = Module::from_buffer(&out)
             .unwrap()
             .customs
@@ -793,7 +872,7 @@ mod tests {
         builder.name("__A_hot_impl".to_string()).func_body();
         module.funcs.add_local(builder.local_func(vec![]));
 
-        let err = prepare_base_module(&module.emit_wasm()).unwrap_err();
+        let err = prepare_base_module(&module.emit_wasm(), Flavor::Hybrid).unwrap_err();
         assert!(
             format!("{err:#}").contains("element segment"),
             "unhelpful error: {err:#}"

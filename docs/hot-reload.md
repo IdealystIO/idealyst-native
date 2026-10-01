@@ -271,7 +271,39 @@ Everything from step 2 lives in
 A wasm patch is a PIC side module: everything it does not define, it
 imports, and those imports resolve against the module already running in
 the page. Making a function resolvable there is not the same problem as
-on a native target, for two measured reasons.
+on a native target.
+
+**Own mode and hybrid mode.** Most of what follows exists because of
+wasm-bindgen, and a framework-only app no longer runs it. Every web build
+reads the linked module once (`build_web::own_glue::extract_for_build`):
+with no wasm-bindgen metadata in it — no `__wbindgen*` import, no
+`__wasm_bindgen_unstable` section — the build is in **own mode** and the
+glue pass writes `pkg/` itself; otherwise (wgpu, an app's own web-sys) it
+is **hybrid** and wasm-bindgen runs over the glue-stripped module as
+before. The hot-patch tier in each:
+
+| step | own mode | hybrid |
+|---|---|---|
+| root every local function in the table (`prepare_base_module`) | yes — a patch reaches every base function through a slot | yes, and BEFORE wasm-bindgen, whose GC keeps only what is rooted |
+| forwarding bodies for imports (`__idealyst_shim_*`) | `./__wasm_split.js` imports only | every JS-shim import |
+| cast forwarders (`wbg_cast`) / descriptor exclusions (`is_bindgen_internal`) | skipped (`hotpatch_base::Flavor::Own`) | yes |
+| wasm-bindgen CLI (`--keep-lld-exports --no-demangle`) | not run | yes |
+| stranded `__wbindgen_placeholder__` imports (`wasm_carve::strand`) | not run | yes |
+| `command_export` neutralize pass | not run | yes |
+| command-export wrappers | every export but `main` unwrapped (reactor semantics) | web-glue's `__glue_*` only |
+
+The served base in own mode is the prepared module exactly as written
+to `pkg/`, so its function indices are the linked module's plus the
+appended forwarders. A patch's own glue imports are compiled by the page
+from their names in both modes (`globalThis.__idealystGlue`, which the
+own-mode loader publishes too). An edit that makes an own-mode app start
+using wasm-bindgen cannot be patched (its `__wbindgen_placeholder__`
+imports have nothing to resolve to); it falls back to a rebuild, which
+then builds hybrid. `wasm_hot_patch_e2e` and `dev_events_e2e` assert that
+their sessions never ran wasm-bindgen.
+
+The rest of this section describes the hybrid pipeline; own mode is the
+same minus the wasm-bindgen steps above.
 
 **wasm-bindgen garbage-collects, and it does not care what the linker
 kept.** On the probe crate, rustc linked 2993 functions under
@@ -347,7 +379,8 @@ back to a rebuild.
 ### What the base module has to survive
 
 Rooting every function in the element table is what makes the tier work,
-and it drags three wasm-bindgen behaviours along with it. Each cost a
+and in a hybrid build it drags three wasm-bindgen behaviours along with it
+(own mode has none of them). Each cost a
 non-booting page before it was understood, so each is worth naming.
 
 **wasm-bindgen's descriptor imports.** Keeping every function alive keeps
@@ -399,8 +432,8 @@ ordinary body edit was refused. `build_web::hotpatch_aliases` reads
 `alias → canonical` out of the `linking` section's symbol table (this is
 what `--emit-relocs` on the base is for) and writes it next to the base as
 `<app>.aliases.tsv`. It has to be read from the LINKED module, before base
-prep: base prep drops the `linking` section, and wasm-bindgen renumbers
-functions anyway. The map is name to name, so renumbering cannot make it
+prep: base prep drops the `linking` section, and in a hybrid build
+wasm-bindgen renumbers functions anyway. The map is name to name, so renumbering cannot make it
 stale. `BaseIndex` and the jump table both consult it.
 
 The base's statics are read the same way, into `<app>.datasyms.tsv`

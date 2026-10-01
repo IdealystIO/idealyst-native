@@ -7,7 +7,7 @@ crates:
 | --- | --- |
 | `wasm-split` | The runtime side: the `LazyLoader` / `LazySplitLoader` that a split call site awaits. Re-exported to authors as `runtime_core::__wasm_split`. Vendored from DioxusLabs/dioxus (alpha-0.8.0). |
 | `wasm-split-macro` | The `#[wasm_split(module)]` attribute. `#[component(lazy)]` emits it around each lazy body on wasm32; native builds never see it. Vendored from DioxusLabs/dioxus. |
-| `wasm-carve` | The post-link pass `build-web` runs on the wasm-bindgen output: partitions the module at the split exports and writes main, one module per split point, the shared chunk, and the loader JS (`__wasm_split.js`). Ours; it replaced Dioxus's walrus-based `wasm-split-cli`. |
+| `wasm-carve` | The post-link pass `build-web` runs on the packaged module (the web-glue pass's output in own mode, wasm-bindgen's in hybrid mode): partitions the module at the split exports and writes main, one module per split point, the shared chunk, and the loader JS (`__wasm_split.js`). Ours; it replaced Dioxus's walrus-based `wasm-split-cli`. |
 
 ## How the pieces link up
 
@@ -20,11 +20,27 @@ site and different between call sites that share `<module>` and `<fn>`.
 ## wasm-carve
 
 Inputs: the rustc/LLD module (linked with `--emit-relocs`) and the
-wasm-bindgen output. The partition — what main reaches, what each split
-point reaches, what more than one split reaches (the shared chunk) — comes
-from the rustc module's relocations (the only record of function pointers
-stored in DATA: vtables, closures) plus the bindgened module's direct
+packaged module — in own mode (every framework-only app) the web-glue
+pass's output, in hybrid mode wasm-bindgen's (still called "bindgened" in
+the code). The partition — what main reaches, what each split point
+reaches, what more than one split reaches (the shared chunk) — comes from
+the rustc module's relocations (the only record of function pointers
+stored in DATA: vtables, closures) plus the packaged module's direct
 `call` / `ref.func` operands, paired by function name.
+
+**Imports, glue included, stay in main.** A split module has no function
+imports: index `i` below the source's import count becomes a defined
+trampoline to main's import, reached through the shared table. So a
+chunk whose code calls a web-glue binding nothing in main calls still
+works in own mode: the binding is an import of main's module (named
+`g<N>`, its JS in main's `pkg/<lib>.js`), and the chunk reaches it the way
+it reaches any main function. Chunks never import `./__idealyst_glue.js`,
+so the split loader supplies no glue namespace and needs none.
+`tests/lazy-chunk-handoff` pins it in a browser (a chunk-only binding
+renders `glue in chunk: 42`; `cargo run -p prune-regression -- --browser`).
+The loader reaches main's instance through `initSync(undefined,
+undefined)`, which both modes' `pkg/<lib>.js` answers with the raw exports
+once instantiated.
 
 No output is built through an instruction IR. Every output keeps the
 source's type, table, memory and global numbering, so function bodies are
@@ -60,19 +76,28 @@ outside the build, for measuring.
 
 Two more streaming passes live here because they are the same kind of
 byte-range rewrite, for [`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md)
-(driven by `build_web::own_glue`; since phase 2a every web build runs the
-hybrid form of both):
+(driven by `build_web::own_glue`; every web build runs both):
 
 - `glue.rs` — pulls `web-glue`'s JS out of a linked module (snippets
   carried in `./__idealyst_glue.js` import names, the runtime and crate
   modules in the `__idealyst_glue` custom section), renames those imports
-  to `g0…`, strips the section. Re-encodes the import section only.
+  to `g0…`, strips the section. Re-encodes the import section only. It
+  also reports whether the module uses wasm-bindgen (`Glue::wasm_bindgen`:
+  a `__wbindgen*` import or the `__wasm_bindgen_unstable` section), which
+  is how the build picks own or hybrid mode.
 - `command_exports.rs` — repoints exports past LLD's command-export
   wrapper (`call __wasm_call_ctors; forward args; call inner`), so JS →
   Rust calls stop re-running static constructors; `main` keeps its wrapper
-  (the one-time run). Only the export section changes. Every web build
-  applies it to web-glue's own `__glue_*` exports only
-  (`unwrap_command_exports_where`); the phase-1 PoC path unwraps them all.
+  (the one-time run). Only the export section changes. Own mode unwraps
+  every export but `main` (`unwrap_command_exports`); hybrid mode only
+  web-glue's own `__glue_*` exports (`unwrap_command_exports_where`).
+- `glue_js.rs` — the JS: own mode's `pkg/<lib>.js` (`loader_js`), hybrid
+  mode's `pkg/__idealyst_glue.js` (`hybrid_glue_js`).
+
+`neutralize.rs` (wasm-bindgen 0.2.122's `*.command_export` wrappers) and
+`strand.rs` (the hot-patch base's stranded `__wbindgen_placeholder__`
+imports) exist only for wasm-bindgen's output; own-mode builds never run
+them.
 
 `wasm-carve/examples/glue_pass.rs` runs both over one module and prints
 their cost.
