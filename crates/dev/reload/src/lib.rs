@@ -106,6 +106,18 @@ pub struct ReloadSignal {
     /// listener that should reload anyway.
     patches: Mutex<Vec<PushedPatch>>,
     patch_seq: AtomicU64,
+    /// The overlay and hot patches the bundle on disk does NOT contain:
+    /// every one pushed since the current base was staged, with each hot
+    /// patch replacing the one before it (see [`Self::connect_snapshot`]).
+    /// Guarded by the `patches` lock's ordering: written only under it.
+    ///
+    /// Separate from `patches` because that buffer is bounded and shared
+    /// with the build-state events, which a single replay's progress
+    /// fills by the hundred — the one patch a reloading page needs would
+    /// be drained out of it within a few saves.
+    since_base: Mutex<Vec<PushedPatch>>,
+    /// Names this dev session to its pages (see [`Self::session`]).
+    session: SessionId,
     /// Where a page's acks are reported ([`Self::page_ack`]). Unset, an
     /// ack is parsed and dropped: the page's behaviour does not depend on
     /// anyone listening.
@@ -196,6 +208,17 @@ impl PatchKind {
     }
 }
 
+/// What [`ReloadSignal::connect_snapshot`] hands a page that connects.
+#[derive(Debug, Clone, Default)]
+pub struct ConnectSnapshot {
+    /// The session's build state, as `dev-state` event payloads.
+    pub state: Vec<String>,
+    /// The patches the bundle on disk is missing, oldest first.
+    pub replay: Vec<PushedPatch>,
+    /// The patch sequence the snapshot brings a listener up to.
+    pub seq: u64,
+}
+
 /// One pushed patch, with the sequence number a listener catches up by.
 #[derive(Debug, Clone)]
 pub struct PushedPatch {
@@ -206,7 +229,39 @@ pub struct PushedPatch {
 
 mod escalate;
 
+/// A name for one dev session, unique across sessions of a project: the
+/// generation counter restarts at 1 every session, so it cannot tell a
+/// page that its stream now belongs to a session that built a different
+/// bundle.
+#[derive(Debug)]
+struct SessionId(String);
+
+impl Default for SessionId {
+    fn default() -> Self {
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        Self(format!(
+            "{:x}-{:x}-{:x}",
+            nanos,
+            std::process::id(),
+            COUNT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+}
+
 impl ReloadSignal {
+    /// This session's name, as the reload stream stamps it on what it
+    /// sends (`id: <session>:<seq>`). A page whose stream reconnects to a
+    /// DIFFERENT session — the dev session was restarted — reloads: the
+    /// bundle it runs may not be the one the new session built, and the
+    /// new session's patches pair with that one's table. Contains no `:`.
+    pub fn session(&self) -> &str {
+        &self.session.0
+    }
+
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
@@ -400,6 +455,47 @@ impl ReloadSignal {
         (events, self.patch_seq.load(Ordering::Acquire))
     }
 
+    /// What a page connecting now needs, taken under one lock: the
+    /// build-state events, the patches its bundle is missing, and the
+    /// sequence the live stream resumes from.
+    ///
+    /// The bundle a page loads is the BASE: the last one cargo built.
+    /// Overlay and hot patches never rebuild it, so a page that loads
+    /// after one — a browser refresh, a second tab, the page of the next
+    /// dev session — would run code the source no longer describes while
+    /// the session reports the edit as applied. `replay` is what makes it
+    /// current: every overlay patch since the base was staged, in order,
+    /// and the NEWEST hot patch only. A hot patch re-emits every crate
+    /// patched since the last rebuild (`WasmPatchBuilder::build_crates`),
+    /// so the newest one carries all the code of the ones before it —
+    /// and the builder deletes their modules from disk, so they could not
+    /// be fetched anyway.
+    pub fn connect_snapshot(&self) -> ConnectSnapshot {
+        let _patches = self.patches.lock().unwrap();
+        let state = self
+            .dev_state
+            .lock()
+            .unwrap()
+            .snapshot()
+            .iter()
+            .filter_map(|e| serde_json::to_string(e).ok())
+            .collect();
+        ConnectSnapshot {
+            state,
+            replay: self.since_base.lock().unwrap().clone(),
+            seq: self.patch_seq.load(Ordering::Acquire),
+        }
+    }
+
+    /// A new base is on disk: the patches pushed so far are in it (or were
+    /// built against the one it replaced), and a page loading it must not
+    /// be handed them again. Called by the watcher whenever a build
+    /// changed the served module, before the generation moves.
+    pub fn base_replaced(&self) {
+        let _patches = self.patches.lock().unwrap();
+        self.since_base.lock().unwrap().clear();
+    }
+
     /// Serve `events` — the session's whole event stream — from the
     /// servers holding this signal (`dev_http`'s `/__idealyst/events`).
     pub fn serve_events(&self, events: Arc<dev_events::broadcast::Broadcast>) {
@@ -427,7 +523,19 @@ impl ReloadSignal {
             // order of the buffer — and a snapshot taken under the same
             // lock sees a sequence that matches its state.
             let seq = self.patch_seq.load(Ordering::Acquire) + 1;
-            patches.push(PushedPatch { seq, kind, json });
+            let pushed = PushedPatch { seq, kind, json };
+            match kind {
+                PatchKind::DevState => {}
+                PatchKind::Overlay => self.since_base.lock().unwrap().push(pushed.clone()),
+                // The newest hot patch carries every earlier one's code
+                // (see `connect_snapshot`), so it takes their place.
+                PatchKind::Hot => {
+                    let mut since = self.since_base.lock().unwrap();
+                    since.retain(|p| p.kind != PatchKind::Hot);
+                    since.push(pushed.clone());
+                }
+            }
+            patches.push(pushed);
             let len = patches.len();
             if len > MAX_BUFFERED_PATCHES {
                 patches.drain(..len - MAX_BUFFERED_PATCHES);
@@ -1334,6 +1442,9 @@ fn watch_loop(
                     // onto its own rebuild.
                     if let Ok(a) = built {
                         reload_owed |= a.wasm_changed || premint_any;
+                        if a.wasm_changed {
+                            signal.base_replaced();
+                        }
                         base.rebuilt(a);
                     }
                     return None;
@@ -1347,6 +1458,11 @@ fn watch_loop(
                 };
                 Some(match built.map(|a| {
                     let changed = a.wasm_changed;
+                    // Before the generation moves: a page reloading onto
+                    // this base must not be handed the patches it holds.
+                    if changed {
+                        signal.base_replaced();
+                    }
                     base.rebuilt(a);
                     changed
                 }) {
@@ -3707,6 +3823,73 @@ mod tests {
             vec![PatchKind::DevState, PatchKind::Overlay, PatchKind::DevState, PatchKind::Hot]
         );
         assert_eq!(PatchKind::DevState.sse_event(), "dev-state");
+    }
+
+    /// Regression: a page that loaded after a hot patch — a browser
+    /// refresh, a second tab — ran the BASE bundle, which no patch
+    /// rebuilds, and nothing re-sent the patch: it showed the pre-edit
+    /// code while the session reported the edit as applied (measured on
+    /// CrewForge: 26 elements patched in the live tab, 0 after a refresh).
+    /// The connect snapshot carries what the base is missing.
+    #[test]
+    fn regression_a_page_loading_after_a_hot_patch_is_handed_it() {
+        let signal = ReloadSignal::new();
+        signal.push_hot_patch("{\"hot\":1}".into());
+        let snap = signal.connect_snapshot();
+        let replay: Vec<_> = snap.replay.iter().map(|p| (p.kind, p.json.as_str())).collect();
+        assert_eq!(replay, vec![(PatchKind::Hot, "{\"hot\":1}")]);
+        assert_eq!(snap.seq, 1, "the live stream resumes after the replay");
+    }
+
+    /// Overlays replay in order; of the hot patches only the newest —
+    /// it re-emits every crate patched since the base, so it carries the
+    /// older ones' code, and their modules are gone from disk.
+    #[test]
+    fn the_replay_is_every_overlay_and_the_newest_hot_patch_in_order() {
+        let signal = ReloadSignal::new();
+        signal.push_patch("o1".into());
+        signal.push_hot_patch("h1".into());
+        signal.push_patch("o2".into());
+        signal.push_hot_patch("h2".into());
+        signal.push_patch("o3".into());
+        let replay: Vec<_> =
+            signal.connect_snapshot().replay.into_iter().map(|p| p.json).collect();
+        assert_eq!(replay, vec!["o1", "o2", "h2", "o3"]);
+    }
+
+    /// A new base holds every patch before it: a page loading it must not
+    /// be handed them again (a hot patch built against the OLD base pairs
+    /// with the wrong table slots).
+    #[test]
+    fn a_replaced_base_has_nothing_to_replay() {
+        let signal = ReloadSignal::new();
+        signal.push_patch("o1".into());
+        signal.push_hot_patch("h1".into());
+        signal.base_replaced();
+        assert!(signal.connect_snapshot().replay.is_empty());
+        signal.push_hot_patch("h2".into());
+        let replay: Vec<_> =
+            signal.connect_snapshot().replay.into_iter().map(|p| p.json).collect();
+        assert_eq!(replay, vec!["h2"]);
+    }
+
+    /// The bounded buffer is shared with build-state events, hundreds per
+    /// replay's progress. The patch a reloading page needs must survive
+    /// them being drained.
+    #[test]
+    fn the_replay_survives_the_buffer_draining() {
+        let signal = ReloadSignal::new();
+        signal.push_hot_patch("h1".into());
+        for i in 0..(MAX_BUFFERED_PATCHES as u64 + 10) {
+            signal.push_dev_state(&dev_state(
+                i,
+                dev_events::DevEvent::Log { source: "t".into(), line: i.to_string() },
+            ));
+        }
+        assert!(signal.patches_since(0).iter().all(|p| p.kind == PatchKind::DevState));
+        let replay: Vec<_> =
+            signal.connect_snapshot().replay.into_iter().map(|p| p.json).collect();
+        assert_eq!(replay, vec!["h1"]);
     }
 
     /// A page connecting mid-way gets the state as a snapshot, with the

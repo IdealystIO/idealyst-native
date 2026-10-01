@@ -180,3 +180,54 @@ fn nothing_else_is_served() {
          surfaces as a 404 rather than an opaque CORS error:\n{head}"
     );
 }
+
+/// Read from `stream` until `needle` shows up or `deadline` passes.
+fn read_until(stream: &mut TcpStream, needle: &str, deadline: Instant) -> String {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while Instant::now() < deadline {
+        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if String::from_utf8_lossy(&buf).contains(needle) {
+                    break;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+/// Regression: a page that connects AFTER a hot patch — a browser
+/// refresh, a second tab — has just loaded the base bundle, which no
+/// patch rebuilds. The stream used to send it only the generation, so it
+/// ran the pre-edit code while the session reported the edit applied.
+/// It now gets the patch right after the baseline; a page that connects
+/// after the base is replaced gets nothing.
+#[test]
+fn regression_a_page_connecting_after_a_hot_patch_receives_it() {
+    let port = pick_port();
+    let signal = start(port);
+    signal.push_hot_patch(r#"{"url":"/pkg/hotpatch/patch-1.wasm","table":{}}"#.into());
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .write_all(format!("GET {RELOAD_SSE_URL} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
+        .unwrap();
+    let got = read_until(&mut stream, "patch-1.wasm", Instant::now() + Duration::from_secs(3));
+    let baseline = got.find("data: 0").expect(&got);
+    let patch = got.find("event: hot-patch").unwrap_or_else(|| panic!("no hot patch replayed: {got}"));
+    assert!(baseline < patch, "the baseline generation must come first: {got}");
+
+    signal.base_replaced();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .write_all(format!("GET {RELOAD_SSE_URL} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
+        .unwrap();
+    let got = read_until(&mut stream, "never", Instant::now() + Duration::from_millis(800));
+    assert!(got.contains("data: 0"), "{got}");
+    assert!(!got.contains("hot-patch"), "a new base must not be handed old patches: {got}");
+}

@@ -702,6 +702,24 @@ so the ordinary session has it.
 5. The page's livereload script calls `window.__idealyst_hot_patch`, which
    loads the patch — supplying its imports from the plan — commits its
    jump table, and rebuilds the tree against it.
+
+   A page that loads AFTER a patch — a refresh, a second tab, a
+   reconnect — loads the base bundle, which no patch rebuilds. The stream
+   hands it what the base lacks right after the baseline generation
+   (`ReloadSignal::connect_snapshot`): every overlay patch since the base
+   was staged, in order, and the newest hot patch only (it re-emits every
+   crate patched since the rebuild, so it carries the older ones' code,
+   whose modules the builder has deleted). Before, the page silently ran
+   the pre-edit code while the session reported the edit applied —
+   measured on CrewForge: 26 elements patched in the live tab, 0 after a
+   refresh. The script queues patches until the bundle has booted and
+   published its appliers (a replay reaches the page before its wasm is
+   up; applying at once found no applier and reloaded into the same
+   replay, for ever), skips a patch it already took (each carries
+   `id: <session>:<seq>`), and reloads when the stream it reconnected to
+   belongs to another session — the generation restarts at 1 every
+   session, so only the session id can tell a page left open across a
+   restart that the bundle it runs may not be the new session's.
 6. Once the rebuilt tree is mounted, the page reports back — a `POST` to
    `/__idealyst/ack` with how many functions were redirected and how many
    signal values were carried — and the session records it as a

@@ -199,6 +199,83 @@ pub struct HeadInjectionContext {
 const RELOAD_SCRIPT: &str = r#"<script>
 (function () {
   var baseline = null;
+  // From the stream's SSE ids, `<session>:<seq>`: the dev session this
+  // page is listening to, and the newest patch it has taken.
+  var session = null;
+  var taken = 0;
+  function idOf(e) {
+    var id = (e && e.lastEventId) || "";
+    var at = id.lastIndexOf(":");
+    return at < 0 ? null : { session: id.slice(0, at), seq: Number(id.slice(at + 1)) };
+  }
+  // False when `e` came from a DIFFERENT dev session than the one this
+  // page loaded under — the session was restarted and the EventSource
+  // reconnected to the new one. The bundle running here may not be the
+  // one that session built, and its patches pair with that one's table:
+  // reload.
+  var leaving = false;
+  function sameSession(e) {
+    if (leaving) return false;
+    var id = idOf(e);
+    if (!id) return true;
+    if (session === null) session = id.session;
+    if (id.session === session) return true;
+    leaving = true;
+    ack({ kind: "reloading", gen: Number(e.data) || 0 });
+    location.reload();
+    return false;
+  }
+  // False for a patch this page already took: a reconnect is replayed
+  // what the base bundle lacks, and this page may hold it already.
+  function firstTime(e) {
+    var id = idOf(e);
+    if (!id || !(id.seq > 0)) return true;
+    if (id.seq <= taken) return false;
+    taken = id.seq;
+    return true;
+  }
+  // Patches wait for the bundle that applies them, in the order they were
+  // decided. A page that connects after a patch is replayed it at once —
+  // before its module has booted and published the appliers. Applying
+  // then found nothing and reloaded, and the reloaded page was replayed
+  // the patch again: a reload loop. Once either applier exists the module
+  // has booted, and a patch with no applier takes its fallback at once; a
+  // page whose module never boots drops the queue after BOOT_WAIT_MS
+  // rather than reload into the same failure.
+  var BOOT_WAIT_MS = 60000;
+  var queue = [];
+  var timer = null;
+  var waitingSince = null;
+  function booted() {
+    return typeof window.__idealyst_hot_patch === "function" ||
+      typeof window.__idealyst_overlay_patch === "function";
+  }
+  function enqueue(applier, run) {
+    queue.push({ applier: applier, run: run });
+    pump();
+  }
+  function pump() {
+    while (queue.length) {
+      var head = queue[0];
+      var fn = window[head.applier];
+      if (typeof fn !== "function" && !booted()) {
+        if (waitingSince === null) waitingSince = Date.now();
+        if (Date.now() - waitingSince < BOOT_WAIT_MS) {
+          if (timer === null) timer = setTimeout(function () { timer = null; pump(); }, 50);
+          return;
+        }
+        console.error("[idealyst] the page's bundle never booted; dropping " + queue.length + " patch(es)");
+        queue.forEach(function (p) {
+          ack({ kind: "failed", what: p.applier === "__idealyst_hot_patch" ? "hot_patch" : "overlay", error: "the page's bundle never booted" });
+        });
+        queue = [];
+        return;
+      }
+      waitingSince = null;
+      queue.shift();
+      head.run(typeof fn === "function" ? fn : null);
+    }
+  }
   // Where the stream may be, in order: `[stream, ack]` pairs. One pair on
   // the static path; on the full-stack path the app server's same-origin
   // proxy first, then the dev session's own port (see `reload_script_tag_with_fallback`).
@@ -217,6 +294,7 @@ __STATUS_OVERLAY__
   var status = idealystStatusOverlay(document);
   function wire(es) {
   es.onmessage = function (e) {
+    if (!sameSession(e)) return;
     if (baseline === null) {
       baseline = e.data;
       ack({ kind: "connected", gen: Number(e.data) });
@@ -226,7 +304,10 @@ __STATUS_OVERLAY__
     }
   };
   es.addEventListener("patch", function (e) {
-    var apply = window.__idealyst_overlay_patch;
+    if (!sameSession(e) || !firstTime(e)) return;
+    enqueue("__idealyst_overlay_patch", function (apply) { overlay(apply, e); });
+  });
+  function overlay(apply, e) {
     if (typeof apply !== "function") {
       console.info("[idealyst] overlay patch ignored: this bundle has no overlay");
       ack({ kind: "failed", what: "overlay", error: "this bundle has no overlay" });
@@ -242,9 +323,12 @@ __STATUS_OVERLAY__
       ack({ kind: "failed", what: "overlay", error: String(err) });
       location.reload();
     }
-  });
+  }
   es.addEventListener("hot-patch", function (e) {
-    var apply = window.__idealyst_hot_patch;
+    if (!sameSession(e) || !firstTime(e)) return;
+    enqueue("__idealyst_hot_patch", function (apply) { hot(apply, e); });
+  });
+  function hot(apply, e) {
     if (typeof apply !== "function") {
       console.info("[idealyst] hot patch ignored: this bundle has no patch applier");
       ack({ kind: "failed", what: "hot_patch", error: "this bundle has no patch applier" });
@@ -267,7 +351,7 @@ __STATUS_OVERLAY__
       ack({ kind: "failed", what: "hot_patch", error: String(err) });
       location.reload();
     }
-  });
+  }
   es.addEventListener("dev-state", function (e) {
     try {
       status.apply(JSON.parse(e.data));
@@ -760,23 +844,37 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
     // baseline event immediately on connect. Without this the page
     // would sit on an empty stream until the next rebuild.
     let mut last_seen = signal.as_ref().map(|s| s.current()).unwrap_or(0);
-    // Patches already decided are NOT replayed to a page connecting
-    // now: it just loaded the bundle, which was built from the current
-    // source. Replaying would re-apply edits that are already in it.
+    // A page connecting now just loaded the BASE bundle, which no overlay
+    // or hot patch rebuilds: the patches decided since it was staged are
+    // replayed to it (`ReloadSignal::connect_snapshot` says which), or a
+    // refresh after a hot patch would run the pre-edit code while the
+    // session reports the edit as applied.
     //
-    // The build STATE is: a page that loads mid-build, or after a build
-    // failed, must show that without having seen it happen. Snapshot and
-    // sequence come from one lock, so the live events that follow start
-    // exactly where the snapshot ends.
-    let (state, mut last_patch) = match signal.as_ref() {
-        Some(s) => s.dev_state_snapshot(),
-        None => (Vec::new(), 0),
-    };
-    if write_event(&mut writer, last_seen).is_err() {
+    // The build STATE is sent too: a page that loads mid-build, or after
+    // a build failed, must show that without having seen it happen.
+    // Snapshot, replay and sequence come from one lock, so the live
+    // events that follow start exactly where the snapshot ends.
+    //
+    // Every patch carries `id: <session>:<seq>`, and so does the baseline
+    // (`:0`): the page skips a patch it already took (a reconnect is
+    // replayed what the base lacks, which it may hold already) and
+    // reloads when the stream it reconnected to is another session's.
+    let snapshot = signal.as_ref().map(|s| s.connect_snapshot()).unwrap_or_default();
+    let session = signal.as_ref().map(|s| s.session().to_string());
+    let id = |seq: u64| session.as_ref().map(|s| format!("{s}:{seq}"));
+    let (state, mut last_patch) = (snapshot.state, snapshot.seq);
+    if write_event(&mut writer, last_seen, id(0).as_deref()).is_err() {
         return;
     }
+    for patch in &snapshot.replay {
+        if write_patch(&mut writer, patch.kind.sse_event(), id(patch.seq).as_deref(), &patch.json)
+            .is_err()
+        {
+            return;
+        }
+    }
     for json in &state {
-        if write_patch(&mut writer, PatchKind::DevState.sse_event(), json).is_err() {
+        if write_patch(&mut writer, PatchKind::DevState.sse_event(), None, json).is_err() {
             return;
         }
     }
@@ -787,7 +885,13 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
                 let (new, patch_seq) = sig.wait_past_either(last_seen, last_patch, SSE_KEEPALIVE);
                 if patch_seq > last_patch {
                     for patch in sig.patches_since(last_patch) {
-                        if write_patch(&mut writer, patch.kind.sse_event(), &patch.json).is_err()
+                        // Build state is not a patch: no id, nothing to skip.
+                        let id = match patch.kind {
+                            PatchKind::DevState => None,
+                            _ => id(patch.seq),
+                        };
+                        if write_patch(&mut writer, patch.kind.sse_event(), id.as_deref(), &patch.json)
+                            .is_err()
                         {
                             return;
                         }
@@ -797,7 +901,7 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
                 }
                 if new > last_seen {
                     last_seen = new;
-                    if write_event(&mut writer, new).is_err() {
+                    if write_event(&mut writer, new, None).is_err() {
                         return;
                     }
                 } else if patch_seq == last_patch && new == last_seen && write_ping(&mut writer).is_err() {
@@ -825,18 +929,25 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
 fn write_patch(
     w: &mut Box<dyn Write + Send + 'static>,
     event: &str,
+    id: Option<&str>,
     json: &str,
 ) -> std::io::Result<()> {
     debug_assert!(
         !json.contains('\n'),
         "a patch must be one SSE data line; serialize it compactly"
     );
-    w.write_all(format!("event: {event}\ndata: {json}\n\n").as_bytes())?;
+    let id = id.map(|i| format!("id: {i}\n")).unwrap_or_default();
+    w.write_all(format!("event: {event}\n{id}data: {json}\n\n").as_bytes())?;
     w.flush()
 }
 
-fn write_event(w: &mut Box<dyn Write + Send + 'static>, gen: u64) -> std::io::Result<()> {
-    let line = format!("data: {gen}\n\n");
+fn write_event(
+    w: &mut Box<dyn Write + Send + 'static>,
+    gen: u64,
+    id: Option<&str>,
+) -> std::io::Result<()> {
+    let id = id.map(|i| format!("id: {i}\n")).unwrap_or_default();
+    let line = format!("{id}data: {gen}\n\n");
     w.write_all(line.as_bytes())?;
     w.flush()
 }
