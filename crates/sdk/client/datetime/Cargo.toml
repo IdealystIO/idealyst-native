@@ -1,6 +1,6 @@
 [package]
 name = "datetime"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Current wall-clock time and the local UTC offset / IANA zone on every target, with optional chrono conversions. No wasm-bindgen."

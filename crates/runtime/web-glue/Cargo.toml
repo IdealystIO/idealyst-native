@@ -14,7 +14,7 @@
 
 [package]
 name = "web-glue"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "Framework-owned wasm <-> JS bindings: handles, strings, callbacks, futures, exceptions, with the JS shipped inside the wasm."

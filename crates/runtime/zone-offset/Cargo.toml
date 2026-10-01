@@ -27,7 +27,7 @@
 
 [package]
 name = "zone-offset"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "The local UTC offset at an instant, read from the OS zone database (libc localtime_r / Win32). Shared by the runtime's native wall clock and the datetime SDK."
