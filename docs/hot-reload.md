@@ -987,6 +987,18 @@ never a live archive: an overlay patch moves an archive's digests to the
 new sources but keeps the old build's site keys, which is not what a
 scan of those sources says.
 
+**A session start reuses the last session's scans.** Every scan is also
+written to disk, under the crate's overlay dir as `<build key>.json`, and
+a crate the memo has no set for is looked up there before it is scanned
+(`dev_overlay::archive::read_set`). A set is reused only when its format
+and split versions, its package, its key and its `scanner` — the running
+`idealyst` executable, as `path:len:mtime` — all match, so a rebuilt CLI
+rescans. Before, every session start rescanned all 32 of CrewForge's
+crates before the hot tier could take a save: the replay cache was
+seeded 22–26 s after launch with the page up at 4–17 s, so a save made
+right after a restart waited on the scan. Now it is seeded 5.8–6.8 s
+after launch (the scan itself ~1 s, from ~15 s).
+
 The page's reload does not wait for that scan. Only the next save's
 decision needs it, and the loop takes no save until the scan is
 installed. A scan still running when the reload goes out is reported as

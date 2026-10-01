@@ -695,6 +695,11 @@ impl Workspace {
     /// For the rescan after a rebuild, which covers EVERY crate of the
     /// workspace although a save typically moved one: 13–15 s on
     /// CrewForge's 32 crates, which held its page's reload that long.
+    ///
+    /// A crate `memo` has no set for is looked up on disk next
+    /// ([`crate::archive::read_set`]): the scan an earlier SESSION wrote
+    /// for the same sources, which is what makes a restart's first scan
+    /// cheap.
     pub fn scan_read_reusing(
         project_root: &Path,
         tip: &str,
@@ -707,7 +712,10 @@ impl Workspace {
             let dir = crate::archive::crate_overlay_dir(project_root, tip, &package);
             let set = match sources {
                 None => None,
-                Some(sources) => match memo.reuse(&dir, &sources) {
+                Some(sources) => match memo
+                    .reuse(&dir, &sources)
+                    .or_else(|| crate::archive::read_set(&dir, &sources).inspect(|set| memo.record(set)))
+                {
                     Some(set) => Some(set),
                     None => match crate::archive::write_scanned_cancellable(&dir, &sources, cancel) {
                         Ok(Some(set)) => {

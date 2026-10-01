@@ -221,6 +221,50 @@ pub struct DescriptorSet {
     pub files: BTreeMap<String, FileDigest>,
     /// Every site found, in file then document order.
     pub sites: Vec<ArchivedSite>,
+    /// The program that scanned it ([`scanner_identity`]). A set read back
+    /// from disk is reused in place of a scan only when this matches the
+    /// running program: a scanner change that bumps neither version above
+    /// (a parser fix between releases) must not hand the dev loop sites
+    /// numbered by the old code. `None` on documents from before the
+    /// field, which are never reused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scanner: Option<String>,
+}
+
+/// The running program, as `len:mtime` of its executable: what produced
+/// a scan, for [`read_set`] to reuse only its own. `None` when the
+/// executable cannot be stat'd; nothing is reused then.
+pub fn scanner_identity() -> Option<String> {
+    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        let md = std::fs::metadata(&exe).ok()?;
+        let mtime = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(format!("{}:{}:{}", exe.display(), md.len(), mtime.as_nanos()))
+    })
+    .clone()
+}
+
+/// The scan of `sources` this program already wrote into `dir`, if any:
+/// `<dir>/<key>.json` from an earlier session, read back instead of
+/// scanned again. Every file there is a scan (only scans are written,
+/// never an archive a patch advanced — see `ScanMemo`), and it is reused
+/// only when its versions, package, key and scanner all match.
+///
+/// Why: a session start scanned every crate of the workspace before the
+/// hot tier could take a save — 14–16 s on CrewForge, every restart, on
+/// sources the previous session had already scanned.
+pub fn read_set(dir: &Path, sources: &CrateSources) -> Option<DescriptorSet> {
+    let scanner = scanner_identity()?;
+    let key = sources.build_key();
+    let text = std::fs::read_to_string(dir.join(format!("{key}.json"))).ok()?;
+    let set: DescriptorSet = serde_json::from_str(&text).ok()?;
+    let reusable = set.overlay_version == OVERLAY_VERSION
+        && set.split_version == SPLIT_VERSION
+        && set.package == sources.package
+        && set.scanner.as_deref() == Some(scanner.as_str())
+        && set.build_key() == key;
+    reusable.then_some(set)
 }
 
 /// The document format's own version. See
@@ -402,6 +446,7 @@ pub fn scan_sources_cancellable(
         package: package.clone(),
         files: BTreeMap::new(),
         sites: Vec::new(),
+        scanner: scanner_identity(),
     };
 
     for (relative, text) in &sources.files {
@@ -664,6 +709,36 @@ pub fn digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: every session start scanned the whole workspace again
+    /// before the hot tier could take a save (14–16 s on CrewForge), on
+    /// sources the last session had scanned and written to disk. The
+    /// written scan is read back when nothing it depends on moved.
+    #[test]
+    fn regression_a_scan_written_by_an_earlier_session_is_reused() {
+        let krate = fixture_crate();
+        let out = tempfile::tempdir().unwrap();
+        let sources = read_crate(krate.path()).unwrap();
+        let written = write_scanned(out.path(), &sources).unwrap();
+        assert!(written.scanner.is_some());
+        assert_eq!(read_set(out.path(), &sources), Some(written.clone()));
+
+        // Other sources: another key, nothing to reuse.
+        let mut edited = sources.clone();
+        edited.files[0].1.push_str("\n// edit\n");
+        assert_eq!(read_set(out.path(), &edited), None);
+
+        // A set another build of the scanner wrote is never reused.
+        let path = out.path().join(format!("{}.json", sources.build_key()));
+        let mut foreign = written.clone();
+        foreign.scanner = Some("another-idealyst".into());
+        std::fs::write(&path, serde_json::to_string(&foreign).unwrap()).unwrap();
+        assert_eq!(read_set(out.path(), &sources), None);
+        // Nor one from before the field existed.
+        foreign.scanner = None;
+        std::fs::write(&path, serde_json::to_string(&foreign).unwrap()).unwrap();
+        assert_eq!(read_set(out.path(), &sources), None);
+    }
 
     /// Build a throwaway crate on disk and scan it.
     ///
