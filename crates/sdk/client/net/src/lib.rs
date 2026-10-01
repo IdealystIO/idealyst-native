@@ -83,6 +83,16 @@ mod headers;
 mod method;
 mod request;
 mod response;
+// Pure timeout decisions for the NSURLSession and HttpURLConnection arms;
+// compiled for tests on every host so its coverage runs anywhere.
+#[cfg(any(
+    test,
+    target_os = "ios",
+    target_os = "macos",
+    target_os = "tvos",
+    target_os = "android"
+))]
+mod timeout_policy;
 mod websocket;
 
 pub use body::{FromBody, IntoBody};

@@ -73,6 +73,10 @@ impl RequestBuilder {
     }
 
     /// Per-request timeout, overrides the client default.
+    ///
+    /// One deadline on the whole exchange — connect, request, response
+    /// head and body — on every platform; expiry resolves
+    /// [`Error::Timeout`].
     pub fn timeout(mut self, dur: Duration) -> Self {
         self.timeout = Some(dur);
         self

@@ -756,9 +756,16 @@ on the old arm):
   `VersionError`, and one without the `blobs` store never got it.
 - files read a value that was not bytes as `Ok(Some(empty))`.
 
-**Found, not fixed here:** net's iOS (NSURLSession) and Android
-(HttpURLConnection) arms ignore `timeout` too. Only reqwest and web apply
-it, as net's README now says.
+**Found here, fixed after:** net's iOS (NSURLSession) and Android
+(HttpURLConnection) arms ignored `timeout` too. Both now apply it with the
+same meaning (one deadline on the whole exchange, body included,
+`Error::Timeout`): NSURLSession through a per-request session's
+`timeoutIntervalForResource` (an `NSURLRequest.timeoutInterval` alone is an
+idle timeout a trickling body never trips), HttpURLConnection through a
+deadline watchdog that disconnects the connection, with
+`setConnectTimeout` / `setReadTimeout` as per-phase backstops. Covered by
+`net/tests/timeout.rs` (host, and the iOS simulator via `simctl spawn`)
+and `net/tests/android-device/run.sh` (an emulator, under `app_process`).
 
 **Verification:** net's browser suites through the workspace runner
 (headless Chrome 154): `web_fetch` 16 (real `fetch` against `blob:` /

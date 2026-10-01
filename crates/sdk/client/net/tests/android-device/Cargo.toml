@@ -1,0 +1,21 @@
+[package]
+name = "net-android-device-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Drives net's Android transport (HttpURLConnection over JNI) inside a real
+# ART process on an emulator or device — the closest reachable test for the
+# arm, since `cargo test` binaries have no JVM. Built and run by `run.sh`.
+# Its own workspace: a cdylib for aarch64-linux-android only, never part of
+# the framework build graph.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+net = { path = "../..", default-features = false }
+jni = "0.21"
+ndk-context = "0.1"

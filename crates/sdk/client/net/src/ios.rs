@@ -14,6 +14,20 @@
 //! caller as the same `Error::Cancelled` variant the native +
 //! web transports produce.
 //!
+//! Timeout: a request `timeout` is a deadline on the whole exchange, body
+//! included, resolving `Error::Timeout` — the reqwest and web arms'
+//! meaning. `NSURLRequest.timeoutInterval` alone is an IDLE timeout (it
+//! restarts on every packet, so a trickling body never expires); the
+//! whole-transfer limit is the session's `timeoutIntervalForResource`. So a
+//! request with a timeout runs on its own session, built from
+//! `defaultSessionConfiguration` (the same shared cookie / credential /
+//! cache stores as `sharedSession`) with all three intervals set to the
+//! deadline, and invalidated once its one task finishes. The cost is that
+//! such a request does not reuse the shared session's pooled connections.
+//! `NSURLErrorTimedOut` maps to `Error::Timeout`
+//! ([`crate::timeout_policy`]). Requests without a timeout keep
+//! `sharedSession` (and its system 60 s idle default).
+//!
 //! Submission posture: by reaching `NSURLSession` (rather than e.g.
 //! linking `libcurl` or shipping reqwest into the app bundle), the
 //! app inherits ATS, system proxy, cellular handoff, background
@@ -32,8 +46,8 @@ use futures_channel::oneshot;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{
-    NSData, NSDictionary, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSString, NSURL,
-    NSURLResponse, NSURLSession,
+    NSData, NSDictionary, NSError, NSHTTPURLResponse, NSMutableURLRequest, NSString, NSURLResponse,
+    NSURLSession, NSURLSessionConfiguration, NSURL,
 };
 
 use crate::cancel::CancelToken;
@@ -41,6 +55,7 @@ use crate::error::Error;
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::response::Response;
+use crate::timeout_policy;
 
 pub(crate) struct Transport;
 
@@ -56,7 +71,7 @@ pub(crate) async fn send(
     url: String,
     headers: Headers,
     body: Vec<u8>,
-    _timeout: Option<Duration>,
+    timeout: Option<Duration>,
     cancel: Option<CancelToken>,
 ) -> Result<Response, Error> {
     // -------------------------------------------------------------
@@ -89,6 +104,14 @@ pub(crate) async fn send(
         unsafe { request.setHTTPBody(Some(&data)) };
     }
 
+    // The deadline also goes on the request itself: the request's own
+    // `timeoutInterval` (default 60 s) is an idle timeout that would
+    // otherwise cut a longer deadline short on a quiet connection.
+    let deadline = timeout.map(timeout_policy::ns_time_interval);
+    if let Some(secs) = deadline {
+        unsafe { request.setTimeoutInterval(secs) };
+    }
+
     // -------------------------------------------------------------
     // Wire up the completion block.
     //
@@ -119,10 +142,27 @@ pub(crate) async fn send(
     // retains the block; calling `resume` kicks off the network
     // operation.
     // -------------------------------------------------------------
-    let session = unsafe { NSURLSession::sharedSession() };
+    let session = match deadline {
+        None => unsafe { NSURLSession::sharedSession() },
+        Some(secs) => unsafe {
+            // `timeoutIntervalForResource` is the whole-exchange limit;
+            // `timeoutIntervalForRequest` is the idle one, raised from its
+            // 60 s default so it cannot fire before the deadline.
+            let config = NSURLSessionConfiguration::defaultSessionConfiguration();
+            config.setTimeoutIntervalForRequest(secs);
+            config.setTimeoutIntervalForResource(secs);
+            NSURLSession::sessionWithConfiguration(&config)
+        },
+    };
     let task = unsafe { session.dataTaskWithRequest_completionHandler(&request, &completion) };
     unsafe {
         let _: () = objc2::msg_send![&task, resume];
+    }
+    if deadline.is_some() {
+        // A per-request session is released only once invalidated. This
+        // lets its one task run to completion (or cancel / timeout), then
+        // tears the session down; it accepts no further tasks.
+        unsafe { session.finishTasksAndInvalidate() };
     }
 
     // -------------------------------------------------------------
@@ -155,18 +195,17 @@ fn build_result(
     response: *mut NSURLResponse,
     error: *mut NSError,
 ) -> Result<Response, Error> {
-    // Error path. Cancellation maps to its dedicated variant so
-    // callers can `match Error::Cancelled` against it; everything
-    // else lands as a Network error with the localized description.
+    // Error path. Cancellation and an expired deadline map to their
+    // dedicated variants (`Error::Cancelled` / `Error::Timeout`) so callers
+    // can match them; everything else lands as a Network error with the
+    // localized description.
     if !error.is_null() {
         let err_ref: &NSError = unsafe { &*error };
-        let code = err_ref.code();
-        // NSURLErrorCancelled is -999 in NSURLErrorDomain.
-        if code == -999 {
-            return Err(Error::Cancelled);
-        }
         let desc = err_ref.localizedDescription();
-        return Err(Error::Network(desc.to_string()));
+        return Err(timeout_policy::ns_url_error(
+            err_ref.code(),
+            desc.to_string(),
+        ));
     }
 
     // Status + headers come from the HTTP-specific subclass; if the
@@ -211,7 +250,7 @@ fn build_result(
             // to `length()` contiguous bytes; we copy out so the
             // returned `Response` is independent of NSData's
             // lifetime.
-            let slice = unsafe { std::slice::from_raw_parts(ptr.as_ptr() as *const u8, len) };
+            let slice = unsafe { std::slice::from_raw_parts(ptr.as_ptr(), len) };
             slice.to_vec()
         }
     };
@@ -242,8 +281,7 @@ fn collect_headers_into(dict: &NSDictionary, out: &mut Headers) {
             if key_obj.is_null() {
                 continue;
             }
-            let value_obj: *mut AnyObject =
-                objc2::msg_send![dict, objectForKey: key_obj as *mut AnyObject];
+            let value_obj: *mut AnyObject = objc2::msg_send![dict, objectForKey: key_obj];
             if value_obj.is_null() {
                 continue;
             }

@@ -75,9 +75,16 @@ diverge in mechanism, not in what you observe.
 | Web (wasm32) | `fetch` (web-glue bindings; `AbortController` for cancel, timeout and a dropped future) | the browser's `WebSocket` (web-glue bindings) | the browser's `EventSource` (web-glue bindings) |
 
 A request `timeout` (per request or the client default) is a deadline on
-the whole exchange, body included, and resolves `Error::Timeout` on the
-reqwest and web arms. The NSURLSession and HttpURLConnection arms currently
-ignore it.
+the whole exchange, body included, and resolves `Error::Timeout` on every
+arm. reqwest and web (`setTimeout` aborting the fetch) enforce it directly.
+NSURLSession runs a request that has a timeout on its own session whose
+`timeoutIntervalForResource` is the deadline (`NSURLRequest.timeoutInterval`
+alone is an idle timeout, which a slowly trickling body never trips); such a
+request does not share the shared session's connection pool. Android arms a
+watchdog thread that disconnects the `HttpURLConnection` at the deadline,
+with `setConnectTimeout` / `setReadTimeout` set to the same value as
+per-phase backstops. Without a timeout, NSURLSession keeps its system 60 s
+idle default and HttpURLConnection waits indefinitely.
 
 No async runtime is introduced anywhere (the framework's execution-model
 invariant): native arms drive a blocking I/O worker thread and bridge to
@@ -139,6 +146,8 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo build -p net --target wasm32-unknown-unknown` — web (fetch / browser `WebSocket` / browser `EventSource`)
 - [x] `cargo test -p net --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_closure_lifetime.rs`: a refused WebSocket / EventSource connect leaves no dead handler; `tests/web_socket_glue.rs`: text + binary frames both ways, close status, malformed URL → `Error::Network`, SSE messages and close-on-drop (stand-in socket / stream)
 - [x] `cargo test -p net --test websocket` — `close_status`: peer code + reason, normal 1000, 1006 on a dropped connection, 1005 after a local `close()`
+- [x] `cargo test -p net --test timeout` — `timeout` is a whole-exchange deadline resolving `Error::Timeout` (never-answering server, trickling body, client default, no false fire) on macOS's NSURLSession arm; the same binary on the iOS simulator: `cargo test -p net --target aarch64-apple-ios-sim --test timeout --no-run`, then `xcrun simctl spawn <device> <test binary>`
+- [x] `tests/android-device/run.sh` — the same timeout cases plus mid-flight cancel through the `HttpURLConnection` arm in a real ART process (`app_process`) on a connected emulator/device
 
 **Behavior**
 - [ ] **Web** — GET/POST to a live endpoint over `fetch`; WebSocket echo over the browser `WebSocket`; SSE stream over the browser's `EventSource`; cancel mid-flight aborts (`Error::Cancelled`)

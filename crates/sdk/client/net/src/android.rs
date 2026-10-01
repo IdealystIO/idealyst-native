@@ -19,6 +19,20 @@
 //! IOException, which we map to `Error::Network`; the worker's
 //! result is then discarded because the awaiter has already
 //! returned `Err(Error::Cancelled)`.
+//!
+//! Timeout: a request `timeout` is a deadline on the whole exchange, body
+//! included, resolving `Error::Timeout` — the reqwest and web arms'
+//! meaning. `setConnectTimeout` / `setReadTimeout` bound ONE connect and
+//! ONE blocking read each (a read timeout restarts per read, so a trickling
+//! body never trips it), so they cannot enforce that alone. A
+//! [`Watchdog`] thread armed at `send` does: at the deadline it settles the
+//! request with `Error::Timeout` and disconnects the connection (the same
+//! cross-thread `disconnect()` cancellation uses), which unblocks the
+//! worker; the worker's late result loses the [`FirstResult`] race. The
+//! per-phase timeouts are still set to the deadline so the worker unblocks
+//! itself even when the watchdog fires before the connection is published
+//! (URL parsing, DNS); their `SocketTimeoutException` maps to
+//! `Error::Timeout` as well ([`crate::timeout_policy`]).
 
 use std::future::{poll_fn, Future};
 use std::pin::Pin;
@@ -26,7 +40,6 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use futures_channel::oneshot;
 use jni::objects::{GlobalRef, JObject, JString, JValue};
 use jni::JavaVM;
 
@@ -35,6 +48,7 @@ use crate::error::Error;
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::response::Response;
+use crate::timeout_policy::{self, FirstResult, Watchdog};
 
 pub(crate) struct Transport;
 
@@ -61,10 +75,12 @@ pub(crate) async fn send(
     url: String,
     headers: Headers,
     body: Vec<u8>,
-    _timeout: Option<Duration>,
+    timeout: Option<Duration>,
     cancel: Option<CancelToken>,
 ) -> Result<Response, Error> {
-    let (tx, rx) = oneshot::channel::<Result<Response, Error>>();
+    // Settled by whichever finishes first: the worker (the real result) or
+    // the deadline watchdog (`Error::Timeout`).
+    let (settle, rx) = FirstResult::<Result<Response, Error>>::new();
 
     // SAFETY: `ndk_context::android_context()` is the documented entry
     // point for getting the host's `JavaVM` pointer. The host
@@ -82,9 +98,31 @@ pub(crate) async fn send(
     let conn_slot: ConnSlot = Arc::new(Mutex::new(None));
     let slot_for_worker = conn_slot.clone();
 
+    // The deadline clock starts here, before the worker even attaches.
+    let watchdog = timeout.map(|deadline| {
+        let settle = settle.clone();
+        let slot = conn_slot.clone();
+        Watchdog::arm(deadline, move || {
+            if settle.settle(Err(Error::Timeout)) {
+                // Unblock the worker's `getResponseCode()` / `read()`. If
+                // the connection is not published yet (URL / DNS phase),
+                // the worker's own connect/read timeouts bound it instead.
+                // Taken atomically, so a racing cancel or the worker's
+                // cleanup never sees the same ref.
+                let global = slot.lock().unwrap().take();
+                if let Some(global) = global {
+                    disconnect(global);
+                }
+            }
+        })
+    });
+
     std::thread::spawn(move || {
-        let result = do_request(&vm, method, url, headers, body, slot_for_worker);
-        let _ = tx.send(result);
+        let result = do_request(&vm, method, url, headers, body, timeout, slot_for_worker);
+        // The exchange is over either way: disarm before settling so the
+        // timer thread exits instead of sleeping out the deadline.
+        drop(watchdog);
+        settle.settle(result);
     });
 
     let receive_future = async move {
@@ -120,6 +158,7 @@ fn do_request(
     url: String,
     headers: Headers,
     body: Vec<u8>,
+    timeout: Option<Duration>,
     conn_slot: ConnSlot,
 ) -> Result<Response, Error> {
     let mut env = vm
@@ -136,7 +175,7 @@ fn do_request(
     // Run the JNI work, capturing the outcome instead of early-returning,
     // so the pending-exception checkpoint below ALWAYS runs before this
     // worker thread detaches.
-    let result = do_request_inner(&mut env, method, url, headers, body, &conn_slot);
+    let result = do_request_inner(&mut env, method, url, headers, body, timeout, &conn_slot);
 
     // A connect/IO failure (server unreachable, wrong host, offline,
     // relay down) throws a Java exception — e.g. `ConnectException` from
@@ -150,10 +189,27 @@ fn do_request(
     // contract: web catches the same failure into the reducer's error
     // arm, so native must too. Clear it here, preferring the Java
     // exception's own message for the returned `Err` so the reducer can
-    // show something useful.
-    if env.exception_check().unwrap_or(false) {
-        if let Some(msg) = take_pending_exception(&mut env) {
-            return Err(Error::Network(msg));
+    // show something useful. A `SocketTimeoutException` (the connect/read
+    // timeout firing) maps to `Error::Timeout`.
+    let pending = if env.exception_check().unwrap_or(false) {
+        take_pending_exception(&mut env)
+    } else {
+        None
+    };
+    let result = match pending {
+        Some(msg) => Err(timeout_policy::java_exception_error(msg)),
+        None => result,
+    };
+    // A failed exchange (an exception, a timeout) returned before
+    // `do_request_inner`'s own `disconnect()`: free the socket now rather
+    // than at GC. Safe here — the pending exception was cleared above.
+    if result.is_err() {
+        let global = conn_slot.lock().unwrap().take();
+        if let Some(global) = global {
+            let _ = env.call_method(global.as_obj(), "disconnect", "()V", &[]);
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
         }
     }
     result
@@ -170,6 +226,7 @@ fn do_request_inner(
     url: String,
     headers: Headers,
     body: Vec<u8>,
+    timeout: Option<Duration>,
     conn_slot: &ConnSlot,
 ) -> Result<Response, Error> {
     // -----------------------------------------------------------------
@@ -207,6 +264,26 @@ fn do_request_inner(
     {
         let global = env.new_global_ref(&conn_obj).map_err(map_jni_err)?;
         *conn_slot.lock().unwrap() = Some(global);
+    }
+
+    // -----------------------------------------------------------------
+    // conn.setConnectTimeout(ms); conn.setReadTimeout(ms);
+    //
+    // Each bounds one phase only (the watchdog in `send` owns the overall
+    // deadline), but they let the worker unblock itself if the watchdog
+    // fired before the connection was published above.
+    // -----------------------------------------------------------------
+    if let Some(deadline) = timeout {
+        let millis = timeout_policy::java_timeout_millis(deadline);
+        env.call_method(
+            &conn_obj,
+            "setConnectTimeout",
+            "(I)V",
+            &[JValue::Int(millis)],
+        )
+        .map_err(map_jni_err)?;
+        env.call_method(&conn_obj, "setReadTimeout", "(I)V", &[JValue::Int(millis)])
+            .map_err(map_jni_err)?;
     }
 
     // -----------------------------------------------------------------
@@ -299,16 +376,21 @@ fn do_request_inner(
         "()Ljava/io/InputStream;",
         &[],
     );
+    // A failure here is an exception left pending (a read timeout, a
+    // reset, a watchdog disconnect): return it so `do_request` clears and
+    // maps it. Swallowing it into an empty body — as this once did — both
+    // reported a truncated body as success and made the following
+    // `disconnect()` a JNI call with an exception pending.
     let body_bytes = match stream_result {
         Ok(jv) => {
             let stream = jv.l().map_err(map_jni_err)?;
             if stream.is_null() {
                 Vec::new()
             } else {
-                read_input_stream(&mut *env, &stream).unwrap_or_default()
+                read_input_stream(&mut *env, &stream)?
             }
         }
-        Err(_) => Vec::new(),
+        Err(e) => return Err(map_jni_err(e)),
     };
 
     // Always disconnect to free the socket promptly. Safe to call even
@@ -494,6 +576,31 @@ fn take_pending_exception(env: &mut jni::JNIEnv<'_>) -> Option<String> {
     env.get_string(&msg_str).ok().map(|s| s.into())
 }
 
+/// Attach the CURRENT thread to the JVM and call `disconnect()` on a
+/// connection another thread is blocked on — the cross-thread abort both
+/// cancellation and the timeout watchdog use. `disconnect()` closes the
+/// socket, so the blocked `getResponseCode()` / `read()` throws.
+fn disconnect(global: GlobalRef) {
+    let ctx = ndk_context::android_context();
+    let vm_ptr = ctx.vm() as *mut jni::sys::JavaVM;
+    let vm = match unsafe { JavaVM::from_raw(vm_ptr) } {
+        Ok(vm) => vm,
+        Err(_) => return,
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let _ = env.call_method(global.as_obj(), "disconnect", "()V", &[]);
+    // Never detach with an exception pending (ART aborts the app).
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    // `global` drops here; the AttachGuard is still alive, so
+    // `DeleteGlobalRef` is one FFI hop.
+    drop(global);
+}
+
 /// Race the worker's `oneshot` against the cancel token. If cancel
 /// wins, take the connection's `GlobalRef` out of the shared slot
 /// (atomically — the worker will then see `None` on its own
@@ -532,21 +639,7 @@ where
                 // disconnect on the worker-side socket is then a
                 // no-op; we still need it for the case where the
                 // worker is parked inside that blocking call.
-                std::thread::spawn(move || {
-                    let ctx = ndk_context::android_context();
-                    let vm_ptr = ctx.vm() as *mut jni::sys::JavaVM;
-                    let vm = match unsafe { JavaVM::from_raw(vm_ptr) } {
-                        Ok(vm) => vm,
-                        Err(_) => return,
-                    };
-                    let mut env = match vm.attach_current_thread() {
-                        Ok(g) => g,
-                        Err(_) => return,
-                    };
-                    let _ = env.call_method(global.as_obj(), "disconnect", "()V", &[]);
-                    // `global` drops here; the AttachGuard is still
-                    // alive, so `DeleteGlobalRef` is one FFI hop.
-                });
+                std::thread::spawn(move || disconnect(global));
             }
             return Poll::Ready(Err(Error::Cancelled));
         }

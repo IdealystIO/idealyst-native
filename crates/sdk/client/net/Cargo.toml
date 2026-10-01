@@ -118,7 +118,7 @@ tungstenite = "0.21"
 # native dev-deps are target-gated — otherwise `wasm-pack test` fails to
 # compile the dev graph before reaching a single test.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "io-util"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
