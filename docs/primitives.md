@@ -645,7 +645,16 @@ Three properties follow from the handler design:
 - **URL sync is a seam, not a per-app opt-in.** A URL-bearing host
   installs a `UrlSyncService` and both navigators register at mount;
   hosts without URLs install nothing and the hooks vanish
-  (web: `crates/backend/web/src/newcore_url_sync.rs`).
+  (web: `crates/backend/web/src/newcore_url_sync.rs`). On web, every
+  history entry the sync writes carries a tag in `history.state` under
+  `__idealyst_nav` (the entry's own id and the id of the entry below
+  it). A programmatic `pop()` calls `history.back()` and knows which
+  entry that lands on, so a `popstate` is treated as the pop's echo only
+  when it lands there. Any other landing is the user's Back or Forward
+  and the screens follow it, even while the pop's own traversal is
+  still in flight. A replace keeps whatever else an app stored in an
+  object `history.state`. A non-object state (a string, an array) is
+  left as it is, and that entry stays untagged.
 
 The reason navigation is a primitive at all: retention policy, screen
 scope lifetime, and the outlet's structural swap have to sit next to the

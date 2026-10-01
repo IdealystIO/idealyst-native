@@ -4,7 +4,7 @@
 //! This is the port of the old substrate's
 //! `runtime_shared::primitives::navigator::url_sync` onto the new-core
 //! seam. The *semantics* are carried over invariant-for-invariant
-//! (owned-slice comparison, pending-self-pop swallowing, reconciling
+//! (owned-slice comparison, self-pop echo swallowing, reconciling
 //! echo suppression, per-entry scroll memory, cold-start history seed);
 //! what changed is the wiring:
 //!
@@ -36,6 +36,11 @@
 //!   round-trips it through the browser process; 80–200 ms under CPU
 //!   load), so every history write issued while one is in flight is
 //!   serialized behind its echo — see [`HistoryOp`].
+//! - Every entry this module creates is TAGGED in `history.state` (see
+//!   [`EntryTag`]), so a popstate is attributed by the entry it landed
+//!   on, not by counting: only a landing on the exact entry our
+//!   in-flight back targets is its echo; anything else is the user's
+//!   navigation and is reconciled, even while our back is pending.
 //! - Popstate dispatch only STAGES commands, so the listener calls
 //!   [`crate::newcore::schedule_flush`] afterwards — popstate is a raw
 //!   DOM event outside every wrapped author callback (the residual the
@@ -80,8 +85,10 @@ use web_glue::JsCast;
 /// `window.history` calls.
 pub(crate) struct HistoryPort {
     pub(crate) current_path: Box<dyn Fn() -> String>,
-    pub(crate) push_state: Box<dyn Fn(&str)>,
-    pub(crate) replace_state: Box<dyn Fn(&str)>,
+    /// The CURRENT entry's tag (`history.state`), `None` when untagged.
+    pub(crate) current_tag: Box<dyn Fn() -> Option<EntryTag>>,
+    pub(crate) push_state: Box<dyn Fn(&str, EntryTag)>,
+    pub(crate) replace_state: Box<dyn Fn(&str, EntryTag)>,
     pub(crate) history_back: Box<dyn Fn()>,
 }
 
@@ -120,26 +127,230 @@ fn pathname() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
-fn push_state(url: &str) {
-    if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.push_state)(url))).is_some() {
-        return;
-    }
-    if let Some(w) = web_glue::dom::window() {
-        if let Ok(h) = w.history() {
-            let _ = h.push_state_with_url(&web_glue::JsValue::NULL, "", Some(url));
-        }
-    }
+// ---------------------------------------------------------------------------
+// Entry tags (exact popstate attribution)
+// ---------------------------------------------------------------------------
+//
+// WHY (bug: a user Back/Forward racing a programmatic pop was swallowed):
+// `popstate` says nothing about WHICH traversal caused it, and this module
+// used to attribute by counting — the first popstate after our
+// `history.back()` was taken as its echo. Chrome resolves every traversal
+// against the entry the previous one is heading to, fixed at call time
+// (probed in headless Chrome, from `/p1` with `/p2`,`/p3` ahead:
+// `forward(); back()` → ONE popstate, on `/p2` — the back resolved to the
+// committed entry and was dropped; `go(2); back()` → `/p3` then `/p2`).
+// So when the user's traversal is ahead of ours (pressed just before an
+// app handler popped), the first popstate is the USER's. Counting
+// swallowed it: the screen showed the popped-to route while the address
+// bar named the user's — and when Chrome dropped our back, nothing ever
+// repaired it.
+//
+// Fix: every entry this module creates carries `{ s, i, ps, pi }` under
+// [`STATE_KEY`] in its `history.state` — its own key (`s` = a random
+// per-document session, `i` = a per-session counter) and its
+// predecessor's key. A self back records the CURRENT entry's predecessor
+// as its exact target; a popstate is its echo only if it lands on that
+// entry. Anything else is a user navigation: reconcile it, and cancel the
+// pending back's bookkeeping (see [`handle_popstate`]).
+//
+// The predecessor link lives in the entry, not in module state, so it
+// survives everything that keeps `history.state`: a reload, a
+// back/forward-cache restore, a later document of this tab. The session
+// half of the key is what keeps a reloaded document's restarted counter
+// from colliding with ids an earlier document already wrote.
+
+/// The `history.state` property this module owns. The rest of an
+/// object state belongs to whoever put it there (an app, a router,
+/// `deep_link::replace_url`) and is preserved on replace.
+///
+/// The JS snippets below spell it literally (they are string literals);
+/// the constant is what the tests read it by.
+#[cfg(test)]
+pub(crate) const STATE_KEY: &str = "__idealyst_nav";
+
+/// One history entry's identity: the document session that minted it
+/// and that session's counter. Both stay below 2^53, so they round-trip
+/// through a JS number exactly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct EntryKey {
+    pub(crate) session: u64,
+    pub(crate) id: u64,
 }
 
-fn replace_state(url: &str) {
-    if HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.replace_state)(url))).is_some() {
+/// The tag stored in an entry's `history.state`: its own key, plus the
+/// key of the entry directly below it when that entry is ours (`None`
+/// below the first entry the app tagged — the page it was loaded over).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct EntryTag {
+    pub(crate) key: EntryKey,
+    pub(crate) prev: Option<EntryKey>,
+}
+
+web_glue::import! {
+    // 1 and the current entry's tag as "s,i,ps,pi" (prev fields empty
+    // when absent) written to `out`; 0 when untagged or no window.
+    fn js_read_entry_tag(out: usize) -> u32 =
+        "(o) => { if (typeof window === 'undefined') return 0; \
+           const st = window.history.state; \
+           const t = st !== null && typeof st === 'object' ? st.__idealyst_nav : undefined; \
+           if (t === null || typeof t !== 'object' || typeof t.s !== 'number' || typeof t.i !== 'number') return 0; \
+           const p = typeof t.ps === 'number' && typeof t.pi === 'number'; \
+           G.retStr(p ? `${t.s},${t.i},${t.ps},${t.pi}` : `${t.s},${t.i},,`, o); return 1; }";
+    // push (r = 0) or replace (r = 1) with the tag. A push starts a new
+    // entry, so its state is the tag alone. A replace keeps the entry's
+    // other state: a plain object is copied with the tag set; a non-plain
+    // state (a string, an array, a class instance some app stored) is
+    // written back untouched and the entry stays untagged — it cannot
+    // carry the tag without changing the app's value. `replaceState`
+    // throws a SecurityError for a cross-origin URL; swallowed like the
+    // untagged calls always were. `ku` = keep the URL: the call omits it,
+    // so the entry's address — fragment included — is untouched.
+    #[catch]
+    fn js_write_entry(r: u32, s: f64, i: f64, hp: u32, ps: f64, pi: f64, ku: u32, up: usize, ul: usize) =
+        "(r, s, i, hp, ps, pi, ku, up, ul) => { if (typeof window === 'undefined') return; \
+           const h = window.history, url = ku ? undefined : G.str(up, ul); \
+           const tag = { s, i, ps: hp ? ps : null, pi: hp ? pi : null }; \
+           let st = { __idealyst_nav: tag }; \
+           if (r) { const cur = h.state; \
+             if (cur !== null && cur !== undefined) { \
+               const proto = typeof cur === 'object' ? Object.getPrototypeOf(cur) : undefined; \
+               st = proto === Object.prototype || proto === null \
+                 ? Object.assign({}, cur, { __idealyst_nav: tag }) : cur; } \
+             if (ku) h.replaceState(st, ''); else h.replaceState(st, '', url); } \
+           else h.pushState(st, '', url); }";
+    // A random session id in [1, 2^53 - 1).
+    fn js_session_seed() -> f64 = "() => 1 + Math.floor(Math.random() * 9007199254740990)";
+}
+
+thread_local! {
+    /// This document's session id (lazily drawn; 0 = not yet).
+    static SESSION: Cell<u64> = const { Cell::new(0) };
+    /// The next entry id this session mints.
+    static NEXT_HISTORY_ID: Cell<u64> = const { Cell::new(1) };
+}
+
+fn session() -> u64 {
+    SESSION.with(|s| {
+        if s.get() == 0 {
+            let seed = if web_glue::dom::window().is_some() {
+                (unsafe { js_session_seed() }) as u64
+            } else {
+                1
+            };
+            s.set(seed.max(1));
+        }
+        s.get()
+    })
+}
+
+/// Start a new document session (tests: simulate a reload — the counter
+/// restarts at 1, exactly as a fresh document's would).
+#[cfg(test)]
+pub(crate) fn begin_session_for_tests(session: u64) {
+    SESSION.with(|s| s.set(session));
+    NEXT_HISTORY_ID.with(|c| c.set(1));
+}
+
+fn mint_key() -> EntryKey {
+    let id = NEXT_HISTORY_ID.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
+    EntryKey { session: session(), id }
+}
+
+/// The current entry's tag; `None` for an entry no session of this app
+/// tagged (one the page was loaded over, or one app code wrote itself).
+fn current_tag() -> Option<EntryTag> {
+    if let Some(t) = HISTORY_PORT.with(|p| p.borrow().as_ref().map(|p| (p.current_tag)())) {
+        return t;
+    }
+    web_glue::dom::window()?;
+    let mut hit = 0;
+    let raw = web_glue::string::receive(|o| hit = unsafe { js_read_entry_tag(o) });
+    if hit == 0 {
+        return None;
+    }
+    parse_tag(&raw)
+}
+
+fn parse_tag(raw: &str) -> Option<EntryTag> {
+    let mut parts = raw.split(',');
+    let num = |p: Option<&str>| p.and_then(|v| v.parse::<u64>().ok());
+    let key = EntryKey { session: num(parts.next())?, id: num(parts.next())? };
+    let prev = match (num(parts.next()), num(parts.next())) {
+        (Some(session), Some(id)) => Some(EntryKey { session, id }),
+        _ => None,
+    };
+    Some(EntryTag { key, prev })
+}
+
+/// Write `tag` with a push or a replace. `url: None` (replace only)
+/// keeps the entry's address as it is.
+fn write_entry(url: Option<&str>, tag: EntryTag, replace: bool) {
+    let routed = HISTORY_PORT.with(|p| {
+        p.borrow().as_ref().map(|p| {
+            let url = url.map(str::to_string).unwrap_or_else(|| (p.current_path)());
+            if replace {
+                (p.replace_state)(&url, tag)
+            } else {
+                (p.push_state)(&url, tag)
+            }
+        })
+    });
+    if routed.is_some() || web_glue::dom::window().is_none() {
         return;
     }
-    if let Some(w) = web_glue::dom::window() {
-        if let Ok(h) = w.history() {
-            let _ = h.replace_state_with_url(&web_glue::JsValue::NULL, "", Some(url));
+    let (p, l) = web_glue::string::abi(url.unwrap_or(""));
+    let (hp, ps, pi) = match tag.prev {
+        Some(k) => (1, k.session as f64, k.id as f64),
+        None => (0, 0.0, 0.0),
+    };
+    let _ = unsafe {
+        js_write_entry(
+            replace as u32,
+            tag.key.session as f64,
+            tag.key.id as f64,
+            hp,
+            ps,
+            pi,
+            url.is_none() as u32,
+            p,
+            l,
+        )
+    };
+}
+
+/// `pushState` a new entry, linked to the one it covers.
+///
+/// An untagged entry being covered is adopted first (tagged in place,
+/// address untouched): without a key below it, a programmatic pop from
+/// the new entry would have no exact landing to match. That is the
+/// common case, not an edge — the root's boot claim only runs for a
+/// launch-resolved root, so a root mounted after the launch slot cleared
+/// (or a page whose first entry predates the app) pushes over an
+/// untagged entry.
+fn push_state(url: &str) {
+    let below = match current_tag() {
+        Some(t) => Some(t.key),
+        None => {
+            write_entry(None, EntryTag { key: mint_key(), prev: None }, true);
+            // `None` when the entry's state is the app's own non-object
+            // value, which the write leaves untagged.
+            current_tag().map(|t| t.key)
         }
-    }
+    };
+    write_entry(Some(url), EntryTag { key: mint_key(), prev: below }, false);
+}
+
+/// `replaceState` the current entry. Same entry, same identity: a tagged
+/// entry keeps its tag (its successors' `prev` links name that key — a
+/// reload's boot claim must not orphan them); an untagged one is adopted
+/// with a fresh key and an unknown predecessor.
+fn replace_state(url: &str) {
+    let tag = current_tag().unwrap_or_else(|| EntryTag { key: mint_key(), prev: None });
+    write_entry(Some(url), tag, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,13 +384,25 @@ enum HistoryOp {
     Push(String),
     Replace(String),
     /// A programmatic pop's `history.back()`; applying it arms
-    /// [`PENDING_SELF_POPS`] so its echo is swallowed.
+    /// [`PENDING_BACK`] so its echo is swallowed.
     Back,
+}
+
+/// A self-initiated `history.back()` whose popstate has not arrived.
+#[derive(Clone, Copy)]
+struct PendingBack {
+    /// The entry it lands on: the predecessor recorded in the tag of the
+    /// entry it left. `None` when that entry is untagged or does not know
+    /// its predecessor — then nothing can be matched and the FIRST
+    /// popstate is taken as the echo (the attribution this module had
+    /// before entries were tagged; reachable only after app code or a
+    /// fragment link wrote an entry we then navigated from).
+    target: Option<EntryKey>,
 }
 
 /// Issue `op` now, or queue it behind the pending self-initiated back.
 fn history_op(op: HistoryOp) {
-    if PENDING_SELF_POPS.with(|c| c.get()) > 0 {
+    if PENDING_BACK.with(|c| c.get()).is_some() {
         QUEUED_HISTORY_OPS.with(|q| q.borrow_mut().push(op));
         return;
     }
@@ -191,17 +414,19 @@ fn apply_history_op(op: HistoryOp) {
         HistoryOp::Push(url) => push_state(&url),
         HistoryOp::Replace(url) => replace_state(&url),
         HistoryOp::Back => {
-            PENDING_SELF_POPS.with(|c| c.set(c.get() + 1));
+            // Read BEFORE the call: the entry being left names the one
+            // the traversal lands on.
+            let target = current_tag().and_then(|t| t.prev);
+            PENDING_BACK.with(|c| c.set(Some(PendingBack { target })));
             history_back();
         }
     }
 }
 
-/// The last pending self-back has traversed: replay the queued ops in
-/// issue order, stopping after a `Back` (its own echo resumes the
-/// replay).
+/// The pending self-back has traversed: replay the queued ops in issue
+/// order, stopping after a `Back` (its own echo resumes the replay).
 fn drain_queued_history_ops() {
-    while PENDING_SELF_POPS.with(|c| c.get()) == 0 {
+    while PENDING_BACK.with(|c| c.get()).is_none() {
         let next = QUEUED_HISTORY_OPS.with(|q| {
             let mut q = q.borrow_mut();
             (!q.is_empty()).then(|| q.remove(0))
@@ -289,9 +514,10 @@ impl NavEntry {
 
 thread_local! {
     static REGISTRY: RefCell<Vec<Rc<NavEntry>>> = const { RefCell::new(Vec::new()) };
-    /// `history.back()` calls we initiated whose `popstate` hasn't
-    /// arrived yet — those events are bookkeeping-only, never dispatch.
-    static PENDING_SELF_POPS: Cell<u32> = const { Cell::new(0) };
+    /// The `history.back()` we initiated whose `popstate` hasn't arrived
+    /// yet. At most one: a second back queues behind it (see
+    /// [`HistoryOp`]). Its echo is bookkeeping-only, never dispatch.
+    static PENDING_BACK: Cell<Option<PendingBack>> = const { Cell::new(None) };
     /// History ops issued while a self-initiated back was in flight, in
     /// issue order (see [`HistoryOp`]).
     static QUEUED_HISTORY_OPS: RefCell<Vec<HistoryOp>> = const { RefCell::new(Vec::new()) };
@@ -301,8 +527,9 @@ thread_local! {
     static RECONCILING: Cell<bool> = const { Cell::new(false) };
     static NEXT_ENTRY_ID: Cell<u64> = const { Cell::new(1) };
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
-    /// Keeps the popstate listener alive for the page's lifetime.
-    static POPSTATE_LISTENER: RefCell<Option<web_glue::dom::Listener>> =
+    /// Keeps the popstate + pageshow listeners alive for the page's
+    /// lifetime.
+    static POPSTATE_LISTENER: RefCell<Option<[web_glue::dom::Listener; 2]>> =
         const { RefCell::new(None) };
 }
 
@@ -325,10 +552,21 @@ pub(crate) fn install() {
     }
     let Some(window) = web_glue::dom::window() else { return };
     INSTALLED.with(|c| c.set(true));
-    let listener = crate::glue_dom::listen(&window, "popstate", web_glue::dom::ListenerOptions::default(), move |_| {
+    let popstate = crate::glue_dom::listen(&window, "popstate", web_glue::dom::ListenerOptions::default(), move |_| {
         handle_popstate(&pathname());
     });
-    POPSTATE_LISTENER.with(|slot| *slot.borrow_mut() = Some(listener));
+    let pageshow = crate::glue_dom::listen(&window, "pageshow", web_glue::dom::ListenerOptions::default(), move |ev| {
+        let restored = ev
+            .as_ref()
+            .get("persisted")
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if restored {
+            handle_page_restored();
+        }
+    });
+    POPSTATE_LISTENER.with(|slot| *slot.borrow_mut() = Some([popstate, pageshow]));
 }
 
 /// Uninstall the service + drop all sync entries (host `stop()` /
@@ -337,7 +575,7 @@ pub(crate) fn install() {
 pub(crate) fn reset() {
     runtime_vocabulary::handlers::nav_url_sync::clear_url_sync_service();
     REGISTRY.with(|r| r.borrow_mut().clear());
-    PENDING_SELF_POPS.with(|c| c.set(0));
+    PENDING_BACK.with(|c| c.set(None));
     QUEUED_HISTORY_OPS.with(|q| q.borrow_mut().clear());
     RECONCILING.with(|c| c.set(false));
     HISTORY_PORT.with(|p| *p.borrow_mut() = None);
@@ -396,6 +634,12 @@ impl UrlSyncService for WebUrlSync {
                 // deep-link entry. Capture the FULL platform path BEFORE
                 // the replace (so a deeper nested remainder survives),
                 // then re-push it above the index entry.
+                //
+                // Tags: the replace keeps the boot entry's key (or adopts
+                // it — a reload restores the key an earlier document of
+                // this tab wrote), and the push links the deep-link entry
+                // to it, so a programmatic pop from the deep link knows
+                // its exact landing.
                 let full = pathname();
                 replace_state(&reg.initial_full_path);
                 push_state(&full);
@@ -407,8 +651,9 @@ impl UrlSyncService for WebUrlSync {
                     scroll: (0.0, 0.0),
                 });
             } else {
-                // Plain mount: claim the current history entry (clears
-                // stray hash/state) WITHOUT rewriting the path —
+                // Plain mount: claim the current history entry (clears a
+                // stray hash and tags the entry; any other state on it is
+                // kept — see `js_write_entry`) WITHOUT rewriting the path —
                 // replacing with our own slice would clobber a nested
                 // navigator's remainder on a cold deep link.
                 replace_state(&pathname());
@@ -438,7 +683,7 @@ impl UrlSyncService for WebUrlSync {
         //
         // A RECONCILING dispatch needs no such guard: there the browser
         // moved FIRST and `location` is already authoritative.
-        if PENDING_SELF_POPS.with(|c| c.get()) > 0 {
+        if PENDING_BACK.with(|c| c.get()).is_some() {
             return None;
         }
         Some(pathname())
@@ -549,13 +794,39 @@ impl UrlSyncService for WebUrlSync {
 /// for the wasm-bindgen browser tests, which drive it directly as well
 /// as through real `history.back()` events.
 pub(crate) fn handle_popstate(new_path: &str) {
-    // Echo of our own `history.back()` — before_command already did the
-    // bookkeeping (and after_commit restores scroll on the flush).
-    if PENDING_SELF_POPS.with(|c| c.get()) > 0 {
-        PENDING_SELF_POPS.with(|c| c.set(c.get() - 1));
-        // The browser has landed: writes issued meanwhile can apply now.
-        drain_queued_history_ops();
-        return;
+    if let Some(pending) = PENDING_BACK.with(|c| c.take()) {
+        let echo = match pending.target {
+            Some(target) => current_tag().map(|t| t.key) == Some(target),
+            None => true,
+        };
+        if echo {
+            // Our own `history.back()` landed — before_command already
+            // did the bookkeeping (and after_commit restores scroll on
+            // the flush). Writes issued meanwhile can apply now.
+            //
+            // The one landing a tag cannot attribute: a user Back that
+            // reaches the browser first lands on this same entry. It is
+            // indistinguishable from our echo and is swallowed, which is
+            // right at that moment (the pop already shows this entry);
+            // our own back then arrives with nothing pending and is
+            // reconciled as a further Back. Both moves happened, and the
+            // screens agree with the address bar after each.
+            drain_queued_history_ops();
+            return;
+        }
+        // The user's traversal reached the browser ahead of ours (see
+        // "Entry tags"): it is a real navigation, reconciled below. Our
+        // back's bookkeeping is cancelled, not carried: Chrome resolves
+        // our back against the user's landing and may drop it outright
+        // (`forward(); back()` gives ONE popstate), so an armed wait
+        // could hang forever — stalling the queue and blinding
+        // `current_url`. If it does still traverse, its popstate arrives
+        // with nothing pending and is reconciled like any other, so the
+        // screen follows the address bar either way. The queued writes
+        // are dropped: they encode navigations the app made on top of
+        // the pop, relative to an entry the user has just left; replayed
+        // now they would stack on the user's landing and undo it.
+        QUEUED_HISTORY_OPS.with(|q| q.borrow_mut().clear());
     }
 
     // The browser hands us path+query; routing runs on the path half and
@@ -671,6 +942,19 @@ pub(crate) fn handle_popstate(new_path: &str) {
     }
 }
 
+/// A document restored from the back/forward cache resumes with this
+/// module's state as it was frozen. A self back in flight when the page
+/// was left never delivers its popstate here (the browser went
+/// cross-document instead), so it is cancelled with its queued writes;
+/// then the restored entry is reconciled against the screens on show, a
+/// no-op when they already agree.
+pub(crate) fn handle_page_restored() {
+    if PENDING_BACK.with(|c| c.take()).is_some() {
+        QUEUED_HISTORY_OPS.with(|q| q.borrow_mut().clear());
+    }
+    handle_popstate(&pathname());
+}
+
 // ===========================================================================
 // Browser-side regression tests. Run with:
 //   cd crates/backend/web
@@ -772,21 +1056,46 @@ mod tests {
     // page away. Same shape, same assertions.
     // -----------------------------------------------------------------
 
-    /// A fake History API: entry list + index + an op log.
-    /// `history_back` behaves as Chrome's does: it only QUEUES a
-    /// traversal — `location` (the index) stays put until the TEST
-    /// delivers it with [`deliver_self_back`], which moves the index and
-    /// fires the popstate. The target is fixed when `back()` is called
-    /// (measured: `back(); pushState(x)` from `/p1` over `/p0` lands on
-    /// `/p0`), so a write slipped in before delivery is exposed exactly
-    /// as the real browser exposes it.
+    /// A fake History API: entries (URL + `history.state` tag) + index +
+    /// an op log.
+    ///
+    /// Traversals behave as Chrome's do (probed in headless Chrome, see
+    /// the module's "Entry tags" note): `back()` and a user's Back/Forward
+    /// only QUEUE a traversal — `location` (the index) stays put until the
+    /// TEST delivers it ([`deliver_next`] / [`deliver_self_back`]), which
+    /// moves the index and fires the popstate. Each traversal's target is
+    /// fixed when it is issued, relative to the target of the one queued
+    /// before it (or the committed entry when none is), so a write slipped
+    /// in before delivery is exposed exactly as the real browser exposes
+    /// it (`back(); pushState(x)` from `/p1` over `/p0` lands on `/p0`).
+    /// A traversal that resolves to the committed entry is dropped
+    /// (`forward(); back()` gives one popstate); one that resolves outside
+    /// the list would leave the document, which this fake models as a
+    /// dropped traversal.
     #[derive(Default)]
     struct SimHistory {
         entries: Vec<String>,
+        /// Each entry's tag, parallel to `entries` (`None` = untagged:
+        /// written before the app loaded, or by code that is not ours).
+        tags: Vec<Option<EntryTag>>,
         index: usize,
         log: Vec<String>,
-        /// Queued `back()` traversals, by target index, oldest first.
-        pending_backs: Vec<usize>,
+        /// Queued traversals, oldest first.
+        pending: Vec<SimTraversal>,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Mover {
+        /// Our module's `history.back()`.
+        App,
+        /// The browser's Back/Forward buttons (or a long-press jump).
+        User,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct SimTraversal {
+        target: usize,
+        by: Mover,
     }
 
     impl SimHistory {
@@ -796,11 +1105,27 @@ mod tests {
                 .cloned()
                 .unwrap_or_else(|| "/".to_string())
         }
+        fn current_tag(&self) -> Option<EntryTag> {
+            self.tags.get(self.index).copied().flatten()
+        }
         fn pushes(&self) -> usize {
             self.log.iter().filter(|l| l.starts_with("push:")).count()
         }
         fn backs(&self) -> usize {
             self.log.iter().filter(|l| *l == "back").count()
+        }
+        /// Queue a traversal by `delta`, Chrome-style (see the type docs).
+        fn traverse(&mut self, delta: isize, by: Mover) {
+            let base = self.pending.last().map(|t| t.target).unwrap_or(self.index);
+            let target = base as isize + delta;
+            if target < 0 || target as usize >= self.entries.len() {
+                return;
+            }
+            let target = target as usize;
+            if !self.pending.is_empty() && target == self.index {
+                return;
+            }
+            self.pending.push(SimTraversal { target, by });
         }
     }
 
@@ -808,11 +1133,21 @@ mod tests {
     /// for assertions. Call BEFORE `start` so the registration's
     /// cold-start history claim lands in the fake.
     fn install_sim_history(initial: &str) -> Rc<RefCell<SimHistory>> {
+        install_sim_history_over(&[], initial)
+    }
+
+    /// The fake seeded with UNTAGGED entries `below` the app's first
+    /// entry `initial` — what a page loaded over earlier same-document
+    /// history (a pre-boot `pushState`, a fragment link) looks like.
+    fn install_sim_history_over(below: &[&str], initial: &str) -> Rc<RefCell<SimHistory>> {
+        let mut entries: Vec<String> = below.iter().map(|s| s.to_string()).collect();
+        entries.push(initial.to_string());
         let sim = Rc::new(RefCell::new(SimHistory {
-            entries: vec![initial.to_string()],
-            index: 0,
+            tags: vec![None; entries.len()],
+            index: entries.len() - 1,
+            entries,
             log: Vec::new(),
-            pending_backs: Vec::new(),
+            pending: Vec::new(),
         }));
         arm_sim_history(&sim);
         sim
@@ -824,29 +1159,30 @@ mod tests {
     /// module falls back to the real `window.location`, which the test
     /// page pins at `/`.
     fn arm_sim_history(sim: &Rc<RefCell<SimHistory>>) {
-        let (s1, s2, s3, s4) = (sim.clone(), sim.clone(), sim.clone(), sim.clone());
+        let (s1, s2, s3, s4, s5) = (sim.clone(), sim.clone(), sim.clone(), sim.clone(), sim.clone());
         install_history_port(HistoryPort {
             current_path: Box::new(move || s1.borrow().current()),
-            push_state: Box::new(move |url| {
+            current_tag: Box::new(move || s5.borrow().current_tag()),
+            push_state: Box::new(move |url, tag| {
                 let mut h = s2.borrow_mut();
                 let idx = h.index;
                 h.entries.truncate(idx + 1);
+                h.tags.truncate(idx + 1);
                 h.entries.push(url.to_string());
+                h.tags.push(Some(tag));
                 h.index += 1;
                 h.log.push(format!("push:{url}"));
             }),
-            replace_state: Box::new(move |url| {
+            replace_state: Box::new(move |url, tag| {
                 let mut h = s3.borrow_mut();
                 let idx = h.index;
                 h.entries[idx] = url.to_string();
+                h.tags[idx] = Some(tag);
                 h.log.push(format!("replace:{url}"));
             }),
             history_back: Box::new(move || {
                 let mut h = s4.borrow_mut();
-                // Relative to where the browser will be once the backs
-                // already queued have traversed.
-                let from = h.pending_backs.last().copied().unwrap_or(h.index);
-                h.pending_backs.push(from.saturating_sub(1));
+                h.traverse(-1, Mover::App);
                 h.log.push("back".to_string());
             }),
         });
@@ -868,6 +1204,7 @@ mod tests {
     fn browser_back(sim: &Rc<RefCell<SimHistory>>) {
         {
             let mut h = sim.borrow_mut();
+            assert!(h.pending.is_empty(), "immediate Back with traversals queued: {:?}", h.pending);
             assert!(h.index > 0, "browser_back below the first entry");
             h.index -= 1;
         }
@@ -876,25 +1213,44 @@ mod tests {
         crate::newcore::flush_sync();
     }
 
-    /// Deliver the oldest queued programmatic `history.back()`: the
-    /// browser lands on its target and fires the popstate (the echo the
-    /// module must swallow), then the driver turn runs.
-    fn deliver_self_back(sim: &Rc<RefCell<SimHistory>>) {
-        {
+    /// The user presses Back (`delta < 0`) or Forward (`delta > 0`), or
+    /// jumps several entries from the button's long-press menu — QUEUED
+    /// like any traversal; [`deliver_next`] lands it.
+    fn user_go(sim: &Rc<RefCell<SimHistory>>, delta: isize) {
+        sim.borrow_mut().traverse(delta, Mover::User);
+    }
+
+    /// Land the oldest queued traversal: the browser moves to its target
+    /// and fires the popstate, then the driver turn runs. Returns who
+    /// issued it.
+    fn deliver_next(sim: &Rc<RefCell<SimHistory>>) -> Mover {
+        let by = {
             let mut h = sim.borrow_mut();
-            assert!(!h.pending_backs.is_empty(), "no history.back() in flight, log: {:?}", h.log);
-            let target = h.pending_backs.remove(0);
-            h.index = target;
-        }
+            assert!(!h.pending.is_empty(), "no traversal in flight, log: {:?}", h.log);
+            let t = h.pending.remove(0);
+            h.index = t.target;
+            t.by
+        };
         let path = sim.borrow().current();
         handle_popstate(&path);
         crate::newcore::flush_sync();
+        by
+    }
+
+    /// Deliver the oldest queued traversal, which must be a programmatic
+    /// `history.back()`: the browser lands on its target and fires the
+    /// popstate (the echo the module must swallow).
+    fn deliver_self_back(sim: &Rc<RefCell<SimHistory>>) {
+        let first = sim.borrow().pending.first().map(|t| t.by);
+        assert_eq!(first, Some(Mover::App), "no history.back() in flight, log: {:?}", sim.borrow().log);
+        deliver_next(sim);
     }
 
     /// Simulate browser Forward.
     fn browser_forward(sim: &Rc<RefCell<SimHistory>>) {
         {
             let mut h = sim.borrow_mut();
+            assert!(h.pending.is_empty(), "immediate Forward with traversals queued: {:?}", h.pending);
             assert!(
                 h.index + 1 < h.entries.len(),
                 "browser_forward past the last entry"
@@ -904,6 +1260,11 @@ mod tests {
         let path = sim.borrow().current();
         handle_popstate(&path);
         crate::newcore::flush_sync();
+    }
+
+    /// Whether a self-initiated back is still awaiting its echo.
+    fn self_back_pending() -> bool {
+        PENDING_BACK.with(|c| c.get()).is_some()
     }
 
     fn text_of(mount: &web_glue::dom::Element) -> String {
@@ -1025,6 +1386,107 @@ mod tests {
             "popstate reconciled into a Pop"
         );
         stop();
+    }
+
+    /// Regression (real Chrome): the user's Forward is issued, and before
+    /// its popstate arrives an app handler pops. Chrome resolves the
+    /// pop's `history.back()` against the Forward's landing — the entry
+    /// already committed — and drops it, so the one popstate that comes
+    /// is the user's. The counting swallow took it for the pop's echo and
+    /// left the root on screen under `/deep`, permanently. `forward()`
+    /// stands in for the toolbar button: both are resolved against the
+    /// pending traversal in the browser process, and calling both in one
+    /// task is what makes the ordering deterministic (the renderer cannot
+    /// commit the Forward until the task ends). Pre-fix: "S-root".
+    #[wasm_bindgen_test]
+    async fn regression_user_forward_racing_a_programmatic_pop_is_applied_not_swallowed() {
+        let mount = setup_mount();
+        let nav = boot_stack4();
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        nav.push(&DEEP, ());
+        crate::newcore::flush_sync();
+        let history = web_glue::dom::window().unwrap().history().unwrap();
+        await_popstate(|| history.back().unwrap()).await;
+        assert_eq!(pathname(), "/detail");
+        assert!(text_of(&mount).contains("S-detail"), "{}", text_of(&mount));
+
+        await_popstate(|| {
+            history.forward().unwrap();
+            nav.pop();
+            crate::newcore::flush_sync();
+        })
+        .await;
+        assert_eq!(pathname(), "/deep", "the user's Forward landed");
+        assert!(
+            text_of(&mount).contains("S-deep"),
+            "the screen follows the user's Forward: {}",
+            text_of(&mount)
+        );
+        assert!(!self_back_pending(), "no wait left armed for a dropped back");
+
+        // History and screens agree: Back from here is an ordinary pop.
+        await_popstate(|| history.back().unwrap()).await;
+        assert_eq!(pathname(), "/detail");
+        assert!(text_of(&mount).contains("S-detail"), "{}", text_of(&mount));
+        stop();
+    }
+
+    /// The tags on the REAL History API: a replace keeps an app's object
+    /// state and adds the tag beside it; a push links its entry to the one
+    /// below; a non-object state an app stored is left exactly as it was
+    /// (and the entry untagged) rather than overwritten.
+    #[wasm_bindgen_test]
+    async fn entry_tags_ride_history_state_without_clobbering_app_state() {
+        let _mount = setup_mount();
+        let eval = |body: &str| {
+            web_glue::js::Function::new_no_args(body)
+                .call0(&web_glue::JsValue::UNDEFINED)
+                .unwrap()
+                .as_string()
+                .unwrap_or_default()
+        };
+        eval("history.replaceState({ app: 'kept' }, '', '/'); return '';");
+        assert_eq!(current_tag(), None, "an app's state alone carries no tag");
+
+        replace_state("/");
+        let below = current_tag().expect("replace adopted the entry");
+        assert_eq!(below.prev, None, "nothing known below an adopted entry");
+        assert_eq!(
+            eval("return String(history.state.app);"),
+            "kept",
+            "the app's state survives the replace"
+        );
+        assert_eq!(
+            eval(&format!("return typeof history.state['{STATE_KEY}'].i;")),
+            "number"
+        );
+
+        push_state("/tagged");
+        let pushed = current_tag().expect("push tagged");
+        assert_eq!(pushed.prev, Some(below.key), "the push links to the entry it covers");
+        assert_ne!(pushed.key, below.key);
+        assert_eq!(eval("return String(history.state.app);"), "undefined", "a new entry starts clean");
+
+        replace_state("/tagged-again");
+        assert_eq!(current_tag(), Some(pushed), "a replace keeps the entry's identity");
+        assert_eq!(pathname(), "/tagged-again");
+
+        eval("history.replaceState('app-string', '', location.pathname); return '';");
+        replace_state("/tagged-3");
+        assert_eq!(eval("return JSON.stringify(history.state);"), "\"app-string\"");
+        assert_eq!(current_tag(), None);
+        assert_eq!(pathname(), "/tagged-3");
+
+        // Adoption keeps the address — fragment included.
+        eval("history.replaceState(null, '', '/adopt#frag'); return '';");
+        push_state("/after-adopt");
+        let after = current_tag().expect("pushed");
+        assert!(after.prev.is_some(), "the untagged entry below was adopted first");
+        let history = web_glue::dom::window().unwrap().history().unwrap();
+        await_popstate(|| history.back().unwrap()).await;
+        assert_eq!(eval("return location.pathname + location.hash;"), "/adopt#frag");
+        assert_eq!(current_tag().map(|t| t.key), after.prev, "landed on the adopted entry");
     }
 
     /// Cold-start deep link: the initial-path slot resolves the URL's
@@ -1394,6 +1856,437 @@ mod tests {
         deliver_self_back(&sim);
         assert_eq!(sim.borrow().current(), "/", "log: {:?}", sim.borrow().log);
         assert!(text_of(&mount).contains("root-screen"), "both echoes inert");
+        stop();
+    }
+
+    // =================================================================
+    // Popstate attribution by entry tag: a user traversal that reaches
+    // the browser while our own `history.back()` is in flight. The fake
+    // queues traversals the way Chrome resolves them (see `SimHistory`).
+    // =================================================================
+
+    /// Four-screen stack (`/`, `/detail`, `/deep`, `/settings`).
+    fn boot_stack4() -> NavHandle {
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| runtime_vocabulary::text().content("S-root").build())
+                .screen(DETAIL, |_| runtime_vocabulary::text().content("S-detail").build())
+                .screen(DEEP, |_| runtime_vocabulary::text().content("S-deep").build())
+                .screen(SETTINGS, |_| runtime_vocabulary::text().content("S-settings").build())
+                .layout(|| navigator_outlet().build())
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
+                .build()
+        });
+        let h = handle.borrow_mut().take();
+        h.expect("NavHandle filled at mount")
+    }
+
+    /// Regression (user Forward swallowed as our pop's echo): the user
+    /// pressed Forward and, before its popstate arrived, an app handler
+    /// popped. Chrome resolves our back against the Forward's landing —
+    /// the committed entry — and drops it, so the ONLY popstate is the
+    /// user's. The counting swallow took it for our echo: the root stayed
+    /// on screen under `/deep`, and with the back dropped nothing ever
+    /// repaired it. Pre-fix: "S-root" at `/deep`.
+    #[wasm_bindgen_test]
+    fn regression_user_forward_ahead_of_a_self_back_is_applied_not_swallowed() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack4();
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        nav.push(&DEEP, ());
+        crate::newcore::flush_sync();
+        browser_back(&sim);
+        assert!(text_of(&mount).contains("S-detail"));
+
+        user_go(&sim, 1);
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("S-root"), "pop committed: {}", text_of(&mount));
+        assert_eq!(sim.borrow().pending.len(), 1, "our back resolved to the committed entry and was dropped");
+
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert_eq!(sim.borrow().current(), "/deep");
+        assert!(
+            text_of(&mount).contains("S-deep"),
+            "the user's Forward is a navigation, not our echo: {}",
+            text_of(&mount)
+        );
+        assert!(!self_back_pending(), "the overtaken back's wait is cancelled");
+
+        // Nothing is left waiting for an echo that will never come: the
+        // next navigation writes history at once.
+        let pushes = sim.borrow().pushes();
+        nav.push(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        assert_eq!(sim.borrow().pushes(), pushes + 1, "log: {:?}", sim.borrow().log);
+        assert_eq!(sim.borrow().current(), "/settings");
+        stop();
+    }
+
+    /// Regression (user Back jump swallowed): the user jumped two entries
+    /// back (the button's long-press menu) just before an app pop. Both
+    /// traversals land — the user's first, then ours, resolved from the
+    /// user's landing. The user's popstate is not our target and must be
+    /// reconciled; ours then arrives with nothing pending and is
+    /// reconciled too. Pre-fix: the first popstate was swallowed and the
+    /// screen sat on "S-deep" under `/detail`.
+    #[wasm_bindgen_test]
+    fn regression_user_back_jump_ahead_of_a_self_back_is_applied() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack4();
+        for r in [&DETAIL, &DEEP, &SETTINGS] {
+            nav.push(r, ());
+            crate::newcore::flush_sync();
+        }
+        assert_eq!(sim.borrow().current(), "/settings");
+
+        user_go(&sim, -2);
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("S-deep"), "pop committed");
+
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert_eq!(sim.borrow().current(), "/detail");
+        assert!(
+            text_of(&mount).contains("S-detail"),
+            "the screen follows the user's landing: {}",
+            text_of(&mount)
+        );
+        assert!(!self_back_pending());
+
+        assert_eq!(deliver_next(&sim), Mover::App);
+        assert_eq!(sim.borrow().current(), "/");
+        assert!(
+            text_of(&mount).contains("S-root"),
+            "our late back is reconciled like any traversal: {}",
+            text_of(&mount)
+        );
+        stop();
+    }
+
+    /// Two quick user Backs queued BEHIND our back: ours lands first and
+    /// is swallowed (it is exactly our target), then both of the user's
+    /// are applied. Coverage for the order the counting swallow already
+    /// handled — the tag match must not regress it.
+    #[wasm_bindgen_test]
+    fn two_quick_user_backs_behind_a_self_back_are_both_applied() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack4();
+        for r in [&DETAIL, &DEEP, &SETTINGS] {
+            nav.push(r, ());
+            crate::newcore::flush_sync();
+        }
+
+        nav.pop();
+        crate::newcore::flush_sync();
+        user_go(&sim, -1);
+        user_go(&sim, -1);
+
+        deliver_self_back(&sim);
+        assert_eq!(sim.borrow().current(), "/deep");
+        assert!(text_of(&mount).contains("S-deep"), "echo inert: {}", text_of(&mount));
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert!(text_of(&mount).contains("S-detail"), "first Back: {}", text_of(&mount));
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert_eq!(sim.borrow().current(), "/");
+        assert!(text_of(&mount).contains("S-root"), "second Back: {}", text_of(&mount));
+        stop();
+    }
+
+    /// Regression (queue misfire): `pop(); push(x)` queued the push behind
+    /// the back; a user Forward then landed first. Taken for the echo, it
+    /// released the queue and `/settings` was pushed over the entry the
+    /// user had just moved to. The queued write encodes a navigation
+    /// relative to an entry the user has left, so it is dropped, and the
+    /// screen follows the user. Pre-fix: `push:/settings` after the
+    /// user's landing, "S-settings" on screen.
+    #[wasm_bindgen_test]
+    fn regression_writes_queued_behind_an_overtaken_self_back_are_dropped() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack4();
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        nav.push(&DEEP, ());
+        crate::newcore::flush_sync();
+        browser_back(&sim);
+
+        user_go(&sim, 1);
+        nav.pop();
+        nav.push(&SETTINGS, ());
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("S-settings"), "pop + push committed");
+        let log_len = sim.borrow().log.len();
+
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert!(
+            !sim.borrow().log[log_len..].iter().any(|l| l == "push:/settings"),
+            "the queued push must not land on the user's entry, log: {:?}",
+            sim.borrow().log
+        );
+        assert_eq!(sim.borrow().current(), "/deep");
+        assert!(text_of(&mount).contains("S-deep"), "{}", text_of(&mount));
+        assert!(!self_back_pending());
+        stop();
+    }
+
+    /// Regression (untagged landing taken for the echo): the user jumped
+    /// back onto an entry from before the app booted — same document, no
+    /// tag. It cannot be our target, so it is reconciled. Pre-fix: "root"
+    /// on screen under `/detail`.
+    #[wasm_bindgen_test]
+    fn regression_user_landing_on_a_pre_app_entry_during_a_self_back_is_applied() {
+        let mount = setup_mount();
+        runtime_shared::primitives::navigator::set_initial_path(None);
+        let sim = install_sim_history_over(&["/detail"], "/");
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        assert!(
+            sim.borrow().tags[1].is_some() && sim.borrow().tags[0].is_none(),
+            "the boot entry was adopted on the first push; the pre-app entry left alone: {:?}",
+            sim.borrow().tags
+        );
+
+        user_go(&sim, -2);
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("root-screen"));
+
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert_eq!(sim.borrow().current(), "/detail");
+        assert!(
+            text_of(&mount).contains("detail-screen"),
+            "an untagged landing is never our echo: {}",
+            text_of(&mount)
+        );
+        assert!(!self_back_pending());
+        stop();
+    }
+
+    /// A pop from an entry that carries no tag (app code pushed it, and a
+    /// browser Forward reconciled onto it) has no exact landing to match:
+    /// the first popstate is taken as the echo, the attribution this
+    /// module had before tags. Pins the documented fallback.
+    #[wasm_bindgen_test]
+    fn pop_from_an_untagged_entry_falls_back_to_first_popstate_as_echo() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+        // App code outside the navigator: `history.pushState(null, "", "/detail")`.
+        {
+            let mut h = sim.borrow_mut();
+            h.entries.push("/detail".to_string());
+            h.tags.push(None);
+            h.index = 1;
+        }
+        browser_back(&sim);
+        browser_forward(&sim);
+        assert!(text_of(&mount).contains("detail-screen"), "Forward reconciled onto the untagged entry");
+
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(self_back_pending());
+        deliver_self_back(&sim);
+        assert!(!self_back_pending(), "first popstate taken as the echo");
+        assert!(text_of(&mount).contains("root-screen"));
+        stop();
+    }
+
+    /// Regression (reload): a reloaded document restarts its id counter,
+    /// so an entry it pushes can carry the same numeric id as a restored
+    /// entry an earlier document wrote. The session half of the key keeps
+    /// them apart: here the user's Forward lands on `(new, 2)` while our
+    /// back targets `(old, 2)`, and it must be applied, not swallowed.
+    /// Also pins that the reload's boot claim keeps the restored entry's
+    /// key (the replace re-tags it with the key its successor links to).
+    #[wasm_bindgen_test]
+    fn regression_reload_restarted_ids_do_not_collide_with_restored_entries() {
+        const OLD: u64 = 111;
+        const NEW: u64 = 222;
+        let (mount, sim) = setup_sim("/");
+        begin_session_for_tests(OLD);
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        let restored = sim.borrow().tags[1].expect("pushed entry tagged");
+        assert_eq!(restored.key, EntryKey { session: OLD, id: 2 });
+        stop();
+
+        // Reload at `/detail`: new document, counter back at 1.
+        begin_session_for_tests(NEW);
+        let mount = setup_mount();
+        arm_sim_history(&sim);
+        runtime_shared::primitives::navigator::set_initial_path(Some("/detail".to_string()));
+        let handle: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let fill = handle.clone();
+        start(move || {
+            stack_navigator(&ROOT)
+                .screen(ROOT, |_| runtime_vocabulary::text().content("S-root").build())
+                .screen(DETAIL, |_| runtime_vocabulary::text().content("S-detail").build())
+                .screen(DEEP, |_| runtime_vocabulary::text().content("S-deep").build())
+                .layout(|| navigator_outlet().build())
+                .on_handle({
+                    // The build closure is `Fn` (a hot patch re-runs the
+                    // app root), so an inner `move` must take a fresh
+                    // clone rather than the captured one.
+                    let fill = fill.clone();
+                    move |h| *fill.borrow_mut() = Some(h)
+                })
+                .build()
+        });
+        runtime_shared::primitives::navigator::set_initial_path(None);
+        let nav = { let h = handle.borrow_mut().take(); h.expect("handle") };
+        assert!(text_of(&mount).contains("S-detail"), "{}", text_of(&mount));
+        // Seed: the restored entry became the index entry, key kept; the
+        // deep link was re-pushed over it as the new session's first id.
+        let seeded = sim.borrow().tags[sim.borrow().index].expect("seeded entry tagged");
+        assert_eq!(seeded.key, EntryKey { session: NEW, id: 1 });
+        assert_eq!(seeded.prev, Some(restored.key), "linked to the restored key");
+
+        nav.push(&DEEP, ());
+        crate::newcore::flush_sync();
+        assert_eq!(
+            sim.borrow().current_tag().map(|t| t.key),
+            Some(EntryKey { session: NEW, id: 2 }),
+            "same numeric id as the restored entry"
+        );
+        browser_back(&sim);
+        assert!(text_of(&mount).contains("S-detail"));
+
+        // Our back targets (OLD, 2); the user's Forward lands on (NEW, 2).
+        user_go(&sim, 1);
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert!(
+            text_of(&mount).contains("S-deep"),
+            "same id, other session: not our echo: {}",
+            text_of(&mount)
+        );
+        assert!(!self_back_pending());
+        stop();
+    }
+
+    /// Regression (nested): an inner stack's pop raced a user Back jump
+    /// that left the section entirely. The user's landing (`/`) changes
+    /// the OUTER swap's slice, so attribution is page-wide, not
+    /// per-navigator: it must reach the parent. Pre-fix: swallowed,
+    /// "DOCS INDEX" under `/`.
+    #[wasm_bindgen_test]
+    fn regression_user_traversal_overtaking_a_nested_self_back_reaches_the_parent() {
+        let (mount, sim) = setup_sim("/");
+        let outer: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let inner: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let (o, i) = (outer.clone(), inner.clone());
+        start(move || {
+            let i = i.clone();
+            runtime_vocabulary::builders::swap_navigator(&ROOT)
+                .screen(ROOT, |_| {
+                    runtime_vocabulary::text().content("HOME CONTENT").build()
+                })
+                .screen(DOCS, move |_| {
+                    let i = i.clone();
+                    stack_navigator(&NESTED_INDEX)
+                        .screen(NESTED_INDEX, |_| {
+                            runtime_vocabulary::text().content("DOCS INDEX").build()
+                        })
+                        .screen(NESTED_DETAIL, |_| {
+                            runtime_vocabulary::text().content("NESTED DETAIL").build()
+                        })
+                        .layout(|| navigator_outlet().build())
+                        .on_handle({
+                            // Fresh clone per build (the closure is `Fn`).
+                            let i = i.clone();
+                            move |h| *i.borrow_mut() = Some(h)
+                        })
+                        .build()
+                })
+                .layout(|| navigator_outlet().build())
+                .on_handle({
+                    // Fresh clone per build (the closure is `Fn`).
+                    let o = o.clone();
+                    move |h| *o.borrow_mut() = Some(h)
+                })
+                .build()
+        });
+        let onav = { let h = outer.borrow_mut().take(); h.expect("outer handle") };
+        onav.select(&DOCS, ());
+        crate::newcore::flush_sync();
+        let inav = { let h = inner.borrow_mut().take(); h.expect("nested handle") };
+        inav.push(&NESTED_DETAIL, ());
+        crate::newcore::flush_sync();
+        assert_eq!(sim.borrow().current(), "/docs/detail");
+
+        user_go(&sim, -2);
+        inav.pop();
+        crate::newcore::flush_sync();
+        assert!(text_of(&mount).contains("DOCS INDEX"), "inner pop committed");
+
+        assert_eq!(deliver_next(&sim), Mover::User);
+        assert_eq!(sim.borrow().current(), "/");
+        let t = text_of(&mount);
+        assert!(t.contains("HOME CONTENT"), "the parent followed the user out of the section: {t}");
+        assert!(!self_back_pending());
+        stop();
+    }
+
+    /// Regression (bfcache): the page was left for another document while
+    /// our back was in flight, and the user came back to it through the
+    /// back/forward cache — on `/detail`, the entry our back never left.
+    /// Its popstate will never arrive here. Pre-fix the wait stayed
+    /// armed: every later write queued forever and the root stayed on
+    /// screen under `/detail`.
+    #[wasm_bindgen_test]
+    fn regression_bfcache_restore_cancels_a_self_back_that_never_landed() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert!(self_back_pending());
+
+        // Cross-document navigation discarded the traversal; `pageshow`
+        // (persisted) fires on the restored page.
+        sim.borrow_mut().pending.clear();
+        handle_page_restored();
+        crate::newcore::flush_sync();
+        assert!(!self_back_pending(), "the wait is cancelled");
+        assert!(
+            text_of(&mount).contains("detail-screen"),
+            "the screen follows the restored entry: {}",
+            text_of(&mount)
+        );
+        let pushes = sim.borrow().pushes();
+        nav.pop();
+        crate::newcore::flush_sync();
+        assert_eq!(sim.borrow().backs(), 2, "history moves again, log: {:?}", sim.borrow().log);
+        deliver_self_back(&sim);
+        assert_eq!(sim.borrow().pushes(), pushes);
+        assert_eq!(sim.borrow().current(), "/");
+        stop();
+    }
+
+    /// A restore onto the entry the screens already show is a no-op.
+    #[wasm_bindgen_test]
+    fn bfcache_restore_with_nothing_pending_writes_and_dispatches_nothing() {
+        let (mount, sim) = setup_sim("/");
+        let nav = boot_stack_app(&mount);
+        nav.push(&DETAIL, ());
+        crate::newcore::flush_sync();
+        let log_len = sim.borrow().log.len();
+        handle_page_restored();
+        crate::newcore::flush_sync();
+        assert_eq!(sim.borrow().log.len(), log_len);
+        assert!(text_of(&mount).contains("detail-screen"));
         stop();
     }
 

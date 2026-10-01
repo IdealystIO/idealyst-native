@@ -531,7 +531,12 @@ docs! {
              code("history.pushState"),
              " entries, browser back/forward reconcile into ordinary nav \
               commands, cold-start deep links seed the right screen, and \
-              per-entry scroll offsets restore on back. A navigator that \
+              per-entry scroll offsets restore on back. Each entry the \
+              sync writes carries a small tag in history.state (under \
+              __idealyst_nav, beside anything else the app keeps there), \
+              so a Back or Forward the user presses while a programmatic \
+              pop is still traversing is told apart from the pop and \
+              followed. A navigator that \
               mounts LATER — a disposed section rebuilt by Back, or a \
               shell remounted by a signal — resolves the live URL the same \
               way a cold link does, whenever that URL names something \
