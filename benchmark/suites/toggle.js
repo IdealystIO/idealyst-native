@@ -30,9 +30,22 @@ export const meta = {
   params: [
     { name: 'rows',         label: 'Rows',           type: 'number', default: 1000, min: 1, max: 100000 },
     { name: 'iterations',   label: 'Iterations',     type: 'number', default: 10,   min: 1, max: 100   },
-    // Two warmup toggles by default — one in each direction.
-    // The first measured iteration would otherwise pay a cold
-    // tax for whichever direction it happens to go.
+    // Untimed toggles run back to back (one frame each) before the
+    // paced warmup, to get the JIT past its tier-up schedule. V8
+    // compiles a function up a tier (Liftoff → TurboFan for wasm,
+    // Ignition → Sparkplug → Maglev for JS) after it has run a fixed
+    // amount, so in every page load the compile events land on the
+    // SAME toggle numbers, ~5–30 on the web variants (traced:
+    // Sparkplug batch at toggle 9, Maglev at 19–22). Toggle n's
+    // direction is fixed by n's parity, so with only the paced
+    // warmup those one-off compiles always fell on one direction's
+    // samples and read as a light→dark vs dark→light gap that is not
+    // in either toggle's work. Rounded up to even so the measured
+    // loop still starts on light→dark.
+    { name: 'jitWarmup',    label: 'JIT warmup toggles', type: 'number', default: 50, min: 0, max: 1000 },
+    // Two paced warmup toggles — one in each direction — so the first
+    // measured toggle of each direction follows the same 300 ms
+    // cadence as the rest.
     { name: 'warmupCycles', label: 'Warmup toggles', type: 'number', default: 2,    min: 0, max: 10   },
   ],
 };
@@ -55,6 +68,7 @@ export async function run({ setRows, setTheme, params, onProgress }) {
   const rows = Number(params?.rows ?? 1000);
   const iterations = Number(params?.iterations ?? 10);
   const warmupCycles = Number(params?.warmupCycles ?? 2);
+  const jitWarmup = Number(params?.jitWarmup ?? 50);
 
   // One-time mount. Most variants need a row list to theme; the
   // ones that don't (e.g. css-vars-only variants where the rows
@@ -73,10 +87,21 @@ export async function run({ setRows, setTheme, params, onProgress }) {
     verifyRowsMounted(rows, 'after setRows in toggle suite');
   }
 
-  // Page starts in light theme by convention. Warmup toggles
-  // hit both directions to warm JIT, font, and style caches at
-  // both polarities before measurement starts.
+  // Page starts in light theme by convention. The JIT warmup runs
+  // an even number of toggles, so the page is light again after it.
+  // One frame per toggle lets style recalc run as it does in the
+  // measured loop, without the 300 ms cadence.
   let currentDark = false;
+  const jitToggles = jitWarmup + (jitWarmup % 2);
+  for (let i = 0; i < jitToggles; i++) {
+    currentDark = !currentDark;
+    await setTheme(currentDark ? 'dark' : 'light');
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  verifyThemeApplied(currentDark, `after ${jitToggles} JIT warmup toggles`);
+
+  // Paced warmup: both directions once at the measured cadence, to
+  // warm font and style caches at both polarities.
   for (let i = 0; i < warmupCycles; i++) {
     currentDark = !currentDark;
     await measureOne(() => setTheme(currentDark ? 'dark' : 'light'));

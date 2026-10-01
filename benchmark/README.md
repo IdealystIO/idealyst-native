@@ -129,7 +129,10 @@ cross-suite numbers aren't comparable.
 - **Warmup.** The rebuild suite runs an untimed cycle at each row count
   before measurement starts so neither size pays a cold tax on its first
   iteration. Bump `warmupCycles` in the runner sidebar if iter-1 numbers
-  still look anomalous.
+  still look anomalous. The toggle suite also runs `jitWarmup` (default
+  50) untimed toggles first: V8's tier-up compiles fire at fixed call
+  counts, and with only two warmup toggles they always fell on the
+  light→dark samples.
 
 ## Adding a framework
 

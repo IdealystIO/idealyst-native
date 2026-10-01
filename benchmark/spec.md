@@ -90,8 +90,16 @@ per-iteration numbers. Shipped:
   light→dark + 5 dark→light. Bucket = direction (0 = light→dark,
   1 = dark→light) → columns labeled `L→D` / `D→L`.
 
-  Params: `rows`, `iterations`, `warmupCycles` (untimed warmup toggles; one
-  in each direction by default).
+  Params: `rows`, `iterations`, `jitWarmup` (untimed toggles run back to
+  back, one frame each, before anything is measured; default 50),
+  `warmupCycles` (untimed toggles at the measured cadence; one in each
+  direction by default).
+
+  `jitWarmup` exists because V8 compiles hot code up a tier at fixed call
+  counts, so its one-off compile pauses land on the same toggle numbers in
+  every page load (toggles ~5–30 on the web variants), and a toggle's
+  direction is set by its number's parity. Without it the measured toggles
+  sat inside that schedule and the pauses read as a direction gap.
 
   Note that some variants (vanilla-css-vars, react-cssvars, the
   framework's web backend) implement theme swap as a single `<html>` class
