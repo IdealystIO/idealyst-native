@@ -150,11 +150,18 @@ fn checks() -> Vec<Check> {
             fix: "rustup target add wasm32-unknown-unknown",
             probe: || rustup_target("wasm32-unknown-unknown"),
         },
+        // Not needed for a framework-only app: `idealyst build/dev --web`
+        // packages a module with no wasm-bindgen in it (own mode) without
+        // the CLI. Only a HYBRID build — an app that links wasm-bindgen
+        // through wgpu (canvas-vello, the GPU host) or its own web-sys —
+        // and `idealyst export` run it, and then at exactly the version in
+        // the app's Cargo.lock. See docs/proposals/own-web-bindings.md.
         Check {
             id: "wasm-bindgen",
             category: Category::Web,
-            level: Level::Required,
-            fix: "cargo install wasm-bindgen-cli",
+            level: Level::Optional,
+            fix: "cargo install wasm-bindgen-cli --version <the wasm-bindgen in your Cargo.lock> — \
+                  only for apps that use wgpu or web-sys (hybrid builds) and `idealyst export`",
             probe: || bin_version("wasm-bindgen", &["--version"]),
         },
         Check {
@@ -705,6 +712,17 @@ mod tests {
         assert_eq!(status_key(&Outcome::Ok(None)), "ok");
         assert_eq!(status_key(&Outcome::Missing), "missing");
         assert_eq!(status_key(&Outcome::Unknown("x".into())), "unknown");
+    }
+
+    /// A framework-only web app builds in own mode and never runs the
+    /// wasm-bindgen CLI, so `idealyst doctor web` must not fail an install
+    /// without it. It stays listed (hybrid builds and `export` need it).
+    #[test]
+    fn wasm_bindgen_is_not_required_for_a_web_build() {
+        let check = checks().into_iter().find(|c| c.id == "wasm-bindgen").expect("still listed");
+        assert_eq!(check.category, Category::Web);
+        assert!(check.level != Level::Required);
+        assert!(check.fix.contains("hybrid"), "{}", check.fix);
     }
 
     #[test]

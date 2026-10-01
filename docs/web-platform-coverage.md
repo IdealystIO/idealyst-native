@@ -10,10 +10,13 @@ two reasons:
   second path for every other target. The SDK call works on every
   target, and each target gives its own answer, even when that answer
   is "there is no address bar here".
-- **The binding layer is the framework's to change.** The framework is
-  moving away from `wasm-bindgen` inside its own crates. An app that
-  imports it directly is tied to it; an app that goes through the SDKs
-  is not.
+- **The binding layer is the framework's to change.** The framework's
+  own crates are off `wasm-bindgen` (they bind the browser through
+  `web-glue`), so an app that goes through the SDKs builds without the
+  wasm-bindgen CLI at all (own mode). An app that imports `web-sys` /
+  `wasm-bindgen` directly is tied to them: its web build runs in hybrid
+  mode and needs the `wasm-bindgen` CLI at the version in its
+  `Cargo.lock`.
 
 This page lists every browser capability a real app has needed, which
 framework API covers it, and how each backend answers. The list started

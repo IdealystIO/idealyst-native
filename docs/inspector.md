@@ -138,7 +138,9 @@ staged files (`index.html`, the JS glue, one wasm module) with
 workspace, so the source is always there.
 
 - Building the CLI therefore needs the wasm toolchain (the
-  `wasm32-unknown-unknown` target, `wasm-bindgen`, `wasm-opt`). When a
+  `wasm32-unknown-unknown` target, `wasm-opt`, and `wasm-bindgen`: the
+  Inspector still reads its host and query string through web-sys, so it
+  builds in hybrid mode). When a
   piece is missing, the CLI still builds. It emits a build warning, and
   `idealyst inspect` says why there's no page. The server still runs.
 - `build.rs` re-runs when any workspace crate in the Inspector's wasm

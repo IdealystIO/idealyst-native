@@ -103,8 +103,8 @@ fn main() {
 //
 // The CLI installs from a git checkout of this workspace, so the
 // Inspector's source is always beside this crate. Building it needs the
-// wasm toolchain (wasm32-unknown-unknown, wasm-bindgen, wasm-opt), which
-// anyone building idealyst web apps already has. A missing tool must not
+// wasm toolchain (wasm32-unknown-unknown, wasm-opt — and wasm-bindgen: the
+// Inspector still uses web-sys, so it builds in hybrid mode). A missing tool must not
 // make the CLI uninstallable: the failure becomes a build warning plus
 // `SKIPPED`, which `idealyst inspect` reports when it starts.
 //

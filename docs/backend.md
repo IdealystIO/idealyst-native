@@ -170,6 +170,14 @@ compiles and silently yields `None`. (The phase-2b crossing
 `backend_web::bridge::{node_from_web_sys, node_to_web_sys}` is gone since
 every SDK that mounts DOM was ported in phase 3.)
 
+backend-web itself depends on neither web-sys nor wasm-bindgen, so how a
+web app is packaged depends only on the app: a module with no wasm-bindgen
+in it builds in **own mode** (the web-glue pass writes `pkg/<lib>.js`; the
+wasm-bindgen CLI is not needed), and one that links wasm-bindgen — wgpu
+through `canvas-vello` or the GPU host, or the app's own web-sys — builds in
+**hybrid mode**, where the CLI runs at the version in the app's
+`Cargo.lock` (`build_web::own_glue`).
+
 The framework's own handlers install through one call —
 `runtime_vocabulary::handlers::register_builtins(&mut registry)`: the
 leaf primitives (`view`, `text`, `button`, `pressable`, `image`, `icon`,
@@ -534,6 +542,18 @@ An authored GPU surface. The framework provides the platform drawable
 (`<canvas>`, `SurfaceView`, `UIView` + `CAMetalLayer`) and the
 `on_ready` / `on_resize` / `on_lost` lifecycle callbacks; the author owns
 the rendering. No GPU crate is linked by the framework itself.
+
+On the web the surface's window handle is raw-window-handle's id form,
+`WebWindowHandle`: the `<canvas>` carries `data-raw-handle="<id>"` (unique
+on the page, never 0), and a consumer finds it with
+`document.querySelector('[data-raw-handle="<id>"]')` — which is what
+wgpu's `create_surface` does with it. It is not a `WebCanvasWindowHandle`
+because that handle's pointer must name a wasm-bindgen `JsValue`, and the
+backend holds the canvas as a web-glue handle; a pointer to the latter
+names an unrelated object in wasm-bindgen's heap (the bug that left every
+GPU canvas blank after the web-glue port — `canvas-vello` and `host-web`
+resolve the id now). Like wgpu's own lookup this searches the document, so
+a Graphics canvas inside a shadow root is not found.
 
 ### Presence / Portal
 

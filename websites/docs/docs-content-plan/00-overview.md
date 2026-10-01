@@ -477,7 +477,7 @@ increments.
 
 ## What you don't write
 
-You don't write the wasm-bindgen entry point for web.
+You don't write the JS entry point for web.
 You don't write the JNI bridge for Android.
 You don't write the `UIApplicationDelegate` for iOS.
 You don't write the Roku component manifest.

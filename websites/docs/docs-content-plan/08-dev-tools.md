@@ -32,7 +32,7 @@ crates that turn `app()` into a runnable platform artifact are
 ```
 target/
   idealyst/
-    web/              # wasm-bindgen entry + pkg/ + index.html
+    web/              # pkg/ (the generated JS + wasm) + index.html
     ios/              # Xcode project + static lib
     android/          # Gradle project + cdylib
     roku/             # Channel package layout

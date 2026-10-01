@@ -79,6 +79,8 @@ npm install -g @anthropic-ai/claude-code
 rustup target add wasm32-unknown-unknown
 
 # wasm-bindgen-cli MUST match the wasm-bindgen crate version in Cargo.lock.
+# Only hybrid web builds (an app linking wgpu / web-sys) and the wasm32 browser
+# test runner use it; a framework-only app builds without it (own mode).
 # Prebuilt release first (seconds); cargo install as the slow fallback.
 WBG_VERSION=$(grep -A1 'name = "wasm-bindgen"' "$REPO/Cargo.lock" | grep version | head -1 | cut -d'"' -f2)
 if ! wasm-bindgen --version 2>/dev/null | grep -q "$WBG_VERSION"; then

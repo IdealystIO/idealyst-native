@@ -28,7 +28,8 @@ CLI when you target the matching platform.
 
 ## Web
 
-`backend-web` drives the DOM via `web-sys` and `wasm-bindgen`. Your
+`backend-web` drives the DOM via `web-glue`, the framework's own JS
+bindings (no `web-sys` / `wasm-bindgen`). Your
 app compiles to WebAssembly, the backend creates DOM elements as
 the walker visits primitives, and the browser handles layout,
 input, and rendering.

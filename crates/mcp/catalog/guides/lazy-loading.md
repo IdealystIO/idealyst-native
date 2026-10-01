@@ -125,9 +125,12 @@ idealyst dev --web --local --split
 ```
 
 A non-splitting build does not merely skip the pass — it stops building *for*
-the splitter. rustc emits no relocations and wasm-bindgen runs without
-`--no-demangle`, so stack traces get demangled names. (It keeps `--keep-lld-exports`: the inline lazy loader calls
-through the main module's function table, which is an LLD export.) Measured on a large
+the splitter: rustc emits no relocations. (An app that still links
+wasm-bindgen — a hybrid build — also runs it without `--no-demangle`, so stack
+traces get demangled names, and keeps `--keep-lld-exports`: the inline lazy
+loader calls through the main module's function table, which is an LLD
+export.) Lazy chunks work the same in both build modes: a chunk reaches the
+framework's JS bindings through the main module. Measured on a large
 app: the post-cargo tail falls from 21-42 s to 6-10 s, for a served module about
 15% larger (79 MB vs 69 MB).
 
