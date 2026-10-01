@@ -59,6 +59,12 @@
 //!   a negative value that rounded away printed `"-0.0"`, and even `-1e-5`
 //!   itself came out `"0.0"`. Labels now take their precision from the
 //!   step (69 corpus lines).
+//! - **Log axes with spare tick budget**: the last in-decade tick landed on
+//!   the next decade, which the decade walk emitted again (`"9", "10",
+//!   "10", "20"`); and labels printed to three fixed places, so every tick
+//!   under 0.0005 read `"0"`. The in-decade run now stops short of the next
+//!   decade, and small values print in scientific notation (`"1e-5"`) (85
+//!   corpus lines).
 //!
 //! `tests/ticks.rs` sweeps ranges for each axis kind asserting the
 //! contract.
@@ -360,10 +366,17 @@ fn log_values(min: f64, max: f64, max_points: usize) -> Vec<f64> {
         if !at_zero(val) {
             ret.push(sign * val);
         }
+        // The next tick of the decade walk. plotters' in-decade loop ran
+        // `i` all the way to `light_density`, whose step lands exactly on
+        // this value — and the decade walk then emitted it again, so every
+        // decade label appeared twice (`"9", "10", "10", "20"`). Stop short
+        // of it; the decade walk owns that tick. The `1e-9` slack absorbs
+        // the two products rounding differently.
+        let next_decade = val * multiplier * (1.0 - 1e-9);
         for i in 1..=light_density {
             let v = val
                 * (1.0 + multiplier / f64::from(light_density as u32 + 1) * f64::from(i as u32));
-            if v > end {
+            if v > end || v >= next_decade {
                 break;
             }
             // Tests `val`, not `v` — plotters' (harmless) quirk, kept.
@@ -376,15 +389,41 @@ fn log_values(min: f64, max: f64, max_points: usize) -> Vec<f64> {
     ret
 }
 
+/// Below this magnitude a log label switches to scientific notation
+/// (`"1e-5"`); at and above it, fixed decimals (`"0.001"`, `"0.25"`).
+const LOG_SCIENTIFIC_BELOW: f64 = 1e-3;
+
+/// Significant digits a log label is rounded to before trimming. Tick
+/// values are `k x 10^n` for small `k` (plus float noise such as
+/// `0.30000000000000004`); six digits keeps every real digit and drops the
+/// noise.
+const LOG_LABEL_SIG_DIGITS: i32 = 6;
+
 /// Format a log tick label without trailing noise: integers print bare
-/// (`"100"`), fractions to at most three places (`"0.001"`, `"0"` for
-/// anything smaller).
+/// (`"100"`), other values at six significant digits with trailing zeros
+/// trimmed — fixed decimals down to 0.001 (`"0.001"`, `"0.25"`),
+/// scientific below that (`"1e-5"`, `"2.5e-7"`).
+///
+/// plotters printed fractions to three fixed places, so every tick under
+/// 0.0005 read `"0"` — twelve-decade axes started `"0", "0", "0.001"` —
+/// and in-decade ticks below 0.01 collided once there were more than nine
+/// per decade.
 fn format_number(v: f64) -> String {
     if v == v.trunc() && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        let s = format!("{v:.3}");
+        return format!("{}", v as i64);
+    }
+    if v.abs() < LOG_SCIENTIFIC_BELOW {
+        let s = format!("{v:.prec$e}", prec = (LOG_LABEL_SIG_DIGITS - 1) as usize);
+        let (mantissa, exp) = s.split_once('e').expect("`{:e}` always has an exponent");
+        let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+        return format!("{mantissa}e{exp}");
+    }
+    let places = (LOG_LABEL_SIG_DIGITS - 1 - v.abs().log10().floor() as i32).max(0) as usize;
+    let s = format!("{v:.places$}");
+    if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
     }
 }
 

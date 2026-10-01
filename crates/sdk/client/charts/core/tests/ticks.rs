@@ -263,8 +263,52 @@ fn log_multi_decade_skips_decades_to_fit() {
 #[test]
 fn log_spare_budget_adds_in_decade_ticks() {
     let t = ticks::log(1.0, 10.0, 20);
-    assert_eq!(t.len(), 11);
-    assert_eq!(&labels(&t)[..3], ["1", "2", "3"]);
+    assert_eq!(labels(&t), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+}
+
+/// plotters' in-decade walk ran `i` up to the light-tick density, and its
+/// last step lands exactly on the next decade — which the decade walk then
+/// emitted again: `…, "9", "10", "10", "20", …`.
+#[test]
+fn regression_log_spare_budget_does_not_repeat_decade_ticks() {
+    let t = ticks::log(1.0, 100.0, 20);
+    assert_eq!(t.len(), 19);
+    assert_eq!(&labels(&t)[8..11], ["9", "10", "20"]);
+    assert_eq!(labels(&t).last(), Some(&"100"));
+    assert_distinct_labels(&ticks::log(0.001, 1.0, 20), "log(0.001, 1, 20)");
+}
+
+/// Labels printed to three fixed places, so every tick below 0.0005 read
+/// `"0"` — twelve-decade axes started `"0", "0", "0.001"`.
+#[test]
+fn regression_log_small_decades_are_not_labelled_zero() {
+    let t = ticks::log(1e-6, 1e6, 20);
+    assert_eq!(&labels(&t)[..4], ["1e-5", "1e-4", "0.001", "0.01"]);
+    assert_eq!(labels(&ticks::log(5e-10, 1e-7, 20))[..3], ["1e-9", "2e-9", "3e-9"]);
+    // Negative (mirrored) axes keep their sign.
+    assert_eq!(labels(&ticks::log(-1e-3, -1e-5, 5)), ["-1e-5", "-1e-4", "-0.001"]);
+}
+
+/// The general rule, swept over log ranges and budgets.
+#[test]
+fn log_labels_are_distinct_over_a_sweep_of_ranges() {
+    let mut checked = 0;
+    for lo_exp in -15..=12 {
+        for decades in [0.3, 1.0, 1.5, 2.0, 3.7, 6.0, 12.0] {
+            for m in [1.0, 2.5, 7.0] {
+                let lo = m * 10f64.powi(lo_exp);
+                let hi = lo * 10f64.powf(decades);
+                for w in 1..=40 {
+                    for (a, b) in [(lo, hi), (-hi, -lo)] {
+                        let t = ticks::log(a, b, w);
+                        assert_distinct_labels(&t, &format!("log({a:?}, {b:?}, {w})"));
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 10_000);
 }
 
 #[test]
