@@ -1,0 +1,31 @@
+# Measurement prototype for "model B": the REAL framework inside a bundle.
+# A remote component written with `#[component]` + `ui!`, realized by the
+# actual runtime-world/scene/vocabulary compiled to wasm, rendering through
+# dev-server's wire recorder (session layer off). The app replays the
+# recorded commands. Built for wasm32 by stream-spike's build script.
+
+[package]
+name = "spike-fullguest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+spike-components = { path = "../components" }
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+# A path dep, not `workspace = true`: a workspace-inherited dep cannot turn
+# default features OFF unless the workspace entry does, and the session
+# layer (default-on) pulls getrandom, which has no wasm32-unknown target.
+dev-server = { path = "../../../dev/server", default-features = false }
+wire = { workspace = true }
+stream-abi = { path = "../../abi" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

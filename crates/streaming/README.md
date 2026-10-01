@@ -1,15 +1,25 @@
-# Streamed components (spike)
+# Remote components (spike)
 
-A streamed component is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
+A remote component (working name in code: "streamed"; the attribute will be `#[component(remote)]`) is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
 
 This directory is a spike. It proves the boundary works end to end and measures what it costs. Nothing here is published or depended on by the framework.
+
+The spike holds **two models** of what runs inside a bundle:
+
+- **Model A, a host-owned graph** (`abi`, `guest`, `host`, `spike/guest`). The bundle holds handles into the app's reactive graph and returns small node descriptions. Bundles are small, around 37 KB. But `ui!` can't run inside one: it expands to the framework's full author API, about 220 items, so model A would need a second implementation of that API.
+- **Model B, the real framework in the bundle** (`spike/components`, `spike/fullguest`). The bundle compiles the actual `runtime-world`, `runtime-scene` and `runtime-vocabulary`. It renders through `dev-server`'s wire recorder, and the app replays the commands through `dev-client`, which is runtime-server sandboxed down to one subtree. `ui!`, `#[component]` and context work unchanged. **This is the chosen direction.** See [Model B](#model-b-the-real-framework-in-the-bundle).
+
+What carries over from model A to model B: the loader, the manifest and import checks, prop contracts, `#[host_fn]`, live reload, and native host components.
 
 | Crate | Role |
 |---|---|
 | `abi` (`stream-abi`) | The byte contract both sides link: import/export names, the `Wire` codec, `Node` descriptions, the `Manifest`. Zero dependencies, because it ships inside every bundle. |
 | `guest` (`stream-guest`) | What a bundle links: handle-backed `signal` / `effect`, node builders, the `bundle!` export macro. |
 | `host` (`stream-host`) | Loads a bundle into wasmi, checks its manifest, binds it to the app's reactive graph, and turns node descriptions into `runtime_scene::Element`s. |
-| `spike` (`stream-spike`) | Builds `spike/guest` to wasm32 in its build script. Holds the end-to-end tests and the `measure` example. |
+| `macros` (`stream-macros`) | `#[host_fn]`. |
+| `spike` (`stream-spike`) | Builds both spike bundles to wasm32 in its build script. Holds the end-to-end tests, the `measure` / `measure_full` examples, `stream-serve`, and the model-B host wrapper (`full.rs`). |
+| `spike/components` | Model B's remote component (`RemoteCounter`): a plain crate of `#[component]`s that the app also links natively. |
+| `spike/fullguest` | Model B's bundle: the wasm exports around `spike/components`. |
 
 ## The boundary
 
@@ -74,7 +84,9 @@ Native views stay native. The camera preview is a host component (`CameraPreview
 
 ```sh
 cargo test -p stream-abi -p stream-spike
-cargo run --release -p stream-spike --example measure   # host MUST be --release
+cargo run --release -p stream-spike --example measure        # model A; host MUST be --release
+cargo test -p stream-spike --test full_framework              # model B end to end
+cargo run --release -p stream-spike --example measure_full   # model B
 ```
 
 ### See it live
@@ -95,9 +107,64 @@ How it behaves:
 
 The test `swapping_bundles_releases_the_old_instance_and_keeps_host_state` pins down the swap: the old instance's closures and handles are all released, and host state carries over.
 
-## Measurements
+## Model B: the real framework in the bundle
 
-Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (release, opt-level z, no wasm-opt). "Native" is the same component compiled into the binary.
+`RemoteCounter` is an ordinary component:
+
+```rust
+#[component]
+pub fn RemoteCounter(title: String, external: ReadSignal<i64>) -> Element {
+    let clicks = signal(0i64);
+    let user = inject::<CurrentUser>().map(|u| u.0);
+    ui! { view() { text { "{title}" } text { "external: {external}" } … if let Some(user) = user { text { "signed in as {user}" } } } }
+}
+```
+
+The bundle mounts it in a `dev_server::newcore::SceneSession` against a `WireRecordingBackend`. It returns `DevToApp::Commands` batches, which the app replays through `dev_client::WireBackend` into its own backend.
+
+- **The bundle has its own world**, so host state crosses as mirrors. A host signal prop, like `external`, becomes a signal in the bundle that the app updates when its own signal changes. The bundle then flushes and returns the delta in the same turn.
+- **Context works the same way:** the app's provided `CurrentUser` is mirrored, `provide`d at the root of the bundle's world, and read with a plain `inject`. It stays reactive.
+- **Taps:** the replay client reports the tapped button's `HandlerId`, and the bundle dispatches it.
+- **Unmount:** the bundle frees its world, and the app removes the replayed subtree under its own mount point. The recorder emits no teardown commands, because in runtime-server teardown is the whole session.
+
+The test `bundle_emits_exactly_what_the_native_build_emits` shows the bundle *is* the framework. Mounting the same component natively against the same recorder produces a byte-identical command stream. The bundle imports nothing from the host.
+
+Making this possible changed one framework crate: **`dev-server` gained a default-on `session` feature.** It covers the sidecar, the websocket transport, the file watcher and the test harness. With the feature off, the crate is just the recorder, which builds for `wasm32-unknown-unknown`; tungstenite's handshake pulls in `getrandom`, which doesn't. Existing consumers are unchanged, and `dev-server`'s tests pass.
+
+### Model B measurements
+
+M3 Max, release, portable dispatch, replayed into `mock-backend`. Mount and update times include the JSON wire codec and the replay.
+
+| | Bundle | Native + wire | Native |
+|---|---|---|---|
+| Size | 545 KB raw, 454 KB after wasm-opt, **148 KB brotli** | — | — |
+| Load, lazy translation (eager) | 1.9 ms (5.9 ms) | — | — |
+| Mount `RemoteCounter`, cold | 2.2 ms | — | — |
+| Mount, warm | 590 µs | 41 µs | 10.5 µs |
+| Host prop change → replayed | 31 µs | — | 0.6 µs |
+| Tap → replayed | 34 µs | — | — |
+| Context change → replayed | 33 µs | — | — |
+
+The "native + wire" column isolates the cost of recording, the JSON codec and replay, about 30 µs of a mount. The rest of the gap is the interpreter running framework code.
+
+### What building model B found
+
+1. **wasmi's default tail-call dispatch can overflow the native stack.** That dispatch keeps the stack flat only if LLVM turns every handler call into a sibling call. Whether it does depends on how wasmi *and its dependencies* are compiled. In the workspace dev profile, the model-B bundle overflowed a 2 MB thread with wasmi at opt-level 3 and passed at `"z"`. wasmi picks tail calls from opt-level alone, so an app's profile choices could turn a big bundle into a stack-overflow crash. iOS's main thread has a 1 MB stack. The host therefore uses **`portable-dispatch`**, a loop that never grows the stack. Its cost, measured:
+
+   | | Tail-call dispatch | Portable dispatch |
+   |---|---|---|
+   | Model B warm mount | 348 µs | 590 µs |
+   | Model B prop update | 16.5 µs | 31 µs |
+   | Model A typed signal read | 98 ns | 155 ns |
+   | Pure compute vs native | 3.9× | 18.7× |
+
+   `regression_full_framework_bundle_fits_a_2mb_thread` pins this. Tail calls could become an opt-in only alongside a CI check that runs a large bundle on a 1 MB thread in the exact shipping profile.
+2. **A bundle crate must be `cdylib` only.** Built as both `cdylib` and `rlib`, it lost link-time optimization: 668 KB instead of 545 KB. Components therefore live in an ordinary crate (`spike/components`) with a thin `cdylib` wrapper around it, which is the shape the CLI would generate.
+3. **A workspace-inherited dependency can't turn default features off** unless the workspace entry does. `dev-server = { workspace = true, default-features = false }` silently kept the session layer, so `spike/fullguest` uses a path dependency.
+
+## Model A measurements
+
+Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (release, opt-level z, no wasm-opt). "Native" is the same component compiled into the binary. These numbers were taken with wasmi's tail-call dispatch, before the switch to portable dispatch; see the dispatch table above for that cost.
 
 | | Streamed | Native |
 |---|---|---|
@@ -122,10 +189,10 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 
 - **On-device numbers.** These were measured on a Mac. An iPhone run is the next measurement.
 - **Props passed from a bundle to a host component** (`Node::Host`, e.g. `Badge`) are still positional and unchecked. The same schema mechanism applies in that direction.
-- **Plain value props are fixed at mount.** Changing one means remounting. For values that change over time, the app passes a signal. A `#[component(streamed)]` could make every prop reactive by default, as `#[props]` does natively.
-- **Most of the primitive vocabulary.** `Node` has `View`, `Text`, `Button` and `Host`. Adding the rest is mechanical.
-- **`ui!` and `#[component]` in a guest.** The guest uses builder functions. Making the macros target the guest is the real work behind "the same source compiles natively or streamed".
-- **Context injection across the boundary.**
+- **Plain value props are fixed at mount** in model A. Model B mirrors props as signals, so `#[component(remote)]` can make every prop reactive by default, as `#[props]` does natively.
+- **Model A only: most of the primitive vocabulary.** `Node` has `View`, `Text`, `Button` and `Host`. This doesn't apply to model B, which has the whole vocabulary.
+- **Model B is hand-wired.** `spike/fullguest`'s exports and `full.rs` are written by hand for one component. `#[component(remote)]` should generate the exports, the manifest, prop mirrors and context mirrors, and fold the loader into `stream_host::Bundle`.
+- **The wire codec is JSON.** A binary codec would cut the roughly 30 µs per batch that the "native + wire" column shows.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **Guest trap handling.** It's a panic for now. Whether a trap should be contained to the bundle in release builds is still an open decision.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.

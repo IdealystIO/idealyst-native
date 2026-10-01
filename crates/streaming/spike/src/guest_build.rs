@@ -8,15 +8,25 @@
 pub const GUEST_SOURCES: &[&str] =
     &["guest/src", "guest/Cargo.toml", "camera/src", "../guest/src", "../abi/src", "../macros/src"];
 
-/// A `cargo build` of `spike-guest` for wasm32 into `target_dir`.
+/// Sources of the full-framework prototype bundle (`spike-fullguest`) that
+/// live in this directory tree. It also depends on the framework crates;
+/// cargo's own fingerprinting covers those inside the nested build.
+pub const FULL_GUEST_SOURCES: &[&str] = &["fullguest/src", "fullguest/Cargo.toml", "components/src", "../abi/src"];
+
+/// A `cargo build` of bundle crate `package` for wasm32 into `target_dir`.
 ///
 /// Uses its own target dir: sharing an outer build's would deadlock on
 /// cargo's build-directory lock. Flags the outer build exports for the HOST
 /// target are stripped so they do not leak into the wasm build.
-pub fn guest_build_command(cargo: &str, crate_dir: &std::path::Path, target_dir: &std::path::Path) -> std::process::Command {
+pub fn guest_build_command(
+    cargo: &str,
+    crate_dir: &std::path::Path,
+    target_dir: &std::path::Path,
+    package: &str,
+) -> std::process::Command {
     let mut cmd = std::process::Command::new(cargo);
     cmd.current_dir(crate_dir)
-        .args(["build", "--release", "--target", "wasm32-unknown-unknown", "-p", "spike-guest"])
+        .args(["build", "--release", "--target", "wasm32-unknown-unknown", "-p", package])
         .arg("--target-dir")
         .arg(target_dir)
         .env_remove("RUSTFLAGS")
@@ -38,7 +48,7 @@ pub fn guest_build_command(cargo: &str, crate_dir: &std::path::Path, target_dir:
     cmd
 }
 
-/// Where [`guest_build_command`] leaves the bundle.
-pub fn guest_wasm_path(target_dir: &std::path::Path) -> std::path::PathBuf {
-    target_dir.join("wasm32-unknown-unknown/release/spike_guest.wasm")
+/// Where [`guest_build_command`] leaves package `package`'s bundle.
+pub fn guest_wasm_path(target_dir: &std::path::Path, package: &str) -> std::path::PathBuf {
+    target_dir.join(format!("wasm32-unknown-unknown/release/{}.wasm", package.replace('-', "_")))
 }

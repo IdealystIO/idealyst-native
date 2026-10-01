@@ -58,10 +58,10 @@ impl State {
         }
         eprintln!("[stream-serve] sources changed — building spike-guest…");
         let t = Instant::now();
-        let out = guest_build_command("cargo", &self.crate_dir, &self.target_dir).output();
+        let out = guest_build_command("cargo", &self.crate_dir, &self.target_dir, "spike-guest").output();
         self.built_from = stamp;
         match out {
-            Ok(out) if out.status.success() => match std::fs::read(guest_wasm_path(&self.target_dir)) {
+            Ok(out) if out.status.success() => match std::fs::read(guest_wasm_path(&self.target_dir, "spike-guest")) {
                 Ok(wasm) => {
                     self.version += 1;
                     eprintln!(

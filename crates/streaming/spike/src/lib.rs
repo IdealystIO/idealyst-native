@@ -6,7 +6,12 @@ use runtime_world::Signal;
 use stream_host::{HostExports, HostProps};
 
 pub mod fetch;
+pub mod full;
 pub mod guest_build;
+
+/// `spike-fullguest` (model B: the real framework inside the bundle),
+/// release-built for wasm32 by this crate's build script.
+pub const FULL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_fullguest.wasm"));
 
 /// `spike-guest`, release-built for wasm32 by this crate's build script —
 /// the app's built-in copy, used when no bundle server answers.

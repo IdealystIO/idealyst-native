@@ -115,6 +115,8 @@ members = [
     "crates/streaming/spike",
     "crates/streaming/spike/guest",
     "crates/streaming/spike/camera",
+    "crates/streaming/spike/fullguest",
+    "crates/streaming/spike/components",
     "crates/streaming/spike/demo",
     # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
     "crates/dev/parity-goldens",

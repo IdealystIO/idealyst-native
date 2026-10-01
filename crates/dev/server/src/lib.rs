@@ -73,26 +73,35 @@ pub mod crash_handler;
 // consumers don't drag tokio.
 #[cfg(feature = "runtime-server")]
 pub mod async_executor;
+// The session layer (feature `session`, on by default): everything that
+// talks to a client or the file system. Without it the crate is the bare
+// recorder — see the feature's comment in Cargo.toml.
+#[cfg(feature = "session")]
 pub mod sidecar;
-// Always compiled — the test-support module is small and its only
-// non-trivial cost is the `tungstenite` symbols, which the crate
-// already pulls in for the production server. Keeping it
-// unconditionally available means integration tests, examples, and
-// downstream consumers all see the same surface without juggling a
-// feature flag through cargo invocations.
+// Compiled whenever the session layer is — the test-support module is
+// small and its only non-trivial cost is the `tungstenite` symbols, which
+// the session layer already pulls in. Keeping it available with the
+// default features means integration tests, examples, and downstream
+// consumers all see the same surface without juggling a feature flag.
+#[cfg(feature = "session")]
 pub mod test_support;
+#[cfg(feature = "session")]
 pub mod transport;
+#[cfg(feature = "session")]
 pub mod watch;
 
 use scene_model::SceneModel;
 
+#[cfg(feature = "session")]
 pub use sidecar::{SessionFacts, SessionTracker, Sidecar, SidecarIn, SidecarOut, SidecarSlot};
+#[cfg(feature = "session")]
 pub use transport::{
     serve, serve_with_port_mirror, serve_with_sidecar, serve_with_sidecar_and_tracker,
     serve_with_tick, serve_with_tick_and_port, serve_with_tick_and_port_and_mode, SessionMode,
 };
-#[cfg(feature = "robot")]
+#[cfg(all(feature = "robot", feature = "session"))]
 pub use transport::serve_with_robot_bridge;
+#[cfg(feature = "session")]
 pub use watch::{spawn_change_loop, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
 /// The runtime-server (Application-as-a-Server) **server-side backend** —
@@ -1296,7 +1305,17 @@ impl WireRecordingBackend {
         &self,
         node: &NodeId,
     ) -> Option<runtime_shared::primitives::portal::ViewportRect> {
-        crate::sidecar::device_frame_over_wire(node.0)
+        #[cfg(feature = "session")]
+        {
+            crate::sidecar::device_frame_over_wire(node.0)
+        }
+        // No session layer means no client to ask — the documented
+        // "no client attached" answer.
+        #[cfg(not(feature = "session"))]
+        {
+            let _ = node;
+            None
+        }
     }
 
     /// Wrap the wire `NodeId` so layout authors who bind a

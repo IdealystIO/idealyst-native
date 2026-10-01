@@ -12,6 +12,11 @@ publish = false
 
 [dependencies]
 stream-host = { path = "../host" }
+stream-abi = { path = "../abi" }
+# The full-framework (model B) prototype host: load the bundle, decode its
+# wire commands.
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
+wire = { workspace = true }
 spike-camera = { path = "camera" }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
@@ -19,5 +24,10 @@ runtime-vocabulary = { workspace = true }
 
 [dev-dependencies]
 host-mock = { workspace = true }
-stream-abi = { path = "../abi" }
-wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+# Model B: replay the bundle's commands through the real replay client into
+# the mock scene, and run the same component natively for parity/baseline.
+dev-client = { workspace = true }
+dev-server = { workspace = true }
+mock-backend = { workspace = true }
+spike-components = { path = "components" }
+runtime-core = { workspace = true }

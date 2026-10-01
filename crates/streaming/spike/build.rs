@@ -11,14 +11,18 @@ fn main() {
     let target_dir = out.join("guest-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
-    let status = guest_build_command(&cargo, &manifest, &target_dir)
-        .status()
-        .expect("spawn cargo for spike-guest");
-    assert!(status.success(), "building spike-guest for wasm32-unknown-unknown failed");
-    std::fs::copy(guest_wasm_path(&target_dir), out.join("spike_guest.wasm")).expect("copy spike_guest.wasm");
+    for package in ["spike-guest", "spike-fullguest"] {
+        let status = guest_build_command(&cargo, &manifest, &target_dir, package)
+            .status()
+            .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));
+        assert!(status.success(), "building {package} for wasm32-unknown-unknown failed");
+        let file = format!("{}.wasm", package.replace('-', "_"));
+        std::fs::copy(guest_wasm_path(&target_dir, package), out.join(&file))
+            .unwrap_or_else(|e| panic!("copy {file}: {e}"));
+    }
 
     println!("cargo:rerun-if-changed=src/guest_build.rs");
-    for dir in GUEST_SOURCES {
+    for dir in GUEST_SOURCES.iter().chain(FULL_GUEST_SOURCES) {
         println!("cargo:rerun-if-changed={}", manifest.join(dir).display());
     }
 }

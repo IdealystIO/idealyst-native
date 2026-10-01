@@ -19,4 +19,15 @@ runtime-vocabulary = { workspace = true, features = ["async-driver"] }
 rustc-hash = { workspace = true }
 # Pure-Rust interpreter: no JIT, so it runs where executable memory is
 # forbidden (iOS). `wat` is off — bundles arrive as binary wasm.
-wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+#
+# `portable-dispatch`, NOT wasmi's default tail-call dispatch: tail-call
+# dispatch keeps the native stack flat only if LLVM turns every handler
+# call into a sibling call, and that depends on how wasmi AND its deps are
+# compiled — measured: the full-framework bundle overflowed a 2 MB thread
+# with wasmi at opt-level 3 in the dev profile, and passed at "z"; wasmi
+# picks tail calls from opt-level alone. An app's own profile settings
+# could therefore turn a big bundle into a stack-overflow crash. The loop
+# dispatch never grows the stack, for ~1.7-1.9x slower interpretation
+# (crates/streaming/README.md). Pinned by
+# `regression_full_framework_bundle_fits_a_2mb_thread`.
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }

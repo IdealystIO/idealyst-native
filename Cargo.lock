@@ -11198,6 +11198,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike-components"
+version = "0.1.0"
+dependencies = [
+ "runtime-core",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
+name = "spike-fullguest"
+version = "0.1.0"
+dependencies = [
+ "dev-server",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "spike-components",
+ "stream-abi",
+ "wire",
+]
+
+[[package]]
 name = "spike-guest"
 version = "0.1.0"
 dependencies = [
@@ -11486,14 +11509,20 @@ dependencies = [
 name = "stream-spike"
 version = "0.1.0"
 dependencies = [
+ "dev-client",
+ "dev-server",
  "host-mock",
+ "mock-backend",
+ "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
  "spike-camera",
+ "spike-components",
  "stream-abi",
  "stream-host",
  "wasmi",
+ "wire",
 ]
 
 [[package]]
