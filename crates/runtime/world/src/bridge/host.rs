@@ -1,0 +1,347 @@
+//! The host half of the bridge: [`HostOps`] over the native arena.
+//!
+//! Every slot a bundle owns holds a proxy instead of the real thing:
+//!
+//! - a signal slot holds [`ValueProxy`] — its `commit` (the flush's equality
+//!   cut) asks the bundle, which has the value and its `PartialEq`;
+//! - an effect slot's body is an [`EffectProxy`] closure that asks the
+//!   bundle to run the real body;
+//! - a cleanup is a [`CleanupProxy`], context is a [`CtxProxy`].
+//!
+//! Each proxy's `Drop` tells the bundle to release its side. The native
+//! engine already drops value boxes, effect bodies and context values with
+//! no arena borrow held (its rule: user `Drop` code never runs under a
+//! borrow), so those calls back into the bundle may re-enter the kernel.
+
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
+use std::rc::Rc;
+
+use rustc_hash::FxHashMap;
+
+use super::{GuestHooks, Handle, HostOps};
+use crate::engine::{AnySignal, EffectClass, Engine, WorldId};
+use crate::native::{self, CtxKey, EffectFrames, Native, OwnedItem, SavedCollectors, WorldArena};
+
+/// The host side, generic over how it reaches the bundle.
+pub(crate) struct Host<G>(PhantomData<fn() -> G>);
+
+/// Host-side state the native engine has no slot for: scopes handed to the
+/// bundle by id, and the stacks `unscoped` / `unanchored` suspended (their
+/// closure forms keep these on the Rust stack; across the bridge the begin
+/// and end are separate calls).
+#[derive(Default)]
+struct HostState {
+    scopes: FxHashMap<u32, Vec<OwnedItem>>,
+    next_scope: u32,
+    unscoped: Vec<SavedCollectors>,
+    unanchored: Vec<EffectFrames>,
+}
+
+thread_local! {
+    // A thread-local of its own rather than a field of the native `Tls`:
+    // it is touched only when a bundle is bridged, and `thread_local!`
+    // claims a key lazily on first access, so apps without remote
+    // components pay nothing (Android caps pthread TLS keys at 128 — see
+    // the single-TLS note in `native.rs`).
+    static HOST: RefCell<HostState> = RefCell::new(HostState::default());
+}
+
+fn with_host<R>(f: impl FnOnce(&mut HostState) -> R) -> R {
+    HOST.with(|h| f(&mut h.borrow_mut()))
+}
+
+/// [`with_host`] for the paths that run from drop guards and so can run
+/// during thread teardown (`None` once the thread-local is destroyed).
+fn try_host<R>(f: impl FnOnce(&mut HostState) -> R) -> Option<R> {
+    HOST.try_with(|h| f(&mut h.borrow_mut())).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Proxies
+// ---------------------------------------------------------------------------
+
+/// A bundle-owned signal value, as its host slot sees it.
+struct ValueProxy<G: GuestHooks> {
+    value: u32,
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: GuestHooks> AnySignal for ValueProxy<G> {
+    fn commit(&mut self, forced: bool) -> bool {
+        G::commit(self.value, forced)
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    #[cfg(feature = "hot-reload")]
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+    #[cfg(feature = "hot-reload")]
+    fn value_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Self>()
+    }
+}
+
+impl<G: GuestHooks> Drop for ValueProxy<G> {
+    fn drop(&mut self) {
+        G::drop_value(self.value);
+    }
+}
+
+/// Releases a bundle-owned effect body when the host frees the effect.
+struct EffectProxy<G: GuestHooks> {
+    effect: u32,
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: GuestHooks> Drop for EffectProxy<G> {
+    fn drop(&mut self) {
+        G::drop_effect(self.effect);
+    }
+}
+
+/// A bundle-owned cleanup: runs it, or releases it if the host drops the
+/// cleanup unrun (an effect freed before its next re-run).
+struct CleanupProxy<G: GuestHooks> {
+    cleanup: u32,
+    ran: Cell<bool>,
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: GuestHooks> CleanupProxy<G> {
+    fn run(self) {
+        self.ran.set(true);
+        G::run_cleanup(self.cleanup);
+    }
+}
+
+impl<G: GuestHooks> Drop for CleanupProxy<G> {
+    fn drop(&mut self) {
+        if !self.ran.get() {
+            G::drop_cleanup(self.cleanup);
+        }
+    }
+}
+
+/// A bundle-owned context value, as the host's context stack holds it.
+struct CtxProxy<G: GuestHooks> {
+    ctx: u32,
+    _g: PhantomData<fn() -> G>,
+}
+
+impl<G: GuestHooks> Drop for CtxProxy<G> {
+    fn drop(&mut self) {
+        G::drop_context(self.ctx);
+    }
+}
+
+fn ctx_proxy<G: GuestHooks>(ctx: u32) -> Box<dyn Any> {
+    Box::new(CtxProxy::<G> { ctx, _g: PhantomData })
+}
+
+fn ctx_id<G: GuestHooks>(v: &dyn Any) -> Option<u32> {
+    v.downcast_ref::<CtxProxy<G>>().map(|p| p.ctx)
+}
+
+// ---------------------------------------------------------------------------
+// HostOps
+// ---------------------------------------------------------------------------
+
+/// Resolve `world` (`None` = ambient) the way `Native::signal_create` does,
+/// including its dead-world panic.
+fn resolve<R>(world: Option<WorldId>, what: &str, f: impl FnOnce(&Rc<WorldArena>) -> R) -> R {
+    match world {
+        None => native::with_ambient(f),
+        Some(world) => match native::arena_of(world) {
+            Some(arena) => f(&arena),
+            None => panic!("runtime-world: {what} created in a dead world {world}"),
+        },
+    }
+}
+
+/// The stale-handle check every bundle-side signal access starts with.
+/// `false` for a dead world.
+fn check_live((world, slot, gen): Handle) -> bool {
+    if native::arena_of(world).is_none() {
+        return false;
+    }
+    if !Native::signal_is_alive(world, slot, gen) {
+        native::stale_signal_panic(world, slot);
+    }
+    true
+}
+
+impl<G: GuestHooks> HostOps for Host<G> {
+    fn world_new() -> WorldId {
+        Native::world_new()
+    }
+    fn world_drop(world: WorldId) {
+        Native::world_drop(world)
+    }
+    fn world_flush(world: WorldId) {
+        Native::world_flush(world)
+    }
+    fn world_is_flushing(world: WorldId) -> bool {
+        Native::world_is_flushing(world)
+    }
+    fn world_provide(world: WorldId, key: u32, ctx: u32) {
+        native::world_provide(world, CtxKey::Foreign(key), ctx_proxy::<G>(ctx))
+    }
+    fn world_inject(world: WorldId, key: u32) -> Option<u32> {
+        let arena = native::arena_of(world)?;
+        native::context_top(&arena, CtxKey::Foreign(key), ctx_id::<G>).flatten()
+    }
+    fn enter_push(world: WorldId) {
+        native::enter_push(world)
+    }
+    fn enter_pop() {
+        native::enter_pop()
+    }
+
+    fn is_flushing() -> bool {
+        Native::is_flushing()
+    }
+    fn is_entered() -> bool {
+        Native::is_entered()
+    }
+    fn in_effect() -> bool {
+        Native::in_effect()
+    }
+    fn effect_depth() -> u32 {
+        Native::effect_depth() as u32
+    }
+    fn current_effect() -> Option<Handle> {
+        Native::current_effect()
+    }
+    fn in_collector() -> bool {
+        Native::in_collector()
+    }
+
+    fn signal_create(world: Option<WorldId>, value: u32) -> (Handle, bool) {
+        let proxy: Box<dyn AnySignal> = Box::new(ValueProxy::<G> { value, _g: PhantomData });
+        resolve(world, "signal", |arena| {
+            // The host slot's `created_at` is this line: the bundle keeps the
+            // author's site itself (`Engine::signal_created_at`), since a
+            // source location cannot cross a wasm boundary.
+            let (slot, gen, collected) = native::create_signal(arena, proxy, crate::caller_site());
+            ((arena.id, slot, gen), collected)
+        })
+    }
+    fn signal_check(h: Handle) -> bool {
+        check_live(h)
+    }
+    fn signal_read_check(h: Handle, track: bool) -> Option<bool> {
+        // The native read's order: dead-world check, subscribe, stale check.
+        native::arena_of(h.0)?;
+        let subscribed = track && native::maybe_subscribe(h.0, h.1, h.2);
+        check_live(h).then_some(subscribed)
+    }
+    fn signal_enqueue((world, slot, gen): Handle, force: bool) {
+        if let Some(arena) = native::arena_of(world) {
+            native::enqueue(&arena, slot, gen, force);
+        }
+    }
+    fn signal_touch((world, slot, gen): Handle) {
+        Native::signal_touch(world, slot, gen)
+    }
+    fn signal_is_alive((world, slot, gen): Handle) -> bool {
+        Native::signal_is_alive(world, slot, gen)
+    }
+    fn signal_subscriber_count((world, slot, gen): Handle) -> u32 {
+        Native::signal_subscriber_count(world, slot, gen) as u32
+    }
+
+    fn effect_create(world: Option<WorldId>, class: EffectClass, effect: u32) -> Handle {
+        let proxy = EffectProxy::<G> { effect, _g: PhantomData };
+        // `&proxy` makes the closure capture the WHOLE proxy (a bare
+        // `proxy.effect` would capture only the `u32` under disjoint
+        // capture, dropping the proxy — and releasing the bundle's body —
+        // right here). The body dies with the closure, i.e. with the slot.
+        let body: Box<dyn FnMut()> = Box::new(move || {
+            let p = &proxy;
+            G::run_effect(p.effect);
+        });
+        resolve(world, "effect", |arena| {
+            let (slot, gen) = native::create_effect(arena, class, body);
+            (arena.id, slot, gen)
+        })
+    }
+    fn effect_is_alive((world, slot, gen): Handle) -> bool {
+        Native::effect_is_alive(world, slot, gen)
+    }
+    fn on_cleanup(cleanup: u32) {
+        let proxy = CleanupProxy::<G> { cleanup, ran: Cell::new(false), _g: PhantomData };
+        native::on_cleanup(Box::new(move || proxy.run()))
+    }
+
+    fn untrack_push() {
+        native::untrack_push()
+    }
+    fn untrack_pop() {
+        native::untrack_pop()
+    }
+    fn unscoped_begin() {
+        let saved = native::unscoped_begin();
+        with_host(|h| h.unscoped.push(saved));
+    }
+    fn unscoped_end() {
+        // A torn-down thread has nothing left to restore.
+        if let Some(saved) = try_host(|h| h.unscoped.pop()).flatten() {
+            native::unscoped_end(saved);
+        }
+    }
+    fn unanchored_begin() {
+        let saved = native::unanchored_begin();
+        with_host(|h| h.unanchored.push(saved));
+    }
+    fn unanchored_end() {
+        if let Some(saved) = try_host(|h| h.unanchored.pop()).flatten() {
+            native::unanchored_end(saved);
+        }
+    }
+
+    fn collect_begin() {
+        native::collect_begin()
+    }
+    fn collect_end() -> u32 {
+        let items = native::collect_end().expect("collector stack imbalance");
+        if items.is_empty() {
+            return 0;
+        }
+        with_host(|h| {
+            // Ids start at 1: 0 is "collected nothing".
+            h.next_scope = h.next_scope.checked_add(1).expect("bridge: scope ids exhausted");
+            let id = h.next_scope;
+            h.scopes.insert(id, items);
+            id
+        })
+    }
+    fn collect_abort() {
+        native::drop_items(native::collect_end().unwrap_or_default());
+    }
+    fn scope_merge(into: u32, other: u32) {
+        with_host(|h| {
+            let mut moved = h.scopes.remove(&other).unwrap_or_default();
+            h.scopes.entry(into).or_default().append(&mut moved);
+        })
+    }
+    fn scope_len(scope: u32) -> u32 {
+        with_host(|h| h.scopes.get(&scope).map_or(0, |s| s.len() as u32))
+    }
+    fn scope_drop(scope: u32) {
+        // Out of the table first, freed after: freeing runs cleanups and
+        // value drops, which may re-enter the bridge.
+        let items = try_host(|h| h.scopes.remove(&scope)).flatten().unwrap_or_default();
+        native::drop_items(items);
+    }
+
+    fn ctx_provide(key: u32, ctx: u32) {
+        native::ctx_provide(CtxKey::Foreign(key), ctx_proxy::<G>(ctx))
+    }
+    fn ctx_inject(key: u32) -> Option<u32> {
+        native::with_ambient(|arena| native::context_top(arena, CtxKey::Foreign(key), ctx_id::<G>)).flatten()
+    }
+}

@@ -807,7 +807,7 @@ fn regression_stale_handle_panic_releases_the_arena_borrow_before_panicking() {
     // target (wasm, `panic = "abort"`) never does, so an after-the-fact
     // assertion passes against the buggy code and proves nothing.
     let w = World::new();
-    let arena = Rc::clone(&w.core.arena);
+    let arena = arena_of(w.id()).expect("live world");
     let (dead, owned) = w.enter(|| collect_owned(|| signal(1u32)));
     let live = w.enter(|| signal(100u32));
     drop(owned);
@@ -2488,10 +2488,11 @@ mod staged_read_diagnostic {
     /// not reachable from a test body.
     #[test]
     fn a_memos_cache_signal_reports_the_authors_creation_site() {
+        // Through the engine rather than the native arena, so the test
+        // holds for every engine (the bridge keeps the author's site on
+        // the bundle side).
         fn created_at_of<T>(m: &Memo<T>) -> SiteLoc {
-            let arena = arena_of(m.value.world).expect("live world");
-            let site = arena.signals.borrow()[m.value.slot as usize].created_at;
-            site
+            Active::signal_created_at(m.value.world, m.value.slot).expect("live signal")
         }
 
         let world = World::new();
@@ -2922,4 +2923,86 @@ fn owned_attachments_drop_after_the_scope_tears_down() {
         drop(owned);
         assert!(saw_freed.get(), "attachment dropped after the scope's items were freed");
     });
+}
+
+// ---------------------------------------------------------------------------
+// The native engine's one-entry world cache (`Tls::cached_id`). It sits in
+// front of the world registry on every signal operation, so a cache that
+// outlived its world would make a dead world look alive: reads would return
+// values from freed storage instead of panicking, writes would stage into a
+// queue nothing will ever flush.
+// ---------------------------------------------------------------------------
+
+/// Regression guard for the cache invariant: the world a handle was resolved
+/// through LAST — i.e. the one sitting in the cache — must read as dead the
+/// moment it drops.
+#[test]
+#[should_panic(expected = "idealyst[dead-world-read]")]
+fn regression_world_cache_never_reports_a_dropped_world_alive() {
+    let w = World::new();
+    let s = w.signal(5u32);
+    assert_eq!(s.get(), 5); // `w` is now the cached world
+    drop(w);
+    assert!(!s.is_alive(), "a cached world must not outlive its drop");
+    s.set(6); // a dead world's writes are silent no-ops
+    let _ = s.get(); // ...and its reads panic, cache or not
+}
+
+/// Interleaving worlds swaps the cache back and forth; every handle must
+/// still route to its OWN world (the cache is keyed by id, never "the
+/// current world").
+#[test]
+fn world_cache_routes_interleaved_worlds_to_their_own_arenas() {
+    let a = World::new();
+    let b = World::new();
+    let sa = a.signal(1u32);
+    let sb = b.signal(2u32);
+    for i in 0..10u32 {
+        sa.set(i);
+        sb.set(i * 100);
+        a.flush();
+        b.flush();
+        assert_eq!((sa.get(), sb.get()), (i, i * 100));
+    }
+    // A world created after another dropped gets a fresh id, so a stale
+    // cache entry can never alias it.
+    drop(a);
+    let c = World::new();
+    let sc = c.signal(3u32);
+    assert_eq!((sb.get(), sc.get()), (900, 3));
+    assert!(!sa.is_alive());
+}
+
+/// Regression: a `World` (with live signals and effects) dropped during
+/// THREAD-LOCAL TEARDOWN — held in a thread-local of its own, destroyed after
+/// the kernel's own thread-locals are gone — must tear down quietly. The
+/// native engine has always guarded its teardown paths with `try_with`; the
+/// bridged engine's release hooks used plain `with` and aborted with
+/// "cannot access a Thread Local Storage value during or after destruction"
+/// (found by runtime-vocabulary's robot-highlight suite under
+/// `loopback-engine`).
+///
+/// The holder's thread-local is touched FIRST so its destructor is
+/// registered first; destructors run in reverse registration order, so the
+/// world is dropped after the kernel's state is destroyed.
+#[test]
+fn regression_world_dropped_during_thread_teardown_is_quiet() {
+    let joined = std::thread::spawn(|| {
+        thread_local! {
+            static HOLD: RefCell<Option<(World, Signal<u32>)>> = const { RefCell::new(None) };
+        }
+        HOLD.with(|_| {}); // register the holder's destructor before the kernel's
+        let w = World::new();
+        let s = w.signal(1u32);
+        w.enter(|| {
+            effect(move || {
+                let _ = s.get();
+                on_cleanup(|| {});
+            });
+            provide(7u64);
+        });
+        HOLD.with(|h| *h.borrow_mut() = Some((w, s)));
+    })
+    .join();
+    assert!(joined.is_ok(), "tearing a world down during TLS destruction must not panic");
 }
