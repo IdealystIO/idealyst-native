@@ -93,12 +93,22 @@ pub(crate) enum TabAction {
 
 pub(crate) struct Mask {
     items: Vec<Item>,
+    /// The format has a NAME segment (`MMM`, `MMMM`, `ddd`, `dddd`). The mask is
+    /// a digit machine, and a name is typed letter by letter with no fixed
+    /// length, so it does not engage at all. Input passes through as
+    /// typed and the lenient parser reads it, the same as text the mask
+    /// finds misaligned.
+    inert: bool,
 }
 
 impl Mask {
     pub(crate) fn new(fmt: &str) -> Self {
+        let tokens = lex(fmt);
+        if tokens.iter().any(|t| t.is_name()) {
+            return Mask { items: Vec::new(), inert: true };
+        }
         let mut items: Vec<Item> = Vec::new();
-        for tok in lex(fmt) {
+        for tok in tokens {
             match tok {
                 Token::Literal(c) => match items.last_mut() {
                     Some(Item::Lit(s)) => s.push(c),
@@ -108,7 +118,7 @@ impl Mask {
                 t => items.push(Item::Num(seg_spec(t))),
             }
         }
-        Mask { items }
+        Mask { items, inert: false }
     }
 
     /// Apply the mask to an input transition `prev` → `next`. Engages
@@ -117,7 +127,7 @@ impl Mask {
     /// `07031994` masks the same as eight keystrokes); anything else
     /// returns `next` unchanged.
     pub(crate) fn feed(&self, prev: &str, next: &str) -> String {
-        if next.len() <= prev.len() || !next.starts_with(prev) {
+        if self.inert || next.len() <= prev.len() || !next.starts_with(prev) {
             return next.to_string();
         }
         let mut text = prev.to_string();
@@ -249,7 +259,7 @@ impl Mask {
     /// The Tab decision for the current text — see the module docs for
     /// the rules table.
     pub(crate) fn tab(&self, text: &str) -> TabAction {
-        if text.is_empty() {
+        if self.inert || text.is_empty() {
             return TabAction::Pass;
         }
         match self.position(text) {
@@ -301,7 +311,8 @@ impl Mask {
     /// that is complete, or that doesn't align with the format at all,
     /// reports `false` and errors as usual.
     pub(crate) fn is_incomplete_prefix(&self, text: &str) -> bool {
-        matches!(
+        !self.inert
+            && matches!(
             self.position(text),
             Pos::InNum { .. } | Pos::AtLit { .. } | Pos::AtMeridiem { .. }
         )
@@ -435,8 +446,13 @@ fn seg_spec(tok: Token) -> SegSpec {
         Token::Hour12Two => SegSpec { min: 1, max: 12, max_len: 2, pad: true },
         Token::Hour12One => SegSpec { min: 1, max: 12, max_len: 2, pad: false },
         Token::Minute2 | Token::Second2 => SegSpec { min: 0, max: 59, max_len: 2, pad: true },
-        Token::Meridiem { .. } | Token::Literal(_) => {
-            unreachable!("meridiem/literal are not numeric segments")
+        Token::Meridiem { .. }
+        | Token::Literal(_)
+        | Token::MonthShort
+        | Token::MonthLong
+        | Token::WeekdayShort
+        | Token::WeekdayLong => {
+            unreachable!("meridiem/literal/name tokens are not numeric segments")
         }
     }
 }
@@ -444,6 +460,17 @@ fn seg_spec(tok: Token) -> SegSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A format with a month or weekday NAME is not a digit sequence: the
+    /// mask stands aside rather than force digits into it.
+    #[test]
+    fn a_format_with_a_name_token_is_not_masked() {
+        let m = Mask::new("D MMM YYYY");
+        assert_eq!(m.feed("3", "3 "), "3 ");
+        assert_eq!(m.feed("3 S", "3 Se"), "3 Se");
+        assert_eq!(m.tab("3 Se"), TabAction::Pass);
+        assert!(!m.is_incomplete_prefix("3 Se"));
+    }
 
     /// Type `keys` one char at a time from empty, mimicking the
     /// on_change flow (each step's output is the next step's `prev`).

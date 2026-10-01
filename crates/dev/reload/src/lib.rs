@@ -1646,7 +1646,7 @@ fn watch_loop(
                 }
             }
             let folded = fs_batches.saturating_sub(1);
-            if !forced && !reload_owed && changed_paths.is_empty() && !any_ok {
+            if !forced && !reload_owed && !names_work(&changed_paths, any_ok) {
                 return Attempt::Finished;
             }
 
@@ -2288,6 +2288,27 @@ fn saved_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Whether the paths an attempt collected call for any work.
+///
+/// No paths and no successful batch is a watcher error: nothing to do.
+/// Paths that are ALL scratch files ([`saved_paths`] keeps none) are not
+/// a save either. That case matters: a temp-and-rename save
+/// (`skeleton.rs.tmp.20647.8b2d7e43908b` renamed over `skeleton.rs`, or
+/// GNU `sed -i`'s `sedAaNZmz`) can reach the watcher as a batch that names
+/// only the temp file, with the renamed file in the next batch. The temp
+/// file is gone by the time it is read, so the decision saw an empty save
+/// and REBUILT ("nothing the archives describe was saved"); the real
+/// file's batch then superseded that rebuild, and the reload it owed
+/// forced a second rebuild too. Every agent edit was a full reload and
+/// never a hot patch. Skipped here, the renamed file's own batch decides
+/// the save.
+fn names_work(paths: &[PathBuf], any_ok: bool) -> bool {
+    if paths.is_empty() {
+        return any_ok;
+    }
+    !saved_paths(paths).is_empty()
 }
 
 /// Paths as event data. The watch set is reported at startup and
@@ -3348,6 +3369,31 @@ mod tests {
             ]),
             vec![p("/w/src/app.rs")]
         );
+    }
+
+    /// Regression (CrewForge, 2026-10-01): a temp-and-rename save — every
+    /// Claude Code Edit/Write, and GNU `sed -i` — never hot-patched. The
+    /// watcher delivered the temp file alone in one batch; it read as an
+    /// empty save, which rebuilds, and the renamed file's batch then
+    /// superseded that rebuild and owed a reload. A batch of only scratch
+    /// files is no work; the one naming the final path is the save.
+    #[test]
+    fn regression_a_temp_and_rename_save_does_not_rebuild_on_the_temp_file() {
+        let p = |s: &str| PathBuf::from(s);
+        for temp in [
+            "/w/src/sketches/skeleton.rs.tmp.20647.8b2d7e43908b",
+            "/w/src/sketches/sedAaNZmz",
+        ] {
+            assert!(!names_work(&[p(temp)], true), "{temp} alone is not a save");
+            assert!(saved_paths(&[p(temp)]).is_empty(), "{temp} alone must not supersede work in flight");
+            assert!(names_work(&[p(temp), p("/w/src/sketches/skeleton.rs")], true));
+        }
+        // What still does work: a watcher batch that named something real,
+        // a non-Rust file (a manifest edit rebuilds), and an empty but
+        // successful batch (resume's offline edits arrive that way).
+        assert!(names_work(&[p("/w/Cargo.toml")], true));
+        assert!(names_work(&[], true));
+        assert!(!names_work(&[], false));
     }
 
     /// A rebuild request needs a running watch loop to go to.

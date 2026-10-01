@@ -47,7 +47,8 @@ use crate::components::calendar::{Calendar, RangeCalendar};
 use crate::components::select::SelectSize;
 use crate::components::time_input::TimeInput;
 use crate::date::{
-    format_date, CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday,
+    format_date_with, format_datetime_with, CivilDate, CivilDateTime, CivilTime, DateLabels,
+    Weekday,
 };
 use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTrigger};
 use idea_theme::tokens;
@@ -174,6 +175,8 @@ pub struct DatePickerProps {
     /// Trigger text when no value is set.
     pub placeholder: Option<String>,
     /// Token format for the trigger's value text. Default `YYYY-MM-DD`.
+    /// Name tokens (`MMMM`, `MMM`, `dddd`, `ddd`) take their names from `labels`,
+    /// so `"ddd D MMM YYYY"` reads `Wed 30 Sep 2026`. See [`crate::date`].
     pub display_format: String,
     /// Earliest pickable day (inclusive).
     pub min: Option<CivilDate>,
@@ -221,10 +224,12 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
 
     let fmt = props.display_format.clone();
     let placeholder = props.placeholder.clone();
+    // Name tokens (`MMM`, `ddd`) read the same labels the calendar shows.
+    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
     let label_source = move || {
         value
             .get()
-            .map(|d| format_date(d, &fmt.get()))
+            .map(|d| format_date_with(d, &fmt.get(), &names))
             .or_else(|| placeholder.get())
             .unwrap_or_else(|| "Select date".to_string())
     };
@@ -369,10 +374,11 @@ pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
 
     let fmt = props.display_format.clone();
     let placeholder = props.placeholder.clone();
+    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
     let label_source = move || {
         value
             .get()
-            .map(|dt| crate::date::format_datetime(dt, &fmt.get()))
+            .map(|dt| format_datetime_with(dt, &fmt.get(), &names))
             .or_else(|| placeholder.get())
             .unwrap_or_else(|| "Select date & time".to_string())
     };
@@ -519,12 +525,13 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
 
     let fmt = props.display_format.clone();
     let placeholder = props.placeholder.clone();
+    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
     let label_source = move || {
         value
             .get()
             .map(|(a, b)| {
                 let f = fmt.get();
-                format!("{} – {}", format_date(a, &f), format_date(b, &f))
+                format!("{} – {}", format_date_with(a, &f, &names), format_date_with(b, &f, &names))
             })
             .or_else(|| placeholder.get())
             .unwrap_or_else(|| "Select range".to_string())

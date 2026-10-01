@@ -711,6 +711,58 @@ fn regression_a_restart_after_a_hot_patch_resumes_the_patched_base() {
     }
 }
 
+/// CrewForge, 2026-10-01: a tab opened after two hot patches, the second
+/// made while no page was connected, showed the BASE build — neither
+/// patch — while the status pill said "hot patch". A verifier that opens
+/// its own tab checked stale code. A page that connects late must run
+/// what the source on disk says.
+#[test]
+#[ignore = "compiles the framework for wasm32 and drives headless Chrome; run with --ignored"]
+fn regression_a_page_opened_after_patches_made_with_no_page_runs_them() {
+    let repo = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wasm_hot_patch_late_page_e2e");
+    materialize(&project, &repo);
+    let app_rs = project.join("src/app.rs");
+
+    let (session, mut page) = start(&project, tmp.path());
+    assert!(page.wait_for_text("logic v1 -> 0", Duration::from_secs(60)), "{:?}", page.text());
+
+    // Patch 1, with the page connected.
+    let source = std::fs::read_to_string(&app_rs).unwrap();
+    std::fs::write(&app_rs, source.replace("logic v1 ->", "logic v2 ->")).unwrap();
+    assert!(
+        page.wait_for_text("logic v2 -> 0", Duration::from_secs(120)),
+        "the first patch never reached the page:\n{}",
+        tail(&session.log())
+    );
+
+    // No page connected: navigate away, so the event stream closes.
+    let origin = page.eval("location.origin").as_str().unwrap().to_string();
+    page.eval("location.href = 'about:blank'");
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Patch 2, with nobody listening.
+    let patched = |log: &str| log.matches("[hotpatch] src/app.rs ·").count();
+    let before = patched(&session.log());
+    let source = std::fs::read_to_string(&app_rs).unwrap();
+    std::fs::write(&app_rs, source.replace("logic v2 ->", "logic v3 ->")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while patched(&session.log()) == before {
+        assert!(Instant::now() < deadline, "the second save never patched:\n{}", tail(&session.log()));
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    // A fresh page load.
+    page.eval(&format!("location.href = '{origin}/'"));
+    assert!(
+        page.wait_for_text("logic v3 -> 0", Duration::from_secs(60)),
+        "a page opened after the patches does not run them: {:?}\n{}",
+        page.text(),
+        tail(&session.log())
+    );
+}
+
 // ── the two-crate workspace ──────────────────────────────────────────
 
 const WS_SHARED_RS: &str = r#"

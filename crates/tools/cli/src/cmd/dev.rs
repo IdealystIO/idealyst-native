@@ -11,11 +11,15 @@
 //!     survives, every client stays in sync. This is the hot-reload
 //!     experience — saves apply in place with state preserved.
 //!   - `--local`: each platform builds the user's `app()` for itself
-//!     with a file-watcher rebuild loop. Web uses livereload (full
-//!     page reload on change); native platforms restart the app on
-//!     rebuild. State does not survive saves. Use when the workspace
-//!     isn't available for the runtime-server sidecar build, or to
-//!     bypass the wire protocol entirely.
+//!     with a file-watcher loop. On web the page runs the app as wasm
+//!     and a save lands in one of three tiers: a literal edit inside a
+//!     `ui!` body is an overlay patch (no compiler), a function-body
+//!     edit is a wasm hot patch (seconds, page state kept), and a shape
+//!     change rebuilds the bundle and reloads the page (state reset).
+//!     Native platforms rebuild and relaunch the app on every save. Use
+//!     it to run the real wasm build, when the workspace isn't available
+//!     for the runtime-server sidecar build, or to bypass the wire
+//!     protocol entirely. `docs/hot-reload.md` has the tiers.
 //!
 //! - **Targets**: `--web`, `--ios`, `--android`, `--macos`. If none
 //!   are passed explicitly, the active set comes from `[package
@@ -246,18 +250,24 @@ pub struct Args {
     pub dir: PathBuf,
 
     /// Opt out of the runtime-server: build + run the user's `app()`
-    /// natively on each platform with its own file-watcher rebuild
-    /// loop. Web uses livereload (full page reload on save); native
-    /// platforms restart the app. State does not survive saves.
+    /// on each platform itself, with its own file-watcher loop.
+    ///
+    /// On web the page runs the app as wasm, and each save lands in one
+    /// of three tiers. A literal edit inside a `ui!` body is an overlay
+    /// patch: no compiler, applied in milliseconds. A function-body edit
+    /// is a wasm hot patch: applied in seconds, with page state kept. A
+    /// shape change (a signature, a struct, a new item) rebuilds the
+    /// bundle and reloads the page, which resets page state. Native
+    /// platforms rebuild and relaunch the app on every save.
     ///
     /// The default (off) starts the runtime-server sidecar — a single
     /// dev process holds the user's reactive tree and every platform
-    /// client connects over WebSocket. Source changes apply as
-    /// hot-patches with state preserved.
+    /// client connects over WebSocket. Saves land in the same three
+    /// tiers, on every platform at once.
     ///
-    /// Use `--local` when the framework workspace isn't reachable
-    /// for the sidecar build, or for a faster cold-start at the cost
-    /// of in-place saves.
+    /// Use `--local` to run the real wasm build in the browser, when
+    /// the framework workspace isn't reachable for the sidecar build,
+    /// or to bypass the wire protocol. See `docs/hot-reload.md`.
     #[arg(long)]
     pub local: bool,
 
@@ -270,8 +280,9 @@ pub struct Args {
     /// (`dev_server::sidecar::run_newcore`); the wire protocol is
     /// unchanged, so clients are identical. Saves apply in three tiers
     /// — literal, body, shape — see `docs/hot-reload.md`. In `--local`
-    /// mode each platform wrapper boots its own `newcore` entry and a
-    /// body edit rebuilds the wasm and reloads the page.
+    /// mode each platform wrapper boots its own `newcore` entry; on web
+    /// the same three tiers apply, a body edit landing as a wasm hot
+    /// patch with page state kept.
     #[arg(long)]
     pub new_core: bool,
 

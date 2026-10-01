@@ -75,13 +75,23 @@ pub fn variant_state_overlay(
     }
 }
 
+/// No visible border: zero width, and a transparent colour. The colour
+/// matters where a later layer reserves a width without naming a colour
+/// (an interactive Chip reserves 1px for its focus ring, see
+/// `tone_variant_sheet`). Without it the border would draw in the
+/// platform default, `currentColor` on web.
 fn no_border() -> StyleRules {
     let zero = Tokenized::Literal(0.0);
+    let clear = Tokenized::Literal(Color("transparent".into()));
     StyleRules {
         border_top_width: Some(zero.clone()),
         border_right_width: Some(zero.clone()),
         border_bottom_width: Some(zero.clone()),
         border_left_width: Some(zero),
+        border_top_color: Some(clear.clone()),
+        border_right_color: Some(clear.clone()),
+        border_bottom_color: Some(clear.clone()),
+        border_left_color: Some(clear),
         ..Default::default()
     }
 }

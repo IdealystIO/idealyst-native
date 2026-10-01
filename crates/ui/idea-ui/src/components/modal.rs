@@ -44,7 +44,8 @@
 //! [`ModalProps::on_backdrop_press`] fires when the backdrop is tapped.
 //! Unset → falls back to [`ModalProps::on_dismiss`] *if* `dismissable`, and
 //! to nothing when non-dismissable. Set it to intercept the tap without
-//! assuming dismissal.
+//! assuming dismissal. Escape / back reach `on_dismiss` only when
+//! `dismissable` too.
 //!
 //! ## Width and height
 //! [`ModalProps::width`] is the surface's desired width on a roomy viewport;
@@ -190,7 +191,8 @@ pub struct ModalProps {
     /// Everything else about the modal is unchanged by this choice.
     pub presentation: ModalPresentation,
     /// Fires when the user dismisses (backdrop tap — unless
-    /// `on_backdrop_press` overrides it — or Escape / back). The host is
+    /// `on_backdrop_press` overrides it — or Escape / back), only while
+    /// `dismissable`. The host is
     /// expected to flip its open-state signal in response; idea-ui's modal
     /// doesn't auto-unmount itself.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
@@ -200,8 +202,11 @@ pub struct ModalProps {
     /// dismissal.
     pub on_backdrop_press: Option<Rc<dyn Fn()>>,
     /// `true` (default) lets the backdrop tap dismiss (via `on_dismiss`)
-    /// and routes Escape/back to `on_dismiss`. `false` makes the backdrop
-    /// inert (no dismissal) unless `on_backdrop_press` is set.
+    /// and routes Escape/back to `on_dismiss`. `false` makes both inert:
+    /// Escape/back are swallowed without reaching `on_dismiss` (Android's
+    /// back key does not fall through to the screen under the modal), and
+    /// the backdrop does nothing unless `on_backdrop_press` is set. Close a non-dismissable modal
+    /// from its own content (flip `open`).
     pub dismissable: bool,
     /// Desired surface width on a roomy viewport, in DIPs (default 520).
     /// Capped to the viewport width reactively so it never overflows a
@@ -620,15 +625,8 @@ fn build_overlay(
     // [`ModalProps::sheet_slide`].
     sheet_slide: Option<AnimatedValue<f32>>,
 ) -> Element {
-    // Resolve the backdrop press handler: explicit override wins; otherwise
-    // dismiss when dismissable; otherwise the backdrop is inert.
-    let backdrop_handler: Option<Rc<dyn Fn()>> = on_backdrop_press.or_else(|| {
-        if dismissable {
-            on_dismiss.clone()
-        } else {
-            None
-        }
-    });
+    let DismissRouting { backdrop: backdrop_handler, platform: platform_dismiss } =
+        DismissRouting::resolve(on_dismiss, on_backdrop_press, dismissable);
 
     // Bidirectional animators: bound to the inner views, then driven by an
     // effect reading `open` — animate IN on open, OUT on close. The backdrop
@@ -707,10 +705,44 @@ fn build_overlay(
         backdrop_style,
         desired,
         presentation,
-        on_dismiss,
+        platform_dismiss,
         surface_style,
         content_style,
     )
+}
+
+/// Where the modal's two dismissal gestures go.
+struct DismissRouting {
+    /// The backdrop tap: `on_backdrop_press` if set, else `on_dismiss`
+    /// when dismissable, else inert.
+    backdrop: Option<Rc<dyn Fn()>>,
+    /// The platform gesture — Escape on web/desktop, the back key on
+    /// Android: `on_dismiss` when dismissable. A non-dismissable modal
+    /// used to route Escape to `on_dismiss` anyway (only the backdrop
+    /// honored the flag), so a modal its author meant to be undismissable
+    /// closed on Escape.
+    ///
+    /// A non-dismissable modal hands the portal a handler that does
+    /// nothing rather than none: the Android overlay attaches its back-key
+    /// listener (which consumes the key) only when the portal has a
+    /// handler, and without one the back key falls through to the
+    /// Activity and pops the navigator screen UNDER the modal. The
+    /// gesture is swallowed, not routed.
+    platform: Option<Rc<dyn Fn()>>,
+}
+
+impl DismissRouting {
+    fn resolve(
+        on_dismiss: Option<Rc<dyn Fn()>>,
+        on_backdrop_press: Option<Rc<dyn Fn()>>,
+        dismissable: bool,
+    ) -> Self {
+        if dismissable {
+            Self { backdrop: on_backdrop_press.or_else(|| on_dismiss.clone()), platform: on_dismiss }
+        } else {
+            Self { backdrop: on_backdrop_press, platform: Some(Rc::new(|| {})) }
+        }
+    }
 }
 
 /// Pure structural assembly of the modal portal (backdrop + scrollable card +
@@ -916,7 +948,8 @@ fn assemble_overlay(
 
     // One fullscreen portal: backdrop (behind) + card (centered) as siblings
     // in a flex-centering content wrapper. `backdrop(None)` because we supply
-    // our own backdrop child; Escape/back still routes to `on_dismiss`.
+    // our own backdrop child; Escape/back routes to `on_dismiss` (`None`
+    // for a non-dismissable modal, see `DismissRouting`).
     let mut overlay = runtime_core::overlay(vec![backdrop, card])
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::None)
@@ -1071,6 +1104,36 @@ mod tests {
     /// child (the card, painted above the first-child backdrop) is a
     /// `Pressable`. If a refactor reverts it to a plain `view`, the
     /// Android tap-through regression returns and this test fails.
+    /// Regression (CrewForge, 2026-10-01): `dismissable = false` with an
+    /// `on_dismiss` still closed on Escape. The flag only gated the
+    /// backdrop; `on_dismiss` went to the portal unconditionally, and the
+    /// web portal installs its Escape listener whenever it has one.
+    #[test]
+    fn regression_non_dismissable_modal_ignores_escape() {
+        let hits = Rc::new(std::cell::Cell::new(0));
+        let h = hits.clone();
+        let dismiss: Rc<dyn Fn()> = Rc::new(move || h.set(h.get() + 1));
+
+        let r = DismissRouting::resolve(Some(dismiss.clone()), None, false);
+        // The portal still gets a handler, so Android consumes the back
+        // key instead of popping the screen under the modal...
+        (r.platform.expect("the gesture is swallowed, not passed through"))();
+        // ...but it never reaches `on_dismiss`.
+        assert_eq!(hits.get(), 0, "Escape/back must not reach on_dismiss");
+        assert!(r.backdrop.is_none(), "the backdrop is inert");
+
+        // An explicit backdrop handler still fires on a non-dismissable one.
+        let press: Rc<dyn Fn()> = Rc::new(|| {});
+        let r = DismissRouting::resolve(Some(dismiss.clone()), Some(press), false);
+        assert!(r.backdrop.is_some());
+
+        // Dismissable: both gestures dismiss.
+        let r = DismissRouting::resolve(Some(dismiss), None, true);
+        (r.platform.expect("Escape/back dismiss"))();
+        (r.backdrop.expect("the backdrop dismisses"))();
+        assert_eq!(hits.get(), 2);
+    }
+
     #[test]
     fn regression_modal_card_layer_consumes_touches() {
         with_test_world(|| {

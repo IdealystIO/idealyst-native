@@ -52,8 +52,8 @@ use crate::components::time_input::TimeInput;
 use crate::components::typed_field::{typed_field_wiring, TypedFieldSpec};
 use crate::date_mask::Mask;
 use crate::date::{
-    format_date, format_datetime, parse_date, parse_datetime, CivilDate, CivilDateTime,
-    CivilTime, DateLabels, Weekday,
+    format_date_with, format_datetime_with, parse_date_with, parse_datetime_with, CivilDate,
+    CivilDateTime, CivilTime, DateLabels, Weekday,
 };
 
 /// Trailing clear glyph — an ✕. Inline `IconData` like
@@ -97,7 +97,8 @@ pub struct DateInputProps {
     /// Fires with `Some(date)` on each valid commit, `None` when the
     /// field is emptied.
     pub on_change: Rc<dyn Fn(Option<CivilDate>)>,
-    /// Token format for parsing AND display. Default `YYYY-MM-DD`.
+    /// Token format for parsing AND display. Default `YYYY-MM-DD`. Name
+    /// tokens (`MMMM`, `MMM`, `dddd`, `ddd`) read `labels`; see [`crate::date`].
     pub format: String,
     /// Optional field label (see [`Field`]).
     pub label: Option<String>,
@@ -164,17 +165,21 @@ pub fn DateInput(props: DateInputProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let format = props.format.get();
+    // Month/weekday name tokens (`MMM`, `ddd`) read the same labels the
+    // popup calendar shows.
+    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
 
     let wiring = typed_field_wiring(TypedFieldSpec {
         value,
         on_commit: on_change.clone(),
         parse: Rc::new({
             let f = format.clone();
-            move |s: &str| parse_date(s, &f)
+            let names = names.clone();
+            move |s: &str| parse_date_with(s, &f, &names)
         }),
         render: Rc::new({
             let f = format.clone();
-            move |d: CivilDate| format_date(d, &f)
+            move |d: CivilDate| format_date_with(d, &f, &names)
         }),
         invalid_message: props.invalid_message.get(),
         host_error: props.error.clone(),
@@ -343,17 +348,20 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
     let format = props.format.get();
+    // See `DateInput`.
+    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
 
     let wiring = typed_field_wiring(TypedFieldSpec {
         value,
         on_commit: on_change.clone(),
         parse: Rc::new({
             let f = format.clone();
-            move |s: &str| parse_datetime(s, &f)
+            let names = names.clone();
+            move |s: &str| parse_datetime_with(s, &f, &names)
         }),
         render: Rc::new({
             let f = format.clone();
-            move |dt: CivilDateTime| format_datetime(dt, &f)
+            move |dt: CivilDateTime| format_datetime_with(dt, &f, &names)
         }),
         invalid_message: props.invalid_message.get(),
         host_error: props.error.clone(),

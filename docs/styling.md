@@ -910,6 +910,43 @@ native style-state system.
 Both paths produce the same observable behavior on the resulting
 widget. The choice is purely about where the state tracking lives.
 
+### Focus indicators
+
+A focusable element (a `pressable` is one: `tabindex="0"` on web, in the
+key-view loop on macOS) shows the platform's own focus ring until its
+stylesheet takes the job over. Declaring a `state focused` block is what
+takes it over: the sheet then owns the indicator, and the platform ring
+is suppressed. On web the `:focus` rule minted for the block starts with
+`outline: none` (the live engine, SSR and premint all mint it that way);
+macOS never draws its native ring on framework views.
+
+```rust
+stylesheet! {
+    pub Row<()> {
+        base(t) {
+            // Reserve the ring's width at rest, so focusing does not
+            // move the layout.
+            border_width: 1.0,
+            border_color: Color::TRANSPARENT,
+        }
+        state focused(t) {
+            border_color: t.color("focus-ring"),
+        }
+    }
+}
+```
+
+An element whose sheet declares no `state focused` keeps the browser's
+default ring, on purpose. Without it, a keyboard user could not see where
+focus is. That default ring is drawn outside the box, so an ancestor
+with `overflow: hidden` clips it, and its colour ignores the theme. Both
+are reasons to declare your own.
+
+Draw the ring with a border, as above, or with `box_shadow`. If you use a
+border, give `base` the same `border_width` and a transparent colour.
+Otherwise focusing adds the border's width and shifts everything after
+the element.
+
 ---
 
 ## Responsive breakpoints

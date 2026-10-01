@@ -778,11 +778,32 @@ pub fn json_schema() -> serde_json::Value {
 
 /// Whether a file name is an editor's or a tool's scratch file rather
 /// than a file someone saved: a `.name.swp`, an `.!12345!name.rs` from
-/// `sed -i`, a `name.rs~` backup, an emacs `#name#`. Watchers see those
-/// beside every save; a [`DevEvent::ChangeDetected`] names the saved files
-/// without them.
+/// BSD `sed -i`, a `sedAaNZmz` from GNU `sed -i`, a `name.rs~` backup, an
+/// emacs `#name#`, or the `name.rs.tmp.<pid>.<hex>` (or `name.tmp`) that a
+/// write-then-rename save writes before renaming it over the original.
+/// Watchers see those beside every save; a [`DevEvent::ChangeDetected`]
+/// names the saved files without them.
+///
+/// A temp-and-rename save is how most tools (and every AI agent edit)
+/// write a file, and the watcher can deliver the temp file's events in a
+/// batch of their own, before the renamed file's. Such a batch names no
+/// saved file at all, so it must not count as a save; the batch that
+/// names the final path is the save.
 pub fn is_scratch_file(name: &str) -> bool {
-    name.starts_with('.') || name.starts_with('#') || name.ends_with('~')
+    name.starts_with('.')
+        || name.starts_with('#')
+        || name.ends_with('~')
+        || name.ends_with(".tmp")
+        || name.contains(".tmp.")
+        || is_gnu_sed_temp(name)
+}
+
+/// GNU `sed -i` writes its output to `sedXXXXXX` (mkostemp: six
+/// alphanumerics, no extension) in the edited file's directory, then
+/// renames it over the original.
+fn is_gnu_sed_temp(name: &str) -> bool {
+    name.strip_prefix("sed")
+        .is_some_and(|rest| rest.len() == 6 && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 static GLOBAL: OnceLock<Reporter> = OnceLock::new();
@@ -984,10 +1005,20 @@ mod tests {
 
     #[test]
     fn scratch_files_are_told_from_saved_ones() {
-        for scratch in [".app.rs.swp", ".!21378!app.rs", "app.rs~", "#app.rs#"] {
+        for scratch in [
+            ".app.rs.swp",
+            ".!21378!app.rs",
+            "app.rs~",
+            "#app.rs#",
+            // CrewForge, 2026-10-01: a temp-and-rename save (Claude
+            // Code's Edit/Write) and GNU `sed -i`.
+            "skeleton.rs.tmp.20647.8b2d7e43908b",
+            "skeleton.rs.tmp",
+            "sedAaNZmz",
+        ] {
             assert!(is_scratch_file(scratch), "{scratch}");
         }
-        for saved in ["app.rs", "Cargo.toml", "lib.rs"] {
+        for saved in ["app.rs", "Cargo.toml", "lib.rs", "sed.rs", "sedation", "sedAaNZmz.rs", "tmp.rs"] {
             assert!(!is_scratch_file(saved), "{saved}");
         }
     }

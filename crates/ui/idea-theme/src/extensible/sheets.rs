@@ -527,10 +527,27 @@ where
     // `(sheet, variants, computed_key, overrides)` and shared one resolved
     // `StyleRules`, so whichever resolved first decided the cursor for both.
     // A variant is part of the cache identity by construction.
+    //
+    // The `on` arm also RESERVES the focus ring's 1px border. The ring above
+    // is a 1px border, and the borderless appearances (filled, soft, ghost)
+    // have none at rest. On a content-sized pill the ring then added 2px to
+    // each axis on focus, and since a press focuses, pressing a chip pushed
+    // its neighbours 1px over and everything below it 1px down (CrewForge,
+    // 2026-10-01). `interactive` merges after `appearance`, so this sets only
+    // the WIDTH: an outlined chip keeps its stroke colour, and a borderless one
+    // keeps the transparent colour `no_border` gave it. Inert Tags, Badges and
+    // Alerts never focus, so they reserve nothing and keep their size.
     sheet = sheet.variant("interactive", "off", |_vs| StyleRules::default());
-    sheet = sheet.variant("interactive", "on", |_vs| StyleRules {
-        cursor: Some(Cursor::Pointer),
-        ..Default::default()
+    sheet = sheet.variant("interactive", "on", |_vs| {
+        let one = Tokenized::Literal(1.0);
+        StyleRules {
+            cursor: Some(Cursor::Pointer),
+            border_top_width: Some(one.clone()),
+            border_right_width: Some(one.clone()),
+            border_bottom_width: Some(one.clone()),
+            border_left_width: Some(one),
+            ..Default::default()
+        }
     });
     sheet.variant_default("interactive", "off")
 }
@@ -1471,9 +1488,11 @@ pub fn install_default_icon_button_sheet() {
 /// border the `checked`/`appearance` arm set.
 ///
 /// WHY a border and not an outline/box-shadow: `StyleRules` has no outline
-/// property, and a border lives inside the border-box, so swapping it on
-/// focus never changes the control's outer size (no layout nudge on
-/// focus/blur).
+/// property, and `BoxShadow` has no spread to draw a ring with. A border
+/// takes layout space, so the sheet must reserve the same width at rest or
+/// focus moves the layout. The fixed-size hosts (Switch track, Checkbox
+/// box, Radio ring) have an explicit width and height, which the border
+/// fits inside. A content-sized Chip reserves 1px in its `interactive` arm.
 fn focus_ring_rules(width: f32, whose: &'static str) -> StyleRules {
     let theme_rc = active_theme();
     let theme_ref = theme_rc
@@ -2519,6 +2538,49 @@ mod selection_sheet_tests {
         // themed focus-ring overlay.
         let sheet = TagSheetBuilder::new().build();
         assert!(has(&sheet, "__state_focused", "on"));
+    }
+
+    /// Regression (CrewForge, 2026-10-01): a soft Chip gained a 1px border
+    /// only while focused. Pressing focuses it, so the chip grew 2px and
+    /// shifted its neighbours and everything below. An interactive chip
+    /// reserves the ring's width at rest, so focus only recolours it. An
+    /// inert one (Badge, Tag) reserves nothing and keeps its size.
+    #[test]
+    fn regression_focusing_a_chip_does_not_change_its_border_width() {
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let sheet = TagSheetBuilder::new().build();
+            assert!(has(&sheet, "__state_focused", "on"));
+            // What that overlay's arm returns.
+            let focus = focus_ring_rules(1.0, "test");
+            let widths = |r: &StyleRules| {
+                [&r.border_top_width, &r.border_right_width, &r.border_bottom_width, &r.border_left_width]
+                    .map(|w| match w {
+                        Some(Tokenized::Literal(v)) => *v,
+                        None => 0.0,
+                        Some(other) => panic!("unexpected border width {other:?}"),
+                    })
+            };
+            for appearance in ["primary_soft", "primary_filled", "primary_ghost", "primary_outlined"] {
+                let mut vs = VariantSet::default();
+                vs.0.insert("appearance".into(), appearance.into());
+                vs.0.insert("interactive".into(), "on".into());
+                let rest = sheet.resolve(&vs);
+                let focused = rest.clone().merge(&focus);
+                assert_eq!(widths(&rest), widths(&focused), "{appearance}: focus moved the border width");
+                assert_eq!(widths(&rest), [1.0; 4], "{appearance}");
+                if appearance != "primary_outlined" {
+                    assert!(
+                        matches!(&rest.border_top_color, Some(Tokenized::Literal(c)) if c.0 == "transparent"),
+                        "{appearance}: the reserved border must be invisible at rest: {:?}",
+                        rest.border_top_color
+                    );
+                }
+            }
+            let mut inert = VariantSet::default();
+            inert.0.insert("appearance".into(), "primary_soft".into());
+            assert_eq!(widths(&sheet.resolve(&inert)), [0.0; 4], "an inert tag keeps its size");
+        });
     }
 
     #[test]

@@ -24,8 +24,17 @@
 //! any other character a literal. Parsing is lenient about digit width
 //! (`M` and `MM` both accept `3` or `03`) so typed input like
 //! `3/4/2026` round-trips; formatting is strict (`MM` zero-pads).
-//! Month/weekday display names live in [`DateLabels`] — English by
-//! default, replaceable per call site for i18n.
+//!
+//! Name tokens come from a [`DateLabels`]: `MMMM` is the month's full name
+//! (`September`), `MMM` its short name (`Sep`), `dddd` the weekday's full
+//! name (`Wednesday`) and `ddd` its short name (`Wed`). So
+//! `"ddd D MMM YYYY"` formats as `Wed 30 Sep 2026`. Only a run of three or
+//! four `d`s is a token. A lone `d` or `dd` stays literal text, as it
+//! always was. Parsing matches a month name
+//! case-insensitively. It accepts a weekday name but ignores it, because
+//! the date fields decide the day. [`format_date`] and its siblings use
+//! [`DateLabels::english`]; the `*_with` variants take the labels to use,
+//! and the date components pass their `labels` prop through.
 
 use std::rc::Rc;
 
@@ -284,6 +293,8 @@ pub struct DateLabels {
     pub months_short: [String; 12],
     /// Abbreviated weekday names, Monday-first (column headers).
     pub weekdays_short: [String; 7],
+    /// Full weekday names, Monday-first (the `dddd` format token).
+    pub weekdays: [String; 7],
 }
 
 impl DateLabels {
@@ -301,12 +312,20 @@ impl DateLabels {
                 "Dec",
             ]),
             weekdays_short: arr(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]),
+            weekdays: arr([
+                "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+            ]),
         })
     }
 
     /// Full name of `month` (1-based).
     pub fn month_name(&self, month: u8) -> &str {
         &self.months[usize::from(month.clamp(1, 12) - 1)]
+    }
+
+    /// Full name of `weekday`.
+    pub fn weekday_name(&self, weekday: Weekday) -> &str {
+        &self.weekdays[usize::from(weekday.as_index())]
     }
 
     /// Short name of `weekday`.
@@ -337,7 +356,25 @@ pub(crate) enum Token {
     Second2,
     /// `A` → `AM`/`PM`, `a` → `am`/`pm`.
     Meridiem { upper: bool },
+    /// `MMM` → [`DateLabels::months_short`].
+    MonthShort,
+    /// `MMMM` → [`DateLabels::months`].
+    MonthLong,
+    /// `ddd` → [`DateLabels::weekdays_short`].
+    WeekdayShort,
+    /// `dddd` → [`DateLabels::weekdays`].
+    WeekdayLong,
     Literal(char),
+}
+
+impl Token {
+    /// A token written as a NAME rather than digits.
+    pub(crate) fn is_name(self) -> bool {
+        matches!(
+            self,
+            Token::MonthShort | Token::MonthLong | Token::WeekdayShort | Token::WeekdayLong
+        )
+    }
 }
 
 /// Longest-match tokenizer over the format tokens documented in the
@@ -351,13 +388,17 @@ pub(crate) fn lex(fmt: &str) -> Vec<Token> {
         let run = |c: char| rest.iter().take_while(|&&x| x == c).count();
         let (tok, len) = match rest[0] {
             'Y' => (Token::Year4, run('Y').min(4)),
-            'M' => {
-                if run('M') >= 2 {
-                    (Token::Month2, 2)
-                } else {
-                    (Token::Month1, 1)
-                }
-            }
+            'M' => match run('M') {
+                1 => (Token::Month1, 1),
+                2 => (Token::Month2, 2),
+                3 => (Token::MonthShort, 3),
+                _ => (Token::MonthLong, 4),
+            },
+            // `ddd` and `dddd`. `d` and `dd` were literals before the name
+            // tokens existed and stay literals, so no existing format
+            // changes meaning.
+            'd' if run('d') == 3 => (Token::WeekdayShort, 3),
+            'd' if run('d') >= 4 => (Token::WeekdayLong, 4),
             'D' => {
                 if run('D') >= 2 {
                     (Token::Day2, 2)
@@ -414,10 +455,35 @@ struct Fields {
     saw_hour12: bool,
 }
 
-fn format_with(tokens: &[Token], date: Option<CivilDate>, time: Option<CivilTime>) -> String {
+fn format_with(
+    tokens: &[Token],
+    date: Option<CivilDate>,
+    time: Option<CivilTime>,
+    labels: &DateLabels,
+) -> String {
     let mut out = String::new();
     for tok in tokens {
         match *tok {
+            Token::MonthShort => {
+                if let Some(d) = date {
+                    out.push_str(&labels.months_short[usize::from(d.month - 1)]);
+                }
+            }
+            Token::MonthLong => {
+                if let Some(d) = date {
+                    out.push_str(labels.month_name(d.month));
+                }
+            }
+            Token::WeekdayShort => {
+                if let Some(d) = date {
+                    out.push_str(labels.weekday_short(d.weekday()));
+                }
+            }
+            Token::WeekdayLong => {
+                if let Some(d) = date {
+                    out.push_str(labels.weekday_name(d.weekday()));
+                }
+            }
             Token::Year4 => {
                 if let Some(d) = date {
                     out.push_str(&format!("{:04}", d.year));
@@ -493,7 +559,7 @@ fn format_with(tokens: &[Token], date: Option<CivilDate>, time: Option<CivilTime
 /// Parse `input` against `tokens`. Digit tokens accept 1–2 digits
 /// (4 for the year) regardless of padding; literals must match
 /// exactly except that any run of spaces matches any run of spaces.
-fn parse_with(tokens: &[Token], input: &str) -> Option<Fields> {
+fn parse_with(tokens: &[Token], input: &str, labels: &DateLabels) -> Option<Fields> {
     let chars: Vec<char> = input.trim().chars().collect();
     let mut pos = 0usize;
     let mut f = Fields::default();
@@ -509,8 +575,43 @@ fn parse_with(tokens: &[Token], input: &str) -> Option<Fields> {
         chars[start..*pos].iter().collect::<String>().parse().ok()
     }
 
+    /// The index of the longest name in `names` that `chars[pos..]`
+    /// starts with, case-insensitively, advancing past it. Longest, so
+    /// a short name that prefixes a longer one cannot win.
+    fn take_name(chars: &[char], pos: &mut usize, names: &[String]) -> Option<usize> {
+        let rest = &chars[*pos..];
+        let (i, len) = names
+            .iter()
+            .enumerate()
+            .filter_map(|(i, name)| {
+                let name: Vec<char> = name.chars().collect();
+                let fits = !name.is_empty()
+                    && name.len() <= rest.len()
+                    && name.iter().zip(rest).all(|(a, b)| a.to_lowercase().eq(b.to_lowercase()));
+                fits.then_some((i, name.len()))
+            })
+            .max_by_key(|&(_, len)| len)?;
+        *pos += len;
+        Some(i)
+    }
+
     for tok in tokens {
         match *tok {
+            Token::MonthShort => {
+                f.month = Some(take_name(&chars, &mut pos, &labels.months_short)? as u8 + 1)
+            }
+            Token::MonthLong => {
+                f.month = Some(take_name(&chars, &mut pos, &labels.months)? as u8 + 1)
+            }
+            // Read past, not checked: the year, month and day already
+            // name the date, and a mismatched weekday is the kind of slip
+            // lenient parsing exists to forgive.
+            Token::WeekdayShort => {
+                take_name(&chars, &mut pos, &labels.weekdays_short)?;
+            }
+            Token::WeekdayLong => {
+                take_name(&chars, &mut pos, &labels.weekdays)?;
+            }
             Token::Year4 => f.year = Some(take_digits(&chars, &mut pos, 4)? as i32),
             Token::Month2 | Token::Month1 => {
                 f.month = Some(u8::try_from(take_digits(&chars, &mut pos, 2)?).ok()?)
@@ -592,37 +693,61 @@ impl Fields {
 }
 
 /// Format `date` with a date-token format string (e.g. `"YYYY-MM-DD"`,
-/// `"D/M/YYYY"`). Time tokens produce nothing.
+/// `"D/M/YYYY"`, `"ddd D MMM YYYY"`). Time tokens produce nothing. Names
+/// are English; see [`format_date_with`].
 pub fn format_date(date: CivilDate, fmt: &str) -> String {
-    format_with(&lex(fmt), Some(date), None)
+    format_date_with(date, fmt, &DateLabels::english())
+}
+
+/// [`format_date`] with the month and weekday names from `labels`.
+pub fn format_date_with(date: CivilDate, fmt: &str, labels: &DateLabels) -> String {
+    format_with(&lex(fmt), Some(date), None, labels)
 }
 
 /// Format `time` with a time-token format string (e.g. `"HH:mm"`,
 /// `"h:mm A"`). Date tokens produce nothing.
 pub fn format_time(time: CivilTime, fmt: &str) -> String {
-    format_with(&lex(fmt), None, Some(time))
+    format_with(&lex(fmt), None, Some(time), &DateLabels::english())
 }
 
 /// Format a datetime with a combined format string
-/// (e.g. `"YYYY-MM-DD HH:mm"`).
+/// (e.g. `"YYYY-MM-DD HH:mm"`). Names are English; see
+/// [`format_datetime_with`].
 pub fn format_datetime(dt: CivilDateTime, fmt: &str) -> String {
-    format_with(&lex(fmt), Some(dt.date), Some(dt.time))
+    format_datetime_with(dt, fmt, &DateLabels::english())
+}
+
+/// [`format_datetime`] with the month and weekday names from `labels`.
+pub fn format_datetime_with(dt: CivilDateTime, fmt: &str, labels: &DateLabels) -> String {
+    format_with(&lex(fmt), Some(dt.date), Some(dt.time), labels)
 }
 
 /// Parse a date. `None` unless every date field is present, in range,
-/// and the whole input is consumed. Lenient about zero-padding.
+/// and the whole input is consumed. Lenient about zero-padding. Names
+/// are English; see [`parse_date_with`].
 pub fn parse_date(input: &str, fmt: &str) -> Option<CivilDate> {
-    parse_with(&lex(fmt), input)?.to_date()
+    parse_date_with(input, fmt, &DateLabels::english())
+}
+
+/// [`parse_date`] against the month and weekday names in `labels`.
+pub fn parse_date_with(input: &str, fmt: &str, labels: &DateLabels) -> Option<CivilDate> {
+    parse_with(&lex(fmt), input, labels)?.to_date()
 }
 
 /// Parse a time of day (see [`parse_date`] for the leniency rules).
 pub fn parse_time(input: &str, fmt: &str) -> Option<CivilTime> {
-    parse_with(&lex(fmt), input)?.to_time()
+    parse_with(&lex(fmt), input, &DateLabels::english())?.to_time()
 }
 
-/// Parse a combined datetime.
+/// Parse a combined datetime. Names are English; see
+/// [`parse_datetime_with`].
 pub fn parse_datetime(input: &str, fmt: &str) -> Option<CivilDateTime> {
-    let f = parse_with(&lex(fmt), input)?;
+    parse_datetime_with(input, fmt, &DateLabels::english())
+}
+
+/// [`parse_datetime`] against the month and weekday names in `labels`.
+pub fn parse_datetime_with(input: &str, fmt: &str, labels: &DateLabels) -> Option<CivilDateTime> {
+    let f = parse_with(&lex(fmt), input, labels)?;
     Some(CivilDateTime { date: f.to_date()?, time: f.to_time()? })
 }
 
@@ -800,6 +925,48 @@ mod tests {
         assert_eq!(Weekday::Monday.add(6), Weekday::Sunday);
     }
 
+    /// CrewForge, 2026-10-01: `display_format = "ddd D MMM YYYY"` rendered
+    /// the letters as literal text. The names live in `DateLabels`, which
+    /// the format tokens could not reach.
+    #[test]
+    fn regression_name_tokens_format_from_the_labels() {
+        let d = CivilDate::new(2026, 9, 30).unwrap();
+        assert_eq!(format_date(d, "ddd D MMM YYYY"), "Wed 30 Sep 2026");
+        assert_eq!(format_date(d, "MMMM D, YYYY"), "September 30, 2026");
+        assert_eq!(format_date(d, "dddd, MMMM D"), "Wednesday, September 30");
+        let dt = CivilDateTime::new(d, CivilTime::new(14, 5, 0).unwrap());
+        assert_eq!(format_datetime(dt, "ddd MMM D h:mm A"), "Wed Sep 30 2:05 PM");
+
+        // The labels a component is given, not English.
+        let mut fr = (*DateLabels::english()).clone();
+        fr.months_short[8] = "sept.".into();
+        fr.weekdays_short[2] = "mer.".into();
+        assert_eq!(format_date_with(d, "ddd D MMM YYYY", &fr), "mer. 30 sept. 2026");
+        assert_eq!(parse_date_with("mer. 30 sept. 2026", "ddd D MMM YYYY", &fr), Some(d));
+    }
+
+    #[test]
+    fn name_tokens_parse_case_insensitively_and_round_trip() {
+        let d = CivilDate::new(2026, 9, 30).unwrap();
+        for fmt in ["ddd D MMM YYYY", "MMMM D, YYYY", "D MMM YYYY", "dddd D MMMM YYYY"] {
+            assert_eq!(parse_date(&format_date(d, fmt), fmt), Some(d), "{fmt}");
+        }
+        assert_eq!(parse_date("wed 30 SEP 2026", "ddd D MMM YYYY"), Some(d));
+        // The weekday is read past, not checked against the date.
+        assert_eq!(parse_date("Mon 30 Sep 2026", "ddd D MMM YYYY"), Some(d));
+        // `MMMM` takes the full name; a short one does not satisfy it.
+        assert_eq!(parse_date("Sep 30, 2026", "MMMM D, YYYY"), None);
+        assert_eq!(parse_date("Sept 30 2026", "MMM D YYYY"), None);
+    }
+
+    #[test]
+    fn lone_d_and_dd_stay_literal() {
+        let d = CivilDate::new(2026, 9, 30).unwrap();
+        assert_eq!(format_date(d, "YYYY-MM-DD d dd"), "2026-09-30 d dd");
+        // `MM` and `M` still mean the month number.
+        assert_eq!(format_date(d, "M/MM"), "9/09");
+    }
+
     #[test]
     fn labels_default_english() {
         let l = DateLabels::english();
@@ -807,5 +974,6 @@ mod tests {
         assert_eq!(l.month_name(12), "December");
         assert_eq!(l.weekday_short(Weekday::Monday), "Mon");
         assert_eq!(l.weekday_short(Weekday::Sunday), "Sun");
+        assert_eq!(l.weekday_name(Weekday::Wednesday), "Wednesday");
     }
 }
