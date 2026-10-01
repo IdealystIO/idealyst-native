@@ -799,7 +799,7 @@ impl Painter for IosSim {
         &self,
         viewport: (f32, f32),
         insets: runtime_shared::EdgeInsets,
-        _now: web_time::Instant,
+        _now: render_wgpu::time::Instant,
         glyphs: &'a HashMap<&'static str, Buffer>,
         rects: &mut Vec<RectInstance>,
         texts: &mut Vec<StagedText<'a>>,

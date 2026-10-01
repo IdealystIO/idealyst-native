@@ -22,11 +22,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-// `web-time` mirrors `std::time` on native and uses `performance.now()`
-// on wasm32 (where `std::time::Instant::now()` panics). The `EventSink`
-// trait in `render-api` re-exports the same `Instant`, so this stays
-// one type across the call boundary.
-use web_time::{Duration, Instant};
+// The framework clock (`runtime_shared::time`), not `std::time::Instant`
+// — `Instant::now()` panics on wasm32. See `crate::time` for why, and
+// for the install-before-first-read invariant `Host::new` upholds.
+use crate::time::Instant;
+use std::time::Duration;
 
 // Runtime v2: the host no longer builds the tree. `newcore::start` /
 // `start_in_world` (crate::newcore) realize the scene into a world and
@@ -296,6 +296,16 @@ enum ReleaseAction {
 
 impl Host {
     pub fn new(skin: Rc<dyn Painter>, color_scheme: ColorScheme) -> Self {
+        // Clocks FIRST: everything below may read time (the chrome
+        // clock glyphs read the wall clock; every animation, momentum
+        // scroll and caret blink reads `crate::time::Instant`). With no
+        // source installed `now_micros()` reads 0 forever and every
+        // animation freezes on its first frame. First install wins, so
+        // a host that installed its own source earlier (host-web, via
+        // backend-web's `performance.now()` / `js Date` sources) keeps
+        // it — which is also what keeps a sim skin's non-`Web` platform
+        // from constructing the std-backed default on wasm32.
+        runtime_shared::time::install_default_time_source(skin.platform());
         let text = Rc::new(RefCell::new(TextStore::new()));
         let font_system = Rc::new(RefCell::new(FontSystem::new()));
         // Register the bundled default font BEFORE anything reads from
@@ -604,8 +614,9 @@ impl Host {
         // Sample the clock once per tick so every animation reads
         // the same "now." Shells no longer thread an `Instant`
         // across the API boundary — clock choice is local to the
-        // render backend (here, `web_time` so wasm32 doesn't panic
-        // on `std::time::Instant::now()`).
+        // render backend (here, `crate::time::Instant` on the
+        // framework's installed source, so wasm32 doesn't panic on
+        // `std::time::Instant::now()`).
         let now = Instant::now();
         let any_anim = self.backend.borrow_mut().animator.tick(now);
         let any_presence = crate::backend_impl::tick_presence_tweens(&self.backend, now);
@@ -2044,10 +2055,9 @@ pub(crate) fn collect_touch_path(
 /// the epoch is arbitrary (lazily fixed at first call). Not a
 /// wall-clock time.
 fn monotonic_ns() -> u64 {
-    use std::sync::OnceLock;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    Instant::now().duration_since(*epoch).as_nanos() as u64
+    // The installed monotonic source's epoch is already fixed for the
+    // process, so its reading is the timestamp.
+    Instant::now().as_micros().saturating_mul(1_000)
 }
 
 /// Absolute (window-relative) origin of `node`'s top-left corner.
@@ -2414,22 +2424,18 @@ fn build_chrome_glyph_cache(
 /// compares this against `chrome_clock_minute` each tick to
 /// decide whether to re-shape the clock buffer.
 pub(crate) fn current_clock_minute() -> i64 {
-    // `web_time::SystemTime` is `std::time::SystemTime` on native
-    // and a `performance.now()` + page-start anchor on wasm32 —
-    // `std::time::SystemTime::now()` would panic on wasm, taking
-    // down any snippet that mounts the simulator chrome (status
-    // bar + clock). Same swap we did for `Instant` higher up in
-    // this file; keep them paired.
-    let now = web_time::SystemTime::now();
-    let secs_since_epoch = now
-        .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    // Local-time hour/minute via the system's offset. `chrono`
-    // would be the right dep here; rolling a tiny calculator
-    // avoids pulling it in just for the status bar. The result
-    // matches `SystemTime::now()` to within DST/TZ — good
-    // enough for a frozen-design simulator clock.
+    // The framework wall clock (`runtime_shared::time::epoch_millis`)
+    // rather than `std::time::SystemTime::now()`, which panics on wasm32
+    // and would take down any snippet that mounts the simulator chrome
+    // (status bar + clock). Web installs a `js Date` source, native the
+    // `SystemTime` default (`Host::new`). Reads 0 (→ "0:00") only if no
+    // wall clock is installed yet.
+    let secs_since_epoch = runtime_shared::time::epoch_millis().div_euclid(1000);
+    // Hour/minute of the epoch reading as-is (UTC; the local offset
+    // is not applied). `chrono` would be the right dep for a real
+    // local clock; rolling a tiny calculator avoids pulling it in
+    // just for the status bar — good enough for a frozen-design
+    // simulator clock.
     let secs_of_day = secs_since_epoch.rem_euclid(86_400);
     let hour = secs_of_day / 3600;
     let minute = (secs_of_day % 3600) / 60;

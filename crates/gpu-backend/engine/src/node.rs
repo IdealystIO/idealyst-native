@@ -274,7 +274,7 @@ pub struct TabRoute {
 /// could stay on-screen during the slide).
 pub struct NavTransition {
     pub kind: NavTransitionKind,
-    pub start: web_time::Instant,
+    pub start: crate::time::Instant,
 }
 
 pub enum NavTransitionKind {
@@ -559,7 +559,7 @@ pub enum NodeKind {
         /// where direction comes from `is_open`. `None` means no
         /// transition currently in flight; sidebar is resting at
         /// its current `is_open` extreme.
-        anim_started_at: std::cell::Cell<Option<web_time::Instant>>,
+        anim_started_at: std::cell::Cell<Option<crate::time::Instant>>,
         /// Drawer chrome styles. `scrim_style.background` is
         /// read at paint time by `paint_drawer_overlay` to
         /// override the default 32%-black scrim. `sidebar_style`
@@ -594,7 +594,7 @@ pub enum NodeKind {
         /// hands `elapsed = now - created_at` to the drawer so
         /// animations keep a stable origin even if the user
         /// remounts the node (each remount gets its own zero).
-        created_at: web_time::Instant,
+        created_at: crate::time::Instant,
     },
     /// Renders a "not supported in this simulator" panel for
     /// primitives we don't implement (Graphics).

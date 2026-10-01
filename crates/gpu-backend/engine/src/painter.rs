@@ -273,7 +273,7 @@ pub trait Painter {
         &self,
         viewport: (f32, f32),
         insets: runtime_shared::EdgeInsets,
-        now: web_time::Instant,
+        now: crate::time::Instant,
         glyphs: &'a HashMap<&'static str, Buffer>,
         rects: &mut Vec<RectInstance>,
         texts: &mut Vec<StagedText<'a>>,

@@ -31,8 +31,9 @@
 //!    node so they don't keep firing redraws for dead nodes.
 
 use std::collections::HashMap;
-// `web-time` for wasm32 compat — see `host.rs` for the rationale.
-use web_time::{Duration, Instant};
+// Framework clock (wasm32-safe) — see `crate::time` for the rationale.
+use crate::time::Instant;
+use std::time::Duration;
 
 use runtime_layout::LayoutNode;
 use runtime_shared::animation::{apply_easing, Animatable};

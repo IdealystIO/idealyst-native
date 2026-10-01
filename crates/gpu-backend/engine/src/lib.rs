@@ -51,6 +51,7 @@ mod scheduler;
 mod sticky;
 mod style_convert;
 pub mod text;
+pub mod time;
 pub mod widgets;
 
 /// Headless offscreen screenshot rendering (no window). Gated behind

@@ -19,6 +19,3 @@ publish = false
 render-wgpu = { workspace = true }
 runtime-shared = { workspace = true }
 glyphon = "0.11"
-# Same wasm32 `Instant`/`Duration` shim used by `render-wgpu`
-# and `ios-sim` — needed for the Painter trait's `now` parameter.
-web-time = "1"

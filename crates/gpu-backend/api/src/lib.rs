@@ -99,7 +99,8 @@ pub trait EventSink {
     /// step.
     ///
     /// No `now` parameter: the render side owns its monotonic
-    /// clock (`web_time` on wgpu, anything else on a different
+    /// clock (on wgpu, the framework's installed
+    /// `runtime_shared::time` source; anything else on a different
     /// backend) so shells don't have to pick one or thread it
     /// across the API boundary. Cross-target consistency is the
     /// render backend's problem, not the shell's.

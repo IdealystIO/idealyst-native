@@ -11,8 +11,8 @@
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
-// `web-time` for wasm32 compat — see `host.rs` for the rationale.
-use web_time::Instant;
+// Framework clock (wasm32-safe) — see `crate::time` for the rationale.
+use crate::time::Instant;
 
 use glyphon::FontSystem;
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size as TaffySize};
@@ -1134,7 +1134,7 @@ impl WgpuBackend {
         let node = new_node(
             NodeKind::Graphics {
                 drawer: std::cell::RefCell::new(None),
-                created_at: web_time::Instant::now(),
+                created_at: crate::time::Instant::now(),
             },
             layout,
         );

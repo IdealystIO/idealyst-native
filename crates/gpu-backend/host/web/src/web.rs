@@ -148,6 +148,15 @@ pub async fn mount(
     // install the web driver, so install it here (idempotent, first
     // install wins).
     backend_web::install_render_loop();
+    // The renderer's animation clock and status-bar clock read the
+    // framework time sources (`render_wgpu::time`). The page boot
+    // installs these already; installing them here too (idempotent,
+    // first install wins) keeps that a guarantee of THIS crate — and it
+    // must precede `Host::new`, whose default install would otherwise
+    // construct the std-backed source for the sim skin's non-`Web`
+    // platform, which panics on wasm32.
+    backend_web::install_time_source();
+    backend_web::install_wall_clock_source();
 
     let WgpuInit {
         canvas,

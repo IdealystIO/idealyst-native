@@ -19,8 +19,8 @@
 //! line up with hit-test coordinates.
 
 use std::rc::Rc;
-// `web-time` for wasm32 compat — see `host.rs` for the rationale.
-use web_time::Instant;
+// Framework clock (wasm32-safe) — see `crate::time` for the rationale.
+use crate::time::Instant;
 
 use glyphon::{Buffer, TextBounds};
 use runtime_layout::LayoutNode;
@@ -812,7 +812,7 @@ impl Renderer {
                 node: crate::node::WgpuNode,
                 layout_id: runtime_layout::LayoutNode,
                 size: (u32, u32),
-                created_at: web_time::Instant,
+                created_at: crate::time::Instant,
             }
             let mut pending: Vec<PendingGraphics> = Vec::new();
             for req in all {
@@ -850,7 +850,7 @@ impl Renderer {
                     view: &entry.view,
                     encoder: &mut encoder0,
                     size: p.size,
-                    elapsed: web_time::Instant::now().saturating_duration_since(p.created_at),
+                    elapsed: crate::time::Instant::now().saturating_duration_since(p.created_at),
                 };
                 if let NodeKind::Graphics { drawer, .. } = &p.node.borrow().kind {
                     if let Some(d) = drawer.borrow_mut().as_mut() {
@@ -2607,7 +2607,7 @@ fn paint_drawer_overlay<'a>(
 /// toward `target` over `DRAWER_ANIM_MS`. Ease-out cubic —
 /// matches Material's emphasized-decelerate curve closely.
 fn sample_drawer_progress(
-    started: Option<web_time::Instant>,
+    started: Option<crate::time::Instant>,
     target: f32,
     now: Instant,
 ) -> (f32, bool) {
@@ -2635,7 +2635,7 @@ fn nav_transition_frame(
     anim: &std::rc::Rc<dyn crate::nav_anim::ScreenTransition>,
     width: f32,
     height: f32,
-    now: web_time::Instant,
+    now: crate::time::Instant,
 ) -> Option<crate::nav_anim::TransitionFrame> {
     let t = transition.borrow();
     let nav = t.as_ref()?;
