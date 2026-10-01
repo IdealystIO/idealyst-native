@@ -94,7 +94,9 @@ async fn the_proxy_streams_each_frame_as_it_arrives_in_order() {
     let mut body = response.bytes_stream();
     let mut read = String::new();
     // The snapshot, then one live event after the first was already read.
-    frames.send("data: 1\n\nevent: dev-state\ndata: {\"type\":\"session_started\"}\n\n".into()).unwrap();
+    // `retry:` leads, as `dev-http` sends it: the page's reconnect time
+    // after a server restart (`dev_http::SSE_RETRY`) must pass through.
+    frames.send("retry: 250\n\ndata: 1\n\nevent: dev-state\ndata: {\"type\":\"session_started\"}\n\n".into()).unwrap();
     while !read.contains("session_started") {
         let chunk = tokio::time::timeout(Duration::from_secs(5), body.next())
             .await
@@ -114,7 +116,7 @@ async fn the_proxy_streams_each_frame_as_it_arrives_in_order() {
     }
     assert_eq!(
         read,
-        "data: 1\n\nevent: dev-state\ndata: {\"type\":\"session_started\"}\n\n\
+        "retry: 250\n\ndata: 1\n\nevent: dev-state\ndata: {\"type\":\"session_started\"}\n\n\
          event: dev-state\ndata: {\"type\":\"build_started\"}\n\n"
     );
     // The stream ends: so does the page's response.

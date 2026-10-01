@@ -1491,6 +1491,19 @@ r rebuild · l log: dev → server → all · e error · c clear · q quit · �
   answers: a save in a crate both depend on (CrewForge's `crates/core`)
   shows both rows rebuilding, and the page reloads once, after both are
   ready — onto the new server, not the old one about to be killed.
+- **…and follows it within a quarter second.** The page reaches its dev
+  stream through the server's same-origin proxy, so the restart drops the
+  stream, and the reload the restart releases reaches the page only when
+  its `EventSource` reconnects. The stream used to leave that to the
+  browser's default reconnection time (3 s in Chrome, 5 s in Firefox): on
+  the full-stack e2e the page reloaded 2.3–2.4 s after `server_ready`
+  whenever the server was the last half ready (and ~3 ms after when the
+  bundle was, because the page had long since reconnected). Every dev
+  stream now opens with `retry: 250` (`dev_http::SSE_RETRY`), so the page
+  retries every 250 ms while the server is down and reloads 2–140 ms
+  after the later of the two (`dev_fullstack_e2e` asserts under 1 s). The
+  cost is one refused loopback connect — and a console line — per 250 ms
+  while the server is down.
 
 Measured on CrewForge (`crates/app-main`, M-series laptop under a
 busy devcontainer VM, load average 7–10), seconds from launch; "server

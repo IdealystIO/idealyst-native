@@ -231,3 +231,42 @@ fn regression_a_page_connecting_after_a_hot_patch_receives_it() {
     assert!(got.contains("data: 0"), "{got}");
     assert!(!got.contains("hot-patch"), "a new base must not be handed old patches: {got}");
 }
+
+/// Regression: after a full-stack server restart the page reloaded
+/// ~2.4 s after `server_ready` (measured by `dev_fullstack_e2e`).
+///
+/// The page reaches this stream through the app server's same-origin
+/// proxy, so a restart drops it, and the reload the restart releases
+/// reaches the page only when its `EventSource` reconnects. The stream
+/// never said when to reconnect, so the browser waited its own default —
+/// 3 s in Chrome — and most of that wait came after the new server was
+/// already up. Both streams on this server now open with a `retry:`
+/// field well under a second, before the first event; the page's stream
+/// is checked to keep it ahead of the baseline it reloads against.
+#[test]
+fn regression_a_restarted_server_does_not_leave_the_page_waiting_the_browsers_default_retry() {
+    let port = pick_port();
+    let signal = start(port);
+    signal.serve_events(dev_events::broadcast::Broadcast::new());
+
+    let retry = |path: &str, after: &str| {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes())
+            .unwrap();
+        let got = read_until(&mut stream, after, Instant::now() + Duration::from_secs(3));
+        let body = got.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or_else(|| panic!("{got}"));
+        assert!(body.starts_with("retry: "), "{path}: the stream must open with `retry:`: {body:?}");
+        let ms: u64 = body["retry: ".len()..]
+            .split('\n')
+            .next()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or_else(|| panic!("{path}: unreadable retry: {body:?}"));
+        assert_eq!(ms, dev_http::SSE_RETRY.as_millis() as u64);
+        assert!(ms < 1000, "{path}: a {ms} ms retry is the reload latency after a restart");
+        body.to_string()
+    };
+    let page = retry(RELOAD_SSE_URL, "data: 0");
+    assert!(page.find("retry:").unwrap() < page.find("data: 0").unwrap(), "{page}");
+    retry(dev_http::EVENTS_URL, "retry:");
+}

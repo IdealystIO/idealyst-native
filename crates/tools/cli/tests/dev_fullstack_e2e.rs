@@ -27,7 +27,8 @@
 //!    (`change_detected` → `build_finished{reloaded}` → `server_ready`) and
 //!    builds nothing on the web side; the API answers with the new code;
 //! 5. a save in `shared/` rebuilds BOTH, and the page reloads once, after
-//!    the restarted server is ready;
+//!    the restarted server is ready — and within a second of both halves
+//!    being ready, not after the browser's default SSE reconnect;
 //! 6. the server's request lines are in `server.log` and in the events as
 //!    `output{source: server}`, and NOT in the panel's default log view;
 //!    a panic in the server is an `error` from it naming `server.log`.
@@ -657,6 +658,25 @@ fn a_full_stack_session_builds_and_reports_its_server_as_a_target() {
     assert!(
         seq(&server_back) < seq(&reloading),
         "the page reloaded before the restarted server was ready:\n{}",
+        summary(&events, before)
+    );
+    // ...and promptly once BOTH halves are ready (whichever came last:
+    // the server's restart or the bundle's rebuild). The restart dropped
+    // the page's stream (it is proxied through the server), so the page
+    // only hears the reload when its EventSource reconnects: at the
+    // browser's default retry (3 s in Chrome) that landed ~2.4 s after
+    // `server_ready`. The stream now sets `retry:` (`dev_http::SSE_RETRY`).
+    let at = |e: &Value| e["at_ms"].as_u64().unwrap();
+    let both_ready = at(&server_back).max(at(&web_done));
+    let gap = at(&reloading) - both_ready;
+    eprintln!(
+        "[e2e] server_ready at {} ms, web build_finished at {} ms → page reloading {gap} ms after both",
+        at(&server_back),
+        at(&web_done),
+    );
+    assert!(
+        gap < 1000,
+        "the page reloaded {gap} ms after the restarted server and the bundle were ready:\n{}",
         summary(&events, before)
     );
     assert!(

@@ -87,6 +87,22 @@ const MAX_ACK_BYTES: u64 = 16 * 1024;
 /// through every possible middlebox.
 const SSE_KEEPALIVE: Duration = Duration::from_secs(30);
 
+/// The reconnection time every stream here hands the browser, as the
+/// SSE `retry:` field (milliseconds), first thing after the head.
+///
+/// Without it the `EventSource` waits its own default before
+/// reconnecting — 3 s in Chrome, 5 s in Firefox — and in the full-stack
+/// shape that wait IS the page's reload latency: the page reaches the
+/// stream through the app server's proxy, a server restart drops it, and
+/// the reload a restart releases only reaches the page when it
+/// reconnects. Measured on the full-stack e2e, the page reloaded 2.3–2.4 s
+/// after `server_ready`; with this it reloads within one retry of it.
+///
+/// Every attempt while the server is down is one refused loopback
+/// connect (and a line in the page's console), so this is not lower:
+/// a quarter second is under what a person notices after a restart.
+pub const SSE_RETRY: Duration = Duration::from_millis(250);
+
 /// JSON endpoint published when an [`AasContext`] is supplied. Body
 /// is `{"url": "<ws://...>"}` for a discovered server, or `{"url":
 /// null}` while we're still browsing. Browsers can re-poll this on
@@ -162,8 +178,9 @@ pub struct HeadInjectionContext {
 /// reload is active. Holds an `EventSource` open against
 /// [`RELOAD_SSE_URL`]; reloads the page when the generation in the
 /// stream differs from the one received on connect. `EventSource`
-/// auto-reconnects on its own (default ~3s backoff), so a server
-/// restart or transient network blip recovers without any glue here.
+/// auto-reconnects on its own — after [`SSE_RETRY`], which the stream
+/// sets — so a server restart or transient network blip recovers
+/// without any glue here.
 ///
 /// The same stream also carries `patch` events — a saved edit the dev
 /// loop decided needs no rebuild. Those go to the page's overlay entry
@@ -478,7 +495,7 @@ fn serve_event_stream(request: Request, events: &dev_events::broadcast::Broadcas
                  Access-Control-Allow-Origin: *\r\n\
                  X-Accel-Buffering: no\r\n\
                  \r\n";
-    if writer.write_all(head).is_err() || writer.flush().is_err() {
+    if writer.write_all(head).is_err() || write_retry(&mut writer).is_err() {
         return;
     }
     let sub = events.subscribe();
@@ -836,7 +853,9 @@ fn serve_sse(request: Request, signal: Option<Arc<ReloadSignal>>) {
                  Access-Control-Allow-Origin: *\r\n\
                  X-Accel-Buffering: no\r\n\
                  \r\n";
-    if writer.write_all(head).is_err() || writer.flush().is_err() {
+    // The reconnection time goes first, before anything that could fail
+    // the stream: a page only learns it from a stream it has read.
+    if writer.write_all(head).is_err() || write_retry(&mut writer).is_err() {
         return;
     }
 
@@ -949,6 +968,13 @@ fn write_event(
     let id = id.map(|i| format!("id: {i}\n")).unwrap_or_default();
     let line = format!("{id}data: {gen}\n\n");
     w.write_all(line.as_bytes())?;
+    w.flush()
+}
+
+/// The stream's `retry:` field ([`SSE_RETRY`]). Flushes, so it also
+/// pushes the head out.
+fn write_retry(w: &mut Box<dyn Write + Send + 'static>) -> std::io::Result<()> {
+    w.write_all(format!("retry: {}\n\n", SSE_RETRY.as_millis()).as_bytes())?;
     w.flush()
 }
 
