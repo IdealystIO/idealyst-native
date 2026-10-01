@@ -463,12 +463,12 @@ premint-dump = { path = "crates/tools/premint-dump" }
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.12.0", registry = "idealyst" }
-runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.9.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.14.0", registry = "idealyst" }
+runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.10.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.14.1", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
-web-glue = { path = "crates/runtime/web-glue", version = "1.5.2", registry = "idealyst" }
+web-glue = { path = "crates/runtime/web-glue", version = "1.5.3", registry = "idealyst" }
 zone-offset = { path = "crates/runtime/zone-offset", version = "1.5.2", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.7.0", registry = "idealyst" }
 dev-client = { path = "crates/dev/client", version = "1.7.0", registry = "idealyst" }
@@ -486,7 +486,7 @@ robot-test = { path = "crates/dev/robot-test" }
 robot-test-macros = { path = "crates/dev/robot-test-macros" }
 native-parity = { path = "crates/dev/native-parity" }
 dev-http = { path = "crates/dev/http" }
-dev-overlay = { path = "crates/dev/overlay", version = "1.7.0", registry = "idealyst" }
+dev-overlay = { path = "crates/dev/overlay", version = "1.8.0", registry = "idealyst" }
 dev-events = { path = "crates/dev/events", version = "1.7.0", registry = "idealyst" }
 dev-reload = { path = "crates/dev/reload" }
 web-dev-host = { path = "crates/dev/web-host" }
@@ -527,7 +527,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.6.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.6.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "2.0.0", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "2.0.1", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.4", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "1.5.3", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.6.0", registry = "idealyst" }
@@ -580,7 +580,7 @@ video = { path = "crates/sdk/client/video", version = "1.6.0", registry = "ideal
 svg = { path = "crates/sdk/client/svg", version = "1.6.0", registry = "idealyst" }
 canvas = { path = "crates/sdk/client/canvas", version = "1.6.0", registry = "idealyst" }
 canvas-core = { path = "crates/sdk/client/canvas/core", version = "1.6.0", registry = "idealyst" }
-charts-core = { path = "crates/sdk/client/charts/core", version = "1.6.0", registry = "idealyst" }
+charts-core = { path = "crates/sdk/client/charts/core", version = "1.6.1", registry = "idealyst" }
 charts = { path = "crates/sdk/client/charts", version = "1.5.4", registry = "idealyst" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.6.0", registry = "idealyst" }
 canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "1.6.0", registry = "idealyst" }
@@ -591,7 +591,7 @@ table = { path = "crates/sdk/client/table", version = "1.6.0", registry = "ideal
 virtualized = { path = "crates/sdk/client/virtualized", version = "1.5.2", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "2.0.0", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "1.5.2", registry = "idealyst" }
-net = { path = "crates/sdk/client/net", version = "1.7.0", registry = "idealyst" }
+net = { path = "crates/sdk/client/net", version = "1.7.1", registry = "idealyst" }
 storage = { path = "crates/sdk/client/storage", version = "1.7.0", registry = "idealyst" }
 sync = { path = "crates/sdk/client/sync", version = "2.0.1", registry = "idealyst" }
 graphql = { path = "crates/sdk/client/graphql", version = "1.5.2", registry = "idealyst" }
