@@ -11,6 +11,25 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`DateLabels` gains a `weekdays` field** (`idea-ui` 3.0). The full
+  weekday names back the new `dddd` date-format token, which sits beside
+  the other new name tokens `ddd`, `MMM` and `MMMM`. The struct's fields
+  are public, so code that builds a `DateLabels { .. }` literal no longer
+  compiles. *Migration:* add `weekdays: [..; 7]` (full names, Monday
+  first) to the literal, or start from `DateLabels::english()`.
+- **A non-dismissable `Modal` ignores Escape and back** (`idea-ui`). With
+  `dismissable = false`, Escape and Android's back key no longer reach
+  `on_dismiss`, which is what the prop's doc always said. The modal still
+  consumes the gesture, so on Android back does not pop the screen
+  under it. *Migration:* close a non-dismissable modal from its own
+  content by setting `open` to false.
+- **Pressable chips reserve their focus border** (`idea-theme`). A `Chip`
+  with an `on_select` keeps a transparent 1px border at rest, so focus
+  only changes the border's colour. Before, pressing a chip grew it 2px
+  and shifted the layout. Soft, solid and ghost pressable chips are
+  therefore 2px larger at rest than before. Badges, Alerts and chips
+  without `on_select` keep their size. *Migration:* none needed.
+
 - **`sync`: getting a partition is synchronous** (`sync`).
   `SyncEngine::partition` and `SharedPartition::open` were `async fn`s
   that created their signals when the task first resumed, and a tab
