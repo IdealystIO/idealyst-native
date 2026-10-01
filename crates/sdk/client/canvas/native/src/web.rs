@@ -3,7 +3,7 @@
 //! texture-layer compositing, and `captureStream` self-capture.
 //!
 //! The mount handler that drives it lives in [`crate::web_scene`]; the
-//! same [`make_2d_rasterizer`] is also `canvas-vello`'s
+//! same rasterizer (`make_2d_rasterizer`) is also `canvas-vello`'s
 //! WebGPU-unavailable fallback, so both paths produce identical output
 //! (CLAUDE.md §7).
 //!
@@ -11,11 +11,12 @@
 //! A texture layer's and the self-capture's `native_source` is a
 //! `web_glue::dom::MediaStream`, the type every media producer publishes and
 //! every consumer downcasts. One thing still crosses to web-sys, at the
-//! crate's seam only (`HYBRID-BRIDGE: wgpu`): the public entry points
-//! [`make_2d_rasterizer`] / [`publish_capture_stream`] take a
-//! `web_sys::HtmlCanvasElement`, because `canvas-vello` (on wgpu, hence
-//! wasm-bindgen — phase 5's hybrid mode) calls them with one. Changing that
-//! is a public API change, so the element crosses in with `web_glue::bridge`.
+//! crate's seam only (`HYBRID-BRIDGE: wgpu`), and only with the
+//! `web-sys-canvas` feature: the public entry points `make_2d_rasterizer` /
+//! `publish_capture_stream` take a `web_sys::HtmlCanvasElement`, because
+//! `canvas-vello` (on wgpu, hence wasm-bindgen — hybrid mode) calls them with
+//! one, so the element crosses in with `web_glue::bridge`. Without the
+//! feature the crate links no wasm-bindgen and its apps build in own mode.
 //!
 //! [`Scene`]: canvas_core::Scene
 
@@ -63,6 +64,7 @@ impl Drop for ObserverGuard {
 /// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
 /// holds; the element crosses into web-glue once, here (HYBRID-BRIDGE:
 /// wgpu).
+#[cfg(feature = "web-sys-canvas")]
 pub fn make_2d_rasterizer(
     canvas: web_sys::HtmlCanvasElement,
     props: &Rc<CanvasProps>,
@@ -127,6 +129,7 @@ pub(crate) fn rasterizer_2d(
 /// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
 /// holds; the element crosses into web-glue once, here (HYBRID-BRIDGE:
 /// wgpu).
+#[cfg(feature = "web-sys-canvas")]
 #[must_use]
 pub fn publish_capture_stream(
     canvas: &web_sys::HtmlCanvasElement,

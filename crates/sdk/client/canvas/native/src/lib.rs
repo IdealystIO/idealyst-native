@@ -40,7 +40,9 @@ mod web_scene;
 // calls these as its WebGPU-unavailable fallback (renders into the graphics
 // primitive's own `<canvas>`, same output as this crate's standalone handler)
 // and for self-capture on its GPU path (captureStream works on any canvas).
-#[cfg(target_arch = "wasm32")]
+// Behind `web-sys-canvas`: they take web-sys canvases, and linking web-sys
+// would make every canvas app a hybrid (wasm-bindgen) build.
+#[cfg(all(target_arch = "wasm32", feature = "web-sys-canvas"))]
 pub use web::{make_2d_rasterizer, publish_capture_stream};
 
 // Shared CoreGraphics painter for the Apple platforms (iOS + macOS).

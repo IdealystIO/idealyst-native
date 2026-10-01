@@ -232,6 +232,8 @@ async fn texture_layers_and_self_capture() {
 
 /// canvas-vello's entry point: `make_2d_rasterizer` takes a
 /// `web_sys::HtmlCanvasElement` and must draw into that very element.
+/// (`--features web-sys-canvas`, which canvas-vello enables.)
+#[cfg(feature = "web-sys-canvas")]
 #[wasm_bindgen_test]
 fn public_rasterizer_draws_into_a_web_sys_canvas() {
     let doc = window().unwrap().document().unwrap();
