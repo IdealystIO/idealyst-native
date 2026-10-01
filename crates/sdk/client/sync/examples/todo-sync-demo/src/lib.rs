@@ -71,18 +71,9 @@ impl Merge for Todo {
 /// single user across their own devices; a real multi-user app would use a
 /// server time or a logical clock.)
 fn now_millis() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    }
+    // `datetime` reads `Date.now()` on web and `SystemTime` natively, so
+    // there is no per-target branch here (and no js-sys for the clock).
+    datetime::now_utc().unix_millis().max(0) as u64
 }
 
 /// A stable **per-browser** client id (persisted in `localStorage`). This
@@ -101,7 +92,7 @@ fn device_id() -> String {
             }
             let fresh = format!(
                 "device-{}-{}",
-                js_sys::Date::now() as u64,
+                now_millis(),
                 (js_sys::Math::random() * 1.0e9) as u64
             );
             let _ = ls.set_item(KEY, &fresh);

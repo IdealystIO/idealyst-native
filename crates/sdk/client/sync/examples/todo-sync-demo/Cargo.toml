@@ -34,6 +34,8 @@ idealyst = { workspace = true }
 server = { workspace = true }
 sync = { workspace = true }
 storage = { workspace = true }
+# Wall-clock edit stamps for last-write-wins (`now_millis`).
+datetime = { workspace = true }
 # `runtime-core` is aliased to `runtime_core` at the crate root (see
 # src/lib.rs), so the app's `runtime_core::…` paths resolve against
 # `runtime_vocabulary::glue`. `runtime-vocabulary` must be a NAMED dep
@@ -53,7 +55,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], option
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 
 # Web client: window.location.origin for `server::configure`, localStorage
-# for the per-browser device id; js-sys for the edit timestamp + id RNG.
+# for the per-browser device id; js-sys for the device id's RNG.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
 js-sys = "0.3"
