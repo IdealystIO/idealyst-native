@@ -571,18 +571,9 @@ mod ios_impl {
         // The other ambient installs ride `install_env_services` below,
         // same as web/macOS.
         let platform = backend.borrow().platform_impl();
-        // Wall clock BEFORE the defaults — same ordering rationale as the
-        // macOS backend: `install_default_time_source` also installs the
-        // UTC-only `SystemWallClockSource`, and first install wins, so the
-        // NSTimeZone-backed source must land first for a timezone-correct
-        // "today".
-        // Fully qualified: `IosWallClockSource` is declared at file scope,
-        // outside this `ios_impl` module, so the bare name does not resolve
-        // from in here.
-        #[cfg(target_os = "ios")]
-        runtime_shared::time::install_wall_clock_source(Box::new(
-            crate::newcore::IosWallClockSource,
-        ));
+        // Also installs the wall clock: the shared native
+        // `SystemWallClockSource` (OS zone database via `zone-offset`), the
+        // same source every native backend gets — no iOS-specific one.
         runtime_shared::time::install_default_time_source(platform);
 
         // Ambient environment services (platform identity, color scheme, URL
@@ -1956,29 +1947,5 @@ mod tests {
         assert_eq!(world.enter(|| sig.get()), 9, "clone is the boot world");
         set_flush_world(None);
         assert!(mounted_world().is_none(), "cleared after stop");
-    }
-}
-
-/// Wall clock for the iOS mount — mechanically identical to the macOS
-/// backend's `MacosWallClockSource` (see that definition for the
-/// rationale and the per-call DST note). `SystemTime` is real on iOS;
-/// `NSTimeZone.localTimeZone.secondsFromGMT` supplies the offset.
-#[cfg(target_os = "ios")]
-struct IosWallClockSource;
-
-#[cfg(target_os = "ios")]
-impl runtime_shared::time::WallClockSource for IosWallClockSource {
-    fn epoch_millis(&self) -> i64 {
-        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(d) => d.as_millis() as i64,
-            Err(e) => -(e.duration().as_millis() as i64),
-        }
-    }
-
-    fn local_offset_minutes(&self) -> i32 {
-        // SAFETY: no preconditions — objc2 0.2's blanket `unsafe` on
-        // generated Foundation methods, as in the macOS source.
-        let seconds = unsafe { objc2_foundation::NSTimeZone::localTimeZone().secondsFromGMT() };
-        (seconds / 60) as i32
     }
 }

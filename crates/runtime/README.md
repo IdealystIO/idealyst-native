@@ -20,6 +20,7 @@ Interface.
 | `runtime-template` | [`template/`](./template) | A `ui!` site as DATA: `Descriptor`, slot signatures, `Registry`, patch validation, the `site_key` both halves address by. A descriptor is a BUILD artifact produced from source, not something compiled into the app — measured, see its README. Depends on `serde` only. |
 | `runtime-layout` | [`layout/`](./layout) | Taffy wrapper (flex + grid). Used by backends that don't have a native layout engine — iOS, Android, macOS, Linux, Windows, terminal, CPU, and the GPU engine. Web inherits the browser's layout. |
 | `web-glue` | [`web-glue/`](./web-glue) | The framework-owned wasm ⇄ JS boundary: JS handles, strings, callbacks, promises-as-futures, exceptions, with each binding's JS carried inside the wasm and turned into `pkg/<lib>.js` by `build_web::own_glue`. Phase 1 (proof of concept) of [`docs/proposals/own-web-bindings.md`](../../docs/proposals/own-web-bindings.md); nothing uses it yet, and it does not depend on wasm-bindgen. |
+| `zone-offset` | [`zone-offset/`](./zone-offset) | The local UTC offset at an instant from the OS zone database (libc `localtime_r` / Win32). Backs `runtime-shared`'s native default wall clock — so `runtime_core::time::local_offset_minutes()` is right on every native backend — and the `datetime` SDK. Its own crate because runtime crates may not depend on SDKs, and it keeps per-target code out of `runtime-shared`. |
 
 The Runtime's job is to turn app code (components, signals,
 stylesheets, navigators) into a scene `Element` tree, then realize that

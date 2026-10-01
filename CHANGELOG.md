@@ -384,6 +384,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **The local timezone is right on every native backend**
+  (`runtime-shared`, new `zone-offset` crate). `runtime_core::time::
+  local_offset_minutes()` was `0` (UTC) on Android, Linux, Windows,
+  terminal, CPU, Roku and the GPU hosts, so idea-ui's `CivilDate::today()`
+  / `CivilDateTime::now()` — the calendar's "today", a date picker's
+  `min = today` — gave the UTC date there. The default native wall clock
+  (`SystemWallClockSource`, which every non-web backend installs at
+  mount) now reads the OS zone database through `zone-offset` (libc
+  `localtime_r` on unix, `SystemTimeToTzSpecificLocalTimeEx` on Windows),
+  DST-correct per call. macOS and iOS drop their own `NSTimeZone` sources
+  for the same shared one; web keeps its `js Date` source. The `datetime`
+  SDK uses the same crate, so `datetime::local_offset()` and core agree.
+  The GPU hosts' simulator status-bar clock also applies the offset now
+  (it showed UTC on every platform).
+
 - **A right-click menu no longer closes the instant it opens on web**
   (`backend-web`). Since `Dismiss` backdrops answer right-clicks (above),
   every menu opened from a secondary press dismissed itself: the press's

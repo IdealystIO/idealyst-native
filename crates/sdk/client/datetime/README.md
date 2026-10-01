@@ -155,12 +155,17 @@ such as a date picker's "today". It doesn't fit this job, for three reasons:
   of the core vocabulary.
 
 The two don't conflict: the core seam is what the framework's own UI reads
-inside a mounted app, and both read the same platform clock for the instant.
-They can differ on the offset. Core's default native source
-(`SystemWallClockSource`) reports UTC, and only web, macOS and iOS install a
-zone-aware source, so on Android, Linux and Windows
-`runtime_core::time::local_offset_minutes()` is `0` while
-`datetime::local_offset()` is the real offset.
+inside a mounted app, and both read the same platform clock for the instant
+and the same zone lookup for the offset. On native targets that lookup is
+the `zone-offset` crate (libc `localtime_r` on unix,
+`SystemTimeToTzSpecificLocalTimeEx` on Windows): this crate's
+`local_offset_at` calls it, and so does core's default native wall clock
+(`SystemWallClockSource`), which every non-web backend installs at mount.
+On web both read `Date`. So inside a mounted app
+`runtime_core::time::local_offset_minutes()` and `datetime::local_offset()`
+report the same offset on every backend. `zone-offset` sits below both
+because runtime crates may not depend on SDK crates, and this crate must
+not depend on the runtime.
 
 ## Tests
 

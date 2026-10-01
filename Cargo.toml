@@ -36,6 +36,9 @@ members = [
     # Framework-owned wasm <-> JS bindings (phase 1 PoC of
     # docs/proposals/own-web-bindings.md). Zero deps; no wasm-bindgen.
     "crates/runtime/web-glue",
+    # The local UTC offset at an instant (libc / Win32). Below both
+    # runtime-shared's native wall clock and the datetime SDK.
+    "crates/runtime/zone-offset",
 
     # Shared StyleRules → CSS conversion (used by web + ssr backends).
     "crates/css",
@@ -466,6 +469,7 @@ mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.6.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "1.5.2", registry = "idealyst" }
+zone-offset = { path = "crates/runtime/zone-offset", version = "1.5.2", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.7.0", registry = "idealyst" }
 dev-client = { path = "crates/dev/client", version = "1.7.0", registry = "idealyst" }
 dev-server = { path = "crates/dev/server", version = "1.7.0", registry = "idealyst" }

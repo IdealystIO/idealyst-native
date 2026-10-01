@@ -1,0 +1,39 @@
+# zone-offset — the local UTC offset at an instant, from the OS zone
+# database. One function, `local_offset_seconds_at`.
+#
+# Why a crate of its own: two consumers need the same lookup and neither
+# may depend on the other.
+#
+#   - `runtime-shared`'s native default wall clock (`SystemWallClockSource`,
+#     installed at mount by every non-web backend) — so
+#     `runtime_core::time::local_offset_minutes()` is the real local offset
+#     on Android, Linux, Windows, terminal, CPU and the GPU hosts, not UTC.
+#   - the `datetime` SDK (`local_offset_at`), which must work with no
+#     framework mounted at all.
+#
+# Runtime crates must not depend on SDK crates, and the SDK must not drag
+# in the runtime substrate, so the lookup sits below both. It also keeps
+# the per-target code (libc / Win32) out of `runtime-shared`, whose own
+# source stays free of compile-target switches.
+#
+# Mechanism per target (same observable answer everywhere):
+#   - unix (iOS, macOS, Android, Linux, BSD): libc `tzset` + `localtime_r`
+#     (`tm_gmtoff`), which applies the zone rule in force at that instant
+#   - Windows: `SystemTimeToTzSpecificLocalTimeEx` with the dynamic zone
+#     (per-year DST rules)
+#   - anything else (wasm32 included): UTC. The web backend installs a
+#     `js Date` wall clock instead; nothing on wasm32 reaches this fallback
+#     in a mounted app.
+
+[package]
+name = "zone-offset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The local UTC offset at an instant, read from the OS zone database (libc localtime_r / Win32). Shared by the runtime's native wall clock and the datetime SDK."
+
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Time"] }

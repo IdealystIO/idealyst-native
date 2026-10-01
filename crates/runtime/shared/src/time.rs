@@ -21,6 +21,15 @@
 //! [`Platform`](crate::Platform) identity, **not** a
 //! `#[cfg(target_arch)]` — core stays free of compile-target switches.
 //!
+//! The local offset is right on every backend: web reads `js Date`, and
+//! every native backend (iOS, macOS, Android, Linux, Windows, terminal,
+//! CPU, the GPU hosts) reads the OS zone database through
+//! [`SystemWallClockSource`], which asks the `zone-offset` crate (libc
+//! `localtime_r` on unix, `SystemTimeToTzSpecificLocalTimeEx` on
+//! Windows). The per-target code lives in that crate, not here; the
+//! `datetime` SDK uses the same crate, so the framework's date UI and an
+//! app's `datetime::local_offset()` always agree.
+//!
 //! Until a source is installed (e.g. before `mount`, or on `Web`
 //! before its bootstrap install), [`now_micros`] and [`epoch_millis`]
 //! read `0`.
@@ -134,11 +143,21 @@ pub trait WallClockSource: Send + Sync {
 }
 
 /// Default wall clock for native hosts: `SystemTime` for the epoch
-/// instant, UTC (offset `0`) for the local offset — std has no
-/// timezone database, so the offset refinement is per-backend (macOS
-/// installs an `NSTimeZone`-backed source; web reads `js Date`).
-/// Installed automatically by [`mount`](crate::mount) on non-`Web`
-/// platforms via [`install_default_time_source`].
+/// instant, the OS zone database for the local offset
+/// ([`zone_offset::local_offset_seconds_at`] at that same instant — libc
+/// `localtime_r` on unix, `SystemTimeToTzSpecificLocalTimeEx` on
+/// Windows). Installed automatically by [`mount`](crate::mount) on
+/// non-`Web` platforms via [`install_default_time_source`], so every
+/// native backend reports the user's real offset with no install of its
+/// own; web installs a `js Date`-backed source instead.
+///
+/// One implementation for every native backend on purpose (CLAUDE.md
+/// §7): the per-backend sources this replaced (an `NSTimeZone` one on
+/// macOS and iOS, none at all — so UTC — on Android, Linux and Windows)
+/// meant a date picker's "today" depended on which backend drew it.
+/// The offset is re-read per call (`tzset` runs before each
+/// `localtime_r`), so DST transitions and a zone change in the system
+/// settings show up on the next read.
 ///
 /// Like [`InstantTimeSource`], the type compiles for wasm but is never
 /// constructed there (`SystemTime::now()` panics on
@@ -157,17 +176,20 @@ impl WallClockSource for SystemWallClockSource {
     }
 
     fn local_offset_minutes(&self) -> i32 {
-        0
+        // Truncates toward zero, which is exact for every modern zone
+        // (all whole minutes); only pre-1900 local-mean-time offsets carry
+        // seconds.
+        zone_offset::local_offset_seconds_now() / 60
     }
 }
 
 static WALL_CLOCK: OnceLock<Box<dyn WallClockSource>> = OnceLock::new();
 
 /// Register the active backend's wall clock. First call wins;
-/// subsequent calls are silently ignored — so a backend installing a
-/// timezone-aware source must do so *before* the default lands (all
-/// backends install their own sources ahead of the
-/// [`install_default_time_source`] call in their mount preamble).
+/// subsequent calls are silently ignored — so a backend installing its
+/// own source (only web does: `SystemTime` panics there) must do so
+/// *before* the default lands, i.e. ahead of the
+/// [`install_default_time_source`] call in its mount preamble.
 pub fn install_wall_clock_source(source: Box<dyn WallClockSource>) {
     let _ = WALL_CLOCK.set(source);
 }
@@ -285,9 +307,13 @@ mod tests {
             ms > 1_577_836_800_000,
             "epoch_millis must be wall time since 1970, got {ms}",
         );
-        // The std default has no timezone database: it must report UTC,
-        // leaving offset refinement to per-backend sources.
-        assert_eq!(src.local_offset_minutes(), 0);
+        // The offset is the OS zone database's, not a hardcoded UTC — the
+        // forced-zone proof (a child process per native backend's
+        // `Platform`) is `tests/native_wall_clock_zone.rs`.
+        assert_eq!(
+            src.local_offset_minutes(),
+            zone_offset::local_offset_seconds_now() / 60
+        );
     }
 
     #[test]

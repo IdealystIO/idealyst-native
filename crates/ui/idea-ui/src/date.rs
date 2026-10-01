@@ -12,8 +12,10 @@
 //!
 //! "Today" comes from the runtime's wall-clock seam
 //! (`runtime_core::time::epoch_millis` + `local_offset_minutes`),
-//! installed per backend at mount — `js Date` on web, `NSTimeZone` on
-//! macOS, UTC `SystemTime` elsewhere. Before a source is installed the
+//! installed at mount — `js Date` on web, and on every native backend
+//! `SystemTime` plus the OS zone database's offset (libc `localtime_r` /
+//! Win32, through the `zone-offset` crate), so "today" is the user's
+//! local date everywhere. Before a source is installed the
 //! epoch reads `0` and [`CivilDate::today`] reports 1970-01-01; in
 //! practice components build after mount, where a source is present.
 //!

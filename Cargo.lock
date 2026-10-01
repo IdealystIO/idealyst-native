@@ -3174,10 +3174,9 @@ version = "1.5.2"
 dependencies = [
  "chrono",
  "iana-time-zone",
- "libc",
  "wasm-bindgen-test",
  "web-glue",
- "windows-sys 0.59.0",
+ "zone-offset",
 ]
 
 [[package]]
@@ -10146,6 +10145,7 @@ dependencies = [
  "tungstenite 0.24.0",
  "wasm-bindgen-test",
  "wasm-splitter",
+ "zone-offset",
 ]
 
 [[package]]
@@ -14952,6 +14952,14 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zone-offset"
+version = "1.5.2"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "zoom"

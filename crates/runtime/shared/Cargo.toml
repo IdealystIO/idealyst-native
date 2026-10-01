@@ -104,6 +104,12 @@ linkme = { workspace = true, optional = true }
 # Robot bridge screenshot PNG → base64 in the JSON response.
 base64 = { version = "0.22", optional = true }
 mcp-catalog = { workspace = true, optional = true }
+# The local UTC offset for the native default wall clock
+# (`time::SystemWallClockSource`): libc `localtime_r` on unix, Win32 on
+# Windows. Its own crate so the per-target code stays out of this crate's
+# source and the `datetime` SDK can share the same lookup. No deps on
+# wasm32, where the web backend's `js Date` clock is installed instead.
+zone-offset = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.4", optional = true }

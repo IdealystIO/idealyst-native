@@ -27,10 +27,13 @@
 //!    driver rides the scheduler (it schedules the post-dispatch flush as
 //!    a microtask), so nothing that can stage a reactive write may run
 //!    before it exists.
-//! 2. **[`install_wall_clock_source`]**, if the backend has a
-//!    timezone-aware clock — *before* the monotonic default, because
-//!    [`install_default_time_source`] also installs the UTC-only
-//!    `SystemWallClockSource` and both slots are first-install-wins.
+//! 2. **[`install_wall_clock_source`]**, only if the backend cannot use
+//!    the native default — today that is web alone (`SystemTime` panics
+//!    on wasm32; it installs a `js Date` source). It must come *before*
+//!    the monotonic default, because [`install_default_time_source`] also
+//!    installs `SystemWallClockSource` and both slots are
+//!    first-install-wins. Native backends skip this step: the default is
+//!    already zone-aware (OS zone database via the `zone-offset` crate).
 //! 3. **[`install_time_source`]** (or [`install_default_time_source`]) —
 //!    the monotonic clock animation and presence timing read. Skipping it
 //!    on wasm32 leaves `now_micros()` returning `0`, which silently
