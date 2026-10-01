@@ -35,20 +35,19 @@
   <div id="app"></div>
 
   <script type="module">
-    // ?v=N is a cache-buster for the wasm js shim — bump when you
-    // need to force-fetch a freshly-built wasm without relying on a
-    // browser hard-refresh.
+    // Import the shim by its plain specifier — no `?v=N` cache-buster.
+    // The web-glue namespace (`pkg/__idealyst_glue.js`) imports
+    // `initSync` from `./benchmark_idealyst_native_anim.js`; ES modules
+    // are keyed by URL, so a `?v=N` here loads a SECOND, never-initialized
+    // copy of the shim and the first glue call throws "WebAssembly.Module():
+    // Argument 0 must be a buffer source" (docs/proposals/own-web-bindings.md,
+    // "Hybrid mode"). Hard-refresh to pick up a rebuilt pkg.
     import init, {
       start, setup_anim, step_to, get_state, start_anim, stop_anim,
-    } from './wasm/pkg/benchmark_idealyst_native_anim.js?v=6';
+    } from './wasm/pkg/benchmark_idealyst_native_anim.js';
     import { autoRunIfRequested } from '../instrument.js';
 
-    // Pass an explicit cache-busted URL for the wasm binary. Without
-    // this, the shim resolves the binary path off `import.meta.url`
-    // and the ?v=2 on the shim import doesn't propagate — so a
-    // stale `_bg.wasm` would still be served from disk cache even
-    // after rebuilding.
-    await init({ module_or_path: './wasm/pkg/benchmark_idealyst_native_anim_bg.wasm?v=6' });
+    await init();
     start();
 
     // ─────────────────────────────────────────────────────────────────

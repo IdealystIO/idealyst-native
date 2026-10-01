@@ -16,9 +16,12 @@ Unlike the vanilla / React variants, this one requires a one-time
 wasm build. From this directory:
 
 ```bash
-cd wasm
-wasm-pack build --target web --release
+# from the repo root
+cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native/wasm
 ```
+
+(Not wasm-pack: backend-web's web-glue needs `pkg/__idealyst_glue.js`,
+which wasm-pack can't write — see ../README.md, "Builds".)
 
 That produces `wasm/pkg/` with the JS shim + `.wasm`, which
 `index.html` imports directly. Rebuild after any change to
@@ -33,8 +36,8 @@ scale, so headline figures are always measured without it. Turn it on
 for a profiling build (CLAUDE.md §6):
 
 ```bash
-wasm-pack build --target web --release --out-dir pkg-prof \
-  -- --features debug-stats
+cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native/wasm \
+  --out-dir benchmark/idealyst-native/wasm/pkg-prof -- --features debug-stats
 ```
 
 That build's `bench_stats_json()` returns a `phases` object of
@@ -57,10 +60,10 @@ serves it.
 before/after harness for a framework change:
 
 ```bash
-cd wasm
-wasm-pack build --target web --release                       # baseline → pkg/
+P="cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native/wasm"
+$P                                                          # baseline → pkg/
 # …make the change…
-wasm-pack build --target web --release --out-dir pkg-after   # candidate → pkg-after/
+$P --out-dir benchmark/idealyst-native/wasm/pkg-after       # candidate → pkg-after/
 ```
 
 Serve this directory (`python3 -m http.server PORT`), open

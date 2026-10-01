@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [lib]
-# `cdylib` for wasm-pack's web target; `rlib` so the workspace can
+# `cdylib` for the web target (`bench-pack-web`); `rlib` so the workspace can
 # still link this if anything depends on it (nothing does today).
 crate-type = ["cdylib", "rlib"]
 
@@ -29,8 +29,8 @@ debug-stats = [
     "backend-web/debug-stats",
 ]
 
-# Build:
-#   wasm-pack build --target web --release
+# Build (from the repo root; not wasm-pack — see benchmark/README.md):
+#   cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native/wasm
 #
 # The bench themes through `runtime_vocabulary::theme` directly rather
 # than idea-ui: the toggle suite measures the framework's token
@@ -71,6 +71,7 @@ version = "0.3"
 features = ["console"]
 
 # wasm-opt flags. Matches `examples/hello-world` so the per-instruction
-# perf is comparable.
+# perf is comparable. `bench-pack-web` reads them from this table (the
+# key wasm-pack used, kept so old and new builds share one source).
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz", "--strip-debug", "--strip-producers", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

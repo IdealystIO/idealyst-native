@@ -15,6 +15,7 @@ command:
 
 - Builds the runner wasm (`benchmark/pkg/`)
 - Builds the idealyst-native variant wasm (`benchmark/idealyst-native/wasm/pkg/`)
+  and the idealyst-native-anim variant wasm
 - Builds the Svelte variant bundle via Vite (`benchmark/svelte/pkg/`)
 - Invokes `idealyst-cli serve` on port 8080 (or `$PORT`)
 
@@ -30,11 +31,10 @@ to load over `file://`.
 If you want to invoke the builds individually:
 
 ```bash
-# Runner UI (Rust → wasm)
-cd benchmark && wasm-pack build --target web --release
-
-# idealyst-native variant (Rust → wasm)
-cd benchmark/idealyst-native/wasm && wasm-pack build --target web --release
+# Runner UI and the idealyst-native variants (Rust → wasm), from the repo root
+cargo run -q --release -p bench-pack-web -- benchmark
+cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native/wasm
+cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native-anim/wasm
 
 # Svelte variant (Svelte SFCs → bundled JS via Vite)
 cd benchmark/svelte && npm install && npm run build
@@ -42,6 +42,22 @@ cd benchmark/svelte && npm install && npm run build
 
 The vanilla / React / Vue variants need no build step — they load
 their (production) runtimes from esm.sh.
+
+**Not wasm-pack.** The three wasm crates link backend-web, whose
+bindings are web-glue: its JS rides inside the linked module and has to
+come back out as `pkg/__idealyst_glue.js`, which only the framework's
+build pass writes. `wasm-pack build` still exits 0 on these crates, but
+its `pkg/` imports a `__idealyst_glue.js` that isn't there — the page
+404s on it, never boots, and the runner times out with no error.
+[`pack-web/`](./pack-web/src/main.rs) (`bench-pack-web`) is cargo + that
+glue pass (`build_web::own_glue`) + `wasm-bindgen --target web` +
+`wasm-opt` with each crate's own
+`[package.metadata.wasm-pack.profile.release]` flags — on a crate without
+web-glue its output is byte-identical to wasm-pack's. Pass cargo args
+after `--` (e.g. `-- --features debug-stats`) and `--out-dir <dir>` for a
+second package. A page must import the generated shim by its plain path
+(no `?v=N` cache-buster): the glue file imports `initSync` from it, and a
+different URL loads a second, uninitialised copy.
 
 ## What's here
 
@@ -94,7 +110,7 @@ cross-suite numbers aren't comparable.
   arg-shape checks); Vue uses the runtime-only `vue.runtime.esm-browser.prod.js`
   with hand-written `h()` render functions (no template compiler shipped);
   Svelte is AOT-compiled by Vite with `dev: false`; the idealyst-native
-  variant builds wasm with `wasm-pack --release` and no `debug-stats`
+  variant builds release wasm through `bench-pack-web` and no `debug-stats`
   feature. Don't ship numbers run against any dev-mode equivalents — they're
   all ~2-5× slower.
 - **`flushSync` in React.** The React variants wrap `setRowCountState` in

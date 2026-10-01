@@ -385,6 +385,8 @@ members = [
     "benchmark",
     "benchmark/idealyst-native/wasm",
     "benchmark/idealyst-native-anim/wasm",
+    # Packages the wasm crates above (wasm-pack can't write web-glue's JS).
+    "benchmark/pack-web",
 
     # Framework regression test apps. See tests/README.md.
     "tests/vtable-dispatch",

@@ -6,7 +6,8 @@
 #   PORT=9000 benchmark/serve    # custom port
 #
 # Variants that load from esm.sh (vanilla-*, react-*, vue) need
-# no build. Only the Svelte variant + the two wasm crates do.
+# no build. Only the Svelte variant + the three wasm crates (runner,
+# idealyst-native, idealyst-native-anim) do.
 # Each step is idempotent — re-running is safe.
 
 set -e
@@ -14,16 +15,31 @@ set -e
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "$BENCH_DIR/.." && pwd)"
 
+# The three wasm crates link backend-web, whose bindings are web-glue:
+# its JS rides inside the wasm and has to come back out as
+# `pkg/__idealyst_glue.js`. wasm-pack can't write that file (its output
+# builds, then 404s on the import and never boots), so each crate goes
+# through `bench-pack-web` — cargo + the framework's hybrid glue pass +
+# wasm-bindgen + wasm-opt with the crate's own
+# `[package.metadata.wasm-pack.profile.release]` flags. See
+# benchmark/pack-web/src/main.rs.
+pack() {
+  # `cargo run` execs the tool, so its own cargo build of the wasm crate
+  # doesn't contend for the build lock.
+  (cd "$WORKSPACE_ROOT" && cargo run -q --release -p bench-pack-web -- "$1")
+}
+
+echo
 echo "[bench] building runner wasm..."
-(cd "$BENCH_DIR" && wasm-pack build --target web --release)
+pack "$BENCH_DIR"
 
 echo
 echo "[bench] building idealyst-native variant wasm..."
-(cd "$BENCH_DIR/idealyst-native/wasm" && wasm-pack build --target web --release)
+pack "$BENCH_DIR/idealyst-native/wasm"
 
 echo
 echo "[bench] building idealyst-native-anim variant wasm..."
-(cd "$BENCH_DIR/idealyst-native-anim/wasm" && wasm-pack build --target web --release)
+pack "$BENCH_DIR/idealyst-native-anim/wasm"
 
 echo
 echo "[bench] building svelte variant..."

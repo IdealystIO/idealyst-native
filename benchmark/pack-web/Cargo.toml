@@ -1,0 +1,17 @@
+[package]
+name = "bench-pack-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Packages a benchmark wasm crate (cdylib) for the browser through the framework's web build passes, in place of wasm-pack."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[dependencies]
+anyhow = "1"
+# `own_glue::hybrid_extract` / `write_hybrid_glue_file`: the same web-glue
+# pass `idealyst build --web` runs. wasm-pack cannot produce
+# `pkg/__idealyst_glue.js`, so a crate that links backend-web needs this.
+build-web = { workspace = true }
+serde_json = { workspace = true }

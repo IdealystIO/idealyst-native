@@ -1647,6 +1647,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bench-pack-web"
+version = "1.5.2"
+dependencies = [
+ "anyhow",
+ "build-web",
+ "serde_json",
+]
+
+[[package]]
 name = "benchmark"
 version = "1.5.2"
 dependencies = [
