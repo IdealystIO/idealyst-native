@@ -26,8 +26,9 @@
 //! default bodies, nested `fn` items, closures' enclosing fns — is
 //! replaced by `{}`. Everything else survives verbatim as tokens:
 //! signatures, generics, where clauses, attributes, items, fields,
-//! variants, `const` and `static` initializers, `use` statements,
-//! macro items at item position.
+//! variants, `static` initializers, a `const`'s name and type, `use`
+//! statements, macro items at item position. A `const` item's
+//! INITIALIZER is blanked too (see below).
 //!
 //! Tokens rather than text, because whitespace and comments must not
 //! decide whether a save is patchable — reformatting a signature is a
@@ -37,12 +38,30 @@
 //!
 //! # Deliberately conservative edges
 //!
-//! - A `const fn` body is blanked like any other, but a `const` ITEM's
-//!   initializer is not: a const's value is baked into every use site
-//!   across the whole graph, and only the patched crate is re-emitted.
-//! - A `static` / `thread_local!` initializer likewise. The patch dylib
-//!   gets its own copy of a static; the running process keeps reading
-//!   the original. Treating that as a rebuild is the honest answer.
+//! - A `const` ITEM's initializer is blanked — outside function bodies,
+//!   at item level, in an `impl`, as a trait's default — so editing
+//!   `const HEADLINE: &str = "…"` keeps the shape. Its name and TYPE stay,
+//!   so a type change still rebuilds. That alone would be unsound: a
+//!   const's value is copied into every use, and a use in an array
+//!   length, a const generic, an enum discriminant, a `static`, a `const
+//!   fn` — or, in another crate, anywhere — is not something a patch
+//!   re-emits. The decider therefore pairs the shape with
+//!   [`crate::const_facts`], which records each blanked value and where
+//!   every const is read, and rebuilds when an edited value can reach one
+//!   of those places (see `crate::consts` for the rule and why it is by
+//!   use rather than by type). Two kinds of const keep their initializer
+//!   in the shape: `const _` (it exists for what it does — an assertion,
+//!   a registration — not to be read), and one whose initializer declares
+//!   items (`= { static S: … ; &S }`), whose items are shape like any
+//!   other.
+//! - A `static` / `thread_local!` initializer is NOT blanked, and an
+//!   edit to one rebuilds. A patch never re-initializes a static's
+//!   storage: for a crate it re-emits, the patch defines a FRESH copy, so
+//!   patched code and the base code still running read different storage;
+//!   for any other crate it imports the base's through `GOT.mem`
+//!   (`build-web`'s `hotpatch_prepare`), so patched code keeps reading
+//!   the base's OLD value. Either way the screen would not match the
+//!   source, and `static mut` is no different.
 //! - A doc comment on a function is an attribute, so editing one
 //!   rebuilds. Conservative, and it matches what the overlay tier does
 //!   with the same edit today.
@@ -148,6 +167,26 @@ fn blank_stylesheet_values(tokens: proc_macro2::TokenStream) -> proc_macro2::Tok
 }
 
 impl VisitMut for BlankBodies {
+    fn visit_item_const_mut(&mut self, c: &mut syn::ItemConst) {
+        if crate::consts::blanks_value(&c.ident, &c.expr) {
+            *c.expr = blank_value();
+        }
+    }
+
+    fn visit_impl_item_const_mut(&mut self, c: &mut syn::ImplItemConst) {
+        if crate::consts::blanks_value(&c.ident, &c.expr) {
+            c.expr = blank_value();
+        }
+    }
+
+    fn visit_trait_item_const_mut(&mut self, c: &mut syn::TraitItemConst) {
+        if let Some((_, expr)) = &mut c.default {
+            if crate::consts::blanks_value(&c.ident, expr) {
+                *expr = blank_value();
+            }
+        }
+    }
+
     fn visit_item_macro_mut(&mut self, m: &mut syn::ItemMacro) {
         if is_stylesheet(&m.mac) {
             m.mac.tokens = blank_stylesheet_values(std::mem::take(&mut m.mac.tokens));
@@ -173,6 +212,13 @@ impl VisitMut for BlankBodies {
             f.default = Some(empty_block());
         }
     }
+}
+
+/// What a blanked const initializer becomes: nothing, so the shape
+/// reads `const NAME: Type = ;` — never valid Rust, and never compared
+/// to anything but another shape.
+fn blank_value() -> syn::Expr {
+    syn::Expr::Verbatim(proc_macro2::TokenStream::new())
 }
 
 fn empty_block() -> syn::Block {
@@ -293,6 +339,50 @@ mod tests {
     #[test]
     fn changing_a_static_initializer_changes_the_shape() {
         assert!(!same(BASE, &BASE.replace("LIMIT: u32 = 10", "LIMIT: u32 = 20")));
+    }
+
+    /// A `static mut` too: same storage problem, and more of it.
+    #[test]
+    fn changing_a_static_mut_initializer_changes_the_shape() {
+        let src = format!("{BASE}\n pub static mut HITS: u32 = 0;");
+        assert!(!same(&src, &src.replace("HITS: u32 = 0", "HITS: u32 = 1")));
+    }
+
+    /// The shape lets go of a const's VALUE — whether that value may be
+    /// patched is `const_facts`' question, not this one's.
+    #[test]
+    fn changing_a_const_value_keeps_the_shape() {
+        let src = format!(
+            "{BASE}\n const HEADLINE: &str = \"v1\";\n impl Config {{ const LABEL: &str = \"a\"; }}\n              trait Named {{ const NAME: &str = \"n\"; }}\n mod inner {{ pub const N: usize = 3; }}"
+        );
+        for (from, to) in [
+            ("\"v1\"", "\"v2\""),
+            ("\"a\"", "\"b\""),
+            ("\"n\"", "concat!(\"n\", \"m\")"),
+            ("N: usize = 3", "N: usize = 4"),
+        ] {
+            let edited = src.replace(from, to);
+            assert_ne!(src, edited, "fixture did not contain {from}");
+            assert!(same(&src, &edited), "{from} -> {to} should keep the shape");
+        }
+    }
+
+    #[test]
+    fn changing_a_const_type_or_name_changes_the_shape() {
+        let src = format!("{BASE}\n const HEADLINE: &str = \"v1\";");
+        assert!(!same(&src, &src.replace("HEADLINE: &str", "HEADLINE: &'static str")));
+        assert!(!same(&src, &src.replace("HEADLINE:", "TITLE:")));
+        assert!(!same(&src, &format!("{src}\n const MORE: u8 = 1;")));
+    }
+
+    /// `const _` exists for what it does, and a const whose initializer
+    /// declares items carries those items: both stay shape.
+    #[test]
+    fn underscore_consts_and_item_declaring_initializers_stay_shape() {
+        let src = format!("{BASE}\n const _: () = assert!(1 > 0);");
+        assert!(!same(&src, &src.replace("1 > 0", "2 > 0")));
+        let src = format!("{BASE}\n const R: &u8 = {{ static S: u8 = 1; &S }};");
+        assert!(!same(&src, &src.replace("u8 = 1", "u8 = 2")));
     }
 
     #[test]

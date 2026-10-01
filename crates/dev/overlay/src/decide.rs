@@ -87,7 +87,7 @@ pub enum Reason {
     /// one, and it covers every logic edit.
     CodeChanged { file: String },
     /// The file's SHAPE moved — a signature, a props struct, a
-    /// `static`, an attribute, the set of items. A hot patch cannot
+    /// `static`, a const's type, an attribute, the set of items. A hot patch cannot
     /// express this: the patch dylib is spliced into a process where
     /// every other crate is still the old build, so the two would
     /// disagree about layout. Only a rebuild is correct.
@@ -97,10 +97,20 @@ pub enum Reason {
     /// the page's class names from the whole invocation at session start,
     /// so only a rebuild regenerates them.
     PremintStylesheet { file: String },
+    /// A `const`'s VALUE changed (`item` labels it), and the crate reads
+    /// that const somewhere a value outlives a patch: an array length or
+    /// repeat count, a const generic argument, an enum discriminant, a
+    /// `static` / `thread_local!` initializer, a `const fn`, an unknown
+    /// macro, another const that is read there — or, in a premint
+    /// session, a `stylesheet!` (see `runtime_macros_parse::consts`).
+    /// Also when the crate has source the scan cannot see (`#[path]`,
+    /// `include!`), since a read hidden there cannot be ruled out.
+    ConstReadAtCompileTime { file: String, item: String },
     /// A LIBRARY crate of the app's workspace changed the body of a
     /// function its dependents compile themselves, from its metadata:
     /// a generic, `#[inline]`, `const`, `async` or `impl Trait` function,
-    /// or a trait's default method
+    /// or a trait's default method — or the VALUE of a `const`, which
+    /// dependents copy into their own code the same way
     /// (`runtime_macros_parse::downstream_bodies`). A patch re-emits the
     /// dependents against the BASE build's metadata, which still carries
     /// the old body, so their copies would stay old with nothing to say
@@ -128,6 +138,17 @@ impl std::fmt::Display for Reason {
                 f,
                 "{file} changed a `stylesheet!`, and this session preminted its class names"
             ),
+            Reason::ConstReadAtCompileTime { file, item } => write!(
+                f,
+                "{file} changed the value of `{item}`, which is read at compile time (an array \
+                 length, a const generic, an enum discriminant, a `static`, a `const fn`, a macro, \
+                 or a premint stylesheet)"
+            ),
+            Reason::DownstreamBody { file, item } if is_const_label(item) => write!(
+                f,
+                "{file} changed the value of `{item}`, which the crates depending on it copy into \
+                 their own code"
+            ),
             Reason::DownstreamBody { file, item } => write!(
                 f,
                 "{file} changed the body of `{item}`, which the crates depending on it compile \
@@ -139,6 +160,12 @@ impl std::fmt::Display for Reason {
             ),
         }
     }
+}
+
+/// Whether a `downstream_bodies` label names a const (`const N`,
+/// `impl T::const N`, `trait T::const N`) rather than a function.
+fn is_const_label(label: &str) -> bool {
+    label.rsplit("::").next().is_some_and(|last| last.starts_with("const "))
 }
 
 /// One changed file, as the watcher sees it.
@@ -158,7 +185,7 @@ pub fn decide_with(
     changed: &[ChangedFile],
     premint: bool,
 ) -> Decision {
-    let decision = decide(archive, changed);
+    let decision = decide_in(archive, changed, premint);
     let (Decision::HotPatch(_), true, Some(archive)) = (&decision, premint, archive) else {
         return decision;
     };
@@ -177,6 +204,13 @@ pub fn decide_with(
 /// the two arguments, which is what lets the decision table be tested
 /// exhaustively without a build.
 pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decision {
+    decide_in(archive, changed, false)
+}
+
+/// [`decide`], knowing whether the session preminted its stylesheets —
+/// which decides whether a const a `stylesheet!` reads was baked at
+/// session start ([`const_value_rebuild`]).
+fn decide_in(archive: Option<&DescriptorSet>, changed: &[ChangedFile], premint: bool) -> Decision {
     let Some(archive) = archive else {
         return Decision::Rebuild(Reason::NoArchive);
     };
@@ -220,6 +254,9 @@ pub fn decide(archive: Option<&DescriptorSet>, changed: &[ChangedFile]) -> Decis
     // hot patch carries the literal along — applying the overlay patch
     // as well would address the pre-patch binary's site keys.
     if !body_only.is_empty() {
+        if let Some(why) = const_value_rebuild(archive, changed, &body_only, premint) {
+            return Decision::Rebuild(why);
+        }
         Decision::HotPatch(body_only)
     } else if patches.is_empty() {
         Decision::Unchanged
@@ -339,6 +376,56 @@ fn body_only_or_rebuild(recorded: &FileDigest, file: &ChangedFile) -> FileOutcom
     FileOutcome::BodyOnly
 }
 
+/// The half of the hot-patch question the shape no longer answers: did
+/// a body-only file move a `const`'s VALUE that the crate reads at compile
+/// time?
+///
+/// The shape blanks const initializers, so `const HEADLINE: &str = "…"`
+/// can be a hot patch: every function body of the crate is re-emitted
+/// and sees the new value. A value that also went into a type, a layout
+/// or a `static` did NOT get re-emitted with it — the framework's
+/// instantiations over that type, the static's storage — so if any
+/// edited const can reach one of those, this rebuilds. The reach is the
+/// whole CRATE's (a const in `consts.rs` sizing an array in `grid.rs`),
+/// from every archived file's facts, with the save's files replaced by
+/// their new ones. See `runtime_macros_parse::consts` for the rule.
+fn const_value_rebuild(
+    archive: &DescriptorSet,
+    changed: &[ChangedFile],
+    body_only: &[String],
+    premint: bool,
+) -> Option<Reason> {
+    let now: BTreeMap<&str, crate::archive::ConstDigest> = changed
+        .iter()
+        .map(|f| (f.path.as_str(), crate::archive::ConstDigest::of(&f.text)))
+        .collect();
+    let mut edited: Vec<(&str, &str, &str)> = Vec::new(); // (file, label, name)
+    for path in body_only {
+        let (Some(new), Some(recorded)) = (now.get(path.as_str()), archive.files.get(path)) else {
+            continue;
+        };
+        for (label, (name, value)) in &new.values {
+            if recorded.consts.values.get(label).map(|(_, v)| v) != Some(value) {
+                edited.push((path, label, name));
+            }
+        }
+    }
+    let first = edited.first()?;
+    let uses: Vec<runtime_macros_parse::ConstFacts> = archive
+        .files
+        .iter()
+        .map(|(path, recorded)| now.get(path.as_str()).unwrap_or(&recorded.consts).uses())
+        .collect();
+    let rebuild = |(file, label, _): &(&str, &str, &str)| Reason::ConstReadAtCompileTime {
+        file: file.to_string(),
+        item: label.to_string(),
+    };
+    let Some(reach) = runtime_macros_parse::compile_time_reach(&uses, premint) else {
+        return Some(rebuild(first));
+    };
+    edited.iter().find(|(_, _, name)| reach.contains(*name)).map(rebuild)
+}
+
 /// Fold a decided save back into the archive, so the NEXT save is
 /// decided against what is actually running.
 ///
@@ -401,6 +488,7 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                 ),
                 sheets: crate::archive::sheets_digest(&file.text),
                 downstream: crate::archive::downstream_digests(&file.text),
+                consts: crate::archive::ConstDigest::of(&file.text),
             },
         );
         if rekey {
@@ -906,6 +994,198 @@ fn Screen() -> Element {
         assert_eq!(
             decide(Some(&archive), &changed(&edited)),
             Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    /// `static mut` too — and both keep rebuilding now that a const's
+    /// value no longer does: a patch never re-initializes a static.
+    #[test]
+    fn changing_a_static_mut_rebuilds_as_a_shape_change() {
+        let src = format!("{APP}\n pub static mut HITS: u32 = 0;\n");
+        let (_d, archive) = archive_of(&src);
+        assert_eq!(
+            decide(Some(&archive), &changed(&src.replace("HITS: u32 = 0", "HITS: u32 = 1"))),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    // --- const values ------------------------------------------------
+
+    /// The CrewForge case: a screen's `const HEADLINE: &str`, rendered
+    /// by a component. Every reader is a function body the patch
+    /// re-emits, so the value edit is a hot patch, not a rebuild.
+    const HEADLINED: &str = r#"
+use runtime_core::*;
+
+const HEADLINE: &str = "Run your crews";
+
+struct Copy;
+impl Copy {
+    const CTA: &'static str = "Start";
+}
+
+#[component]
+fn Landing() -> Element {
+    ui! {
+        view() {
+            text { HEADLINE }
+            text { Copy::CTA }
+        }
+    }
+}
+"#;
+
+    #[test]
+    fn a_const_string_value_edit_is_a_hot_patch() {
+        let (_d, archive) = archive_of(HEADLINED);
+        let edited = HEADLINED.replace("Run your crews", "Run every crew");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+        // An associated const in an `impl` is the same.
+        let edited = HEADLINED.replace("\"Start\"", "\"Begin\"");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    #[test]
+    fn a_const_type_change_rebuilds_as_a_shape_change() {
+        let (_d, archive) = archive_of(HEADLINED);
+        let edited = HEADLINED.replace("HEADLINE: &str", "HEADLINE: &'static str");
+        assert_eq!(
+            decide(Some(&archive), &changed(&edited)),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+    }
+
+    /// A value that sized a TYPE went into a layout the rest of the
+    /// process agrees on: the patch would disagree with it.
+    #[test]
+    fn an_integer_const_used_as_an_array_length_rebuilds() {
+        let src = format!("{HEADLINED}\nconst SLOTS: usize = 4;\npub struct Grid {{ cells: [u8; SLOTS] }}\n");
+        let (_d, archive) = archive_of(&src);
+        assert_eq!(
+            decide(Some(&archive), &changed(&src.replace("SLOTS: usize = 4", "SLOTS: usize = 5"))),
+            Decision::Rebuild(Reason::ConstReadAtCompileTime {
+                file: "src/app.rs".into(),
+                item: "const SLOTS".into(),
+            })
+        );
+        // …through another const as well.
+        let src = format!(
+            "{HEADLINED}\nconst BASE: usize = 2;\nconst SLOTS: usize = BASE * 2;\n\
+             pub struct Grid {{ cells: [u8; SLOTS] }}\n"
+        );
+        let (_d, archive) = archive_of(&src);
+        assert!(matches!(
+            decide(Some(&archive), &changed(&src.replace("BASE: usize = 2", "BASE: usize = 3"))),
+            Decision::Rebuild(Reason::ConstReadAtCompileTime { .. })
+        ));
+    }
+
+    /// An integer const read only by bodies is as patchable as a string.
+    #[test]
+    fn an_integer_const_read_only_by_bodies_is_a_hot_patch() {
+        let src = format!("{HEADLINED}\nconst RETRIES: u32 = 3;\nfn retries() -> u32 {{ RETRIES + 1 }}\n");
+        let (_d, archive) = archive_of(&src);
+        assert_eq!(
+            decide(Some(&archive), &changed(&src.replace("RETRIES: u32 = 3", "RETRIES: u32 = 4"))),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// A static's storage keeps the value it was initialized with, so a
+    /// const feeding one has to rebuild even though the static's own
+    /// tokens did not move.
+    #[test]
+    fn a_const_read_by_a_static_rebuilds() {
+        let src = format!("{HEADLINED}\nstatic TITLE: &str = HEADLINE;\n");
+        let (_d, archive) = archive_of(&src);
+        assert!(matches!(
+            decide(Some(&archive), &changed(&src.replace("Run your crews", "Run every crew"))),
+            Decision::Rebuild(Reason::ConstReadAtCompileTime { .. })
+        ));
+    }
+
+    /// The reach is the CRATE's: a const in one file sizing an array in
+    /// another still rebuilds.
+    #[test]
+    fn a_const_used_as_an_array_length_in_another_file_rebuilds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"decide-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let consts = "pub const SLOTS: usize = 4;\npub const TITLE: &str = \"Grid\";\n";
+        std::fs::write(dir.path().join("src/consts.rs"), consts).unwrap();
+        std::fs::write(
+            dir.path().join("src/app.rs"),
+            "pub struct Grid { cells: [u8; crate::consts::SLOTS] }\n",
+        )
+        .unwrap();
+        let archive = crate::archive::scan_crate(dir.path()).expect("scan");
+        let save = |text: String| vec![ChangedFile { path: "src/consts.rs".into(), text }];
+        assert_eq!(
+            decide(Some(&archive), &save(consts.replace("= 4", "= 5"))),
+            Decision::Rebuild(Reason::ConstReadAtCompileTime {
+                file: "src/consts.rs".into(),
+                item: "const SLOTS".into(),
+            })
+        );
+        assert_eq!(
+            decide(Some(&archive), &save(consts.replace("\"Grid\"", "\"Board\""))),
+            Decision::HotPatch(vec!["src/consts.rs".into()])
+        );
+    }
+
+    /// Premint baked every `stylesheet!`'s rules into CSS at session
+    /// start, so a const a sheet reads was baked with them — though the
+    /// sheet's own tokens did not move. Outside premint the same edit is
+    /// a hot patch: the rules run in `<name>_style()`, a body.
+    #[test]
+    fn a_const_read_by_a_stylesheet_rebuilds_only_under_premint() {
+        let src = format!(
+            "{HEADLINED}\nconst PAD: f32 = 8.0;\n\
+             stylesheet! {{ pub Banner<IdeaThemeRef> {{ base(_t) {{ padding: PAD }} }} }}\n"
+        );
+        let (_d, archive) = archive_of(&src);
+        let edited = src.replace("PAD: f32 = 8.0", "PAD: f32 = 12.0");
+        assert_eq!(
+            decide_with(Some(&archive), &changed(&edited), false),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+        assert_eq!(
+            decide_with(Some(&archive), &changed(&edited), true),
+            Decision::Rebuild(Reason::ConstReadAtCompileTime {
+                file: "src/app.rs".into(),
+                item: "const PAD".into(),
+            })
+        );
+        // A const no sheet reads still patches under premint.
+        let edited = src.replace("Run your crews", "Run every crew");
+        assert_eq!(
+            decide_with(Some(&archive), &changed(&edited), true),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
+    /// After a const edit is patched, the archive holds the NEW value: a
+    /// second edit diffs against what is running, and reverting is an
+    /// edit too.
+    #[test]
+    fn a_patched_const_value_advances_the_archive() {
+        let (_d, mut archive) = archive_of(HEADLINED);
+        let v2 = HEADLINED.replace("Run your crews", "Run every crew");
+        advance_archive(&mut archive, &changed(&v2));
+        assert_eq!(decide(Some(&archive), &changed(&v2)), Decision::Unchanged);
+        assert_eq!(
+            decide(Some(&archive), &changed(HEADLINED)),
+            Decision::HotPatch(vec!["src/app.rs".into()])
         );
     }
 

@@ -20,6 +20,7 @@
 //!    assert the counter kept its value and the marker is still there —
 //!    a reload would have cleared both — and that a `thread_local`
 //!    signal cache still reads (the rebuild keeps the page's world).
+//!    Then edit a `const HEADLINE: &str`'s value: a hot patch too.
 //! 5. Add a prop to the component. Poll until the page shows it, and
 //!    assert the marker is GONE: a shape change must rebuild and reload.
 //!
@@ -28,8 +29,9 @@
 //! of its workspace holding a component and a function the app calls
 //! directly. A body edit in the library lands as a patch (the app's
 //! direct call and the component's click handler both run the new code),
-//! a later edit of the app alone still carries the library's edit, and a
-//! shape edit in the library rebuilds and reloads.
+//! a later edit of the app alone still carries the library's edit, a
+//! `pub const` value edit in the library (read by the app) rebuilds and
+//! reloads, and a shape edit in the library rebuilds and reloads.
 //!
 //! Both apps link no wasm-bindgen, so they build in own mode — the
 //! wasm-bindgen CLI never runs, and the test asserts it from the build's
@@ -80,6 +82,11 @@ fn Badge(label: String) -> Element {
     ui! { view { text { "[ {label} ]" } } }
 }
 
+// A const VALUE this test edits. Every reader is a function body, so the
+// edit is a hot patch: the patch re-emits the crate and `Root` reads the
+// new value.
+const HEADLINE: &str = "headline v1";
+
 // The body this test edits. A plain function: it reaches the screen
 // only because `Root` — redirected through the jump table — calls the
 // patch's copy of it.
@@ -94,6 +101,7 @@ fn Root() -> Element {
     ui! {
         view {
             Badge(label = "draft".to_string())
+            text { HEADLINE }
             text { move || format!("count = {}", count.get()) }
             button(label = "+1".to_string(), on_click = bump)
             text { move || logic_line(count.get()) }
@@ -509,6 +517,30 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
         page.text()
     );
 
+    // ── a const VALUE edit ─────────────────────────────────────────────
+    // `const HEADLINE: &str` read only by a component body: a hot patch,
+    // where it used to rebuild (the shape held every const's value).
+    let patches_before = session.log().matches("[hotpatch] src/app.rs ·").count();
+    let source = std::fs::read_to_string(&app_rs).unwrap();
+    std::fs::write(&app_rs, source.replace("\"headline v1\"", "\"headline v2\"")).unwrap();
+    assert!(
+        page.wait_for_text("headline v2", Duration::from_secs(120)),
+        "the const edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert!(
+        session.log().matches("[hotpatch] src/app.rs ·").count() > patches_before,
+        "the const edit arrived, but not through a hot patch:\n{}",
+        tail(&session.log())
+    );
+    assert_eq!(
+        page.eval("window.__e2e_marker"),
+        json!("still-here"),
+        "the page reloaded — a const value edit must arrive as a hot patch"
+    );
+    assert!(page.text().contains("count = 4"), "{:?}", page.text());
+
     // ── a body edit that adds a web-glue binding the base never had ────
     // The patch imports it from `./__idealyst_glue.js` with its JS in the
     // import name; the page compiles it (`__idealystGlue.compileImport`)
@@ -610,6 +642,11 @@ pub fn SharedCounter(title: String) -> Element {
     }
 }
 
+// Read by the APP: its value is copied into the app's code, from this
+// crate's metadata — which a patch does not regenerate. So editing it
+// rebuilds rather than patching the app with the old value.
+pub const SHARED_TAG: &str = "tag v1";
+
 // Called DIRECTLY by the app's `Root`: only a patch that re-emits the
 // app too can make that call reach this body's new version.
 pub fn shared_line(n: i32) -> String {
@@ -618,7 +655,7 @@ pub fn shared_line(n: i32) -> String {
 "#;
 
 const WS_APP_RS: &str = r#"
-use e2e_shared::{shared_line, SharedCounter};
+use e2e_shared::{shared_line, SharedCounter, SHARED_TAG};
 use runtime_core::{component, signal, ui, Element};
 
 fn logic_line(n: i32) -> String {
@@ -635,6 +672,7 @@ fn Root() -> Element {
             button(label = "+1".to_string(), on_click = bump)
             text { move || logic_line(count.get()) }
             text { move || shared_line(count.get()) }
+            text { SHARED_TAG }
             SharedCounter(title = "the shared card".to_string())
         }
     }
@@ -810,6 +848,29 @@ fn a_workspace_library_edit_patches_the_running_page() {
     );
     assert!(page.text().contains("shared line v2 -> 2"), "{:?}", page.text());
     assert_eq!(page.eval("window.__e2e_marker"), json!("still-here"), "the page reloaded");
+
+    // ── a const VALUE edit in the library ─────────────────────────────
+    // The app reads it, and a patch would re-emit the app against the
+    // BASE metadata, old value included: this has to rebuild.
+    let source = std::fs::read_to_string(&shared_rs).unwrap();
+    std::fs::write(&shared_rs, source.replace("\"tag v1\"", "\"tag v2\"")).unwrap();
+    assert!(
+        page.wait_for_text("tag v2", Duration::from_secs(300)),
+        "the library const edit never reached the page. Page: {:?}\nLog tail:\n{}",
+        page.text(),
+        tail(&session.log()),
+    );
+    assert!(
+        session.log().contains("changed the value of `const SHARED_TAG`"),
+        "a library const edit has to be routed to a rebuild:\n{}",
+        tail(&session.log())
+    );
+    assert_eq!(
+        page.eval("window.__e2e_marker ?? null"),
+        Value::Null,
+        "a library const edit has to reload the page; the marker survived"
+    );
+    page.eval("window.__e2e_marker = 'still-here'");
 
     // ── a SHAPE edit in the library ───────────────────────────────────
     let source = std::fs::read_to_string(&shared_rs).unwrap();

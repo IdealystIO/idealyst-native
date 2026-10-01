@@ -166,7 +166,11 @@ premint (below)
   Unchanged ⇒ nothing outside the sites moved ⇒ overlay tier.
 - **shape** — the file with every function body blanked, as TOKENS
   (`runtime_macros_parse::shape_of`). Unchanged ⇒ only statements inside
-  functions moved ⇒ hot-patch tier.
+  functions moved ⇒ hot-patch tier. A `const`'s initializer is blanked
+  too (its name and type are not); the next digest decides it.
+- **consts** — every blanked const value as a digest, plus where the
+  file reads each const (`runtime_macros_parse::const_facts`). See
+  [Const values](#const-values).
 
 Tokens rather than text for the shape, so reindenting a function is free
 while reformatting a signature is not.
@@ -191,6 +195,54 @@ still rebuilds: the archive keeps a fourth digest, **sheets** (the raw
 `stylesheet!` tokens, `runtime_macros_parse::stylesheet_tokens`), and
 `decide_with(.., premint = true)` rebuilds when it moves.
 
+### Const values
+
+A const's value is copied into every place that reads it. When every
+reader is a function body, a value edit is a body edit: the hot patch
+re-emits the whole crate, so each body sees the new value. When a reader
+is somewhere a patch does not reach, the edit rebuilds
+(`Reason::ConstReadAtCompileTime`). Those places are:
+
+- a TYPE or a LAYOUT: an array length or repeat count, a const generic
+  argument or default, an enum discriminant, a `const fn`, a `const _`
+  assertion. The framework's code compiled against that type is not
+  re-emitted.
+- a `static` initializer, including `thread_local!` and a `static`
+  inside a function. A patch never re-initializes a static. For a crate
+  it re-emits, it defines a fresh copy, so patched code and the base code
+  still running read different storage. For any other crate it imports
+  the base's static through `GOT.mem`, which still holds the old value.
+- a macro whose expansion is unknown. `ui!`, `jsx!` and std's
+  formatting and assertion macros are known to expand to plain
+  expressions; any other macro might expand to a `static`.
+- another const that one of these reads (the check follows const-to-const
+  reads and `use … as …` renames).
+- in a premint session, a `stylesheet!`'s rules. Premint baked them
+  into CSS at session start. Outside premint they run in
+  `<name>_style()`, a body.
+
+The check runs across the whole crate, so a `pub const SLOTS: usize` in
+`consts.rs` that sizes an array in `grid.rs` rebuilds. It goes by where a
+const is read, not by its type: `[u8; PREFIX.len()]` is a legal array
+length for a `&str` const, and an integer const read only by bodies
+patches like a string does. It matches on names, not resolved paths, so
+two consts with the same name in different modules count as one. That
+can cost a rebuild a patch could have handled, but it never lets through
+a patch that should have rebuilt. A crate with a `#[path]` module or an
+`include!` has source the scan cannot read, so in that crate every const
+value edit rebuilds.
+
+A const in a LIBRARY crate of the workspace always rebuilds. Its
+dependents copy its value into their own code from the library's
+metadata, and a patch replays them against the base build's metadata,
+which still has the old value. That holds for a private const too, since
+one can reach dependents through an `#[inline]` or generic body. The
+rebuild names the const: ``changed the value of `const NAME`, which the
+crates depending on it copy into their own code``.
+
+The overlay tier never handles a const edit. A const's literal is not a
+`ui!` literal, so no compiled tag points at it.
+
 A decision table, by example:
 
 | Edit | Tier |
@@ -206,7 +258,10 @@ A decision table, by example:
 | Add a comment or blank line outside a body | Hot patch |
 | Change a prop's type, or add a prop | Rebuild |
 | Add or rename any item | Rebuild |
-| Change a `const` / `static` initializer | Rebuild |
+| Change a `const`'s value (`const HEADLINE: &str = "…"`, an `impl`'s associated const, a trait's default), when only function bodies read it | Hot patch |
+| Change a `const`'s value when it is read at compile time: an array length, a const generic, an enum discriminant, a `static`, a `const fn`, an unknown macro, or (premint only) a `stylesheet!` | Rebuild ([Const values](#const-values)) |
+| Change a `const`'s type or name | Rebuild |
+| Change a `static` / `static mut` / `thread_local!` initializer | Rebuild |
 | Change an attribute or a doc comment | Rebuild |
 | A rule VALUE inside `stylesheet! { … }` (a number, a token, a rule added or removed in any block, including `state`/`breakpoint`/`container`/`compound` blocks) | Hot patch |
 | Anything in a `stylesheet!`'s `transitions { … }` (a duration, an easing, an entry added or removed) | Hot patch |
@@ -215,6 +270,7 @@ A decision table, by example:
 | A function body in a library crate of the app's cargo workspace (a path dependency that is a member) | Hot patch — the library AND every workspace crate depending on it are re-emitted ([Workspace crates](#workspace-crates)) |
 | A literal in a `ui!` body of such a library crate | Overlay patch |
 | The body of a generic, `#[inline]`, `const`, `async` or `impl Trait` fn, or a trait's default method, in such a library crate | Rebuild — its dependents compile that body themselves |
+| A `const`'s value in such a library crate | Rebuild — its dependents copied the old value from the base build's metadata |
 | Any shape edit in such a library crate (a new prop on a shared component) | Rebuild |
 | Edit a file of a local package outside the app's workspace (a `[patch]` checkout of the framework), or a `Cargo.toml` | Rebuild |
 
@@ -937,6 +993,15 @@ moves one rebuilds, naming it:
 
 ```text
 [dev] rebuilding: crewforge-ui-shared/src/grid.rs changed the body of `fn sort_rows`, which the crates depending on it compile themselves (generic, `#[inline]`, `const`, `async` or `impl Trait`)
+```
+
+A `const`'s value is the same case: a dependent evaluates the const
+from the library's metadata and copies the value into its own code, so
+the archive records every const (item level, an `impl`'s, a trait's
+default) beside those functions, and a value edit rebuilds:
+
+```text
+[dev] rebuilding: crewforge-ui-shared/src/copy.rs changed the value of `const HEADLINE`, which the crates depending on it copy into their own code
 ```
 
 The check reads source, so it sees `#[inline]` and generics as written,

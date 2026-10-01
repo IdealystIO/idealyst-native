@@ -35,7 +35,8 @@
 //! library's METADATA from the base build, and for some functions rustc
 //! compiles the body out of that metadata into the dependent — generic
 //! ones, `#[inline]`, `const fn`, `async fn`, `impl Trait`, trait default
-//! bodies (see `runtime_macros_parse::downstream_bodies`). An edit to one
+//! bodies — and every `const`'s value, which a dependent evaluates from
+//! the same metadata (see `runtime_macros_parse::downstream_bodies`). An edit to one
 //! of those in a library crate would reach the library's own callers and
 //! miss every dependent's copy, silently. The archive records a digest per
 //! such function ([`crate::archive::FileDigest::downstream`]) and a save
@@ -795,6 +796,9 @@ impl Workspace {
             Reason::CodeChanged { file } => Reason::CodeChanged { file: q(file) },
             Reason::ShapeChanged { file } => Reason::ShapeChanged { file: q(file) },
             Reason::PremintStylesheet { file } => Reason::PremintStylesheet { file: q(file) },
+            Reason::ConstReadAtCompileTime { file, item } => {
+                Reason::ConstReadAtCompileTime { file: q(file), item }
+            }
             other => other,
         }
     }
@@ -846,6 +850,8 @@ pub fn wrap<T: Clone>(t: T) -> Vec<T> {
 pub fn quick() -> u32 {
     1
 }
+
+pub const SHARED_TAG: &str = "tag v1";
 "#;
 
     const APP: &str = r#"
@@ -859,6 +865,8 @@ fn Root() -> Element {
 pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
     vec![t]
 }
+
+const APP_TAG: &str = "app v1";
 "#;
 
     fn write_crate(dir: &Path, name: &str, lib: &str) {
@@ -1118,6 +1126,41 @@ pub fn wrap_here<T: Clone>(t: T) -> Vec<T> {
                 item: "fn quick".into(),
             })
         );
+    }
+
+    /// A library's const is evaluated INTO each dependent from the base
+    /// build's metadata, which a patch's replay of the dependent still
+    /// reads — so the dependent would keep the old value. Rebuild, naming
+    /// the const. (Before consts were downstream items this was a
+    /// ShapeChanged rebuild; the shape no longer holds a const's value,
+    /// so without this the edit would have patched the library alone and
+    /// left the app showing the old text.)
+    #[test]
+    fn regression_a_const_value_edit_in_a_library_crate_rebuilds() {
+        let f = fixture();
+        let edit = SHARED.replace("\"tag v1\"", "\"tag v2\"");
+        let decision = f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false);
+        assert_eq!(
+            decision,
+            WorkspaceDecision::Rebuild(Reason::DownstreamBody {
+                file: "lab-shared/src/lib.rs".into(),
+                item: "const SHARED_TAG".into(),
+            })
+        );
+        let WorkspaceDecision::Rebuild(why) = decision else { unreachable!() };
+        assert!(why.to_string().contains("changed the value of `const SHARED_TAG`"), "{why}");
+    }
+
+    /// The same const edit in the TIP is a hot patch: nothing depends on
+    /// it, and every body that reads it is re-emitted.
+    #[test]
+    fn a_const_value_edit_in_the_tip_hot_patches() {
+        let f = fixture();
+        let edit = APP.replace("\"app v1\"", "\"app v2\"");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
     }
 
     /// The same generic edit in the TIP is fine: nothing downstream.

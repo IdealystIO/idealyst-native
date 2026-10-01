@@ -24,7 +24,16 @@
 //!   called;
 //! - **`async fn`**: the future is such a hidden type;
 //! - **`const fn`**: evaluated at compile time inside the dependent's own
-//!   constants.
+//!   constants;
+//! - **`const` items** — not a function, but the same story: a const's
+//!   value is evaluated from the library's metadata wherever a dependent
+//!   reads it, and copied into the dependent's code. Every const counts,
+//!   a private one included (it reaches a dependent through any of the
+//!   bodies above, or through a `pub` const that reads it), at item
+//!   level, in an `impl`, or as a trait's default. A const VALUE edit
+//!   keeps the shape (`crate::shape_of`), so this is what rebuilds it in
+//!   a library crate. Labelled `const NAME`, `impl Type::const NAME`,
+//!   `trait Name::const NAME`.
 //!
 //! A replay of a dependent reads the library's metadata from the BASE
 //! build, which still carries the old bodies — the replay only emits
@@ -40,7 +49,7 @@ use std::collections::BTreeMap;
 
 use quote::ToTokens;
 
-/// Every function in `text` whose body a dependent may compile, keyed by
+/// Every function (and const) in `text` whose body a dependent may compile, keyed by
 /// a label (`fn name`, `impl Type::name`, `trait Name::name`, prefixed
 /// with enclosing `mod`s), valued by the function's token text.
 ///
@@ -56,6 +65,9 @@ pub fn downstream_bodies(text: &str) -> Option<BTreeMap<String, String>> {
 fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>) {
     for item in items {
         match item {
+            syn::Item::Const(c) if c.ident != "_" => {
+                insert(out, format!("{prefix}const {}", c.ident), c.to_token_stream().to_string());
+            }
             syn::Item::Fn(f) => {
                 if downstream_sig(&f.sig, &f.attrs) {
                     insert(out, format!("{prefix}fn {}", f.sig.ident), f.to_token_stream().to_string());
@@ -76,14 +88,22 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
                     None => format!("{prefix}impl {self_ty}"),
                 };
                 for it in &imp.items {
-                    if let syn::ImplItem::Fn(f) = it {
-                        if generic_impl || downstream_sig(&f.sig, &f.attrs) {
-                            insert(
-                                out,
-                                format!("{label}::{}", f.sig.ident),
-                                f.to_token_stream().to_string(),
-                            );
+                    match it {
+                        syn::ImplItem::Fn(f) => {
+                            if generic_impl || downstream_sig(&f.sig, &f.attrs) {
+                                insert(
+                                    out,
+                                    format!("{label}::{}", f.sig.ident),
+                                    f.to_token_stream().to_string(),
+                                );
+                            }
                         }
+                        syn::ImplItem::Const(c) => insert(
+                            out,
+                            format!("{label}::const {}", c.ident),
+                            c.to_token_stream().to_string(),
+                        ),
+                        _ => {}
                     }
                 }
             }
@@ -92,14 +112,18 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
                 // gets its own instantiation, compiled by whichever crate
                 // names the implementor.
                 for it in &t.items {
-                    if let syn::TraitItem::Fn(f) = it {
-                        if f.default.is_some() {
-                            insert(
-                                out,
-                                format!("{prefix}trait {}::{}", t.ident, f.sig.ident),
-                                f.to_token_stream().to_string(),
-                            );
-                        }
+                    match it {
+                        syn::TraitItem::Fn(f) if f.default.is_some() => insert(
+                            out,
+                            format!("{prefix}trait {}::{}", t.ident, f.sig.ident),
+                            f.to_token_stream().to_string(),
+                        ),
+                        syn::TraitItem::Const(c) if c.default.is_some() => insert(
+                            out,
+                            format!("{prefix}trait {}::const {}", t.ident, c.ident),
+                            c.to_token_stream().to_string(),
+                        ),
+                        _ => {}
                     }
                 }
             }
@@ -240,6 +264,29 @@ mod tests {
         let before = downstream_bodies(src).unwrap();
         assert_ne!(before, downstream_bodies(&src.replace("{ 1 }", "{ 3 }")).unwrap());
         assert_eq!(before, downstream_bodies(&src.replace("{ 2 }", "{ 4 }")).unwrap());
+    }
+
+    /// A library's const value is evaluated INTO its dependents, from
+    /// metadata the replay does not regenerate — so every const is a
+    /// downstream item, and a value edit moves its entry.
+    #[test]
+    fn every_const_is_downstream_and_a_value_edit_moves_it() {
+        let src = r#"
+            pub const TAG: &str = "v1";
+            const PRIVATE: u8 = 1;
+            const _: () = ();
+            pub struct S;
+            impl S { pub const LABEL: &str = "a"; }
+            pub trait T { const D: u8 = 1; const R: u8; }
+        "#;
+        assert_eq!(
+            labels(src),
+            vec!["const PRIVATE", "const TAG", "impl S::const LABEL", "trait T::const D"]
+        );
+        let before = downstream_bodies(src).unwrap();
+        let after = downstream_bodies(&src.replace("\"v1\"", "\"v2\"")).unwrap();
+        assert_ne!(before["const TAG"], after["const TAG"]);
+        assert_eq!(before["const PRIVATE"], after["const PRIVATE"]);
     }
 
     #[test]

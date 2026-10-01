@@ -47,6 +47,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
+pub mod consts;
 pub mod describe;
 pub mod downstream;
 pub mod number;
@@ -58,6 +59,7 @@ pub mod shape;
 pub mod split;
 
 pub use ast::{is_a11y_attr, MatchArm, Prop, Ui, UiNode};
+pub use consts::{compile_time_reach, const_facts, ConstFacts, ConstValue};
 pub use describe::describe;
 pub use downstream::downstream_bodies;
 pub use number::{number_elements, NodeNumbering, StampMismatch};

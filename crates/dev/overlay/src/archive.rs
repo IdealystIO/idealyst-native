@@ -49,7 +49,7 @@
 //! and one broken file must not cost the descriptor set for the rest of
 //! the crate. Same forgiveness `catalog-scan` has, for the same reason.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -103,9 +103,10 @@ pub struct FileDigest {
     pub sheets: String,
     /// One digest per function whose body a DEPENDENT crate compiles
     /// from this crate's metadata — generic, `#[inline]`, `const`,
-    /// `async`, `impl Trait`, trait default bodies
+    /// `async`, `impl Trait`, trait default bodies — and per `const`
+    /// item, whose value a dependent evaluates from the same metadata
     /// (`runtime_macros_parse::downstream_bodies`), keyed by a label that
-    /// names the function.
+    /// names the item.
     ///
     /// Only consulted for a library crate of the app's workspace, never
     /// for the app crate itself (nothing depends on it). A hot patch of a
@@ -116,6 +117,77 @@ pub struct FileDigest {
     /// that has any never matches — it rebuilds, the safe reading.
     #[serde(default)]
     pub downstream: BTreeMap<String, String>,
+    /// What the file says about `const` values
+    /// (`runtime_macros_parse::const_facts`): a digest of every value the
+    /// shape blanks, and where every const is read. The shape no longer
+    /// holds a const's value, so this is what decides whether a value
+    /// edit can be a hot patch — see [`ConstDigest`]. Defaulted: an older
+    /// document records no values, which a file that has any never
+    /// matches, and `overlay_version` refuses it anyway.
+    #[serde(default)]
+    pub consts: ConstDigest,
+}
+
+/// [`runtime_macros_parse::ConstFacts`], with each value as a digest.
+///
+/// The decider needs two things from it. Per file: which const values a
+/// save moved (`values`). Across the whole crate: which names are read
+/// somewhere a value reaches a type, a layout or a `static` — the rest
+/// of the fields, which `runtime_macros_parse::compile_time_reach` closes
+/// over. A value edit to a const in that set rebuilds; any other is a
+/// body edit, because the patch re-emits every body of the crate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConstDigest {
+    /// Label -> `(name, digest of the initializer)`.
+    #[serde(default)]
+    pub values: BTreeMap<String, (String, String)>,
+    #[serde(default)]
+    pub reads: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    pub compile_time: BTreeSet<String>,
+    #[serde(default)]
+    pub sheet_reads: BTreeSet<String>,
+    #[serde(default)]
+    pub renames: BTreeSet<(String, String)>,
+    /// The file pulls in source the scan cannot read, or did not parse:
+    /// nothing about the crate's const reads can be trusted.
+    #[serde(default)]
+    pub opaque: bool,
+}
+
+impl ConstDigest {
+    /// The digest of `text`. A file that does not parse is
+    /// [`Self::opaque`]: a read hidden in it could be anywhere.
+    pub fn of(text: &str) -> ConstDigest {
+        let Some(facts) = runtime_macros_parse::const_facts(text) else {
+            return ConstDigest { opaque: true, ..ConstDigest::default() };
+        };
+        ConstDigest {
+            values: facts
+                .values
+                .into_iter()
+                .map(|(label, v)| (label, (v.name, hex(&Sha256::digest(v.value.as_bytes())))))
+                .collect(),
+            reads: facts.reads,
+            compile_time: facts.compile_time,
+            sheet_reads: facts.sheet_reads,
+            renames: facts.renames,
+            opaque: facts.opaque,
+        }
+    }
+
+    /// Back to facts, for `compile_time_reach` — which reads only where
+    /// names are used, never the values.
+    pub fn uses(&self) -> runtime_macros_parse::ConstFacts {
+        runtime_macros_parse::ConstFacts {
+            values: BTreeMap::new(),
+            reads: self.reads.clone(),
+            compile_time: self.compile_time.clone(),
+            sheet_reads: self.sheet_reads.clone(),
+            renames: self.renames.clone(),
+            opaque: self.opaque,
+        }
+    }
 }
 
 /// One build's descriptor set.
@@ -153,7 +225,13 @@ pub struct DescriptorSet {
 /// (`runtime_template::SlotInfo::{code, literal}`), and blank nested
 /// `ui!` bodies out of the text they record. A `4` document diffed
 /// against a `5` scan would read every slot as changed code.
-pub const OVERLAY_VERSION: u32 = 5;
+///
+/// `6`: the shape blanks `const` initializers, and [`FileDigest::consts`]
+/// carries what decides a const value edit instead. A `5` document's
+/// shape still holds the values, so every const edit against it would
+/// read as a shape change at best — and it has no `consts` to decide
+/// one with.
+pub const OVERLAY_VERSION: u32 = 6;
 
 /// One `ui!` site as a build recorded it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -339,6 +417,7 @@ pub fn scan_sources_cancellable(
                         shape: content.clone(),
                         sheets: content,
                         downstream: BTreeMap::new(),
+                        consts: ConstDigest { opaque: true, ..ConstDigest::default() },
                     },
                 );
                 continue;
@@ -358,9 +437,10 @@ pub fn scan_sources_cancellable(
         ));
         let sheets = sheets_digest(text);
         let downstream = downstream_digests(text);
+        let consts = ConstDigest::of(text);
         set.files.insert(
             relative.clone(),
-            FileDigest { content, skeleton, shape, sheets, downstream },
+            FileDigest { content, skeleton, shape, sheets, downstream, consts },
         );
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();
