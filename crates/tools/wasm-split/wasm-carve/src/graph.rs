@@ -81,7 +81,7 @@ pub struct Partition {
 impl Partition {
     pub fn compute(original: &[u8], source: &ModuleIndex<'_>) -> Result<Self> {
         let split_points = accumulate_split_points(source)?;
-        let data_symbols = parse_data_symbols(source.bytes)?.data_symbols;
+        let data_symbols = packaged_data_symbols(source.bytes, original)?;
 
         let (mut call_graph, original_graph, names) = build_call_graph(original, source)?;
 
@@ -493,6 +493,60 @@ pub struct RawData<'a> {
     pub data_symbols: BTreeMap<usize, DataSymbol>,
 }
 
+/// The packaged module's data symbols: addresses from ITS data section, the
+/// symbol table from its `linking` section — or, when packaging dropped
+/// that section, from the rustc module's.
+///
+/// wasm-bindgen carries `linking` through to its output; the own-mode glue
+/// pass strips it (with `reloc.*` and DWARF) because nothing reads it from
+/// the served module. Without the fallback an own-mode split saw no data
+/// symbols at all, so `--data-prune` zeroed nothing (lazy-payload-split's
+/// main stayed 1409 KiB where it must shed the chunk's 512 KiB). The two
+/// tables are the same table: packaging renames imports and repoints exports
+/// but never renumbers symbols or moves data, so the rustc module's
+/// `(segment, offset, size)` entries describe the packaged data section.
+pub fn packaged_data_symbols(packaged: &[u8], original: &[u8]) -> Result<BTreeMap<usize, DataSymbol>> {
+    let raw = parse_data_symbols(packaged)?;
+    if !raw.symbols.is_empty() {
+        return Ok(raw.data_symbols);
+    }
+    let symbols = parse_data_symbols(original)?.symbols;
+    let segments = data_segments(packaged)?;
+    data_symbols_of(&symbols, &segments)
+}
+
+fn data_segments(bytes: &[u8]) -> Result<Vec<wasmparser::Data<'_>>> {
+    for payload in Parser::new(0).parse_all(bytes) {
+        if let Payload::DataSection(section) = payload? {
+            return Ok(section.into_iter().collect::<Result<Vec<_>, _>>()?);
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn data_symbols_of(symbols: &[SymbolInfo<'_>], segments: &[wasmparser::Data<'_>]) -> Result<BTreeMap<usize, DataSymbol>> {
+    let mut data_symbols = BTreeMap::new();
+    for (index, symbol) in symbols.iter().enumerate() {
+        let SymbolInfo::Data { symbol: Some(def), .. } = symbol else { continue };
+        if def.size == 0 {
+            continue;
+        }
+        let segment = segments.get(def.index as usize).context("data symbol's segment")?;
+        let offset = segment.range.end - segment.data.len() + def.offset as usize;
+        data_symbols.insert(
+            index,
+            DataSymbol {
+                index,
+                range: offset..offset + def.size as usize,
+                segment_offset: def.offset as usize,
+                symbol_size: def.size as usize,
+                which_data_segment: def.index as usize,
+            },
+        );
+    }
+    Ok(data_symbols)
+}
+
 pub fn parse_data_symbols(bytes: &[u8]) -> Result<RawData<'_>> {
     let mut segments = Vec::new();
     let mut data_range = 0..0;
@@ -522,25 +576,7 @@ pub fn parse_data_symbols(bytes: &[u8]) -> Result<RawData<'_>> {
             _ => {}
         }
     }
-    let mut data_symbols = BTreeMap::new();
-    for (index, symbol) in symbols.iter().enumerate() {
-        let SymbolInfo::Data { symbol: Some(def), .. } = symbol else { continue };
-        if def.size == 0 {
-            continue;
-        }
-        let segment = segments.get(def.index as usize).context("data symbol's segment")?;
-        let offset = segment.range.end - segment.data.len() + def.offset as usize;
-        data_symbols.insert(
-            index,
-            DataSymbol {
-                index,
-                range: offset..offset + def.size as usize,
-                segment_offset: def.offset as usize,
-                symbol_size: def.size as usize,
-                which_data_segment: def.index as usize,
-            },
-        );
-    }
+    let data_symbols = data_symbols_of(&symbols, &segments)?;
     Ok(RawData { data_range, symbols, data_symbols })
 }
 

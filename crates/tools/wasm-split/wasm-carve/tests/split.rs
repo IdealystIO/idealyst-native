@@ -653,6 +653,54 @@ fn data_prune_moves_split_only_data_out_of_main() {
     assert_eq!(restored, vec![(VT_ADDR as i32, vt_word())]);
 }
 
+/// `bytes` minus every custom section `drop` names — what the own-mode glue
+/// pass does to the module it packages (`linking`, `reloc.*`, DWARF).
+fn without_customs(bytes: &[u8], drop: impl Fn(&str) -> bool) -> Vec<u8> {
+    let mut m = Module::new();
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        let payload = payload.unwrap();
+        if let wasmparser::Payload::CustomSection(c) = &payload {
+            if drop(c.name()) {
+                continue;
+            }
+        }
+        if let Some((id, range)) = payload.as_section() {
+            m.section(&RawSection { id, data: &bytes[range] });
+        }
+    }
+    m.finish()
+}
+
+/// Regression: own mode packages a module WITHOUT `linking` (wasm-bindgen
+/// used to carry it through). The splitter read data symbols only from the
+/// packaged module, found none, and `--data-prune` silently zeroed nothing —
+/// lazy-payload-split's main kept the chunk's 512 KiB. The symbol table now
+/// falls back to the rustc module's.
+#[test]
+fn regression_data_prune_works_on_a_packaged_module_without_linking() {
+    let original = fixture();
+    let packaged = without_customs(&original, |n| n == "linking" || n.starts_with("reloc."));
+    let source = ModuleIndex::parse(&packaged).unwrap();
+    assert!(source.custom_payload("linking").is_none(), "the fixture lost its symbol table");
+    assert_eq!(
+        wasm_carve::graph::packaged_data_symbols(&packaged, &original).unwrap().len(),
+        wasm_carve::graph::parse_data_symbols(&original).unwrap().data_symbols.len(),
+    );
+    let options = wasm_carve::SplitOptions { prune_dead_data_min: Some(4) };
+    let out = wasm_carve::split(&original, &packaged, &options).unwrap();
+    validate(&out.main.bytes);
+    let main = ModuleIndex::parse(&out.main.bytes).unwrap();
+    assert_eq!(&out.main.bytes[main.data[0].data.clone()], [0; 8], "VT zeroed in main");
+    let module = ModuleIndex::parse(&out.modules[0].bytes).unwrap();
+    let restored: Vec<(i32, Vec<u8>)> = module
+        .data
+        .iter()
+        .filter_map(|d| d.active_const.map(|(_, o)| (o, out.modules[0].bytes[d.data.clone()].to_vec())))
+        .filter(|(_, b)| !b.is_empty())
+        .collect();
+    assert_eq!(restored, vec![(VT_ADDR as i32, vt_word())], "and restored by the split module");
+}
+
 /// Regression: the DCE-root exports use short `s{n}` names, never the
 /// mangled symbol (~300 KB of export names on the website), and never
 /// collide with an existing export.
