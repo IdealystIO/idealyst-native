@@ -223,10 +223,12 @@ fn an_unsupported_primitive_panics_at_encode_by_name() {
 }
 
 #[test]
-#[should_panic(expected = "`link`'s `route (typed route params)` can't cross")]
+#[should_panic(expected = "`dyn hole`'s `retire hook` can't cross")]
 fn an_unsupported_field_panics_at_encode_by_name() {
-    const HOME: runtime_shared::primitives::navigator::Route = runtime_shared::primitives::navigator::Route::new("home", "/");
-    let tree = runtime_vocabulary::builders::link().route(&HOME, ()).child(text().content("home")).build();
+    // Retire hooks hand a region's old realized content to a mount
+    // handler's code (presence's exit animation) — app-side machinery, never
+    // in an author tree.
+    let tree = runtime_scene::dyn_element(|| view().build()).with_retire(|_| {});
     bundle::encode(tree);
 }
 

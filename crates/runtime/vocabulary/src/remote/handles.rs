@@ -60,6 +60,19 @@ pub enum HandleCall {
     ScrollOffset,
     /// The bundle dropped its handle.
     Release,
+    /// A navigation command on a navigator handle (`NavHandle`).
+    Nav(WireNav),
+}
+
+/// A `NavCommand` as it crosses. Typed params never do: the receiving
+/// navigator rebuilds them from `url` (`ParamsFromUrl`).
+#[derive(Serialize, Deserialize, Debug)]
+pub enum WireNav {
+    Push { name: String, url: String, query: String },
+    Replace { name: String, url: String, query: String },
+    Reset { name: String, url: String, query: String },
+    Select { name: String, url: String, query: String },
+    Pop,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +317,47 @@ mod bundle_side {
     impl PortalOps for RemoteOps {}
     impl PresenceOps for RemoteOps {}
 
+    thread_local! {
+        /// The navigator handles this bundle received from the app, by
+        /// identity — so handing one back (to an app component) sends the
+        /// app's id, not a new proxy.
+        static NAV_IDS: RefCell<std::collections::HashMap<*const (), u32>> = RefCell::new(Default::default());
+    }
+
+    /// The bundle's `NavHandle` for the app's navigator handle `id`: its
+    /// commands cross as [`WireNav`]. Dropping its last copy releases the
+    /// app's entry.
+    pub fn nav_proxy(id: u32) -> crate::prims::NavHandle {
+        use runtime_shared::primitives::navigator::NavCommand;
+        let node = Rc::new(RemoteNode(id));
+        let handle = crate::prims::NavHandle::new(Rc::new(move |cmd: NavCommand| {
+            let wire = match cmd {
+                NavCommand::Push { name, url, query, .. } => {
+                    super::WireNav::Push { name: name.into(), url, query: query.to_query_string() }
+                }
+                NavCommand::Replace { name, url, query, .. } => {
+                    super::WireNav::Replace { name: name.into(), url, query: query.to_query_string() }
+                }
+                NavCommand::Reset { name, url, query, .. } => {
+                    super::WireNav::Reset { name: name.into(), url, query: query.to_query_string() }
+                }
+                NavCommand::Select { name, url, query, .. } => {
+                    super::WireNav::Select { name: name.into(), url, query: query.to_query_string() }
+                }
+                NavCommand::Pop => super::WireNav::Pop,
+                _ => panic!("remote component: a custom navigation command can't cross to the app"),
+            };
+            try_send(node.0, &HandleCall::Nav(wire));
+        }));
+        NAV_IDS.with(|m| m.borrow_mut().insert(handle.identity(), id));
+        handle
+    }
+
+    /// The app's id for `handle`, if it is one this bundle received.
+    pub fn nav_id(handle: &crate::prims::NavHandle) -> Option<u32> {
+        NAV_IDS.with(|m| m.borrow().get(&handle.identity()).copied())
+    }
+
     /// A prim's `ref_fill`, as it crosses: a one-shot callback the app calls
     /// with the id of the real handle it now holds. `make` builds the
     /// bundle's handle (`|n| TextInputHandle::new(n, &REMOTE_OPS)`).
@@ -327,7 +381,7 @@ mod bundle_side {
 mod host_side {
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
-    use std::rc::Weak;
+    use std::rc::{Rc, Weak};
 
     use runtime_shared::handles::*;
     use runtime_shared::primitives::activity_indicator::ActivityIndicatorHandle;
@@ -367,12 +421,21 @@ mod host_side {
         Presence(PresenceHandle),
         Virtualizer(VirtualizerHandle),
         VirtualGrid(VirtualGridHandle),
+        Nav(crate::prims::NavHandle),
+        /// An app `Ref<H>` of a navigator handle, read when the bundle
+        /// uses it (as native code reads its `Ref` at call time — a screen
+        /// is built before its navigator fills the ref). `original` is the
+        /// `Ref<H>` itself, so handing it back to an app component returns
+        /// the same ref.
+        NavRef { get: Rc<dyn Fn() -> Option<crate::prims::NavHandle>>, original: Rc<dyn std::any::Any> },
     }
 
     struct Entry {
         held: Held,
-        /// The decoded tree's connection: the entry dies with it.
-        tree: Weak<dyn std::any::Any>,
+        /// The decoded tree's connection: the entry dies with it. `None`
+        /// for a handle the app handed to a bundle (a prop): that entry
+        /// lives as long as its [`HoldGuard`].
+        tree: Option<Weak<dyn std::any::Any>>,
         /// Layout subscriptions this handle made, by id.
         subs: HashMap<u32, LayoutSubscription>,
     }
@@ -384,6 +447,10 @@ mod host_side {
 
     /// Hold `held` for the bundle whose decoded tree is `tree`; its id.
     pub(crate) fn hold(held: Held, tree: Weak<dyn std::any::Any>) -> u32 {
+        insert(held, Some(tree))
+    }
+
+    fn insert(held: Held, tree: Option<Weak<dyn std::any::Any>>) -> u32 {
         let id = NEXT.with(|n| {
             n.set(n.get().checked_add(1).expect("remote codec: handle ids exhausted"));
             n.get()
@@ -392,12 +459,52 @@ mod host_side {
         id
     }
 
+    /// Hold `held` for a bundle until the guard drops — a handle the app
+    /// passes as a prop (the mount keeps the guard).
+    pub fn hold_scoped(held: Held) -> (u32, HoldGuard) {
+        let id = insert(held, None);
+        (id, HoldGuard(id))
+    }
+
+    /// Ends a [`hold_scoped`] entry.
+    pub struct HoldGuard(u32);
+
+    impl Drop for HoldGuard {
+        fn drop(&mut self) {
+            let gone = HANDLES.try_with(|h| h.borrow_mut().remove(&self.0)).ok().flatten();
+            drop(gone);
+        }
+    }
+
+    /// The navigator handle the app holds under `id` (for a `Ref`, what it
+    /// holds now).
+    pub fn held_nav(id: u32) -> Option<crate::prims::NavHandle> {
+        let held = HANDLES.with(|h| h.borrow().get(&id).map(|e| e.held.clone()))?;
+        match held {
+            Held::Nav(n) => Some(n),
+            Held::NavRef { get, .. } => get(),
+            _ => None,
+        }
+    }
+
+    /// The app `Ref` held under `id`, if that entry is one.
+    pub fn held_nav_ref(id: u32) -> Option<Rc<dyn std::any::Any>> {
+        HANDLES.with(|h| match h.borrow().get(&id).map(|e| &e.held) {
+            Some(Held::NavRef { original, .. }) => Some(original.clone()),
+            _ => None,
+        })
+    }
+
     /// Drop the entries whose tree is gone (`host::Conn`'s drop).
     pub(crate) fn purge_dead() {
         let dead: Vec<Entry> = HANDLES
             .try_with(|h| {
                 let mut h = h.borrow_mut();
-                let ids: Vec<u32> = h.iter().filter(|(_, e)| e.tree.strong_count() == 0).map(|(id, _)| *id).collect();
+                let ids: Vec<u32> = h
+                    .iter()
+                    .filter(|(_, e)| e.tree.as_ref().is_some_and(|t| t.strong_count() == 0))
+                    .map(|(id, _)| *id)
+                    .collect();
                 ids.into_iter().filter_map(|id| h.remove(&id)).collect()
             })
             .unwrap_or_default();
@@ -453,7 +560,7 @@ mod host_side {
                 to_bytes(&h.install_keyframe_animation(prop, &keyframes, duration_ms, repeat_forever, autoreverse))
             }
             (H::View(h), C::SubscribeLayout { callback }) => {
-                let tree = HANDLES.with(|t| t.borrow().get(&id).map(|e| e.tree.clone()));
+                let tree = HANDLES.with(|t| t.borrow().get(&id).and_then(|e| e.tree.clone()));
                 let Some(conn) = tree.and_then(|t| t.upgrade()) else { return to_bytes(&0u32) };
                 let cb = crate::remote::host::callback_for(&conn, callback);
                 let sub = h.on_layout(move |w, hh| {
@@ -495,7 +602,37 @@ mod host_side {
             (H::VirtualGrid(h), C::ScrollToCell { col, row }) => unit(h.scroll_to_cell(col, row)),
             (H::Virtualizer(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::VirtualGrid(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
+            (H::Nav(nav), C::Nav(cmd)) => unit(nav.dispatch(nav_command(cmd))),
+            // An unfilled ref drops the command, as native code's
+            // `if let Some(h) = nav.get()` would.
+            (H::NavRef { get, .. }, C::Nav(cmd)) => unit(if let Some(nav) = get() {
+                nav.dispatch(nav_command(cmd))
+            }),
             (_, call) => panic!("remote codec: handle {id} has no method for {call:?} — the bundle and the app disagree"),
+        }
+    }
+
+    /// A remote component's navigation command: its params are rebuilt
+    /// from the url by the receiving navigator.
+    fn nav_command(w: super::WireNav) -> runtime_shared::primitives::navigator::NavCommand {
+        use runtime_shared::primitives::navigator::{NavCommand, QueryParams};
+        use super::WireNav as W;
+        let params = || Box::new(crate::prims::ParamsFromUrl) as Box<dyn std::any::Any>;
+        let name = |n: &str| crate::remote::host::intern_name(n);
+        match w {
+            W::Push { name: n, url, query } => {
+                NavCommand::Push { name: name(&n), url, params: params(), query: QueryParams::parse(&query) }
+            }
+            W::Replace { name: n, url, query } => {
+                NavCommand::Replace { name: name(&n), url, params: params(), query: QueryParams::parse(&query) }
+            }
+            W::Reset { name: n, url, query } => {
+                NavCommand::Reset { name: name(&n), url, params: params(), query: QueryParams::parse(&query) }
+            }
+            W::Select { name: n, url, query } => {
+                NavCommand::Select { name: name(&n), url, params: params(), query: QueryParams::parse(&query) }
+            }
+            W::Pop => NavCommand::Pop,
         }
     }
 

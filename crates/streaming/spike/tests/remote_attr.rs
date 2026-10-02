@@ -376,3 +376,64 @@ fn a_remote_components_ref_drives_the_apps_handle() {
     assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0);
 }
 
+
+// ---- navigation: remote screens inside an app navigator ----
+
+/// The app's stack navigator; its home screen is the REMOTE `Navigating`,
+/// handed the navigator's handle as a prop; the detail screen is the app's.
+fn navigator_app(a: &App) -> Element {
+    use runtime_core::primitives::navigator::Route;
+    use runtime_vocabulary::builders::{stack_navigator, text as text_b};
+    use spike_remoteattr::{ItemId, Navigating, DETAIL};
+    const HOME: Route = Route::new("home", "/");
+    a.h.world.enter(|| {
+        let nav = runtime_core::Ref::<runtime_vocabulary::prims::NavHandle>::new();
+        stack_navigator(&HOME)
+            .screen(HOME, move |()| ui! { Navigating(nav = nav) })
+            .screen(DETAIL, |ItemId(id)| text_b().content(format!("detail {id}")).build())
+            .on_handle(move |h| nav.fill(h))
+            .build()
+    })
+}
+
+fn screen_texts(a: &App) -> String {
+    a.h.live_roots().iter().map(|n| a.h.live_tree(*n)).collect::<Vec<_>>().join("\n")
+}
+
+/// A remote screen drives the app's navigator: a typed push (its params
+/// rebuilt by the app from the url `/items/7`), a pop, and a route link.
+#[test]
+fn a_remote_screen_navigates_the_apps_navigator() {
+    let a = app();
+    let realized = a.h.mount(navigator_app(&a));
+    a.h.flush();
+    let t = screen_texts(&a);
+    assert!(t.contains("remote home"), "{t}");
+
+    let presses = a.h.shared.button_presses.borrow().clone();
+    presses[0](); // push 7
+    a.h.flush();
+    let t = screen_texts(&a);
+    assert!(t.contains("detail 7"), "the app built its screen from the remote push:\n{t}");
+
+    presses[1](); // pop
+    a.h.flush();
+    let t = screen_texts(&a);
+    assert!(!t.contains("detail 7"), "{t}");
+
+    (a.h.link_activation(0))(); // the remote route link
+    a.h.flush();
+    let t = screen_texts(&a);
+    assert!(t.contains("detail 9"), "the remote link's typed route resolved in the app:\n{t}");
+
+    // The app component the remote screen handed its `nav` to pops it.
+    (a.h.shared.button_presses.borrow()[2].clone())(); // "app back"
+    a.h.flush();
+    let t = screen_texts(&a);
+    assert!(!t.contains("detail 9") && t.contains("remote home"), "{t}");
+    drop(presses);
+    drop(realized);
+    a.h.flush();
+    a.h.forget_handlers();
+    assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0);
+}

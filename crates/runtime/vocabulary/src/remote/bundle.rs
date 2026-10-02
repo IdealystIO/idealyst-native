@@ -384,12 +384,12 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     if let Some(cell) = data.downcast_ref::<PrimCell<LinkPrim>>() {
         let p = cell.take();
         let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::link::LinkHandle::new(n, &super::handles::REMOTE_OPS));
-        if p.route_link.is_some() {
-            refuse("link", "route (typed route params)");
-        }
         return Node::Link {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             url: val(p.url),
+            // The route's name; its typed params cross as the url, which
+            // the app's navigator parses (`ParamsFromUrl`).
+            route: p.route_link.map(|r| r.name.to_owned()),
             external: p.external,
             on_activate: p.on_activate.map(|f| register(Entry::Fire(f))),
             children: encode_all(children),

@@ -121,3 +121,61 @@ pub fn Focuser() -> Element {
         }
     }
 }
+
+/// A route both builds share: the app's navigator owns it, the remote
+/// component navigates to it.
+pub const DETAIL: runtime_shared::primitives::navigator::Route<ItemId> =
+    runtime_shared::primitives::navigator::Route::new("detail", "/items/:id");
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct ItemId(pub u32);
+
+impl runtime_shared::primitives::navigator::RouteParams for ItemId {
+    fn to_path(&self, pattern: &str) -> String {
+        pattern.replace(":id", &self.0.to_string())
+    }
+    fn from_segments(segs: &std::collections::HashMap<String, String>) -> Option<Self> {
+        segs.get("id").and_then(|s| s.parse().ok()).map(ItemId)
+    }
+}
+
+/// An APP component taking the navigator ref — what a remote screen hands
+/// its `nav` to (a header's back button). Gets the app's own `Ref` back.
+#[component]
+pub fn BackButton(nav: runtime_core::Ref<runtime_vocabulary::prims::NavHandle>) -> Element {
+    ui! {
+        button(label = "app back", on_click = move || {
+            if let Some(h) = nav.get() {
+                h.pop();
+            }
+        })
+    }
+}
+
+/// A remote SCREEN: it gets the app navigator's handle as a prop (as app
+/// screens do) and pushes, pops and links — typed routes, written exactly
+/// as natively.
+#[component(remote)]
+pub fn Navigating(nav: runtime_core::Ref<runtime_vocabulary::prims::NavHandle>) -> Element {
+    let open_nine = runtime_vocabulary::builders::link()
+        .route(&DETAIL, ItemId(9))
+        .child(runtime_vocabulary::builders::text().content("open 9"))
+        .build();
+    ui! {
+        view() {
+            text { "remote home" }
+            button(label = "push 7", on_click = move || {
+                if let Some(h) = nav.get() {
+                    h.push(&DETAIL, ItemId(7));
+                }
+            })
+            button(label = "pop", on_click = move || {
+                if let Some(h) = nav.get() {
+                    h.pop();
+                }
+            })
+            open_nine
+            BackButton(nav = nav)
+        }
+    }
+}

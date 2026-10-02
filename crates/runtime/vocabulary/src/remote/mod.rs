@@ -119,6 +119,7 @@ pub enum Node {
     Link {
         common: Common,
         url: Val<String>,
+        route: Option<String>,
         external: bool,
         on_activate: Option<Cb>,
         children: Vec<Node>,
@@ -1073,3 +1074,93 @@ macro_rules! __remote_import {
 pub use runtime_scene::Element as __Element;
 #[doc(hidden)]
 pub use linkme as __linkme;
+
+// ---------------------------------------------------------------------------
+// Navigator handles as props
+// ---------------------------------------------------------------------------
+//
+// The app's navigator handle crosses as an id into the app's handle table
+// (`handles`); the bundle gets a `NavHandle` whose commands cross back as
+// `WireNav`, their typed params rebuilt from the url by the navigator. A
+// `Ref<StackHandle>`-style prop crosses as the REF: the app reads it when
+// the bundle navigates, as native code does — a screen is built before its
+// navigator fills the ref, so a value taken at mount would be empty.
+
+impl RemoteProp for crate::prims::NavHandle {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send(&self, out: &mut Vec<u8>, keep: &mut host::Keep) {
+        let (id, guard) = handles::hold_scoped(handles::Held::Nav(self.clone()));
+        keep.push(Box::new(guard));
+        __send_value(&id, out)
+    }
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive(input: &mut &[u8]) -> Self {
+        handles::nav_proxy(__receive_value(input))
+    }
+}
+
+impl<H: crate::prims::NavHandleType> RemoteProp for runtime_shared::Ref<H> {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send(&self, out: &mut Vec<u8>, keep: &mut host::Keep) {
+        let r = *self;
+        let (id, guard) = handles::hold_scoped(handles::Held::NavRef {
+            get: std::rc::Rc::new(move || r.get().map(|h| h.nav_handle().clone())),
+            original: std::rc::Rc::new(r),
+        });
+        keep.push(Box::new(guard));
+        __send_value(&id, out)
+    }
+    /// Filled at once: the bundle's handle forwards to whatever the app's
+    /// ref holds when it is used.
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive(input: &mut &[u8]) -> Self {
+        let r = runtime_shared::Ref::new();
+        r.fill(H::from_nav_handle(handles::nav_proxy(__receive_value(input))));
+        r
+    }
+}
+
+/// The app's id for a navigator handle a bundle hands back (to an app
+/// component); only handles the bundle received from the app can cross.
+#[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+fn nav_id_of(handle: &crate::prims::NavHandle) -> u32 {
+    handles::nav_id(handle).unwrap_or_else(|| {
+        panic!(
+            "remote component: a navigator handle can cross to the app only if it came from the app — \\
+             a navigator the remote component mounts itself can't be driven from app components yet"
+        )
+    })
+}
+
+impl ImportArg for crate::prims::NavHandle {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        __send_value(&nav_id_of(&self), out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
+        let id: u32 = __try_receive_value(input)?;
+        handles::held_nav(id).ok_or_else(|| format!("navigator handle {id} is no longer held"))
+    }
+}
+
+impl<H: crate::prims::NavHandleType> ImportArg for runtime_shared::Ref<H> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        __send_value(&self.get().map(|h| nav_id_of(h.nav_handle())), out)
+    }
+    /// The app's own `Ref` when the bundle's came from one; otherwise a ref
+    /// holding the navigator handle.
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
+        let r = runtime_shared::Ref::new();
+        if let Some(id) = __try_receive_value::<Option<u32>>(input)? {
+            if let Some(original) = handles::held_nav_ref(id).and_then(|o| o.downcast_ref::<runtime_shared::Ref<H>>().copied()) {
+                return Ok(original);
+            }
+            let nav = handles::held_nav(id).ok_or_else(|| format!("navigator handle {id} is no longer held"))?;
+            r.fill(H::from_nav_handle(nav));
+        }
+        Ok(r)
+    }
+}

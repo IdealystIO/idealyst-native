@@ -478,6 +478,40 @@ impl NavHandle {
     }
 }
 
+/// A navigation command's params, to be rebuilt from its url by the
+/// navigator that receives it — with the screen's own `from_segments`,
+/// exactly as a deep link is. What a REMOTE component's commands carry: its
+/// typed params are values of the bundle's build of the type, which the
+/// app's navigator can't downcast, while the url (`RouteParams::to_path`)
+/// says the same thing in a form both sides read.
+pub struct ParamsFromUrl;
+
+/// A typed navigator handle (`NavHandle` itself, or an SDK wrapper like
+/// `StackHandle`): what lets one cross to and from a remote component.
+pub trait NavHandleType: Clone + 'static {
+    fn nav_handle(&self) -> &NavHandle;
+    fn from_nav_handle(handle: NavHandle) -> Self;
+}
+
+impl NavHandleType for NavHandle {
+    fn nav_handle(&self) -> &NavHandle {
+        self
+    }
+    fn from_nav_handle(handle: NavHandle) -> Self {
+        handle
+    }
+}
+
+impl NavHandle {
+    /// The dispatcher's address — this navigator's identity (see the
+    /// `PartialEq` impl). How a remote component recognises a handle it
+    /// received from the app.
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    pub(crate) fn identity(&self) -> *const () {
+        Rc::as_ptr(&self.dispatch) as *const ()
+    }
+}
+
 // ===========================================================================
 // Prim payloads
 // ===========================================================================

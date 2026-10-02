@@ -11259,6 +11259,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-core",
  "runtime-scene",
+ "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
  "spike-camera",

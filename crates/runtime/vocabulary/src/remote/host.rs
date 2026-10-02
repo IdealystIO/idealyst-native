@@ -298,7 +298,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::Link { common, url, external, on_activate, children } => {
+        Node::Link { common, url, route, external, on_activate, children } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(LinkPrim {
@@ -306,7 +306,10 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     url: value(conn, url),
                     external,
                     on_activate: on_activate.map(|id| fire(conn, id)),
-                    route_link: None,
+                    route_link: route.map(|name| RouteLink {
+                        name: intern(&name),
+                        make_params: Rc::new(|| Box::new(ParamsFromUrl) as Box<dyn std::any::Any>),
+                    }),
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::Link),
@@ -870,6 +873,12 @@ fn sheet(conn: &Rc<Conn>, r: SheetRef) -> Rc<StyleSheet> {
     ));
     conn.sheets.borrow_mut().insert(r.id, Rc::downgrade(&sheet));
     sheet
+}
+
+/// A route name, interned (`NavCommand` / `RouteLink` names are
+/// `&'static str`).
+pub(crate) fn intern_name(s: &str) -> &'static str {
+    intern(s)
 }
 
 /// `test_id` and an action's `method` are `&'static str` on the prims:

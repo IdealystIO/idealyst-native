@@ -903,6 +903,50 @@ impl CommandChannel {
     }
 }
 
+/// Rebuild a command's params from its url when they are
+/// [`ParamsFromUrl`](crate::prims::ParamsFromUrl) (a remote component's
+/// command): match the url against the named screen's pattern and run its
+/// own `from_segments`, as a deep link does. The url here is still
+/// navigator-relative (before [`compose_url`]).
+fn params_from_url(screens: &HashMap<&'static str, NavScreenEntry>, cmd: NavCommand) -> NavCommand {
+    fn resolve(screens: &HashMap<&'static str, NavScreenEntry>, name: &'static str, url: &str, params: Box<dyn Any>) -> Box<dyn Any> {
+        if !params.is::<crate::prims::ParamsFromUrl>() {
+            return params;
+        }
+        let entry = screens
+            .get(name)
+            .unwrap_or_else(|| panic!("navigation to `{name}`, which this navigator has no screen for"));
+        match_pattern(split_query(url).0, entry.path)
+            .and_then(|segs| (entry.from_segments)(&segs))
+            .unwrap_or_else(|| {
+                panic!(
+                    "navigation to `{name}` with url `{url}` doesn't match its route `{}` — the remote component \
+                     and the app disagree about the route",
+                    entry.path
+                )
+            })
+    }
+    match cmd {
+        NavCommand::Push { name, url, params, query } => {
+            let params = resolve(screens, name, &url, params);
+            NavCommand::Push { name, url, params, query }
+        }
+        NavCommand::Replace { name, url, params, query } => {
+            let params = resolve(screens, name, &url, params);
+            NavCommand::Replace { name, url, params, query }
+        }
+        NavCommand::Reset { name, url, params, query } => {
+            let params = resolve(screens, name, &url, params);
+            NavCommand::Reset { name, url, params, query }
+        }
+        NavCommand::Select { name, url, params, query } => {
+            let params = resolve(screens, name, &url, params);
+            NavCommand::Select { name, url, params, query }
+        }
+        other => other,
+    }
+}
+
 /// Compose this navigator's base prefix onto a command's
 /// (navigator-relative) url — old `NavigatorControl::compose_url`.
 fn compose_url(base: &str, cmd: NavCommand) -> NavCommand {
@@ -1319,10 +1363,12 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         let channel = channel.clone();
         let base = base.clone();
         let sync = sync.clone();
+        let screens = shared.screens.clone();
         Rc::new(move |cmd| {
             // Last-driven navigator = the inspector's "current".
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
+            let cmd = params_from_url(&screens, cmd);
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
@@ -2040,10 +2086,12 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         let channel = channel.clone();
         let base = base.clone();
         let sync = sync.clone();
+        let screens = shared.screens.clone();
         Rc::new(move |cmd| {
             // Last-driven navigator = the inspector's "current".
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
+            let cmd = params_from_url(&screens, cmd);
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);

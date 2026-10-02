@@ -18,6 +18,7 @@ runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
 # A host-function SDK: the remote `Snapshot` calls its `#[host_fn]`s.
 spike-camera = { path = "../camera" }
 

@@ -168,6 +168,23 @@ A remote component takes refs like any component (`text_input(..., bind = input)
 
 The app's entry goes when the bundle drops its handle, and in any case when the tree that made it unmounts. The decoded root owns its connection, so the handle lives exactly as long as the tree, whether or not the bundle releases it (it may keep it in a `Ref` slot, or have been stopped). `tests/remote_elements.rs` (`refs`) checks every method reaches the backend's handle in the same order as natively; `tests/remote_attr.rs` checks it over wasm.
 
+## Navigation
+
+A remote component can be a screen in the app's navigator, and navigate it. It gets the navigator's handle as a prop, as app screens do (`nav: Ref<StackHandle>`, `Ref<NavHandle>` or a `NavHandle`), and pushes, pops, selects and follows route links with typed routes, written exactly as natively:
+
+```rust
+#[component(remote)]
+pub fn Home(nav: Ref<StackHandle>) -> Element {
+    ui! { button(label = "open", on_click = move || if let Some(h) = nav.get() { h.push(&DETAIL, ItemId(7)) }) }
+}
+```
+
+- **Typed params cross as the url.** A route's params are values of the bundle's build of the type, which the app's navigator can't downcast, so a command crosses as its route name, url and query, and the navigator rebuilds the params from the url with the screen's own `from_segments` — exactly as for a deep link (`ParamsFromUrl`). The routes must be the same on both sides (one shared definition, as for any component).
+- **A `Ref` crosses as the ref.** A screen is built before its navigator fills the ref, so the app keeps its `Ref` in the handle table and reads it when the bundle navigates, as native code reads its ref at call time. Handing the ref on to an app component (a header's back button) gives that component the app's original `Ref`.
+- `StackHandle` / `SwapHandle` implement `NavHandleType`, which is what lets them cross.
+
+`tests/remote_attr.rs` (`a_remote_screen_navigates_the_apps_navigator`) runs it over wasm: a remote home screen in an app stack pushes `/items/7`, pops, follows a route link to `/items/9`, and hands its ref to an app component that pops.
+
 ## Calling native code: `#[host_fn]`
 
 A remote component calls native code through `#[host_fn]` (`stream-macros`). One definition, in a crate both builds see:
@@ -209,7 +226,7 @@ A bundle is built with `--cfg idealyst_stream_guest` (a build flag, not a cargo 
 - A component's `Owned` crosses as the app-side scope id it already is, and the app claims it (`runtime_world::remote::claim_scope`), so unmounting tears the bundle's state down like a native component's.
 - **Styles keep the app's theme.** Style rules cross with token names intact, so the app's theme resolves them. A stylesheet crosses as its shape, and the app rebuilds the same sheet with each closure calling back into the bundle. State, breakpoint and container overlays then work exactly as for a native sheet. Ids are refcounted, so a sheet shared by many nodes crosses once.
 - **App components are imported by name.** A bundle calls `remote::bundle::import("Card", &props, children)`; the app exports `Card` with `remote::host::register_import`. A bundle that needs a component the app doesn't export fails to decode with `MissingImport`, rather than rendering half a tree.
-- **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take (touch, wheel, hover, file drop, key, focus, blur, scroll, image load and error). Event handlers cross as callbacks whose event and reply are encoded; a stopped bundle's handlers answer the platform default. Everything else, and the field that doesn't cross yet (a `link`'s typed route), panics at encode, naming itself. `tests/remote_elements.rs` (`controls`) checks every one against the native build, handler by handler. The structural primitives cross too: `repeat`, `presence`, `portal` (viewport and named targets), `virtualizer` (including measured sizes and `item_diff`, whose snapshots stay in the bundle) and `virtual_grid`; their builders, sizes and keys are callbacks the app's backend calls, and `tests/remote_elements.rs` (`structural`) drives them the way a backend does.
+- **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take (touch, wheel, hover, file drop, key, focus, blur, scroll, image load and error). Event handlers cross as callbacks whose event and reply are encoded; a stopped bundle's handlers answer the platform default. Everything else panics at encode, naming itself. `tests/remote_elements.rs` (`controls`) checks every one against the native build, handler by handler. The structural primitives cross too: `repeat`, `presence`, `portal` (viewport and named targets), `virtualizer` (including measured sizes and `item_diff`, whose snapshots stay in the bundle) and `virtual_grid`; their builders, sizes and keys are callbacks the app's backend calls, and `tests/remote_elements.rs` (`structural`) drives them the way a backend does.
 
 What the tests prove (`remote_counter.rs`): the real `RemoteCounter`, written with `#[component]` and `ui!`, mounted from the bundle drives the app's backend through exactly the same calls as the native build, through mount, button presses (bundle state), a prop change and a context change (app state), and unmount. After unmount, no bundle callback or scope is left behind.
 
@@ -250,7 +267,7 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
 - **`#[component(remote)]` carries props, not context yet,** and has no manifest.
 - Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
-- **Not crossing yet:** navigators and route links. `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.
+- **Not crossing yet:** a navigator *defined in* a remote component (remote screens inside an app's navigator work; see [Navigation](#navigation)). `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **A poisoned bundle can keep running in one case.** If a host→bundle call made *from inside* a bundle call traps (a bundle calling `flush`, whose effects then panic), the outer bundle frame is still on the stack and resumes. Its later imports still reach the app's graph. Imports could refuse a poisoned bundle, at the cost of every import returning a `Result`.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.

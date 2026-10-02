@@ -41,7 +41,7 @@ pub use media::{IconPrim, ImagePrim, LinkPrim, RouteLink};
 pub use navigator::{
     LinkActivator, MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim,
     ParamsFromSegments, Screen, ScreenChrome, SelectArgs, StackNav, StackNavigatorPrim,
-    StackRetention, SwapNav, SwapNavigatorPrim,
+    StackRetention, SwapNav, SwapNavigatorPrim, NavHandleType, ParamsFromUrl,
 };
 pub use portal::{PortalPrim, ScreenNav};
 pub use presence::PresencePrim;
