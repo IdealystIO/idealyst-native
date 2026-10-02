@@ -517,7 +517,11 @@ pub fn crossing(ty: std::any::TypeId) -> Option<Crossing> {
         ),
         VirtualizerPrim => Crossing::Supported("virtualizer"),
         VirtualGridPrim => Crossing::Supported("virtual_grid"),
-        GraphicsPrim => Crossing::Unsupported("graphics", LATER),
+        GraphicsPrim => Crossing::Unsupported(
+            "graphics",
+            "it hands the author's code a native GPU surface, which a bundle — interpreted wasm — can't drive; \
+             draw in an app component and use it from the remote component",
+        ),
         PortalPrim => Crossing::Supported("portal"),
         PresencePrim => Crossing::Supported("presence"),
         StackNavigatorPrim => Crossing::Unsupported("stack navigator", LATER),
