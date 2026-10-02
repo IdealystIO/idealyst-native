@@ -137,7 +137,7 @@ mod theme_runtime;
 // install_idea_theme, …` keep compiling.
 pub use idea_theme::theme::{
     dark_theme, idea_color, idea_header, idea_theme_palette, install_idea_theme,
-    install_idea_theme_reactive, install_idea_theme_schemes, light_theme, set_idea_theme, Colors,
+    install_idea_theme_reactive, install_idea_theme_schemes, light_theme, set_idea_color_scheme, set_idea_theme, Colors,
     IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing,
 };
 // NB: `idea_theme::theme::Typography` (the typography *theme* struct) is
@@ -252,7 +252,7 @@ pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};
 pub use components::textarea::{Textarea, TextareaProps};
 pub use components::toast::{
-    dismiss_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,
+    dismiss_toast, push_standard_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,
     ToastEntry, ToastHost, ToastHostProps, ToastPlacement,
 };
 pub use components::typography::{Typography, TypographyProps};
@@ -280,3 +280,24 @@ pub use idea_theme::extensible::{
 pub use idea_theme::{app_theme, color_token, tone, variant};
 
 pub use stylesheets::TabPanel;
+
+// The host functions remote code calling idea-ui's global functions needs:
+// an app hosting remote components adds them to its allowlist
+// (`stream_host::remote::install_with(wasm, idea_ui::host_fns())`). A bundle
+// that calls one the app doesn't list is refused at load, naming it.
+runtime_vocabulary::__remote_guest_split! {
+    bundle: {}
+    app: {
+        runtime_vocabulary::__remote_enabled! {
+            /// idea-ui's host functions, for the app's allowlist: the theme
+            /// scheme switch and the toast queue.
+            pub fn host_fns() -> Vec<runtime_vocabulary::remote::HostFnDef> {
+                vec![
+                    idea_theme::theme::set_idea_color_scheme::export(),
+                    components::toast::push_standard_toast::export(),
+                    components::toast::dismiss_toast::export(),
+                ]
+            }
+        }
+    }
+}

@@ -32,7 +32,7 @@ use std::rc::{Rc, Weak};
 
 use runtime_world::remote::{EffectClass, GuestHooks, Handle, Host, HostOps, Id, StageMode, WorldId};
 use rustc_hash::FxHashMap;
-use stream_abi::host_fn::{HostFnDef, HostFnKind, HOST_FN_MODULE};
+use runtime_vocabulary::remote::host_fn::{HostFnDef, HostFnKind, HOST_FN_MODULE};
 use wasmi::{AsContextMut, Caller, Engine, ExternType, Linker, Memory, Module, Store, TypedFunc, Val, ValType};
 
 use crate::LoadError;
@@ -853,7 +853,7 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
             continue;
         }
         let name = import.name();
-        let Some((path, bundle_schema)) = stream_abi::host_fn::parse_import_name(name) else {
+        let Some((path, bundle_schema)) = runtime_vocabulary::remote::host_fn::parse_import_name(name) else {
             missing.push(name.to_string());
             continue;
         };
@@ -930,4 +930,18 @@ fn read_args(caller: &Caller<'_, KState>, params: &[Val]) -> Result<Vec<u8>, was
         .read(caller, ptr as usize, &mut buf)
         .map_err(|_| wasmi::Error::new(format!("bundle pointer {ptr}+{len} is out of bounds")))?;
     Ok(buf)
+}
+
+/// A host function declared with `stream-macros`' `#[host_fn]` (whose
+/// records are `stream-abi`'s, shared with model A), as the bridged loader
+/// takes it. The framework's `runtime_core::host_fn` gives these directly.
+pub fn bridged(def: stream_abi::host_fn::HostFnDef) -> HostFnDef {
+    HostFnDef {
+        path: def.path,
+        schema: def.schema,
+        kind: match def.kind {
+            stream_abi::host_fn::HostFnKind::Sync(f) => HostFnKind::Sync(f),
+            stream_abi::host_fn::HostFnKind::Async(f) => HostFnKind::Async(f),
+        },
+    }
 }

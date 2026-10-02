@@ -82,6 +82,7 @@ mod props_attr;
 mod reactivity;
 mod remote_component;
 mod remote_derive;
+mod host_fn;
 mod stylesheet;
 mod ui;
 mod ui_overlay;
@@ -373,6 +374,21 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 ///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
 /// }
 /// ```
+/// `#[host_fn]` — an app function remote code can call: the function in the
+/// app, a stub asking the app to run it in a remote bundle. Arguments and
+/// result cross as `RemoteValue`s. See `host_fn`.
+#[proc_macro_attribute]
+pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(proc_macro2::Span::call_site(), "#[host_fn] takes no arguments").to_compile_error().into();
+    }
+    let func = parse_macro_input!(item as syn::ItemFn);
+    match host_fn::expand(func) {
+        Ok(out) => out.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
 #[proc_macro_attribute]
 pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
     finish(props_attr::emit(item.into()))

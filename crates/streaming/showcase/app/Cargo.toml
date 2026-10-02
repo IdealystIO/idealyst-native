@@ -33,8 +33,6 @@ runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-shared = { workspace = true }
-stream-abi = { path = "../../abi" }
-stream-macros = { path = "../../macros" }
 stream-host = { path = "../../host" }
 
 [target.'cfg(target_os = "macos")'.dependencies]

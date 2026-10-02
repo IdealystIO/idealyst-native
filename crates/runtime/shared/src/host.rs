@@ -118,6 +118,7 @@ pub struct VirtualizerCallbacks<N: Clone + 'static> {
 /// `prefers-color-scheme` media query match). Apps should fall back
 /// to whichever theme they consider the default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorScheme {
     Light,
     Dark,

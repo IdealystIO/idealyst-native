@@ -22,7 +22,7 @@ use crate::kernel::KernelBundle;
 
 struct BundleLoader {
     /// The `#[host_fn]`s every bundle this loader loads may call.
-    host_fns: Vec<stream_abi::host_fn::HostFnDef>,
+    host_fns: Vec<runtime_vocabulary::remote::HostFnDef>,
     current: RefCell<Rc<KernelBundle>>,
     /// Bumped on reload. Created on first read, inside the app's world.
     generation: Cell<Option<Signal<u64>>>,
@@ -86,7 +86,7 @@ pub fn install(wasm: &[u8]) -> Result<RemoteApp, String> {
 /// [`install`], letting this and every later (reloaded) bundle call
 /// `host_fns` — the app's allowlist, `[my_sdk::take_photo::export(), …]`.
 /// A bundle calling anything else is refused at load, naming it.
-pub fn install_with(wasm: &[u8], host_fns: Vec<stream_abi::host_fn::HostFnDef>) -> Result<RemoteApp, String> {
+pub fn install_with(wasm: &[u8], host_fns: Vec<runtime_vocabulary::remote::HostFnDef>) -> Result<RemoteApp, String> {
     let bundle = KernelBundle::load_with(&engine(), wasm, &host_fns).map_err(|e| e.to_string())?;
     let loader = Rc::new(BundleLoader {
         host_fns,

@@ -37,10 +37,9 @@
 use std::rc::Rc;
 
 use idea_ui::{tone, typography_kind, Badge, Button, Card, IdeaThemeRef, Slider, Switch, Typography};
-use runtime_core::{component, rx, signal, ui, Element, ReadSignal, Remote, Signal};
+use runtime_core::{component, host_fn, rx, signal, ui, Element, ReadSignal, Remote, Signal};
 use runtime_shared::primitives::navigator::{Route, RouteParams};
 use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
-use stream_macros::host_fn;
 
 // ===========================================================================
 // Shared by both builds: routes, data, context, host functions, styles
@@ -245,6 +244,13 @@ pub fn FeedScreen() -> Element {
                 view(style = Banner()) {
                     text(style = BannerText()) { "This banner's colors are the app's theme tokens, named by the bundle's own stylesheet." }
                 }
+                // The APP's theme and toast queue, switched from remote code:
+                // idea-ui's global functions are `#[host_fn]`s.
+                view(style = StyleRules { flex_direction: Some(runtime_shared::FlexDirection::Row), gap: px(8.0), ..StyleRules::default() }) {
+                    Button(label = "☀ Light".to_string(), on_click = handler(|| idea_ui::set_idea_color_scheme(runtime_core::ColorScheme::Light)), tone = tone::Neutral)
+                    Button(label = "☾ Dark".to_string(), on_click = handler(|| idea_ui::set_idea_color_scheme(runtime_core::ColorScheme::Dark)), tone = tone::Neutral)
+                    Button(label = "Toast".to_string(), on_click = handler(|| { idea_ui::push_toast("Hello from the bundle", tone::Success); }), tone = tone::Neutral)
+                }
                 Badge(label = format!("running on {device}"), tone = tone::Info)
                 text(style = Muted()) { move || format!("density: {}", if compact.is_some_and(|c| c.get()) { "compact" } else { "comfortable" }) }
                 for (post, like) in POSTS.iter().zip(likes) {
@@ -384,6 +390,7 @@ mod app {
 
     use super::*;
     use runtime_vocabulary::builders::{button, navigator_outlet, swap_navigator, text, view};
+    use idea_ui::{ToastHost, ToastPlacement};
     use runtime_vocabulary::prims::SwapNav;
     use stream_host::remote::RemoteApp;
 
@@ -394,8 +401,12 @@ mod app {
     pub(crate) const REVIEW_DELAY_MS: i32 = 700;
 
     /// What remote code may call.
-    pub fn host_fns() -> Vec<stream_abi::host_fn::HostFnDef> {
-        vec![device_name::export(), fetch_reviews::export()]
+    pub fn host_fns() -> Vec<runtime_vocabulary::remote::HostFnDef> {
+        let mut fns = vec![device_name::export(), fetch_reviews::export()];
+        // What remote code calling idea-ui's global functions needs
+        // (`set_idea_color_scheme`, `push_toast`, …).
+        fns.extend(idea_ui::host_fns());
+        fns
     }
 
     thread_local! {
@@ -452,8 +463,7 @@ mod app {
     pub fn App() -> Element {
         // idea-ui's theme lives in the app: the components the bundle
         // imports render here, natively, against it.
-        idea_ui::install_idea_theme(idea_ui::light_theme());
-        let dark = signal(false);
+        idea_ui::install_idea_theme_schemes(idea_ui::light_theme(), idea_ui::dark_theme());
         let compact = signal(false);
         let cart = signal(0u32);
         let status = signal(format!("built-in bundle ({} KB)", BUILT_IN.len() / 1024));
@@ -500,26 +510,26 @@ mod app {
                             .build(),
                     )
                     .child(navigator_outlet().build())
+                    // The app's toast queue — where `push_toast` from remote
+                    // code lands too.
+                    .child(ui! { ToastHost(placement = ToastPlacement::BottomCenter) })
                     .build()
             })
             .screen(FEED, |()| ui! { FeedScreen() })
             .screen(SHOP, move |()| ui! { ShopNavigator(cart = cart) })
-            .screen(SETTINGS, move |()| settings(dark, compact, cart))
+            .screen(SETTINGS, move |()| settings(compact, cart))
             .build()
     }
 
     /// Native settings: the idea theme every screen follows (remote ones
     /// through their token stylesheets), and the `FeedPrefs` the feed reads.
-    fn settings(dark: Signal<bool>, compact: Signal<bool>, cart: Signal<u32>) -> Element {
-        let toggle_dark = move || {
-            dark.update(|d| !d);
-            idea_ui::set_idea_theme(if dark.get() { idea_ui::dark_theme() } else { idea_ui::light_theme() });
-        };
+    fn settings(compact: Signal<bool>, cart: Signal<u32>) -> Element {
         ui! {
             scroll_view(style = Page()) {
                 view(style = column(10.0)) {
                     text(style = Heading()) { "Settings — native" }
-                    button(label = move || format!("Dark theme: {}", if dark.get() { "on" } else { "off" }), on_click = toggle_dark)
+                    button(label = "Light theme", on_click = || idea_ui::set_idea_color_scheme(runtime_core::ColorScheme::Light))
+                    button(label = "Dark theme", on_click = || idea_ui::set_idea_color_scheme(runtime_core::ColorScheme::Dark))
                     button(label = move || format!("Compact feed: {}", if compact.get() { "on" } else { "off" }), on_click = move || compact.update(|c| !c))
                     Card() {
                         Typography(content = "Cart".to_string(), kind = typography_kind::H3)

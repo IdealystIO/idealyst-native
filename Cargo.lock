@@ -9811,9 +9811,7 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "stream-abi",
  "stream-host",
- "stream-macros",
 ]
 
 [[package]]
@@ -9826,8 +9824,6 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "stream-abi",
- "stream-macros",
 ]
 
 [[package]]

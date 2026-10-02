@@ -41,7 +41,7 @@
 #![cfg_attr(idealyst_stream_guest, allow(dead_code, unused_imports))]
 
 use runtime_core::{component, signal, ui, Element, ReadSignal, Signal};
-use stream_macros::host_fn;
+use runtime_core::host_fn;
 
 /// A host function: native code the remote component calls. In the app
 /// this is the function as written; in the bundle, a stub that asks the app

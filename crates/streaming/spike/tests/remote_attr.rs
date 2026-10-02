@@ -293,10 +293,14 @@ fn reloading_after_a_panic_recovers() {
 
 use spike_remoteattr::Snapshot;
 
-/// The app's allowlist of host functions bundles may call.
-fn camera() -> Vec<stream_abi::host_fn::HostFnDef> {
-    vec![spike_camera::battery_level::export(), spike_camera::take_photo::export()]
+/// The app's allowlist of host functions bundles may call. The camera SDK
+/// uses `stream-macros`' `#[host_fn]` (it is shared with model A), so its
+/// records go through `bridged`.
+fn camera() -> Vec<runtime_vocabulary::remote::HostFnDef> {
+    vec![bridged(spike_camera::battery_level::export()), bridged(spike_camera::take_photo::export())]
 }
+
+use stream_host::kernel::bridged;
 
 fn snapshot_tree(a: &App) -> Element {
     a.h.world.enter(|| ui! { Snapshot() })
@@ -329,7 +333,7 @@ fn a_remote_component_calls_sync_and_async_host_functions() {
 /// load, naming it — before any of its code runs.
 #[test]
 fn a_bundle_calling_an_unlisted_host_function_is_refused_at_load() {
-    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export()])
+    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![bridged(spike_camera::battery_level::export())])
         .err()
         .expect("refused");
     assert!(err.contains("spike_camera::take_photo") && !err.contains("battery_level"), "{err}");
@@ -339,9 +343,9 @@ fn a_bundle_calling_an_unlisted_host_function_is_refused_at_load() {
 /// refused at load too.
 #[test]
 fn a_host_function_with_a_changed_signature_is_refused_at_load() {
-    let mut drifted = spike_camera::take_photo::export();
+    let mut drifted = bridged(spike_camera::take_photo::export());
     drifted.schema ^= 1;
-    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export(), drifted])
+    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![bridged(spike_camera::battery_level::export()), drifted])
         .err()
         .expect("refused");
     assert!(err.contains("spike_camera::take_photo"), "{err}");

@@ -192,7 +192,7 @@ A prop type with no `ImportArg` doesn't stop anything compiling: it fails by nam
 
 **Crossing by key** is the rule for components ("not remote = in the app") applied to the other things a library defines. A type marks itself with `runtime_vocabulary::__remote_keyed!(MoodRef, |v| v.0.key())`, and each value registers with `__remote_key!(MoodRef, |v| v.0.key(), MoodRef(Rc::new(Loud)))` — a link-time table (`remote::host::KEYED`), like `APP_COMPONENTS`. idea-theme does both: its five ref types are keyed, and every built-in marker, every `tone!` / `variant!` an app declares, and idea-ui's card variants register themselves (`idea_theme::__remote_marker!`). A hand-written `impl Tone for X` in an app needs that one line too. All of it expands to nothing unless the app hosts remote components.
 
-**idea-ui works as a remote component library** with no change to its components. `spike/ideaui` uses every one of them from remote code — layout, text and status, actions, forms, dates, navigation, overlays (tooltip, a popover and a menu anchored to a `Button`'s ref, a modal, the toast host), data — and `tests/idea_ui.rs` checks each area against the same tree rendered in-process: the tree, the handle methods the components call, and what a press does to the backend. idea-ui's part: `#[derive(Remote)]` on ~30 value types, keyed token refs, and `#[props]` on its two field-less props structs. Still open: idea-ui's global functions (`push_toast`, `set_theme`, `active_theme`) run inside the bundle against the bundle's own state — a toast remote code pushes never reaches the app's `ToastHost` (checked) — so they either forward to the app or are app-only.
+**idea-ui works as a remote component library** with no change to its components. `spike/ideaui` uses every one of them from remote code — layout, text and status, actions, forms, dates, navigation, overlays (tooltip, a popover and a menu anchored to a `Button`'s ref, a modal, the toast host), data — and `tests/idea_ui.rs` checks each area against the same tree rendered in-process: the tree, the handle methods the components call, and what a press does to the backend. idea-ui's part: `#[derive(Remote)]` on ~30 value types, keyed token refs, and `#[props]` on its two field-less props structs. idea-ui's global functions that change app state are host functions (below): remote code's `push_toast` lands on the app's toast queue, and `set_idea_color_scheme` switches the app's theme.
 
 **Promotion.** A bundle-created signal keeps its value in the bundle until the bundle hands it to native code. Then the app's prop decoder (which knows `T`) takes the value over: the slot keeps its subscribers and the bundle keeps its handle, but the value is now a real `SignalData<T>` in the app's arena, and the bundle reads and writes it the way it does any app signal. Native code reads it at native speed; a memo's output promotes too, and its derivation keeps writing the native value. It is two-phase (`GuestHooks::promote` / `promote_finish`), so a value the app can't decode leaves the bundle untouched. The native slot holds a `Promoted<T>` whose `as_any_mut` returns the inner `SignalData<T>`, so every native read, write and commit runs unchanged code — measured on the shipped profiles: no regression with `bridge` on or off.
 
@@ -222,7 +222,7 @@ Fields cross like a remote component's props: a `ReadSignal` / `Signal` as a han
 
 A stylesheet doesn't read a theme value. In `stylesheet! { pub Banner<IdeaThemeRef> { base(t) { background: t.intent.primary.solid_bg() } } }`, `t` is a namespace of token NAMES (`intent-primary-solid-bg`); values come from the token registry at resolve time, which `install_idea_theme` / `set_idea_theme` write. So a stylesheet in remote code needs nothing from the app: it runs in the bundle, the token names cross with its rules, and the app resolves them against its installed theme — following a theme swap exactly as native code does. `tests/idea_ui.rs` (`a_bundles_own_stylesheet_uses_the_apps_theme_tokens`) mounts remote code's own token sheets on plain primitives, swaps light → dark in the app, and checks the resolved colors against the same tree in-process. The showcase's feed does the same on screen (Settings → Dark theme).
 
-Code that reads the active theme object directly (`active_theme()`, an idea-theme `Variant::render`) runs wherever it's called: inside idea-ui's components that is the app; called from remote code, it would see the bundle's own (empty) copy — the same open question as `push_toast`.
+Code that reads the active theme object directly (`active_theme()`, an idea-theme `Variant::render`) runs wherever it's called: inside idea-ui's components that is the app; called from remote code, it sees the bundle's own (empty) copy. Remote code CHANGES the theme through a host function: `idea_ui::set_idea_color_scheme(ColorScheme::Dark)` switches the app between the light/dark pair it installed (`install_idea_theme_schemes`). A whole theme can't be an argument — it's code, not data — so the app owns the themes and remote code picks one.
 
 ## Navigation
 
@@ -252,22 +252,24 @@ pub fn Home(nav: Ref<StackHandle>) -> Element {
 
 ## Calling native code: `#[host_fn]`
 
-A remote component calls native code through `#[host_fn]` (`stream-macros`). One definition, in a crate both builds see:
+Remote code calls native code through `#[host_fn]` (`runtime_core::host_fn`). One definition, in a crate both builds see — an app, or a library:
 
 ```rust
 #[host_fn]
-pub fn battery_level() -> f64 { … }
+pub fn device_name() -> String { … }
 #[host_fn]
-pub async fn take_photo(opts: PhotoOptions) -> Result<Photo, CameraError> { … }
+pub async fn fetch_reviews(product: u32) -> Vec<String> { … }
 ```
 
-In the app it is the function as written. In a bundle it becomes a stub that asks the app to run it: a sync call answers inline, and an async one returns a future (`runtime_vocabulary::remote::bundle::HostFuture`) that the framework's own `spawn_then` drives, the same call shape as natively. The app runs the real future on its own executor and delivers the result to the bundle as a one-shot callback. Inside the bundle a small executor (`remote::wasm`, installed at load) polls the futures as results arrive.
+In the app it is the function as written. In a bundle it becomes a stub that asks the app to run it: a sync call answers inline, and an async one returns a future (`runtime_vocabulary::remote::bundle::HostFuture`) that the framework's own `spawn_then` drives, the same call shape as natively. The app runs the real future on its own executor and delivers the result to the bundle as a one-shot callback. Arguments and results cross as `RemoteValue`s — plain data, including values that cross by key (an idea-theme `ToneRef`). The choice of build goes through the vocabulary, so a library using it declares no cfg, and an app without remote components gets only the function.
 
-The app lists what bundles may call: `stream_host::remote::install_with(wasm, vec![take_photo::export(), …])`. A bundle that calls anything else is refused at load with `MissingHostFunctions`, naming it; one whose signature changed since the app was built (the import name carries a fingerprint of the signature) with `IncompatibleHostFunctions`. A result that arrives after its bundle was stopped is dropped.
+The app lists what bundles may call: `stream_host::remote::install_with(wasm, vec![device_name::export(), …])`. A bundle that calls anything else is refused at load with `MissingHostFunctions`, naming it; one whose signature changed since the app was built (the import name carries a fingerprint of the signature) with `IncompatibleHostFunctions`. A result that arrives after its bundle was stopped is dropped.
 
-Plain functions are always compiled into the bundle; only `#[host_fn]` crosses to the app. `example` has one (`os_name`); `tests/remote_attr.rs` covers sync, async, the load-time refusals and a result for a stopped bundle.
+**Libraries' global functions.** A function that changes the APP's state has to be a host function, or remote code changes the bundle's own copy of that state. idea-ui's are: `set_idea_color_scheme` (the theme), `push_standard_toast` (what `push_toast` / `push_toast_with` call, with a concrete signature) and `dismiss_toast`. An app adds them all with `idea_ui::host_fns()`. The showcase's feed switches the app's theme and pushes a toast from the bundle; `showcase/app/tests/flow.rs` checks both land in the app (and was checked to fail with the functions run bundle-side). Toasts built from closures (`Toast` with an `action`, `push_toast_node`) aren't data, so they stay on whichever side builds them.
 
-Model A bundles build with an extra `--cfg idealyst_stream_model_a` (in their own target dir) and keep model A's stub.
+Plain functions are always compiled into the bundle; only `#[host_fn]` crosses to the app. `tests/remote_attr.rs` covers sync, async, the load-time refusals and a result for a stopped bundle.
+
+`stream-macros` keeps its own `#[host_fn]` for model A (whose bundles use `stream-abi`'s codec and build with an extra `--cfg idealyst_stream_model_a`); a bridged app takes its records through `stream_host::kernel::bridged`.
 
 ## Panics in a bundle
 

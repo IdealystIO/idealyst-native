@@ -87,7 +87,23 @@ fn the_showcase_runs_its_remote_screens() {
     r.press("♥ 0");
     assert!(r.sees("♥ 1"), "{}", r.screen());
 
-    // Settings (native) drives the Theme the feed reads live.
+    // Remote code switches the APP's theme and pushes onto the APP's toast
+    // queue: idea-ui's global functions are host functions.
+    let background = |r: &Run| {
+        r.h.world.enter(|| runtime_shared::Tokenized::<runtime_shared::Color>::token("color-background", runtime_shared::Color("unset".into())).resolve().0)
+    };
+    let light_bg = background(&r);
+    r.press("☾ Dark");
+    let dark_bg = background(&r);
+    assert_ne!(light_bg, dark_bg, "the bundle's Dark button didn't switch the app's theme");
+    assert_eq!(dark_bg, "#0a0e17", "the app's dark theme is active");
+    r.press("☀ Light");
+    assert_eq!(background(&r), light_bg, "and back to light");
+    assert!(!r.sees("Hello from the bundle"));
+    r.press("Toast");
+    assert!(r.sees("Hello from the bundle"), "the bundle's toast reached the app's ToastHost:\n{}", r.screen());
+
+    // Settings (native) drives the FeedPrefs the feed reads live.
     r.press("Settings");
     assert!(r.sees("Settings — native"), "{}", r.screen());
     r.press("Compact feed: off");

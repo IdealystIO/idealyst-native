@@ -56,6 +56,8 @@ pub mod bundle;
 pub mod handles;
 #[cfg(not(idealyst_stream_guest))]
 pub mod host;
+pub mod host_fn;
+pub use host_fn::HostFnDef;
 /// The bundle half's wasm exports.
 #[cfg(idealyst_stream_guest)]
 pub mod wasm;
@@ -859,6 +861,7 @@ remote_value!(
     runtime_shared::primitives::key::KeyOutcome,
     runtime_shared::primitives::image::ImageLoadEvent,
     runtime_shared::touch::TouchPoint,
+    runtime_shared::host::ColorScheme,
 );
 
 /// `ImportArg` + `RemoteProp` for a type that is a [`RemoteValue`]: it
@@ -1639,28 +1642,53 @@ macro_rules! __remote_props_receive {
 macro_rules! __remote_keyed {
     ($ty:ty, |$v:ident| $key:expr) => {
         impl $crate::remote::ImportArg for $ty {
-            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
-            fn send(self, out: &mut ::std::vec::Vec<u8>) {
-                let $v = &self;
+            $crate::__remote_bundle_code! {
+                fn send(self, out: &mut ::std::vec::Vec<u8>) {
+                    $crate::remote::RemoteValue::encode(&self, out)
+                }
+            }
+            $crate::__remote_app_code! {
+                fn receive(
+                    input: &mut &[u8],
+                    _cx: &$crate::remote::host::ImportCx,
+                ) -> ::core::result::Result<Self, ::std::string::String> {
+                    <$ty as $crate::remote::RemoteValue>::decode(input)
+                }
+            }
+        }
+        /// As plain data (a host function's argument): the key; only the
+        /// app, which holds the registry, can decode it.
+        impl $crate::remote::RemoteValue for $ty {
+            fn encode(&self, out: &mut ::std::vec::Vec<u8>) {
+                let $v = self;
                 let key: &str = $key;
                 $crate::remote::__send_value(&key, out)
             }
-            #[cfg(not(idealyst_stream_guest))]
-            fn receive(
-                input: &mut &[u8],
-                _cx: &$crate::remote::host::ImportCx,
-            ) -> ::core::result::Result<Self, ::std::string::String> {
+            fn decode(input: &mut &[u8]) -> ::core::result::Result<Self, ::std::string::String> {
                 let key: ::std::string::String = $crate::remote::__try_receive_value(input)?;
-                $crate::remote::host::by_key::<$ty>(&key).ok_or_else(|| {
-                    ::std::format!(
-                        "the app has no `{}` with key `{}` (a remote bundle can only name ones the app defines)",
-                        ::core::any::type_name::<$ty>(),
-                        key
-                    )
-                })
+                $crate::remote::__by_key::<$ty>(&key)
             }
         }
     };
+}
+
+/// The app's value of `T` registered under `key`; a bundle has no registry
+/// (values cross by key only to the app).
+#[doc(hidden)]
+pub fn __by_key<T: 'static>(key: &str) -> Result<T, String> {
+    #[cfg(not(idealyst_stream_guest))]
+    {
+        host::by_key::<T>(key).ok_or_else(|| {
+            format!(
+                "the app has no `{}` with key `{key}` (a remote bundle can only name ones the app defines)",
+                std::any::type_name::<T>()
+            )
+        })
+    }
+    #[cfg(idealyst_stream_guest)]
+    {
+        Err(format!("a `{}` crosses by key only to the app (`{key}`)", std::any::type_name::<T>()))
+    }
 }
 
 /// Register `$value` (an expression building it) as the app's `$ty` under

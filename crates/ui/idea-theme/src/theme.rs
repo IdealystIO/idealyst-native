@@ -35,6 +35,10 @@ thread_local! {
     /// the caller. Single-slot, so repeated installs supersede rather than
     /// leak — same posture as `theme_runtime::INSTALL_THEMES_KEEPALIVE`.
     static REACTIVE_THEME_KEEPALIVE: RefCell<Option<Subscription>> = const { RefCell::new(None) };
+
+    /// The light/dark pair [`install_idea_theme_schemes`] installed, for
+    /// [`set_idea_color_scheme`] to switch between.
+    static SCHEMES: RefCell<Option<(Rc<dyn IdeaTheme>, Rc<dyn IdeaTheme>)>> = const { RefCell::new(None) };
 }
 
 /// The default body font for every idea-ui text surface.
@@ -1103,6 +1107,30 @@ pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(theme);
 }
 
+/// Switch the app between its light and dark themes — the pair
+/// [`install_idea_theme_schemes`] installed, or idea's built-in
+/// [`light_theme`] / [`dark_theme`] if the app installed none. `Auto`
+/// follows the platform's preference.
+///
+/// A `#[host_fn]`: remote code calling it switches the APP's theme (a theme
+/// is the app's state; the bundle has none of its own), which every screen
+/// follows, remote ones through their token stylesheets.
+#[runtime_core::host_fn]
+pub fn set_idea_color_scheme(scheme: runtime_core::ColorScheme) {
+    let dark = match scheme {
+        runtime_core::ColorScheme::Dark => true,
+        runtime_core::ColorScheme::Light => false,
+        runtime_core::ColorScheme::Auto => matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark),
+    };
+    let installed = SCHEMES.with(|s| s.borrow().as_ref().map(|(l, d)| if dark { d.clone() } else { l.clone() }));
+    let theme = match installed {
+        Some(theme) => IdeaThemeRef::from_rc(theme),
+        None => IdeaThemeRef::new(if dark { dark_theme() } else { light_theme() }),
+    };
+    sync_default_text_font(&theme);
+    set_theme(theme);
+}
+
 /// Describe one switchable palette to the framework WITHOUT installing
 /// it — its token set plus the name and system preference it answers to.
 ///
@@ -1160,6 +1188,7 @@ pub fn idea_theme_palette<T: IdeaTheme>(
 /// inline `<head>` script; the emitted CSS already answers to it. Keeping
 /// that attribute in sync with later toggles is the app's job.
 pub fn install_idea_theme_schemes<T: IdeaTheme + Clone>(light: T, dark: T) {
+    SCHEMES.with(|s| *s.borrow_mut() = Some((Rc::new(light.clone()), Rc::new(dark.clone()))));
     let prefers_dark = matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
     let active = if prefers_dark { dark.clone() } else { light.clone() };
     install_idea_theme(active);
