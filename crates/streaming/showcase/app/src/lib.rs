@@ -7,9 +7,9 @@
 //! | Piece | Where | Shows |
 //! |---|---|---|
 //! | Tab shell (`App`, a swap navigator) | app | native code hosting remote screens |
-//! | `FeedScreen` | bundle | remote screen, bundle state, app context, a sync `#[host_fn]` |
+//! | `FeedScreen` | bundle | remote screen, its own stylesheets over idea's theme tokens, bundle state, app context, a sync `#[host_fn]` |
 //! | `ShopNavigator` | bundle | a navigator DEFINED in the bundle: typed routes, route links, screen options in its header, an async `#[host_fn]`, writing the app's cart |
-//! | `Settings` | app | native controls for the `Theme` the remote screens read live |
+//! | `Settings` | app | native controls: the idea theme (light/dark) every screen follows, and the `FeedPrefs` context the feed reads |
 //! | idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses — imported from the app, not bundled |
 //!
 //! The rules on display:
@@ -18,7 +18,11 @@
 //!   is an import of the app's copy, which renders natively with the app's
 //!   theme. Bundle-only helpers are plain functions (`product_list`, …).
 //! - App state crosses as props (`cart: Signal<u32>` — the bundle writes the
-//!   app's signal) and as `#[remote_context]` context (`Theme`).
+//!   app's signal) and as context (`FeedPrefs`, which derives `Remote`).
+//! - Theming is NOT context: stylesheets name the theme's tokens
+//!   (`t.color.background()`), the names cross, and the app resolves them
+//!   against its installed theme — so a theme swap restyles remote screens
+//!   exactly as native ones.
 //! - Native code the bundle calls is a `#[host_fn]`.
 //!
 //! Live reload: `cargo run --release -p stream-spike --bin stream-serve`,
@@ -28,14 +32,14 @@
 // And in an app build the remote bodies are compiled out (the bundle has
 // them), so the helpers only they call — `product_list`, `price`, … — are
 // dead here. `--features inline` compiles the bodies in and uses them.
-#![cfg_attr(not(any(idealyst_stream_guest, feature = "inline")), allow(dead_code))]
+#![cfg_attr(not(any(idealyst_stream_guest, feature = "inline")), allow(dead_code, unused_imports))]
 
 use std::rc::Rc;
 
-use idea_ui::{tone, typography_kind, Badge, Button, Card, Slider, Switch, Typography};
-use runtime_core::{component, remote_context, rx, signal, ui, Element, ReadSignal, Signal};
+use idea_ui::{tone, typography_kind, Badge, Button, Card, IdeaThemeRef, Slider, Switch, Typography};
+use runtime_core::{component, rx, signal, ui, Element, ReadSignal, Remote, Signal};
 use runtime_shared::primitives::navigator::{Route, RouteParams};
-use runtime_shared::{Color, Length, StyleRules, Tokenized};
+use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
 use stream_macros::host_fn;
 
 // ===========================================================================
@@ -94,12 +98,11 @@ pub const POSTS: &[Post] = &[
     Post { title: "Field report", body: "Three days on the ridge with nothing but a notebook." },
 ];
 
-/// The app's theme. Marked `#[remote_context]`, so remote screens read it
-/// with a plain `inject` — the accent and the density live, as signals.
-#[remote_context]
-#[derive(Clone)]
-pub struct Theme {
-    pub accent: ReadSignal<String>,
+/// App state remote screens read as context: it derives `Remote`, so the
+/// feed reads it with a plain `inject` — the density live, as a signal.
+/// (Not the theme: that's tokens; see the stylesheets below.)
+#[derive(Clone, Remote)]
+pub struct FeedPrefs {
     pub compact: ReadSignal<bool>,
 }
 
@@ -154,11 +157,70 @@ fn screen_fill() -> StyleRules {
     }
 }
 
-/// A theme-colored style, following the app's accent live.
-fn accented(theme: Option<Theme>) -> impl Fn() -> Rc<StyleRules> {
-    move || {
-        let accent = theme.as_ref().map(|t| t.accent.get()).unwrap_or_else(|| "#444444".into());
-        Rc::new(StyleRules { color: color(&accent), ..StyleRules::default() })
+// Stylesheets over idea's theme tokens, used by remote and native screens
+// alike. Each names tokens (`t.color.background()` → `color-background`);
+// the app resolves them against its installed theme, so `set_idea_theme`
+// restyles every screen, remote ones included.
+
+runtime_core::stylesheet! {
+    /// A screen root: fills its parent, painted with the theme's page color.
+    pub Page<IdeaThemeRef> {
+        base(t) {
+            width: Length::pct(100.0),
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            flex_basis: 0.0,
+            min_height: 0.0,
+            background: t.color.background(),
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    /// Plain text in the theme's text color.
+    pub Body<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text(),
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    /// Secondary text.
+    pub Muted<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text_muted(),
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    /// A heading in the primary intent's foreground.
+    pub Heading<IdeaThemeRef> {
+        base(t) {
+            color: t.intent.primary.fg(),
+            font_weight: FontWeight::Bold,
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    /// A primary-filled banner.
+    pub Banner<IdeaThemeRef> {
+        base(t) {
+            background: t.intent.primary.solid_bg(),
+            padding: t.spacing.md(),
+            border_radius: t.radius.md(),
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    /// Text on a `Banner`.
+    pub BannerText<IdeaThemeRef> {
+        base(t) {
+            color: t.intent.primary.solid_text(),
+        }
     }
 }
 
@@ -166,21 +228,25 @@ fn accented(theme: Option<Theme>) -> impl Fn() -> Rc<StyleRules> {
 // Remote components — shipped in the bundle
 // ===========================================================================
 
-/// The feed tab. Bundle state (likes), app context (`Theme`), a sync host
-/// function (`device_name`), idea-ui components from the app.
+/// The feed tab. Its own stylesheets over idea's theme tokens (the app's
+/// light/dark switch restyles it), bundle state (likes), app context
+/// (`FeedPrefs`), a sync host function (`device_name`), idea-ui components
+/// from the app.
 #[component(remote)]
 pub fn FeedScreen() -> Element {
-    let theme = runtime_world::inject::<Theme>();
-    let compact = theme.as_ref().map(|t| t.compact);
+    let prefs = runtime_world::inject::<FeedPrefs>();
+    let compact = prefs.map(|p| p.compact);
     let device = device_name();
     let likes: Vec<Signal<u32>> = POSTS.iter().map(|_| signal(0)).collect();
-    let heading = accented(theme.clone());
     ui! {
-        scroll_view(style = screen_fill()) {
+        scroll_view(style = Page()) {
             view(style = column(10.0)) {
-                text(style = heading) { "Feed — rendered by the bundle" }
+                text(style = Heading()) { "Feed — rendered by the bundle" }
+                view(style = Banner()) {
+                    text(style = BannerText()) { "This banner's colors are the app's theme tokens, named by the bundle's own stylesheet." }
+                }
                 Badge(label = format!("running on {device}"), tone = tone::Info)
-                text { move || format!("density: {}", if compact.is_some_and(|c| c.get()) { "compact" } else { "comfortable" }) }
+                text(style = Muted()) { move || format!("density: {}", if compact.is_some_and(|c| c.get()) { "compact" } else { "comfortable" }) }
                 for (post, like) in POSTS.iter().zip(likes) {
                     Card() {
                         Typography(content = post.title.to_string(), kind = typography_kind::H3)
@@ -210,12 +276,12 @@ pub fn ShopNavigator(cart: Signal<u32>) -> Element {
             let nav = runtime_world::inject::<StackNav>().expect("StackNav in the shop's layout");
             let (back, chrome, pop) = (nav.can_go_back, nav.screen_chrome, nav.pop.clone());
             view()
-                .style(StyleRules { background: color("#eef2ff"), ..StyleRules { gap: px(4.0), ..screen_fill() } })
+                .style(Page())
                 .child(
                     view()
                         .style(column(4.0))
                         .child(button().label("‹ Back").disabled(move || !back.get()).on_press(move || pop()))
-                        .child(text().content(move || {
+                        .child(text().style(Body()).content(move || {
                             let title = chrome.get().options.as_ref().and_then(|o| o.downcast_ref::<ScreenTitle>().map(|t| t.0)).unwrap_or("Shop");
                             format!("{title}   ·   cart: {}", cart.get())
                         }))
@@ -256,7 +322,7 @@ fn product_list() -> Element {
         })
         .collect();
     ui! {
-        scroll_view(style = screen_fill()) {
+        scroll_view(style = Page()) {
             view(style = column(8.0)) {
                 rows
             }
@@ -267,8 +333,8 @@ fn product_list() -> Element {
 fn product_detail(id: u32, cart: Signal<u32>) -> Element {
     let Some(p) = product(id) else {
         return ui! {
-            view(style = screen_fill()) {
-                text { "No such product" }
+            view(style = Page()) {
+                text(style = Body()) { "No such product" }
             }
         };
     };
@@ -281,19 +347,19 @@ fn product_detail(id: u32, cart: Signal<u32>) -> Element {
     // An async host function: the app fetches, the bundle applies.
     runtime_core::spawn_then(fetch_reviews(id), move |r| reviews.set(Some(r)));
     ui! {
-        scroll_view(style = screen_fill()) {
+        scroll_view(style = Page()) {
             view(style = column(10.0)) {
                 Card() {
                     Typography(content = p.name.to_string(), kind = typography_kind::H2)
                     Typography(content = p.blurb.to_string())
                     Typography(content = price(p.price_cents), muted = true)
                 }
-                text { move || format!("Quantity: {}", qty.get() as u32) }
+                text(style = Body()) { move || format!("Quantity: {}", qty.get() as u32) }
                 Slider(value = rx!(qty.get()), on_change = on_qty, min = 1.0, max = 5.0, step = 1.0)
-                text { move || format!("Gift wrap: {}", if gift.get() { "yes" } else { "no" }) }
+                text(style = Body()) { move || format!("Gift wrap: {}", if gift.get() { "yes" } else { "no" }) }
                 Switch(value = gift, on_change = on_gift, label = "Gift wrap".to_string())
                 Button(label = "Add to cart".to_string(), on_click = add_to_cart, tone = tone::Primary)
-                text { move || match reviews.get() {
+                text(style = Muted()) { move || match reviews.get() {
                     None => "Loading reviews…".to_string(),
                     Some(r) => format!("Reviews: {}", r.join("  ")),
                 } }
@@ -387,11 +453,11 @@ mod app {
         // idea-ui's theme lives in the app: the components the bundle
         // imports render here, natively, against it.
         idea_ui::install_idea_theme(idea_ui::light_theme());
-        let accent = signal("#2563eb".to_string());
+        let dark = signal(false);
         let compact = signal(false);
         let cart = signal(0u32);
         let status = signal(format!("built-in bundle ({} KB)", BUILT_IN.len() / 1024));
-        runtime_world::provide(Theme { accent: accent.read_only(), compact: compact.read_only() });
+        runtime_world::provide(FeedPrefs { compact: compact.read_only() });
         swap_navigator(&FEED)
             .layout(move || {
                 let nav = runtime_world::inject::<SwapNav>().expect("SwapNav in the shell");
@@ -408,7 +474,13 @@ mod app {
                 view()
                     .style(|| {
                         let ins = runtime_core::safe_area_insets().get();
-                        Rc::new(StyleRules { padding_bottom: px(ins.bottom), ..screen_fill() })
+                        // The home-indicator strip shows the theme's page
+                        // color too (a token, like the screens' sheets).
+                        Rc::new(StyleRules {
+                            padding_bottom: px(ins.bottom),
+                            background: Some(Tokenized::token("color-background", Color("#f6f7f9".into()))),
+                            ..screen_fill()
+                        })
                     })
                     .child(
                         view()
@@ -432,24 +504,26 @@ mod app {
             })
             .screen(FEED, |()| ui! { FeedScreen() })
             .screen(SHOP, move |()| ui! { ShopNavigator(cart = cart) })
-            .screen(SETTINGS, move |()| settings(accent, compact, cart))
+            .screen(SETTINGS, move |()| settings(dark, compact, cart))
             .build()
     }
 
-    /// Native settings: they drive the `Theme` the remote screens read.
-    fn settings(accent: Signal<String>, compact: Signal<bool>, cart: Signal<u32>) -> Element {
+    /// Native settings: the idea theme every screen follows (remote ones
+    /// through their token stylesheets), and the `FeedPrefs` the feed reads.
+    fn settings(dark: Signal<bool>, compact: Signal<bool>, cart: Signal<u32>) -> Element {
+        let toggle_dark = move || {
+            dark.update(|d| !d);
+            idea_ui::set_idea_theme(if dark.get() { idea_ui::dark_theme() } else { idea_ui::light_theme() });
+        };
         ui! {
-            scroll_view(style = screen_fill()) {
+            scroll_view(style = Page()) {
                 view(style = column(10.0)) {
-                    text { "Settings — native" }
-                    text { move || format!("accent: {}", accent.get()) }
-                    button(label = "Blue accent", on_click = move || accent.set("#2563eb".into()))
-                    button(label = "Green accent", on_click = move || accent.set("#059669".into()))
-                    button(label = "Orange accent", on_click = move || accent.set("#ea580c".into()))
+                    text(style = Heading()) { "Settings — native" }
+                    button(label = move || format!("Dark theme: {}", if dark.get() { "on" } else { "off" }), on_click = toggle_dark)
                     button(label = move || format!("Compact feed: {}", if compact.get() { "on" } else { "off" }), on_click = move || compact.update(|c| !c))
                     Card() {
                         Typography(content = "Cart".to_string(), kind = typography_kind::H3)
-                        text { move || format!("{} item(s)", cart.get()) }
+                        text(style = Body()) { move || format!("{} item(s)", cart.get()) }
                         button(label = "Empty cart", on_click = move || cart.set(0))
                     }
                 }

@@ -49,7 +49,7 @@ pub use runtime_vocabulary::glue::*;
 
 // The proc-macro set.
 pub use runtime_macros::{
-    component, doc_scope, idealyst_tool, jsx, lazy_component, props, recipe, remote_context, stylesheet, ui,
+    component, doc_scope, idealyst_tool, jsx, lazy_component, props, recipe, stylesheet, ui,
     Remote,
     IdealystSchema,
 };

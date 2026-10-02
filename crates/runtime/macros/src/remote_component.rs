@@ -234,23 +234,20 @@ pub(crate) fn import_split(
         )
     };
 
-    // Swap the body by build kind. The parsed body is MOVED into the
-    // template, never printed and re-parsed (expansion time matters: see
+    // Swap the body by build kind, chosen by the vocabulary's flag
+    // (`__remote_guest_split!`), so the component's crate declares no cfg
+    // of its own. The body goes into the macro call as tokens: syn doesn't
+    // re-parse it (a macro call stays opaque to syn), and the re-parse is
+    // the cost that matters for expansion time (see
     // `wrap_component_body_new_core`).
     let body = std::mem::replace(&mut *item_fn.block, syn::Block { brace_token: Default::default(), stmts: Vec::new() });
-    let mut block: syn::Block = syn::parse_quote!({
-        #[cfg(idealyst_stream_guest)]
-        let __remote_tree: ::runtime_core::Element = #stub;
-        #[cfg(not(idealyst_stream_guest))]
-        let __remote_tree: ::runtime_core::Element = {};
+    *item_fn.block = syn::parse_quote!({
+        let __remote_tree: ::runtime_core::Element = ::runtime_vocabulary::__remote_guest_split! {
+            bundle: { #stub }
+            app: { #body }
+        };
         __remote_tree
     });
-    if let Some(syn::Stmt::Local(local)) = block.stmts.get_mut(1) {
-        if let Some(init) = &mut local.init {
-            *init.expr = syn::Expr::Block(syn::ExprBlock { attrs: Vec::new(), label: None, block: body });
-        }
-    }
-    *item_fn.block = block;
     Import { registration, explicit_name: explicit.then_some(key) }
 }
 
@@ -275,9 +272,13 @@ pub(crate) fn import_key(
 /// rest from its own defaults).
 pub(crate) fn build_set_override(key: &TokenStream2, props: &TokenStream2) -> TokenStream2 {
     quote! {
-        #[cfg(idealyst_stream_guest)]
-        fn build_set(self, __set: &'static [&'static str]) -> ::runtime_core::Element {
-            ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(__set))
+        ::runtime_vocabulary::__remote_guest_split! {
+            bundle: {
+                fn build_set(self, __set: &'static [&'static str]) -> ::runtime_core::Element {
+                    ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(__set))
+                }
+            }
+            app: {}
         }
     }
 }

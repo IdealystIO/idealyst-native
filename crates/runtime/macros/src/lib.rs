@@ -373,59 +373,6 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 ///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
 /// }
 /// ```
-/// `#[remote_context]` — let remote components `inject` this context type
-/// from the app. Its fields cross like a remote component's props: signals
-/// as handles into the app's graph (`ReadSignal<T>` read live, `Signal<T>`
-/// writable), values as copies. The type registers itself; the app offers
-/// it to bundles under its path, and a bundle's `inject::<T>()` falls back
-/// to the app's value. Context types without it stay invisible to bundles.
-///
-/// ```ignore
-/// #[remote_context]
-/// #[derive(Clone)]
-/// pub struct Theme { pub accent: ReadSignal<String>, pub compact: bool }
-/// ```
-#[proc_macro_attribute]
-pub fn remote_context(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return syn::Error::new(proc_macro2::Span::call_site(), "#[remote_context] takes no arguments")
-            .to_compile_error()
-            .into();
-    }
-    let st = match syn::parse::<syn::ItemStruct>(item) {
-        Ok(s) => s,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    if !st.generics.params.is_empty() {
-        return syn::Error::new_spanned(&st.generics, "#[remote_context] types can't be generic: they cross under one name")
-            .to_compile_error()
-            .into();
-    }
-    let name = &st.ident;
-    let fields = match &st.fields {
-        syn::Fields::Named(f) => {
-            let pairs = f.named.iter().map(|f| {
-                let (n, t) = (f.ident.as_ref().expect("named"), &f.ty);
-                quote::quote! { #n: #t }
-            });
-            quote::quote! { { #(#pairs),* } }
-        }
-        syn::Fields::Unnamed(f) => {
-            let pairs = f.unnamed.iter().enumerate().map(|(i, f)| {
-                let (i, t) = (syn::Index::from(i), &f.ty);
-                quote::quote! { #i: #t }
-            });
-            quote::quote! { ( #(#pairs),* ) }
-        }
-        syn::Fields::Unit => quote::quote! { {} },
-    };
-    quote::quote! {
-        #st
-        ::runtime_vocabulary::__remote_context!(#name #fields);
-    }
-    .into()
-}
-
 #[proc_macro_attribute]
 pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
     finish(props_attr::emit(item.into()))

@@ -137,3 +137,41 @@ fn data() {
     same_as_native(|| ui! { spike_ideaui::DataArea() }, spike_ideaui::data_demo, "Admin", Some("Second"));
 }
 
+
+
+/// The resolved background of every node a theme restyles: at mount, then
+/// after the app swaps to the dark theme.
+fn themed(tree: impl FnOnce() -> Element) -> (Vec<String>, Vec<String>) {
+    let h = Harness::new();
+    h.set_style_line(|_, s| format!("bg={:?}", s.background.as_ref().map(|b| b.resolve())));
+    h.world.enter(|| idea_ui::install_idea_theme(idea_ui::light_theme()));
+    let realized = h.mount(h.world.enter(tree));
+    h.flush();
+    let styles = |h: &Harness| h.take_log().into_iter().filter(|l| l.starts_with("bg=")).collect::<Vec<_>>();
+    let light = styles(&h);
+    h.world.enter(|| idea_ui::set_idea_theme(idea_ui::dark_theme()));
+    h.flush();
+    let dark = styles(&h);
+    drop(realized);
+    h.flush();
+    h.forget_handlers();
+    (light, dark)
+}
+
+/// Remote code's own `stylesheet!` over idea's tokens (`t.color.background()`,
+/// `t.intent.primary.solid_bg()`), on plain primitives — no idea-ui
+/// component: the sheet runs in the bundle, the token NAMES cross, and the
+/// app resolves them against its installed theme, following a swap.
+#[test]
+fn a_bundles_own_stylesheet_uses_the_apps_theme_tokens() {
+    pump::install_executor();
+    pump::install_scheduler();
+    let _remote = stream_host::remote::install(IDEA_UI_WASM).expect("the bundle loads");
+    let (light, dark) = themed(|| ui! { spike_ideaui::ThemedArea() });
+    let (native_light, native_dark) = themed(spike_ideaui::themed_demo);
+    assert!(!light.is_empty(), "the bundle's sheets styled nothing");
+    assert_eq!(light, native_light, "remote and in-process styles differ (light)");
+    assert_eq!(dark, native_dark, "remote and in-process styles differ after the swap");
+    assert!(dark.iter().all(|d| !light.contains(d)), "the swap didn't restyle the bundle's nodes: {light:?} → {dark:?}");
+    assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0);
+}

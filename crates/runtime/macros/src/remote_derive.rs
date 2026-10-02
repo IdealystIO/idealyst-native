@@ -14,6 +14,12 @@
 //! `__remote_app_code!`), which follow the vocabulary's build rather than
 //! the deriving crate's.
 //!
+//! A derived type is also CONTEXT: the app may `provide` it and remote code
+//! `inject` it (when it is `Clone` — `inject` hands out a copy; the entry
+//! probes for it). That is the whole context mechanism: no attribute of its
+//! own. Its name across the boundary is `module_path::Name`, the same in
+//! both builds.
+//!
 //! Encoding: a struct's fields in declaration order; an enum's variant
 //! index (`u32`), then that variant's fields. Both sides compile the same
 //! source, so positions agree.
@@ -59,6 +65,13 @@ fn construct(path: TokenStream2, fields: &Fields, recv: impl Fn(&syn::Type) -> T
 }
 
 pub(crate) fn derive(input: DeriveInput) -> syn::Result<TokenStream2> {
+    derive_with(input, true)
+}
+
+/// [`derive`], choosing whether the type registers as context (`stylesheet!`
+/// variant enums don't: nothing provides a style axis as context, and each
+/// registration keeps a bundle export).
+pub(crate) fn derive_with(input: DeriveInput, context: bool) -> syn::Result<TokenStream2> {
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &input.generics,
@@ -154,8 +167,11 @@ pub(crate) fn derive(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
+    let context_entry = if context { quote! { ::runtime_vocabulary::__remote_context_entry!(#name); } } else { quote!() };
+
     Ok(quote! {
         ::runtime_vocabulary::__remote_enabled! {
+            #context_entry
             impl #v::ImportArg for #name {
                 ::runtime_vocabulary::__remote_bundle_code! {
                     fn send(self, __out: &mut ::std::vec::Vec<u8>) {

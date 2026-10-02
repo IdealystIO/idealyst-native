@@ -354,3 +354,47 @@ pub fn data_demo() -> Element {
 pub fn DataArea() -> Element {
     data_demo()
 }
+
+// ---------------------------------------------------------------------------
+// The theme's tokens in remote code's OWN stylesheets (no idea-ui component)
+// ---------------------------------------------------------------------------
+
+runtime_core::stylesheet! {
+    pub ThemedPage<idea_ui::IdeaThemeRef> {
+        base(t) {
+            background: t.color.background(),
+            color: t.color.text(),
+            padding: t.spacing.md(),
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    pub ThemedBanner<idea_ui::IdeaThemeRef> {
+        base(t) {
+            background: t.intent.primary.solid_bg(),
+            color: t.intent.primary.solid_text(),
+            padding: t.spacing.sm(),
+            border_radius: t.radius.md(),
+        }
+    }
+}
+
+/// Plain primitives styled by sheets that name idea's tokens: the sheets
+/// run in the bundle, their token names cross, and the app resolves them
+/// against ITS installed theme.
+pub fn themed_demo() -> Element {
+    ui! {
+        view(style = ThemedPage()) {
+            view(style = ThemedBanner()) {
+                text { "a banner the bundle styled" }
+            }
+            text { "page text" }
+        }
+    }
+}
+
+#[component(remote)]
+pub fn ThemedArea() -> Element {
+    themed_demo()
+}

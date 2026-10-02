@@ -268,17 +268,16 @@ pub fn NativeTabs() -> Element {
     tabs_view()
 }
 
-/// App context a remote component reads with a plain `inject`: marked
-/// `#[remote_context]`, so it crosses — the accent as a live signal, the
-/// flag as a copy.
-#[runtime_core::remote_context]
-#[derive(Clone)]
+/// App context a remote component reads with a plain `inject`: it derives
+/// `Remote`, so it crosses — the accent as a live signal, the flag as a
+/// copy.
+#[derive(Clone, runtime_core::Remote)]
 pub struct Theme {
     pub accent: ReadSignal<String>,
     pub compact: bool,
 }
 
-/// Context NOT marked: invisible to bundles.
+/// Context that doesn't derive `Remote`: invisible to bundles.
 #[derive(Clone)]
 pub struct Secret(pub String);
 

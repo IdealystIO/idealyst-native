@@ -1941,15 +1941,16 @@ pub(crate) fn intern_static(s: &str) -> &'static str {
 // loader calls every such export at load (stream-host) — the module's own
 // export table is the registry.
 
-/// A context type that crosses to remote components. Implemented by
-/// `#[remote_context]`.
-pub trait RemoteContext: RemoteProp + Clone {
+/// A context type that crosses to remote components: every
+/// `#[derive(Remote)]` type (it is offered as context when it is also
+/// `Clone`, which `inject` needs).
+pub trait RemoteContext: RemoteProp {
     /// `module_path::Name` — the same in the app and the bundle (they
     /// compile the same source, under the same crate name).
     const NAME: &'static str;
 }
 
-/// One `#[remote_context]` type, as registered.
+/// One context type, as registered (by `#[derive(Remote)]`).
 pub struct ContextEntry {
     pub name: &'static str,
     /// App side: offer the type to bundles; the guard withdraws it.
@@ -1971,8 +1972,39 @@ pub fn remote_context_names() -> Vec<&'static str> {
 /// The prefix of a bundle's per-context registration exports.
 pub const CONTEXT_EXPORT_PREFIX: &str = "__idealyst_ctx_";
 
+/// A derived type's context entry, built through a probe: a `Clone` type
+/// crosses as context ([`ViaContext`]), any other isn't offered
+/// ([`ViaNoContext`]) — `inject` hands out a copy.
 #[doc(hidden)]
-pub fn __export_context<T: RemoteContext>() -> Box<dyn std::any::Any> {
+pub trait ViaContext {
+    fn export_context(&self) -> Box<dyn std::any::Any>;
+    fn register_context(&self);
+}
+
+impl<T: RemoteContext + Clone> ViaContext for Arg<T> {
+    fn export_context(&self) -> Box<dyn std::any::Any> {
+        __export_context::<T>()
+    }
+    fn register_context(&self) {
+        __register_context::<T>()
+    }
+}
+
+#[doc(hidden)]
+pub trait ViaNoContext {
+    fn export_context(&self) -> Box<dyn std::any::Any>;
+    fn register_context(&self);
+}
+
+impl<T> ViaNoContext for &Arg<T> {
+    fn export_context(&self) -> Box<dyn std::any::Any> {
+        Box::new(())
+    }
+    fn register_context(&self) {}
+}
+
+#[doc(hidden)]
+pub fn __export_context<T: RemoteContext + Clone>() -> Box<dyn std::any::Any> {
     #[cfg(not(idealyst_stream_guest))]
     {
         Box::new(runtime_world::remote::export_context(T::NAME, |out| {
@@ -1994,7 +2026,7 @@ pub fn __export_context<T: RemoteContext>() -> Box<dyn std::any::Any> {
 }
 
 #[doc(hidden)]
-pub fn __register_context<T: RemoteContext>() {
+pub fn __register_context<T: RemoteContext + Clone>() {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     runtime_world::remote_guest::register_remote_context::<T>(T::NAME, |bytes| {
         let mut input = bytes;
@@ -2002,7 +2034,7 @@ pub fn __register_context<T: RemoteContext>() {
     });
 }
 
-/// Register every `#[remote_context]` type's decoder, in-process (tests
+/// Register every context type's decoder, in-process (tests
 /// running both halves natively). A wasm bundle's are registered by the
 /// loader calling its `__idealyst_ctx_*` exports.
 #[cfg(feature = "remote-loopback")]
@@ -2010,48 +2042,6 @@ pub fn register_contexts() {
     for e in REMOTE_CONTEXTS.iter() {
         (e.register)()
     }
-}
-
-/// `impl RemoteProp + RemoteContext` for a `#[remote_context]` struct, and
-/// its registration. Emitted by the attribute; a no-op without `remote`.
-#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __remote_context {
-    ($name:ident { $($f:ident : $t:ty),* $(,)? }) => {
-        impl $crate::remote::RemoteProp for $name {
-            $crate::__remote_send_side! {
-                fn send(&self, __out: &mut ::std::vec::Vec<u8>, __keep: &mut $crate::remote::host::Keep) {
-                    $( $crate::remote::RemoteProp::send(&self.$f, __out, __keep); )*
-                    let _ = (__out, __keep);
-                }
-            }
-            $crate::__remote_receive_side! {
-                fn receive(__in: &mut &[u8]) -> Self {
-                    let _ = &__in;
-                    $name { $( $f: <$t as $crate::remote::RemoteProp>::receive(__in) ),* }
-                }
-            }
-        }
-        $crate::__remote_context_entry!($name);
-    };
-    ($name:ident ( $($i:tt : $t:ty),* $(,)? )) => {
-        impl $crate::remote::RemoteProp for $name {
-            $crate::__remote_send_side! {
-                fn send(&self, __out: &mut ::std::vec::Vec<u8>, __keep: &mut $crate::remote::host::Keep) {
-                    $( $crate::remote::RemoteProp::send(&self.$i, __out, __keep); )*
-                    let _ = (__out, __keep);
-                }
-            }
-            $crate::__remote_receive_side! {
-                fn receive(__in: &mut &[u8]) -> Self {
-                    let _ = &__in;
-                    $name ( $( <$t as $crate::remote::RemoteProp>::receive(__in) ),* )
-                }
-            }
-        }
-        $crate::__remote_context_entry!($name);
-    };
 }
 
 #[cfg(all(feature = "remote", idealyst_stream_guest))]
@@ -2066,7 +2056,9 @@ macro_rules! __remote_context_entry {
             /// Called by the loader at load (see `CONTEXT_EXPORT_PREFIX`).
             #[export_name = ::core::concat!("__idealyst_ctx_", ::core::module_path!(), "::", ::core::stringify!($name))]
             extern "C" fn __register() {
-                $crate::remote::__register_context::<$name>()
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaContext as _, ViaNoContext as _};
+                (&$crate::remote::Arg::<$name>::new()).register_context()
             }
         };
     };
@@ -2085,9 +2077,19 @@ macro_rules! __remote_context_entry {
             #[linkme(crate = $crate::remote::__linkme)]
             static __ENTRY: $crate::remote::ContextEntry = $crate::remote::ContextEntry {
                 name: <$name as $crate::remote::RemoteContext>::NAME,
-                export: $crate::remote::__export_context::<$name>,
-                register: $crate::remote::__register_context::<$name>,
+                export: __export,
+                register: __register,
             };
+            fn __export() -> ::std::boxed::Box<dyn ::core::any::Any> {
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaContext as _, ViaNoContext as _};
+                (&$crate::remote::Arg::<$name>::new()).export_context()
+            }
+            fn __register() {
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaContext as _, ViaNoContext as _};
+                (&$crate::remote::Arg::<$name>::new()).register_context()
+            }
         };
     };
 }

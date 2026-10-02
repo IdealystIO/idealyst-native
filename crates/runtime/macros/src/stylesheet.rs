@@ -1304,7 +1304,7 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
     let remote = {
         let unit_arms = axis.arms.iter().map(|arm| format_ident!("{}", pascal(&arm.name)));
         let decl: syn::DeriveInput = syn::parse_quote! { enum #enum_name { #(#unit_arms),* } };
-        crate::remote_derive::derive(decl).expect("a variant axis is a plain unit enum")
+        crate::remote_derive::derive_with(decl, false).expect("a variant axis is a plain unit enum")
     };
     // to_variant_str: snake-case the arm name.
     let arm_arms = axis.arms.iter().map(|arm| {

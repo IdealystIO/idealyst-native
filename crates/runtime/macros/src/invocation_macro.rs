@@ -109,11 +109,10 @@ pub(crate) fn generate_build_impl(
     };
     let build_body = match import_name {
         Some(name) => quote! {
-            #[cfg(idealyst_stream_guest)]
-            let __remote_element = ::runtime_vocabulary::__remote_import!(#name, #path, self);
-            #[cfg(not(idealyst_stream_guest))]
-            let __remote_element = ::runtime_core::IntoElement::into_element(#fn_name(#amp self));
-            __remote_element
+            ::runtime_vocabulary::__remote_guest_split! {
+                bundle: { ::runtime_vocabulary::__remote_import!(#name, #path, self) }
+                app: { ::runtime_core::IntoElement::into_element(#fn_name(#amp self)) }
+            }
         },
         None => quote! {
             ::runtime_core::IntoElement::into_element(#fn_name(#amp self))

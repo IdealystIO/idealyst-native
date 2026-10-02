@@ -193,6 +193,24 @@ pub mod prims;
 #[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
 pub mod remote;
 
+/// `#[component]`'s emission for this build: a remote bundle build (the
+/// vocabulary's `idealyst_stream_guest`), where an app component's body is
+/// replaced by an import of the app's copy, or any other build. Chosen by
+/// the VOCABULARY's flag, so a crate using `#[component]` declares no cfg
+/// (an emitted `#[cfg(idealyst_stream_guest)]` warned in every such crate).
+#[cfg(idealyst_stream_guest)]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_guest_split {
+    (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($b)* };
+}
+#[cfg(not(idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_guest_split {
+    (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($a)* };
+}
+
 /// `#[derive(Remote)]`'s output: kept in a build that hosts or is a remote
 /// bundle, dropped (unexpanded) everywhere else — so a library can derive
 /// it unconditionally and cost nothing in apps without remote components.
@@ -216,12 +234,6 @@ macro_rules! __remote_enabled {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_nav_handle {
-    ($($t:tt)*) => {};
-}
-#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __remote_context {
     ($($t:tt)*) => {};
 }
 #[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]

@@ -27,7 +27,7 @@ use host_mock::{pump, Harness};
 use runtime_core::ui;
 use runtime_scene::Element;
 use runtime_world::Signal;
-use remote_showcase::{FeedScreen, ShopNavigator, Theme};
+use remote_showcase::{FeedPrefs, FeedScreen, ShopNavigator};
 
 const REMOTE: bool = !cfg!(feature = "inline");
 
@@ -72,14 +72,13 @@ fn rss() -> usize {
 /// The app's state the remote screens read, owned by the bench.
 #[derive(Clone, Copy)]
 struct State {
-    accent: Signal<String>,
     compact: Signal<bool>,
     cart: Signal<u32>,
 }
 
 fn feed(s: State) -> Element {
     runtime_scene::component_scope(move || {
-        runtime_world::provide(Theme { accent: s.accent.read_only(), compact: s.compact.read_only() });
+        runtime_world::provide(FeedPrefs { compact: s.compact.read_only() });
         ui! { FeedScreen() }
     })
 }
@@ -170,7 +169,6 @@ fn main() {
     // The idea-ui components the screens import render here, against it.
     h.world.enter(|| idea_ui::install_idea_theme(idea_ui::light_theme()));
     let s = h.world.enter(|| State {
-        accent: runtime_world::signal("#2563eb".to_string()),
         compact: runtime_world::signal(false),
         cart: runtime_world::signal(0u32),
     });
@@ -197,11 +195,13 @@ fn main() {
     let like = h.shared.press_handlers.borrow()[presses_before].clone();
     report("feed.like", "press ♥ (handler → screen state → its text)", per_op(&h, 2000, |_| like()));
     report(
-        "feed.accent",
-        "app sets Theme.accent (screen's heading restyles)",
-        per_op(&h, 2000, |i| s.accent.set(if i % 2 == 0 { "#059669".into() } else { "#2563eb".into() })),
+        "feed.theme",
+        "app swaps the idea theme (the screen's token sheets restyle)",
+        per_op(&h, 400, |i| {
+            h.world.enter(|| idea_ui::set_idea_theme(if i % 2 == 0 { idea_ui::dark_theme() } else { idea_ui::light_theme() }))
+        }),
     );
-    report("feed.compact", "app toggles Theme.compact (4 post bodies come and go)", per_op(&h, 1000, |_| s.compact.update(|c| !c)));
+    report("feed.compact", "app toggles FeedPrefs.compact (3 post bodies come and go)", per_op(&h, 1000, |_| s.compact.update(|c| !c)));
     drop(like);
     unmount(&h, r);
 

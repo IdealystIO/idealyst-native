@@ -147,9 +147,9 @@ Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the
 | Piece | Where | Shows |
 |---|---|---|
 | Tab shell (`App`, a swap navigator) | app | native code hosting remote screens |
-| `FeedScreen` | bundle | bundle state, `#[remote_context]` theme read live, a sync `#[host_fn]`, idea-ui components |
+| `FeedScreen` | bundle | its own stylesheets over idea's theme tokens (the light/dark switch restyles it), `FeedPrefs` context read live, bundle state, a sync `#[host_fn]`, idea-ui components |
 | `ShopNavigator` | bundle | a stack navigator defined in the bundle: route links with typed params, a header reading `StackNav` and the screen's title option, an async `#[host_fn]` (reviews), idea-ui's `Slider`/`Switch`/`Button` writing the app's cart signal |
-| `Settings` | app | native controls for the theme the remote screens read |
+| `Settings` | app | native controls: the idea theme (light/dark) every screen follows, and the `FeedPrefs` the feed reads |
 | idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses: imported from the app, rendered natively with the app's idea theme, not bundled |
 
 ```sh
@@ -206,15 +206,23 @@ The app's entry goes when the bundle drops its handle, and in any case when the 
 
 ## Context
 
-A remote component reads the app's context with a plain `inject`, for context types marked `#[remote_context]`:
+A remote component reads the app's context with a plain `inject`, for any type that derives `Remote` (and is `Clone` — `inject` hands out a copy):
 
 ```rust
-#[remote_context]
-#[derive(Clone)]
-pub struct Theme { pub accent: ReadSignal<String>, pub compact: bool }
+#[derive(Clone, Remote)]
+pub struct FeedPrefs { pub compact: ReadSignal<bool> }
+
+// App:    runtime_world::provide(FeedPrefs { compact: compact.read_only() });
+// Remote: let prefs = runtime_world::inject::<FeedPrefs>();
 ```
 
-Fields cross like a remote component's props: a `ReadSignal` / `Signal` as a handle into the app's graph (read live, writable for `Signal`), a value as a copy. Each marked type registers itself — natively in a link-time slice, which the app's remote loader offers to bundles under the type's path; in a bundle (`linkme` has no wasm32 support) as an `__idealyst_ctx_<path>` export the loader calls at load to register its decoder. A bundle's `inject::<Theme>()` then falls back to the app's value when the remote tree provides none itself; the exports live as long as the component that asked. Unmarked context stays invisible to bundles. `tests/remote_attr.rs` covers it over wasm (live signal, unmarked context hidden, unprovided context absent).
+Fields cross like a remote component's props: a `ReadSignal` / `Signal` as a handle into the app's graph (read live, writable for `Signal`), a value as a copy. Each derived type registers itself under `module_path::Name` — natively in a link-time slice, which the app's remote loader offers to bundles; in a bundle (`linkme` has no wasm32 support) as an `__idealyst_ctx_<path>` export the loader calls at load to register its decoder. A bundle's `inject::<FeedPrefs>()` then falls back to the app's value when the remote tree provides none itself; the exports live as long as the component that asked. Context that doesn't derive `Remote` stays invisible to bundles. `tests/remote_attr.rs` covers it over wasm (live signal, a non-`Remote` context hidden, unprovided context absent).
+
+### Themes are tokens, not context
+
+A stylesheet doesn't read a theme value. In `stylesheet! { pub Banner<IdeaThemeRef> { base(t) { background: t.intent.primary.solid_bg() } } }`, `t` is a namespace of token NAMES (`intent-primary-solid-bg`); values come from the token registry at resolve time, which `install_idea_theme` / `set_idea_theme` write. So a stylesheet in remote code needs nothing from the app: it runs in the bundle, the token names cross with its rules, and the app resolves them against its installed theme — following a theme swap exactly as native code does. `tests/idea_ui.rs` (`a_bundles_own_stylesheet_uses_the_apps_theme_tokens`) mounts remote code's own token sheets on plain primitives, swaps light → dark in the app, and checks the resolved colors against the same tree in-process. The showcase's feed does the same on screen (Settings → Dark theme).
+
+Code that reads the active theme object directly (`active_theme()`, an idea-theme `Variant::render`) runs wherever it's called: inside idea-ui's components that is the app; called from remote code, it would see the bundle's own (empty) copy — the same open question as `push_toast`.
 
 ## Navigation
 
@@ -276,7 +284,7 @@ A panic in a bundle never takes the app down. A Rust panic in wasm is `panic = "
 A bundle is built with `--cfg idealyst_stream_guest` (a build flag, not a cargo feature, so it can never leak into an app through feature unification). Under that flag two things change, and nothing else:
 
 **The kernel is bridged** (`runtime-world/src/bridge`). runtime-world's typed layer runs on an `Engine`; natively that is the arena, in a bundle it is `Bridged`. `Bridged` keeps what cannot leave the bundle (signal values, effect bodies, cleanups, context values) in local tables, and forwards every graph operation (slots, subscriptions, staging, flush, scopes, context stacks) to the app over wasm imports. The app holds a proxy in each slot the bundle owns. So a bundle's signal is a slot in the app's arena, the app's flush runs the bundle's effects, and the app's scopes own them.
-- **Props and context the app owns** cross as handles: the app exports a signal (`stream_host::kernel::export_signal` / `export_read_signal`) and the bundle imports it (`runtime_world::remote_guest::import_signal`); reads subscribe in the app's graph. Context is declared by name on both sides (`export_context` / `register_remote_context`); context the app did not declare is invisible to bundles.
+- **Props and context the app owns** cross as handles: the app exports a signal (`stream_host::kernel::export_signal` / `export_read_signal`) and the bundle imports it (`runtime_world::remote_guest::import_signal`); reads subscribe in the app's graph. Context is declared by name on both sides (`export_context` / `register_remote_context`, emitted by `#[derive(Remote)]`); context the app did not declare is invisible to bundles.
 - **Parity is enforced, not hoped for.** Adding an `Engine` method doesn't compile until every engine has it, and `--features loopback-engine` runs the entire kernel suite through the bridge in one process.
 
 **The tree crosses as data** (`runtime-vocabulary/src/remote`, feature `remote`). The bundle encodes the `Element` it built into a `Node`. Every closure in it (a dynamic text getter, an `on_press`, a `Dyn` hole's builder, a keyed list's items and render, a stylesheet) stays in a bundle-side table under a callback id, and the id crosses instead. The app decodes the `Node` into real primitives whose closures call the bundle by id, then realizes it like any other tree. When the app drops such a closure it releases the id, and the bundle frees the closure.
