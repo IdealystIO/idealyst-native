@@ -157,6 +157,8 @@ cargo run --release -p stream-spike --bin stream-serve   # optional: serves /sho
 cargo run --release -p remote-showcase
 ```
 
+Every screen root — and each navigator layout root, which holds the outlet — sizes itself to fill its parent (`screen_fill()`): a screen is responsible for its own size; its navigator doesn't size it.
+
 `showcase/app/tests/flow.rs` drives the real bundle through the whole app against the mock backend: likes, the theme toggle reaching the feed, the shop list, a product (title in the header, reviews arriving from the async host function, quantity and gift wrap), adding to the cart (seen by the bundle's header and the app shell), back, settings — and nothing left alive after unmount.
 
 ### Remote code using app components

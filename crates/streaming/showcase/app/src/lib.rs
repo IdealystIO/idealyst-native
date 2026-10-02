@@ -128,12 +128,13 @@ fn column(gap: f32) -> StyleRules {
     StyleRules { gap: px(gap), padding_top: px(12.0), padding_left: px(12.0), padding_right: px(12.0), padding_bottom: px(12.0), ..StyleRules::default() }
 }
 
-/// A screen's scroll view: fill the space its navigator gives it. A
-/// scroller has no height of its own (its content scrolls), and a swap
-/// navigator's outlet doesn't size its screens — without this a screen
-/// whose root is a `scroll_view` collapses to nothing.
+/// The style of every screen root (and navigator layout root) here: fill
+/// the parent. A screen sizes ITSELF — its navigator doesn't size it — and
+/// a root with no size of its own (a `scroll_view`, whose content scrolls)
+/// otherwise collapses to nothing.
 fn screen_fill() -> StyleRules {
     StyleRules {
+        width: Some(Length::Percent(100.0).into()),
         flex_grow: Some(1.0.into()),
         flex_shrink: Some(1.0.into()),
         flex_basis: px(0.0),
@@ -226,9 +227,10 @@ pub fn ShopNavigator(cart: Signal<u32>) -> Element {
             let nav = runtime_world::inject::<StackNav>().expect("StackNav in the shop's layout");
             let (back, chrome, pop) = (nav.can_go_back, nav.screen_chrome, nav.pop.clone());
             view()
-                .style(StyleRules { background: color("#eef2ff"), ..column(4.0) })
+                .style(StyleRules { background: color("#eef2ff"), ..StyleRules { gap: px(4.0), ..screen_fill() } })
                 .child(
                     view()
+                        .style(column(4.0))
                         .child(button().label("‹ Back").disabled(move || !back.get()).on_press(move || pop()))
                         .child(text().content(move || {
                             let title = chrome.get().options.as_ref().and_then(|o| o.downcast_ref::<ScreenTitle>().map(|t| t.0)).unwrap_or("Shop");
@@ -274,7 +276,11 @@ fn product_list() -> Element {
 fn product_detail(id: u32, cart: Signal<u32>) -> Element {
     use runtime_vocabulary::builders::{slider, toggle};
     let Some(p) = product(id) else {
-        return ui! { text { "No such product" } };
+        return ui! {
+            view(style = screen_fill()) {
+                text { "No such product" }
+            }
+        };
     };
     let qty = signal(1.0f32);
     let gift = signal(false);
@@ -373,6 +379,7 @@ mod app {
                         .build()
                 };
                 view()
+                    .style(screen_fill())
                     .child(
                         view()
                             .style(StyleRules { background: color("#111827"), ..column(6.0) })
