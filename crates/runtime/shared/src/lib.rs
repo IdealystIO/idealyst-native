@@ -408,6 +408,9 @@ pub use style::{
     VariantAxis, VariantEnum, VariantSet, VariantValue,
 };
 
+#[cfg(feature = "remote-serde")]
+pub use style::{SheetPart, SheetShape};
+
 pub use text_defaults::{
     effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
 };

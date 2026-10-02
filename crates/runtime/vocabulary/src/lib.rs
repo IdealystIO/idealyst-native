@@ -190,6 +190,8 @@ pub mod glue;
 pub mod glue_lazy;
 pub mod handlers;
 pub mod prims;
+#[cfg(feature = "remote")]
+pub mod remote;
 #[cfg(feature = "robot")]
 pub mod robot;
 #[cfg(feature = "robot")]

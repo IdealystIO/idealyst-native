@@ -416,3 +416,20 @@ impl<G: GuestHooks> HostOps for Host<G> {
         fetch(out)
     }
 }
+
+/// Take ownership of bundle scope `id` out of the table — the host claiming a
+/// remote component's scope as its own `Owned` (see
+/// `remote::claim_scope`). Empty for `0` or an unknown id.
+#[cfg_attr(any(feature = "loopback-engine", idealyst_stream_guest), allow(dead_code))]
+pub(crate) fn take_scope(id: u32) -> Vec<OwnedItem> {
+    if id == 0 {
+        return Vec::new();
+    }
+    with_host(|h| h.scopes.remove(&id)).unwrap_or_default()
+}
+
+/// Scopes a bundle collected that nobody has claimed or dropped yet. Zero
+/// whenever every remote tree has been claimed — what a leak check asserts.
+pub(crate) fn pending_scopes() -> usize {
+    try_host(|h| h.scopes.len()).unwrap_or(0)
+}

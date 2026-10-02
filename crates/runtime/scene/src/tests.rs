@@ -1866,3 +1866,55 @@ fn regression_element_owned_keeps_its_published_two_field_shape() {
         _ => panic!("a hook on a plain subtree is carried by an Owned wrapper"),
     }
 }
+
+/// A hole taken apart with `into_parts` and rebuilt with `dyn_guarded`
+/// keeps the guarded semantics — a fire whose `changed` says `false`
+/// rebuilds nothing — which is what lets a remote component's guarded hole
+/// cross as two callbacks.
+#[test]
+fn guarded_hole_survives_into_parts_and_dyn_guarded() {
+    let rig = Rig::new(true);
+    let builds = counter();
+    let builds_in = builds.clone();
+    let (s, tick) = rig.world.enter(|| (signal(true), signal(0u32)));
+    let original = dyn_keyed(
+        move || {
+            let _ = tick.get(); // an extra dep that must NOT rebuild
+            s.get()
+        },
+        move |&on| {
+            builds_in.set(builds_in.get() + 1);
+            t(if on { "on" } else { "off" })
+        },
+    );
+    let Element::Dyn(spec) = original else { unreachable!() };
+    let (kind, retire) = spec.into_parts();
+    assert!(retire.is_none());
+    let DynKind::Guarded { changed, build } = kind else { panic!("dyn_keyed is guarded") };
+    let shell = rig.realize(v(vec![dyn_guarded(changed, build)]));
+    assert_eq!(render_labels(&rig, &shell), ["view", "on"]);
+
+    tick.set(1);
+    rig.flush();
+    assert_eq!(builds.get(), 1, "guard unchanged: no rebuild");
+
+    s.set(false);
+    rig.flush();
+    assert_eq!(render_labels(&rig, &shell), ["view", "off"]);
+    assert_eq!(builds.get(), 2);
+}
+
+#[test]
+fn registry_kinds_lists_single_and_multi_node_payloads() {
+    let rig = Rig::new(true);
+    let mut kinds = rig.registry.kinds();
+    kinds.sort();
+    let mut want = vec![
+        std::any::TypeId::of::<V>(),
+        std::any::TypeId::of::<T>(),
+        std::any::TypeId::of::<Portal>(),
+        std::any::TypeId::of::<Rep>(),
+    ];
+    want.sort();
+    assert_eq!(kinds, want);
+}

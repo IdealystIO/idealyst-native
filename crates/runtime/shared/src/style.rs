@@ -49,6 +49,7 @@ use crate::assets::TypefaceId;
 /// Color value as a backend-portable string. Backends translate to their
 /// native form (CSS string, UIColor, Android color int).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Color(pub String);
 
 impl From<&str> for Color {
@@ -71,6 +72,7 @@ impl From<String> for Color {
 /// "pill" (see below), and like Auto is only meaningful on the
 /// properties that define it.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Length {
     Px(f32),
     Percent(f32),
@@ -181,6 +183,58 @@ fn length_bits(l: Length) -> u64 {
 pub enum Tokenized<T> {
     Literal(T),
     Token { name: &'static str, fallback: T },
+}
+
+/// Serde for `Tokenized`, for remote components (feature `remote-serde`):
+/// a bundle's style rules cross to the host app with their TOKEN NAMES
+/// intact, so the app's own theme resolves them — the bundle never needs the
+/// theme. A token name is `&'static str`; deserializing interns it (leaking
+/// once per distinct name — a set bounded by the app's token vocabulary).
+#[cfg(feature = "remote-serde")]
+mod tokenized_serde {
+    use super::Tokenized;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    enum Repr<T> {
+        Literal(T),
+        Token { name: String, fallback: T },
+    }
+
+    impl<T: Serialize + Clone> Serialize for Tokenized<T> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self {
+                Tokenized::Literal(v) => Repr::Literal(v.clone()),
+                Tokenized::Token { name, fallback } => {
+                    Repr::Token { name: (*name).to_string(), fallback: fallback.clone() }
+                }
+            }
+            .serialize(s)
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Tokenized<T> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            Ok(match Repr::<T>::deserialize(d)? {
+                Repr::Literal(v) => Tokenized::Literal(v),
+                Repr::Token { name, fallback } => Tokenized::Token { name: intern(&name), fallback },
+            })
+        }
+    }
+
+    /// One `&'static str` per distinct token name, process-wide.
+    fn intern(name: &str) -> &'static str {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+        let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = names.get(name) {
+            return n;
+        }
+        let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+        names.insert(leaked);
+        leaked
+    }
 }
 
 impl<T> Tokenized<T> {
@@ -435,6 +489,7 @@ impl From<String> for Tokenized<Color> {
 // =============================================================================
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FlexDirection {
     /// Children stack top-to-bottom. RN default; what `View {}` does
     /// without explicit configuration.
@@ -446,6 +501,7 @@ pub enum FlexDirection {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FlexWrap {
     #[default]
     NoWrap,
@@ -454,6 +510,7 @@ pub enum FlexWrap {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum JustifyContent {
     #[default]
     FlexStart,
@@ -465,6 +522,7 @@ pub enum JustifyContent {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlignItems {
     FlexStart,
     FlexEnd,
@@ -476,6 +534,7 @@ pub enum AlignItems {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlignContent {
     #[default]
     FlexStart,
@@ -487,6 +546,7 @@ pub enum AlignContent {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlignSelf {
     #[default]
     Auto,
@@ -507,6 +567,7 @@ pub enum AlignSelf {
 /// browser's `<table>` does. Keep this minimal: it is a layout-engine
 /// capability, not a general CSS-grid authoring surface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DisplayKind {
     /// Children follow the flexbox algorithm (the framework default).
     #[default]
@@ -522,6 +583,7 @@ pub enum DisplayKind {
 /// is the single nested form (e.g. `Minmax(MinContent, Fr(1.0))` =
 /// "at least fit the content, then share leftover width to fill").
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TrackSize {
     /// Content-sized; in a definite-width grid, `Auto` tracks also
     /// absorb leftover space so the grid fills its container.
@@ -560,6 +622,7 @@ pub enum TrackSize {
 /// in a grid is explicitly placed, place ALL of them (the table SDK
 /// does exactly this the moment a row proxy exists).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GridPlacement {
     /// Place the item's leading edge at this grid line; it spans one
     /// track (`grid-row: 3`).
@@ -574,6 +637,7 @@ impl GridPlacement {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Position {
     #[default]
     Relative,
@@ -668,6 +732,7 @@ pub enum Position {
 /// CSS numeric weights (100..900), iOS `UIFontWeight`, Android typeface
 /// constants. RN-compatible enum; authors don't think in numeric scales.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FontWeight {
     Thin,
     ExtraLight,
@@ -682,6 +747,7 @@ pub enum FontWeight {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FontStyle {
     #[default]
     Normal,
@@ -725,6 +791,29 @@ pub enum FontFamily {
     /// before any `apply_style` that references it; backends then
     /// resolve fonts via the typeface's `family_name`.
     Typeface(crate::assets::Typeface),
+}
+
+/// Serde for `FontFamily` (feature `remote-serde`). A `Typeface` is a static
+/// declaration pointing at font assets, not data that can cross to another
+/// binary, so it crosses as its FAMILY NAME: the host resolves it like any
+/// system family, which finds the font when the host app registered the same
+/// typeface (a shared design system's fonts ship with the app). A remote
+/// bundle cannot bring new font files.
+#[cfg(feature = "remote-serde")]
+impl serde::Serialize for FontFamily {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            FontFamily::System(name) => s.serialize_str(name),
+            FontFamily::Typeface(t) => s.serialize_str(t.family_name),
+        }
+    }
+}
+
+#[cfg(feature = "remote-serde")]
+impl<'de> serde::Deserialize<'de> for FontFamily {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(FontFamily::System(String::deserialize(d)?))
+    }
 }
 
 impl From<String> for FontFamily {
@@ -777,6 +866,7 @@ impl std::hash::Hash for FontFamily {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextAlign {
     #[default]
     Left,
@@ -786,6 +876,7 @@ pub enum TextAlign {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextTransform {
     #[default]
     None,
@@ -849,6 +940,7 @@ impl TextTransform {
 /// primitive (separate concern). Authors who want overflow:hidden for
 /// clipping (e.g. rounded-corner clipping of children) get the option.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Overflow {
     #[default]
     Visible,
@@ -894,6 +986,7 @@ pub enum Overflow {
 /// spelling is the point, so an app doesn't need a web-only escape
 /// hatch in its HTML shell.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OverscrollBehavior {
     /// Platform default — the gesture chains outward past this
     /// container's edges.
@@ -924,6 +1017,7 @@ pub enum OverscrollBehavior {
 /// tabs and their selection underline — and no amount of styling the
 /// control itself can remove it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScrollbarVisibility {
     /// Platform default — the surface shows a scrollbar / indicator.
     #[default]
@@ -956,6 +1050,7 @@ pub enum ScrollbarVisibility {
 ///   has no aspect-fill mode, so the macOS image path renders through the
 ///   layer's `contents`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ObjectFit {
     /// Stretch to fill the box exactly, ignoring aspect ratio (CSS `fill`).
     Fill,
@@ -985,6 +1080,7 @@ pub enum ObjectFit {
 /// `cursor: pointer` on the web pressable is gone, so an author setting
 /// `cursor` here is never overridden by an un-overridable inline style).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Cursor {
     /// Browser/OS picks based on context (CSS `auto`).
     #[default]
@@ -1041,6 +1137,7 @@ pub enum Cursor {
 /// double-clicking a button doesn't select its label text. The framework
 /// sets no default; component libraries opt in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UserSelect {
     /// Default selection behavior (CSS `auto`).
     #[default]
@@ -1076,6 +1173,7 @@ pub enum UserSelect {
 /// - Terminal: the dashed (`╌`/`╎`) / dotted (`┈`/`┊`) box-drawing
 ///   characters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BorderStyle {
     /// One unbroken line (CSS `solid`).
     #[default]
@@ -1099,6 +1197,7 @@ pub enum BorderStyle {
 /// The framework sets no default; only an author/SDK opt-in produces a
 /// non-default value.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PointerEvents {
     /// Default — the element hit-tests normally (CSS `auto`).
     #[default]
@@ -1120,6 +1219,7 @@ pub enum PointerEvents {
 /// equivalent across UIView/Android/DOM that the framework will commit
 /// to. Approximate it with a more-opaque translucent `background` fill.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Shadow {
     pub x: f32,
     pub y: f32,
@@ -1136,6 +1236,7 @@ pub struct Shadow {
 /// - Android: `GradientDrawable` with the corresponding gradient type,
 ///   or a manual `RadialGradient` + `Paint` when the type isn't expressible.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Gradient {
     pub kind: GradientKind,
     /// Color stops ordered by ascending offset. Each `(offset, color)`
@@ -1148,6 +1249,7 @@ pub struct Gradient {
 
 /// One color stop in a [`Gradient`].
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GradientStop {
     /// Offset along the gradient's axis (linear) or radius (radial),
     /// in normalized 0..=1 space.
@@ -1159,6 +1261,7 @@ pub struct GradientStop {
 /// only the parameters specific to its shape; the color stops live
 /// on the parent [`Gradient`].
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GradientKind {
     /// Linear gradient along an axis defined by an angle.
     Linear {
@@ -1198,6 +1301,7 @@ pub enum GradientKind {
 /// space — matches the equivalent CSS `radial-gradient(<extent>, …)`
 /// keywords.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadialExtent {
     /// Distance to the closest edge midpoint. On a 100×200 box
     /// centered, the reference is 50px (half the shorter side).
@@ -1218,6 +1322,7 @@ pub enum RadialExtent {
 /// - Web: emits a single `transform: ...` string joining all entries.
 /// - Native: applies each transform to the view's layer matrix in order.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Transform {
     TranslateX(Length),
     TranslateY(Length),
@@ -1254,6 +1359,7 @@ pub enum Transform {
 /// - iOS: `CAMediaTimingFunction` named constants + custom control points
 /// - Android: `Interpolator` subclasses + `PathInterpolator` for custom
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Easing {
     Linear,
     /// CSS default — quick start, slow end. Equivalent to
@@ -1271,6 +1377,7 @@ pub enum Easing {
 /// milliseconds (no floats — keeps `Hash`/`Eq` straightforward, and
 /// sub-millisecond timing isn't meaningful for UI transitions).
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transition {
     pub duration_ms: u32,
     pub easing: Easing,
@@ -1303,6 +1410,7 @@ impl Transition {
 /// compile time and by builder methods at runtime — the data model
 /// itself has only per-side state.
 #[derive(Debug, Default, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StyleRules {
     // --- Color + text ---
     pub background: Option<Tokenized<Color>>,
@@ -2302,6 +2410,28 @@ pub struct VariantAxisDef {
     pub values: BTreeMap<VariantValue, RulesFn>,
 }
 
+/// A stylesheet's STRUCTURE without its closures (feature `remote-serde`):
+/// every axis with its values and default, and every compound's `when`.
+/// What a remote bundle sends so the host can rebuild the same sheet with
+/// each closure proxied back to the bundle — see [`StyleSheet::from_shape`].
+#[cfg(feature = "remote-serde")]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SheetShape {
+    /// `(axis, values, default)`, in the sheet's own axis order.
+    pub axes: Vec<(VariantAxis, Vec<VariantValue>, Option<VariantValue>)>,
+    /// Each compound's `when`, by position.
+    pub compounds: Vec<BTreeMap<VariantAxis, VariantValue>>,
+}
+
+/// One closure of a stylesheet (feature `remote-serde`).
+#[cfg(feature = "remote-serde")]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SheetPart {
+    Base,
+    Axis(VariantAxis, VariantValue),
+    Compound(u32),
+}
+
 /// A compound variant: only applied when *all* of `when`'s
 /// axis=value pairs are active at apply time.
 pub struct CompoundVariant {
@@ -2708,6 +2838,58 @@ impl StyleSheet {
     /// resolution: scanning `variant_keys()` per call allocates the full
     /// key list per styled node per fire — the cached slice is the
     /// empty-slice fast path the old walker used.
+    /// This sheet's structure, closures omitted (feature `remote-serde`).
+    #[cfg(feature = "remote-serde")]
+    pub fn shape(&self) -> SheetShape {
+        SheetShape {
+            axes: self
+                .variants
+                .iter()
+                .map(|(axis, def)| (axis.clone(), def.values.keys().cloned().collect(), def.default.clone()))
+                .collect(),
+            compounds: self.compounds.iter().map(|c| c.when.clone()).collect(),
+        }
+    }
+
+    /// Run ONE of this sheet's closures — what a proxied part on the host
+    /// asks for (feature `remote-serde`). `None` for a part the sheet does
+    /// not have.
+    #[cfg(feature = "remote-serde")]
+    pub fn eval_part(&self, part: &SheetPart, variants: &VariantSet) -> Option<StyleRules> {
+        match part {
+            SheetPart::Base => Some((self.base)(variants)),
+            SheetPart::Axis(axis, value) => Some((self.variants.get(axis)?.values.get(value)?)(variants)),
+            SheetPart::Compound(i) => Some((self.compounds.get(*i as usize)?.rules)(variants)),
+        }
+    }
+
+    /// Rebuild a sheet from its `shape`, every closure answered by `eval`
+    /// (feature `remote-serde`). Built through the ordinary builders, so the
+    /// derived state / breakpoint / container / author-axis metadata is
+    /// exactly what the original sheet derived from the same axis names —
+    /// the native engine treats the result as it treats any sheet.
+    #[cfg(feature = "remote-serde")]
+    pub fn from_shape(shape: &SheetShape, eval: Rc<dyn Fn(&SheetPart, &VariantSet) -> StyleRules>) -> StyleSheet {
+        let e = eval.clone();
+        let mut sheet = StyleSheet::new(move |v| e(&SheetPart::Base, v));
+        for (axis, values, default) in &shape.axes {
+            for value in values {
+                let e = eval.clone();
+                let part = SheetPart::Axis(axis.clone(), value.clone());
+                sheet = sheet.variant(axis.clone(), value.clone(), move |v| e(&part, v));
+            }
+            if let Some(d) = default {
+                sheet = sheet.variant_default(axis.clone(), d.clone());
+            }
+        }
+        for (i, when) in shape.compounds.iter().enumerate() {
+            let e = eval.clone();
+            let part = SheetPart::Compound(i as u32);
+            sheet = sheet.compound(when.clone().into_iter().collect::<Vec<_>>(), move |v| e(&part, v));
+        }
+        sheet
+    }
+
     pub fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         &self.state_axes
     }
@@ -3199,6 +3381,7 @@ fn is_state_axis(axis: &str) -> bool {
 // ----------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VariantSet(pub BTreeMap<VariantAxis, VariantValue>);
 
 impl VariantSet {

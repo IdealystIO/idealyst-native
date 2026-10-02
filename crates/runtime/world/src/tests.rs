@@ -3166,4 +3166,48 @@ mod host_owned_values {
         w.flush();
         assert_eq!(seen.get(), 8);
     }
+
+    /// A remote component's `Owned` crosses as a scope id and the host's
+    /// claimed copy is the owner: nothing is freed at release, everything
+    /// is freed (cleanups run, signals die) when the CLAIMED scope drops.
+    #[test]
+    fn released_scope_is_owned_by_whoever_claims_it() {
+        use crate::remote::claim_scope;
+        use crate::remote_guest::release_scope;
+        let w = World::new();
+        let cleaned = Rc::new(Cell::new(0));
+        let c2 = cleaned.clone();
+        let (sig, owned) = w.enter(|| {
+            collect_owned(|| {
+                let s = signal(1u32);
+                effect(move || {
+                    let _ = s.get();
+                    let c = c2.clone();
+                    on_cleanup(move || c.set(c.get() + 1));
+                });
+                s
+            })
+        });
+        assert_eq!(owned.len(), 2);
+        let id = release_scope(owned);
+        assert_ne!(id, 0);
+        assert!(sig.is_alive(), "release hands the slots over; it frees nothing");
+        assert_eq!(cleaned.get(), 0);
+
+        let claimed = claim_scope(id);
+        assert_eq!(claimed.len(), 2);
+        sig.set(2);
+        w.flush();
+        assert_eq!(cleaned.get(), 1, "the effect is still live under the claimed scope");
+        drop(claimed);
+        assert_eq!(cleaned.get(), 2, "dropping the claimed scope ran the cleanup");
+        assert!(!sig.is_alive(), "and freed the signal");
+    }
+
+    #[test]
+    fn an_empty_scope_crosses_as_zero() {
+        let owned = collect_owned(|| ()).1;
+        assert_eq!(crate::remote_guest::release_scope(owned), 0);
+        assert!(crate::remote::claim_scope(0).is_empty());
+    }
 }

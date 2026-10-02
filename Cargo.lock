@@ -10164,6 +10164,7 @@ dependencies = [
  "dev-hot",
  "host-mock",
  "mcp-catalog",
+ "postcard",
  "runtime-macros",
  "runtime-scene",
  "runtime-shared",
@@ -11233,6 +11234,18 @@ name = "spike-kernelguest"
 version = "0.1.0"
 dependencies = [
  "runtime-world",
+ "stream-abi",
+]
+
+[[package]]
+name = "spike-remoteguest"
+version = "0.1.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "spike-components",
  "stream-abi",
 ]
 

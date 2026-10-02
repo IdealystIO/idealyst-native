@@ -101,6 +101,17 @@ catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
 # Only `idealyst dev`'s generated runtime-server sidecar enables it.
 hot-reload = ["dep:dev-hot", "dev-hot/hot", "runtime-world/hot-reload"]
 
+# Remote components (crates/streaming): the element codec that carries a
+# bundle's `Element` tree to the host app — `remote::bundle` encodes it in the
+# bundle (closures become callback ids), `remote::host` decodes it into real
+# prims whose closures call back. Off for every app that hosts no remote
+# components. See `src/remote/mod.rs`.
+remote = ["dep:serde", "dep:postcard", "runtime-shared/remote-serde", "runtime-world/bridge"]
+# Both halves in one process, on the kernel's loopback engine: what the
+# codec's own tests run on (`cargo test -p runtime-vocabulary --features
+# remote-loopback --test remote_elements`).
+remote-loopback = ["remote", "runtime-world/loopback-engine"]
+
 [dependencies]
 # The shared prop/data types (StyleRules, AccessibilityProps, handler
 # aliases, primitives::* payloads, robot bridge, host slots) live in
@@ -115,6 +126,8 @@ runtime-world = { workspace = true }
 # though the overlay that consumes descriptors is feature-gated.
 runtime-template = { workspace = true }
 serde = { workspace = true, optional = true }
+# The remote element codec's wire format (feature `remote`).
+postcard = { version = "1", default-features = false, features = ["alloc"], optional = true }
 
 # Catalog anchor (see the `catalog` feature above).
 mcp-catalog = { workspace = true, optional = true }
@@ -147,3 +160,6 @@ host-mock = { path = "../../dev/host-mock" }
 # used to make a proc-macro feature a cross-crate unification hazard is
 # gone (see runtime-macros/Cargo.toml).
 runtime-macros = { path = "../macros" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

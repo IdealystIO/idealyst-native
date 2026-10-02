@@ -11,7 +11,7 @@ fn main() {
     let target_dir = out.join("guest-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
-    for package in ["spike-guest", "spike-fullguest", "spike-kernelguest"] {
+    for package in ["spike-guest", "spike-fullguest", "spike-kernelguest", "spike-remoteguest"] {
         let status = guest_build_command(&cargo, &manifest, &target_dir, package)
             .status()
             .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));

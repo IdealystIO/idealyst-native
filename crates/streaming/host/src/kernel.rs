@@ -45,6 +45,15 @@ pub struct KState {
     memory: Option<Memory>,
 }
 
+/// The element codec's exports (`runtime_vocabulary::remote::wasm`); only a
+/// bundle that renders UI has them.
+#[derive(Clone, Copy)]
+struct UiHooks {
+    alloc: TypedFunc<u32, u32>,
+    invoke: TypedFunc<(u32, u32), i64>,
+    release: TypedFunc<u32, ()>,
+}
+
 #[derive(Clone, Copy)]
 struct Hooks {
     commit: TypedFunc<(i64, u32), u32>,
@@ -54,6 +63,7 @@ struct Hooks {
     run_cleanup: TypedFunc<i64, ()>,
     drop_cleanup: TypedFunc<i64, ()>,
     drop_context: TypedFunc<i64, ()>,
+    ui: Option<UiHooks>,
 }
 
 struct Inner {
@@ -116,6 +126,9 @@ fn with_active<R>(caller: &mut Caller<'_, KState>, f: impl FnOnce() -> R) -> R {
 trait GuestCall {
     fn call_i64(&mut self, f: TypedFunc<i64, ()>, arg: i64) -> Result<(), wasmi::Error>;
     fn commit(&mut self, f: TypedFunc<(i64, u32), u32>, value: i64, forced: u32) -> Result<u32, wasmi::Error>;
+    /// Run element callback `cb` on `args`; its reply.
+    fn ui_invoke(&mut self, ui: UiHooks, cb: u32, args: &[u8]) -> Result<Vec<u8>, wasmi::Error>;
+    fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error>;
 }
 
 impl<C: AsContextMut<Data = KState>> GuestCall for C {
@@ -125,6 +138,28 @@ impl<C: AsContextMut<Data = KState>> GuestCall for C {
     fn commit(&mut self, f: TypedFunc<(i64, u32), u32>, value: i64, forced: u32) -> Result<u32, wasmi::Error> {
         f.call(&mut *self, (value, forced))
     }
+    fn ui_invoke(&mut self, ui: UiHooks, cb: u32, args: &[u8]) -> Result<Vec<u8>, wasmi::Error> {
+        let memory = self.as_context().data().memory.expect("kernel bridge: bundle exports no memory");
+        let ptr = ui.alloc.call(&mut *self, args.len() as u32)?;
+        memory
+            .write(&mut *self, ptr as usize, args)
+            .unwrap_or_else(|_| panic!("remote codec: argument buffer {ptr} out of bounds"));
+        let packed = ui.invoke.call(&mut *self, (cb, args.len() as u32))?;
+        Ok(read_packed(&*self, memory, packed))
+    }
+    fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error> {
+        ui.release.call(&mut *self, cb)
+    }
+}
+
+/// Copy a `ptr << 32 | len` result out of the bundle's memory.
+fn read_packed(ctx: impl wasmi::AsContext, memory: Memory, packed: i64) -> Vec<u8> {
+    let (ptr, len) = ((packed >> 32) as u32 as usize, packed as u32 as usize);
+    let mut out = vec![0u8; len];
+    memory
+        .read(&ctx, ptr, &mut out)
+        .unwrap_or_else(|_| panic!("remote codec: reply buffer {ptr}+{len} out of bounds"));
+    out
 }
 
 /// Route one hook to bundle `bundle`: through its in-flight import's
@@ -421,6 +456,14 @@ impl KernelBundle {
             run_cleanup: instance.get_typed_func(&store, "idealyst_kernel_run_cleanup")?,
             drop_cleanup: instance.get_typed_func(&store, "idealyst_kernel_drop_cleanup")?,
             drop_context: instance.get_typed_func(&store, "idealyst_kernel_drop_context")?,
+            ui: match (
+                instance.get_typed_func(&store, "idealyst_ui_alloc"),
+                instance.get_typed_func(&store, "idealyst_ui_invoke"),
+                instance.get_typed_func(&store, "idealyst_ui_release"),
+            ) {
+                (Ok(alloc), Ok(invoke), Ok(release)) => Some(UiHooks { alloc, invoke, release }),
+                _ => None,
+            },
         };
         let inner = Rc::new(Inner { id: bundle, store: RefCell::new(store), instance, hooks });
         BUNDLES.with(|b| b.borrow_mut().insert(bundle, Rc::downgrade(&inner)));
@@ -495,5 +538,71 @@ impl KernelBundle {
         let mut buf = vec![0u8; len as usize];
         memory.read(&*store, ptr as usize, &mut buf).expect("in bounds");
         buf
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remote components: the element codec's link to a bundle
+// ---------------------------------------------------------------------------
+
+use runtime_scene::Element;
+use runtime_vocabulary::remote::host::{decode, DecodeError, Link};
+
+/// The element codec's [`Link`] to one bundle: decoded closures call the
+/// bundle's callback table through it. Routed like the kernel hooks — a call
+/// made while the bundle has an import in flight goes through that import's
+/// `Caller` — so a host effect can run a bundle getter at any depth.
+struct UiLink {
+    bundle: u32,
+}
+
+impl Link for UiLink {
+    fn call(&self, cb: u32, args: &[u8]) -> Vec<u8> {
+        let bundle = self.bundle;
+        route(bundle, |c, h| c.ui_invoke(ui_hooks(bundle, h), cb, args))
+            .unwrap_or_else(|| panic!("remote component: bundle {bundle} is gone, but a node it built is still live"))
+    }
+    fn release(&self, cb: u32) {
+        // A bundle already gone took its table with it: nothing to release.
+        let bundle = self.bundle;
+        route(bundle, |c, h| c.ui_release(ui_hooks(bundle, h), cb));
+    }
+}
+
+fn ui_hooks(bundle: u32, h: Hooks) -> UiHooks {
+    h.ui.unwrap_or_else(|| panic!("remote component: bundle {bundle} exports no element codec (`idealyst_ui_*`)"))
+}
+
+impl KernelBundle {
+    /// Mount a remote component: call the bundle's mount `export` — shape
+    /// `(args_ptr, args_len) -> packed reply` — with `args` (the component's
+    /// props, encoded as the export expects), and decode the tree it
+    /// returns. Call inside the world the component should live in; realize
+    /// the result with the app's own registry.
+    pub fn mount_remote(&self, export: &str, args: &[u8]) -> Result<Element, DecodeError> {
+        let ui = ui_hooks(self.inner.id, self.inner.hooks);
+        let mount: TypedFunc<(u32, u32), i64> = {
+            let store = self.inner.store.borrow();
+            self.inner
+                .instance
+                .get_typed_func(&*store, export)
+                .unwrap_or_else(|e| panic!("remote component: no mount export `{export}` of shape (u32, u32) -> i64: {e}"))
+        };
+        let bytes = {
+            let mut store = self.inner.store.try_borrow_mut().unwrap_or_else(|_| {
+                panic!("remote component: mount `{export}` re-entered a bundle that is already running")
+            });
+            let memory = store.data().memory.expect("kernel bridge: bundle exports no memory");
+            let ptr = ui
+                .alloc
+                .call(&mut *store, args.len() as u32)
+                .unwrap_or_else(|e| panic!("remote component: alloc trapped: {e}"));
+            memory.write(&mut *store, ptr as usize, args).expect("argument buffer in bounds");
+            let packed = mount
+                .call(&mut *store, (ptr, args.len() as u32))
+                .unwrap_or_else(|e| panic!("remote component: `{export}` trapped: {e}"));
+            read_packed(&*store, memory, packed)
+        };
+        decode(Rc::new(UiLink { bundle: self.inner.id }), &bytes)
     }
 }

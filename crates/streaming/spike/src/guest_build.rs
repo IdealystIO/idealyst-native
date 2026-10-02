@@ -17,6 +17,11 @@ pub const FULL_GUEST_SOURCES: &[&str] = &[
     "components/src",
     "kernelguest/src",
     "kernelguest/Cargo.toml",
+    "remoteguest/src",
+    "remoteguest/Cargo.toml",
+    "../../runtime/vocabulary/src",
+    "../../runtime/scene/src",
+    "../../runtime/shared/src",
     "../abi/src",
     "../../runtime/world/src",
 ];

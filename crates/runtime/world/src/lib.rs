@@ -275,6 +275,33 @@ pub mod remote {
     pub fn export_context(name: &str, fetch: impl Fn(&mut Vec<u8>) -> bool + 'static) -> ExportGuard {
         crate::bridge::host::register_context(name, Rc::new(fetch))
     }
+
+    /// Claim scope `id` — a remote component's `Owned`, sent over by
+    /// [`remote_guest::release_scope`](crate::remote_guest::release_scope) —
+    /// as an `Owned` of this side. The slots it collected (the bundle's
+    /// signals, effects and context entries, all living in this graph) now
+    /// live and die with the returned value, so an `Element::Owned` decoded
+    /// from a bundle is a component boundary exactly like a native one.
+    /// `0` (collected nothing) gives an empty `Owned`.
+    /// Bundle scopes held by id that nobody has claimed or dropped — `0`
+    /// once every remote tree's scopes have been claimed (see
+    /// [`claim_scope`]). A remote mount that leaves this above zero leaked
+    /// the bundle's signals and effects into the host's graph.
+    pub fn pending_scopes() -> usize {
+        crate::bridge::host::pending_scopes()
+    }
+
+    #[cfg(not(idealyst_stream_guest))]
+    pub fn claim_scope(id: u32) -> crate::Owned {
+        // Natively the scope's items move out of the bridge's table into a
+        // native scope. On loopback the active engine IS the bridge, whose
+        // scopes are table ids already: the id is the scope.
+        #[cfg(not(feature = "loopback-engine"))]
+        let scope = crate::bridge::host::take_scope(id);
+        #[cfg(feature = "loopback-engine")]
+        let scope = (id != 0).then_some(id);
+        crate::Owned { scope, attachments: Vec::new(), _not_send: std::marker::PhantomData }
+    }
 }
 
 /// The bundle side of host-owned values: what a remote bundle's component
@@ -313,6 +340,15 @@ pub mod remote_guest {
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn import_read_signal<T: PartialEq + 'static>(h: (u32, u32, u32), codec: Codec<T>) -> ReadSignal<T> {
         import_signal(h, codec).read_only()
+    }
+
+    /// Hand `owned` to the host as a scope id, for
+    /// [`remote::claim_scope`](crate::remote::claim_scope) on the other
+    /// side; `0` when it collected nothing. The slots stay alive — they are
+    /// the host's now, and so is the job of dropping them. Attachments are
+    /// this side's data and are dropped here.
+    pub fn release_scope(mut owned: Owned) -> u32 {
+        std::mem::take(&mut owned.scope).unwrap_or(0)
     }
 
     /// Let `inject::<T>()` fall back to the host context declared under

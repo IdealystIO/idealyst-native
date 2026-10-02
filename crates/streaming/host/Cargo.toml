@@ -16,7 +16,8 @@ runtime-world = { workspace = true, features = ["bridge"] }
 runtime-scene = { workspace = true }
 # `async-driver` for `spawn_then`, which async host functions run under so
 # they get the framework's scope guarantee rather than a second one.
-runtime-vocabulary = { workspace = true, features = ["async-driver"] }
+# `remote`: the element codec's host half (`kernel.rs`'s `mount_remote`).
+runtime-vocabulary = { workspace = true, features = ["async-driver", "remote"] }
 rustc-hash = { workspace = true }
 # Pure-Rust interpreter: no JIT, so it runs where executable memory is
 # forbidden (iOS). `wat` is off — bundles arrive as binary wasm.

@@ -18,6 +18,10 @@ pub const FULL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spi
 /// build script.
 pub const KERNEL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_kernelguest.wasm"));
 
+/// Phase 4: `RemoteCounter` as a remote component — bridged kernel, element
+/// codec (`spike-remoteguest`).
+pub const REMOTE_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_remoteguest.wasm"));
+
 /// `spike-guest`, release-built for wasm32 by this crate's build script —
 /// the app's built-in copy, used when no bundle server answers.
 pub const GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_guest.wasm"));

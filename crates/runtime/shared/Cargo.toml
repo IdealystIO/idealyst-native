@@ -41,6 +41,11 @@ description = "Idealyst shared runtime substrate: style engine, assets, animatio
 # the old single-crate feature surface keeps working unchanged.
 default = []
 
+# Serde for the style data model (`StyleRules`, `VariantSet` and everything
+# they reach), so a remote component's styles can cross to the host app with
+# token names intact. Off for every app that doesn't host remote components.
+remote-serde = []
+
 # NOTE: `style-dynamic` was REMOVED (runtime v2). It was the last
 # remnant of the bundle-size gating model (`prim-*` + `style-dynamic`)
 # that stage 2 of the deletion removed by decision, and it had already
