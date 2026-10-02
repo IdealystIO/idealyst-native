@@ -3006,3 +3006,164 @@ fn regression_world_dropped_during_thread_teardown_is_quiet() {
     .join();
     assert!(joined.is_ok(), "tearing a world down during TLS destruction must not panic");
 }
+
+// ---------------------------------------------------------------------------
+// Host-owned values crossing into a bundle (bridge phase 3b), in-process.
+// Only meaningful where the bridged engine is the active one: `Active` plays
+// the bundle, and the host side is native slots created directly on the
+// native engine — exactly what a remote-component host hands a bundle.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "loopback-engine")]
+mod host_owned_values {
+    use super::*;
+    use crate::engine::Engine;
+    use crate::native::Native;
+    use crate::remote::{export_context, export_read_signal, export_signal, Codec};
+    use crate::remote_guest::{import_read_signal, import_signal, register_remote_context};
+
+    fn enc(v: &u32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    fn dec(b: &[u8]) -> Option<u32> {
+        Some(u32::from_le_bytes(b.try_into().ok()?))
+    }
+    const U32: Codec<u32> = Codec { encode: enc, decode: dec };
+
+    /// A HOST-owned signal: a native slot holding the real value, created on
+    /// the native engine directly (the bridged `Active` would make a
+    /// bundle-owned one).
+    fn host_signal(world: &World, v: u32) -> Signal<u32> {
+        let (w, slot, gen, _) =
+            Native::signal_create(Some(world.id()), Box::new(SignalData { value: v, next: None }), caller_site());
+        Signal { world: w, slot, gen, _marker: PhantomData }
+    }
+
+    /// The host reading its own signal, natively.
+    fn host_get(s: Signal<u32>) -> u32 {
+        match Native::signal_access(s.world, s.slot, s.gen, |d| typed::<u32>(d).value) {
+            Access::Done(v) => v,
+            Access::DeadWorld => panic!("dead"),
+        }
+    }
+
+    /// The host writing its own signal, natively (staged, like `set`).
+    fn host_set(s: Signal<u32>, v: u32) {
+        let _ = Native::signal_write(s.world, s.slot, s.gen, false, |d| typed::<u32>(d).next = Some(v));
+    }
+
+    #[test]
+    fn an_imported_signal_reads_the_hosts_committed_value() {
+        let w = World::new();
+        let host = host_signal(&w, 5);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let imported = w.enter(|| import_read_signal(h, U32));
+        assert_eq!(imported.get(), 5);
+        host_set(host, 6);
+        assert_eq!(imported.get(), 5, "staged on the host: not visible yet");
+        w.flush();
+        assert_eq!(imported.get(), 6);
+    }
+
+    /// The bundle's effect subscribes on the HOST's graph: a host write +
+    /// host flush re-runs it.
+    #[test]
+    fn a_bundle_effect_tracks_an_imported_signal() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let seen = Rc::new(Cell::new(0u32));
+        let s2 = seen.clone();
+        w.enter(|| {
+            let imported = import_read_signal(h, U32);
+            effect(move || s2.set(imported.get()));
+        });
+        assert_eq!(seen.get(), 1);
+        host_set(host, 42);
+        w.flush();
+        assert_eq!(seen.get(), 42);
+    }
+
+    /// Bundle writes stage into the host's signal; two `update`s in one batch
+    /// compose on the host's STAGED value, like native.
+    #[test]
+    fn bundle_writes_stage_into_the_host_signal_and_updates_compose() {
+        let w = World::new();
+        let host = host_signal(&w, 10);
+        let (h, _guard) = export_signal(host, U32);
+        let imported = w.enter(|| import_signal(h, U32));
+        imported.update(|v| v + 1);
+        imported.update(|v| v + 1);
+        assert_eq!(host_get(host), 10, "staged, not committed");
+        w.flush();
+        assert_eq!(host_get(host), 12);
+        imported.set_untracked(99);
+        assert_eq!(host_get(host), 99, "set_untracked commits directly");
+    }
+
+    #[test]
+    #[should_panic(expected = "received read-only")]
+    fn a_bundle_cannot_write_a_signal_exported_read_only() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        // A bundle forging a two-way import of a read-only export.
+        let forged = w.enter(|| import_signal(h, U32));
+        forged.set(2);
+    }
+
+    #[derive(Clone)]
+    struct Theme(u32);
+    #[derive(Clone)]
+    struct Live(ReadSignal<u32>);
+
+    /// Declared host context reaches the bundle's plain `inject`, and the
+    /// bundle's own provision of the type shadows the host's.
+    #[test]
+    fn declared_host_context_reaches_inject_and_bundle_provisions_shadow_it() {
+        let w = World::new();
+        let _guard = export_context("Theme", |out| {
+            enc(&7, out);
+            true
+        });
+        register_remote_context::<Theme>("Theme", |b| dec(b).map(Theme));
+        w.enter(|| {
+            assert_eq!(inject::<Theme>().map(|t| t.0), Some(7), "host context, by declared name");
+            let (_, _owned) = collect_owned(|| {
+                provide(Theme(1));
+                assert_eq!(inject::<Theme>().map(|t| t.0), Some(1), "the bundle's own provision wins");
+            });
+        });
+        // Undeclared: invisible.
+        w.enter(|| assert!(inject::<Live>().is_none()));
+    }
+
+    /// A context value that HOLDS a host signal arrives as an imported
+    /// handle, so it stays reactive in the bundle.
+    #[test]
+    fn host_context_holding_a_signal_stays_reactive_in_the_bundle() {
+        let w = World::new();
+        let host = host_signal(&w, 3);
+        let (h, _sig_guard) = export_read_signal(host.read_only(), U32);
+        let _ctx_guard = export_context("Live", move |out| {
+            for v in [h.0, h.1, h.2] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            true
+        });
+        register_remote_context::<Live>("Live", |b| {
+            let n = |i: usize| u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
+            Some(Live(import_read_signal((n(0), n(1), n(2)), U32)))
+        });
+        let seen = Rc::new(Cell::new(0u32));
+        let s2 = seen.clone();
+        w.enter(|| {
+            let live = inject::<Live>().expect("declared").0;
+            effect(move || s2.set(live.get()));
+        });
+        assert_eq!(seen.get(), 3);
+        host_set(host, 8);
+        w.flush();
+        assert_eq!(seen.get(), 8);
+    }
+}

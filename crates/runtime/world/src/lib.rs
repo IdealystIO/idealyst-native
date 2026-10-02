@@ -130,16 +130,200 @@ type Active = bridge::Loopback;
 #[cfg(idealyst_stream_guest)]
 type Active = bridge::guest::Bridged<bridge::wasm::Imports>;
 
+/// Typed halves of the bridge's host-owned-value machinery: the sync that
+/// mirrors an imported value in a bundle, and the exporter that serves a
+/// host signal to bundles. Here because both need `T` and `SignalData<T>`.
+#[cfg(any(test, feature = "bridge", feature = "loopback-engine", idealyst_stream_guest))]
+#[cfg_attr(not(any(feature = "bridge", feature = "loopback-engine", idealyst_stream_guest)), allow(dead_code))]
+mod bridge_typed {
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::bridge::{ImportSync, StageMode};
+    use crate::native::Native;
+
+    /// How a value of type `T` crosses the boundary. Plain function
+    /// pointers, so runtime-world stays codec-free: the remote-component
+    /// crates supply them (from `stream_abi::Wire`).
+    pub struct Codec<T> {
+        pub encode: fn(&T, &mut Vec<u8>),
+        pub decode: fn(&[u8]) -> Option<T>,
+    }
+
+    impl<T> Clone for Codec<T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+    impl<T> Copy for Codec<T> {}
+
+    /// Mirrors an imported value through its codec (bundle side).
+    #[cfg_attr(not(any(idealyst_stream_guest, feature = "loopback-engine")), allow(dead_code))]
+    pub(crate) struct TypedSync<T>(pub(crate) Codec<T>);
+
+    impl<T: PartialEq + 'static> ImportSync for TypedSync<T> {
+        fn pull(&self, mirror: &mut dyn AnySignal, committed: &[u8], staged: Option<&[u8]>) {
+            let d = typed::<T>(mirror);
+            d.value = (self.0.decode)(committed).expect("kernel bridge: host value does not decode");
+            d.next = staged.map(|b| (self.0.decode)(b).expect("kernel bridge: host staged value does not decode"));
+        }
+        fn take_next(&self, mirror: &mut dyn AnySignal, out: &mut Vec<u8>) -> bool {
+            match typed::<T>(mirror).next.take() {
+                Some(next) => {
+                    (self.0.encode)(&next, out);
+                    true
+                }
+                None => false,
+            }
+        }
+        fn encode_value(&self, mirror: &mut dyn AnySignal, out: &mut Vec<u8>) {
+            (self.0.encode)(&typed::<T>(mirror).value, out)
+        }
+    }
+
+    /// Serves a host-owned signal to bundles (host side). Goes through the
+    /// NATIVE engine directly rather than `Active`: the slot is native, and
+    /// in the loopback configuration `Active` is the bridged engine.
+    pub(crate) struct Exporter<T> {
+        pub(crate) handle: (WorldId, u32, u32),
+        pub(crate) codec: Codec<T>,
+        pub(crate) writable: bool,
+    }
+
+    impl<T: PartialEq + 'static> crate::bridge::host::Exported for Exporter<T> {
+        fn fetch(&self, staged: bool, out: &mut Vec<u8>) -> bool {
+            let (w, s, g) = self.handle;
+            match Native::signal_access(w, s, g, |d| {
+                let d = typed::<T>(d);
+                match (staged, &d.next) {
+                    (false, _) => {
+                        (self.codec.encode)(&d.value, out);
+                        true
+                    }
+                    (true, Some(next)) => {
+                        (self.codec.encode)(next, out);
+                        true
+                    }
+                    (true, None) => false,
+                }
+            }) {
+                Access::Done(found) => found,
+                Access::DeadWorld => false,
+            }
+        }
+        fn stage(&self, bytes: &[u8], mode: StageMode) {
+            assert!(
+                self.writable,
+                "kernel bridge: a bundle wrote a host signal it received read-only (world {}, slot {})",
+                self.handle.0, self.handle.1
+            );
+            let value = (self.codec.decode)(bytes).expect("kernel bridge: bundle value does not decode");
+            let (w, s, g) = self.handle;
+            let _ = match mode {
+                StageMode::Set | StageMode::SetAlways => {
+                    Native::signal_write(w, s, g, mode == StageMode::SetAlways, |d| typed::<T>(d).next = Some(value))
+                }
+                StageMode::Untracked => Native::signal_access(w, s, g, |d| typed::<T>(d).value = value),
+            };
+        }
+    }
+
+    // Host side: used by `remote::export_*` (feature `bridge`).
+    #[cfg_attr(not(feature = "bridge"), allow(dead_code))]
+    pub(crate) fn exporter<T: PartialEq + 'static>(
+        handle: (WorldId, u32, u32),
+        codec: Codec<T>,
+        writable: bool,
+    ) -> Rc<dyn crate::bridge::host::Exported> {
+        Rc::new(Exporter { handle, codec, writable })
+    }
+}
+
 /// The host side of the kernel bridge, for a remote-component host (the
 /// app that loads bundles): implement [`remote::GuestHooks`] for the
-/// transport that reaches a bundle, and serve the bundle's kernel calls with
-/// [`remote::Host`]'s [`remote::HostOps`]. See `bridge/mod.rs` for the
-/// model and `crates/streaming` for the wasm transport.
+/// transport that reaches a bundle, serve the bundle's kernel calls with
+/// [`remote::Host`]'s [`remote::HostOps`], and hand host state to bundles
+/// with [`remote::export_signal`] / [`remote::export_read_signal`] (props)
+/// and [`remote::export_context`] (context). See `bridge/mod.rs`.
 #[cfg(feature = "bridge")]
 pub mod remote {
-    pub use crate::bridge::host::Host;
-    pub use crate::bridge::{GuestHooks, Handle, HostOps, Id};
+    use std::rc::Rc;
+
+    pub use crate::bridge::host::{ExportGuard, Host};
+    pub use crate::bridge::{GuestHooks, Handle, HostOps, Id, StageMode};
+    pub use crate::bridge_typed::Codec;
     pub use crate::engine::{EffectClass, WorldId};
+    use crate::{ReadSignal, Signal};
+
+    /// Let bundles read AND write `sig` (a two-way prop). Returns its handle
+    /// — what the bundle imports — and a guard that withdraws it.
+    pub fn export_signal<T: PartialEq + 'static>(sig: Signal<T>, codec: Codec<T>) -> (Handle, ExportGuard) {
+        let h = (sig.world, sig.slot, sig.gen);
+        (h, crate::bridge::host::register_export(h, crate::bridge_typed::exporter(h, codec, true)))
+    }
+
+    /// Let bundles read `sig` (a read-only prop; a write is refused).
+    pub fn export_read_signal<T: PartialEq + 'static>(sig: ReadSignal<T>, codec: Codec<T>) -> (Handle, ExportGuard) {
+        let h = (sig.world, sig.slot, sig.gen);
+        (h, crate::bridge::host::register_export(h, crate::bridge_typed::exporter(h, codec, false)))
+    }
+
+    /// Declare host context to bundles under `name`: when a bundle's
+    /// `inject` for a type it registered under that name finds nothing of
+    /// its own, `fetch` encodes the host's value (return `false` for none).
+    /// The allowlist — undeclared host context is invisible to bundles.
+    pub fn export_context(name: &str, fetch: impl Fn(&mut Vec<u8>) -> bool + 'static) -> ExportGuard {
+        crate::bridge::host::register_context(name, Rc::new(fetch))
+    }
+}
+
+/// The bundle side of host-owned values: what a remote bundle's component
+/// glue uses to receive props and context the host owns.
+#[cfg(any(idealyst_stream_guest, feature = "loopback-engine"))]
+pub mod remote_guest {
+    use std::any::{Any, TypeId};
+    use std::rc::Rc;
+
+    use super::*;
+    pub use crate::bridge_typed::Codec;
+    use crate::bridge_typed::TypedSync;
+
+    /// A handle to host-owned signal `h`, for this bundle. Reads subscribe
+    /// on the host's graph and see the host's committed value; writes stage
+    /// into the host's signal (`update` composes on its staged value). Lives
+    /// until the importing scope ends.
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn import_signal<T: PartialEq + 'static>(h: (u32, u32, u32), codec: Codec<T>) -> Signal<T> {
+        let site = caller_site();
+        let mut bytes = Vec::new();
+        assert!(
+            Active::fetch(h, &mut bytes),
+            "kernel bridge: host signal (world {}, slot {}) was not exported to this bundle",
+            h.0,
+            h.1
+        );
+        let value = (codec.decode)(&bytes).expect("kernel bridge: host value does not decode");
+        let mirror: Box<dyn AnySignal> = Box::new(SignalData { value, next: None });
+        let id = Active::import(h, mirror, Rc::new(TypedSync(codec)), site);
+        on_scope_drop(move || Active::release_import(id));
+        Signal { world: h.0, slot: h.1, gen: h.2, _marker: PhantomData }
+    }
+
+    /// [`import_signal`]'s read-only half.
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn import_read_signal<T: PartialEq + 'static>(h: (u32, u32, u32), codec: Codec<T>) -> ReadSignal<T> {
+        import_signal(h, codec).read_only()
+    }
+
+    /// Let `inject::<T>()` fall back to the host context declared under
+    /// `name` when this bundle provides no `T` itself.
+    pub fn register_remote_context<T: Clone + 'static>(
+        name: &'static str,
+        decode: impl Fn(&[u8]) -> Option<T> + 'static,
+    ) {
+        let decode = Rc::new(move |b: &[u8]| decode(b).map(|v| Box::new(v) as Box<dyn Any>));
+        Active::register_remote_context(TypeId::of::<T>(), name, decode);
+    }
 }
 
 /// Compile-time parity: the bridged engine implements the full contract.

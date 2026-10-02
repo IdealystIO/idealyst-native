@@ -11233,6 +11233,7 @@ name = "spike-kernelguest"
 version = "0.1.0"
 dependencies = [
  "runtime-world",
+ "stream-abi",
 ]
 
 [[package]]

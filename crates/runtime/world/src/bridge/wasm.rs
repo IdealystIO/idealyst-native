@@ -13,7 +13,7 @@
 //! memory. The host implements the imports in `stream-host`.
 
 use super::guest::Local;
-use super::{GuestHooks, Handle, HostOps, Id};
+use super::{GuestHooks, Handle, HostOps, Id, StageMode};
 use crate::engine::{EffectClass, WorldId};
 
 #[link(wasm_import_module = "idealyst_kernel")]
@@ -62,6 +62,35 @@ extern "C" {
 
     fn ctx_provide(key: i64, ctx: i64);
     fn ctx_inject(key: i64) -> i64;
+
+    fn value_fetch(world: u32, slot: u32, gen: u32, staged: u32, out: *mut u8, cap: u32) -> i64;
+    fn value_stage(world: u32, slot: u32, gen: u32, bytes: *const u8, len: u32, mode: u32);
+    fn ctx_fetch(name: *const u8, name_len: u32, out: *mut u8, cap: u32) -> i64;
+}
+
+/// Run a "write into my buffer" import: `-1` = nothing; a length larger than
+/// the buffer means "grow and ask again" (the value cannot change between
+/// the two calls — writes are staged until the host's flush, which never
+/// runs inside a bundle call).
+fn fetch_into(out: &mut Vec<u8>, mut call: impl FnMut(*mut u8, u32) -> i64) -> bool {
+    out.clear();
+    if out.capacity() < 64 {
+        out.reserve(64);
+    }
+    loop {
+        let cap = out.capacity();
+        let len = call(out.as_mut_ptr(), cap as u32);
+        if len < 0 {
+            return false;
+        }
+        let len = len as usize;
+        if len <= cap {
+            // SAFETY: the host wrote exactly `len` bytes.
+            unsafe { out.set_len(len) };
+            return true;
+        }
+        out.reserve(len);
+    }
 }
 
 /// Effect class on the wire.
@@ -215,6 +244,21 @@ impl HostOps for Imports {
     }
     fn ctx_inject(key: Id) -> Option<Id> {
         opt_id(unsafe { ctx_inject(key as i64) })
+    }
+
+    fn value_fetch((w, s, g): Handle, staged: bool, out: &mut Vec<u8>) -> bool {
+        fetch_into(out, |ptr, cap| unsafe { value_fetch(w, s, g, staged as u32, ptr, cap) })
+    }
+    fn value_stage((w, s, g): Handle, bytes: &[u8], mode: StageMode) {
+        let mode = match mode {
+            StageMode::Set => 0,
+            StageMode::SetAlways => 1,
+            StageMode::Untracked => 2,
+        };
+        unsafe { value_stage(w, s, g, bytes.as_ptr(), bytes.len() as u32, mode) }
+    }
+    fn ctx_fetch(name: &str, out: &mut Vec<u8>) -> bool {
+        fetch_into(out, |ptr, cap| unsafe { ctx_fetch(name.as_ptr(), name.len() as u32, ptr, cap) })
     }
 }
 

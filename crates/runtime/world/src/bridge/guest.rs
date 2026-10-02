@@ -20,11 +20,12 @@
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::marker::PhantomData;
 
 use rustc_hash::FxHashMap;
 
-use super::{GuestHooks, Handle, HostOps, Id};
+use super::{GuestHooks, Handle, HostOps, Id, ImportSync, StageMode};
 use crate::engine::{Access, AnySignal, EffectClass, Engine, WorldId};
 use crate::native;
 use crate::SiteLoc;
@@ -42,6 +43,10 @@ struct ValueEntry {
     data: Option<Box<dyn AnySignal>>,
     /// The host freed the slot while `data` was out; drop it on return.
     freed: bool,
+    /// `Some` for an IMPORTED value: the host owns the slot and the real
+    /// value; `data` is a mirror refreshed around every operation (see
+    /// [`with_value`]). `None` for a value this bundle created.
+    sync: Option<Rc<dyn ImportSync>>,
     /// The author's creation site, for the staged-read warning. Kept here
     /// because a source location cannot cross to the host. Read only by the
     /// debug-build diagnostic (in release `SiteLoc` is `()`).
@@ -65,7 +70,13 @@ struct LocalState {
     cleanups: FxHashMap<Id, Box<dyn FnOnce()>>,
     ctx: FxHashMap<Id, Box<dyn Any>>,
     ctx_keys: FxHashMap<TypeId, Id>,
+    /// Host context types this bundle may inject, by type: the name the
+    /// host declared them under, and how to decode one.
+    remote_ctx: FxHashMap<TypeId, (&'static str, Rc<RemoteDecode>)>,
 }
+
+/// Decodes a host context value into this bundle's type, boxed.
+pub(crate) type RemoteDecode = dyn Fn(&[u8]) -> Option<Box<dyn Any>>;
 
 impl LocalState {
     fn next_id(&mut self) -> Id {
@@ -102,24 +113,41 @@ fn ctx_key(key: TypeId) -> Id {
     with_local(|l| l.ctx_key(key))
 }
 
+/// What an operation does to a value — decides how an IMPORTED value's
+/// mirror is synced with its host slot around it.
+#[derive(Clone, Copy)]
+enum Op {
+    /// A read: refresh the committed value.
+    Read,
+    /// A staged write (`set` / `update`): refresh committed AND staged (so
+    /// updates compose on the host's staged value), then send the result.
+    Write { force: bool },
+    /// Raw access (`set_untracked`): refresh committed; send it back if the
+    /// operation changed it.
+    Access,
+}
+
 /// Run `f` against the local value behind `handle`, moved out for the call.
 /// The host has already vouched for the handle (live world, live slot).
-fn with_value<R>(handle: Handle, f: impl FnOnce(&mut dyn AnySignal) -> R) -> R {
+fn with_value<H: HostOps, R>(handle: Handle, op: Op, f: impl FnOnce(&mut dyn AnySignal) -> R) -> R {
     enum Taken {
-        Got(Id, Box<dyn AnySignal>),
+        Got(Id, Box<dyn AnySignal>, Option<Rc<dyn ImportSync>>),
         Reentrant,
         Missing,
     }
     // Decide under the borrow, panic outside it (the native engine's rule).
     let taken = with_local(|l| match l.by_handle.get(&handle).copied() {
         None => Taken::Missing,
-        Some(id) => match l.values.get_mut(&id).and_then(|e| e.data.take()) {
-            Some(data) => Taken::Got(id, data),
-            None => Taken::Reentrant,
+        Some(id) => match l.values.get_mut(&id) {
+            Some(e) => match e.data.take() {
+                Some(data) => Taken::Got(id, data, e.sync.clone()),
+                None => Taken::Reentrant,
+            },
+            None => Taken::Missing,
         },
     });
-    let (id, mut data) = match taken {
-        Taken::Got(id, data) => (id, data),
+    let (id, mut data, sync) = match taken {
+        Taken::Got(id, data, sync) => (id, data, sync),
         Taken::Reentrant => native::reentrant_signal_panic(handle.0, handle.1),
         Taken::Missing => panic!(
             "runtime-world bridge: signal (world {}, slot {}) is live on the host but has no \
@@ -128,7 +156,38 @@ fn with_value<R>(handle: Handle, f: impl FnOnce(&mut dyn AnySignal) -> R) -> R {
             handle.0, handle.1
         ),
     };
+    // An imported value: refresh the mirror from the host first.
+    let mut pulled = Vec::new();
+    if let Some(sync) = &sync {
+        if !H::value_fetch(handle, false, &mut pulled) {
+            panic!(
+                "kernel bridge: host signal (world {}, slot {}) is no longer exported to this bundle",
+                handle.0, handle.1
+            );
+        }
+        let mut staged = Vec::new();
+        let has_staged = matches!(op, Op::Write { .. }) && H::value_fetch(handle, true, &mut staged);
+        sync.pull(&mut *data, &pulled, has_staged.then_some(&staged[..]));
+    }
     let result = f(&mut *data);
+    // ...and send what the operation wrote back to it.
+    if let Some(sync) = &sync {
+        let mut out = Vec::new();
+        match op {
+            Op::Read => {}
+            Op::Write { force } => {
+                if sync.take_next(&mut *data, &mut out) {
+                    H::value_stage(handle, &out, if force { StageMode::SetAlways } else { StageMode::Set });
+                }
+            }
+            Op::Access => {
+                sync.encode_value(&mut *data, &mut out);
+                if out != pulled {
+                    H::value_stage(handle, &out, StageMode::Untracked);
+                }
+            }
+        }
+    }
     // Put back, unless the host freed the slot during `f`; then the value
     // drops here, outside the borrow.
     let leftover = with_local(|l| match l.values.get_mut(&id) {
@@ -317,7 +376,7 @@ impl<H: HostOps> Engine for Bridged<H> {
     fn signal_create(world: Option<WorldId>, data: Box<dyn AnySignal>, site: SiteLoc) -> (WorldId, u32, u32, bool) {
         let id = with_local(|l| {
             let id = l.next_id();
-            l.values.insert(id, ValueEntry { handle: (0, 0, 0), data: Some(data), freed: false, site });
+            l.values.insert(id, ValueEntry { handle: (0, 0, 0), data: Some(data), freed: false, sync: None, site });
             id
         });
         let (handle, collected) = H::signal_create(world, id);
@@ -334,7 +393,7 @@ impl<H: HostOps> Engine for Bridged<H> {
         if !H::signal_check(h) {
             return Access::DeadWorld;
         }
-        Access::Done(with_value(h, f))
+        Access::Done(with_value::<H, R>(h, Op::Access, f))
     }
     fn signal_read<R>(
         world: WorldId,
@@ -346,7 +405,7 @@ impl<H: HostOps> Engine for Bridged<H> {
         let h = (world, slot, gen);
         match H::signal_read_check(h, track) {
             None => Access::DeadWorld,
-            Some(subscribed) => Access::Done(with_value(h, |d| f(d, subscribed))),
+            Some(subscribed) => Access::Done(with_value::<H, R>(h, Op::Read, |d| f(d, subscribed))),
         }
     }
     fn signal_write<R>(
@@ -360,7 +419,7 @@ impl<H: HostOps> Engine for Bridged<H> {
         if !H::signal_check(h) {
             return Access::DeadWorld;
         }
-        let r = with_value(h, f);
+        let r = with_value::<H, R>(h, Op::Write { force }, f);
         H::signal_enqueue(h, force);
         Access::Done(r)
     }
@@ -481,7 +540,69 @@ impl<H: HostOps> Engine for Bridged<H> {
         H::ctx_provide(ctx_key(key), ctx)
     }
     fn ctx_inject<R>(key: TypeId, f: impl FnOnce(&dyn Any) -> R) -> Option<R> {
-        let ctx = H::ctx_inject(ctx_key(key))?;
-        read_ctx(ctx, f)
+        // This bundle's own provisions first, exactly like native shadowing:
+        // the innermost provider of a type wins, and a bundle providing a
+        // type shadows the host's for the bundle's subtree.
+        if let Some(ctx) = H::ctx_inject(ctx_key(key)) {
+            return read_ctx(ctx, f);
+        }
+        // Then host context the HOST declared to bundles, by name.
+        let (name, decode) = with_local(|l| l.remote_ctx.get(&key).cloned())?;
+        let mut bytes = Vec::new();
+        if !H::ctx_fetch(name, &mut bytes) {
+            return None;
+        }
+        // Decoding may import host signals (a context holding a
+        // `ReadSignal`), which touches the local tables — so no borrow here.
+        let value = decode(&bytes)?;
+        Some(f(&*value))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host-owned values in this bundle (props and context)
+// ---------------------------------------------------------------------------
+
+// Used by the bundle-side import API (`remote_guest`), which only exists
+// where the bridged engine is the active one.
+#[cfg_attr(not(any(idealyst_stream_guest, feature = "loopback-engine")), allow(dead_code))]
+impl<H: HostOps> Bridged<H> {
+    /// Encode a host-owned signal's committed value; `false` when it was not
+    /// exported to this bundle.
+    pub(crate) fn fetch(h: Handle, out: &mut Vec<u8>) -> bool {
+        H::value_fetch(h, false, out)
+    }
+
+    /// Make host-owned slot `h` addressable from this bundle: `mirror` is the
+    /// typed layer's storage holding the value as last fetched, `sync` keeps
+    /// it in step with the host. Returns the local id to release it with.
+    pub(crate) fn import(h: Handle, mirror: Box<dyn AnySignal>, sync: Rc<dyn ImportSync>, site: SiteLoc) -> Id {
+        with_local(|l| {
+            let id = l.next_id();
+            l.values.insert(id, ValueEntry { handle: h, data: Some(mirror), freed: false, sync: Some(sync), site });
+            // A later import of the same host slot takes over the handle;
+            // `release_import` of the earlier one leaves it alone.
+            l.by_handle.insert(h, id);
+            id
+        })
+    }
+
+    /// Forget import `id` (the importing scope ended). The host slot is the
+    /// host's and is untouched.
+    pub(crate) fn release_import(id: Id) {
+        let removed = try_local(|l| {
+            let e = l.values.remove(&id)?;
+            if l.by_handle.get(&e.handle) == Some(&id) {
+                l.by_handle.remove(&e.handle);
+            }
+            Some(e)
+        });
+        drop(removed);
+    }
+
+    /// Declare that `inject::<T>()` may fall back to the host context the
+    /// host declared under `name`.
+    pub(crate) fn register_remote_context(key: TypeId, name: &'static str, decode: Rc<RemoteDecode>) {
+        with_local(|l| l.remote_ctx.insert(key, (name, decode)));
     }
 }

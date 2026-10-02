@@ -30,7 +30,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use runtime_world::remote::{EffectClass, GuestHooks, Handle, Host, HostOps, Id, WorldId};
+use runtime_world::remote::{EffectClass, GuestHooks, Handle, Host, HostOps, Id, StageMode, WorldId};
 use rustc_hash::FxHashMap;
 use wasmi::{AsContextMut, Caller, Engine, Linker, Memory, Module, Store, TypedFunc};
 
@@ -318,6 +318,75 @@ pub fn define_imports(linker: &mut Linker<KState>) {
             with_active(&mut c, || opt(H::ctx_inject(ns(b, key))))
         })
         .expect("define ctx_inject");
+
+    // Host-owned values: a fetch writes into the bundle's buffer when it
+    // fits and always returns the full length (the bundle grows and asks
+    // again); `-1` = nothing.
+    linker
+        .func_wrap(
+            MODULE,
+            "value_fetch",
+            |mut c: Caller<'_, KState>, w: u32, s: u32, g: u32, staged: u32, out: u32, cap: u32| -> i64 {
+                let mut buf = Vec::new();
+                if !with_active(&mut c, || H::value_fetch((w, s, g), staged != 0, &mut buf)) {
+                    return -1;
+                }
+                if buf.len() <= cap as usize {
+                    write_bytes(&mut c, out, &buf);
+                }
+                buf.len() as i64
+            },
+        )
+        .expect("define value_fetch");
+    linker
+        .func_wrap(
+            MODULE,
+            "value_stage",
+            |mut c: Caller<'_, KState>, w: u32, s: u32, g: u32, ptr: u32, len: u32, mode: u32| {
+                let bytes = read_bytes(&c, ptr, len);
+                let mode = match mode {
+                    0 => StageMode::Set,
+                    1 => StageMode::SetAlways,
+                    _ => StageMode::Untracked,
+                };
+                with_active(&mut c, || H::value_stage((w, s, g), &bytes, mode))
+            },
+        )
+        .expect("define value_stage");
+    linker
+        .func_wrap(
+            MODULE,
+            "ctx_fetch",
+            |mut c: Caller<'_, KState>, name: u32, name_len: u32, out: u32, cap: u32| -> i64 {
+                let name = String::from_utf8(read_bytes(&c, name, name_len))
+                    .unwrap_or_else(|_| panic!("kernel bridge: context name is not UTF-8"));
+                let mut buf = Vec::new();
+                if !with_active(&mut c, || H::ctx_fetch(&name, &mut buf)) {
+                    return -1;
+                }
+                if buf.len() <= cap as usize {
+                    write_bytes(&mut c, out, &buf);
+                }
+                buf.len() as i64
+            },
+        )
+        .expect("define ctx_fetch");
+}
+
+fn read_bytes(caller: &Caller<'_, KState>, ptr: u32, len: u32) -> Vec<u8> {
+    let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
+    let mut buf = vec![0u8; len as usize];
+    memory
+        .read(caller, ptr as usize, &mut buf)
+        .unwrap_or_else(|_| panic!("kernel bridge: buffer {ptr}+{len} out of bounds"));
+    buf
+}
+
+fn write_bytes(caller: &mut Caller<'_, KState>, ptr: u32, bytes: &[u8]) {
+    let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
+    memory
+        .write(&mut *caller, ptr as usize, bytes)
+        .unwrap_or_else(|_| panic!("kernel bridge: out-buffer {ptr} out of bounds"));
 }
 
 // ---------------------------------------------------------------------------
@@ -372,5 +441,59 @@ impl KernelBundle {
             panic!("kernel bridge: KernelBundle::call(`{export}`) re-entered a bundle that is already running")
         });
         f.call(&mut *store, params).unwrap_or_else(|e| panic!("kernel bridge: `{export}` trapped: {e}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handing host state to bundles
+// ---------------------------------------------------------------------------
+
+pub use runtime_world::remote::ExportGuard;
+use stream_abi::Wire;
+
+fn wire_encode<T: Wire>(v: &T, out: &mut Vec<u8>) {
+    v.encode(out)
+}
+
+fn wire_decode<T: Wire>(b: &[u8]) -> Option<T> {
+    T::from_bytes(b)
+}
+
+fn wire_codec<T: Wire>() -> runtime_world::remote::Codec<T> {
+    runtime_world::remote::Codec { encode: wire_encode::<T>, decode: wire_decode::<T> }
+}
+
+/// Hand `sig` to bundles as a two-way prop. The handle goes into the mount's
+/// props; the guard withdraws the export (keep it as long as the mount).
+pub fn export_signal<T: Wire + PartialEq + 'static>(sig: runtime_world::Signal<T>) -> (Handle, ExportGuard) {
+    runtime_world::remote::export_signal(sig, wire_codec::<T>())
+}
+
+/// Hand `sig` to bundles as a read-only prop.
+pub fn export_read_signal<T: Wire + PartialEq + 'static>(sig: runtime_world::ReadSignal<T>) -> (Handle, ExportGuard) {
+    runtime_world::remote::export_read_signal(sig, wire_codec::<T>())
+}
+
+/// Declare host context of type `T` to bundles under `name`: a bundle that
+/// registered the same name gets the value the host has provided at the
+/// moment it injects, encoded by `encode`.
+pub fn export_context<T: Clone + 'static>(name: &str, encode: impl Fn(&T, &mut Vec<u8>) + 'static) -> ExportGuard {
+    runtime_world::remote::export_context(name, move |out| match runtime_world::inject::<T>() {
+        Some(v) => {
+            encode(&v, out);
+            true
+        }
+        None => false,
+    })
+}
+
+impl KernelBundle {
+    /// Copy `len` bytes out of the bundle's memory (test and glue helper).
+    pub fn read_memory(&self, ptr: u32, len: u32) -> Vec<u8> {
+        let store = self.inner.store.borrow();
+        let memory = store.data().memory.expect("bundle exports no memory");
+        let mut buf = vec![0u8; len as usize];
+        memory.read(&*store, ptr as usize, &mut buf).expect("in bounds");
+        buf
     }
 }

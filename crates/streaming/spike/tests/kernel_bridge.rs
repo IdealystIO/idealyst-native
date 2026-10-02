@@ -111,3 +111,103 @@ fn dropping_the_host_world_tears_the_bundle_state_down() {
     drop(world);
     assert_eq!(b.call::<(), i64>("kg_cleanups", ()), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3b: host-owned props and context crossing into the bundle — the
+// reactive half of RemoteCounter, on the host's graph.
+// ---------------------------------------------------------------------------
+
+use runtime_world::{provide, ReadSignal, Signal};
+use stream_abi::Wire;
+use stream_host::kernel::{export_context, export_read_signal, export_signal, ExportGuard};
+
+/// The host's context type. A shared crate would define it once for both
+/// sides; here the host declares its encoding (the handle of the user
+/// signal) under the name the bundle registered.
+#[derive(Clone)]
+struct HostUser(ReadSignal<String>, (u32, u32, u32));
+
+struct Counter {
+    bundle: KernelBundle,
+    world: World,
+    external: Signal<i64>,
+    value: Signal<i64>,
+    user: Signal<String>,
+    _guards: Vec<ExportGuard>,
+}
+
+impl Counter {
+    fn mount() -> Counter {
+        let bundle = load();
+        let world = World::new();
+        let external = world.signal(5i64);
+        let value = world.signal(100i64);
+        let user = world.signal("ada".to_string());
+        let (eh, g1) = export_read_signal(external.read_only());
+        let (vh, g2) = export_signal(value);
+        let (uh, g3) = export_read_signal(user.read_only());
+        let g4 = export_context::<HostUser>("CurrentUser", |u, out| {
+            for v in [u.1 .0, u.1 .1, u.1 .2] {
+                v.encode(out);
+            }
+        });
+        world.enter(|| {
+            provide(HostUser(user.read_only(), uh));
+            bundle.call::<(u32, u32, u32, u32, u32, u32), ()>("kg_counter_mount", (eh.0, eh.1, eh.2, vh.0, vh.1, vh.2));
+        });
+        Counter { bundle, world, external, value, user, _guards: vec![g1, g2, g3, g4] }
+    }
+
+    fn line(&self) -> String {
+        let packed = self.bundle.call::<(), i64>("kg_counter_line", ());
+        let bytes = self.bundle.read_memory((packed >> 32) as u32, packed as u32);
+        String::from_utf8(bytes).unwrap()
+    }
+}
+
+#[test]
+fn bundle_renders_from_host_props_and_host_context() {
+    let c = Counter::mount();
+    assert_eq!(c.line(), "external: 5 clicks: 0 value: 100 user: ada");
+}
+
+/// A host prop changes → host flush → the bundle's effect re-ran with it.
+#[test]
+fn host_prop_change_rerenders_the_bundle() {
+    let c = Counter::mount();
+    c.external.set(6);
+    c.world.flush();
+    assert_eq!(c.line(), "external: 6 clicks: 0 value: 100 user: ada");
+}
+
+/// Host context holding a signal stays reactive across the boundary.
+#[test]
+fn host_context_change_rerenders_the_bundle() {
+    let c = Counter::mount();
+    c.user.set("grace".to_string());
+    c.world.flush();
+    assert_eq!(c.line(), "external: 5 clicks: 0 value: 100 user: grace");
+}
+
+/// The bundle writes a two-way host prop: the host sees it, composed, after
+/// its own flush — and the bundle's own render follows.
+#[test]
+fn bundle_writes_a_two_way_host_prop() {
+    let c = Counter::mount();
+    c.bundle.call::<(), ()>("kg_counter_bump_value", ());
+    c.bundle.call::<(), ()>("kg_counter_bump_value", ());
+    assert_eq!(c.value.get(), 100, "staged on the host");
+    c.world.flush();
+    assert_eq!(c.value.get(), 102);
+    assert_eq!(c.line(), "external: 5 clicks: 0 value: 102 user: ada");
+}
+
+/// Bundle-local state and host state in one effect, one flush.
+#[test]
+fn bundle_local_state_and_host_props_settle_together() {
+    let c = Counter::mount();
+    c.bundle.call::<(), ()>("kg_counter_click", ());
+    c.external.set(9);
+    c.world.flush();
+    assert_eq!(c.line(), "external: 9 clicks: 1 value: 100 user: ada");
+}

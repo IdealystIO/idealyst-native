@@ -38,6 +38,9 @@
 //! from drifting from the native one.
 
 pub(crate) mod guest;
+// In a bundle build the host side is compiled (the parity check names it)
+// but not used — the host is the app, on the far side of the wasm boundary.
+#[cfg_attr(all(idealyst_stream_guest, not(feature = "bridge")), allow(dead_code))]
 pub(crate) mod host;
 /// The bundle side over wasm: what a remote bundle's kernel runs on.
 #[cfg(idealyst_stream_guest)]
@@ -125,6 +128,44 @@ pub trait HostOps: 'static {
 
     fn ctx_provide(key: Id, ctx: Id);
     fn ctx_inject(key: Id) -> Option<Id>;
+
+    // ---- host-owned values (props and context crossing into a bundle) ----
+
+    /// Encode the host-owned signal `h`'s committed value (or, with
+    /// `staged`, its staged write) into `out`. `false` when `h` was not
+    /// exported to bundles, or `staged` and nothing is staged.
+    fn value_fetch(h: Handle, staged: bool, out: &mut Vec<u8>) -> bool;
+    /// Write `bytes` into the host-owned signal `h` the way `mode` says.
+    fn value_stage(h: Handle, bytes: &[u8], mode: StageMode);
+    /// Encode the host context declared to bundles under `name` into `out`;
+    /// `false` when none is declared or none is provided right now.
+    fn ctx_fetch(name: &str, out: &mut Vec<u8>) -> bool;
+}
+
+/// How a bundle's write lands in a host-owned signal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StageMode {
+    /// `set`: staged, equality-guarded.
+    Set,
+    /// `set_always`: staged, notifies even if equal.
+    SetAlways,
+    /// `set_untracked`: committed directly, notifies nobody.
+    Untracked,
+}
+
+/// How an IMPORTED value (one the host owns, mirrored in the bundle) moves
+/// between its host slot and the bundle's mirror. Implemented by the typed
+/// layer, which knows `T` and holds the codec. The mirror is the typed
+/// layer's own storage type, so reads and writes through a handle to an
+/// imported signal are the same code as for any other.
+pub(crate) trait ImportSync {
+    /// Overwrite the mirror from host bytes: its committed value, and its
+    /// staged value (`None` = nothing staged).
+    fn pull(&self, mirror: &mut dyn crate::engine::AnySignal, committed: &[u8], staged: Option<&[u8]>);
+    /// Take the mirror's staged write, encoded, if the operation made one.
+    fn take_next(&self, mirror: &mut dyn crate::engine::AnySignal, out: &mut Vec<u8>) -> bool;
+    /// Encode the mirror's committed value.
+    fn encode_value(&self, mirror: &mut dyn crate::engine::AnySignal, out: &mut Vec<u8>);
 }
 
 /// Host → bundle: the proxies' calls back into the side that owns the value

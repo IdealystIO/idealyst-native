@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
-use super::{GuestHooks, Handle, HostOps, Id};
+use super::{GuestHooks, Handle, HostOps, Id, StageMode};
 use crate::engine::{AnySignal, EffectClass, Engine, WorldId};
 use crate::native::{self, CtxKey, EffectFrames, Native, OwnedItem, SavedCollectors, WorldArena};
 
@@ -37,6 +37,55 @@ struct HostState {
     next_scope: u32,
     unscoped: Vec<SavedCollectors>,
     unanchored: Vec<EffectFrames>,
+    /// Host-owned signals handed to bundles (props), by slot.
+    exports: FxHashMap<Handle, Rc<dyn Exported>>,
+    /// Host context declared to bundles, by name.
+    contexts: FxHashMap<String, ContextFetch>,
+}
+
+/// Encodes the host context declared under a name; `false` for none.
+pub(crate) type ContextFetch = Rc<dyn Fn(&mut Vec<u8>) -> bool>;
+
+/// A host-owned signal a bundle may read (and, if exported two-way, write).
+/// Implemented by the typed layer, which holds the codec and knows `T`.
+pub(crate) trait Exported {
+    fn fetch(&self, staged: bool, out: &mut Vec<u8>) -> bool;
+    fn stage(&self, bytes: &[u8], mode: StageMode);
+}
+
+/// Registers an export; unregisters it on drop. The host ties it to
+/// whatever mounted the bundle component the signal was passed to.
+#[must_use = "dropping the guard withdraws the export"]
+pub struct ExportGuard {
+    kind: GuardKind,
+}
+
+enum GuardKind {
+    Signal(Handle),
+    Context(String),
+}
+
+impl Drop for ExportGuard {
+    fn drop(&mut self) {
+        // Out of the table first, dropped after (a codec's captures may run
+        // user `Drop` code).
+        let removed: Option<Box<dyn Any>> = try_host(|h| match &self.kind {
+            GuardKind::Signal(handle) => h.exports.remove(handle).map(|e| Box::new(e) as Box<dyn Any>),
+            GuardKind::Context(name) => h.contexts.remove(name).map(|f| Box::new(f) as Box<dyn Any>),
+        })
+        .flatten();
+        drop(removed);
+    }
+}
+
+pub(crate) fn register_export(handle: Handle, export: Rc<dyn Exported>) -> ExportGuard {
+    with_host(|h| h.exports.insert(handle, export));
+    ExportGuard { kind: GuardKind::Signal(handle) }
+}
+
+pub(crate) fn register_context(name: &str, fetch: ContextFetch) -> ExportGuard {
+    with_host(|h| h.contexts.insert(name.to_string(), fetch));
+    ExportGuard { kind: GuardKind::Context(name.to_string()) }
 }
 
 thread_local! {
@@ -343,5 +392,27 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
     fn ctx_inject(key: Id) -> Option<Id> {
         native::with_ambient(|arena| native::context_top(arena, CtxKey::Foreign(key), ctx_id::<G>)).flatten()
+    }
+
+    fn value_fetch(h: Handle, staged: bool, out: &mut Vec<u8>) -> bool {
+        out.clear();
+        // The `Rc` comes out of the table before the codec runs.
+        let Some(export) = with_host(|s| s.exports.get(&h).cloned()) else { return false };
+        export.fetch(staged, out)
+    }
+    fn value_stage(h: Handle, bytes: &[u8], mode: StageMode) {
+        let export = with_host(|s| s.exports.get(&h).cloned()).unwrap_or_else(|| {
+            panic!(
+                "kernel bridge: a bundle wrote host signal (world {}, slot {}), which was not \
+                 exported to it",
+                h.0, h.1
+            )
+        });
+        export.stage(bytes, mode)
+    }
+    fn ctx_fetch(name: &str, out: &mut Vec<u8>) -> bool {
+        out.clear();
+        let Some(fetch) = with_host(|s| s.contexts.get(name).cloned()) else { return false };
+        fetch(out)
     }
 }
