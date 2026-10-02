@@ -97,6 +97,7 @@ use crate::style::Easing;
 /// point unit). `scale` is uniform — non-uniform scale isn't
 /// supported.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PresenceState {
     pub opacity: Option<f32>,
     pub translate_x: Option<f32>,
@@ -141,6 +142,7 @@ impl PresenceState {
 /// ways so authors can mirror a fade-and-slide enter as a
 /// fade-and-slide exit by sharing a `PresenceState`.
 #[derive(Copy, Clone, Debug)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PresenceAnim {
     pub state: PresenceState,
     pub duration_ms: u32,

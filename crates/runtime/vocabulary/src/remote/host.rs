@@ -414,6 +414,131 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
+        Node::Repeat { count, row } => {
+            let row = render_with::<usize>(conn, row);
+            runtime_scene::many(PrimCell::new(RepeatPrim { count, row_builder: Box::new(move |i| row(&i)) }))
+        }
+        Node::Presence { test_id, a11y: a, child, present, enter, exit } => {
+            let (c, child) = (conn.clone(), cb(conn, child));
+            let present = cb(conn, present);
+            runtime_scene::item(
+                PrimCell::new(PresencePrim {
+                    test_id: test_id.as_deref().map(intern),
+                    child: Box::new(move || child.call(&[]).map_or_else(nothing, |bytes| subtree(&c, &bytes))),
+                    present: Rc::new(move || present.get::<bool>(&[]).unwrap_or(false)),
+                    enter,
+                    exit,
+                    a11y: a.map(|a| a11y(conn, a)).unwrap_or_default(),
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::Portal { target, on_dismiss, trap_focus, style: st, a11y: a, children } => {
+            use runtime_shared::primitives::portal::PortalTarget;
+            runtime_scene::item(
+                PrimCell::new(PortalPrim {
+                    target: match target {
+                        WirePortalTarget::Viewport(v) => PortalTarget::Viewport(v),
+                        WirePortalTarget::Named(n) => PortalTarget::Named(intern(&n)),
+                    },
+                    on_dismiss: on_dismiss.map(|id| fire(conn, id)),
+                    trap_focus,
+                    style: st.map(|st| style(conn, st)),
+                    a11y: a.map(|a| a11y(conn, a)).unwrap_or_default(),
+                    ref_fill: None,
+                }),
+                build_all(conn, children)?,
+            )
+        }
+        Node::Virtualizer {
+            common,
+            item_count,
+            item_key,
+            measured,
+            item_size,
+            render_item,
+            item_diff,
+            overscan,
+            layout,
+            on_scroll,
+            on_end_reached,
+            end_reached_threshold,
+            safe_area,
+        } => {
+            use runtime_shared::primitives::virtualizer::{ItemDiff, ItemSize};
+            let (_, style, a11y) = self::common(conn, common);
+            let count = handler::<(), usize>(conn, item_count, || 0);
+            let key = handler::<usize, u64>(conn, item_key, || 0);
+            let size: Rc<dyn Fn(usize) -> f32> = {
+                let h = handler::<usize, f32>(conn, item_size, || 0.0);
+                Rc::new(move |i| h(&i))
+            };
+            let render = render_with::<usize>(conn, render_item);
+            runtime_scene::item(
+                PrimCell::new(VirtualizerPrim {
+                    item_count: Box::new(move || count(&())),
+                    item_key: Box::new(move |i| key(&i)),
+                    item_size: if measured { ItemSize::Measured(size) } else { ItemSize::Known(size) },
+                    render_item: Rc::new(move |i| render(&i)),
+                    item_diff: item_diff.map(|(capture, differs)| {
+                        let c = conn.clone();
+                        let capture = handler::<usize, Option<Cb>>(conn, capture, || None);
+                        let differs = handler::<(Cb, usize), bool>(conn, differs, || false);
+                        ItemDiff {
+                            capture: Rc::new(move |i| {
+                                capture(&i).map(|id| Box::new(ItemRef(CbRef::new(id, c.clone()))) as Box<dyn std::any::Any>)
+                            }),
+                            differs: Rc::new(move |snap, i| match snap.downcast_ref::<ItemRef>() {
+                                Some(snap) => differs(&(snap.0.id, i)),
+                                None => true,
+                            }),
+                        }
+                    }),
+                    overscan,
+                    layout,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                    on_scroll: on_scroll.map(|id| {
+                        let h = handler::<(f32, f32), ()>(conn, id, || ());
+                        Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
+                    }),
+                    on_end_reached: on_end_reached.map(|id| fire(conn, id)),
+                    end_reached_threshold,
+                    safe_area: safe_area.map(SafeAreaSides),
+                }),
+                Vec::new(),
+            )
+        }
+        Node::VirtualGrid { common, col_count, row_count, col_width, row_height, cell_key, render_cell, overscan, on_scroll } => {
+            let (_, style, a11y) = self::common(conn, common);
+            let cols = handler::<(), usize>(conn, col_count, || 0);
+            let rows = handler::<(), usize>(conn, row_count, || 0);
+            let cw = handler::<usize, f32>(conn, col_width, || 0.0);
+            let rh = handler::<usize, f32>(conn, row_height, || 0.0);
+            let key = handler::<(usize, usize), u64>(conn, cell_key, || 0);
+            let render = render_with::<(usize, usize)>(conn, render_cell);
+            runtime_scene::item(
+                PrimCell::new(VirtualGridPrim {
+                    col_count: Box::new(move || cols(&())),
+                    row_count: Box::new(move || rows(&())),
+                    col_width: Rc::new(move |i| cw(&i)),
+                    row_height: Rc::new(move |i| rh(&i)),
+                    cell_key: Rc::new(move |r, c| key(&(r, c))),
+                    render_cell: Rc::new(move |r, c| render(&(r, c))),
+                    overscan,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                    on_scroll: on_scroll.map(|id| {
+                        let h = handler::<(f32, f32), ()>(conn, id, || ());
+                        Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
+                    }),
+                }),
+                Vec::new(),
+            )
+        }
         Node::Fragment(children) => runtime_scene::fragment(build_all(conn, children)?),
         Node::Dyn { build } => {
             let (c, b) = (conn.clone(), cb(conn, build));
@@ -505,6 +630,13 @@ fn value_with<W: DeserializeOwned + 'static, T: 'static>(
             Value::Dyn(Box::new(move || r.get::<W>(&[]).map_or_else(fallback, map)))
         }
     }
+}
+
+/// A bundle callback that takes `A` and replies a [`Node`], as a builder:
+/// a stopped bundle's builds render nothing.
+fn render_with<A: Serialize + 'static>(conn: &Rc<Conn>, id: Cb) -> impl Fn(&A) -> Element {
+    let (c, r) = (conn.clone(), cb(conn, id));
+    move |a: &A| r.call(&to_bytes(a)).map_or_else(nothing, |bytes| subtree(&c, &bytes))
 }
 
 /// An event handler that runs in the bundle: the event crosses encoded,

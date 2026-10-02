@@ -135,6 +135,7 @@ pub struct ViewportRect {
 
 /// Where a viewport-anchored portal sits in the window.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ViewportPlacement {
     Center,
     Top,
@@ -151,6 +152,7 @@ impl Default for ViewportPlacement {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ElementSide {
     Above,
     Below,
@@ -165,6 +167,7 @@ impl Default for ElementSide {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ElementAlign {
     Start,
     Center,

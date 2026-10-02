@@ -128,6 +128,22 @@ pub fn live_callback_kinds() -> Vec<(Cb, &'static str, u32)> {
     })
 }
 
+/// Run `f` on held item / snapshot `id` (an [`Entry::Item`]) without
+/// consuming it: taken out for the call, so `f` may use the table.
+fn with_item<R>(id: Cb, f: impl FnOnce(&dyn Any) -> R) -> Option<R> {
+    let item = TABLE.with(|t| match t.borrow_mut().slots.get_mut(&id).map(|s| &mut s.entry) {
+        Some(Entry::Item(item)) => item.take(),
+        _ => None,
+    })?;
+    let r = f(&*item);
+    TABLE.with(|t| {
+        if let Some(Entry::Item(slot)) = t.borrow_mut().slots.get_mut(&id).map(|s| &mut s.entry) {
+            *slot = Some(item);
+        }
+    });
+    Some(r)
+}
+
 /// The host dropped one copy of `cb`.
 pub fn release(cb: Cb) {
     // Out of the table first, dropped after: dropping a closure may drop
@@ -269,7 +285,13 @@ pub fn encode(element: Element) -> Node {
             scope: runtime_world::remote_guest::release_scope(owned),
             element: Box::new(encode(*element)),
         },
-        Element::Many { .. } => refuse("repeat", "multi-node payload"),
+        Element::Many { data } => match data.downcast_ref::<PrimCell<RepeatPrim>>() {
+            Some(cell) => {
+                let RepeatPrim { count, row_builder } = cell.take();
+                Node::Repeat { count, row: handler(move |i: &usize| encode(row_builder(*i))) }
+            }
+            None => refuse("a multi-node primitive", "payload"),
+        },
     }
 }
 
@@ -470,6 +492,96 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             bounces: p.bounces,
             always_bounce: p.always_bounce,
             children: encode_all(children),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<PresencePrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("presence", "ref");
+        }
+        let child: Rc<dyn Fn() -> Element> = Rc::from(p.child);
+        return Node::Presence {
+            test_id: p.test_id.map(str::to_owned),
+            a11y: wire_a11y(p.a11y),
+            child: register(Entry::Build(child)),
+            present: register(Entry::Changed(p.present)),
+            enter: p.enter,
+            exit: p.exit,
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<PortalPrim>>() {
+        use runtime_shared::primitives::portal::PortalTarget;
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("portal", "ref");
+        }
+        let target = match p.target {
+            PortalTarget::Viewport(v) => WirePortalTarget::Viewport(v),
+            PortalTarget::Named(n) => WirePortalTarget::Named(n.to_owned()),
+            PortalTarget::Anchor { .. } => refuse("portal", "anchor target (a node's handle)"),
+        };
+        return Node::Portal {
+            target,
+            on_dismiss: p.on_dismiss.map(|f| register(Entry::Fire(f))),
+            trap_focus: p.trap_focus,
+            style: p.style.map(style_prop),
+            a11y: wire_a11y(p.a11y),
+            children: encode_all(children),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<VirtualizerPrim>>() {
+        use runtime_shared::primitives::virtualizer::ItemSize;
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("virtualizer", "ref");
+        }
+        let (count, key, render) = (p.item_count, p.item_key, p.render_item);
+        let (measured, size) = match p.item_size {
+            ItemSize::Known(f) => (false, f),
+            ItemSize::Measured(f) => (true, f),
+        };
+        return Node::Virtualizer {
+            common: common(None, p.style, p.a11y),
+            item_count: handler(move |_: &()| count()),
+            item_key: handler(move |i: &usize| key(*i)),
+            measured,
+            item_size: handler(move |i: &usize| size(*i)),
+            render_item: handler(move |i: &usize| encode(render(*i))),
+            item_diff: p.item_diff.map(|d| {
+                let (capture, differs) = (d.capture, d.differs);
+                (
+                    handler(move |i: &usize| capture(*i).map(|snap| register(Entry::Item(Some(snap))))),
+                    handler(move |&(snap, i): &(Cb, usize)| {
+                        with_item(snap, |s| differs(s, i))
+                            .unwrap_or_else(|| panic!("remote codec: diff against snapshot {snap}, which is gone"))
+                    }),
+                )
+            }),
+            overscan: p.overscan,
+            layout: p.layout,
+            on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
+            on_end_reached: p.on_end_reached.map(|f| register(Entry::Fire(f))),
+            end_reached_threshold: p.end_reached_threshold,
+            safe_area: p.safe_area.map(|s| s.0),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<VirtualGridPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("virtual_grid", "ref");
+        }
+        let (cols, rows, cw, rh, key, render) =
+            (p.col_count, p.row_count, p.col_width, p.row_height, p.cell_key, p.render_cell);
+        return Node::VirtualGrid {
+            common: common(None, p.style, p.a11y),
+            col_count: handler(move |_: &()| cols()),
+            row_count: handler(move |_: &()| rows()),
+            col_width: handler(move |i: &usize| cw(*i)),
+            row_height: handler(move |i: &usize| rh(*i)),
+            cell_key: handler(move |&(r, c): &(usize, usize)| key(r, c)),
+            render_cell: handler(move |&(r, c): &(usize, usize)| encode(render(r, c))),
+            overscan: p.overscan,
+            on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
         };
     }
     let name = crate::remote::crossing((*data).type_id()).map_or_else(

@@ -178,6 +178,65 @@ pub enum Node {
         always_bounce: Option<bool>,
         children: Vec<Node>,
     },
+    /// A static `for` lowering: `row` takes a `usize`, replies a [`Node`].
+    Repeat { count: usize, row: Cb },
+    Presence {
+        test_id: Option<String>,
+        a11y: Option<A11y>,
+        /// Replies a [`Node`].
+        child: Cb,
+        /// Replies a `bool`.
+        present: Cb,
+        enter: Option<runtime_shared::primitives::presence::PresenceAnim>,
+        exit: Option<runtime_shared::primitives::presence::PresenceAnim>,
+    },
+    Portal {
+        target: WirePortalTarget,
+        on_dismiss: Option<Cb>,
+        trap_focus: bool,
+        style: Option<Style>,
+        a11y: Option<A11y>,
+        children: Vec<Node>,
+    },
+    Virtualizer {
+        common: Common,
+        /// Replies a `usize`.
+        item_count: Cb,
+        /// Takes a `usize`, replies a `u64`.
+        item_key: Cb,
+        /// Whether sizes are measured (`ItemSize::Measured`) or known.
+        measured: bool,
+        /// Takes a `usize`, replies an `f32`.
+        item_size: Cb,
+        /// Takes a `usize`, replies a [`Node`].
+        render_item: Cb,
+        /// `(capture, differs)`: `capture` takes a `usize` and replies an
+        /// `Option<Cb>` (a snapshot held bundle-side, released by the host
+        /// when it drops it); `differs` takes `(snapshot, usize)`, replies a
+        /// `bool`.
+        item_diff: Option<(Cb, Cb)>,
+        overscan: f32,
+        layout: runtime_shared::primitives::virtualizer::VirtualLayout,
+        on_scroll: Option<Cb>,
+        on_end_reached: Option<Cb>,
+        end_reached_threshold: f32,
+        safe_area: Option<u8>,
+    },
+    VirtualGrid {
+        common: Common,
+        /// Each replies a `usize`.
+        col_count: Cb,
+        row_count: Cb,
+        /// Each takes a `usize`, replies an `f32`.
+        col_width: Cb,
+        row_height: Cb,
+        /// Takes `(usize, usize)`, replies a `u64`.
+        cell_key: Cb,
+        /// Takes `(usize, usize)`, replies a [`Node`].
+        render_cell: Cb,
+        overscan: f32,
+        on_scroll: Option<Cb>,
+    },
     Fragment(Vec<Node>),
     /// `dyn_element`: rebuild on every fire. `build` replies a [`Node`].
     Dyn { build: Cb },
@@ -261,6 +320,14 @@ pub struct WireDroppedFile {
     pub mime: String,
     pub size: Option<u64>,
     pub path: Option<std::path::PathBuf>,
+}
+
+/// A portal's target. An anchor to a node needs that node's handle (a
+/// `ref`), which does not cross yet.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum WirePortalTarget {
+    Viewport(runtime_shared::primitives::portal::ViewportPlacement),
+    Named(String),
 }
 
 /// What every crossing primitive carries.
@@ -419,16 +486,16 @@ pub fn crossing(ty: std::any::TypeId) -> Option<Crossing> {
         TextInputPrim => Crossing::Supported("text_input"),
         TextAreaPrim => Crossing::Supported("text_area"),
         ScrollViewPrim => Crossing::Supported("scroll_view"),
-        RepeatPrim => Crossing::Unsupported("repeat (static `for` lowering)", LATER),
+        RepeatPrim => Crossing::Supported("repeat (static `for` lowering)"),
         LazyPrim => Crossing::Unsupported(
             "lazy",
             "web code splitting has no meaning inside a bundle — `remote` and `lazy` are per-target alternatives",
         ),
-        VirtualizerPrim => Crossing::Unsupported("virtualizer", LATER),
-        VirtualGridPrim => Crossing::Unsupported("virtual_grid", LATER),
+        VirtualizerPrim => Crossing::Supported("virtualizer"),
+        VirtualGridPrim => Crossing::Supported("virtual_grid"),
         GraphicsPrim => Crossing::Unsupported("graphics", LATER),
-        PortalPrim => Crossing::Unsupported("portal", LATER),
-        PresencePrim => Crossing::Unsupported("presence", LATER),
+        PortalPrim => Crossing::Supported("portal"),
+        PresencePrim => Crossing::Supported("presence"),
         StackNavigatorPrim => Crossing::Unsupported("stack navigator", LATER),
         SwapNavigatorPrim => Crossing::Unsupported("swap navigator", LATER),
         NavigatorOutletPrim => Crossing::Unsupported("navigator outlet", LATER),

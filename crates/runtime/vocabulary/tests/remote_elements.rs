@@ -250,8 +250,9 @@ fn every_builtin_primitive_has_a_crossing_decision() {
     assert_eq!(
         supported,
         [
-            "activity_indicator", "button", "icon", "image", "link", "pressable", "scroll_view", "slider", "text",
-            "text_area", "text_input", "toggle", "view",
+            "activity_indicator", "button", "icon", "image", "link", "portal", "presence", "pressable",
+            "repeat (static `for` lowering)", "scroll_view", "slider", "text", "text_area", "text_input", "toggle",
+            "view", "virtual_grid", "virtualizer",
         ]
     );
 }
@@ -465,5 +466,137 @@ mod controls {
         }
         assert_eq!(remote_replies, native_replies);
         assert_eq!(native_replies, ["touch consumed true", "drop consumed true", "tab PreventDefault", "a Default", "blur Keep"]);
+    }
+}
+
+// ---- phase B: the structural primitives ----
+
+mod structural {
+    use super::*;
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_shared::primitives::presence::PresenceAnim;
+    use runtime_shared::primitives::virtualizer::{ItemDiff, ItemSize};
+    use runtime_shared::Easing;
+    use runtime_vocabulary::builders::{portal, presence, virtual_grid, virtualizer};
+
+    struct In {
+        shown: Signal<bool>,
+        /// `(key, label)`: a label can change under a surviving key.
+        items: Signal<Vec<(u64, String)>>,
+        dismissed: Signal<u32>,
+    }
+
+    fn app(i: &In) -> Element {
+        let (shown, items, dismissed) = (i.shown, i.items, i.dismissed);
+        component_scope(move || {
+            view()
+                .children(runtime_vocabulary::glue::__static_repeat(3, |i| text().content(format!("rep {i}")).build()))
+                .child(
+                    presence(|| text().content("present").build())
+                        .present(move || shown.get())
+                        .enter(PresenceAnim::fade(100, Easing::Linear))
+                        .exit(PresenceAnim::fade(50, Easing::Linear)),
+                )
+                .child(
+                    portal(PortalTarget::Viewport(ViewportPlacement::default()))
+                        .on_dismiss(move || dismissed.update(|d| d + 1))
+                        .child(text().content(move || format!("dismissed {}", dismissed.get()))),
+                )
+                .child(
+                    virtualizer(
+                        move || items.get().len(),
+                        move |i| items.get()[i].0,
+                        ItemSize::Known(Rc::new(|i| 20.0 + i as f32)),
+                        move |i| text().content(format!("item {}", items.get()[i].1)).build(),
+                    )
+                    .item_diff(ItemDiff {
+                        capture: Rc::new(move |i| items.get().get(i).map(|v| Box::new(v.1.clone()) as Box<dyn std::any::Any>)),
+                        differs: Rc::new(move |snap, i| snap.downcast_ref::<String>() != items.get().get(i).map(|v| &v.1)),
+                    }),
+                )
+                .child(virtual_grid(
+                    || 2,
+                    || 2,
+                    |c| 10.0 + c as f32,
+                    |r| 5.0 + r as f32,
+                    |r, c| (r * 2 + c) as u64,
+                    |r, c| text().content(format!("cell {r},{c}")).build(),
+                )
+                .build())
+                .build()
+        })
+    }
+
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        let i = h.world.enter(|| In {
+            shown: signal(true),
+            items: signal(vec![(1, "a".into()), (2, "b".into()), (3, "c".into())]),
+            dismissed: signal(0),
+        });
+        let tree = h.world.enter(|| app(&i));
+        let tree = if remote { cross(tree) } else { tree };
+        let mut steps = Vec::new();
+        let mut replies = Vec::new();
+        let realized = h.mount(tree);
+        h.flush();
+        steps.push(h.take_log());
+
+        // The backend drives the virtualizer and grid through their callbacks.
+        let v = h.virtualizer(0);
+        replies.push(format!("count {} key1 {} size2 {}", (v.item_count)(), (v.item_key)(1), (v.item_size)(2)));
+        let rows: Vec<(host_mock::Node, u64)> = h.world.enter(|| (0..(v.item_count)()).map(|n| (v.mount_item)(n)).collect());
+        let g = h.virtual_grid(0);
+        replies.push(format!(
+            "grid {}x{} w1 {} h1 {} key {}",
+            (g.col_count)(),
+            (g.row_count)(),
+            (g.col_width)(1),
+            (g.row_height)(1),
+            (g.cell_key)(1, 1)
+        ));
+        let _cell = h.world.enter(|| (g.mount_cell)(1, 0));
+        h.flush();
+        steps.push(h.take_log());
+
+        i.shown.set(false);
+        h.flush();
+        steps.push(h.take_log());
+
+        let dismiss = h.shared.portal_dismissals.borrow()[0].clone().expect("portal on_dismiss");
+        dismiss();
+        h.flush();
+        steps.push(h.take_log());
+
+        // A data change: key 2 keeps its row but its label changes; the
+        // diff (run in the bundle, against a snapshot held there) says so.
+        i.items.set(vec![(1, "a".into()), (2, "B".into()), (3, "c".into())]);
+        h.flush();
+        let changed = v.item_changed.clone().expect("item_diff crosses");
+        replies.push(format!("changed {} {} {}", changed(0), changed(1), changed(2)));
+        h.world.enter(|| {
+            for (_, id) in rows {
+                (v.release_item)(id);
+            }
+        });
+        h.flush();
+        steps.push(h.take_log());
+
+        drop(realized);
+        h.flush();
+        steps.push(h.take_log());
+        (steps, replies)
+    }
+
+    #[test]
+    fn every_structural_primitive_drives_the_backend_exactly_like_the_native_one() {
+        let (native, native_replies) = script(false);
+        let (remote, remote_replies) = script(true);
+        assert!(native[0].len() > 10, "{:?}", native[0]);
+        for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+            assert_eq!(r, n, "step {step}: remote and native diverge");
+        }
+        assert_eq!(remote_replies, native_replies);
+        assert_eq!(native_replies[2], "changed false true false", "{native_replies:?}");
     }
 }
