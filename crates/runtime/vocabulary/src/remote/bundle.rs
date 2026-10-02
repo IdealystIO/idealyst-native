@@ -287,18 +287,6 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     };
     if let Some(cell) = data.downcast_ref::<PrimCell<ViewPrim>>() {
         let p = cell.take();
-        if p.on_touch.is_some() {
-            refuse("view", "on_touch");
-        }
-        if p.on_wheel.is_some() {
-            refuse("view", "on_wheel");
-        }
-        if p.on_hover.is_some() {
-            refuse("view", "on_hover");
-        }
-        if p.on_file_drop.is_some() {
-            refuse("view", "on_file_drop");
-        }
         if p.ref_fill.is_some() {
             refuse("view", "ref");
         }
@@ -307,6 +295,10 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             safe_area: p.safe_area.0,
             preserves_focus: p.preserves_focus,
             is_container: p.is_container,
+            on_touch: p.on_touch.map(|f| handler(move |e| f(e))),
+            on_wheel: p.on_wheel.map(|f| handler(move |e| f(e))),
+            on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),
+            on_file_drop: p.on_file_drop.map(|f| handler(move |e: &WireFileDrop| f(&file_drop(e)))),
             children: encode_all(children),
         };
     }
@@ -329,12 +321,12 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             refuse("text", "ref");
         }
         let content = match p.content {
-            TextSourceProp::Value(v) => val(v),
+            TextSourceProp::Value(v) => TextContent::Value(val(v)),
             // The f-string fast path exists for JS-binding backends (web),
             // where a remote component is never used; everywhere else the
             // text handler runs the same `compute_fallback`.
-            TextSourceProp::JsBinding(b) => getter(b.compute_fallback),
-            TextSourceProp::Runs(_) => refuse("text", "styled runs"),
+            TextSourceProp::JsBinding(b) => TextContent::Value(getter(b.compute_fallback)),
+            TextSourceProp::Runs(runs) => TextContent::Runs(runs),
         };
         return Node::Text { common: common(p.test_id, p.style, p.a11y), content };
     }
@@ -343,14 +335,141 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
         if p.ref_fill.is_some() {
             refuse("button", "ref");
         }
-        if p.leading_icon.is_some() || p.trailing_icon.is_some() {
-            refuse("button", "icons");
-        }
         return Node::Button {
             common: common(p.test_id, p.style, p.a11y),
             label: val(p.label),
             on_press: action(p.on_press),
+            leading_icon: p.leading_icon.map(WireIcon::from),
+            trailing_icon: p.trailing_icon.map(WireIcon::from),
             disabled: p.disabled.map(val),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<ImagePrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("image", "ref");
+        }
+        return Node::Image {
+            common: common(p.test_id, p.style, p.a11y),
+            src: val(p.src),
+            alt: val(p.alt),
+            on_load: p.on_load.map(|f| handler(move |e| f(e))),
+            on_error: p.on_error.map(|f| handler(move |_: &()| f())),
+            asset: p.asset.map(|a| WireAsset { id: a.id.0, source: wire_asset_source(a.source) }),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<IconPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("icon", "ref");
+        }
+        return Node::Icon {
+            common: common(p.test_id, p.style, p.a11y),
+            data: val_map(p.data, WireIcon::from),
+            color: p.color.map(val),
+            stroke: p.stroke.map(val),
+            draw_in: p.draw_in,
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<LinkPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("link", "ref");
+        }
+        if p.route_link.is_some() {
+            refuse("link", "route (typed route params)");
+        }
+        return Node::Link {
+            common: common(p.test_id, p.style, p.a11y),
+            url: val(p.url),
+            external: p.external,
+            on_activate: p.on_activate.map(|f| register(Entry::Fire(f))),
+            children: encode_all(children),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<TogglePrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("toggle", "ref");
+        }
+        let f = p.on_change;
+        return Node::Toggle {
+            common: common(p.test_id, p.style, p.a11y),
+            value: val(p.value),
+            on_change: handler(move |v: &bool| f(*v)),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<SliderPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("slider", "ref");
+        }
+        let f = p.on_change;
+        return Node::Slider {
+            common: common(p.test_id, p.style, p.a11y),
+            value: val(p.value),
+            on_change: handler(move |v: &f32| f(*v)),
+            min: p.min,
+            max: p.max,
+            step: p.step,
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<ActivityIndicatorPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("activity_indicator", "ref");
+        }
+        return Node::ActivityIndicator { common: common(p.test_id, p.style, p.a11y), size: val(p.size), color: p.color };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<TextInputPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("text_input", "ref");
+        }
+        let f = p.on_change;
+        return Node::TextInput {
+            common: common(p.test_id, p.style, p.a11y),
+            value: val(p.value),
+            on_change: handler(move |v: &String| f(v.clone())),
+            on_key_down: p.on_key_down.map(|f| handler(move |e| f(e))),
+            on_blur: p.on_blur.map(|f| handler(move |_: &()| f())),
+            on_focus: p.on_focus.map(|f| handler(move |v: &bool| f(*v))),
+            placeholder: val(p.placeholder),
+            secure: val(p.secure),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<TextAreaPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("text_area", "ref");
+        }
+        let f = p.on_change;
+        return Node::TextArea {
+            common: common(p.test_id, p.style, p.a11y),
+            value: val(p.value),
+            on_change: handler(move |v: &String| f(v.clone())),
+            on_key_down: p.on_key_down.map(|f| handler(move |e| f(e))),
+            placeholder: p.placeholder,
+            wrap: p.wrap,
+            min_rows: p.min_rows,
+            max_rows: p.max_rows,
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<ScrollViewPrim>>() {
+        let p = cell.take();
+        if p.ref_fill.is_some() {
+            refuse("scroll_view", "ref");
+        }
+        return Node::ScrollView {
+            common: common(p.test_id, p.style, p.a11y),
+            horizontal: p.horizontal,
+            on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
+            on_end_reached: p.on_end_reached.map(|f| register(Entry::Fire(f))),
+            end_reached_threshold: p.end_reached_threshold,
+            safe_area: p.safe_area.map(|s| s.0),
+            bounces: p.bounces,
+            always_bounce: p.always_bounce,
+            children: encode_all(children),
         };
     }
     let name = crate::remote::crossing((*data).type_id()).map_or_else(
@@ -369,6 +488,66 @@ fn common(test_id: Option<&'static str>, style: Option<StyleProp>, a11y: Accessi
 
 fn getter<T: Serialize + 'static>(f: Rc<dyn Fn() -> T>) -> Val<T> {
     Val::Dyn(register(Entry::Get(Rc::new(move || to_bytes(&f())))))
+}
+
+/// An event handler: the host calls it with the encoded event `A` and
+/// decodes its encoded reply `R`.
+fn handler<A, R>(f: impl Fn(&A) -> R + 'static) -> Cb
+where
+    A: serde::de::DeserializeOwned,
+    R: Serialize,
+{
+    register(Entry::Call(Rc::new(move |args: &[u8]| {
+        let event: A = from_bytes(args).unwrap_or_else(|e| panic!("remote codec: an event does not decode: {e}"));
+        to_bytes(&f(&event))
+    })))
+}
+
+/// A `Value<T>` crossing as `W` (for a `T` that can't serialize as is).
+fn val_map<T: 'static, W: Serialize + 'static>(v: Value<T>, map: fn(T) -> W) -> Val<W> {
+    match v {
+        Value::Const(v) => Val::Const(map(v)),
+        Value::Dyn(f) => Val::Dyn(register(Entry::Get(Rc::new(move || to_bytes(&map(f())))))),
+    }
+}
+
+fn wire_asset_source(s: runtime_shared::assets::AssetSource) -> WireAssetSource {
+    use runtime_shared::assets::AssetSource;
+    match s {
+        AssetSource::Embedded { bytes, extension } => {
+            WireAssetSource::Embedded { bytes: bytes.to_vec(), extension: extension.to_owned() }
+        }
+        AssetSource::Bundled { path } => WireAssetSource::Bundled { path: path.to_owned() },
+        AssetSource::BundledEmbedded { path, bytes, extension } => WireAssetSource::BundledEmbedded {
+            path: path.to_owned(),
+            bytes: bytes.to_vec(),
+            extension: extension.to_owned(),
+        },
+        AssetSource::Remote { url } => WireAssetSource::Remote { url: url.to_owned() },
+    }
+}
+
+/// A file drop as the bundle's handler sees it. Native files carry a
+/// path; the web-only opaque `source` never crosses.
+fn file_drop(e: &WireFileDrop) -> runtime_shared::file_drop::FileDropEvent {
+    use runtime_shared::file_drop::{DroppedFile, FileDropEvent, FileDropPhase};
+    let phase = match &e.phase {
+        WireDropPhase::Entered => FileDropPhase::Entered,
+        WireDropPhase::Exited => FileDropPhase::Exited,
+        WireDropPhase::Dropped(files) => FileDropPhase::Dropped(
+            files
+                .iter()
+                .map(|f| DroppedFile {
+                    name: f.name.clone(),
+                    mime: f.mime.clone(),
+                    size: f.size,
+                    path: f.path.clone(),
+                    source: None,
+                })
+                .collect(),
+        ),
+    };
+    FileDropEvent { phase, position: e.position }
 }
 
 fn val<T: Serialize + 'static>(v: Value<T>) -> Val<T> {

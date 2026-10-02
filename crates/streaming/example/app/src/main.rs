@@ -33,8 +33,10 @@
 //! changes; the app is not rebuilt. (Editing `App` needs an app rebuild, as
 //! it would for any native code.)
 //!
-//! Remote components can use `view`, `pressable`, `text` and `button` today;
-//! anything else shows the bundle's error in the component's place.
+//! Remote components can use every leaf primitive (`view`, `text`, `button`,
+//! `image`, `icon`, `link`, `toggle`, `slider`, `text_input`, `text_area`,
+//! `scroll_view`, …) and their event handlers; anything not carried yet
+//! shows the bundle's error in the component's place.
 
 #![cfg_attr(idealyst_stream_guest, allow(dead_code, unused_imports))]
 

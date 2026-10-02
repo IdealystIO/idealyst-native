@@ -12,6 +12,9 @@ use std::sync::{Mutex, OnceLock};
 
 use runtime_scene::{dyn_element, dyn_guarded, Element};
 use runtime_shared::accessibility::{AccessibilityAction, AccessibilityProps, AccessibilityTraits};
+use runtime_shared::primitives::key::KeyOutcome;
+use runtime_shared::primitives::text_input::BlurOutcome;
+use runtime_shared::touch::TouchResponse;
 use runtime_shared::{Action, SafeAreaSides, SheetPart, StyleApplication, StyleRules, StyleSheet, VariantSet};
 use runtime_world::Value;
 use serde::de::DeserializeOwned;
@@ -147,17 +150,33 @@ fn cb(conn: &Rc<Conn>, id: Cb) -> Rc<CbRef> {
 
 fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
     Ok(match node {
-        Node::View { common, safe_area, preserves_focus, is_container, children } => {
+        Node::View {
+            common,
+            safe_area,
+            preserves_focus,
+            is_container,
+            on_touch,
+            on_wheel,
+            on_hover,
+            on_file_drop,
+            children,
+        } => {
             let (test_id, style, a11y) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ViewPrim {
                     test_id,
                     style,
                     safe_area: SafeAreaSides(safe_area),
-                    on_touch: None,
-                    on_wheel: None,
-                    on_hover: None,
-                    on_file_drop: None,
+                    on_touch: on_touch.map(|id| Rc::new(handler(conn, id, TouchResponse::default)) as _),
+                    on_wheel: on_wheel.map(|id| Rc::new(handler(conn, id, TouchResponse::default)) as _),
+                    on_hover: on_hover.map(|id| {
+                        let h = handler::<bool, ()>(conn, id, || ());
+                        Rc::new(move |v: bool| h(&v)) as _
+                    }),
+                    on_file_drop: on_file_drop.map(|id| {
+                        let h = handler::<WireFileDrop, TouchResponse>(conn, id, TouchResponse::default);
+                        Rc::new(move |e: &runtime_shared::file_drop::FileDropEvent| h(&wire_file_drop(e))) as _
+                    }),
                     preserves_focus,
                     is_container,
                     a11y,
@@ -186,7 +205,10 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             runtime_scene::item(
                 PrimCell::new(TextPrim {
                     test_id,
-                    content: TextSourceProp::Value(value(conn, content)),
+                    content: match content {
+                        TextContent::Value(v) => TextSourceProp::Value(value(conn, v)),
+                        TextContent::Runs(runs) => TextSourceProp::Runs(runs),
+                    },
                     style,
                     a11y,
                     ref_fill: None,
@@ -194,21 +216,202 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::Button { common, label, on_press, disabled } => {
+        Node::Button { common, label, on_press, leading_icon, trailing_icon, disabled } => {
             let (test_id, style, a11y) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ButtonPrim {
                     test_id,
                     label: value(conn, label),
                     on_press: action(conn, on_press),
-                    leading_icon: None,
-                    trailing_icon: None,
+                    leading_icon: leading_icon.map(intern_icon),
+                    trailing_icon: trailing_icon.map(intern_icon),
                     disabled: disabled.map(|v| value(conn, v)),
                     style,
                     a11y,
                     ref_fill: None,
                 }),
                 Vec::new(),
+            )
+        }
+        Node::Image { common, src, alt, on_load, on_error, asset } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            runtime_scene::item(
+                PrimCell::new(ImagePrim {
+                    test_id,
+                    src: value(conn, src),
+                    alt: value(conn, alt),
+                    on_load: on_load.map(|id| Rc::new(handler::<_, ()>(conn, id, || ())) as _),
+                    on_error: on_error.map(|id| {
+                        let h = handler::<(), ()>(conn, id, || ());
+                        Rc::new(move || h(&())) as _
+                    }),
+                    asset: asset.map(|a| {
+                        runtime_shared::assets::Asset::new(runtime_shared::assets::AssetId(a.id), asset_source(a.source))
+                    }),
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::Icon { common, data, color, stroke, draw_in } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            runtime_scene::item(
+                PrimCell::new(IconPrim {
+                    test_id,
+                    data: value_with(conn, data, intern_icon, blank_icon),
+                    color: color.map(|v| value_with(conn, v, |c| c, || runtime_shared::Color(String::new()))),
+                    stroke: stroke.map(|v| value(conn, v)),
+                    draw_in,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::Link { common, url, external, on_activate, children } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            runtime_scene::item(
+                PrimCell::new(LinkPrim {
+                    test_id,
+                    url: value(conn, url),
+                    external,
+                    on_activate: on_activate.map(|id| fire(conn, id)),
+                    route_link: None,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                build_all(conn, children)?,
+            )
+        }
+        Node::Toggle { common, value: v, on_change } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            let h = handler::<bool, ()>(conn, on_change, || ());
+            runtime_scene::item(
+                PrimCell::new(TogglePrim {
+                    test_id,
+                    value: value(conn, v),
+                    on_change: Rc::new(move |b: bool| h(&b)),
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::Slider { common, value: v, on_change, min, max, step } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            let h = handler::<f32, ()>(conn, on_change, || ());
+            runtime_scene::item(
+                PrimCell::new(SliderPrim {
+                    test_id,
+                    value: value(conn, v),
+                    on_change: Rc::new(move |x: f32| h(&x)),
+                    min,
+                    max,
+                    step,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::ActivityIndicator { common, size, color } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            runtime_scene::item(
+                PrimCell::new(ActivityIndicatorPrim {
+                    test_id,
+                    size: value_with(conn, size, |s| s, || {
+                        runtime_shared::primitives::activity_indicator::ActivityIndicatorSize::Small
+                    }),
+                    color,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            let change = handler::<String, ()>(conn, on_change, || ());
+            runtime_scene::item(
+                PrimCell::new(TextInputPrim {
+                    test_id,
+                    value: value(conn, v),
+                    on_change: Rc::new(move |t: String| change(&t)),
+                    on_key_down: on_key_down.map(|id| Rc::new(handler(conn, id, || KeyOutcome::Default)) as _),
+                    on_blur: on_blur.map(|id| {
+                        let h = handler::<(), BlurOutcome>(conn, id, || BlurOutcome::Allow);
+                        Rc::new(move || h(&())) as _
+                    }),
+                    on_focus: on_focus.map(|id| {
+                        let h = handler::<bool, ()>(conn, id, || ());
+                        Rc::new(move |f: bool| h(&f)) as _
+                    }),
+                    placeholder: value(conn, placeholder),
+                    secure: value(conn, secure),
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::TextArea { common, value: v, on_change, on_key_down, placeholder, wrap, min_rows, max_rows } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            let change = handler::<String, ()>(conn, on_change, || ());
+            runtime_scene::item(
+                PrimCell::new(TextAreaPrim {
+                    test_id,
+                    value: value(conn, v),
+                    on_change: Rc::new(move |t: String| change(&t)),
+                    on_key_down: on_key_down.map(|id| Rc::new(handler(conn, id, || KeyOutcome::Default)) as _),
+                    placeholder,
+                    wrap,
+                    min_rows,
+                    max_rows,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                Vec::new(),
+            )
+        }
+        Node::ScrollView {
+            common,
+            horizontal,
+            on_scroll,
+            on_end_reached,
+            end_reached_threshold,
+            safe_area,
+            bounces,
+            always_bounce,
+            children,
+        } => {
+            let (test_id, style, a11y) = self::common(conn, common);
+            runtime_scene::item(
+                PrimCell::new(ScrollViewPrim {
+                    test_id,
+                    horizontal,
+                    on_scroll: on_scroll.map(|id| {
+                        let h = handler::<(f32, f32), ()>(conn, id, || ());
+                        Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
+                    }),
+                    on_end_reached: on_end_reached.map(|id| fire(conn, id)),
+                    end_reached_threshold,
+                    safe_area: safe_area.map(SafeAreaSides),
+                    bounces,
+                    always_bounce,
+                    style,
+                    a11y,
+                    ref_fill: None,
+                }),
+                build_all(conn, children)?,
             )
         }
         Node::Fragment(children) => runtime_scene::fragment(build_all(conn, children)?),
@@ -284,12 +487,111 @@ fn fire(conn: &Rc<Conn>, id: Cb) -> Rc<dyn Fn()> {
 }
 
 fn value<T: DeserializeOwned + Default + 'static>(conn: &Rc<Conn>, v: Val<T>) -> Value<T> {
+    value_with(conn, v, |v| v, T::default)
+}
+
+/// A `Value<T>` that crossed as `W`; `fallback` when a stopped bundle's
+/// getter has no last value.
+fn value_with<W: DeserializeOwned + 'static, T: 'static>(
+    conn: &Rc<Conn>,
+    v: Val<W>,
+    map: fn(W) -> T,
+    fallback: fn() -> T,
+) -> Value<T> {
     match v {
-        Val::Const(v) => Value::Const(v),
+        Val::Const(v) => Value::Const(map(v)),
         Val::Dyn(id) => {
             let r = cb(conn, id);
-            Value::Dyn(Box::new(move || r.get::<T>(&[]).unwrap_or_default()))
+            Value::Dyn(Box::new(move || r.get::<W>(&[]).map_or_else(fallback, map)))
         }
+    }
+}
+
+/// An event handler that runs in the bundle: the event crosses encoded,
+/// the reply comes back encoded; `fallback` is the reply once the bundle
+/// can't be called (it was stopped) — the platform's default behaviour.
+fn handler<A: Serialize + 'static, R: DeserializeOwned + 'static>(
+    conn: &Rc<Conn>,
+    id: Cb,
+    fallback: fn() -> R,
+) -> impl Fn(&A) -> R {
+    let r = cb(conn, id);
+    move |event: &A| {
+        r.call(&to_bytes(event)).map_or_else(fallback, |bytes| {
+            from_bytes(&bytes).unwrap_or_else(|e| panic!("remote codec: a handler's reply does not decode: {e}"))
+        })
+    }
+}
+
+fn wire_file_drop(e: &runtime_shared::file_drop::FileDropEvent) -> WireFileDrop {
+    use runtime_shared::file_drop::FileDropPhase;
+    let phase = match &e.phase {
+        FileDropPhase::Entered => WireDropPhase::Entered,
+        FileDropPhase::Exited => WireDropPhase::Exited,
+        FileDropPhase::Dropped(files) => WireDropPhase::Dropped(
+            files
+                .iter()
+                .map(|f| WireDroppedFile { name: f.name.clone(), mime: f.mime.clone(), size: f.size, path: f.path.clone() })
+                .collect(),
+        ),
+        // `FileDropPhase` is non-exhaustive: a phase added later reaches the
+        // bundle as "left", the safe reading for a drag it doesn't know.
+        _ => WireDropPhase::Exited,
+    };
+    WireFileDrop { phase, position: e.position }
+}
+
+/// The prims hold icon and asset data as `&'static`: decoded ones are
+/// interned, one leak per DISTINCT icon / byte blob for the process's
+/// life — bounded by what bundles actually use, like [`intern`].
+fn intern_icon(w: WireIcon) -> runtime_shared::primitives::icon::IconData {
+    use runtime_shared::primitives::icon::IconData;
+    static ICONS: OnceLock<Mutex<HashMap<(Vec<String>, (u16, u16), bool, u8), IconData>>> = OnceLock::new();
+    let rule = w.fill_rule as u8;
+    let key = (w.paths, w.view_box, w.filled, rule);
+    let mut icons = ICONS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = icons.get(&key) {
+        return *i;
+    }
+    let paths: Vec<&'static str> = key.0.iter().map(|p| intern(p)).collect();
+    let icon = IconData { view_box: w.view_box, paths: Box::leak(paths.into_boxed_slice()), fill_rule: w.fill_rule, filled: w.filled };
+    icons.insert(key, icon);
+    icon
+}
+
+fn blank_icon() -> runtime_shared::primitives::icon::IconData {
+    runtime_shared::primitives::icon::IconData {
+        view_box: (0, 0),
+        paths: &[],
+        fill_rule: runtime_shared::primitives::icon::FillRule::NonZero,
+        filled: false,
+    }
+}
+
+fn intern_bytes(b: Vec<u8>) -> &'static [u8] {
+    static BLOBS: OnceLock<Mutex<HashSet<&'static [u8]>>> = OnceLock::new();
+    let mut blobs = BLOBS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&x) = blobs.get(&b[..]) {
+        return x;
+    }
+    let x: &'static [u8] = Box::leak(b.into_boxed_slice());
+    blobs.insert(x);
+    x
+}
+
+fn asset_source(s: WireAssetSource) -> runtime_shared::assets::AssetSource {
+    use runtime_shared::assets::AssetSource;
+    match s {
+        WireAssetSource::Embedded { bytes, extension } => {
+            AssetSource::Embedded { bytes: intern_bytes(bytes), extension: intern(&extension) }
+        }
+        WireAssetSource::Bundled { path } => AssetSource::Bundled { path: intern(&path) },
+        WireAssetSource::BundledEmbedded { path, bytes, extension } => AssetSource::BundledEmbedded {
+            path: intern(&path),
+            bytes: intern_bytes(bytes),
+            extension: intern(&extension),
+        },
+        WireAssetSource::Remote { url } => AssetSource::Remote { url: intern(&url) },
     }
 }
 

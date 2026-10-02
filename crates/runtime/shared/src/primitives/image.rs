@@ -54,6 +54,7 @@ pub trait ImageOps {
 /// compute an aspect ratio for a placeholder box before the image
 /// paints.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImageLoadEvent {
     pub width: f32,
     pub height: f32,

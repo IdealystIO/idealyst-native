@@ -68,6 +68,7 @@ use std::rc::Rc;
 /// coordinates on [`TouchEvent`]. Origin is the top-left, y grows down,
 /// matching the convention every supported platform happens to share.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TouchPoint {
     pub x: f32,
     pub y: f32,
@@ -90,6 +91,7 @@ impl TouchPoint {
 /// concurrent fingers. Reusing an id after the corresponding finger has
 /// lifted is permitted; handlers must not assume monotonicity.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TouchId(pub u64);
 
 /// Phase a [`TouchEvent`] reports on. Mirrors the four states every
@@ -105,6 +107,7 @@ pub struct TouchId(pub u64);
 /// call, alert), a parent claiming the touch, the subscribed node
 /// detaching mid-touch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TouchPhase {
     Began,
     Moved,
@@ -127,6 +130,7 @@ pub enum TouchPhase {
 /// produces two parallel streams of events sharing a handler, each
 /// carrying its own [`TouchId`].
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TouchEvent {
     /// Stable identity for this finger / pointer.
     pub id: TouchId,
@@ -152,6 +156,7 @@ pub struct TouchEvent {
 /// independent — a handler can consume an event without claiming the
 /// gesture, or claim without consuming.
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TouchResponse {
     /// `true` → this view handles the event; do not bubble to the next
     /// subscribed ancestor in the responder chain. `false` → bubble.

@@ -216,16 +216,16 @@ fn a_missing_app_component_fails_to_decode_by_name() {
 }
 
 #[test]
-#[should_panic(expected = "primitive `image` can't cross")]
+#[should_panic(expected = "primitive `graphics` can't cross")]
 fn an_unsupported_primitive_panics_at_encode_by_name() {
-    let tree = runtime_vocabulary::builders::image().src("a.png").build();
+    let tree = runtime_vocabulary::builders::graphics(|_| {}).build();
     bundle::encode(tree);
 }
 
 #[test]
-#[should_panic(expected = "`view`'s `on_hover` can't cross")]
+#[should_panic(expected = "`view`'s `ref` can't cross")]
 fn an_unsupported_field_panics_at_encode_by_name() {
-    let tree = view().on_hover(|_| {}).build();
+    let tree = view().on_handle(|_| {}).build();
     bundle::encode(tree);
 }
 
@@ -244,9 +244,16 @@ fn every_builtin_primitive_has_a_crossing_decision() {
         undecided.len(),
         undecided.iter().map(|k| runtime_scene::payload_type_name(**k)).collect::<Vec<_>>()
     );
-    let supported: Vec<_> =
+    let mut supported: Vec<_> =
         kinds.iter().filter_map(|k| match crossing(*k) { Some(Crossing::Supported(n)) => Some(n), _ => None }).collect();
-    assert_eq!(supported.len(), 4, "view, pressable, text, button: {supported:?}");
+    supported.sort();
+    assert_eq!(
+        supported,
+        [
+            "activity_indicator", "button", "icon", "image", "link", "pressable", "scroll_view", "slider", "text",
+            "text_area", "text_input", "toggle", "view",
+        ]
+    );
 }
 
 /// A link whose bundle can be POISONED mid-life, as a trap poisons a wasm
@@ -295,4 +302,168 @@ fn regression_a_poisoned_bundles_tree_keeps_running_without_it() {
     assert!(!after.contains("shown") && !after.contains("row 9"), "new subtrees render nothing: {after}");
     drop(realized);
     h.flush();
+}
+
+// ---- phase A: every leaf control and every event handler ----
+
+mod controls {
+    use super::*;
+    use runtime_shared::file_drop::{DroppedFile, FileDropEvent, FileDropPhase};
+    use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+    use runtime_shared::primitives::icon::{FillRule, IconData};
+    use runtime_shared::primitives::image::ImageLoadEvent;
+    use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
+    use runtime_shared::primitives::text_input::BlurOutcome;
+    use runtime_shared::styled_text::TextRun;
+    use runtime_shared::touch::{TouchEvent, TouchId, TouchPhase, TouchPoint, TouchResponse};
+    use runtime_shared::wheel::{WheelEvent, WheelKind};
+    use runtime_vocabulary::builders::{
+        activity_indicator, icon, image, link, scroll_view, slider, text_area, text_input, toggle,
+    };
+
+    const STAR: IconData = IconData { view_box: (24, 24), paths: &["M12 2l3 7h7l-6 4 2 7-6-4-6 4 2-7-6-4h7z"], fill_rule: FillRule::NonZero, filled: true };
+
+    /// Every leaf primitive phase A carries, each handler writing a signal a
+    /// text shows — so the backend log records what each event did.
+    fn app() -> Element {
+        component_scope(|| {
+            let seen = signal(String::from("-"));
+            let on = signal(false);
+            let level = signal(0.25f32);
+            let typed = signal(String::from("start"));
+            let note = move |s: String| seen.set(s);
+            view()
+                .on_touch(Rc::new(move |e: &TouchEvent| {
+                    note(format!("touch {:?} {}", e.phase, e.position.x));
+                    TouchResponse::CONSUMED
+                }))
+                .on_wheel(Rc::new(move |e: &WheelEvent| {
+                    note(format!("wheel {}", e.delta_y));
+                    TouchResponse::default()
+                }))
+                .on_hover(move |h| note(format!("hover {h}")))
+                .on_file_drop(Rc::new(move |e: &FileDropEvent| {
+                    if let FileDropPhase::Dropped(files) = &e.phase {
+                        note(format!("drop {}", files[0].name));
+                    }
+                    TouchResponse::CONSUMED
+                }))
+                .child(text().content(move || seen.get()))
+                .child(text().runs(vec![TextRun::plain("plain "), TextRun::plain("run")]))
+                .child(button().label("star").leading_icon(STAR).on_press(|| {}))
+                .child(
+                    image()
+                        .src(move || if on.get() { "on.png".to_string() } else { "off.png".to_string() })
+                        .on_load(Rc::new(move |e: &ImageLoadEvent| note(format!("loaded {}", e.width))))
+                        .on_error(Rc::new(move || note("image error".into()))),
+                )
+                .child(icon().data(STAR).color(runtime_shared::Color("#f00".into())))
+                .child(link().url("https://example.com").on_activate(move || note("link".into())).child(text().content("go")))
+                .child(toggle().value(move || on.get()).on_change(move |v| on.set(v)))
+                .child(slider().value(move || level.get()).range(0.0, 1.0).on_change(move |v| level.set(v)))
+                .child(activity_indicator().size(ActivityIndicatorSize::Large))
+                .child(
+                    text_input()
+                        .value(move || typed.get())
+                        .on_change(move |v| typed.set(v))
+                        .on_key_down(move |e: &KeyEvent| {
+                            note(format!("key {}", e.key));
+                            if e.key == "Tab" { KeyOutcome::PreventDefault } else { KeyOutcome::Default }
+                        })
+                        .on_blur(move || BlurOutcome::Keep)
+                        .on_focus(move |f| note(format!("focus {f}")))
+                        .placeholder("type"),
+                )
+                .child(text_area().value(move || typed.get()).on_change(move |v| typed.set(v)).placeholder("notes"))
+                .child(
+                    scroll_view()
+                        .on_scroll(move |x, y| note(format!("scroll {x},{y}")))
+                        .on_end_reached(move || note("end".into()))
+                        .child(text().content(move || format!("on {} level {} typed {}", on.get(), level.get(), typed.get()))),
+                )
+                .build()
+        })
+    }
+
+    fn key(k: &str) -> KeyEvent {
+        KeyEvent { key: k.into(), shift: false, ctrl: false, alt: false, meta: false, selection_start: 0, selection_end: 0 }
+    }
+
+    /// Mount, fire every handler, and return the backend log per step plus
+    /// what the handlers that answer the platform replied.
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        let tree = h.world.enter(app);
+        let tree = if remote { cross(tree) } else { tree };
+        let mut steps = Vec::new();
+        let mut replies = Vec::new();
+        let realized = h.mount(tree);
+        h.flush();
+        steps.push(h.take_log());
+
+        let at = TouchPoint { x: 3.0, y: 4.0 };
+        let touch = h.shared.touch_handlers.borrow()[0].1.clone();
+        let r = touch(&TouchEvent { id: TouchId(1), phase: TouchPhase::Began, position: at, window_position: at, timestamp_ns: 0, force: None });
+        replies.push(format!("touch consumed {}", r.consumed));
+        h.flush();
+        steps.push(h.take_log());
+
+        let wheel = h.shared.wheel_handlers.borrow()[0].1.clone();
+        wheel(&WheelEvent { kind: WheelKind::Scroll, delta_x: 0.0, delta_y: 7.0, scale: 1.0, rotation: 0.0, position: at, window_position: at, timestamp_ns: 0 });
+        (h.shared.hover_handlers.borrow()[0].1.clone())(true);
+        h.flush();
+        steps.push(h.take_log());
+
+        let drop_h = h.shared.file_drop_handlers.borrow()[0].1.clone();
+        let file = DroppedFile { name: "a.txt".into(), mime: "text/plain".into(), size: Some(3), path: None, source: None };
+        let r = drop_h(&FileDropEvent { phase: FileDropPhase::Dropped(vec![file]), position: at });
+        replies.push(format!("drop consumed {}", r.consumed));
+        h.flush();
+        steps.push(h.take_log());
+
+        (h.shared.image_load_handlers.borrow()[0].1.clone())(&ImageLoadEvent { width: 64.0, height: 32.0 });
+        h.flush();
+        steps.push(h.take_log());
+        (h.shared.image_error_handlers.borrow()[0].1.clone())();
+        (h.link_activation(0))();
+        h.flush();
+        steps.push(h.take_log());
+
+        (h.toggle_change(0))(true);
+        (h.slider_change(0))(0.75);
+        (h.text_input_change(0))("typed".into());
+        h.flush();
+        steps.push(h.take_log());
+
+        let keys = h.key_down_handler(0).expect("text_input key handler");
+        replies.push(format!("tab {:?}", keys(&key("Tab"))));
+        replies.push(format!("a {:?}", keys(&key("a"))));
+        replies.push(format!("blur {:?}", h.blur_handler(0).expect("blur handler")()));
+        (h.shared.focus_handlers.borrow()[0].1.clone())(true);
+        h.flush();
+        steps.push(h.take_log());
+
+        (h.scroll_handler(0).expect("scroll handler"))(1.0, 2.0);
+        let end = h.shared.end_observers.borrow()[0].3.clone();
+        end();
+        h.flush();
+        steps.push(h.take_log());
+
+        drop(realized);
+        h.flush();
+        steps.push(h.take_log());
+        (steps, replies)
+    }
+
+    #[test]
+    fn every_leaf_control_drives_the_backend_exactly_like_the_native_one() {
+        let (native, native_replies) = script(false);
+        let (remote, remote_replies) = script(true);
+        assert!(native[0].len() > 20, "the script mounts a real tree: {:?}", native[0]);
+        for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+            assert_eq!(r, n, "step {step}: remote and native diverge");
+        }
+        assert_eq!(remote_replies, native_replies);
+        assert_eq!(native_replies, ["touch consumed true", "drop consumed true", "tab PreventDefault", "a Default", "blur Keep"]);
+    }
 }

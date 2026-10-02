@@ -198,6 +198,12 @@ pub struct Shared {
     pub touch_handlers: RefCell<Vec<(Node, TouchHandler)>>,
     /// Hover handlers installed via `InputOps::install_hover_handler`.
     pub hover_handlers: RefCell<Vec<(Node, HoverHandler)>>,
+    /// Every installed wheel handler, image load / error handler and text
+    /// input focus handler, in install order — so tests can fire them.
+    pub wheel_handlers: RefCell<Vec<(Node, WheelHandler)>>,
+    pub image_load_handlers: RefCell<Vec<(Node, ImageLoadHandler)>>,
+    pub image_error_handlers: RefCell<Vec<(Node, ImageErrorHandler)>>,
+    pub focus_handlers: RefCell<Vec<(Node, Rc<dyn Fn(bool)>)>>,
 
     // --- capability flags (live; flip mid-test) ---
     /// `Host::supports_splice` (anchorless reactive regions).
@@ -259,6 +265,10 @@ impl Default for Shared {
             file_drop_handlers: RefCell::new(Vec::new()),
             touch_handlers: RefCell::new(Vec::new()),
             hover_handlers: RefCell::new(Vec::new()),
+            wheel_handlers: RefCell::new(Vec::new()),
+            image_load_handlers: RefCell::new(Vec::new()),
+            image_error_handlers: RefCell::new(Vec::new()),
+            focus_handlers: RefCell::new(Vec::new()),
             splice: Cell::new(false),
             batched_repeat: Cell::new(false),
             renders_lazy_chunks: Cell::new(true),
@@ -542,9 +552,10 @@ impl caps::InputOps for HostMock {
         self.s.rec_v("claim_touch", format!("claim_touch n{node}"));
     }
 
-    fn install_wheel_handler(&mut self, node: &Node, _handler: WheelHandler) {
+    fn install_wheel_handler(&mut self, node: &Node, handler: WheelHandler) {
         self.s
             .rec_v("install_wheel_handler", format!("install_wheel_handler n{node}"));
+        self.s.wheel_handlers.borrow_mut().push((*node, handler));
     }
 
     fn install_hover_handler(&mut self, node: &Node, handler: HoverHandler) {
@@ -645,18 +656,20 @@ impl caps::ImageOps for HostMock {
             .rec_v("update_image_alt", format!("update_image_alt n{node} {alt:?}"));
     }
 
-    fn install_image_load_handler(&mut self, node: &Node, _handler: ImageLoadHandler) {
+    fn install_image_load_handler(&mut self, node: &Node, handler: ImageLoadHandler) {
         self.s.rec_v(
             "install_image_load_handler",
             format!("install_image_load_handler n{node}"),
         );
+        self.s.image_load_handlers.borrow_mut().push((*node, handler));
     }
 
-    fn install_image_error_handler(&mut self, node: &Node, _handler: ImageErrorHandler) {
+    fn install_image_error_handler(&mut self, node: &Node, handler: ImageErrorHandler) {
         self.s.rec_v(
             "install_image_error_handler",
             format!("install_image_error_handler n{node}"),
         );
+        self.s.image_error_handlers.borrow_mut().push((*node, handler));
     }
 }
 
@@ -756,11 +769,12 @@ impl caps::TextInputOps for HostMock {
         );
     }
 
-    fn set_text_input_focus_handler(&mut self, node: &Node, _handler: Rc<dyn Fn(bool)>) {
+    fn set_text_input_focus_handler(&mut self, node: &Node, handler: Rc<dyn Fn(bool)>) {
         self.s.rec_v(
             "set_text_input_focus_handler",
             format!("set_text_input_focus_handler n{node}"),
         );
+        self.s.focus_handlers.borrow_mut().push((*node, handler));
     }
 
     fn update_text_input_placeholder(&mut self, node: &Node, placeholder: Option<&str>) {

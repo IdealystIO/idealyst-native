@@ -33,6 +33,7 @@ use std::rc::Rc;
 
 /// Fill rule for SVG path rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FillRule {
     /// Non-zero winding rule (SVG default).
     NonZero,
@@ -84,6 +85,7 @@ pub struct IconData {
 ///     .reverse()                                      // autoreverse
 /// ```
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StrokeAnimation {
     /// Duration in milliseconds.
     pub duration_ms: u32,

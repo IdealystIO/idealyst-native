@@ -71,6 +71,13 @@ pub enum Node {
         safe_area: u8,
         preserves_focus: bool,
         is_container: bool,
+        /// Event handlers, each a callback taking the encoded event and
+        /// replying the encoded response (see [`Handler`]).
+        on_touch: Option<Cb>,
+        on_wheel: Option<Cb>,
+        on_hover: Option<Cb>,
+        /// Takes a [`WireFileDrop`].
+        on_file_drop: Option<Cb>,
         children: Vec<Node>,
     },
     Pressable {
@@ -82,13 +89,94 @@ pub enum Node {
     },
     Text {
         common: Common,
-        content: Val<String>,
+        content: TextContent,
     },
     Button {
         common: Common,
         label: Val<String>,
         on_press: WireAction,
+        leading_icon: Option<WireIcon>,
+        trailing_icon: Option<WireIcon>,
         disabled: Option<Val<bool>>,
+    },
+    Image {
+        common: Common,
+        src: Val<String>,
+        alt: Val<Option<String>>,
+        /// Takes an `ImageLoadEvent`.
+        on_load: Option<Cb>,
+        on_error: Option<Cb>,
+        asset: Option<WireAsset>,
+    },
+    Icon {
+        common: Common,
+        data: Val<WireIcon>,
+        color: Option<Val<runtime_shared::Color>>,
+        stroke: Option<Val<f32>>,
+        draw_in: Option<runtime_shared::primitives::icon::StrokeAnimation>,
+    },
+    Link {
+        common: Common,
+        url: Val<String>,
+        external: bool,
+        on_activate: Option<Cb>,
+        children: Vec<Node>,
+    },
+    Toggle {
+        common: Common,
+        value: Val<bool>,
+        /// Takes a `bool`.
+        on_change: Cb,
+    },
+    Slider {
+        common: Common,
+        value: Val<f32>,
+        /// Takes an `f32`.
+        on_change: Cb,
+        min: f32,
+        max: f32,
+        step: Option<f32>,
+    },
+    ActivityIndicator {
+        common: Common,
+        size: Val<runtime_shared::primitives::activity_indicator::ActivityIndicatorSize>,
+        color: Option<runtime_shared::Color>,
+    },
+    TextInput {
+        common: Common,
+        value: Val<String>,
+        /// Takes a `String`.
+        on_change: Cb,
+        /// Takes a `KeyEvent`, replies a `KeyOutcome`.
+        on_key_down: Option<Cb>,
+        /// Replies a `BlurOutcome`.
+        on_blur: Option<Cb>,
+        /// Takes a `bool`.
+        on_focus: Option<Cb>,
+        placeholder: Val<Option<String>>,
+        secure: Val<bool>,
+    },
+    TextArea {
+        common: Common,
+        value: Val<String>,
+        on_change: Cb,
+        on_key_down: Option<Cb>,
+        placeholder: Option<String>,
+        wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
+    },
+    ScrollView {
+        common: Common,
+        horizontal: bool,
+        /// Takes `(f32, f32)`.
+        on_scroll: Option<Cb>,
+        on_end_reached: Option<Cb>,
+        end_reached_threshold: f32,
+        safe_area: Option<u8>,
+        bounces: Option<bool>,
+        always_bounce: Option<bool>,
+        children: Vec<Node>,
     },
     Fragment(Vec<Node>),
     /// `dyn_element`: rebuild on every fire. `build` replies a [`Node`].
@@ -104,6 +192,75 @@ pub enum Node {
     Owned { scope: u32, element: Box<Node> },
     /// An app component, by name; `props` are its serialized props.
     Import { name: String, props: Vec<u8>, children: Vec<Node> },
+}
+
+/// A `text`'s content.
+#[derive(Serialize, Deserialize, Debug)]
+pub enum TextContent {
+    Value(Val<String>),
+    /// Styled runs; a getter replies `Vec<TextRun>`.
+    Runs(Vec<runtime_shared::styled_text::TextRun>),
+}
+
+/// An `IconData`. Its paths are `&'static` on the prim, so the host interns
+/// each distinct icon (see `host::intern_icon`).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct WireIcon {
+    pub view_box: (u16, u16),
+    pub paths: Vec<String>,
+    pub fill_rule: runtime_shared::primitives::icon::FillRule,
+    pub filled: bool,
+}
+
+impl From<runtime_shared::primitives::icon::IconData> for WireIcon {
+    fn from(i: runtime_shared::primitives::icon::IconData) -> Self {
+        WireIcon {
+            view_box: i.view_box,
+            paths: i.paths.iter().map(|p| p.to_string()).collect(),
+            fill_rule: i.fill_rule,
+            filled: i.filled,
+        }
+    }
+}
+
+/// An image `Asset`: its id and where its bytes are. Embedded bytes cross
+/// with it (a bundle's own asset); a bundled path names a file the APP
+/// ships.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireAsset {
+    pub id: u64,
+    pub source: WireAssetSource,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum WireAssetSource {
+    Embedded { bytes: Vec<u8>, extension: String },
+    Bundled { path: String },
+    BundledEmbedded { path: String, bytes: Vec<u8>, extension: String },
+    Remote { url: String },
+}
+
+/// A `FileDropEvent` without the web-only opaque `source` (a bundle runs on
+/// native targets, where files carry a path).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireFileDrop {
+    pub phase: WireDropPhase,
+    pub position: runtime_shared::touch::TouchPoint,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum WireDropPhase {
+    Entered,
+    Exited,
+    Dropped(Vec<WireDroppedFile>),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireDroppedFile {
+    pub name: String,
+    pub mime: String,
+    pub size: Option<u64>,
+    pub path: Option<std::path::PathBuf>,
 }
 
 /// What every crossing primitive carries.
@@ -253,15 +410,15 @@ pub fn crossing(ty: std::any::TypeId) -> Option<Crossing> {
         PressablePrim => Crossing::Supported("pressable"),
         TextPrim => Crossing::Supported("text"),
         ButtonPrim => Crossing::Supported("button"),
-        ImagePrim => Crossing::Unsupported("image", LATER),
-        IconPrim => Crossing::Unsupported("icon", LATER),
-        LinkPrim => Crossing::Unsupported("link", LATER),
-        TogglePrim => Crossing::Unsupported("toggle", LATER),
-        SliderPrim => Crossing::Unsupported("slider", LATER),
-        ActivityIndicatorPrim => Crossing::Unsupported("activity_indicator", LATER),
-        TextInputPrim => Crossing::Unsupported("text_input", LATER),
-        TextAreaPrim => Crossing::Unsupported("text_area", LATER),
-        ScrollViewPrim => Crossing::Unsupported("scroll_view", LATER),
+        ImagePrim => Crossing::Supported("image"),
+        IconPrim => Crossing::Supported("icon"),
+        LinkPrim => Crossing::Supported("link"),
+        TogglePrim => Crossing::Supported("toggle"),
+        SliderPrim => Crossing::Supported("slider"),
+        ActivityIndicatorPrim => Crossing::Supported("activity_indicator"),
+        TextInputPrim => Crossing::Supported("text_input"),
+        TextAreaPrim => Crossing::Supported("text_area"),
+        ScrollViewPrim => Crossing::Supported("scroll_view"),
         RepeatPrim => Crossing::Unsupported("repeat (static `for` lowering)", LATER),
         LazyPrim => Crossing::Unsupported(
             "lazy",

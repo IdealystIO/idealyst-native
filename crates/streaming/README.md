@@ -109,7 +109,7 @@ The window shows the **bridged** RemoteCounter (green, from `/remote.wasm`) next
 2. Press **Refresh bundle**. The tinted sections remount from the new builds; the app is not rebuilt or restarted. The grey native copy keeps the old code, which is the point of comparison.
 3. The host buttons drive host state the bridged component reads: `external ± 1` is a prop, **switch user** is context.
 
-In the bridged component only `view`, `pressable`, `text` and `button` cross today. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic at any other time (a press handler, an effect) does the same; see [Panics](#panics-in-a-bundle).
+Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic at any other time (a press handler, an effect) does the same; see [Panics](#panics-in-a-bundle).
 
 How it behaves:
 
@@ -203,7 +203,7 @@ A bundle is built with `--cfg idealyst_stream_guest` (a build flag, not a cargo 
 - A component's `Owned` crosses as the app-side scope id it already is, and the app claims it (`runtime_world::remote::claim_scope`), so unmounting tears the bundle's state down like a native component's.
 - **Styles keep the app's theme.** Style rules cross with token names intact, so the app's theme resolves them. A stylesheet crosses as its shape, and the app rebuilds the same sheet with each closure calling back into the bundle. State, breakpoint and container overlays then work exactly as for a native sheet. Ids are refcounted, so a sheet shared by many nodes crosses once.
 - **App components are imported by name.** A bundle calls `remote::bundle::import("Card", &props, children)`; the app exports `Card` with `remote::host::register_import`. A bundle that needs a component the app doesn't export fails to decode with `MissingImport`, rather than rendering half a tree.
-- **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text`, `button`. Everything else, and unsupported fields of crossing primitives (`on_touch`, `ref`, icons, styled runs), panics at encode, naming itself.
+- **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take (touch, wheel, hover, file drop, key, focus, blur, scroll, image load and error). Event handlers cross as callbacks whose event and reply are encoded; a stopped bundle's handlers answer the platform default. Everything else, and the fields that don't cross yet (`ref`s, a `link`'s typed route), panics at encode, naming itself. `tests/remote_elements.rs` (`controls`) checks every one against the native build, handler by handler.
 
 What the tests prove (`remote_counter.rs`): the real `RemoteCounter`, written with `#[component]` and `ui!`, mounted from the bundle drives the app's backend through exactly the same calls as the native build, through mount, button presses (bundle state), a prop change and a context change (app state), and unmount. After unmount, no bundle callback or scope is left behind.
 
@@ -244,7 +244,7 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
 - **`#[component(remote)]` carries props, not context yet,** and has no manifest.
 - Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
-- **The bridged design carries four primitives.** The rest of the vocabulary (`crossing` lists each), event handlers on `view`, `ref`s and handles still have to cross.
+- **Not crossing yet:** the structural primitives (`repeat`, `presence`, `portal`, `virtualizer`, `virtual_grid`), `ref`s (imperative handles), navigators and route links, and `graphics`. `crossing` lists each.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **A poisoned bundle can keep running in one case.** If a host→bundle call made *from inside* a bundle call traps (a bundle calling `flush`, whose effects then panic), the outer bundle frame is still on the stack and resumes. Its later imports still reach the app's graph. Imports could refuse a poisoned bundle, at the cost of every import returning a `Result`.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.
