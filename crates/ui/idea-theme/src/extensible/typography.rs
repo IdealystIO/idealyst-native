@@ -31,6 +31,8 @@ macro_rules! builtin_kind {
         #[schema(value_of = "TypographyKindRef", via = "idea_ui::typography_kind")]
         pub struct $name;
 
+        crate::__remote_marker!(super::TypographyKindRef, $name);
+
         impl TypographyKind for $name {
             fn key(&self) -> &'static str {
                 $key

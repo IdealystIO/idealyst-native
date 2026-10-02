@@ -117,18 +117,22 @@ impl CbRef {
     /// A reply that does not decode is the two sides disagreeing about the
     /// protocol: a bug, so it panics.
     fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
-        let decode = |b: &[u8]| -> T {
-            from_bytes(b).unwrap_or_else(|e| panic!("remote codec: callback {}'s reply does not decode: {e}", self.id))
-        };
+        self.get_bytes(args).map(|b| {
+            from_bytes(&b).unwrap_or_else(|e| panic!("remote codec: callback {}'s reply does not decode: {e}", self.id))
+        })
+    }
+
+    /// [`get`](Self::get), undecoded: for replies their reader decodes
+    /// itself (a prop's own `ImportArg`).
+    fn get_bytes(&self, args: &[u8]) -> Option<Vec<u8>> {
         match self.call(args) {
             Some(bytes) => {
-                let v = decode(&bytes);
                 if args.is_empty() {
-                    *self.last.borrow_mut() = Some(bytes);
+                    *self.last.borrow_mut() = Some(bytes.clone());
                 }
-                Some(v)
+                Some(bytes)
             }
-            None if args.is_empty() => self.last.borrow().as_deref().map(decode),
+            None if args.is_empty() => self.last.borrow().clone(),
             None => None,
         }
     }
@@ -1108,6 +1112,7 @@ pub fn app_component_names() -> Vec<&'static str> {
 
 /// What an imported component's props decode against: the bundle they came
 /// from.
+#[derive(Clone)]
 pub struct ImportCx(Rc<Conn>);
 
 impl ImportCx {
@@ -1134,6 +1139,38 @@ impl CallbackRef {
     pub(crate) fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
         self.0.get(args)
     }
+    /// See `CbRef::get_bytes`.
+    pub(crate) fn get_bytes(&self, args: &[u8]) -> Option<Vec<u8>> {
+        self.0.get_bytes(args)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Values the app defines natively, crossing by key
+// ---------------------------------------------------------------------------
+
+/// One value a bundle may name by key (`__remote_key!`): a tone, a
+/// variant — something the app's code defines, with behavior, so it can't
+/// cross as data. The bundle sends the key; the app rebuilds its own.
+pub struct KeyedEntry {
+    pub ty: fn() -> std::any::TypeId,
+    pub key: fn() -> &'static str,
+    pub make: fn() -> Box<dyn std::any::Any>,
+}
+
+/// Every `__remote_key!` in the app. Filled at link time.
+#[linkme::distributed_slice]
+pub static KEYED: [KeyedEntry];
+
+/// The app's `T` registered under `key`, if any.
+pub fn by_key<T: 'static>(key: &str) -> Option<T> {
+    type Make = fn() -> Box<dyn std::any::Any>;
+    thread_local! {
+        static BY_KEY: HashMap<(std::any::TypeId, &'static str), Make> =
+            KEYED.iter().map(|e| (((e.ty)(), (e.key)()), e.make)).collect();
+    }
+    let make = BY_KEY.with(|m| m.get(&(std::any::TypeId::of::<T>(), key)).copied())?;
+    Some(*make().downcast::<T>().expect("a keyed entry builds the type it is registered under"))
 }
 
 // ---------------------------------------------------------------------------

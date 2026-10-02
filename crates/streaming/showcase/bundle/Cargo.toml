@@ -18,6 +18,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 runtime-core = { workspace = true }
+idea-ui = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
@@ -26,4 +27,4 @@ stream-abi = { path = "../../abi" }
 stream-macros = { path = "../../macros" }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)', 'cfg(feature, values("inline"))'] }

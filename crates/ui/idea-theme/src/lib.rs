@@ -42,6 +42,22 @@
 //!   [`TokenValue`] for theme installation and live swap.
 
 pub mod extensible;
+
+#[doc(hidden)]
+pub use runtime_vocabulary as __vocab;
+
+/// Let a remote bundle name `$marker` (a tone, variant, size, shape or
+/// typography kind) by its key: registers the app's own `$ref` built from
+/// it. Emitted next to every marker's declaration — the built-ins here, and
+/// `tone!` / `variant!` in apps. A no-op unless the app hosts remote
+/// components.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __remote_marker {
+    ($ref:ty, $marker:expr) => {
+        $crate::__vocab::__remote_key!($ref, |v| v.0.key(), <$ref>::from($marker));
+    };
+}
 pub mod intent;
 mod theme_runtime;
 

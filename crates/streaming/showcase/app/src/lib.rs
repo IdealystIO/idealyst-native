@@ -10,12 +10,13 @@
 //! | `FeedScreen` | bundle | remote screen, bundle state, app context, a sync `#[host_fn]` |
 //! | `ShopNavigator` | bundle | a navigator DEFINED in the bundle: typed routes, route links, screen options in its header, an async `#[host_fn]`, writing the app's cart |
 //! | `Settings` | app | native controls for the `Theme` the remote screens read live |
-//! | `Card`, `Pill` | app | app components the bundle uses — imported, not bundled |
+//! | idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses — imported from the app, not bundled |
 //!
 //! The rules on display:
 //! - `#[component(remote)]` ships in the bundle; every other `#[component]`
-//!   is the app's (in the bundle, a use of `Card` is an import of the app's).
-//!   Bundle-only helpers are plain functions (`product_list`, …).
+//!   is the app's — including a library's: in the bundle, idea-ui's `Card`
+//!   is an import of the app's copy, which renders natively with the app's
+//!   theme. Bundle-only helpers are plain functions (`product_list`, …).
 //! - App state crosses as props (`cart: Signal<u32>` — the bundle writes the
 //!   app's signal) and as `#[remote_context]` context (`Theme`).
 //! - Native code the bundle calls is a `#[host_fn]`.
@@ -31,7 +32,8 @@
 
 use std::rc::Rc;
 
-use runtime_core::{component, remote_context, signal, ui, Element, ReadSignal, Signal};
+use idea_ui::{tone, typography_kind, Badge, Button, Card, Slider, Switch, Typography};
+use runtime_core::{component, remote_context, rx, signal, ui, Element, ReadSignal, Signal};
 use runtime_shared::primitives::navigator::{Route, RouteParams};
 use runtime_shared::{Color, Length, StyleRules, Tokenized};
 use stream_macros::host_fn;
@@ -120,6 +122,11 @@ pub async fn fetch_reviews(product: u32) -> Vec<String> {
     }
 }
 
+/// A handler prop (idea-ui takes `Rc<dyn Fn()>`).
+fn handler(f: impl Fn() + 'static) -> Rc<dyn Fn()> {
+    Rc::new(f)
+}
+
 fn px(v: f32) -> Option<Tokenized<Length>> {
     Some(Tokenized::Literal(Length::Px(v)))
 }
@@ -147,10 +154,6 @@ fn screen_fill() -> StyleRules {
     }
 }
 
-fn card_rules() -> StyleRules {
-    StyleRules { background: color("#f3f4f6"), gap: px(6.0), ..column(6.0) }
-}
-
 /// A theme-colored style, following the app's accent live.
 fn accented(theme: Option<Theme>) -> impl Fn() -> Rc<StyleRules> {
     move || {
@@ -160,36 +163,11 @@ fn accented(theme: Option<Theme>) -> impl Fn() -> Rc<StyleRules> {
 }
 
 // ===========================================================================
-// App components — compiled into the app; the bundle imports them
-// ===========================================================================
-
-/// A titled card. In the bundle, `Card(...)` is an import of this one.
-#[component]
-pub fn Card(title: String, children: Vec<Element>) -> Element {
-    ui! {
-        view(style = card_rules()) {
-            text { "{title}" }
-            children
-        }
-    }
-}
-
-/// A small label.
-#[component]
-pub fn Pill(label: String) -> Element {
-    ui! {
-        view(style = StyleRules { background: color("#e0e7ff"), padding_left: px(6.0), padding_right: px(6.0), ..StyleRules::default() }) {
-            text { "{label}" }
-        }
-    }
-}
-
-// ===========================================================================
 // Remote components — shipped in the bundle
 // ===========================================================================
 
 /// The feed tab. Bundle state (likes), app context (`Theme`), a sync host
-/// function (`device_name`), app components (`Card`, `Pill`).
+/// function (`device_name`), idea-ui components from the app.
 #[component(remote)]
 pub fn FeedScreen() -> Element {
     let theme = runtime_world::inject::<Theme>();
@@ -201,14 +179,15 @@ pub fn FeedScreen() -> Element {
         scroll_view(style = screen_fill()) {
             view(style = column(10.0)) {
                 text(style = heading) { "Feed — rendered by the bundle" }
-                Pill(label = format!("running on {device}"))
+                Badge(label = format!("running on {device}"), tone = tone::Info)
                 text { move || format!("density: {}", if compact.is_some_and(|c| c.get()) { "compact" } else { "comfortable" }) }
                 for (post, like) in POSTS.iter().zip(likes) {
-                    Card(title = post.title.to_string()) {
+                    Card() {
+                        Typography(content = post.title.to_string(), kind = typography_kind::H3)
                         if !compact.is_some_and(|c| c.get()) {
-                            text { post.body }
+                            Typography(content = post.body.to_string())
                         }
-                        button(label = move || format!("♥ {}", like.get()), on_click = move || like.update(|n| n + 1))
+                        Button(label = rx!(format!("♥ {}", like.get())), on_click = handler(move || like.update(|n| n + 1)), tone = tone::Primary)
                     }
                 }
             }
@@ -265,7 +244,15 @@ fn product_list() -> Element {
         .map(|p| {
             // A route link: its typed params cross as the url and the
             // navigator rebuilds them (`ParamsFromUrl`).
-            link().route(&PRODUCT, ProductId(p.id)).child(ui! { Card(title = p.name.to_string()) { text { price(p.price_cents) } } }).build()
+            link()
+                .route(&PRODUCT, ProductId(p.id))
+                .child(ui! {
+                    Card() {
+                        Typography(content = p.name.to_string(), kind = typography_kind::H3)
+                        Typography(content = price(p.price_cents), muted = true)
+                    }
+                })
+                .build()
         })
         .collect();
     ui! {
@@ -278,7 +265,6 @@ fn product_list() -> Element {
 }
 
 fn product_detail(id: u32, cart: Signal<u32>) -> Element {
-    use runtime_vocabulary::builders::{slider, toggle};
     let Some(p) = product(id) else {
         return ui! {
             view(style = screen_fill()) {
@@ -289,22 +275,24 @@ fn product_detail(id: u32, cart: Signal<u32>) -> Element {
     let qty = signal(1.0f32);
     let gift = signal(false);
     let reviews = signal(None::<Vec<String>>);
+    let on_qty: Rc<dyn Fn(f32)> = Rc::new(move |v| qty.set(v.round()));
+    let on_gift: Rc<dyn Fn(bool)> = Rc::new(move |v| gift.set(v));
+    let add_to_cart: Rc<dyn Fn()> = Rc::new(move || cart.update(|c| c + qty.get() as u32));
     // An async host function: the app fetches, the bundle applies.
     runtime_core::spawn_then(fetch_reviews(id), move |r| reviews.set(Some(r)));
-    let qty_slider = slider().value(move || qty.get()).range(1.0, 5.0).step(1.0).on_change(move |v| qty.set(v.round())).build();
-    let gift_toggle = toggle().value(move || gift.get()).on_change(move |v| gift.set(v)).build();
     ui! {
         scroll_view(style = screen_fill()) {
             view(style = column(10.0)) {
-                Card(title = p.name.to_string()) {
-                    text { p.blurb }
-                    text { price(p.price_cents) }
+                Card() {
+                    Typography(content = p.name.to_string(), kind = typography_kind::H2)
+                    Typography(content = p.blurb.to_string())
+                    Typography(content = price(p.price_cents), muted = true)
                 }
                 text { move || format!("Quantity: {}", qty.get() as u32) }
-                qty_slider
+                Slider(value = rx!(qty.get()), on_change = on_qty, min = 1.0, max = 5.0, step = 1.0)
                 text { move || format!("Gift wrap: {}", if gift.get() { "yes" } else { "no" }) }
-                gift_toggle
-                button(label = "Add to cart", on_click = move || cart.update(|c| c + qty.get() as u32))
+                Switch(value = gift, on_change = on_gift, label = "Gift wrap".to_string())
+                Button(label = "Add to cart".to_string(), on_click = add_to_cart, tone = tone::Primary)
                 text { move || match reviews.get() {
                     None => "Loading reviews…".to_string(),
                     Some(r) => format!("Reviews: {}", r.join("  ")),
@@ -396,6 +384,9 @@ mod app {
     /// screens and a native one, and the state they share.
     #[component]
     pub fn App() -> Element {
+        // idea-ui's theme lives in the app: the components the bundle
+        // imports render here, natively, against it.
+        idea_ui::install_idea_theme(idea_ui::light_theme());
         let accent = signal("#2563eb".to_string());
         let compact = signal(false);
         let cart = signal(0u32);
@@ -456,7 +447,8 @@ mod app {
                     button(label = "Green accent", on_click = move || accent.set("#059669".into()))
                     button(label = "Orange accent", on_click = move || accent.set("#ea580c".into()))
                     button(label = move || format!("Compact feed: {}", if compact.get() { "on" } else { "off" }), on_click = move || compact.update(|c| !c))
-                    Card(title = "Cart".to_string()) {
+                    Card() {
+                        Typography(content = "Cart".to_string(), kind = typography_kind::H3)
                         text { move || format!("{} item(s)", cart.get()) }
                         button(label = "Empty cart", on_click = move || cart.set(0))
                     }

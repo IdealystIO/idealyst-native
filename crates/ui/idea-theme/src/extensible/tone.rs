@@ -28,6 +28,8 @@ macro_rules! builtin_tone {
         #[schema(value_of = "ToneRef", via = "idea_ui::tone")]
         pub struct $name;
 
+        crate::__remote_marker!(super::ToneRef, $name);
+
         impl Tone for $name {
             fn key(&self) -> &'static str {
                 $key

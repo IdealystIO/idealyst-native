@@ -18,7 +18,8 @@
 //! answers 500 with the compiler output, so the app can show the error and
 //! keep running what it has.
 //!
-//! Change detection is an mtime poll (250 ms) over `GUEST_SOURCES`, plus a
+//! Change detection is an mtime poll (250 ms) over each bundle's listed
+//! sources and every file its last build compiled (cargo's dep-info), plus a
 //! check on every request — so a refresh right after a save waits for that
 //! save's build instead of racing the poller. Builds hold the state lock,
 //! which is what makes a request wait.
@@ -30,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use stream_spike::guest_build::{
-    guest_build_command, guest_wasm_path, EXAMPLE_SOURCES, GUEST_SOURCES, REMOTE_GUEST_SOURCES, SHOWCASE_SOURCES,
+    bundle_sources, guest_build_command, guest_wasm_path, EXAMPLE_SOURCES, GUEST_SOURCES, REMOTE_GUEST_SOURCES, SHOWCASE_SOURCES,
 };
 
 /// One served bundle.
@@ -62,8 +63,12 @@ fn newest_mtime(path: &Path) -> Option<SystemTime> {
 }
 
 impl State {
+    /// The listed sources, plus every file the last build compiled (its
+    /// dep-info): an edit to a library the bundle uses rebuilds it too.
     fn sources_mtime(&self) -> Option<SystemTime> {
-        self.sources.iter().filter_map(|p| newest_mtime(&self.crate_dir.join(p))).max()
+        let listed = self.sources.iter().map(|p| self.crate_dir.join(p));
+        let compiled = bundle_sources(&self.target_dir, self.artifact);
+        listed.chain(compiled).filter_map(|p| newest_mtime(&p)).max()
     }
 
     fn build_if_stale(&mut self) {

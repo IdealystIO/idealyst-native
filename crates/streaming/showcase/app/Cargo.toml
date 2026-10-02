@@ -28,6 +28,7 @@ inline = ["runtime-vocabulary/remote-inline"]
 
 [dependencies]
 runtime-core = { workspace = true }
+idea-ui = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }

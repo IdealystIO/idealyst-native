@@ -824,6 +824,84 @@ impl<T> ViaUnsupported<T> for &Arg<T> {
     }
 }
 
+/// How an app component's PROPS cross from a bundle: by field name, and
+/// only the fields the call site set (`BuildElement::build_set`). The app
+/// starts from its own `defaults()` and overwrites what arrived, so:
+/// - a default never crosses (a component whose defaults can't cross —
+///   idea-ui's token refs, say — still imports when the call site leaves
+///   them alone), and
+/// - a prop the app's component doesn't have is an error naming it, not a
+///   misread stream (an app and bundle built from different versions).
+///
+/// `#[props]` / `#[component]` implement it (`__remote_props!`).
+pub trait ImportProps: Sized + 'static {
+    /// Send the fields named in `set` (`None`: every field — the props
+    /// were built without `ui!`, so which were set is unknown).
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_props(self, set: Option<&[&str]>, out: &mut Vec<u8>);
+    /// Overwrite `base` (the app's defaults) with the fields that arrived.
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_props(base: Self, input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String>;
+}
+
+impl ImportProps for () {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_props(self, _set: Option<&[&str]>, out: &mut Vec<u8>) {
+        __send_value(&0u32, out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_props(base: Self, input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
+        match __try_receive_value::<u32>(input)? {
+            0 => Ok(base),
+            n => Err(format!("the bundle sent {n} props to a component that takes none")),
+        }
+    }
+}
+
+/// [`Arg`]'s probe for a props struct: [`ViaProps`] when it is
+/// [`ImportProps`], else [`ViaUnsupportedProps`] (a hand-written props
+/// struct with no `#[props]`).
+#[doc(hidden)]
+pub trait ViaProps<T> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_props(&self, v: T, set: Option<&[&str]>, out: &mut Vec<u8>);
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
+}
+
+impl<T: ImportProps> ViaProps<T> for Arg<T> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_props(&self, v: T, set: Option<&[&str]>, out: &mut Vec<u8>) {
+        v.send_props(set, out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String> {
+        T::receive_props(base, input, cx)
+    }
+}
+
+#[doc(hidden)]
+pub trait ViaUnsupportedProps<T> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_props(&self, v: T, set: Option<&[&str]>, out: &mut Vec<u8>);
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
+}
+
+impl<T> ViaUnsupportedProps<T> for &Arg<T> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_props(&self, _v: T, _set: Option<&[&str]>, _out: &mut Vec<u8>) {
+        panic!(
+            "props of type `{}` can't cross from a remote component to an app component (declare them with `#[props]`)",
+            std::any::type_name::<T>()
+        )
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_props(&self, _base: T, _input: &mut &[u8], _cx: &host::ImportCx) -> Result<T, String> {
+        Err(format!("props of type `{}` can't cross from a remote component", std::any::type_name::<T>()))
+    }
+}
+
 #[doc(hidden)]
 pub fn __try_receive_value<T: serde::de::DeserializeOwned>(input: &mut &[u8]) -> Result<T, String> {
     let (v, rest) = postcard::take_from_bytes(input).map_err(|e| e.to_string())?;
@@ -908,24 +986,30 @@ impl ImportArg for runtime_scene::Element {
     }
 }
 
-/// A prop's `Reactive<T>`: a static value is copied; a live one becomes a
-/// getter into the bundle, read by the app component's binding effects
-/// (which subscribe to whatever the bundle's closure reads — the app's
-/// graph either way).
-impl<T> ImportArg for crate::glue::Reactive<T>
-where
-    T: Serialize + serde::de::DeserializeOwned + 'static,
-{
+/// A prop's `Reactive<T>`, for any `T` that crosses: a static value
+/// crosses as `T` does; a live one becomes a getter into the bundle, read by
+/// the app component's binding effects (which subscribe to whatever the
+/// bundle's closure reads — the app's graph either way). Each reply is
+/// decoded by `T`'s own `ImportArg`, so a live tone crosses by key like a
+/// static one.
+impl<T: ImportArg> ImportArg for crate::glue::Reactive<T> {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn send(self, out: &mut Vec<u8>) {
         match self {
             crate::glue::Reactive::Static(v) => {
                 __send_value(&false, out);
-                __send_value(&v, out);
+                v.send(out);
             }
             crate::glue::Reactive::Dynamic(f) => {
                 __send_value(&true, out);
-                __send_value(&bundle::register_getter(move || to_bytes(&f())), out);
+                __send_value(
+                    &bundle::register_getter(move || {
+                        let mut reply = Vec::new();
+                        f().send(&mut reply);
+                        reply
+                    }),
+                    out,
+                );
             }
         }
     }
@@ -933,15 +1017,19 @@ where
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
         if __try_receive_value::<bool>(input)? {
             let get = cx.callback(__try_receive_value(input)?);
+            let cx = cx.clone();
+            let read = move || -> Option<Result<T, String>> { get.get_bytes(&[]).map(|b| T::receive(&mut &b[..], &cx)) };
             // Read once now, while the bundle is known to be callable: the
             // getter then always has a last value to fall back on if the
             // bundle is poisoned later (`T` has no default to invent).
-            get.get::<T>(&[]).ok_or_else(|| "the bundle stopped (it panicked)".to_string())?;
+            read().ok_or_else(|| "the bundle stopped (it panicked)".to_string())??;
             Ok(crate::glue::Reactive::Dynamic(std::rc::Rc::new(move || {
-                get.get::<T>(&[]).expect("primed at receive: a last value always exists")
+                read()
+                    .expect("primed at receive: a last value always exists")
+                    .unwrap_or_else(|e| panic!("remote codec: a live prop's value does not decode: {e}"))
             })))
         } else {
-            Ok(crate::glue::Reactive::Static(__try_receive_value(input)?))
+            Ok(crate::glue::Reactive::Static(T::receive(input, cx)?))
         }
     }
 }
@@ -1042,7 +1130,7 @@ impl ImportArg for std::rc::Rc<runtime_shared::StyleSheet> {
 #[doc(hidden)]
 macro_rules! __remote_props {
     ($ty:ident { $($f:ident : $t:ty),* $(,)? }) => {
-        impl $crate::remote::ImportArg for $ty {
+        impl $crate::remote::ImportProps for $ty {
             $crate::__remote_props_send! { $($f : $t),* }
             $crate::__remote_props_receive! { $($f : $t),* }
         }
@@ -1054,12 +1142,22 @@ macro_rules! __remote_props {
 #[doc(hidden)]
 macro_rules! __remote_props_send {
     ($($f:ident : $t:ty),*) => {
-        fn send(self, __out: &mut ::std::vec::Vec<u8>) {
+        fn send_props(self, __set: ::core::option::Option<&[&str]>, __out: &mut ::std::vec::Vec<u8>) {
             #[allow(unused_imports)]
             use $crate::remote::{ViaImport as _, ViaUnsupported as _};
+            let __has = |name: &str| __set.map_or(true, |s| s.contains(&name));
             let Self { $($f),* } = self;
-            $( (&$crate::remote::Arg::<$t>::new()).send($f, __out); )*
-            let _ = __out;
+            let __count: u32 = 0 $( + __has(::core::stringify!($f)) as u32 )*;
+            $crate::remote::__send_value(&__count, __out);
+            $(
+                if __has(::core::stringify!($f)) {
+                    $crate::remote::__send_value(&::core::stringify!($f), __out);
+                    (&$crate::remote::Arg::<$t>::new()).send($f, __out);
+                } else {
+                    // The app has its own default for it.
+                    ::core::mem::drop($f);
+                }
+            )*
         }
     };
 }
@@ -1076,14 +1174,28 @@ macro_rules! __remote_props_send {
 #[doc(hidden)]
 macro_rules! __remote_props_receive {
     ($($f:ident : $t:ty),*) => {
-        fn receive(
+        fn receive_props(
+            #[allow(unused_mut)] mut __base: Self,
             __in: &mut &[u8],
             __cx: &$crate::remote::host::ImportCx,
         ) -> ::core::result::Result<Self, ::std::string::String> {
             #[allow(unused_imports)]
             use $crate::remote::{ViaImport as _, ViaUnsupported as _};
-            let _ = (&__in, __cx);
-            ::core::result::Result::Ok(Self { $($f: (&$crate::remote::Arg::<$t>::new()).receive(__in, __cx)?),* })
+            let __count: u32 = $crate::remote::__try_receive_value(__in)?;
+            for _ in 0..__count {
+                let __name: ::std::string::String = $crate::remote::__try_receive_value(__in)?;
+                match __name.as_str() {
+                    $( ::core::stringify!($f) => __base.$f = (&$crate::remote::Arg::<$t>::new()).receive(__in, __cx)?, )*
+                    __other => {
+                        return ::core::result::Result::Err(::std::format!(
+                            "the app's `{}` has no prop `{}` (the bundle was built against a different version of it)",
+                            ::core::any::type_name::<Self>(),
+                            __other
+                        ))
+                    }
+                }
+            }
+            ::core::result::Result::Ok(__base)
         }
     };
 }
@@ -1095,20 +1207,84 @@ macro_rules! __remote_props_receive {
     ($($t:tt)*) => {};
 }
 
+/// Let `$ty` — something an app defines natively, with behavior, from an
+/// open set (idea-theme's `ToneRef`, `VariantRef`, …) — cross from a bundle
+/// to an app component BY KEY: the bundle sends `$key(&value)`, the app
+/// rebuilds its own value registered under that key (`__remote_key!`). A
+/// key the app has no value for is an error naming it — the same rule as
+/// for components: what isn't remote is assumed to be in the app.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_keyed {
+    ($ty:ty, |$v:ident| $key:expr) => {
+        impl $crate::remote::ImportArg for $ty {
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn send(self, out: &mut ::std::vec::Vec<u8>) {
+                let $v = &self;
+                let key: &str = $key;
+                $crate::remote::__send_value(&key, out)
+            }
+            #[cfg(not(idealyst_stream_guest))]
+            fn receive(
+                input: &mut &[u8],
+                _cx: &$crate::remote::host::ImportCx,
+            ) -> ::core::result::Result<Self, ::std::string::String> {
+                let key: ::std::string::String = $crate::remote::__try_receive_value(input)?;
+                $crate::remote::host::by_key::<$ty>(&key).ok_or_else(|| {
+                    ::std::format!(
+                        "the app has no `{}` with key `{}` (a remote bundle can only name ones the app defines)",
+                        ::core::any::type_name::<$ty>(),
+                        key
+                    )
+                })
+            }
+        }
+    };
+}
+
+/// Register `$value` (an expression building it) as the app's `$ty` under
+/// its own key, for bundles to name (`__remote_keyed!`). Native app builds
+/// only.
+#[cfg(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_key {
+    ($ty:ty, |$v:ident| $key:expr, $value:expr) => {
+        const _: () = {
+            fn __make() -> $ty {
+                $value
+            }
+            #[$crate::remote::__linkme::distributed_slice($crate::remote::host::KEYED)]
+            #[linkme(crate = $crate::remote::__linkme)]
+            static __ENTRY: $crate::remote::host::KeyedEntry = $crate::remote::host::KeyedEntry {
+                ty: ::core::any::TypeId::of::<$ty>,
+                key: || {
+                    let $v = &__make();
+                    let key: &'static str = $key;
+                    key
+                },
+                make: || ::std::boxed::Box::new(__make()),
+            };
+        };
+    };
+}
+
 /// Register an app component for bundles to import (native app builds).
 #[cfg(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest)))]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_app_component {
-    ($name:expr, $props:ty, |$p:ident| $call:expr) => {
+    ($name:expr, $props:ty, $defaults:expr, |$p:ident| $call:expr) => {
         const _: () = {
             fn __build(
                 __in: &mut &[u8],
                 __cx: &$crate::remote::host::ImportCx,
             ) -> ::core::result::Result<$crate::remote::__Element, ::std::string::String> {
                 #[allow(unused_imports)]
-                use $crate::remote::{ViaImport as _, ViaUnsupported as _};
-                let $p: $props = (&$crate::remote::Arg::<$props>::new()).receive(__in, __cx)?;
+                use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
+                // The app's own defaults; the bundle sent what its call
+                // site set.
+                let $p: $props = (&$crate::remote::Arg::<$props>::new()).receive_props($defaults, __in, __cx)?;
                 ::core::result::Result::Ok($call)
             }
             #[$crate::remote::__linkme::distributed_slice($crate::remote::host::APP_COMPONENTS)]
@@ -1125,11 +1301,14 @@ macro_rules! __remote_app_component {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_import {
-    ($name:expr, $props:ty, $value:expr) => {{
+    ($name:expr, $props:ty, $value:expr) => {
+        $crate::__remote_import!($name, $props, $value, ::core::option::Option::None)
+    };
+    ($name:expr, $props:ty, $value:expr, $set:expr) => {{
         #[allow(unused_imports)]
-        use $crate::remote::{ViaImport as _, ViaUnsupported as _};
+        use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
         let mut __out = ::std::vec::Vec::new();
-        (&$crate::remote::Arg::<$props>::new()).send($value, &mut __out);
+        (&$crate::remote::Arg::<$props>::new()).send_props($value, $set, &mut __out);
         $crate::remote::bundle::import_component($name, __out)
     }};
 }

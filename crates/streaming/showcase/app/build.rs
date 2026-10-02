@@ -42,4 +42,9 @@ fn main() {
     std::fs::copy(guest_wasm_path(&target_dir, &app_crate), out.join("bundle.wasm")).expect("copy bundle.wasm");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=../bundle/Cargo.toml");
+    // And every source the bundle compiled — the framework, idea-ui, … —
+    // so editing a library it uses rebuilds the embedded copy.
+    for source in bundle_sources(&target_dir, &app_crate) {
+        println!("cargo:rerun-if-changed={}", source.display());
+    }
 }

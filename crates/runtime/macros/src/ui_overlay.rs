@@ -130,8 +130,9 @@ mod inert {
         props: TokenStream2,
         _name: &proc_macro2::Ident,
         _node: u32,
+        set: &[String],
     ) -> TokenStream2 {
-        quote::quote! { ::runtime_core::BuildElement::build(#props) }
+        quote::quote! { ::runtime_core::BuildElement::build_set(#props, &[#(#set),*]) }
     }
 }
 
@@ -236,6 +237,7 @@ mod live {
         body: TokenStream2,
         _name: &proc_macro2::Ident,
         node: u32,
+        set: &[String],
     ) -> TokenStream2 {
         let site = SITE.with(|s| s.get());
         // A call site with literal props names them, so the component's
@@ -251,7 +253,7 @@ mod live {
             {
                 #enter
                 ::runtime_core::__overlay::exit(
-                    ::runtime_core::BuildElement::build(#body),
+                    ::runtime_core::BuildElement::build_set(#body, &[#(#set),*]),
                 )
             }
         }

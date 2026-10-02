@@ -25,4 +25,11 @@ fn main() {
     for dir in GUEST_SOURCES.iter().chain(BRIDGED_SOURCES) {
         println!("cargo:rerun-if-changed={}", manifest.join(dir).display());
     }
+    // And every source each bundle compiled (cargo's dep-info): a library
+    // one of them uses that the list above doesn't name still reruns it.
+    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr"] {
+        for source in bundle_sources(&target_dir, package) {
+            println!("cargo:rerun-if-changed={}", source.display());
+        }
+    }
 }

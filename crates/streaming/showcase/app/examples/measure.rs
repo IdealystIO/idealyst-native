@@ -167,6 +167,8 @@ fn main() {
     let rss_start = rss();
 
     let h = Harness::new();
+    // The idea-ui components the screens import render here, against it.
+    h.world.enter(|| idea_ui::install_idea_theme(idea_ui::light_theme()));
     let s = h.world.enter(|| State {
         accent: runtime_world::signal("#2563eb".to_string()),
         compact: runtime_world::signal(false),
@@ -174,7 +176,7 @@ fn main() {
     });
 
     // --- Feed: mount ----------------------------------------------------------
-    println!("\nFeedScreen (4 cards from app components, context, a host fn):");
+    println!("\nFeedScreen (3 idea-ui cards with buttons, context, a host fn):");
     let (first, r) = mount(&h, || feed(s));
     report("feed.mount.first", "mount + realize, first in process", first);
     unmount(&h, r);
@@ -188,10 +190,11 @@ fn main() {
     report("feed.unmount", "unmount", median(unmounts));
 
     // --- Feed: updates --------------------------------------------------------
-    let presses_before = h.shared.button_presses.borrow().len();
+    let presses_before = h.shared.press_handlers.borrow().len();
     let (_, r) = mount(&h, || feed(s));
-    // The first like button: pressed in the app, handled by the screen.
-    let like = h.shared.button_presses.borrow()[presses_before].clone();
+    // The first like button (an idea-ui `Button`, a pressable): pressed in
+    // the app, handled by the screen.
+    let like = h.shared.press_handlers.borrow()[presses_before].clone();
     report("feed.like", "press ♥ (handler → screen state → its text)", per_op(&h, 2000, |_| like()));
     report(
         "feed.accent",
@@ -233,8 +236,16 @@ fn main() {
     report("shop.pop", "pop back to the list (header ‹ Back)", median(pops));
     open_first();
     h.flush();
-    let slide = h.shared.slider_changes.borrow().last().unwrap().clone();
-    report("detail.slider", "slider change (handler → screen state → its text)", per_op(&h, 2000, |i| slide((i % 5 + 1) as f32)));
+    // idea-ui's `Slider` maps a touch's x against its width: alternate its
+    // two ends so every touch changes the value.
+    let slide = h.shared.touch_handlers.borrow().last().unwrap().1.clone();
+    report(
+        "detail.slider",
+        "slider change (handler → screen state → its text)",
+        per_op(&h, 2000, |i| {
+            slide(&touch_at(if i % 2 == 0 { 10_000.0 } else { 0.0 }));
+        }),
+    );
     drop((slide, back, open_first));
     unmount(&h, r);
 
@@ -261,5 +272,16 @@ fn main() {
     }
     if REMOTE {
         assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0, "every remote tree torn down");
+    }
+}
+
+fn touch_at(x: f32) -> runtime_core::TouchEvent {
+    runtime_core::TouchEvent {
+        id: runtime_core::TouchId(1),
+        phase: runtime_core::TouchPhase::Began,
+        position: runtime_core::TouchPoint::new(x, 0.0),
+        window_position: runtime_core::TouchPoint::new(x, 0.0),
+        timestamp_ns: 0,
+        force: None,
     }
 }

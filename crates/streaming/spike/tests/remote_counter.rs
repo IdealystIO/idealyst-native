@@ -144,7 +144,7 @@ fn unmounting_the_remote_tree_leaves_nothing_subscribed() {
     drop(realized);
     h.flush();
     // The mock backend keeps the button's press handler; it is a real owner.
-    h.shared.button_presses.borrow_mut().clear();
+    h.forget_handlers();
     assert_eq!(live(), 0, "a bundle callback outlived the tree that used it");
     assert_eq!(runtime_world::remote::pending_scopes(), 0);
     assert_eq!(inputs.external.subscriber_count(), 0, "a bundle effect survived the unmount");

@@ -214,6 +214,18 @@ macro_rules! __remote_context {
 macro_rules! __remote_props {
     ($($t:tt)*) => {};
 }
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_keyed {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_key {
+    ($($t:tt)*) => {};
+}
 #[cfg(not(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest))))]
 #[macro_export]
 #[doc(hidden)]

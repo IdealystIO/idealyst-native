@@ -9805,6 +9805,7 @@ version = "0.1.0"
 dependencies = [
  "host-appkit",
  "host-mock",
+ "idea-ui",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
@@ -9819,6 +9820,7 @@ dependencies = [
 name = "remote-showcase-bundle"
 version = "0.1.0"
 dependencies = [
+ "idea-ui",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",

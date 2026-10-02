@@ -145,6 +145,11 @@ pub trait Tone: 'static {
 #[derive(Clone)]
 pub struct ToneRef(pub Rc<dyn Tone>);
 
+// A remote bundle names one by its key; the app rebuilds its own (every
+// built-in and `tone!`/`variant!`-declared marker registers itself through
+// `__remote_marker!`). A no-op unless the app hosts remote components.
+runtime_vocabulary::__remote_keyed!(ToneRef, |v| v.0.key());
+
 impl<T: Tone> From<T> for ToneRef {
     fn from(t: T) -> Self {
         ToneRef(Rc::new(t))
@@ -227,6 +232,11 @@ pub trait Variant: 'static {
 #[derive(Clone)]
 pub struct VariantRef(pub Rc<dyn Variant>);
 
+// A remote bundle names one by its key; the app rebuilds its own (every
+// built-in and `tone!`/`variant!`-declared marker registers itself through
+// `__remote_marker!`). A no-op unless the app hosts remote components.
+runtime_vocabulary::__remote_keyed!(VariantRef, |v| v.0.key());
+
 impl<V: Variant> From<V> for VariantRef {
     fn from(v: V) -> Self {
         VariantRef(Rc::new(v))
@@ -279,6 +289,11 @@ pub trait ButtonSize: 'static {
 #[derive(Clone)]
 pub struct ButtonSizeRef(pub Rc<dyn ButtonSize>);
 
+// A remote bundle names one by its key; the app rebuilds its own (every
+// built-in and `tone!`/`variant!`-declared marker registers itself through
+// `__remote_marker!`). A no-op unless the app hosts remote components.
+runtime_vocabulary::__remote_keyed!(ButtonSizeRef, |v| v.0.key());
+
 impl<S: ButtonSize> From<S> for ButtonSizeRef {
     fn from(s: S) -> Self {
         ButtonSizeRef(Rc::new(s))
@@ -323,6 +338,11 @@ pub trait Shape: 'static {
 /// Typed handle wrapping `Rc<dyn Shape>`. See [`ToneRef`].
 #[derive(Clone)]
 pub struct ShapeRef(pub Rc<dyn Shape>);
+
+// A remote bundle names one by its key; the app rebuilds its own (every
+// built-in and `tone!`/`variant!`-declared marker registers itself through
+// `__remote_marker!`). A no-op unless the app hosts remote components.
+runtime_vocabulary::__remote_keyed!(ShapeRef, |v| v.0.key());
 
 impl<S: Shape> From<S> for ShapeRef {
     fn from(s: S) -> Self {
@@ -392,6 +412,11 @@ pub trait TypographyKind: 'static {
 /// Typed handle wrapping `Rc<dyn TypographyKind>`. See [`ToneRef`].
 #[derive(Clone)]
 pub struct TypographyKindRef(pub Rc<dyn TypographyKind>);
+
+// A remote bundle names one by its key; the app rebuilds its own (every
+// built-in and `tone!`/`variant!`-declared marker registers itself through
+// `__remote_marker!`). A no-op unless the app hosts remote components.
+runtime_vocabulary::__remote_keyed!(TypographyKindRef, |v| v.0.key());
 
 impl<K: TypographyKind> From<K> for TypographyKindRef {
     fn from(k: K) -> Self {

@@ -30,20 +30,30 @@ impl Run {
         self.h.live_roots().iter().map(|n| self.h.live_tree(*n)).collect::<Vec<_>>().join("\n")
     }
 
-    /// Press the most recently created button whose label (as created)
-    /// starts with `label` (buttons are recorded in creation order).
+    /// Press what the screen shows as `label` (an idea-ui `Button`, a
+    /// primitive button, a tab), then flush.
     fn press(&self, label: &str) {
-        let buttons: Vec<String> =
-            self.h.shared.kinds.borrow().values().filter(|k| k.starts_with("button ")).cloned().collect();
         // The tab shell marks the active tab `[Label]`.
-        let (plain, active) = (format!("button \"{label}"), format!("button \"[{label}]"));
-        let i = buttons
-            .iter()
-            .rposition(|k| k.starts_with(&plain) || k.starts_with(&active))
-            .unwrap_or_else(|| panic!("no button {label:?}: {buttons:?}"));
-        let press = self.h.shared.button_presses.borrow()[i].clone();
-        press();
+        let active = format!("[{label}]");
+        self.h.press_labelled(if self.sees(&active) { &active } else { label });
         self.h.flush();
+    }
+
+    /// Press the pressable next to the text `label` — an idea-ui `Switch`'s
+    /// track sits beside its label, not around it.
+    fn press_beside(&self, label: &str) {
+        let shared = &self.h.shared;
+        let quoted = format!("text {label:?}");
+        let text = shared.kinds.borrow().iter().filter(|(_, k)| **k == quoted).map(|(n, _)| *n).last();
+        let text = text.unwrap_or_else(|| panic!("no text {label:?}:\n{}", self.screen()));
+        let row = shared.parent.borrow()[&text];
+        let press = self
+            .h
+            .children_of(row)
+            .into_iter()
+            .find_map(|n| shared.press_by_node.borrow().get(&n).cloned())
+            .unwrap_or_else(|| panic!("nothing pressable beside {label:?}:\n{}", self.screen()));
+        press();
     }
 
     fn settle(&self) {
@@ -96,25 +106,26 @@ fn the_showcase_runs_its_remote_screens() {
     r.settle();
     assert!(r.sees("Reviews: “Survived a whole summer.”"), "{}", r.screen());
 
-    // Controls, then the bundle writes the app's cart.
-    let slide = r.h.shared.slider_changes.borrow().last().unwrap().clone();
-    slide(3.0);
-    let gift = r.h.shared.toggle_changes.borrow().last().unwrap().clone();
-    gift(true);
-    // The test's own copies of the handlers own the bundle's callbacks.
-    drop((slide, gift));
+    // idea-ui's controls (app components; their handlers are bundle code),
+    // then the bundle writes the app's cart. The slider maps a touch's x
+    // against its width: one far past the end is its max, 5.
+    let drag = r.h.shared.touch_handlers.borrow().last().unwrap().1.clone();
+    drag(&touch_at(10_000.0));
+    r.press_beside("Gift wrap");
+    // The test's own copy of the handler owns the bundle's callback.
+    drop(drag);
     r.h.flush();
-    assert!(r.sees("Quantity: 3") && r.sees("Gift wrap: yes"), "{}", r.screen());
+    assert!(r.sees("Quantity: 5") && r.sees("Gift wrap: yes"), "{}", r.screen());
     r.press("Add to cart");
-    assert!(r.sees("Trail Mug   ·   cart: 3") && r.sees("cart: 3   ·"), "both the bundle's header and the app shell:\n{}", r.screen());
+    assert!(r.sees("Trail Mug   ·   cart: 5") && r.sees("cart: 5   ·"), "both the bundle's header and the app shell:\n{}", r.screen());
 
     // Back to the list through the bundle's header (StackNav::pop).
     r.press("‹ Back");
-    assert!(r.sees("Shop   ·   cart: 3") && !r.sees("Quantity:"), "{}", r.screen());
+    assert!(r.sees("Shop   ·   cart: 5") && !r.sees("Quantity:"), "{}", r.screen());
 
     // The native settings see the same cart.
     r.press("Settings");
-    assert!(r.sees("3 item(s)"), "{}", r.screen());
+    assert!(r.sees("5 item(s)"), "{}", r.screen());
 
     // Teardown leaves nothing behind.
     let Run { h, mut _realized } = r;
@@ -123,4 +134,15 @@ fn the_showcase_runs_its_remote_screens() {
     h.forget_handlers();
     assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0);
     assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0);
+}
+
+fn touch_at(x: f32) -> runtime_core::TouchEvent {
+    runtime_core::TouchEvent {
+        id: runtime_core::TouchId(1),
+        phase: runtime_core::TouchPhase::Began,
+        position: runtime_core::TouchPoint::new(x, 0.0),
+        window_position: runtime_core::TouchPoint::new(x, 0.0),
+        timestamp_ns: 0,
+        force: None,
+    }
 }

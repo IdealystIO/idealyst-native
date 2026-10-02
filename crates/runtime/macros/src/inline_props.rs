@@ -77,6 +77,7 @@ struct Field {
 pub(crate) fn try_expand(
     item_fn: &mut ItemFn,
     attr: &ComponentAttr,
+    import_key: Option<&TokenStream2>,
 ) -> syn::Result<Option<TokenStream2>> {
     if item_fn.sig.inputs.is_empty() {
         // Zero-parameter components stay on the legacy path (empty marker
@@ -87,7 +88,7 @@ pub(crate) fn try_expand(
         // Zero-arg lazy components are common — a route screen or a heavy
         // SDK corner takes no input.
         if attr.lazy && item_fn.sig.generics.params.is_empty() {
-            return Ok(Some(emit_glue(item_fn, &[], attr)));
+            return Ok(Some(emit_glue(item_fn, &[], attr, import_key)));
         }
         return Ok(None);
     }
@@ -167,7 +168,7 @@ pub(crate) fn try_expand(
         });
     }
 
-    Ok(Some(emit_glue(item_fn, &fields, attr)))
+    Ok(Some(emit_glue(item_fn, &fields, attr, import_key)))
 }
 
 /// The classic explicit-props signature: exactly one parameter, no
@@ -205,7 +206,7 @@ pub(crate) fn is_legacy_props_sig(sig: &syn::Signature) -> bool {
 /// structural difference is `build()` calling the fn field-by-field and
 /// the per-field defaults living directly in `Default` (so no
 /// `defaults()` override is needed).
-fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenStream2 {
+fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr, import_key: Option<&TokenStream2>) -> TokenStream2 {
     let fn_name = &item_fn.sig.ident;
     let vis = &item_fn.vis;
     let props_ident = format_ident!("{}Props", fn_name);
@@ -263,6 +264,10 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
         });
     }
 
+    let build_set = match import_key {
+        Some(key) => crate::remote_component::build_set_override(key, &quote!(#props_ident)),
+        None => quote!(),
+    };
     let import_fields: Vec<TokenStream2> = fields
         .iter()
         .map(|f| {
@@ -322,6 +327,7 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
                 // trait — same as the legacy impl.
                 ::runtime_core::IntoElement::into_element(#fn_name(#(#build_args),*))
             }
+            #build_set
         }
     }
 }
@@ -424,7 +430,7 @@ mod tests {
     fn expand(fn_tokens: TokenStream2) -> (ItemFn, Option<String>) {
         let mut item_fn: ItemFn = syn::parse2(fn_tokens).unwrap();
         let attr = parse_component_attr(TokenStream2::new()).unwrap();
-        let glue = try_expand(&mut item_fn, &attr).unwrap();
+        let glue = try_expand(&mut item_fn, &attr, None).unwrap();
         (item_fn, glue.map(|g| squash(g)))
     }
 
@@ -550,7 +556,7 @@ mod tests {
         let mut item_fn: ItemFn =
             syn::parse2(quote! { fn Badge(count: i32) -> Element { body() } }).unwrap();
         let attr = parse_component_attr(quote! { default(count = 3) }).unwrap();
-        let err = try_expand(&mut item_fn, &attr).unwrap_err();
+        let err = try_expand(&mut item_fn, &attr, None).unwrap_err();
         assert!(err.to_string().contains("prop(default"), "{err}");
     }
 
@@ -561,7 +567,7 @@ mod tests {
         })
         .unwrap();
         let attr = parse_component_attr(TokenStream2::new()).unwrap();
-        let err = try_expand(&mut item_fn, &attr).unwrap_err();
+        let err = try_expand(&mut item_fn, &attr, None).unwrap_err();
         assert!(err.to_string().contains("plain identifiers"), "{err}");
     }
 
@@ -572,7 +578,7 @@ mod tests {
         })
         .unwrap();
         let attr = parse_component_attr(TokenStream2::new()).unwrap();
-        let err = try_expand(&mut item_fn, &attr).unwrap_err();
+        let err = try_expand(&mut item_fn, &attr, None).unwrap_err();
         assert!(err.to_string().contains("bogus"), "{err}");
     }
 
@@ -593,7 +599,7 @@ mod tests {
     fn expand_lazy(attr_tokens: TokenStream2, fn_tokens: TokenStream2) -> String {
         let mut item_fn: ItemFn = syn::parse2(fn_tokens).unwrap();
         let attr = parse_component_attr(attr_tokens).unwrap();
-        let glue = try_expand(&mut item_fn, &attr)
+        let glue = try_expand(&mut item_fn, &attr, None)
             .unwrap()
             .expect("lazy components always take the inline glue path");
         squash(glue)

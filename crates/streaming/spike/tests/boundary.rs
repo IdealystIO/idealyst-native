@@ -425,7 +425,7 @@ fn unmount_mid_call_drops_then_without_running_it() {
     // host-mock keeps every button's press handler for the test to fire; a
     // real backend releases it with the node. Drop them, so the only guest
     // callback that can still be live below is the in-flight `then`.
-    h.shared.button_presses.borrow_mut().clear();
+    h.forget_handlers();
 
     host_mock::pump::pump_timers();
     host_mock::pump::pump_tasks(); // IO completes; scope is dead

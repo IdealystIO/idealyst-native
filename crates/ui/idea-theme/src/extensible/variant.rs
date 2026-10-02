@@ -197,3 +197,9 @@ macro_rules! variant_reactive_coercion {
     )* };
 }
 variant_reactive_coercion!(Filled, Soft, Outlined, Ghost);
+
+// A remote bundle names these by key (see `crate::__remote_marker!`).
+crate::__remote_marker!(super::VariantRef, Filled);
+crate::__remote_marker!(super::VariantRef, Soft);
+crate::__remote_marker!(super::VariantRef, Outlined);
+crate::__remote_marker!(super::VariantRef, Ghost);

@@ -332,3 +332,105 @@ pub fn DetailScreen(nav: Option<stack_navigator::StackHandle>, id: u32) -> Eleme
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Props an app component's call site sets, and values crossing by key
+// ---------------------------------------------------------------------------
+
+/// Something the app defines with behavior, from an open set — the shape
+/// of idea-ui's `ToneRef`: it can't cross as data, so it crosses by key.
+pub trait Mood: 'static {
+    fn key(&self) -> &'static str;
+    fn say(&self, s: &str) -> String;
+}
+
+#[derive(Clone)]
+pub struct MoodRef(pub Rc<dyn Mood>);
+runtime_vocabulary::__remote_keyed!(MoodRef, |v| v.0.key());
+
+/// Registered: a bundle may name it.
+pub struct Loud;
+impl Mood for Loud {
+    fn key(&self) -> &'static str {
+        "loud"
+    }
+    fn say(&self, s: &str) -> String {
+        s.to_uppercase()
+    }
+}
+runtime_vocabulary::__remote_key!(MoodRef, |v| v.0.key(), MoodRef(Rc::new(Loud)));
+
+/// The default — NOT registered, so a bundle can't name it: it must never
+/// cross. The app fills it in itself.
+pub struct Secretive;
+impl Mood for Secretive {
+    fn key(&self) -> &'static str {
+        "secretive"
+    }
+    fn say(&self, _: &str) -> String {
+        "***".to_string()
+    }
+}
+impl Default for MoodRef {
+    fn default() -> Self {
+        MoodRef(Rc::new(Secretive))
+    }
+}
+
+/// Defined, but not registered: what a bundle can only have made itself.
+pub struct Sly;
+impl Mood for Sly {
+    fn key(&self) -> &'static str {
+        "sly"
+    }
+    fn say(&self, s: &str) -> String {
+        s.to_string()
+    }
+}
+
+/// An app component with a prop whose default can't cross.
+#[component]
+pub fn Say(#[prop(static)] text: String, #[prop(static)] mood: MoodRef) -> Element {
+    ui! { text { mood.0.say(&text) } }
+}
+
+/// Leaves `Say`'s `mood` to the app's default, and names a registered one.
+#[component(remote)]
+pub fn Moods() -> Element {
+    ui! {
+        view() {
+            Say(text = "quiet".to_string())
+            Say(text = "hello".to_string(), mood = MoodRef(Rc::new(Loud)))
+        }
+    }
+}
+
+/// Names a mood the app has no key for.
+#[component(remote)]
+pub fn SlyMood() -> Element {
+    ui! { Say(text = "x".to_string(), mood = MoodRef(Rc::new(Sly))) }
+}
+
+/// `Say`'s props as a NEWER build of it might declare them: one prop more.
+#[runtime_core::props]
+#[derive(Default)]
+pub struct NewerSayProps {
+    #[prop(static)]
+    pub text: String,
+    pub volume: u32,
+}
+
+/// A bundle built against that newer `Say`, imported from this app.
+#[component(remote)]
+pub fn NewerBundle() -> Element {
+    #[cfg(idealyst_stream_guest)]
+    let tree = runtime_vocabulary::__remote_import!(
+        ::core::concat!(::core::module_path!(), "::Say"),
+        NewerSayProps,
+        NewerSayProps { text: "x".to_string(), volume: 3u32.into() },
+        ::core::option::Option::Some(&["text", "volume"])
+    );
+    #[cfg(not(idealyst_stream_guest))]
+    let tree = ui! { text { "only a bundle build sends this" } };
+    tree
+}

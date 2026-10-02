@@ -123,3 +123,50 @@ pub fn guest_build_command(
 pub fn guest_wasm_path(target_dir: &std::path::Path, artifact: &str) -> std::path::PathBuf {
     guest_target_dir(target_dir, artifact).join(format!("wasm32-unknown-unknown/release/{}.wasm", artifact.replace('-', "_")))
 }
+
+/// Every source file the last build of `artifact` read, from cargo's
+/// dep-info (`<artifact>.d`, next to the wasm): the bundle's own source AND
+/// every local crate it compiles (the framework, idea-ui, …). What a build
+/// script reruns on and what `stream-serve` watches — so editing a library
+/// the bundle uses rebuilds it, which a hand-kept list of directories
+/// missed. Empty before the first build.
+pub fn bundle_sources(target_dir: &std::path::Path, artifact: &str) -> Vec<std::path::PathBuf> {
+    let wasm = guest_wasm_path(target_dir, artifact);
+    let Ok(dep_info) = std::fs::read_to_string(wasm.with_extension("d")) else {
+        return Vec::new();
+    };
+    parse_dep_info(&dep_info)
+}
+
+/// The prerequisites of the first rule in a make-style dep-info file
+/// (`target: a.rs b\ c.rs …`; a space inside a path is escaped).
+pub fn parse_dep_info(dep_info: &str) -> Vec<std::path::PathBuf> {
+    let Some(line) = dep_info.lines().next() else {
+        return Vec::new();
+    };
+    // The target is a path too, so split at the first unescaped ": ".
+    let Some(deps) = line.split_once(": ").map(|(_, d)| d) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    let mut current = String::new();
+    let mut chars = deps.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&' ') => {
+                current.push(' ');
+                chars.next();
+            }
+            ' ' => {
+                if !current.is_empty() {
+                    paths.push(std::path::PathBuf::from(std::mem::take(&mut current)));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        paths.push(std::path::PathBuf::from(current));
+    }
+    paths
+}

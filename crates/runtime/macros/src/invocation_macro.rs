@@ -103,6 +103,10 @@ pub(crate) fn generate_build_impl(
     // props cross to the app instead (see `remote_component::import_split`).
     // Here, not in the fn, because only `build(self)` holds the props BY
     // VALUE for a `fn Foo(props: &FooProps)` component.
+    let build_set = match import_name {
+        Some(name) => crate::remote_component::build_set_override(name, &quote!(#path)),
+        None => quote!(),
+    };
     let build_body = match import_name {
         Some(name) => quote! {
             #[cfg(idealyst_stream_guest)]
@@ -144,6 +148,7 @@ pub(crate) fn generate_build_impl(
                 // form drops the handle — use the fn-call form to `.bind` it.
                 #build_body
             }
+            #build_set
             #defaults_method
         }
     }

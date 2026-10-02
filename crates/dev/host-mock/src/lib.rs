@@ -154,6 +154,9 @@ pub struct Shared {
     pub press_handlers: RefCell<Vec<Rc<dyn Fn()>>>,
     /// Button actions (`Action::fire`).
     pub button_presses: RefCell<Vec<Rc<dyn Fn()>>>,
+    /// Every pressable's and button's press, by node — what
+    /// [`Harness::press_labelled`] fires.
+    pub press_by_node: RefCell<BTreeMap<Node, Rc<dyn Fn()>>>,
     /// Slider `on_change`s (raw, pre-snap).
     pub slider_changes: RefCell<Vec<Rc<dyn Fn(f32)>>>,
     /// Toggle `on_change`s.
@@ -250,6 +253,7 @@ impl Default for Shared {
             state_setters: RefCell::new(Vec::new()),
             press_handlers: RefCell::new(Vec::new()),
             button_presses: RefCell::new(Vec::new()),
+            press_by_node: RefCell::new(BTreeMap::new()),
             slider_changes: RefCell::new(Vec::new()),
             toggle_changes: RefCell::new(Vec::new()),
             text_input_changes: RefCell::new(Vec::new()),
@@ -670,8 +674,10 @@ impl caps::InputOps for HostMock {
 
 impl caps::PressableOps for HostMock {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Node {
-        self.s.press_handlers.borrow_mut().push(on_click);
-        self.mint("pressable".into())
+        self.s.press_handlers.borrow_mut().push(on_click.clone());
+        let node = self.mint("pressable".into());
+        self.s.press_by_node.borrow_mut().insert(node, on_click);
+        node
     }
 
     fn make_pressable_handle(&self, node: &Node) -> runtime_shared::PressableHandle {
@@ -723,7 +729,9 @@ impl caps::ButtonOps for HostMock {
         _a11y: &AccessibilityProps,
     ) -> Node {
         self.s.button_presses.borrow_mut().push(on_click.fire.clone());
-        self.mint(format!("button {label:?}"))
+        let node = self.mint(format!("button {label:?}"));
+        self.s.press_by_node.borrow_mut().insert(node, on_click.fire.clone());
+        node
     }
 
     fn update_button_label(&mut self, node: &Node, label: &str) {
@@ -1609,6 +1617,7 @@ impl Harness {
         drop(std::mem::take(&mut *self.shared.state_setters.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.press_handlers.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.button_presses.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.press_by_node.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.slider_changes.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.toggle_changes.borrow_mut()));
         drop(std::mem::take(&mut *self.shared.text_input_changes.borrow_mut()));
@@ -1774,6 +1783,49 @@ impl Harness {
         let mut out = String::new();
         walk(self, node, 0, &mut out);
         out.trim_end().to_string()
+    }
+
+    /// Press what the screen shows as `label` — the first live text (or
+    /// button) whose content starts with it, in tree order — through the
+    /// nearest pressable or button at or above it, as a tap on it would.
+    /// Panics with the live tree when nothing shown matches. The caller
+    /// flushes.
+    pub fn press_labelled(&self, label: &str) {
+        fn walk(h: &Harness, node: Node, out: &mut Vec<Node>) {
+            out.push(node);
+            for child in h.children_of(node) {
+                walk(h, child, out);
+            }
+        }
+        let mut live = Vec::new();
+        for root in self.live_roots() {
+            walk(self, root, &mut live);
+        }
+        // A kind is `text "…"` / `button "…"` (the content `{:?}`-quoted):
+        // compare against the label quoted the same way, minus its closing
+        // quote, so it matches as a prefix.
+        let quoted = format!("{label:?}");
+        let quoted = &quoted[..quoted.len() - 1];
+        let shows = |node: Node| match self.shared.live_text.borrow().get(&node) {
+            Some(text) => text.starts_with(label),
+            None => self.kind_of(node).is_some_and(|k| {
+                k.strip_prefix("text ").or_else(|| k.strip_prefix("button ")).is_some_and(|q| q.starts_with(quoted))
+            }),
+        };
+        let press = live.iter().copied().filter(|n| shows(*n)).find_map(|mut node| loop {
+            if let Some(press) = self.shared.press_by_node.borrow().get(&node).cloned() {
+                break Some(press);
+            }
+            match self.shared.parent.borrow().get(&node).copied() {
+                Some(parent) => node = parent,
+                None => break None,
+            }
+        });
+        let Some(press) = press else {
+            let screen: Vec<String> = self.live_roots().into_iter().map(|r| self.live_tree(r)).collect();
+            panic!("nothing pressable shows {label:?}:\n{}", screen.join("\n"));
+        };
+        press();
     }
 
     /// Every root of the LIVE tree: a node with no parent that has not

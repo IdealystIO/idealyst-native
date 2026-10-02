@@ -676,8 +676,7 @@ mod refs {
         steps.push(host_mock::take_handle_log());
         drop(realized);
         h.flush();
-        h.shared.button_presses.borrow_mut().clear();
-        h.shared.press_handlers.borrow_mut().clear();
+        h.forget_handlers();
         steps.push(h.take_log());
         steps.push(host_mock::take_handle_log());
         let out = log.borrow().clone();

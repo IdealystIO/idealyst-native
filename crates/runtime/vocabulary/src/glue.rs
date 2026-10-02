@@ -3392,6 +3392,18 @@ pub trait BuildElement: Default {
     fn defaults() -> Self {
         Self::default()
     }
+
+    /// `build`, told which fields the call site set (`ui!` passes their
+    /// names; the rest came from `defaults()`). Only a remote bundle's
+    /// import of an app component overrides it: it sends just those
+    /// fields and the app fills the rest from ITS defaults, so a call
+    /// site's defaults never have to cross (see `remote::ImportProps`).
+    /// Everywhere else this is `build`.
+    #[inline(always)]
+    fn build_set(self, set: &'static [&'static str]) -> Element {
+        let _ = set;
+        self.build()
+    }
 }
 
 /// The struct-update base for a SIGNAL-typed prop with no declared

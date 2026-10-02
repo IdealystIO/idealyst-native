@@ -149,6 +149,8 @@ macro_rules! tone {
         #[schema(value_of = "ToneRef")]
         $vis struct $name;
 
+        $crate::__remote_marker!($crate::extensible::ToneRef, $name);
+
         impl $crate::extensible::Tone for $name {
             fn key(&$me) -> &'static str {
                 let _ = $me;
@@ -403,6 +405,8 @@ macro_rules! variant {
         #[derive(Copy, Clone, Default, ::runtime_core::IdealystSchema)]
         #[schema(value_of = "VariantRef")]
         $vis struct $name;
+
+        $crate::__remote_marker!($crate::extensible::VariantRef, $name);
 
         impl $crate::extensible::Variant for $name {
             fn key(&self) -> &'static str {

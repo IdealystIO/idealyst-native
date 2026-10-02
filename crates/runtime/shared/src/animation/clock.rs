@@ -100,8 +100,13 @@ pub fn register(f: TickFn) -> TickId {
 /// Stop ticking the closure under `id`. If this was the last
 /// registered tick, the clock also drops its `raf_loop` handle,
 /// stopping the per-frame work entirely.
+///
+/// A no-op once the thread's clock is gone: a `TickRegistration` can drop
+/// during thread-local teardown (a pending timer holding an animated value,
+/// destroyed with the scheduler's slots after `CLOCK`), and by then there
+/// is nothing left to stop. Panicking there aborted the process on exit.
 pub fn unregister(id: TickId) {
-    CLOCK.with(|c| {
+    let _ = CLOCK.try_with(|c| {
         let mut c = c.borrow_mut();
         c.ticks.remove(&id);
         if c.ticks.is_empty() {
@@ -328,5 +333,35 @@ mod tests {
             assert_eq!(registered_count(), 1);
         }
         assert_eq!(registered_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod teardown_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Touched BEFORE the clock, so its destructor runs after the
+        /// clock's: it drops a registration once `CLOCK` is gone.
+        static HOLDER: RefCell<Option<TickRegistration>> = const { RefCell::new(None) };
+    }
+
+    /// The showcase benchmark aborted at exit: a pending idea-ui animation
+    /// timer, destroyed during thread-local teardown, dropped its
+    /// `TickRegistration` after the clock's own thread-local, and
+    /// `unregister` panicked on the dead `CLOCK`.
+    ///
+    /// Regressed, this doesn't fail cleanly: a panic during thread-local
+    /// teardown aborts the process (it was checked to, with `.with`).
+    #[test]
+    fn regression_a_registration_dropped_after_the_clock_does_not_panic() {
+        let exit = std::thread::spawn(|| {
+            HOLDER.with(|_| {});
+            let registration = register_guarded(Box::new(|_| true));
+            HOLDER.with(|h| *h.borrow_mut() = Some(registration));
+        })
+        .join();
+        assert!(exit.is_ok(), "the thread panicked tearing down its thread-locals");
     }
 }

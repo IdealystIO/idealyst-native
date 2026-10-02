@@ -79,3 +79,9 @@ macro_rules! shape_reactive_coercion {
     )* };
 }
 shape_reactive_coercion!(Sm,Md,Lg,Pill);
+
+// A remote bundle names these by key (see `crate::__remote_marker!`).
+crate::__remote_marker!(super::ShapeRef, Sm);
+crate::__remote_marker!(super::ShapeRef, Md);
+crate::__remote_marker!(super::ShapeRef, Lg);
+crate::__remote_marker!(super::ShapeRef, Pill);

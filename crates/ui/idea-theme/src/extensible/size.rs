@@ -82,3 +82,8 @@ macro_rules! size_reactive_coercion {
     )* };
 }
 size_reactive_coercion!(Sm, Md, Lg);
+
+// A remote bundle names these by key (see `crate::__remote_marker!`).
+crate::__remote_marker!(super::ButtonSizeRef, Sm);
+crate::__remote_marker!(super::ButtonSizeRef, Md);
+crate::__remote_marker!(super::ButtonSizeRef, Lg);

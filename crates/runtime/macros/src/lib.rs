@@ -560,7 +560,14 @@ pub(crate) fn emit_component_tokens(
     // BEFORE the body rewrites so `reactivity::rewrite` sees the final
     // parameter list, and before re-emission so rustc never sees the param
     // attrs. `None` → classic explicit-props path, unchanged.
-    let inline_glue = match inline_props::try_expand(&mut item_fn, &attr) {
+    // Whether a bundle imports this component from the app, decided once:
+    // the inline glue's `build_set` and `import_split` below must agree.
+    let import_key = remote_component::import_key(
+        &item_fn,
+        &attr,
+        bind_to_injected || methods_block::has_method_fns(&item_fn),
+    );
+    let inline_glue = match inline_props::try_expand(&mut item_fn, &attr, import_key.as_ref()) {
         Ok(g) => g,
         Err(e) => return e.to_compile_error(),
     };

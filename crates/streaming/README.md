@@ -147,10 +147,10 @@ Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the
 | Piece | Where | Shows |
 |---|---|---|
 | Tab shell (`App`, a swap navigator) | app | native code hosting remote screens |
-| `FeedScreen` | bundle | bundle state, `#[remote_context]` theme read live, a sync `#[host_fn]`, app components |
-| `ShopNavigator` | bundle | a stack navigator defined in the bundle: route links with typed params, a header reading `StackNav` and the screen's title option, an async `#[host_fn]` (reviews), slider/toggle, writing the app's cart signal |
+| `FeedScreen` | bundle | bundle state, `#[remote_context]` theme read live, a sync `#[host_fn]`, idea-ui components |
+| `ShopNavigator` | bundle | a stack navigator defined in the bundle: route links with typed params, a header reading `StackNav` and the screen's title option, an async `#[host_fn]` (reviews), idea-ui's `Slider`/`Switch`/`Button` writing the app's cart signal |
 | `Settings` | app | native controls for the theme the remote screens read |
-| `Card`, `Pill` | app | app components both sides use — imported by the bundle, not bundled |
+| idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses: imported from the app, rendered natively with the app's idea theme, not bundled |
 
 ```sh
 cargo run --release -p stream-spike --bin stream-serve   # optional: serves /showcase.wasm, rebuilds on save
@@ -165,12 +165,15 @@ Every screen root — and each navigator layout root, which holds the outlet —
 
 **Every component not marked `remote` lives in the app binary.** When remote code renders one (`Badge` in the example, idea-ui's components, anything), the bundle does not contain it: in a bundle build `#[component]` compiles its body out and replaces it with a stub that sends the props and asks the app for its own copy by name (`module_path::Name`). In a native app build with `remote` on, every component registers itself for that at link time (`runtime_vocabulary::remote::host::APP_COMPONENTS`). An app that doesn't have the component (an older binary) shows `MissingImport` in its place; props that don't decode show `BadProps`. **The bundle must compile the app's source under the app's crate name**, because the import name starts with it: `example/bundle` sets `[lib] name = "remote_example"`, and the app's build script fails the build if the two differ.
 
-Props cross bundle → app with `ImportArg`:
+**Only the props the call site set cross.** `ui!` (and `jsx!`) pass the names of the fields they set (`BuildElement::build_set`); a bundle build's import sends just those, by name, and the app starts from its OWN `defaults()` and overwrites them. So `Card()` sends nothing, a default that can't cross (idea-ui's default `VariantRef`) never has to, and a prop the app's component doesn't have — a bundle built against a newer version of it — fails naming the prop (`the app's … has no prop `volume``) instead of misreading the rest. Props built without `ui!` (a direct `Foo(props)` call) send every field.
+
+Each prop that does cross goes through its type's `ImportArg`:
 
 | Prop | How it crosses |
 |---|---|
 | Values (`String`, numbers, `StyleRules`, your types via `remote_value!`) | Copied |
-| `Reactive<T>` | Copied if static; a getter into the bundle if live |
+| `Reactive<T>` (any `T` below) | As `T` if static; a getter into the bundle if live, each reply decoded as `T` |
+| Things the app defines with behavior, from an open set (idea-theme's `ToneRef`, `VariantRef`, `ButtonSizeRef`, `ShapeRef`, `TypographyKindRef`) | **By key**: the bundle sends `key()`, the app rebuilds its own registered value. A key the app has no value for fails naming it |
 | Callbacks (`Rc<dyn Fn()>`, `Rc<dyn Fn(A)>`, `Option<…>`) | Run in the bundle |
 | Children, `Element` props | Encoded subtrees, built by the bundle |
 | `Rc<StyleSheet>` | A proxied sheet, resolved by the app's theme |
@@ -178,6 +181,10 @@ Props cross bundle → app with `ImportArg`:
 | `Signal<T>` / `ReadSignal<T>` the bundle created | **Promoted**: the value moves into the app's arena |
 
 A prop type with no `ImportArg` doesn't stop anything compiling: it fails by name at runtime, in the component's place.
+
+**Crossing by key** is the rule for components ("not remote = in the app") applied to the other things a library defines. A type marks itself with `runtime_vocabulary::__remote_keyed!(MoodRef, |v| v.0.key())`, and each value registers with `__remote_key!(MoodRef, |v| v.0.key(), MoodRef(Rc::new(Loud)))` — a link-time table (`remote::host::KEYED`), like `APP_COMPONENTS`. idea-theme does both: its five ref types are keyed, and every built-in marker, every `tone!` / `variant!` an app declares, and idea-ui's card variants register themselves (`idea_theme::__remote_marker!`). A hand-written `impl Tone for X` in an app needs that one line too. All of it expands to nothing unless the app hosts remote components.
+
+**idea-ui works as a remote component library** with no change to its components: the showcase's remote screens use `Card`, `Badge`, `Button`, `Typography`, `Switch` and `Slider`, which render natively in the app against its theme. What it took: set-only props, keyed token refs, and `Reactive<T>` crossing for any `T` that crosses. Still open: idea-ui's ~40 plain value types (`StackGap`, `ControlSize`, …) don't cross yet, and its global functions (`push_toast`, `set_theme`) would run inside the bundle against the bundle's own empty state.
 
 **Promotion.** A bundle-created signal keeps its value in the bundle until the bundle hands it to native code. Then the app's prop decoder (which knows `T`) takes the value over: the slot keeps its subscribers and the bundle keeps its handle, but the value is now a real `SignalData<T>` in the app's arena, and the bundle reads and writes it the way it does any app signal. Native code reads it at native speed; a memo's output promotes too, and its derivation keeps writing the native value. It is two-phase (`GuestHooks::promote` / `promote_finish`), so a value the app can't decode leaves the bundle untouched. The native slot holds a `Promoted<T>` whose `as_any_mut` returns the inner `SignalData<T>`, so every native read, write and commit runs unchanged code — measured on the shipped profiles: no regression with `bridge` on or off.
 
@@ -276,22 +283,27 @@ What the tests prove (`remote_counter.rs`): the real `RemoteCounter`, written wi
 
 `showcase/measure.sh` builds `showcase/app/examples/measure.rs` twice: once with the screens mounted from the bundle, and once with `--features inline`, which compiles the same `#[component(remote)]` source into the app (the vocabulary's `remote-inline` feature). Each is a separate binary, built under the profile a native app ships with (opt 3, no LTO). The two runs alternate, and each figure is the median of 7. Both run on host-mock, so the numbers cover the framework and the interpreter; a platform toolkit adds the same cost to both. Measured on an Apple M3 Max with the bundle at the workspace release profile (opt z, fat LTO).
 
+The screens use idea-ui, which renders natively either way: only the screen's own code is interpreted.
+
 | | Remote | Same code in-process |
 |---|---|---|
-| Bundle | 287 KB raw, 90 KB brotli | — |
-| Load (validate, instantiate) | 1.3 ms (first: 1.7 ms) | — |
-| `FeedScreen` mount (4 cards via app components, context, a host fn) | 405 µs (first: 1.8 ms) | 19 µs |
-| `ShopNavigator` mount (a stack navigator defined in the bundle) | 490 µs | 23 µs |
-| Push / pop a product screen | 276 / 60 µs | 12 / 2.4 µs |
-| A press handled by the bundle (♥: handler, bundle state, its text) | 8.8 µs | 0.4 µs |
-| The app sets a signal the bundle reads (cart in the header) | 12 µs | 0.5 µs |
-| The app toggles context that adds and removes 4 bodies | 117 µs | 4.0 µs |
-| Memory per mounted `FeedScreen` | 29 KB | 22 KB |
+| Bundle | 312 KB raw, 95 KB brotli | — |
+| Load (validate, instantiate) | 1.5 ms (first: 1.9 ms) | — |
+| `FeedScreen` mount (3 idea-ui cards with buttons, context, a host fn) | 665 µs (first: 3.0 ms) | 51 µs (first: 0.8 ms) |
+| `ShopNavigator` mount (a stack navigator defined in the bundle) | 691 µs | 41 µs |
+| Push / pop a product screen | 463 / 68 µs | 40 / 6.3 µs |
+| A press handled by the bundle (♥: an idea-ui `Button`, bundle state, its label) | 9.2 µs | 0.4 µs |
+| The app sets a signal the bundle reads (cart in the header) | 11 µs | 0.5 µs |
+| The app toggles context that adds and removes 3 bodies | 126 µs | 7.8 µs |
+| An idea-ui `Slider` drag (its handler is bundle code) | 21 µs | 2.5 µs |
+| Memory per mounted `FeedScreen` | 85 KB | 82 KB |
 | Bundle linear memory, idle / with 200 feeds mounted | 256 / 704 KB | — |
 
-**Where the time goes.** In a `sample` profile of repeated `FeedScreen` mounts, 87% of the time is wasmi executing bundle code. Decoding the tree, the bridge's imports and the app's graph each take under 1%. So the cost is the framework code that runs in the bundle (building the tree, the bridged kernel's tables, encoding), interpreted at roughly 20× native. It is not the crossing. Every mount and update above still takes well under a 16 ms frame.
+Mounts cost 11–17× in-process, against about 20× when the screens drew everything themselves (the earlier hand-rolled showcase: `FeedScreen` 405 µs vs 19 µs): a library the app ships does its rendering natively.
 
-**The bundle's opt level trades size for speed.** The same bundle, all builds with fat LTO:
+**Where the time goes** (measured on the earlier, hand-rolled showcase). In a `sample` profile of repeated `FeedScreen` mounts, 87% of the time is wasmi executing bundle code. Decoding the tree, the bridge's imports and the app's graph each take under 1%. So the cost is the framework code that runs in the bundle (building the tree, the bridged kernel's tables, encoding), interpreted at roughly 20× native. It is not the crossing. Every mount and update above still takes well under a 16 ms frame.
+
+**The bundle's opt level trades size for speed.** The earlier showcase bundle, all builds with fat LTO:
 
 | Bundle opt level | Raw / brotli | Load | `FeedScreen` mount | Press | Push |
 |---|---|---|---|---|---|
@@ -304,6 +316,8 @@ What the tests prove (`remote_counter.rs`): the real `RemoteCounter`, written wi
 **Fixed by these measurements:**
 - **Reloads leaked the old bundle's code.** A wasmi `Engine` never frees compiled functions until it drops. The loader shared one engine across reloads, so every reload kept about 750 KB. Each bundle now gets its own engine, which its store holds (`remote::engine`); `regression_a_reload_frees_the_replaced_bundles_code` pins this.
 - **The app's profile leaked into the bundle build.** `CARGO_PROFILE_*` overrides given to the app's build reached the build script's nested cargo, which rebuilt the bundle at opt 3 without LTO (575 KB instead of 287 KB). The bundle build drops them (`regression_bundle_build_ignores_the_apps_profile_overrides`).
+- **Edits to a library a bundle uses didn't rebuild it.** The build scripts and `stream-serve` watched only the app's own source, so a change to idea-ui or the framework left the embedded and served bundles stale. Both now rerun on every file the bundle compiled, from cargo's dep-info (`guest_build::bundle_sources`; `regression_bundle_sources_include_the_libraries_the_bundle_compiles`).
+- **A pending animation aborted the process at exit.** A timer holding an idea-ui `AnimatedValue`, destroyed during thread-local teardown, unregistered its tick from the animation clock after the clock's own thread-local was gone; `unregister` now does nothing once the clock is gone (`regression_a_registration_dropped_after_the_clock_does_not_panic`). A desktop app quitting with an animation in flight hit the same path.
 
 ## History: model B
 
@@ -338,7 +352,6 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 ## Not covered yet
 
 - **On-device numbers.** The bridged design's numbers are from a Mac. iPhone and Android runs are next.
-- **Props passed from a bundle to a host component** (`Node::Host`, e.g. `Badge`) are still positional and unchecked. The same schema mechanism applies in that direction.
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
 - **No manifest.** A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do (by choice: see where things break first). `remote` can't be combined with `lazy` yet.
 - **Every builtin primitive crosses except `graphics`** (and `lazy`, which has no meaning in a bundle). `crossing` records each decision. `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.

@@ -169,12 +169,11 @@ pub(crate) fn import_split(
     inline: bool,
     has_methods: bool,
 ) -> Import {
-    if attr.lazy || attr.no_import || has_methods || !item_fn.sig.generics.params.is_empty() || !returns_element(item_fn) {
+    let Some(key) = import_key(item_fn, attr, has_methods) else {
         return Import::default();
-    }
+    };
     let name = item_fn.sig.ident.clone();
     let name_str = name.to_string();
-    let key = quote! { ::core::concat!(::core::module_path!(), "::", #name_str) };
 
     let (stub, registration, explicit) = if inline {
         let props = format_ident!("{}Props", name);
@@ -195,13 +194,17 @@ pub(crate) fn import_split(
         }
         (
             quote! { ::runtime_vocabulary::__remote_import!(#key, #props, #props { #(#fields),* }) },
-            quote! { ::runtime_vocabulary::__remote_app_component!(#key, #props, |__p| #name(#(__p.#fields),*)); },
+            quote! {
+                ::runtime_vocabulary::__remote_app_component!(
+                    #key, #props, <#props as ::runtime_core::BuildElement>::defaults(), |__p| #name(#(__p.#fields),*)
+                );
+            },
             false,
         )
     } else if item_fn.sig.inputs.is_empty() {
         (
             quote! { ::runtime_vocabulary::__remote_import!(#key, (), ()) },
-            quote! { ::runtime_vocabulary::__remote_app_component!(#key, (), |__p| { let () = __p; #name() }); },
+            quote! { ::runtime_vocabulary::__remote_app_component!(#key, (), (), |__p| { let () = __p; #name() }); },
             false,
         )
     } else {
@@ -220,7 +223,15 @@ pub(crate) fn import_split(
             quote! { ::runtime_vocabulary::__remote_import!(#key, #path, #param) }
         };
         let amp = if by_ref { quote!(&) } else { quote!() };
-        (stub, quote! { ::runtime_vocabulary::__remote_app_component!(#key, #path, |__p| #name(#amp __p)); }, true)
+        (
+            stub,
+            quote! {
+                ::runtime_vocabulary::__remote_app_component!(
+                    #key, #path, <#path as ::runtime_core::BuildElement>::defaults(), |__p| #name(#amp __p)
+                );
+            },
+            true,
+        )
     };
 
     // Swap the body by build kind. The parsed body is MOVED into the
@@ -241,6 +252,34 @@ pub(crate) fn import_split(
     }
     *item_fn.block = block;
     Import { registration, explicit_name: explicit.then_some(key) }
+}
+
+/// The name a bundle imports this app component by (`module_path::Name`),
+/// or `None` when its shape can't be imported (see [`import_split`]).
+/// Decided once, before the inline-props glue is generated, so the glue's
+/// `BuildElement::build_set` and the import agree.
+pub(crate) fn import_key(
+    item_fn: &ItemFn,
+    attr: &crate::component_attr::ComponentAttr,
+    has_methods: bool,
+) -> Option<TokenStream2> {
+    if attr.lazy || attr.no_import || has_methods || !item_fn.sig.generics.params.is_empty() || !returns_element(item_fn) {
+        return None;
+    }
+    let name_str = item_fn.sig.ident.to_string();
+    Some(quote! { ::core::concat!(::core::module_path!(), "::", #name_str) })
+}
+
+/// The `BuildElement::build_set` a bundle build gives an imported app
+/// component: send only the fields the call site set (the app fills the
+/// rest from its own defaults).
+pub(crate) fn build_set_override(key: &TokenStream2, props: &TokenStream2) -> TokenStream2 {
+    quote! {
+        #[cfg(idealyst_stream_guest)]
+        fn build_set(self, __set: &'static [&'static str]) -> ::runtime_core::Element {
+            ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(__set))
+        }
+    }
 }
 
 /// `fn Foo(props: FooProps)` / `fn Foo(props: &FooProps)`: the param, the

@@ -104,7 +104,7 @@ fn unmounting_releases_the_props() {
     assert!(a.count.subscriber_count() > 0);
     drop(realized);
     a.h.flush();
-    a.h.shared.button_presses.borrow_mut().clear();
+    a.h.forget_handlers();
     assert_eq!(a.count.subscriber_count(), 0);
     assert_eq!(runtime_world::remote::pending_scopes(), 0);
 }
@@ -619,4 +619,36 @@ fn an_sdk_stack_handle_crosses_both_ways() {
     a.h.flush();
     a.h.forget_handlers();
     assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0);
+}
+
+fn mount_text(a: &App, tree: impl FnOnce() -> Element) -> String {
+    let realized = a.h.mount(a.h.world.enter(tree));
+    a.h.flush();
+    text(a, &realized)
+}
+
+/// The bundle sends only the props its call site set; the app fills the
+/// rest from its own defaults. Before, every field crossed — defaults too —
+/// so idea-ui's `Card()` failed on its default `VariantRef`, which can't
+/// cross as data.
+#[test]
+fn regression_an_app_components_defaults_never_cross() {
+    let a = app();
+    let t = mount_text(&a, || ui! { spike_remoteattr::Moods() });
+    assert!(t.contains("***"), "the app's own default mood:\n{t}");
+    assert!(t.contains("HELLO"), "a mood named by key, rebuilt by the app:\n{t}");
+}
+
+#[test]
+fn a_value_the_app_does_not_define_fails_naming_its_key() {
+    let a = app();
+    let t = mount_text(&a, || ui! { spike_remoteattr::SlyMood() });
+    assert!(t.contains("MoodRef") && t.contains("`sly`"), "{t}");
+}
+
+#[test]
+fn a_prop_the_apps_component_does_not_have_fails_naming_it() {
+    let a = app();
+    let t = mount_text(&a, || ui! { spike_remoteattr::NewerBundle() });
+    assert!(t.contains("no prop `volume`"), "{t}");
 }
