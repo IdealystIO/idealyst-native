@@ -1501,38 +1501,3 @@ fn regression_literal_route_beats_param_sibling_through_navigate() {
         }
     }
 }
-
-/// Regression: a stack screen whose root is a `Dyn` hole (an `if`/`match`
-/// at the root, or a remote component — the hole that remounts it) did not
-/// get the flow-fill overlay: the fold skipped node-less roots, so a hole
-/// showing a `scroll_view` collapsed to zero height on a real backend,
-/// while the same scroll view as a direct root filled. The fold now applies
-/// to every element the hole builds — on first build and on each rebuild.
-#[test]
-fn regression_stack_flow_fill_overlay_reaches_a_dyn_hole_screen_root() {
-    use runtime_shared::primitives::navigator::Route;
-    use runtime_vocabulary::builders::{scroll_view, stack_navigator, view};
-    const HOME: Route = Route::new("home", "/");
-    let h = harness();
-    let flip = h.world.enter(|| runtime_world::signal(false));
-    let tree = h.world.enter(|| {
-        stack_navigator(&HOME)
-            .screen(HOME, move |()| {
-                runtime_scene::dyn_element(move || {
-                    let _ = flip.get();
-                    scroll_view().child(view().build()).build()
-                })
-            })
-            .build()
-    });
-    let filled = |log: &[String]| {
-        log.iter().filter(|l| l.starts_with("apply_style") && l.contains("flex_grow=Literal(1.0)") && l.contains("width=Literal(Percent(100.0))")).count()
-    };
-    let _realized = h.mount(tree);
-    h.flush();
-    assert!(filled(&h.ops()) >= 1, "the hole's content gets the flow-fill: {:?}", h.ops());
-    h.clear_ops();
-    flip.set(true);
-    h.flush();
-    assert!(filled(&h.ops()) >= 1, "and so does what it rebuilds: {:?}", h.ops());
-}

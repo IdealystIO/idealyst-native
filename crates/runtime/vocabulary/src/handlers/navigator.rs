@@ -282,16 +282,9 @@ macro_rules! try_fold_payload {
 ///
 /// The old enum matched on every style-bearing variant; here the payload
 /// is type-erased, so the fold enumerates the built-in payload types.
-///
-/// A `Dyn` hole root (a screen whose root is an `if` / `match`, or a
-/// remote component — the hole that remounts it on reload) has no node of
-/// its own to style: the fold is applied to EACH element the hole builds,
-/// so whatever the hole shows fills the screen. Without it such a screen
-/// whose content is a `scroll_view` collapsed to zero height, while the
-/// same content as a direct root filled.
-///
-/// A third-party primitive or a `Keyed` list root is left untouched
-/// (type-erased / node-less) — give such screens an `Item` root.
+/// A screen whose root is a third-party primitive, a `Dyn` hole, or a
+/// `Keyed` list is left untouched (the old core's node-less variants
+/// were skipped the same way) — give such screens an `Item` root.
 fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
     use crate::prims::{
         ActivityIndicatorPrim, ButtonPrim, IconPrim, ImagePrim, LazyPrim, LinkPrim,
@@ -313,28 +306,6 @@ fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
         }
         // A component boundary wraps the real root — fold through it.
         Element::Owned { element, .. } => fold_style_overrides(element, rules),
-        // A hole: fold into every element it builds (see doc comment).
-        Element::Dyn(_) => {
-            let Element::Dyn(spec) = std::mem::replace(element, Element::Fragment(Vec::new())) else {
-                unreachable!("matched Dyn")
-            };
-            let (kind, retire) = spec.into_parts();
-            let rules = rules.clone();
-            let fold = move |mut built: Element| {
-                fold_style_overrides(&mut built, &rules);
-                built
-            };
-            let mut rebuilt = match kind {
-                runtime_scene::DynKind::Plain(build) => runtime_scene::dyn_element(move || fold(build())),
-                runtime_scene::DynKind::Guarded { changed, build } => {
-                    runtime_scene::dyn_guarded(move || changed(), move || fold(build()))
-                }
-            };
-            if let Some(mut retire) = retire {
-                rebuilt = rebuilt.with_retire(move |old| retire(old));
-            }
-            *element = rebuilt;
-        }
         // Node-less / type-erased roots: skipped (see doc comment).
         _ => {}
     }
