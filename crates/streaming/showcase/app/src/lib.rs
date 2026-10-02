@@ -128,6 +128,20 @@ fn column(gap: f32) -> StyleRules {
     StyleRules { gap: px(gap), padding_top: px(12.0), padding_left: px(12.0), padding_right: px(12.0), padding_bottom: px(12.0), ..StyleRules::default() }
 }
 
+/// A screen's scroll view: fill the space its navigator gives it. A
+/// scroller has no height of its own (its content scrolls), and a swap
+/// navigator's outlet doesn't size its screens — without this a screen
+/// whose root is a `scroll_view` collapses to nothing.
+fn screen_fill() -> StyleRules {
+    StyleRules {
+        flex_grow: Some(1.0.into()),
+        flex_shrink: Some(1.0.into()),
+        flex_basis: px(0.0),
+        min_height: px(0.0),
+        ..StyleRules::default()
+    }
+}
+
 fn card_rules() -> StyleRules {
     StyleRules { background: color("#f3f4f6"), gap: px(6.0), ..column(6.0) }
 }
@@ -179,7 +193,7 @@ pub fn FeedScreen() -> Element {
     let likes: Vec<Signal<u32>> = POSTS.iter().map(|_| signal(0)).collect();
     let heading = accented(theme.clone());
     ui! {
-        scroll_view() {
+        scroll_view(style = screen_fill()) {
             view(style = column(10.0)) {
                 text(style = heading) { "Feed — rendered by the bundle" }
                 Pill(label = format!("running on {device}"))
@@ -249,7 +263,7 @@ fn product_list() -> Element {
         })
         .collect();
     ui! {
-        scroll_view() {
+        scroll_view(style = screen_fill()) {
             view(style = column(8.0)) {
                 rows
             }
@@ -270,7 +284,7 @@ fn product_detail(id: u32, cart: Signal<u32>) -> Element {
     let qty_slider = slider().value(move || qty.get()).range(1.0, 5.0).step(1.0).on_change(move |v| qty.set(v.round())).build();
     let gift_toggle = toggle().value(move || gift.get()).on_change(move |v| gift.set(v)).build();
     ui! {
-        scroll_view() {
+        scroll_view(style = screen_fill()) {
             view(style = column(10.0)) {
                 Card(title = p.name.to_string()) {
                     text { p.blurb }
@@ -381,7 +395,7 @@ mod app {
     /// Native settings: they drive the `Theme` the remote screens read.
     fn settings(accent: Signal<String>, compact: Signal<bool>, cart: Signal<u32>) -> Element {
         ui! {
-            scroll_view() {
+            scroll_view(style = screen_fill()) {
                 view(style = column(10.0)) {
                     text { "Settings — native" }
                     text { move || format!("accent: {}", accent.get()) }
