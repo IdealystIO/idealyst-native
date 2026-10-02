@@ -10,12 +10,11 @@
 
 #[cfg(idealyst_stream_guest)]
 mod exports {
-    use runtime_core::ui;
     use runtime_vocabulary::remote::{bundle, to_bytes, wasm};
     use runtime_world::remote_guest::{import_read_signal, register_remote_context, Codec};
     use stream_abi::Wire;
 
-    use spike_components::{CurrentUser, RemoteCounter};
+    use spike_components::{remote_counter_view, CurrentUser};
 
     fn wire_encode<T: Wire>(v: &T, out: &mut Vec<u8>) {
         v.encode(out)
@@ -46,7 +45,11 @@ mod exports {
         // host as the root `Owned`, so unmounting there releases it.
         let tree = runtime_scene::component_scope(move || {
             let external = import_read_signal(external, codec::<i64>());
-            ui! { RemoteCounter(title = title, external = external) }
+            // The view function, not the `RemoteCounter` component: a plain
+            // `#[component]` would be imported from the app (see
+            // `remote_counter_view`), and this fixture compares the bundle's
+            // copy of the code with the app's.
+            runtime_scene::component_scope(move || remote_counter_view(title.into(), external))
         });
         wasm::reply(to_bytes(&bundle::encode(tree)))
     }

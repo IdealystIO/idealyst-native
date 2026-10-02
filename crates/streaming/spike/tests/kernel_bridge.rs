@@ -8,7 +8,7 @@ use stream_host::kernel::KernelBundle;
 use stream_spike::KERNEL_GUEST_WASM;
 
 fn load() -> KernelBundle {
-    let engine = stream_spike::full::engine(wasmi::CompilationMode::LazyTranslation);
+    let engine = stream_host::remote::engine();
     KernelBundle::load(&engine, KERNEL_GUEST_WASM).expect("kernel bundle loads")
 }
 

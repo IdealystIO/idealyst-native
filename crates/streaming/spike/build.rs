@@ -11,7 +11,7 @@ fn main() {
     let target_dir = out.join("guest-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
-    for package in ["spike-guest", "spike-fullguest", "spike-kernelguest", "spike-remoteguest"] {
+    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr"] {
         let status = guest_build_command(&cargo, &manifest, &target_dir, package)
             .status()
             .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));
@@ -22,7 +22,7 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=src/guest_build.rs");
-    for dir in GUEST_SOURCES.iter().chain(FULL_GUEST_SOURCES) {
+    for dir in GUEST_SOURCES.iter().chain(BRIDGED_SOURCES) {
         println!("cargo:rerun-if-changed={}", manifest.join(dir).display());
     }
 }

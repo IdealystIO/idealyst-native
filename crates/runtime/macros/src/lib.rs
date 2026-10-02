@@ -80,6 +80,7 @@ use runtime_macros_parse::primitives;
 use runtime_macros_parse::recovery;
 mod props_attr;
 mod reactivity;
+mod remote_component;
 mod stylesheet;
 mod ui;
 mod ui_overlay;
@@ -410,6 +411,17 @@ pub(crate) fn emit_component_tokens(
         Ok(f) => f,
         Err(e) => return e.to_compile_error(),
     };
+    // `#[component(remote)]`: split the body off by build kind, then run the
+    // rewritten fn through this same emission as an ordinary component.
+    if attr.remote {
+        let (component, extra) = match remote_component::prepare(item_fn) {
+            Ok(r) => r,
+            Err(e) => return e.to_compile_error(),
+        };
+        let attr = component_attr::ComponentAttr { remote: false, no_import: true, ..attr };
+        let emitted = emit_component_tokens(attr, quote::quote!(#component), hot_split);
+        return quote::quote! { #emitted #extra };
+    }
     // Unmigrated-shape rejection — loud, named, never silent (repo
     // rule: an unmigrated feature must fail with its migration status).
     //
@@ -533,6 +545,17 @@ pub(crate) fn emit_component_tokens(
     };
     reactivity::rewrite(&mut item_fn);
 
+    // Every component not marked `remote` lives in the app binary: in a
+    // bundle build its body is replaced by an import of the app's copy, and
+    // in a native app it registers itself for bundles to import (both
+    // no-ops unless the build hosts or is a remote bundle).
+    let import = remote_component::import_split(
+        &mut item_fn,
+        &attr,
+        inline_glue.is_some(),
+        bind_to_injected || !method_infos.is_empty(),
+    );
+
     // NEW-core body semantics: a component runs ONCE, untracked, with
     // every signal/effect it creates collected into an `Owned` scope
     // attached to the returned element (idea-lite's `component_scope`;
@@ -573,9 +596,10 @@ pub(crate) fn emit_component_tokens(
 
     // Inline mode brings its own dispatch glue (struct + Default +
     // BuildElement); the legacy path derives it from the props-struct sig.
+    let import_registration = import.registration.clone();
     let invocation = match inline_glue {
         Some(glue) => glue,
-        None => invocation_macro::generate_build_impl(&item_fn, &attr),
+        None => invocation_macro::generate_build_impl(&item_fn, &attr, import.explicit_name.as_ref()),
     };
 
     // When the `catalog` feature is on, emit an inventory submission so the
@@ -643,6 +667,7 @@ pub(crate) fn emit_component_tokens(
         #invocation
         #mcp_registration
         #external_registration
+        #import_registration
     })
 }
 

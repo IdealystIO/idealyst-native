@@ -112,14 +112,24 @@ fn try_host<R>(f: impl FnOnce(&mut HostState) -> R) -> Option<R> {
 // ---------------------------------------------------------------------------
 
 /// A bundle-owned signal value, as its host slot sees it.
-struct ValueProxy<G: GuestHooks> {
-    value: Id,
-    _g: PhantomData<fn() -> G>,
+///
+/// Concrete (the bundle's hooks as fn pointers, not a `G` type parameter)
+/// so the TYPED host layer can recognise a bundle-owned slot by downcast —
+/// promotion (`remote::receive_signal`) has `T` but no `G`.
+pub(crate) struct ValueProxy {
+    pub(crate) value: Id,
+    commit: fn(Id, bool) -> bool,
+    pub(crate) drop_value: fn(Id),
+    pub(crate) promote: fn(Id, &mut Vec<u8>, &mut Vec<u8>) -> Option<bool>,
+    pub(crate) promote_finish: fn(Id),
+    /// Set when the slot is promoted: the bundle's entry lives on as an
+    /// import, and the promoted value releases it instead.
+    pub(crate) defused: bool,
 }
 
-impl<G: GuestHooks> AnySignal for ValueProxy<G> {
+impl AnySignal for ValueProxy {
     fn commit(&mut self, forced: bool) -> bool {
-        G::commit(self.value, forced)
+        (self.commit)(self.value, forced)
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
@@ -134,9 +144,11 @@ impl<G: GuestHooks> AnySignal for ValueProxy<G> {
     }
 }
 
-impl<G: GuestHooks> Drop for ValueProxy<G> {
+impl Drop for ValueProxy {
     fn drop(&mut self) {
-        G::drop_value(self.value);
+        if !self.defused {
+            (self.drop_value)(self.value);
+        }
     }
 }
 
@@ -270,7 +282,14 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
 
     fn signal_create(world: Option<WorldId>, value: Id) -> (Handle, bool) {
-        let proxy: Box<dyn AnySignal> = Box::new(ValueProxy::<G> { value, _g: PhantomData });
+        let proxy: Box<dyn AnySignal> = Box::new(ValueProxy {
+            value,
+            commit: G::commit,
+            drop_value: G::drop_value,
+            promote: G::promote,
+            promote_finish: G::promote_finish,
+            defused: false,
+        });
         resolve(world, "signal", |arena| {
             // The host slot's `created_at` is this line: the bundle keeps the
             // author's site itself (`Engine::signal_created_at`), since a
@@ -432,4 +451,15 @@ pub(crate) fn take_scope(id: u32) -> Vec<OwnedItem> {
 /// whenever every remote tree has been claimed — what a leak check asserts.
 pub(crate) fn pending_scopes() -> usize {
     try_host(|h| h.scopes.len()).unwrap_or(0)
+}
+
+/// Register `export` for slot `h` with no guard: a PROMOTED slot's value
+/// withdraws it itself, when the slot is freed ([`unregister_export`]).
+pub(crate) fn register_export_owned(h: Handle, export: Rc<dyn Exported>) {
+    with_host(|s| s.exports.insert(h, export));
+}
+
+pub(crate) fn unregister_export(h: Handle) {
+    let removed = try_host(|s| s.exports.remove(&h)).flatten();
+    drop(removed);
 }

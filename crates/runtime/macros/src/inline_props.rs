@@ -263,6 +263,14 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
         });
     }
 
+    let import_fields: Vec<TokenStream2> = fields
+        .iter()
+        .map(|f| {
+            let (name, ty) = (&f.name, &f.ty);
+            quote! { #name: #ty }
+        })
+        .collect();
+
     let build_args = fields.iter().map(|f| {
         let name = &f.name;
         quote! { self.#name }
@@ -296,6 +304,10 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr) -> TokenS
                 Self { #(#default_fields)* }
             }
         }
+
+        // How these props cross from a remote bundle (a no-op unless this
+        // build hosts or is one).
+        ::runtime_vocabulary::__remote_props!(#props_ident { #(#import_fields),* });
 
         #(#fn_docs)*
         #[allow(non_camel_case_types)]

@@ -300,3 +300,33 @@ pub extern "C" fn idealyst_kernel_drop_cleanup(cleanup: i64) {
 pub extern "C" fn idealyst_kernel_drop_context(ctx: i64) {
     Local::drop_context(ctx as Id)
 }
+
+thread_local! {
+    /// The last promotion's encoding, read by the host right after the call.
+    static PROMOTED: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[no_mangle]
+pub extern "C" fn idealyst_kernel_promote_finish(value: i64) {
+    Local::promote_finish(value as Id)
+}
+
+/// [`GuestHooks::promote`] over wasm: `-1` when not offered; else a packed
+/// `ptr << 32 | len` of `[has_staged: u8][committed_len: u32 le][committed][staged]`
+/// in this module's memory, valid until the next promotion.
+#[no_mangle]
+pub extern "C" fn idealyst_kernel_promote(value: i64) -> i64 {
+    let (mut committed, mut staged) = (Vec::new(), Vec::new());
+    let Some(has_staged) = Local::promote(value as Id, &mut committed, &mut staged) else {
+        return -1;
+    };
+    PROMOTED.with(|p| {
+        let mut p = p.borrow_mut();
+        p.clear();
+        p.push(has_staged as u8);
+        p.extend_from_slice(&(committed.len() as u32).to_le_bytes());
+        p.extend_from_slice(&committed);
+        p.extend_from_slice(&staged);
+        ((p.as_ptr() as u32 as i64) << 32) | p.len() as i64
+    })
+}

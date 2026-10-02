@@ -47,6 +47,10 @@ struct ValueEntry {
     /// value; `data` is a mirror refreshed around every operation (see
     /// [`with_value`]). `None` for a value this bundle created.
     sync: Option<Rc<dyn ImportSync>>,
+    /// Set by [`Bridged::offer`] on a value this bundle created: the codec
+    /// to hand it to the host with if the host promotes it (see
+    /// [`GuestHooks::promote`]).
+    promotable: Option<Rc<dyn ImportSync>>,
     /// The author's creation site, for the staged-read warning. Kept here
     /// because a source location cannot cross to the host. Read only by the
     /// debug-build diagnostic (in release `SiteLoc` is `()`).
@@ -298,6 +302,44 @@ impl GuestHooks for Local {
         drop(removed);
     }
 
+    fn promote(value: Id, committed: &mut Vec<u8>, staged: &mut Vec<u8>) -> Option<bool> {
+        // Taken out under the borrow, encoded outside it (a codec is user
+        // code), put back unchanged.
+        let (mut data, sync) = with_local(|l| {
+            let e = l.values.get_mut(&value)?;
+            let sync = e.promotable.clone()?;
+            Some((e.data.take()?, sync))
+        })?;
+        sync.encode_value(&mut *data, committed);
+        let has_staged = sync.encode_next(&mut *data, staged);
+        with_local(|l| {
+            if let Some(e) = l.values.get_mut(&value) {
+                e.data = Some(data);
+            }
+        });
+        Some(has_staged)
+    }
+
+    fn promote_finish(value: Id) {
+        let data = with_local(|l| {
+            let e = l.values.get_mut(&value)?;
+            // From now on the host owns the value; this entry mirrors it.
+            e.sync = e.promotable.take();
+            e.data.take().map(|d| (d, e.sync.clone()))
+        });
+        if let Some((mut data, sync)) = data {
+            // The staged write moved to the host with the value.
+            if let Some(sync) = &sync {
+                sync.take_next(&mut *data, &mut Vec::new());
+            }
+            with_local(|l| {
+                if let Some(e) = l.values.get_mut(&value) {
+                    e.data = Some(data);
+                }
+            });
+        }
+    }
+
     fn drop_context(ctx: Id) {
         let removed = try_local(|l| l.ctx.remove(&ctx));
         drop(removed);
@@ -376,7 +418,10 @@ impl<H: HostOps> Engine for Bridged<H> {
     fn signal_create(world: Option<WorldId>, data: Box<dyn AnySignal>, site: SiteLoc) -> (WorldId, u32, u32, bool) {
         let id = with_local(|l| {
             let id = l.next_id();
-            l.values.insert(id, ValueEntry { handle: (0, 0, 0), data: Some(data), freed: false, sync: None, site });
+            l.values.insert(
+                id,
+                ValueEntry { handle: (0, 0, 0), data: Some(data), freed: false, sync: None, promotable: None, site },
+            );
             id
         });
         let (handle, collected) = H::signal_create(world, id);
@@ -579,12 +624,29 @@ impl<H: HostOps> Bridged<H> {
     pub(crate) fn import(h: Handle, mirror: Box<dyn AnySignal>, sync: Rc<dyn ImportSync>, site: SiteLoc) -> Id {
         with_local(|l| {
             let id = l.next_id();
-            l.values.insert(id, ValueEntry { handle: h, data: Some(mirror), freed: false, sync: Some(sync), site });
+            l.values.insert(
+                id,
+                ValueEntry { handle: h, data: Some(mirror), freed: false, sync: Some(sync), promotable: None, site },
+            );
             // A later import of the same host slot takes over the handle;
             // `release_import` of the earlier one leaves it alone.
             l.by_handle.insert(h, id);
             id
         })
+    }
+
+    /// Allow the value behind `h` to be promoted with `sync` — the bundle
+    /// is handing it to native code, which may take it over. A no-op for a
+    /// value the host already owns (an import).
+    pub(crate) fn offer(h: Handle, sync: Rc<dyn ImportSync>) {
+        with_local(|l| {
+            let Some(id) = l.by_handle.get(&h).copied() else { return };
+            if let Some(e) = l.values.get_mut(&id) {
+                if e.sync.is_none() {
+                    e.promotable = Some(sync);
+                }
+            }
+        });
     }
 
     /// Forget import `id` (the importing scope ended). The host slot is the

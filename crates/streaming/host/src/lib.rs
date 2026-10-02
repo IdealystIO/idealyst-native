@@ -44,7 +44,9 @@ pub use stream_abi;
 
 /// The kernel bridge over wasm (host side): a bundle's reactive kernel on
 /// this app's graph.
+pub mod fetch;
 pub mod kernel;
+pub mod remote;
 
 // ---------------------------------------------------------------------------
 // Engine

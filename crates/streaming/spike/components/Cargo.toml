@@ -1,5 +1,6 @@
 # The spike's remote components: an ordinary crate of `#[component]`s,
-# linked natively by the app and wrapped as a bundle by spike-fullguest.
+# linked natively by the app (the native baseline) and wrapped as a bridged
+# remote component by spike-remoteguest.
 
 [package]
 name = "spike-components"

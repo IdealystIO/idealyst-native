@@ -25,7 +25,7 @@ pub(crate) struct Native;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum CtxKey {
     Type(TypeId),
-    #[cfg_attr(not(any(test, feature = "bridge")), allow(dead_code))]
+    #[cfg_attr(not(any(test, all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))), allow(dead_code))]
     Foreign(u64),
 }
 
@@ -488,7 +488,7 @@ fn effect_is_alive(world: WorldId, slot: u32, gen: u32) -> bool {
 /// bridge's copy of the diagnostic `with_signal_data` expands inline (same
 /// slug, same text; kept identical so `should_panic` tests hold on both
 /// engines).
-#[cfg_attr(not(any(test, feature = "bridge")), allow(dead_code))]
+#[cfg_attr(not(any(test, all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))), allow(dead_code))]
 pub(crate) fn reentrant_signal_panic(world: WorldId, slot: u32) -> ! {
     diag_panic!(
         "reentrant-signal-read",
@@ -583,6 +583,27 @@ fn with_signal_data<R>(
     result
 }
 
+
+/// Replace live slot `(world, slot, gen)`'s storage with `data`, returning
+/// what it held — the bridge's PROMOTION of a bundle-owned value into a
+/// native one (`remote::receive_signal`). Subscribers, queue state and
+/// ownership stay with the slot. `Err(data)` when the slot is not live and
+/// occupied. Not a hot path: bridge-only, once per promoted signal.
+#[cfg(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+#[cfg_attr(idealyst_stream_guest, allow(dead_code))]
+pub(crate) fn swap_signal_data(
+    world: WorldId,
+    slot: u32,
+    gen: u32,
+    data: Box<dyn AnySignal>,
+) -> Result<Box<dyn AnySignal>, Box<dyn AnySignal>> {
+    let Some(arena) = arena_of(world) else { return Err(data) };
+    let mut signals = arena.signals.borrow_mut();
+    match signals.get_mut(slot as usize) {
+        Some(s) if s.gen == gen && s.data.is_some() => Ok(s.data.replace(data).expect("occupied")),
+        _ => Err(data),
+    }
+}
 
 /// Subscribe the innermost RUNNING effect to this signal — but only if that
 /// effect lives in the signal's world.

@@ -102,10 +102,21 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
     let literals = apply_literal_impl(&input.ident, &fields, false);
     // What the explicit-props `#[component]` form's Props table reads.
     let inspect = crate::inspect_emit::inspect_props_impl(&input, &fields);
+    // How these props cross from a remote bundle to the app component that
+    // takes them (a no-op unless this build hosts or is a remote bundle).
+    // A generic props struct has no single type to register.
+    let import = if input.generics.params.is_empty() {
+        let ident = &input.ident;
+        let pairs = fields.iter().map(|(n, t)| quote! { #n: #t });
+        quote! { ::runtime_vocabulary::__remote_props!(#ident { #(#pairs),* }); }
+    } else {
+        TokenStream2::new()
+    };
     quote! {
         #input
         #literals
         #inspect
+        #import
     }
 }
 

@@ -8,17 +8,27 @@
 pub const GUEST_SOURCES: &[&str] =
     &["guest/src", "guest/Cargo.toml", "camera/src", "../guest/src", "../abi/src", "../macros/src"];
 
-/// Sources of the full-framework prototype bundle (`spike-fullguest`) that
-/// live in this directory tree. It also depends on the framework crates;
-/// cargo's own fingerprinting covers those inside the nested build.
-pub const FULL_GUEST_SOURCES: &[&str] = &[
-    "fullguest/src",
-    "fullguest/Cargo.toml",
+/// Sources whose edits change the bridged RemoteCounter bundle
+/// (`spike-remoteguest`): the component itself, and its mount export.
+pub const REMOTE_GUEST_SOURCES: &[&str] =
+    &["components/src", "components/Cargo.toml", "remoteguest/src", "remoteguest/Cargo.toml"];
+
+/// Sources of the single-file example's bundle (`remote-example-bundle`).
+pub const EXAMPLE_SOURCES: &[&str] = &["../example/app/src", "../example/bundle/Cargo.toml"];
+
+/// Sources of the bridged test bundles (`spike-kernelguest`,
+/// `spike-remoteguest`, `spike-remoteattr`) and the framework crates they
+/// compile, for the build script's rerun triggers (cargo's own
+/// fingerprinting decides what the nested build actually rebuilds).
+pub const BRIDGED_SOURCES: &[&str] = &[
     "components/src",
     "kernelguest/src",
     "kernelguest/Cargo.toml",
     "remoteguest/src",
     "remoteguest/Cargo.toml",
+    "remoteattr/src",
+    "remoteattr/Cargo.toml",
+    "../../runtime/macros/src",
     "../../runtime/vocabulary/src",
     "../../runtime/scene/src",
     "../../runtime/shared/src",
@@ -55,7 +65,12 @@ pub fn guest_build_command(
         //
         // (`CARGO_ENCODED_RUSTFLAGS` is 0x1f-separated and replaces the outer
         // build's host flags rather than adding to them.)
-        .env("CARGO_ENCODED_RUSTFLAGS", "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest")
+        //
+        // `-Aunused`: in a bundle build every app component's body is
+        // compiled out (it is imported from the app), so the imports and
+        // helpers only those bodies used read as unused. The app build lints
+        // the same sources with the bodies in.
+        .env("CARGO_ENCODED_RUSTFLAGS", "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused")
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_TARGET_DIR");
     cmd

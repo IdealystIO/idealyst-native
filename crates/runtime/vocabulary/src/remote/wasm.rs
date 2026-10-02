@@ -66,3 +66,30 @@ pub fn reply(bytes: Vec<u8>) -> i64 {
 pub extern "C" fn idealyst_ui_live_callbacks() -> u32 {
     super::bundle::live_callbacks() as u32
 }
+
+thread_local! {
+    static LAST_PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Keep the message of a panic in this bundle, for the host to read after
+/// the trap it ends in (`idealyst_ui_panic_message`). A wasm panic aborts
+/// with a bare `unreachable`; without this the host can only say "trapped".
+/// Called by the host once, at load.
+#[no_mangle]
+pub extern "C" fn idealyst_ui_init() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = match (info.payload().downcast_ref::<&str>(), info.payload().downcast_ref::<String>()) {
+            (Some(s), _) => (*s).to_string(),
+            (_, Some(s)) => s.clone(),
+            _ => "panic".to_string(),
+        };
+        let at = info.location().map(|l| format!(" ({}:{})", l.file(), l.line())).unwrap_or_default();
+        let _ = LAST_PANIC.try_with(|p| *p.borrow_mut() = Some(format!("{msg}{at}")));
+    }));
+}
+
+/// The last panic's message, packed like a reply; length 0 for none.
+#[no_mangle]
+pub extern "C" fn idealyst_ui_panic_message() -> i64 {
+    reply(LAST_PANIC.with(|p| p.borrow_mut().take()).unwrap_or_default().into_bytes())
+}

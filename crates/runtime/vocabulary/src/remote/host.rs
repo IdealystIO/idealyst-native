@@ -192,10 +192,17 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
         }
         Node::Import { name, props, children } => {
             let children = build_all(conn, children)?;
-            let f = IMPORTS
-                .with(|m| m.borrow().get(name.as_str()).cloned())
-                .ok_or_else(|| DecodeError::MissingImport(name.clone()))?;
-            f(&props, children).map_err(|reason| DecodeError::BadProps { name, reason })?
+            match IMPORTS.with(|m| m.borrow().get(name.as_str()).cloned()) {
+                Some(f) => f(&props, children).map_err(|reason| DecodeError::BadProps { name, reason })?,
+                // Every component not marked `remote` is assumed to be in
+                // this binary: its `#[component]` registered it.
+                None => {
+                    let app = app_component(&name).ok_or_else(|| DecodeError::MissingImport(name.clone()))?;
+                    let cx = ImportCx(conn.clone());
+                    let mut input = &props[..];
+                    (app.build)(&mut input, &cx).map_err(|reason| DecodeError::BadProps { name, reason })?
+                }
+            }
         }
     })
 }
@@ -373,4 +380,118 @@ pub fn exported_imports() -> Vec<String> {
 /// hand a bundle's mount export.
 pub fn encode_value<T: Serialize + ?Sized>(v: &T) -> Vec<u8> {
     to_bytes(v)
+}
+
+// ---------------------------------------------------------------------------
+// `#[component(remote)]` on the app side
+// ---------------------------------------------------------------------------
+
+/// What a remote component's props keep alive for as long as it is mounted
+/// (the export guards of signals it was handed).
+pub type Keep = Vec<Box<dyn std::any::Any>>;
+
+/// Where `#[component(remote)]` components come from: the app installs one
+/// (`stream_host::remote::install`) before mounting any.
+pub trait Loader: 'static {
+    /// A number that changes when the bundle is replaced. Read TRACKED by
+    /// every mounted remote component, so a reload remounts them.
+    fn generation(&self) -> u64;
+    /// Mount component `component` (its `#[component(remote)]` fn name) with
+    /// its encoded props. An `Err` is shown in the component's place.
+    fn mount(&self, component: &str, args: &[u8]) -> Result<Element, String>;
+}
+
+thread_local! {
+    static LOADER: RefCell<Option<Rc<dyn Loader>>> = const { RefCell::new(None) };
+}
+
+/// Install the app's remote component loader.
+pub fn install_loader(loader: Rc<dyn Loader>) {
+    LOADER.with(|l| *l.borrow_mut() = Some(loader));
+}
+
+/// The app-side body of a `#[component(remote)]` component (macro-emitted):
+/// send the props, then mount the component from the installed loader —
+/// again whenever the loader's bundle is replaced.
+#[doc(hidden)]
+pub fn __mount_remote(component: &'static str, send: impl FnOnce(&mut Vec<u8>, &mut Keep)) -> Element {
+    let mut args = Vec::new();
+    let mut keep = Keep::new();
+    send(&mut args, &mut keep);
+    // The exports live exactly as long as this component's scope.
+    runtime_world::on_scope_drop(move || drop(keep));
+    let loader = LOADER.with(|l| l.borrow().clone()).unwrap_or_else(|| {
+        panic!(
+            "remote component `{component}` mounted, but this app installed no remote loader \
+             (`stream_host::remote::install`)"
+        )
+    });
+    let select = loader.clone();
+    runtime_scene::dyn_keyed(
+        move || select.generation(),
+        move |_| match loader.mount(component, &args) {
+            Ok(element) => element,
+            Err(msg) => crate::builders::text().content(format!("⚠ remote component `{component}`: {msg}")).build(),
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The app's components, as bundles import them
+// ---------------------------------------------------------------------------
+
+/// One app component bundles may use: every `#[component]` not marked
+/// `remote` registers one in a native app build with `remote` on
+/// (`crate::__remote_app_component!`).
+pub struct AppComponent {
+    /// `module_path::Name` — what the bundle's stub asks for.
+    pub name: &'static str,
+    /// Decode the props (`ImportArg`) and build the component.
+    pub build: fn(&mut &[u8], &ImportCx) -> Result<Element, String>,
+}
+
+/// Filled at link time: no startup work, and nothing in apps without
+/// `remote`.
+#[linkme::distributed_slice]
+pub static APP_COMPONENTS: [AppComponent];
+
+fn app_component(name: &str) -> Option<&'static AppComponent> {
+    thread_local! {
+        static BY_NAME: HashMap<&'static str, &'static AppComponent> =
+            APP_COMPONENTS.iter().map(|c| (c.name, c)).collect();
+    }
+    BY_NAME.with(|m| m.get(name).copied())
+}
+
+/// The names of the app components bundles may import.
+pub fn app_component_names() -> Vec<&'static str> {
+    APP_COMPONENTS.iter().map(|c| c.name).collect()
+}
+
+/// What an imported component's props decode against: the bundle they came
+/// from.
+pub struct ImportCx(Rc<Conn>);
+
+impl ImportCx {
+    pub(crate) fn build(&self, node: Node) -> Result<Element, String> {
+        build(&self.0, node).map_err(|e| e.to_string())
+    }
+    pub(crate) fn callback(&self, id: Cb) -> CallbackRef {
+        CallbackRef(cb(&self.0, id))
+    }
+    pub(crate) fn sheet(&self, r: SheetRef) -> Rc<StyleSheet> {
+        sheet(&self.0, r)
+    }
+}
+
+/// A bundle callback a decoded prop holds.
+pub(crate) struct CallbackRef(Rc<CbRef>);
+
+impl CallbackRef {
+    pub(crate) fn call(&self, args: &[u8]) -> Vec<u8> {
+        self.0.call(args)
+    }
+    pub(crate) fn get<T: DeserializeOwned>(&self, args: &[u8]) -> T {
+        self.0.get(args)
+    }
 }

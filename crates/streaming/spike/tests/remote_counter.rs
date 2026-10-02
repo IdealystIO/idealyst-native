@@ -43,7 +43,7 @@ struct Remote {
 /// What the app does to mount the same component from the bundle: export
 /// the prop and the context, call the mount export, decode.
 fn remote_tree(h: &Harness, i: &Inputs) -> (Element, Remote) {
-    let engine = stream_spike::full::engine(wasmi::CompilationMode::LazyTranslation);
+    let engine = stream_host::remote::engine();
     let bundle = KernelBundle::load(&engine, REMOTE_GUEST_WASM).expect("remote bundle loads");
     let (external, user) = (i.external, i.user);
     let (eh, g1) = export_read_signal(external.read_only());
@@ -61,7 +61,7 @@ fn remote_tree(h: &Harness, i: &Inputs) -> (Element, Remote) {
     }
     let tree = h.world.enter(|| {
         provide(CurrentUser(user.read_only()));
-        bundle.mount_remote("rc_mount", &args).expect("the bundle's tree decodes")
+        bundle.mount_remote("rc_mount", &args).unwrap_or_else(|e| panic!("{e}"))
     });
     (tree, Remote { bundle, _guards: vec![g1, g2, g3] })
 }
@@ -152,4 +152,19 @@ fn unmounting_the_remote_tree_leaves_nothing_subscribed() {
     inputs.external.set(5);
     h.flush();
     assert_eq!(h.take_log(), Vec::<String>::new(), "a host prop change reached an unmounted remote tree");
+}
+
+/// A bundle that panics while building its tree fails the mount with the
+/// bundle's own panic message — the app shows it instead of dying.
+#[test]
+fn a_panicking_mount_is_an_error_carrying_the_bundles_message() {
+    let h = Harness::new();
+    let engine = stream_host::remote::engine();
+    let bundle = KernelBundle::load(&engine, REMOTE_GUEST_WASM).expect("remote bundle loads");
+    // No args: the mount export fails decoding its title.
+    let err = h.world.enter(|| bundle.mount_remote("rc_mount", &[])).err().expect("the mount fails");
+    match err {
+        stream_host::kernel::MountError::Panicked(msg) => assert!(msg.contains("rc_mount: title"), "{msg}"),
+        other => panic!("expected a panic, got {other}"),
+    }
 }

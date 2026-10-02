@@ -31,5 +31,5 @@ rustc-hash = { workspace = true }
 # could therefore turn a big bundle into a stack-overflow crash. The loop
 # dispatch never grows the stack, for ~1.7-1.9x slower interpretation
 # (crates/streaming/README.md). Pinned by
-# `regression_full_framework_bundle_fits_a_2mb_thread`.
+# `regression_bundle_runs_on_a_2mb_thread` (spike `tests/remote_attr.rs`).
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }

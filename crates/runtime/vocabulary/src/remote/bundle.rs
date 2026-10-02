@@ -43,6 +43,9 @@ enum Entry {
     Item(Option<Box<dyn Any>>),
     /// `(SheetPart, VariantSet)` → `StyleRules`.
     Sheet(Rc<StyleSheet>),
+    /// Arguments → reply, both encoded by the closure (an app component's
+    /// callback prop).
+    Call(Rc<dyn Fn(&[u8]) -> Vec<u8>>),
 }
 
 struct Slot {
@@ -115,6 +118,7 @@ pub fn live_callback_kinds() -> Vec<(Cb, &'static str, u32)> {
                     Entry::Render(_) => "render",
                     Entry::Item(_) => "item",
                     Entry::Sheet(_) => "sheet",
+                    Entry::Call(_) => "call",
                 };
                 (*id, kind, s.refs)
             })
@@ -156,6 +160,7 @@ pub fn invoke(cb: Cb, args: &[u8]) -> Vec<u8> {
         Items(Rc<dyn Fn() -> Vec<(runtime_scene::Key, Box<dyn Any>)>>),
         Render(Rc<dyn Fn(Box<dyn Any>) -> Element>),
         Sheet(Rc<StyleSheet>),
+        Call(Rc<dyn Fn(&[u8]) -> Vec<u8>>),
     }
     // Clone the closure out and release the table before running it: every
     // callback may encode more nodes (registering entries) or drop some.
@@ -170,6 +175,7 @@ pub fn invoke(cb: Cb, args: &[u8]) -> Vec<u8> {
             Entry::Items(f) => Call::Items(f.clone()),
             Entry::Render(f) => Call::Render(f.clone()),
             Entry::Sheet(s) => Call::Sheet(s.clone()),
+            Entry::Call(f) => Call::Call(f.clone()),
             Entry::Item(_) => panic!("remote codec: callback {cb} is a keyed item, not a callable"),
         }
     });
@@ -196,6 +202,7 @@ pub fn invoke(cb: Cb, args: &[u8]) -> Vec<u8> {
             let item = item.unwrap_or_else(|| panic!("remote codec: render of keyed item {item_id}, which is gone"));
             to_bytes(&encode(f(item)))
         }
+        Call::Call(f) => f(args),
         Call::Sheet(sheet) => {
             let (part, variants): (SheetPart, VariantSet) = from_bytes(args).unwrap_or_else(|e| bad_args(e));
             let rules = sheet
@@ -434,4 +441,47 @@ fn wire_app(app: StyleApplication) -> App {
         computed,
         variants: app.variants,
     }
+}
+
+/// The bundle-side body of a `#[component(remote)]` mount export
+/// (macro-emitted): decode the props the app wrote (`len` bytes in the
+/// argument buffer), build the component, and reply with its encoded tree.
+/// The props' imports belong to the scope that crosses as the tree's root,
+/// so unmounting on the app side releases them.
+#[cfg(idealyst_stream_guest)]
+#[doc(hidden)]
+pub fn __mount(len: u32, build: impl FnOnce(&mut &[u8]) -> Element) -> i64 {
+    let args = super::wasm::take_args(len);
+    let tree = runtime_scene::component_scope(|| build(&mut &args[..]));
+    super::wasm::reply(to_bytes(&encode(tree)))
+}
+
+// ---------------------------------------------------------------------------
+// App components (imports) — what `crate::__remote_import!` and the
+// `ImportArg` impls use
+// ---------------------------------------------------------------------------
+
+/// Use the app's component `name` (its `#[component]` registration key)
+/// with `props` encoded by its props' `ImportArg`.
+#[doc(hidden)]
+pub fn import_component(name: &'static str, props: Vec<u8>) -> Element {
+    runtime_scene::item(ImportPrim { name: name.to_owned(), props }, Vec::new())
+}
+
+/// A getter the app can call (a live `Reactive` prop).
+#[doc(hidden)]
+pub fn register_getter(f: impl Fn() -> Vec<u8> + 'static) -> Cb {
+    register(Entry::Get(Rc::new(f)))
+}
+
+/// A callback the app can call with encoded arguments.
+#[doc(hidden)]
+pub fn register_call(f: Rc<dyn Fn(&[u8]) -> Vec<u8>>) -> Cb {
+    register(Entry::Call(f))
+}
+
+/// A stylesheet, as it crosses (one entry per sheet, refcounted).
+#[doc(hidden)]
+pub fn sheet_ref(sheet: &Rc<StyleSheet>) -> SheetRef {
+    SheetRef { id: register_sheet(sheet), shape: sheet.shape() }
 }

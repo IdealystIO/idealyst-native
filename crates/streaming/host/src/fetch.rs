@@ -12,6 +12,9 @@ use std::time::Duration;
 /// Where the demo looks for the bundle server by default.
 pub const DEFAULT_URL: &str = "http://127.0.0.1:7878/bundle.wasm";
 
+/// Where the demo looks for the bridged RemoteCounter bundle by default.
+pub const DEFAULT_REMOTE_URL: &str = "http://127.0.0.1:7878/remote.wasm";
+
 /// A served bundle.
 pub struct Fetched {
     pub wasm: Vec<u8>,

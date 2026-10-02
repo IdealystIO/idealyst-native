@@ -40,7 +40,7 @@
 pub(crate) mod guest;
 // In a bundle build the host side is compiled (the parity check names it)
 // but not used — the host is the app, on the far side of the wasm boundary.
-#[cfg_attr(all(idealyst_stream_guest, not(feature = "bridge")), allow(dead_code))]
+#[cfg_attr(all(idealyst_stream_guest, not(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))), allow(dead_code))]
 pub(crate) mod host;
 /// The bundle side over wasm: what a remote bundle's kernel runs on.
 #[cfg(idealyst_stream_guest)]
@@ -164,6 +164,8 @@ pub(crate) trait ImportSync {
     fn pull(&self, mirror: &mut dyn crate::engine::AnySignal, committed: &[u8], staged: Option<&[u8]>);
     /// Take the mirror's staged write, encoded, if the operation made one.
     fn take_next(&self, mirror: &mut dyn crate::engine::AnySignal, out: &mut Vec<u8>) -> bool;
+    /// Encode the staged write, if any, leaving it staged.
+    fn encode_next(&self, mirror: &mut dyn crate::engine::AnySignal, out: &mut Vec<u8>) -> bool;
     /// Encode the mirror's committed value.
     fn encode_value(&self, mirror: &mut dyn crate::engine::AnySignal, out: &mut Vec<u8>);
 }
@@ -180,4 +182,15 @@ pub trait GuestHooks: 'static {
     fn run_cleanup(cleanup: Id);
     fn drop_cleanup(cleanup: Id);
     fn drop_context(ctx: Id);
+    /// First half of PROMOTION (see `remote::receive_signal`): encode bundle
+    /// value `value`'s committed value into `committed` and its staged
+    /// write, if any, into `staged`, changing nothing. `None` when the
+    /// bundle did not offer it (`remote_guest::offer_signal`); else whether
+    /// a staged write was encoded.
+    fn promote(value: Id, committed: &mut Vec<u8>, staged: &mut Vec<u8>) -> Option<bool>;
+    /// Second half, once the host holds the value natively: from now on
+    /// treat `value` as an import of the host's slot (its staged write now
+    /// lives on the host). Two halves so a host that cannot decode the
+    /// value leaves the bundle exactly as it was.
+    fn promote_finish(value: Id);
 }

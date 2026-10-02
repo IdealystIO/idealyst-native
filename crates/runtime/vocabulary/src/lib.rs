@@ -190,8 +190,32 @@ pub mod glue;
 pub mod glue_lazy;
 pub mod handlers;
 pub mod prims;
-#[cfg(feature = "remote")]
+#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
 pub mod remote;
+
+// What `#[component]` / `#[props]` emit for remote components, as no-ops in
+// every build that neither hosts nor is a remote bundle (the real ones live
+// in `remote`). Each pair's cfgs are exact complements.
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_props {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_app_component {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest), any(idealyst_stream_guest, feature = "remote-loopback"))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_import {
+    ($($t:tt)*) => {
+        ::core::unreachable!("remote component imports exist only in a remote bundle build")
+    };
+}
 #[cfg(feature = "robot")]
 pub mod robot;
 #[cfg(feature = "robot")]

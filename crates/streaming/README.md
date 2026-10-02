@@ -4,13 +4,14 @@ A remote component (working name in code: "streamed"; the attribute will be `#[c
 
 This directory is a spike. It proves the boundary works end to end and measures what it costs. Nothing here is published or depended on by the framework.
 
-The spike holds **three models** of what runs inside a bundle:
+The spike holds **two designs** of what runs inside a bundle:
 
 - **Model A, a host-owned graph** (`abi`, `guest`, `host`, `spike/guest`). The bundle holds handles into the app's reactive graph and returns small node descriptions. Bundles are small, around 37 KB. But `ui!` can't run inside one: it expands to the framework's full author API, about 220 items, so model A would need a second implementation of that API.
-- **Model B, the real framework in the bundle** (`spike/components`, `spike/fullguest`). The bundle compiles the actual `runtime-world`, `runtime-scene` and `runtime-vocabulary`. It renders through `dev-server`'s wire recorder, and the app replays the commands through `dev-client`, which is runtime-server sandboxed down to one subtree. `ui!`, `#[component]` and context work unchanged, but the app pays for the framework twice: once natively, once inside every bundle (545 KB for one component). See [Model B](#model-b-the-real-framework-in-the-bundle).
-- **The bridged design, model B with the framework shared** (`spike/kernelguest`, `spike/remoteguest`). The bundle runs the same real framework code, but its reactive kernel is *bridged*: its signals, effects and scopes live in the app's own graph, and the tree it builds crosses to the app as data, to be realized by the app's own registry and backend. One graph, one backend; the bundle carries only its own code (147 KB for the same component). **This is the chosen direction.** See [The bridged design](#the-bridged-design).
+- **The bridged design** (`spike/kernelguest`, `spike/remoteguest`, `spike/remoteattr`, `example`). The bundle runs the same real framework code, but its reactive kernel is *bridged*: its signals, effects and scopes live in the app's own graph, and the tree it builds crosses to the app as data, to be realized by the app's own registry and backend. One graph, one backend; the bundle carries only its own code (147 KB for `RemoteCounter`). **This is the chosen direction.** See [The bridged design](#the-bridged-design).
 
-What carries over from model A to model B: the loader, the manifest and import checks, prop contracts, `#[host_fn]`, live reload, and native host components.
+A third design, model B, ran a private copy of the framework inside each bundle; it was removed once the bridged design replaced it — see [History](#history-model-b).
+
+What can carry over from model A to the bridged design: the manifest and import checks, prop contracts, `#[host_fn]`, and native host components.
 
 | Crate | Role |
 |---|---|
@@ -18,11 +19,12 @@ What carries over from model A to model B: the loader, the manifest and import c
 | `guest` (`stream-guest`) | What a bundle links: handle-backed `signal` / `effect`, node builders, the `bundle!` export macro. |
 | `host` (`stream-host`) | Loads a bundle into wasmi, checks its manifest, binds it to the app's reactive graph, and turns node descriptions into `runtime_scene::Element`s. |
 | `macros` (`stream-macros`) | `#[host_fn]`. |
-| `spike` (`stream-spike`) | Builds both spike bundles to wasm32 in its build script. Holds the end-to-end tests, the `measure` / `measure_full` examples, `stream-serve`, and the model-B host wrapper (`full.rs`). |
-| `spike/components` | Model B's remote component (`RemoteCounter`): a plain crate of `#[component]`s that the app also links natively. |
-| `spike/fullguest` | Model B's bundle: the wasm exports around `spike/components`. |
+| `spike` (`stream-spike`) | Builds the spike's bundles to wasm32 in its build script. Holds the end-to-end tests, model A's `measure` example and `stream-serve`. |
+| `spike/components` | `RemoteCounter`: a plain crate of `#[component]`s the app also links natively (the parity baseline). |
 | `spike/kernelguest` | Test bundle for the kernel bridge: plain `runtime-world` code whose graph is the app's. |
-| `spike/remoteguest` | `spike/components`' `RemoteCounter` as a bridged remote component. |
+| `spike/remoteguest` | `spike/components`' `RemoteCounter` as a bridged remote component, with a hand-written mount export. |
+| `spike/remoteattr` | `#[component(remote)]` end to end: a remote component using an app component. |
+| `example/app`, `example/bundle` | An app and its remote components in one file. |
 
 ## The boundary
 
@@ -88,8 +90,6 @@ Native views stay native. The camera preview is a host component (`CameraPreview
 ```sh
 cargo test -p stream-abi -p stream-spike
 cargo run --release -p stream-spike --example measure        # model A; host MUST be --release
-cargo test -p stream-spike --test full_framework              # model B end to end
-cargo run --release -p stream-spike --example measure_full   # model B
 cargo test -p stream-spike --test kernel_bridge               # the bridged kernel over wasm
 cargo test -p stream-spike --test remote_counter              # a ui! component, bridged, vs native
 cargo test -p runtime-world --features loopback-engine       # every kernel test, through the bridge
@@ -103,8 +103,13 @@ cargo run --release -p stream-spike --bin stream-serve   # serves the bundle, re
 cargo run --release -p stream-demo                        # AppKit window
 ```
 
-1. Edit `spike/guest/src/lib.rs`.
-2. Press **Refresh bundle**. The tinted sections remount from the new build. The app is not rebuilt or restarted.
+The window shows the **bridged** RemoteCounter (green, from `/remote.wasm`) next to the same component compiled into the app (grey), and model A's components below.
+
+1. Edit `spike/components/src/lib.rs` (the bridged component) or `spike/guest/src/lib.rs` (model A).
+2. Press **Refresh bundle**. The tinted sections remount from the new builds; the app is not rebuilt or restarted. The grey native copy keeps the old code, which is the point of comparison.
+3. The host buttons drive host state the bridged component reads: `external ± 1` is a prop, **switch user** is context.
+
+In the bridged component only `view`, `pressable`, `text` and `button` cross today. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic later, in a press handler, still takes the app down.
 
 How it behaves:
 
@@ -114,60 +119,48 @@ How it behaves:
 
 The test `swapping_bundles_releases_the_old_instance_and_keeps_host_state` pins down the swap: the old instance's closures and handles are all released, and host state carries over.
 
-## Model B: the real framework in the bundle
+## `#[component(remote)]`: an app and its remote components in one file
 
-`RemoteCounter` is an ordinary component:
+`example/app/src/main.rs` is a complete app: a native `App`, and a
+`#[component(remote)] Scoreboard` it renders with the app's state as props.
 
 ```rust
-#[component]
-pub fn RemoteCounter(title: String, external: ReadSignal<i64>) -> Element {
-    let clicks = signal(0i64);
-    let user = inject::<CurrentUser>().map(|u| u.0);
-    ui! { view() { text { "{title}" } text { "external: {external}" } … if let Some(user) = user { text { "signed in as {user}" } } } }
-}
+#[component(remote)]
+pub fn Scoreboard(player: String, score: ReadSignal<i64>, cheers: Signal<i64>) -> Element { … }
 ```
 
-The bundle mounts it in a `dev_server::newcore::SceneSession` against a `WireRecordingBackend`. It returns `DevToApp::Commands` batches, which the app replays through `dev_client::WireBackend` into its own backend.
+The file compiles twice. As the app, `Scoreboard`'s body is left out: the macro replaces it with a stub that sends the props and mounts the component from the installed bundle (`stream_host::remote::install`). As the bundle (`example/bundle`, which points at the same file; built by the app's build script and served by `stream-serve`), only the remote component's body compiles, plus a mount export. On web, `remote` is a no-op.
 
-- **The bundle has its own world**, so host state crosses as mirrors. A host signal prop, like `external`, becomes a signal in the bundle that the app updates when its own signal changes. The bundle then flushes and returns the delta in the same turn.
-- **Context works the same way:** the app's provided `CurrentUser` is mirrored, `provide`d at the root of the bundle's world, and read with a plain `inject`. It stays reactive.
-- **Taps:** the replay client reports the tapped button's `HandlerId`, and the bundle dispatches it.
-- **Unmount:** the bundle frees its world, and the app removes the replayed subtree under its own mount point. The recorder emits no teardown commands, because in runtime-server teardown is the whole session.
+Props are taken as declared. A `ReadSignal<T>` crosses as a handle: the bundle reads the app's signal live. A `Signal<T>` lets the bundle write it too. A plain value is copied at mount. Your own value types cross with `runtime_vocabulary::remote_value!(MyType)`.
 
-The test `bundle_emits_exactly_what_the_native_build_emits` shows the bundle *is* the framework. Mounting the same component natively against the same recorder produces a byte-identical command stream. The bundle imports nothing from the host.
+```sh
+cargo run --release -p stream-spike --bin stream-serve   # terminal 1: serves /example.wasm, rebuilds on save
+cargo run --release -p remote-example                     # terminal 2
+```
 
-Making this possible changed one framework crate: **`dev-server` gained a default-on `session` feature.** It covers the sidecar, the websocket transport, the file watcher and the test harness. With the feature off, the crate is just the recorder, which builds for `wasm32-unknown-unknown`; tungstenite's handshake pulls in `getrandom`, which doesn't. Existing consumers are unchanged, and `dev-server`'s tests pass.
+Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the new build, with the app's state intact. `tests/remote_attr.rs` covers the same path end to end.
 
-### Model B measurements
+### Remote code using app components
 
-M3 Max, release, portable dispatch, replayed into `mock-backend`. Mount and update times include the JSON wire codec and the replay.
+**Every component not marked `remote` lives in the app binary.** When remote code renders one (`Badge` in the example, idea-ui's components, anything), the bundle does not contain it: in a bundle build `#[component]` compiles its body out and replaces it with a stub that sends the props and asks the app for its own copy by name (`module_path::Name`). In a native app build with `remote` on, every component registers itself for that at link time (`runtime_vocabulary::remote::host::APP_COMPONENTS`). An app that doesn't have the component (an older binary) shows `MissingImport` in its place; props that don't decode show `BadProps`.
 
-| | Bundle | Native + wire | Native |
-|---|---|---|---|
-| Size | 545 KB raw, 454 KB after wasm-opt, **148 KB brotli** | — | — |
-| Load, lazy translation (eager) | 1.9 ms (5.9 ms) | — | — |
-| Mount `RemoteCounter`, cold | 2.2 ms | — | — |
-| Mount, warm | 590 µs | 41 µs | 10.5 µs |
-| Host prop change → replayed | 31 µs | — | 0.6 µs |
-| Tap → replayed | 34 µs | — | — |
-| Context change → replayed | 33 µs | — | — |
+Props cross bundle → app with `ImportArg`:
 
-The "native + wire" column isolates the cost of recording, the JSON codec and replay, about 30 µs of a mount. The rest of the gap is the interpreter running framework code.
+| Prop | How it crosses |
+|---|---|
+| Values (`String`, numbers, `StyleRules`, your types via `remote_value!`) | Copied |
+| `Reactive<T>` | Copied if static; a getter into the bundle if live |
+| Callbacks (`Rc<dyn Fn()>`, `Rc<dyn Fn(A)>`, `Option<…>`) | Run in the bundle |
+| Children, `Element` props | Encoded subtrees, built by the bundle |
+| `Rc<StyleSheet>` | A proxied sheet, resolved by the app's theme |
+| `Signal<T>` / `ReadSignal<T>` the app gave the bundle | The app's own handle |
+| `Signal<T>` / `ReadSignal<T>` the bundle created | **Promoted**: the value moves into the app's arena |
 
-### What building model B found
+A prop type with no `ImportArg` doesn't stop anything compiling: it fails by name at runtime, in the component's place.
 
-1. **wasmi's default tail-call dispatch can overflow the native stack.** That dispatch keeps the stack flat only if LLVM turns every handler call into a sibling call. Whether it does depends on how wasmi *and its dependencies* are compiled. In the workspace dev profile, the model-B bundle overflowed a 2 MB thread with wasmi at opt-level 3 and passed at `"z"`. wasmi picks tail calls from opt-level alone, so an app's profile choices could turn a big bundle into a stack-overflow crash. iOS's main thread has a 1 MB stack. The host therefore uses **`portable-dispatch`**, a loop that never grows the stack. Its cost, measured:
+**Promotion.** A bundle-created signal keeps its value in the bundle until the bundle hands it to native code. Then the app's prop decoder (which knows `T`) takes the value over: the slot keeps its subscribers and the bundle keeps its handle, but the value is now a real `SignalData<T>` in the app's arena, and the bundle reads and writes it the way it does any app signal. Native code reads it at native speed; a memo's output promotes too, and its derivation keeps writing the native value. It is two-phase (`GuestHooks::promote` / `promote_finish`), so a value the app can't decode leaves the bundle untouched. The native slot holds a `Promoted<T>` whose `as_any_mut` returns the inner `SignalData<T>`, so every native read, write and commit runs unchanged code — measured on the shipped profiles: no regression with `bridge` on or off.
 
-   | | Tail-call dispatch | Portable dispatch |
-   |---|---|---|
-   | Model B warm mount | 348 µs | 590 µs |
-   | Model B prop update | 16.5 µs | 31 µs |
-   | Model A typed signal read | 98 ns | 155 ns |
-   | Pure compute vs native | 3.9× | 18.7× |
-
-   `regression_full_framework_bundle_fits_a_2mb_thread` pins this. Tail calls could become an opt-in only alongside a CI check that runs a large bundle on a 1 MB thread in the exact shipping profile.
-2. **A bundle crate must be `cdylib` only.** Built as both `cdylib` and `rlib`, it lost link-time optimization: 668 KB instead of 545 KB. Components therefore live in an ordinary crate (`spike/components`) with a thin `cdylib` wrapper around it, which is the shape the CLI would generate.
-3. **A workspace-inherited dependency can't turn default features off** unless the workspace entry does. `dev-server = { workspace = true, default-features = false }` silently kept the session layer, so `spike/fullguest` uses a path dependency.
+**Web never compiles any of this.** `remote` is a no-op on web, and the bridge, the codec and the registrations are compiled only for native targets or a bundle build, whatever features an app enables.
 
 ## The bridged design
 
@@ -184,6 +177,13 @@ A bundle is built with `--cfg idealyst_stream_guest` (a build flag, not a cargo 
 - **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text`, `button`. Everything else, and unsupported fields of crossing primitives (`on_touch`, `ref`, icons, styled runs), panics at encode, naming itself.
 
 What the tests prove (`remote_counter.rs`): the real `RemoteCounter`, written with `#[component]` and `ui!`, mounted from the bundle drives the app's backend through exactly the same calls as the native build, through mount, button presses (bundle state), a prop change and a context change (app state), and unmount. After unmount, no bundle callback or scope is left behind.
+
+## History: model B
+
+Model B compiled the real `runtime-world`, `runtime-scene` and `runtime-vocabulary` into each bundle, rendered through `dev-server`'s wire recorder, and had the app replay the commands — with the bundle's own private world, so app state crossed as mirrored copies. It proved real framework code runs unchanged in a bundle (byte-identical commands to the native build), and showed the cost: 545 KB raw / 148 KB brotli for one component, warm mount 590 µs vs 10.5 µs native. The bridged design replaced it; it was deleted after the kernel bridge made its private-world build impossible. Its code is in git history (`5c1bdc9c`). What it found still holds:
+
+1. **wasmi's default tail-call dispatch can overflow the native stack.** It keeps the stack flat only if LLVM turns every handler call into a sibling call, which depends on how wasmi and its dependencies are compiled: with wasmi at opt-level 3, a large bundle overflowed a 2 MB thread. iOS's main thread has 1 MB. The host uses **`portable-dispatch`**, a loop that never grows the stack, at a measured cost of 1.7–1.9× on UI work and 4.8× on pure compute. `regression_bundle_runs_on_a_2mb_thread` (`tests/remote_attr.rs`) pins it, and was checked to overflow with tail-call dispatch at opt-level 3.
+2. **A bundle crate must be `cdylib` only.** Built as both `cdylib` and `rlib`, a bundle lost link-time optimization (668 KB instead of 545 KB). Components live in an ordinary crate with a thin `cdylib` wrapper — or, as in `example`, a bundle package whose `lib` points at the app's source.
 
 ## Model A measurements
 
@@ -212,11 +212,11 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 
 - **On-device numbers.** These were measured on a Mac. An iPhone run is the next measurement.
 - **Props passed from a bundle to a host component** (`Node::Host`, e.g. `Badge`) are still positional and unchecked. The same schema mechanism applies in that direction.
-- **Plain value props are fixed at mount** in model A. Model B mirrors props as signals, so `#[component(remote)]` can make every prop reactive by default, as `#[props]` does natively.
-- **Model A only: most of the primitive vocabulary.** `Node` has `View`, `Text`, `Button` and `Host`. This doesn't apply to model B, which has the whole vocabulary.
-- **The bridged design is hand-wired.** `spike/remoteguest`'s mount export is written by hand. `#[component(remote)]` should generate it (prop imports, context registration, encode), plus a manifest listing the app components and context names the bundle needs, checked before mount.
+- **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
+- **`#[component(remote)]` carries props, not context yet,** and has no manifest.
+- **`#[host_fn]` is not on the bridged loader yet.** It exists for model A (`HostExports`); `KernelBundle` doesn't link host functions.
+- **A panic in bundle code after mount** (a handler, a getter) still takes the app down; a panic while mounting is shown in place. Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
 - **The bridged design carries four primitives.** The rest of the vocabulary (`crossing` lists each), event handlers on `view`, `ref`s and handles still have to cross.
-- **Model B's wire codec is JSON.** (The bridged design's element codec is postcard.)
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **Guest trap handling.** It's a panic for now. Whether a trap should be contained to the bundle in release builds is still an open decision.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.

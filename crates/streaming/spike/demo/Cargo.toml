@@ -15,6 +15,13 @@ runtime-shared = { workspace = true }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }
+# The bridged remote component: the same RemoteCounter compiled natively
+# (for side-by-side comparison), `ui!` to mount it, and the codecs for its
+# props and context.
+spike-components = { path = "../components" }
+runtime-core = { workspace = true }
+stream-abi = { path = "../../abi" }
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true }

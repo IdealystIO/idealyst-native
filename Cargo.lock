@@ -9772,6 +9772,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-example"
+version = "0.1.0"
+dependencies = [
+ "host-appkit",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+ "stream-host",
+]
+
+[[package]]
+name = "remote-example-bundle"
+version = "0.1.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
 name = "render-api"
 version = "1.5.2"
 dependencies = [
@@ -10163,6 +10187,7 @@ version = "1.17.0"
 dependencies = [
  "dev-hot",
  "host-mock",
+ "linkme",
  "mcp-catalog",
  "postcard",
  "runtime-macros",
@@ -11208,20 +11233,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spike-fullguest"
-version = "0.1.0"
-dependencies = [
- "dev-server",
- "runtime-core",
- "runtime-scene",
- "runtime-vocabulary",
- "runtime-world",
- "spike-components",
- "stream-abi",
- "wire",
-]
-
-[[package]]
 name = "spike-guest"
 version = "0.1.0"
 dependencies = [
@@ -11235,6 +11246,16 @@ version = "0.1.0"
 dependencies = [
  "runtime-world",
  "stream-abi",
+]
+
+[[package]]
+name = "spike-remoteattr"
+version = "0.1.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
 ]
 
 [[package]]
@@ -11490,12 +11511,16 @@ name = "stream-demo"
 version = "0.1.0"
 dependencies = [
  "host-appkit",
+ "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "spike-components",
+ "stream-abi",
  "stream-host",
  "stream-spike",
+ "wasmi",
 ]
 
 [[package]]
@@ -11530,20 +11555,17 @@ dependencies = [
 name = "stream-spike"
 version = "0.1.0"
 dependencies = [
- "dev-client",
- "dev-server",
  "host-mock",
- "mock-backend",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
  "spike-camera",
  "spike-components",
+ "spike-remoteattr",
  "stream-abi",
  "stream-host",
  "wasmi",
- "wire",
 ]
 
 [[package]]

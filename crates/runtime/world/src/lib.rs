@@ -110,8 +110,8 @@ mod native;
 // bridge's (unused) code in the crate shifted the size optimizer's outlining
 // on hot paths in the web release profile (opt "z", no LTO) — fan-out +3.3%
 // with it, -2.0% without.
-#[cfg(any(test, feature = "bridge", feature = "loopback-engine", idealyst_stream_guest))]
-#[cfg_attr(not(any(feature = "bridge", feature = "loopback-engine", idealyst_stream_guest)), allow(dead_code))]
+#[cfg(any(test, all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)), feature = "loopback-engine", idealyst_stream_guest))]
+#[cfg_attr(not(any(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)), feature = "loopback-engine", idealyst_stream_guest)), allow(dead_code))]
 mod bridge;
 
 use engine::{Access, AnySignal, EffectClass, Engine, WorldId};
@@ -133,8 +133,8 @@ type Active = bridge::guest::Bridged<bridge::wasm::Imports>;
 /// Typed halves of the bridge's host-owned-value machinery: the sync that
 /// mirrors an imported value in a bundle, and the exporter that serves a
 /// host signal to bundles. Here because both need `T` and `SignalData<T>`.
-#[cfg(any(test, feature = "bridge", feature = "loopback-engine", idealyst_stream_guest))]
-#[cfg_attr(not(any(feature = "bridge", feature = "loopback-engine", idealyst_stream_guest)), allow(dead_code))]
+#[cfg(any(test, all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)), feature = "loopback-engine", idealyst_stream_guest))]
+#[cfg_attr(not(any(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)), feature = "loopback-engine", idealyst_stream_guest)), allow(dead_code))]
 mod bridge_typed {
     use std::rc::Rc;
 
@@ -178,6 +178,15 @@ mod bridge_typed {
         }
         fn encode_value(&self, mirror: &mut dyn AnySignal, out: &mut Vec<u8>) {
             (self.0.encode)(&typed::<T>(mirror).value, out)
+        }
+        fn encode_next(&self, mirror: &mut dyn AnySignal, out: &mut Vec<u8>) -> bool {
+            match &typed::<T>(mirror).next {
+                Some(next) => {
+                    (self.0.encode)(next, out);
+                    true
+                }
+                None => false,
+            }
         }
     }
 
@@ -228,8 +237,53 @@ mod bridge_typed {
         }
     }
 
+    /// A bundle-owned value PROMOTED into the native arena (host side; see
+    /// `remote::receive_signal`). The slot's storage is a real
+    /// `SignalData<T>`: `as_any_mut` hands out `data` itself, so every
+    /// native read, write and commit of the slot is the code an app signal
+    /// runs — the promotion costs native paths nothing. What the wrapper
+    /// adds is teardown: when the slot is freed it withdraws the bundle's
+    /// export and releases the bundle's (now mirroring) entry.
+    #[cfg(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+    #[cfg_attr(idealyst_stream_guest, allow(dead_code))]
+    pub(crate) struct Promoted<T> {
+        pub(crate) data: SignalData<T>,
+        pub(crate) handle: (WorldId, u32, u32),
+        pub(crate) bundle_value: crate::bridge::Id,
+        pub(crate) release: fn(crate::bridge::Id),
+    }
+
+    #[cfg(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+    impl<T: PartialEq + 'static> AnySignal for Promoted<T> {
+        fn commit(&mut self, forced: bool) -> bool {
+            self.data.commit(forced)
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            &mut self.data
+        }
+        // A promoted value belongs to a remote component, which the app's
+        // hot reload does not re-run: handing back the wrapper makes the
+        // harvest's `SignalData<T>` downcast miss, so nothing is seeded.
+        #[cfg(feature = "hot-reload")]
+        fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+            self
+        }
+        #[cfg(feature = "hot-reload")]
+        fn value_type_id(&self) -> std::any::TypeId {
+            std::any::TypeId::of::<T>()
+        }
+    }
+
+    #[cfg(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+    impl<T> Drop for Promoted<T> {
+        fn drop(&mut self) {
+            crate::bridge::host::unregister_export(self.handle);
+            (self.release)(self.bundle_value);
+        }
+    }
+
     // Host side: used by `remote::export_*` (feature `bridge`).
-    #[cfg_attr(not(feature = "bridge"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest))), allow(dead_code))]
     pub(crate) fn exporter<T: PartialEq + 'static>(
         handle: (WorldId, u32, u32),
         codec: Codec<T>,
@@ -245,7 +299,7 @@ mod bridge_typed {
 /// [`remote::Host`]'s [`remote::HostOps`], and hand host state to bundles
 /// with [`remote::export_signal`] / [`remote::export_read_signal`] (props)
 /// and [`remote::export_context`] (context). See `bridge/mod.rs`.
-#[cfg(feature = "bridge")]
+#[cfg(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
 pub mod remote {
     use std::rc::Rc;
 
@@ -283,6 +337,70 @@ pub mod remote {
     /// live and die with the returned value, so an `Element::Owned` decoded
     /// from a bundle is a component boundary exactly like a native one.
     /// `0` (collected nothing) gives an empty `Owned`.
+    /// The app's side of a signal a bundle hands to native code (a prop of
+    /// an app component the bundle uses): a handle the app can read and
+    /// write natively.
+    ///
+    /// A signal the app already owns (one it passed into the bundle, or
+    /// already promoted) is returned as is. A signal the BUNDLE created is
+    /// PROMOTED: its value moves out of the bundle into this slot as a real
+    /// `SignalData<T>` — the app now owns the value, and the bundle's reads
+    /// and writes go to it from here on (as for any app signal the bundle
+    /// imported). Same slot, so subscribers and the bundle's handle stay
+    /// valid. Requires the bundle to have offered it
+    /// ([`remote_guest::offer_signal`](crate::remote_guest::offer_signal)).
+    ///
+    /// `Err` when the value does not decode as `T` (the bundle and the app
+    /// disagree about the type), or the bundle did not offer it.
+    #[cfg(not(idealyst_stream_guest))]
+    pub fn receive_signal<T: PartialEq + 'static>(h: Handle, codec: Codec<T>) -> Result<Signal<T>, String> {
+        use crate::bridge::host::ValueProxy;
+        use crate::native::Native;
+        use crate::engine::Engine;
+        use crate::{AnySignal, PhantomData, SignalData};
+        let (w, s, g) = h;
+        let signal = Signal { world: w, slot: s, gen: g, _marker: PhantomData };
+        let proxy = match Native::signal_access(w, s, g, |d| {
+            let any = d.as_any_mut();
+            if any.is::<SignalData<T>>() {
+                return Ok(None);
+            }
+            match any.downcast_ref::<ValueProxy>() {
+                Some(p) => Ok(Some((p.value, p.promote, p.promote_finish, p.drop_value))),
+                None => Err("the app holds this signal with a different value type".to_string()),
+            }
+        }) {
+            crate::engine::Access::Done(r) => r?,
+            crate::engine::Access::DeadWorld => return Err("the signal's world is gone".into()),
+        };
+        let Some((id, promote, finish, release)) = proxy else { return Ok(signal) };
+        let (mut committed, mut staged) = (Vec::new(), Vec::new());
+        let has_staged = promote(id, &mut committed, &mut staged)
+            .ok_or_else(|| "the bundle did not offer this signal for promotion".to_string())?;
+        let decode = |b: &[u8], what: &str| {
+            (codec.decode)(b).ok_or_else(|| format!("the bundle's {what} value does not decode as the app's type"))
+        };
+        let value = decode(&committed, "committed")?;
+        let next = if has_staged { Some(decode(&staged, "staged")?) } else { None };
+        let promoted: Box<dyn AnySignal> = Box::new(crate::bridge_typed::Promoted {
+            data: SignalData { value, next },
+            handle: h,
+            bundle_value: id,
+            release,
+        });
+        let mut old = crate::native::swap_signal_data(w, s, g, promoted)
+            .map_err(|_| "the signal's slot was freed mid-promotion".to_string())?;
+        // The proxy no longer speaks for the bundle's entry (it is now an
+        // import, released by the promoted value).
+        if let Some(p) = old.as_any_mut().downcast_mut::<ValueProxy>() {
+            p.defused = true;
+        }
+        drop(old);
+        crate::bridge::host::register_export_owned(h, crate::bridge_typed::exporter(h, codec, true));
+        finish(id);
+        Ok(signal)
+    }
+
     /// Bundle scopes held by id that nobody has claimed or dropped — `0`
     /// once every remote tree's scopes have been claimed (see
     /// [`claim_scope`]). A remote mount that leaves this above zero leaked
@@ -342,6 +460,24 @@ pub mod remote_guest {
         import_signal(h, codec).read_only()
     }
 
+    /// Offer `signal` to the host for PROMOTION, before handing its handle
+    /// to native code (see
+    /// [`remote::receive_signal`](crate::remote::receive_signal)). A no-op
+    /// for a signal the host already owns.
+    pub fn offer_signal<T: PartialEq + 'static>(signal: Signal<T>, codec: Codec<T>) -> (u32, u32, u32) {
+        let h = (signal.world, signal.slot, signal.gen);
+        Active::offer(h, Rc::new(TypedSync(codec)));
+        h
+    }
+
+    /// [`offer_signal`] for a read-only handle — a memo's output included:
+    /// once promoted, the memo's own derivation writes the native value.
+    pub fn offer_read_signal<T: PartialEq + 'static>(signal: ReadSignal<T>, codec: Codec<T>) -> (u32, u32, u32) {
+        let h = (signal.world, signal.slot, signal.gen);
+        Active::offer(h, Rc::new(TypedSync(codec)));
+        h
+    }
+
     /// Hand `owned` to the host as a scope id, for
     /// [`remote::claim_scope`](crate::remote::claim_scope) on the other
     /// side; `0` when it collected nothing. The slots stay alive — they are
@@ -363,7 +499,7 @@ pub mod remote_guest {
 }
 
 /// Compile-time parity: the bridged engine implements the full contract.
-#[cfg(any(test, feature = "bridge", feature = "loopback-engine", idealyst_stream_guest))]
+#[cfg(any(test, all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)), feature = "loopback-engine", idealyst_stream_guest))]
 const _: fn() = || {
     fn implements_engine<E: Engine>() {}
     implements_engine::<bridge::Loopback>();

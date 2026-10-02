@@ -3210,4 +3210,114 @@ mod host_owned_values {
         assert_eq!(crate::remote_guest::release_scope(owned), 0);
         assert!(crate::remote::claim_scope(0).is_empty());
     }
+
+    // ---- promotion: a bundle-created signal handed to native code ----
+
+    use crate::remote::receive_signal;
+    use crate::remote_guest::{offer_read_signal, offer_signal};
+
+    /// The bundle creates a signal, offers it, and native code takes it
+    /// over: the value now lives in the native slot (a native typed read
+    /// finds a `SignalData<u32>`), and the bundle reads the same value.
+    #[test]
+    fn a_promoted_signal_is_native_and_still_the_bundles() {
+        let w = World::new();
+        let s = w.enter(|| signal(5u32));
+        let h = offer_signal(s, U32);
+        let native = receive_signal(h, U32).expect("promotes");
+        assert_eq!(host_get(native), 5, "a plain native read of the slot");
+        assert_eq!(s.get(), 5, "the bundle's handle reads the same value");
+        assert_eq!((native.world, native.slot, native.gen), (s.world, s.slot, s.gen), "same slot");
+    }
+
+    /// Subscriptions survive promotion: a bundle effect subscribed BEFORE it
+    /// re-runs on a native write after it, and bundle writes land natively.
+    #[test]
+    fn promotion_keeps_subscribers_and_routes_writes_both_ways() {
+        let w = World::new();
+        let seen = Rc::new(Cell::new(0u32));
+        let s2 = seen.clone();
+        let s = w.enter(|| {
+            let s = signal(1u32);
+            effect(move || s2.set(s.get()));
+            s
+        });
+        let native = receive_signal(offer_signal(s, U32), U32).unwrap();
+        host_set(native, 9);
+        w.flush();
+        assert_eq!(seen.get(), 9, "the bundle effect saw the native write");
+        s.update(|v| v + 1);
+        assert_eq!(host_get(native), 9, "staged");
+        w.flush();
+        assert_eq!(host_get(native), 10, "the bundle write landed in the native value");
+        assert_eq!(seen.get(), 10);
+    }
+
+    /// A write staged before promotion is carried over and commits.
+    #[test]
+    fn a_write_staged_before_promotion_survives_it() {
+        let w = World::new();
+        let s = w.enter(|| signal(1u32));
+        s.set(7);
+        let native = receive_signal(offer_signal(s, U32), U32).unwrap();
+        assert_eq!(host_get(native), 1, "still staged");
+        w.flush();
+        assert_eq!(host_get(native), 7);
+        assert_eq!(s.get(), 7);
+    }
+
+    /// A memo's output promotes too, and its derivation (bundle code) keeps
+    /// writing the now-native value.
+    #[test]
+    fn a_promoted_memo_keeps_deriving() {
+        let w = World::new();
+        let (src, m) = w.enter(|| {
+            let src = signal(2u32);
+            (src, memo(move || src.get() * 10))
+        });
+        let native = receive_signal(offer_read_signal(m.value, U32), U32).unwrap();
+        assert_eq!(host_get(native), 20);
+        src.set(3);
+        w.flush();
+        assert_eq!(host_get(native), 30);
+    }
+
+    /// Dropping the owning scope frees the promoted slot, withdraws the
+    /// bundle's export of it, and releases the bundle's entry.
+    #[test]
+    fn dropping_a_promoted_signals_scope_releases_both_sides() {
+        let w = World::new();
+        let (s, owned) = w.enter(|| collect_owned(|| signal(4u32)));
+        let h = offer_signal(s, U32);
+        receive_signal(h, U32).unwrap();
+        let mut buf = Vec::new();
+        assert!(Active::fetch(h, &mut buf), "exported while alive");
+        drop(owned);
+        assert!(!s.is_alive());
+        assert!(!Active::fetch(h, &mut buf), "export withdrawn");
+    }
+
+    #[test]
+    fn promotion_needs_an_offer_and_a_matching_type() {
+        let w = World::new();
+        let s = w.enter(|| signal(4u32));
+        let h = (s.world, s.slot, s.gen);
+        assert!(receive_signal(h, U32).unwrap_err().contains("did not offer"));
+        fn dec_str(b: &[u8]) -> Option<String> {
+            (b.len() > 8).then(|| String::from_utf8_lossy(b).into_owned())
+        }
+        fn enc_str(v: &String, out: &mut Vec<u8>) {
+            out.extend_from_slice(v.as_bytes())
+        }
+        offer_signal(s, U32);
+        let err = receive_signal(h, Codec { encode: enc_str, decode: dec_str }).unwrap_err();
+        assert!(err.contains("does not decode"), "{err}");
+        // A failed promotion changes nothing: the bundle still owns the
+        // value, and a correct promotion still works.
+        s.set(6);
+        w.flush();
+        assert_eq!(s.get(), 6);
+        let native = receive_signal(h, U32).unwrap();
+        assert_eq!(host_get(native), 6);
+    }
 }

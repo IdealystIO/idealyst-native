@@ -5,13 +5,10 @@ use runtime_vocabulary::builders::{text, view};
 use runtime_world::Signal;
 use stream_host::{HostExports, HostProps};
 
-pub mod fetch;
-pub mod full;
+/// Fetching a bundle over HTTP (moved to `stream-host`; re-exported for the
+/// spike's callers).
+pub use stream_host::fetch;
 pub mod guest_build;
-
-/// `spike-fullguest` (model B: the real framework inside the bundle),
-/// release-built for wasm32 by this crate's build script.
-pub const FULL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_fullguest.wasm"));
 
 /// `spike-kernelguest` (the kernel bridge test bundle): plain runtime-world
 /// code whose graph is the host's. Release-built for wasm32 by this crate's
@@ -21,6 +18,9 @@ pub const KERNEL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/s
 /// Phase 4: `RemoteCounter` as a remote component — bridged kernel, element
 /// codec (`spike-remoteguest`).
 pub const REMOTE_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_remoteguest.wasm"));
+
+/// `spike-remoteattr`: a `#[component(remote)]` component's bundle build.
+pub const REMOTE_ATTR_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_remoteattr.wasm"));
 
 /// `spike-guest`, release-built for wasm32 by this crate's build script —
 /// the app's built-in copy, used when no bundle server answers.

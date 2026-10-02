@@ -49,6 +49,7 @@ pub struct KState {
 /// bundle that renders UI has them.
 #[derive(Clone, Copy)]
 struct UiHooks {
+    panic_message: Option<TypedFunc<(), i64>>,
     alloc: TypedFunc<u32, u32>,
     invoke: TypedFunc<(u32, u32), i64>,
     release: TypedFunc<u32, ()>,
@@ -63,6 +64,10 @@ struct Hooks {
     run_cleanup: TypedFunc<i64, ()>,
     drop_cleanup: TypedFunc<i64, ()>,
     drop_context: TypedFunc<i64, ()>,
+    /// Promotion (`runtime_world::remote::receive_signal`): optional, so a
+    /// bundle built before it still loads (its signals just never promote).
+    promote: Option<TypedFunc<i64, i64>>,
+    promote_finish: Option<TypedFunc<i64, ()>>,
     ui: Option<UiHooks>,
 }
 
@@ -126,9 +131,13 @@ fn with_active<R>(caller: &mut Caller<'_, KState>, f: impl FnOnce() -> R) -> R {
 trait GuestCall {
     fn call_i64(&mut self, f: TypedFunc<i64, ()>, arg: i64) -> Result<(), wasmi::Error>;
     fn commit(&mut self, f: TypedFunc<(i64, u32), u32>, value: i64, forced: u32) -> Result<u32, wasmi::Error>;
+    /// Call the bundle's promote export; its packed reply, copied out.
+    fn promote(&mut self, f: TypedFunc<i64, i64>, value: i64) -> Result<Option<Vec<u8>>, wasmi::Error>;
     /// Run element callback `cb` on `args`; its reply.
     fn ui_invoke(&mut self, ui: UiHooks, cb: u32, args: &[u8]) -> Result<Vec<u8>, wasmi::Error>;
     fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error>;
+    /// The bundle's last panic message (after a trap).
+    fn last_panic(&mut self, ui: UiHooks) -> Option<String>;
 }
 
 impl<C: AsContextMut<Data = KState>> GuestCall for C {
@@ -137,6 +146,14 @@ impl<C: AsContextMut<Data = KState>> GuestCall for C {
     }
     fn commit(&mut self, f: TypedFunc<(i64, u32), u32>, value: i64, forced: u32) -> Result<u32, wasmi::Error> {
         f.call(&mut *self, (value, forced))
+    }
+    fn promote(&mut self, f: TypedFunc<i64, i64>, value: i64) -> Result<Option<Vec<u8>>, wasmi::Error> {
+        let packed = f.call(&mut *self, value)?;
+        if packed < 0 {
+            return Ok(None);
+        }
+        let memory = self.as_context().data().memory.expect("kernel bridge: bundle exports no memory");
+        Ok(Some(read_packed(&*self, memory, packed)))
     }
     fn ui_invoke(&mut self, ui: UiHooks, cb: u32, args: &[u8]) -> Result<Vec<u8>, wasmi::Error> {
         let memory = self.as_context().data().memory.expect("kernel bridge: bundle exports no memory");
@@ -149,6 +166,9 @@ impl<C: AsContextMut<Data = KState>> GuestCall for C {
     }
     fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error> {
         ui.release.call(&mut *self, cb)
+    }
+    fn last_panic(&mut self, ui: UiHooks) -> Option<String> {
+        panic_message(self, ui)
     }
 }
 
@@ -177,7 +197,7 @@ fn route<R>(bundle: u32, f: impl FnOnce(&mut dyn GuestCall, Hooks) -> Result<R, 
             // inside the host call that led here, so nothing else is using
             // the `Caller` for the duration of this call.
             let caller = unsafe { &mut *(ptr as *mut Caller<'static, KState>) };
-            f(caller, inner.hooks)
+            f(caller, inner.hooks).map_err(|e| with_panic(e, caller, inner.hooks))
         }
         None => {
             let mut store = inner.store.try_borrow_mut().unwrap_or_else(|_| {
@@ -186,10 +206,18 @@ fn route<R>(bundle: u32, f: impl FnOnce(&mut dyn GuestCall, Hooks) -> Result<R, 
                      host→bundle call re-entered the bundle without going through an import"
                 )
             });
-            f(&mut *store, inner.hooks)
+            f(&mut *store, inner.hooks).map_err(|e| with_panic(e, &mut *store, inner.hooks))
         }
     };
-    Some(result.unwrap_or_else(|e| panic!("kernel bridge: bundle {bundle} trapped in a kernel hook: {e}")))
+    Some(result.unwrap_or_else(|e| panic!("kernel bridge: bundle {bundle} trapped in a call from the host: {e}")))
+}
+
+/// A trap, described with the bundle's own panic message when it kept one.
+fn with_panic(e: wasmi::Error, c: &mut dyn GuestCall, hooks: Hooks) -> String {
+    match hooks.ui.and_then(|ui| c.last_panic(ui)) {
+        Some(msg) => format!("{msg} [{e}]"),
+        None => e.to_string(),
+    }
 }
 
 /// The hooks, as `runtime_world::remote::GuestHooks` sees them.
@@ -223,6 +251,26 @@ impl GuestHooks for WasmGuest {
     fn drop_context(ctx: Id) {
         let (bundle, local) = split(ctx);
         route(bundle, |c, h| c.call_i64(h.drop_context, local));
+    }
+    fn promote(value: Id, committed: &mut Vec<u8>, staged: &mut Vec<u8>) -> Option<bool> {
+        let (bundle, local) = split(value);
+        let reply = route(bundle, |c, h| match h.promote {
+            Some(f) => c.promote(f, local),
+            None => Ok(None),
+        })??;
+        // `[has_staged: u8][committed_len: u32 le][committed][staged]`
+        let (&flag, rest) = reply.split_first().expect("kernel bridge: empty promotion reply");
+        let len = u32::from_le_bytes(rest[..4].try_into().expect("promotion reply length")) as usize;
+        committed.extend_from_slice(&rest[4..4 + len]);
+        staged.extend_from_slice(&rest[4 + len..]);
+        Some(flag != 0)
+    }
+    fn promote_finish(value: Id) {
+        let (bundle, local) = split(value);
+        route(bundle, |c, h| match h.promote_finish {
+            Some(f) => c.call_i64(f, local),
+            None => Ok(()),
+        });
     }
 }
 
@@ -456,15 +504,25 @@ impl KernelBundle {
             run_cleanup: instance.get_typed_func(&store, "idealyst_kernel_run_cleanup")?,
             drop_cleanup: instance.get_typed_func(&store, "idealyst_kernel_drop_cleanup")?,
             drop_context: instance.get_typed_func(&store, "idealyst_kernel_drop_context")?,
+            promote: instance.get_typed_func(&store, "idealyst_kernel_promote").ok(),
+            promote_finish: instance.get_typed_func(&store, "idealyst_kernel_promote_finish").ok(),
             ui: match (
                 instance.get_typed_func(&store, "idealyst_ui_alloc"),
                 instance.get_typed_func(&store, "idealyst_ui_invoke"),
                 instance.get_typed_func(&store, "idealyst_ui_release"),
             ) {
-                (Ok(alloc), Ok(invoke), Ok(release)) => Some(UiHooks { alloc, invoke, release }),
+                (Ok(alloc), Ok(invoke), Ok(release)) => Some(UiHooks {
+                    panic_message: instance.get_typed_func(&store, "idealyst_ui_panic_message").ok(),
+                    alloc,
+                    invoke,
+                    release,
+                }),
                 _ => None,
             },
         };
+        if let Ok(init) = instance.get_typed_func::<(), ()>(&store, "idealyst_ui_init") {
+            init.call(&mut store, ())?;
+        }
         let inner = Rc::new(Inner { id: bundle, store: RefCell::new(store), instance, hooks });
         BUNDLES.with(|b| b.borrow_mut().insert(bundle, Rc::downgrade(&inner)));
         Ok(KernelBundle { inner })
@@ -569,6 +627,40 @@ impl Link for UiLink {
     }
 }
 
+/// Why a remote component did not mount.
+#[derive(Debug)]
+pub enum MountError {
+    /// The bundle panicked building its tree; the bundle's panic message.
+    Panicked(String),
+    /// The tree it built does not decode here (e.g. it uses an app
+    /// component this app does not export).
+    Decode(DecodeError),
+    /// The bundle has no mount export of that name: a bundle built from
+    /// sources that no longer (or do not yet) define the component.
+    NoSuchComponent(String),
+}
+
+impl std::fmt::Display for MountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MountError::Panicked(m) => write!(f, "the remote component panicked: {m}"),
+            MountError::Decode(e) => write!(f, "{e}"),
+            MountError::NoSuchComponent(export) => write!(f, "the bundle has no `{export}`"),
+        }
+    }
+}
+
+impl std::error::Error for MountError {}
+
+/// The bundle's last panic message, if it kept one (`idealyst_ui_init`
+/// installed its hook).
+fn panic_message(ctx: &mut impl AsContextMut<Data = KState>, ui: UiHooks) -> Option<String> {
+    let memory = ctx.as_context().data().memory?;
+    let packed = ui.panic_message?.call(&mut *ctx, ()).ok()?;
+    let msg = String::from_utf8(read_packed(&*ctx, memory, packed)).ok()?;
+    (!msg.is_empty()).then_some(msg)
+}
+
 fn ui_hooks(bundle: u32, h: Hooks) -> UiHooks {
     h.ui.unwrap_or_else(|| panic!("remote component: bundle {bundle} exports no element codec (`idealyst_ui_*`)"))
 }
@@ -579,15 +671,21 @@ impl KernelBundle {
     /// props, encoded as the export expects), and decode the tree it
     /// returns. Call inside the world the component should live in; realize
     /// the result with the app's own registry.
-    pub fn mount_remote(&self, export: &str, args: &[u8]) -> Result<Element, DecodeError> {
-        let ui = ui_hooks(self.inner.id, self.inner.hooks);
+    ///
+    /// A panic in the bundle while it builds the tree is an `Err` carrying
+    /// the bundle's panic message, not a host panic: a bundle is code the
+    /// app did not compile, and an app shows its failure instead of dying
+    /// with it. (A panic in a callback LATER — a press handler, a getter —
+    /// still panics the host; see `UiLink`.)
+    pub fn mount_remote(&self, export: &str, args: &[u8]) -> Result<Element, MountError> {
         let mount: TypedFunc<(u32, u32), i64> = {
             let store = self.inner.store.borrow();
             self.inner
                 .instance
                 .get_typed_func(&*store, export)
-                .unwrap_or_else(|e| panic!("remote component: no mount export `{export}` of shape (u32, u32) -> i64: {e}"))
+                .map_err(|_| MountError::NoSuchComponent(export.to_string()))?
         };
+        let ui = ui_hooks(self.inner.id, self.inner.hooks);
         let bytes = {
             let mut store = self.inner.store.try_borrow_mut().unwrap_or_else(|_| {
                 panic!("remote component: mount `{export}` re-entered a bundle that is already running")
@@ -598,11 +696,14 @@ impl KernelBundle {
                 .call(&mut *store, args.len() as u32)
                 .unwrap_or_else(|e| panic!("remote component: alloc trapped: {e}"));
             memory.write(&mut *store, ptr as usize, args).expect("argument buffer in bounds");
-            let packed = mount
-                .call(&mut *store, (ptr, args.len() as u32))
-                .unwrap_or_else(|e| panic!("remote component: `{export}` trapped: {e}"));
-            read_packed(&*store, memory, packed)
+            match mount.call(&mut *store, (ptr, args.len() as u32)) {
+                Ok(packed) => read_packed(&*store, memory, packed),
+                Err(e) => {
+                    let msg = panic_message(&mut *store, ui).unwrap_or_else(|| e.to_string());
+                    return Err(MountError::Panicked(msg));
+                }
+            }
         };
-        decode(Rc::new(UiLink { bundle: self.inner.id }), &bytes)
+        decode(Rc::new(UiLink { bundle: self.inner.id }), &bytes).map_err(MountError::Decode)
     }
 }
