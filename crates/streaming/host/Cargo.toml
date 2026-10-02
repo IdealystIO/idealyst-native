@@ -14,6 +14,9 @@ stream-abi = { path = "../abi" }
 # `bridge`: the host side of the kernel bridge (`kernel.rs`).
 runtime-world = { workspace = true, features = ["bridge"] }
 runtime-scene = { workspace = true }
+# `driver::spawn_async`: an async `#[host_fn]` a bundle calls runs on the
+# app's own executor.
+runtime-shared = { workspace = true, features = ["async-driver"] }
 # `async-driver` for `spawn_then`, which async host functions run under so
 # they get the framework's scope guarantee rather than a second one.
 # `remote`: the element codec's host half (`kernel.rs`'s `mount_remote`).

@@ -39,6 +39,17 @@
 #![cfg_attr(idealyst_stream_guest, allow(dead_code, unused_imports))]
 
 use runtime_core::{component, signal, ui, Element, ReadSignal, Signal};
+use stream_macros::host_fn;
+
+/// A host function: native code the remote component calls. In the app
+/// this is the function as written; in the bundle, a stub that asks the app
+/// to run it. The app allows it by listing `os_name::export()` when it
+/// installs the bundle (below). Wasm itself has no OS to report — run there,
+/// `std::env::consts::OS` would say "unknown".
+#[host_fn]
+pub fn os_name() -> String {
+    std::env::consts::OS.to_string()
+}
 
 /// An app component used by BOTH the native app and the remote component.
 #[component]
@@ -72,12 +83,14 @@ pub fn ScoreCard(player: String, score: ReadSignal<i64>, cheers: Signal<i64>) ->
 pub fn Scoreboard(player: String, score: ReadSignal<i64>, cheers: Signal<i64>) -> Element {
     let taps = signal(0i64);
     let raps = signal(0i64);
+    let os = os_name();
     ui! {
         view() {
             text { "Remote component 123 — playing as {player}" }
             text { "Score (the app's signal, read live): {score}" }
             text { "Taps (state inside the bundle): {taps}" }
             text { "Raps: {raps}" }
+            text { "Running on (asked the app): {os}" }
             Badge(label = "bundle taps".to_string(), value = taps.read_only())
             button(label = "Tap", on_click = move || taps.update(|t| t + 1))
             button(label = "Cheer (writes the app's signal)", on_click = move || cheers.update(|c| c + 1))
@@ -133,7 +146,7 @@ mod app {
     }
 
     pub fn install() {
-        let remote = stream_host::remote::install(BUILT_IN).unwrap_or_else(|e| panic!("built-in bundle: {e}"));
+        let remote = stream_host::remote::install_with(BUILT_IN, vec![os_name::export()]).unwrap_or_else(|e| panic!("built-in bundle: {e}"));
         REMOTE.with(|r| *r.borrow_mut() = Some(remote));
     }
 }

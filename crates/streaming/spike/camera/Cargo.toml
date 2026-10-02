@@ -14,11 +14,17 @@ publish = false
 stream-abi = { path = "../../abi" }
 stream-macros = { path = "../../macros" }
 
-[target.'cfg(idealyst_stream_guest)'.dependencies]
+# The bundle-side runtime `#[host_fn]`'s stub calls: model A's
+# `stream-guest`, or — in a bridged bundle, the default — the framework's
+# own (`runtime_vocabulary::remote::bundle`).
+[target.'cfg(all(idealyst_stream_guest, idealyst_stream_model_a))'.dependencies]
 stream-guest = { path = "../../guest" }
+
+[target.'cfg(all(idealyst_stream_guest, not(idealyst_stream_model_a)))'.dependencies]
+runtime-vocabulary = { workspace = true, features = ["remote"] }
 
 [target.'cfg(not(idealyst_stream_guest))'.dependencies]
 runtime-shared = { workspace = true }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }

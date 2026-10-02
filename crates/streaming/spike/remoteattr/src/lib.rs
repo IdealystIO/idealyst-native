@@ -75,3 +75,31 @@ pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
         }
     }
 }
+
+/// A remote component calling native code: the camera SDK's `#[host_fn]`s.
+/// `battery_level` is sync (answered inline), `take_photo` async (the app
+/// runs the real future; `spawn_then` applies the result) — written exactly
+/// as native code calls them.
+#[component(remote)]
+pub fn Snapshot() -> Element {
+    let battery = signal(format!("{:.2}", spike_camera::battery_level()));
+    let last = signal("none".to_string());
+    let shoot = move || {
+        runtime_vocabulary::scoped_spawn::spawn_then(
+            spike_camera::take_photo(spike_camera::PhotoOptions { camera: "back".into() }),
+            move |photo| {
+                last.set(match photo {
+                    Ok(p) => format!("#{} {}x{}", p.sequence, p.width, p.height),
+                    Err(e) => format!("{e:?}"),
+                })
+            },
+        )
+    };
+    ui! {
+        view() {
+            text { "battery {battery}" }
+            text { "photo {last}" }
+            button(label = "shoot", on_click = shoot)
+        }
+    }
+}

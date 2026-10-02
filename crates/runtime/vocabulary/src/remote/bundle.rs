@@ -485,3 +485,89 @@ pub fn register_call(f: Rc<dyn Fn(&[u8]) -> Vec<u8>>) -> Cb {
 pub fn sheet_ref(sheet: &Rc<StyleSheet>) -> SheetRef {
     SheetRef { id: register_sheet(sheet), shape: sheet.shape() }
 }
+
+// ---------------------------------------------------------------------------
+// `#[host_fn]` calls from a bundle (what its bundle stub calls)
+// ---------------------------------------------------------------------------
+
+/// Call a SYNC host function: `import` hands the encoded arguments to the
+/// app, which runs the function and writes its encoded reply into this
+/// bundle's argument buffer (`idealyst_ui_alloc`), returning its length.
+#[cfg(idealyst_stream_guest)]
+#[doc(hidden)]
+pub fn host_fn_sync(args: &[u8], import: impl FnOnce(*const u8, u32) -> i64) -> Vec<u8> {
+    let len = import(args.as_ptr(), args.len() as u32);
+    super::wasm::take_args(len as u32)
+}
+
+/// What an ASYNC `#[host_fn]` returns in a bundle: a future that resolves
+/// when the app's function does. The app runs the real future on its own
+/// executor and, when it completes, calls back into this bundle with the
+/// encoded result (a one-shot callback, released by the app after the
+/// call). Drive it like the native future —
+/// `spawn_then(take_photo(opts), move |photo| …)`; the bundle's executor
+/// (`remote::wasm`) polls it.
+///
+/// If the bundle is stopped (it panicked) before the result arrives, the
+/// app never calls back and the future simply never resolves.
+#[cfg(idealyst_stream_guest)]
+pub struct HostFuture<T> {
+    name: &'static str,
+    state: Rc<RefCell<HostReply>>,
+    decode: fn(&[u8]) -> Option<T>,
+}
+
+#[cfg(idealyst_stream_guest)]
+#[derive(Default)]
+struct HostReply {
+    bytes: Option<Vec<u8>>,
+    waker: Option<std::task::Waker>,
+}
+
+#[cfg(idealyst_stream_guest)]
+impl<T> HostFuture<T> {
+    #[doc(hidden)]
+    pub fn start(
+        name: &'static str,
+        args: Vec<u8>,
+        decode: fn(&[u8]) -> Option<T>,
+        import: impl FnOnce(*const u8, u32, u32),
+    ) -> Self {
+        let state = Rc::new(RefCell::new(HostReply::default()));
+        let filled = state.clone();
+        let then = register_call(Rc::new(move |reply: &[u8]| {
+            // Taken out before waking: the wake may poll this future at once.
+            let waker = {
+                let mut s = filled.borrow_mut();
+                s.bytes = Some(reply.to_vec());
+                s.waker.take()
+            };
+            if let Some(w) = waker {
+                w.wake();
+            }
+            Vec::new()
+        }));
+        import(args.as_ptr(), args.len() as u32, then);
+        HostFuture { name, state, decode }
+    }
+}
+
+#[cfg(idealyst_stream_guest)]
+impl<T> std::future::Future for HostFuture<T> {
+    type Output = T;
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
+        let mut s = self.state.borrow_mut();
+        match s.bytes.take() {
+            Some(bytes) => std::task::Poll::Ready((self.decode)(&bytes).unwrap_or_else(|| {
+                panic!(
+                    "host_fn `{}`: the result does not decode — the load-time schema check should have refused this bundle",
+                    self.name
+                )
+            })),
+            None => {
+                s.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}

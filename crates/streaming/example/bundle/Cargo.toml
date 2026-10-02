@@ -27,6 +27,9 @@ runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-shared = { workspace = true }
+# `#[host_fn]`: native functions the remote component calls.
+stream-abi = { path = "../../abi" }
+stream-macros = { path = "../../macros" }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }

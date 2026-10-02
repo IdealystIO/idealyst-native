@@ -9781,7 +9781,9 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "stream-abi",
  "stream-host",
+ "stream-macros",
 ]
 
 [[package]]
@@ -9793,6 +9795,8 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "stream-abi",
+ "stream-macros",
 ]
 
 [[package]]
@@ -11218,6 +11222,7 @@ name = "spike-camera"
 version = "0.1.0"
 dependencies = [
  "runtime-shared",
+ "runtime-vocabulary",
  "stream-abi",
  "stream-guest",
  "stream-macros",
@@ -11256,6 +11261,7 @@ dependencies = [
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
+ "spike-camera",
 ]
 
 [[package]]
@@ -11535,6 +11541,7 @@ name = "stream-host"
 version = "0.1.0"
 dependencies = [
  "runtime-scene",
+ "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
  "rustc-hash 2.1.2",

@@ -22,6 +22,8 @@ use crate::kernel::KernelBundle;
 
 struct BundleLoader {
     engine: wasmi::Engine,
+    /// The `#[host_fn]`s every bundle this loader loads may call.
+    host_fns: Vec<stream_abi::host_fn::HostFnDef>,
     current: RefCell<Rc<KernelBundle>>,
     /// Bumped on reload. Created on first read, inside the app's world.
     generation: Cell<Option<Signal<u64>>>,
@@ -70,12 +72,21 @@ pub fn engine() -> wasmi::Engine {
 }
 
 /// Load `wasm` and make it where this thread's `#[component(remote)]`
-/// components mount from.
+/// components mount from. The bundle may call no `#[host_fn]`s; see
+/// [`install_with`].
 pub fn install(wasm: &[u8]) -> Result<RemoteApp, String> {
+    install_with(wasm, Vec::new())
+}
+
+/// [`install`], letting this and every later (reloaded) bundle call
+/// `host_fns` — the app's allowlist, `[my_sdk::take_photo::export(), …]`.
+/// A bundle calling anything else is refused at load, naming it.
+pub fn install_with(wasm: &[u8], host_fns: Vec<stream_abi::host_fn::HostFnDef>) -> Result<RemoteApp, String> {
     let engine = engine();
-    let bundle = KernelBundle::load(&engine, wasm).map_err(|e| e.to_string())?;
+    let bundle = KernelBundle::load_with(&engine, wasm, &host_fns).map_err(|e| e.to_string())?;
     let loader = Rc::new(BundleLoader {
         engine,
+        host_fns,
         current: RefCell::new(Rc::new(bundle)),
         generation: Cell::new(None),
     });
@@ -104,7 +115,8 @@ impl RemoteApp {
     /// Replace the bundle; every mounted remote component remounts from it.
     /// On `Err` (it doesn't load) the current bundle stays.
     pub fn reload(&self, wasm: &[u8]) -> Result<(), String> {
-        let bundle = KernelBundle::load(&self.loader.engine, wasm).map_err(|e| e.to_string())?;
+        let bundle =
+            KernelBundle::load_with(&self.loader.engine, wasm, &self.loader.host_fns).map_err(|e| e.to_string())?;
         *self.loader.current.borrow_mut() = Rc::new(bundle);
         watch(&self.loader);
         if let Some(g) = self.loader.generation.get() {

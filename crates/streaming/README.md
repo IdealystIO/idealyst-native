@@ -162,6 +162,25 @@ A prop type with no `ImportArg` doesn't stop anything compiling: it fails by nam
 
 **Web never compiles any of this.** `remote` is a no-op on web, and the bridge, the codec and the registrations are compiled only for native targets or a bundle build, whatever features an app enables.
 
+## Calling native code: `#[host_fn]`
+
+A remote component calls native code through `#[host_fn]` (`stream-macros`). One definition, in a crate both builds see:
+
+```rust
+#[host_fn]
+pub fn battery_level() -> f64 { … }
+#[host_fn]
+pub async fn take_photo(opts: PhotoOptions) -> Result<Photo, CameraError> { … }
+```
+
+In the app it is the function as written. In a bundle it becomes a stub that asks the app to run it: a sync call answers inline, and an async one returns a future (`runtime_vocabulary::remote::bundle::HostFuture`) that the framework's own `spawn_then` drives, the same call shape as natively. The app runs the real future on its own executor and delivers the result to the bundle as a one-shot callback. Inside the bundle a small executor (`remote::wasm`, installed at load) polls the futures as results arrive.
+
+The app lists what bundles may call: `stream_host::remote::install_with(wasm, vec![take_photo::export(), …])`. A bundle that calls anything else is refused at load with `MissingHostFunctions`, naming it; one whose signature changed since the app was built (the import name carries a fingerprint of the signature) with `IncompatibleHostFunctions`. A result that arrives after its bundle was stopped is dropped.
+
+Plain functions are always compiled into the bundle; only `#[host_fn]` crosses to the app. `example` has one (`os_name`); `tests/remote_attr.rs` covers sync, async, the load-time refusals and a result for a stopped bundle.
+
+Model A bundles build with an extra `--cfg idealyst_stream_model_a` (in their own target dir) and keep model A's stub.
+
 ## Panics in a bundle
 
 A panic in a bundle never takes the app down. A Rust panic in wasm is `panic = "abort"`: it traps the interpreter, and no destructor in the bundle runs, so a `RefCell` it held stays borrowed and its tables stay half-updated. So the first trap **poisons** the bundle (`stream-host`, `kernel.rs`):
@@ -224,7 +243,6 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **Props passed from a bundle to a host component** (`Node::Host`, e.g. `Badge`) are still positional and unchecked. The same schema mechanism applies in that direction.
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
 - **`#[component(remote)]` carries props, not context yet,** and has no manifest.
-- **`#[host_fn]` is not on the bridged loader yet.** It exists for model A (`HostExports`); `KernelBundle` doesn't link host functions.
 - Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
 - **The bridged design carries four primitives.** The rest of the vocabulary (`crossing` lists each), event handlers on `view`, `ref`s and handles still have to cross.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.

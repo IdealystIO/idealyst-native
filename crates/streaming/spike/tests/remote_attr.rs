@@ -17,7 +17,7 @@ struct App {
 }
 
 fn app() -> App {
-    let remote = stream_host::remote::install(REMOTE_ATTR_WASM).expect("bundle loads");
+    let remote = stream_host::remote::install_with(REMOTE_ATTR_WASM, camera()).expect("bundle loads");
     let h = Harness::new();
     let (count, likes) = h.world.enter(|| (signal(1i64), signal(0i64)));
     App { h, count, likes, remote }
@@ -268,4 +268,84 @@ fn reloading_after_a_panic_recovers() {
     a.h.flush();
     let t = text(&a, &realized);
     assert!(t.contains("hello ada") && t.contains("fragile sees 0") && !t.contains("boom pressed"), "{t}");
+}
+
+// ---- #[host_fn]: remote code calling native functions ----
+
+use spike_remoteattr::Snapshot;
+
+/// The app's allowlist of host functions bundles may call.
+fn camera() -> Vec<stream_abi::host_fn::HostFnDef> {
+    vec![spike_camera::battery_level::export(), spike_camera::take_photo::export()]
+}
+
+fn snapshot_tree(a: &App) -> Element {
+    a.h.world.enter(|| ui! { Snapshot() })
+}
+
+/// A sync host function answers inline; an async one runs the app's real
+/// future (here the fake camera's shutter timer, hand-pumped) and its
+/// result reaches the bundle's `spawn_then`.
+#[test]
+fn a_remote_component_calls_sync_and_async_host_functions() {
+    host_mock::pump::install_executor();
+    host_mock::pump::install_scheduler();
+    let a = app();
+    let realized = a.h.mount(snapshot_tree(&a));
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("battery 0.87") && t.contains("photo none"), "{t}");
+
+    let shoot = a.h.shared.button_presses.borrow().last().unwrap().clone();
+    shoot();
+    host_mock::pump::pump_tasks();
+    host_mock::pump::pump_timers();
+    host_mock::pump::pump_tasks();
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("photo #1 4032x3024"), "{t}");
+}
+
+/// A bundle calling a host function the app didn't allow is refused at
+/// load, naming it — before any of its code runs.
+#[test]
+fn a_bundle_calling_an_unlisted_host_function_is_refused_at_load() {
+    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export()])
+        .err()
+        .expect("refused");
+    assert!(err.contains("spike_camera::take_photo") && !err.contains("battery_level"), "{err}");
+}
+
+/// A host function whose signature changed since the bundle was built is
+/// refused at load too.
+#[test]
+fn a_host_function_with_a_changed_signature_is_refused_at_load() {
+    let mut drifted = spike_camera::take_photo::export();
+    drifted.schema ^= 1;
+    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export(), drifted])
+        .err()
+        .expect("refused");
+    assert!(err.contains("spike_camera::take_photo"), "{err}");
+}
+
+/// A photo still in flight when its bundle is stopped (it panicked) is
+/// simply dropped: the app's future completes, and its result has nowhere
+/// to go — no call into the poisoned bundle, no panic.
+#[test]
+fn a_host_result_for_a_stopped_bundle_is_dropped() {
+    host_mock::pump::install_executor();
+    host_mock::pump::install_scheduler();
+    let a = app();
+    let trigger = a.h.world.enter(|| runtime_world::signal(0i64));
+    let realized = a.h.mount(a.h.world.enter(|| ui! { view() { Snapshot() Fragile(trigger = trigger.read_only()) } }));
+    a.h.flush();
+    let presses = a.h.shared.button_presses.borrow().clone();
+    (presses[0])(); // shoot
+    (presses[1])(); // boom: the bundle is stopped
+    host_mock::pump::pump_tasks();
+    host_mock::pump::pump_timers();
+    host_mock::pump::pump_tasks();
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("boom pressed") && !t.contains("photo #"), "{t}");
 }

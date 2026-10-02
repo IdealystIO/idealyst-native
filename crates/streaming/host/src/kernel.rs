@@ -32,7 +32,10 @@ use std::rc::{Rc, Weak};
 
 use runtime_world::remote::{EffectClass, GuestHooks, Handle, Host, HostOps, Id, StageMode, WorldId};
 use rustc_hash::FxHashMap;
-use wasmi::{AsContextMut, Caller, Engine, Linker, Memory, Module, Store, TypedFunc};
+use stream_abi::host_fn::{HostFnDef, HostFnKind, HOST_FN_MODULE};
+use wasmi::{AsContextMut, Caller, Engine, ExternType, Linker, Memory, Module, Store, TypedFunc, Val, ValType};
+
+use crate::LoadError;
 
 /// The host side as the kernel imports see it.
 type H = Host<WasmGuest>;
@@ -519,9 +522,20 @@ pub struct KernelBundle {
 }
 
 impl KernelBundle {
-    /// Instantiate `wasm`, which must import only `idealyst_kernel` (plus
-    /// whatever `extra` defines) and export the `idealyst_kernel_*` hooks.
-    pub fn load(engine: &Engine, wasm: &[u8]) -> Result<KernelBundle, wasmi::Error> {
+    /// Instantiate `wasm`, which must import only `idealyst_kernel` and
+    /// export the `idealyst_kernel_*` hooks. A bundle that calls any
+    /// `#[host_fn]` needs [`load_with`](Self::load_with).
+    pub fn load(engine: &Engine, wasm: &[u8]) -> Result<KernelBundle, LoadError> {
+        Self::load_with(engine, wasm, &[])
+    }
+
+    /// [`load`](Self::load), letting the bundle call `host_fns` — the app's
+    /// allowlist (`my_sdk::take_photo::export()`, …). Checked before the
+    /// bundle runs: a bundle that calls a host function not in the list is
+    /// refused with [`LoadError::MissingHostFunctions`], one whose
+    /// signature changed since the app was built with
+    /// [`LoadError::IncompatibleHostFunctions`].
+    pub fn load_with(engine: &Engine, wasm: &[u8], host_fns: &[HostFnDef]) -> Result<KernelBundle, LoadError> {
         let module = Module::new(engine, wasm)?;
         let bundle = NEXT_BUNDLE.with(|n| {
             let id = n.get().checked_add(1).expect("kernel bridge: bundle ids exhausted");
@@ -531,6 +545,7 @@ impl KernelBundle {
         let mut store = Store::new(engine, KState { bundle, memory: None });
         let mut linker = Linker::new(engine);
         define_imports(&mut linker);
+        link_host_fns(&module, host_fns, &mut linker)?;
         let instance = linker.instantiate_and_start(&mut store, &module)?;
         store.data_mut().memory = instance.get_memory(&store, "memory");
         let hooks = Hooks {
@@ -764,4 +779,107 @@ impl KernelBundle {
         };
         decode(Rc::new(UiLink { bundle: self.inner.id }), &bytes).map_err(MountError::Decode)
     }
+}
+
+// ---------------------------------------------------------------------------
+// `#[host_fn]`s a bridged bundle calls
+// ---------------------------------------------------------------------------
+
+/// Check every host-function import of `module` against the app's
+/// allowlist, and define the ones that pass. Runs before instantiation, so
+/// a refused bundle never executes. Same import shapes and schema check as
+/// model A (`crate::Bundle`), over this loader's transport:
+///
+/// - sync `(args_ptr, args_len) -> reply_len`: the reply goes into the
+///   bundle's argument buffer (`idealyst_ui_alloc`), where its stub reads it;
+/// - async `(args_ptr, args_len, then)`: the app's future runs on the app's
+///   executor (`runtime_shared::driver::spawn_async`), and its encoded
+///   result is delivered by calling the bundle's one-shot callback `then`,
+///   which is then released. A bundle that was stopped (it panicked) in the
+///   meantime is not called — `route` answers `None`.
+fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KState>) -> Result<(), LoadError> {
+    let mut missing = Vec::new();
+    let mut mismatched = Vec::new();
+    for import in module.imports() {
+        if import.module() != HOST_FN_MODULE {
+            continue;
+        }
+        let name = import.name();
+        let Some((path, bundle_schema)) = stream_abi::host_fn::parse_import_name(name) else {
+            missing.push(name.to_string());
+            continue;
+        };
+        let Some(def) = host_fns.iter().find(|d| d.path == path) else {
+            missing.push(path.to_string());
+            continue;
+        };
+        let ExternType::Func(ty) = import.ty() else {
+            missing.push(path.to_string());
+            continue;
+        };
+        let shape_ok = match def.kind {
+            HostFnKind::Sync(_) => ty.params() == [ValType::I32, ValType::I32] && ty.results() == [ValType::I64],
+            HostFnKind::Async(_) => ty.params() == [ValType::I32, ValType::I32, ValType::I32] && ty.results().is_empty(),
+        };
+        if def.schema != bundle_schema || !shape_ok {
+            mismatched.push(crate::HostFnMismatch { path: path.to_string(), app_schema: def.schema, bundle_schema });
+            continue;
+        }
+        let path: &'static str = def.path;
+        let defined = match def.kind {
+            HostFnKind::Sync(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, results| {
+                let args = read_args(&caller, params)?;
+                // App code: it may touch the graph, which may call back into
+                // this bundle — through this import's `Caller`.
+                let reply = with_active(&mut caller, || f(&args));
+                let alloc = caller
+                    .get_export("idealyst_ui_alloc")
+                    .and_then(|e| e.into_func())
+                    .ok_or_else(|| wasmi::Error::new(format!("host_fn {path}: the bundle exports no idealyst_ui_alloc")))?
+                    .typed::<u32, u32>(&caller)?;
+                let ptr = alloc.call(&mut caller, reply.len() as u32)?;
+                let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
+                memory
+                    .write(&mut caller, ptr as usize, &reply)
+                    .map_err(|_| wasmi::Error::new(format!("host_fn {path}: reply buffer out of bounds")))?;
+                results[0] = Val::I64(reply.len() as i64);
+                Ok(())
+            }),
+            HostFnKind::Async(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, _| {
+                let args = read_args(&caller, params)?;
+                let then = params[2].i32().unwrap_or(0) as u32;
+                let bundle = caller.data().bundle;
+                let future = f(args);
+                // An executor may finish the future inside `spawn_async`
+                // (pollster, or an already-ready future); the completion
+                // then re-enters this bundle through this import's `Caller`.
+                with_active(&mut caller, || {
+                    runtime_shared::driver::spawn_async(async move {
+                        let reply = future.await;
+                        route(bundle, |c, h| c.ui_invoke(ui_hooks(bundle, h), then, &reply));
+                        route(bundle, |c, h| c.ui_release(ui_hooks(bundle, h), then));
+                    })
+                });
+                Ok(())
+            }),
+        };
+        defined.expect("each host-function import name is unique within a module");
+    }
+    if !missing.is_empty() {
+        return Err(LoadError::MissingHostFunctions(missing));
+    }
+    if !mismatched.is_empty() {
+        return Err(LoadError::IncompatibleHostFunctions(mismatched));
+    }
+    Ok(())
+}
+
+fn read_args(caller: &Caller<'_, KState>, params: &[Val]) -> Result<Vec<u8>, wasmi::Error> {
+    let (ptr, len) = (params[0].i32().unwrap_or(0) as u32, params[1].i32().unwrap_or(0) as u32);
+    let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
+    let mut buf = vec![0u8; len as usize];
+    memory
+        .read(caller, ptr as usize, &mut buf)
+        .map_err(|_| wasmi::Error::new(format!("bundle pointer {ptr}+{len} is out of bounds")))?;
+    Ok(buf)
 }

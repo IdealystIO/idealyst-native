@@ -90,8 +90,10 @@ pub fn battery_level() -> f64 {
     imp::drain_battery()
 }
 
-/// Take a photo. Async: in a bundle this returns a `HostCall` for
-/// `stream_guest::spawn_then`; in the app it is an ordinary future.
+/// Take a photo. Async: in a bridged bundle this returns a future
+/// (`HostFuture`) for the framework's `spawn_then`, in a model A bundle a
+/// `HostCall` for `stream_guest::spawn_then`; in the app it is an ordinary
+/// future.
 #[host_fn]
 pub async fn take_photo(opts: PhotoOptions) -> Result<Photo, CameraError> {
     if opts.camera != "back" && opts.camera != "front" {

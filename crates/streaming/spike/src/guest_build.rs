@@ -41,6 +41,26 @@ pub const BRIDGED_SOURCES: &[&str] = &[
 /// Uses its own target dir: sharing an outer build's would deadlock on
 /// cargo's build-directory lock. Flags the outer build exports for the HOST
 /// target are stripped so they do not leak into the wasm build.
+/// Model A's bundles (the first design, `stream-guest`'s runtime). They are
+/// built with `--cfg idealyst_stream_model_a` on top of the bundle flag, so
+/// `#[host_fn]` emits model A's stub for them and the bridged stub for
+/// every other bundle — and into their own target dir, because a different
+/// `--cfg` changes every crate's fingerprint: sharing a dir would rebuild
+/// the framework each time the build switched between the two.
+const MODEL_A_PACKAGES: &[&str] = &["spike-guest"];
+
+fn is_model_a(package_or_artifact: &str) -> bool {
+    MODEL_A_PACKAGES.iter().any(|p| p.replace('-', "_") == package_or_artifact.replace('-', "_"))
+}
+
+fn guest_target_dir(target_dir: &std::path::Path, package_or_artifact: &str) -> std::path::PathBuf {
+    if is_model_a(package_or_artifact) {
+        target_dir.join("model-a")
+    } else {
+        target_dir.to_path_buf()
+    }
+}
+
 pub fn guest_build_command(
     cargo: &str,
     crate_dir: &std::path::Path,
@@ -51,7 +71,7 @@ pub fn guest_build_command(
     cmd.current_dir(crate_dir)
         .args(["build", "--release", "--target", "wasm32-unknown-unknown", "-p", package])
         .arg("--target-dir")
-        .arg(target_dir)
+        .arg(guest_target_dir(target_dir, package))
         .env_remove("RUSTFLAGS")
         // rustc's wasm32 default stack is 1 MB, which makes the module's
         // initial memory 17 pages — and the interpreter zeroes all of it at
@@ -70,7 +90,14 @@ pub fn guest_build_command(
         // compiled out (it is imported from the app), so the imports and
         // helpers only those bodies used read as unused. The app build lints
         // the same sources with the bodies in.
-        .env("CARGO_ENCODED_RUSTFLAGS", "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused")
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            if is_model_a(package) {
+                "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f--cfg=idealyst_stream_model_a\x1f-Aunused"
+            } else {
+                "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused"
+            },
+        )
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_TARGET_DIR");
     cmd
@@ -82,5 +109,5 @@ pub fn guest_build_command(
 /// unless the package renames its lib — as `remote-example-bundle` does, so
 /// it compiles under the app's crate name (see its Cargo.toml).
 pub fn guest_wasm_path(target_dir: &std::path::Path, artifact: &str) -> std::path::PathBuf {
-    target_dir.join(format!("wasm32-unknown-unknown/release/{}.wasm", artifact.replace('-', "_")))
+    guest_target_dir(target_dir, artifact).join(format!("wasm32-unknown-unknown/release/{}.wasm", artifact.replace('-', "_")))
 }

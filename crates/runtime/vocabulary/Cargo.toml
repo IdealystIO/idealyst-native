@@ -106,7 +106,9 @@ hot-reload = ["dep:dev-hot", "dev-hot/hot", "runtime-world/hot-reload"]
 # bundle (closures become callback ids), `remote::host` decodes it into real
 # prims whose closures call back. Off for every app that hosts no remote
 # components. See `src/remote/mod.rs`.
-remote = ["dep:serde", "dep:postcard", "dep:linkme", "runtime-shared/remote-serde", "runtime-world/bridge"]
+# `async-driver`: a bundle drives `#[host_fn]` futures with its own executor
+# (`remote::wasm`), installed through runtime-shared's driver seam.
+remote = ["dep:serde", "dep:postcard", "dep:linkme", "async-driver", "runtime-shared/remote-serde", "runtime-world/bridge"]
 # Both halves in one process, on the kernel's loopback engine: what the
 # codec's own tests run on (`cargo test -p runtime-vocabulary --features
 # remote-loopback --test remote_elements`).

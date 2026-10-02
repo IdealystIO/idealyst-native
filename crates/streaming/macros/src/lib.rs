@@ -19,17 +19,20 @@
 //!
 //! Bundle side (`idealyst_stream_guest`):
 //! - a sync fn keeps its signature; its body becomes one wasm import call;
-//! - an `async fn` becomes a plain fn returning
-//!   `stream_guest::HostCall<Output>`, driven by `stream_guest::spawn_then`
-//!   — the same call shape as native `spawn_then(future, then)`.
+//! - an `async fn` becomes a plain fn returning a future: in a bridged
+//!   bundle `runtime_vocabulary::remote::bundle::HostFuture<Output>`, which
+//!   the framework's own `spawn_then(future, then)` drives exactly as it
+//!   drives the native `async fn`; in a model A bundle (built with
+//!   `--cfg idealyst_stream_model_a`) `stream_guest::HostCall<Output>`.
 //!
 //! Every stub links a wasm import named `<module_path>::<fn>#<schema>`, so
 //! the bundle's import section lists exactly the host functions it uses.
 //! `<schema>` is a fingerprint of the arg types, return type and
 //! asyncness (`#[server]`'s scheme); the host compares it at load.
 //!
-//! The defining crate depends on `stream-abi` always and `stream-guest` in
-//! bundle builds (`[target.'cfg(idealyst_stream_guest)'.dependencies]`).
+//! The defining crate depends on `stream-abi` always; in bridged bundle
+//! builds on `runtime-vocabulary` with `remote` (and in model A bundle
+//! builds on `stream-guest`) — see `spike/camera/Cargo.toml`.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -135,6 +138,60 @@ fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     let block = &func.block;
     let inputs = &sig.inputs;
 
+    // The bundle side for the BRIDGED design (the default): the bundle runs
+    // real framework code, so an async host function returns a plain
+    // `Future` (driven by the bundle's executor — `spawn_then` works on it
+    // as on the native one), and the call goes through
+    // `runtime_vocabulary::remote::bundle`. Import shapes are the same as
+    // model A's: sync `(args_ptr, args_len) -> reply_len`, async
+    // `(args_ptr, args_len, then_callback)`.
+    let bridged_stub = if is_async {
+        quote! {
+            #(#attrs)*
+            #vis fn #name(#inputs) -> ::runtime_vocabulary::remote::bundle::HostFuture<#ret> {
+                #[link(wasm_import_module = "idealyst_host_fn")]
+                extern "C" {
+                    #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
+                    fn __import(args_ptr: *const u8, args_len: u32, then: u32);
+                }
+                let mut __args = ::std::vec::Vec::new();
+                #( ::stream_abi::Wire::encode(&#arg_names, &mut __args); )*
+                fn __decode(mut b: &[u8]) -> ::core::option::Option<#ret> {
+                    <#ret as ::stream_abi::Wire>::decode(&mut b)
+                }
+                // SAFETY: the host copies `args_len` bytes at `args_ptr`
+                // during the call.
+                ::runtime_vocabulary::remote::bundle::HostFuture::start(
+                    stringify!(#name),
+                    __args,
+                    __decode,
+                    |ptr, len, then| unsafe { __import(ptr, len, then) },
+                )
+            }
+        }
+    } else {
+        quote! {
+            #(#attrs)*
+            #vis fn #name(#inputs) -> #ret {
+                #[link(wasm_import_module = "idealyst_host_fn")]
+                extern "C" {
+                    #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
+                    fn __import(args_ptr: *const u8, args_len: u32) -> i64;
+                }
+                let mut __args = ::std::vec::Vec::new();
+                #( ::stream_abi::Wire::encode(&#arg_names, &mut __args); )*
+                // SAFETY: as above; the reply is left in the bundle's
+                // argument buffer (`idealyst_ui_alloc`).
+                let __reply = ::runtime_vocabulary::remote::bundle::host_fn_sync(&__args, |ptr, len| unsafe { __import(ptr, len) });
+                let mut __input: &[u8] = &__reply;
+                <#ret as ::stream_abi::Wire>::decode(&mut __input).unwrap_or_else(|| panic!(
+                    "host_fn `{}`: the reply does not decode — the load-time schema check should have refused this bundle",
+                    stringify!(#name)
+                ))
+            }
+        }
+    };
+
     let guest_stub = if is_async {
         quote! {
             #(#attrs)*
@@ -201,7 +258,12 @@ fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         }
 
         // ---- bundle side ----------------------------------------------------
-        #[cfg(idealyst_stream_guest)]
+        // Bridged bundles (the default); model A bundles are built with
+        // `--cfg idealyst_stream_model_a` and get its `stream_guest` stub.
+        #[cfg(all(idealyst_stream_guest, not(idealyst_stream_model_a)))]
+        #bridged_stub
+
+        #[cfg(all(idealyst_stream_guest, idealyst_stream_model_a))]
         #guest_stub
     })
 }
