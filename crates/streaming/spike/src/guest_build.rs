@@ -13,6 +13,9 @@ pub const GUEST_SOURCES: &[&str] =
 pub const REMOTE_GUEST_SOURCES: &[&str] =
     &["components/src", "components/Cargo.toml", "remoteguest/src", "remoteguest/Cargo.toml"];
 
+/// Sources of the showcase's bundle (`remote-showcase-bundle`).
+pub const SHOWCASE_SOURCES: &[&str] = &["../showcase/app/src", "../showcase/bundle/Cargo.toml"];
+
 /// Sources of the single-file example's bundle (`remote-example-bundle`).
 pub const EXAMPLE_SOURCES: &[&str] = &["../example/app/src", "../example/bundle/Cargo.toml"];
 

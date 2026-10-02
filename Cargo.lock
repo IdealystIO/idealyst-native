@@ -9800,6 +9800,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-showcase"
+version = "0.1.0"
+dependencies = [
+ "host-appkit",
+ "host-mock",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+ "stream-abi",
+ "stream-host",
+ "stream-macros",
+]
+
+[[package]]
+name = "remote-showcase-bundle"
+version = "0.1.0"
+dependencies = [
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+ "stream-abi",
+ "stream-macros",
+]
+
+[[package]]
 name = "render-api"
 version = "1.5.2"
 dependencies = [

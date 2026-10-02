@@ -8,6 +8,8 @@
 //! - `GET /bundle.wasm` — `spike-guest` (model A), from `GUEST_SOURCES`.
 //! - `GET /remote.wasm` — `spike-remoteguest`, the bridged RemoteCounter,
 //!   from `REMOTE_GUEST_SOURCES` (edit `spike/components/src/lib.rs`).
+//! - `GET /showcase.wasm` — the showcase's bundle
+//!   (`crates/streaming/showcase/app/src/lib.rs`).
 //! - `GET /example.wasm` — the single-file example's bundle
 //!   (`crates/streaming/example/app/src/main.rs`).
 //!
@@ -28,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use stream_spike::guest_build::{
-    guest_build_command, guest_wasm_path, EXAMPLE_SOURCES, GUEST_SOURCES, REMOTE_GUEST_SOURCES,
+    guest_build_command, guest_wasm_path, EXAMPLE_SOURCES, GUEST_SOURCES, REMOTE_GUEST_SOURCES, SHOWCASE_SOURCES,
 };
 
 /// One served bundle.
@@ -157,6 +159,7 @@ fn main() {
             ("/bundle.wasm", "spike-guest", "spike_guest", GUEST_SOURCES),
             ("/remote.wasm", "spike-remoteguest", "spike_remoteguest", REMOTE_GUEST_SOURCES),
             ("/example.wasm", "remote-example-bundle", "remote_example", EXAMPLE_SOURCES),
+            ("/showcase.wasm", "remote-showcase-bundle", "remote_showcase", SHOWCASE_SOURCES),
         ]
             .into_iter()
             .map(|(path, package, artifact, sources)| {

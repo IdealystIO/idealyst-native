@@ -140,6 +140,25 @@ cargo run --release -p remote-example                     # terminal 2
 
 Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the new build, with the app's state intact. `tests/remote_attr.rs` covers the same path end to end.
 
+### The showcase: a fuller app
+
+`showcase/app` is a shopping-style app whose screens come from a bundle (`src/lib.rs` is both the app and, via `showcase/bundle`, the bundle):
+
+| Piece | Where | Shows |
+|---|---|---|
+| Tab shell (`App`, a swap navigator) | app | native code hosting remote screens |
+| `FeedScreen` | bundle | bundle state, `#[remote_context]` theme read live, a sync `#[host_fn]`, app components |
+| `ShopNavigator` | bundle | a stack navigator defined in the bundle: route links with typed params, a header reading `StackNav` and the screen's title option, an async `#[host_fn]` (reviews), slider/toggle, writing the app's cart signal |
+| `Settings` | app | native controls for the theme the remote screens read |
+| `Card`, `Pill` | app | app components both sides use — imported by the bundle, not bundled |
+
+```sh
+cargo run --release -p stream-spike --bin stream-serve   # optional: serves /showcase.wasm, rebuilds on save
+cargo run --release -p remote-showcase
+```
+
+`showcase/app/tests/flow.rs` drives the real bundle through the whole app against the mock backend: likes, the theme toggle reaching the feed, the shop list, a product (title in the header, reviews arriving from the async host function, quantity and gift wrap), adding to the cart (seen by the bundle's header and the app shell), back, settings — and nothing left alive after unmount.
+
 ### Remote code using app components
 
 **Every component not marked `remote` lives in the app binary.** When remote code renders one (`Badge` in the example, idea-ui's components, anything), the bundle does not contain it: in a bundle build `#[component]` compiles its body out and replaces it with a stub that sends the props and asks the app for its own copy by name (`module_path::Name`). In a native app build with `remote` on, every component registers itself for that at link time (`runtime_vocabulary::remote::host::APP_COMPONENTS`). An app that doesn't have the component (an older binary) shows `MissingImport` in its place; props that don't decode show `BadProps`. **The bundle must compile the app's source under the app's crate name**, because the import name starts with it: `example/bundle` sets `[lib] name = "remote_example"`, and the app's build script fails the build if the two differ.
