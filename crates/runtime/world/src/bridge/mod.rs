@@ -39,12 +39,23 @@
 
 pub(crate) mod guest;
 pub(crate) mod host;
+/// The bundle side over wasm: what a remote bundle's kernel runs on.
+#[cfg(idealyst_stream_guest)]
+pub(crate) mod wasm;
 
 use crate::engine::{EffectClass, WorldId};
 
 /// `(world, slot, gen)` — a slot's identity, as the host's engine assigned it.
 /// The bridged engine's handles are the host's handles.
-pub(crate) type Handle = (WorldId, u32, u32);
+pub type Handle = (WorldId, u32, u32);
+
+/// An id for something that lives on the bundle side (a value, an effect
+/// body, a cleanup, a context value) or a bundle's context key. 64 bits so a
+/// host serving several bundles over one graph can NAMESPACE them — bundle
+/// in the high half, the bundle's own id in the low half — and route each
+/// proxy's callback to the right bundle (see the wasm transport in
+/// crates/streaming). In-process (loopback) the bundle's id is used as is.
+pub type Id = u64;
 
 /// The bridged engine wired to a native host in the same process: what
 /// `--features loopback-engine` runs the kernel suite against.
@@ -52,16 +63,16 @@ pub(crate) type Loopback = guest::Bridged<host::Host<guest::Local>>;
 
 /// Bundle → host. Each operation is the graph half of an `Engine` method;
 /// see that method for semantics. Plain data only (see the module docs).
-pub(crate) trait HostOps: 'static {
+pub trait HostOps: 'static {
     fn world_new() -> WorldId;
     fn world_drop(world: WorldId);
     fn world_flush(world: WorldId);
     fn world_is_flushing(world: WorldId) -> bool;
     /// World-lifetime context entry `ctx` (a bundle-side value id) under the
     /// bundle's context key `key`.
-    fn world_provide(world: WorldId, key: u32, ctx: u32);
+    fn world_provide(world: WorldId, key: Id, ctx: Id);
     /// The bundle-side value id of the newest provision of `key`.
-    fn world_inject(world: WorldId, key: u32) -> Option<u32>;
+    fn world_inject(world: WorldId, key: Id) -> Option<Id>;
     fn enter_push(world: WorldId);
     fn enter_pop();
 
@@ -74,7 +85,7 @@ pub(crate) trait HostOps: 'static {
 
     /// A slot whose value is bundle-side value `value`. Returns the slot and
     /// whether a collector took it.
-    fn signal_create(world: Option<WorldId>, value: u32) -> (Handle, bool);
+    fn signal_create(world: Option<WorldId>, value: Id) -> (Handle, bool);
     /// Liveness before a bundle-side access: `false` for a dead world;
     /// panics (the stale-handle diagnostic) for a freed slot.
     fn signal_check(h: Handle) -> bool;
@@ -89,10 +100,10 @@ pub(crate) trait HostOps: 'static {
     fn signal_subscriber_count(h: Handle) -> u32;
 
     /// An effect whose body is bundle-side effect `effect`. Runs it once.
-    fn effect_create(world: Option<WorldId>, class: EffectClass, effect: u32) -> Handle;
+    fn effect_create(world: Option<WorldId>, class: EffectClass, effect: Id) -> Handle;
     fn effect_is_alive(h: Handle) -> bool;
     /// Register bundle-side cleanup `cleanup` on the running effect.
-    fn on_cleanup(cleanup: u32);
+    fn on_cleanup(cleanup: Id);
 
     fn untrack_push();
     fn untrack_pop();
@@ -112,20 +123,20 @@ pub(crate) trait HostOps: 'static {
     fn scope_len(scope: u32) -> u32;
     fn scope_drop(scope: u32);
 
-    fn ctx_provide(key: u32, ctx: u32);
-    fn ctx_inject(key: u32) -> Option<u32>;
+    fn ctx_provide(key: Id, ctx: Id);
+    fn ctx_inject(key: Id) -> Option<Id>;
 }
 
 /// Host → bundle: the proxies' calls back into the side that owns the value
 /// or closure. Plain data only.
-pub(crate) trait GuestHooks: 'static {
+pub trait GuestHooks: 'static {
     /// Commit value `value`'s staged write; whether subscribers must hear.
-    fn commit(value: u32, forced: bool) -> bool;
+    fn commit(value: Id, forced: bool) -> bool;
     /// The host freed the slot holding `value`.
-    fn drop_value(value: u32);
-    fn run_effect(effect: u32);
-    fn drop_effect(effect: u32);
-    fn run_cleanup(cleanup: u32);
-    fn drop_cleanup(cleanup: u32);
-    fn drop_context(ctx: u32);
+    fn drop_value(value: Id);
+    fn run_effect(effect: Id);
+    fn drop_effect(effect: Id);
+    fn run_cleanup(cleanup: Id);
+    fn drop_cleanup(cleanup: Id);
+    fn drop_context(ctx: Id);
 }

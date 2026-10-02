@@ -13,6 +13,11 @@ pub mod guest_build;
 /// release-built for wasm32 by this crate's build script.
 pub const FULL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_fullguest.wasm"));
 
+/// `spike-kernelguest` (the kernel bridge test bundle): plain runtime-world
+/// code whose graph is the host's. Release-built for wasm32 by this crate's
+/// build script.
+pub const KERNEL_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_kernelguest.wasm"));
+
 /// `spike-guest`, release-built for wasm32 by this crate's build script —
 /// the app's built-in copy, used when no bundle server answers.
 pub const GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_guest.wasm"));

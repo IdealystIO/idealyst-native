@@ -20,12 +20,12 @@ use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
-use super::{GuestHooks, Handle, HostOps};
+use super::{GuestHooks, Handle, HostOps, Id};
 use crate::engine::{AnySignal, EffectClass, Engine, WorldId};
 use crate::native::{self, CtxKey, EffectFrames, Native, OwnedItem, SavedCollectors, WorldArena};
 
 /// The host side, generic over how it reaches the bundle.
-pub(crate) struct Host<G>(PhantomData<fn() -> G>);
+pub struct Host<G>(PhantomData<fn() -> G>);
 
 /// Host-side state the native engine has no slot for: scopes handed to the
 /// bundle by id, and the stacks `unscoped` / `unanchored` suspended (their
@@ -64,7 +64,7 @@ fn try_host<R>(f: impl FnOnce(&mut HostState) -> R) -> Option<R> {
 
 /// A bundle-owned signal value, as its host slot sees it.
 struct ValueProxy<G: GuestHooks> {
-    value: u32,
+    value: Id,
     _g: PhantomData<fn() -> G>,
 }
 
@@ -93,7 +93,7 @@ impl<G: GuestHooks> Drop for ValueProxy<G> {
 
 /// Releases a bundle-owned effect body when the host frees the effect.
 struct EffectProxy<G: GuestHooks> {
-    effect: u32,
+    effect: Id,
     _g: PhantomData<fn() -> G>,
 }
 
@@ -106,7 +106,7 @@ impl<G: GuestHooks> Drop for EffectProxy<G> {
 /// A bundle-owned cleanup: runs it, or releases it if the host drops the
 /// cleanup unrun (an effect freed before its next re-run).
 struct CleanupProxy<G: GuestHooks> {
-    cleanup: u32,
+    cleanup: Id,
     ran: Cell<bool>,
     _g: PhantomData<fn() -> G>,
 }
@@ -128,7 +128,7 @@ impl<G: GuestHooks> Drop for CleanupProxy<G> {
 
 /// A bundle-owned context value, as the host's context stack holds it.
 struct CtxProxy<G: GuestHooks> {
-    ctx: u32,
+    ctx: Id,
     _g: PhantomData<fn() -> G>,
 }
 
@@ -138,11 +138,11 @@ impl<G: GuestHooks> Drop for CtxProxy<G> {
     }
 }
 
-fn ctx_proxy<G: GuestHooks>(ctx: u32) -> Box<dyn Any> {
+fn ctx_proxy<G: GuestHooks>(ctx: Id) -> Box<dyn Any> {
     Box::new(CtxProxy::<G> { ctx, _g: PhantomData })
 }
 
-fn ctx_id<G: GuestHooks>(v: &dyn Any) -> Option<u32> {
+fn ctx_id<G: GuestHooks>(v: &dyn Any) -> Option<Id> {
     v.downcast_ref::<CtxProxy<G>>().map(|p| p.ctx)
 }
 
@@ -187,10 +187,10 @@ impl<G: GuestHooks> HostOps for Host<G> {
     fn world_is_flushing(world: WorldId) -> bool {
         Native::world_is_flushing(world)
     }
-    fn world_provide(world: WorldId, key: u32, ctx: u32) {
+    fn world_provide(world: WorldId, key: Id, ctx: Id) {
         native::world_provide(world, CtxKey::Foreign(key), ctx_proxy::<G>(ctx))
     }
-    fn world_inject(world: WorldId, key: u32) -> Option<u32> {
+    fn world_inject(world: WorldId, key: Id) -> Option<Id> {
         let arena = native::arena_of(world)?;
         native::context_top(&arena, CtxKey::Foreign(key), ctx_id::<G>).flatten()
     }
@@ -220,7 +220,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
         Native::in_collector()
     }
 
-    fn signal_create(world: Option<WorldId>, value: u32) -> (Handle, bool) {
+    fn signal_create(world: Option<WorldId>, value: Id) -> (Handle, bool) {
         let proxy: Box<dyn AnySignal> = Box::new(ValueProxy::<G> { value, _g: PhantomData });
         resolve(world, "signal", |arena| {
             // The host slot's `created_at` is this line: the bundle keeps the
@@ -254,7 +254,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
         Native::signal_subscriber_count(world, slot, gen) as u32
     }
 
-    fn effect_create(world: Option<WorldId>, class: EffectClass, effect: u32) -> Handle {
+    fn effect_create(world: Option<WorldId>, class: EffectClass, effect: Id) -> Handle {
         let proxy = EffectProxy::<G> { effect, _g: PhantomData };
         // `&proxy` makes the closure capture the WHOLE proxy (a bare
         // `proxy.effect` would capture only the `u32` under disjoint
@@ -272,7 +272,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
     fn effect_is_alive((world, slot, gen): Handle) -> bool {
         Native::effect_is_alive(world, slot, gen)
     }
-    fn on_cleanup(cleanup: u32) {
+    fn on_cleanup(cleanup: Id) {
         let proxy = CleanupProxy::<G> { cleanup, ran: Cell::new(false), _g: PhantomData };
         native::on_cleanup(Box::new(move || proxy.run()))
     }
@@ -338,10 +338,10 @@ impl<G: GuestHooks> HostOps for Host<G> {
         native::drop_items(items);
     }
 
-    fn ctx_provide(key: u32, ctx: u32) {
+    fn ctx_provide(key: Id, ctx: Id) {
         native::ctx_provide(CtxKey::Foreign(key), ctx_proxy::<G>(ctx))
     }
-    fn ctx_inject(key: u32) -> Option<u32> {
+    fn ctx_inject(key: Id) -> Option<Id> {
         native::with_ambient(|arena| native::context_top(arena, CtxKey::Foreign(key), ctx_id::<G>)).flatten()
     }
 }

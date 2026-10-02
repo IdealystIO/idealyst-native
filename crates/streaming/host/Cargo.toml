@@ -11,7 +11,8 @@ publish = false
 
 [dependencies]
 stream-abi = { path = "../abi" }
-runtime-world = { workspace = true }
+# `bridge`: the host side of the kernel bridge (`kernel.rs`).
+runtime-world = { workspace = true, features = ["bridge"] }
 runtime-scene = { workspace = true }
 # `async-driver` for `spawn_then`, which async host functions run under so
 # they get the framework's scope guarantee rather than a second one.

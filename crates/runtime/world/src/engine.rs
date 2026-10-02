@@ -36,11 +36,11 @@ use std::any::{Any, TypeId};
 use crate::SiteLoc;
 
 /// Non-zero id of a live (or dead) world. Baked into every handle.
-pub(crate) type WorldId = u32;
+pub type WorldId = u32;
 
 /// Scheduling class — the key to glitch-free flushing (see `World::flush`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum EffectClass {
+pub enum EffectClass {
     /// A memo recompute: settles BEFORE reactions each round.
     Derivation,
     /// Bindings, user effects, structural drivers: run once per round, after

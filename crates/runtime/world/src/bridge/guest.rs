@@ -24,7 +24,7 @@ use std::marker::PhantomData;
 
 use rustc_hash::FxHashMap;
 
-use super::{GuestHooks, Handle, HostOps};
+use super::{GuestHooks, Handle, HostOps, Id};
 use crate::engine::{Access, AnySignal, EffectClass, Engine, WorldId};
 use crate::native;
 use crate::SiteLoc;
@@ -58,23 +58,23 @@ enum Body {
 
 #[derive(Default)]
 struct LocalState {
-    next_id: u32,
-    values: FxHashMap<u32, ValueEntry>,
-    by_handle: FxHashMap<Handle, u32>,
-    effects: FxHashMap<u32, Body>,
-    cleanups: FxHashMap<u32, Box<dyn FnOnce()>>,
-    ctx: FxHashMap<u32, Box<dyn Any>>,
-    ctx_keys: FxHashMap<TypeId, u32>,
+    next_id: Id,
+    values: FxHashMap<Id, ValueEntry>,
+    by_handle: FxHashMap<Handle, Id>,
+    effects: FxHashMap<Id, Body>,
+    cleanups: FxHashMap<Id, Box<dyn FnOnce()>>,
+    ctx: FxHashMap<Id, Box<dyn Any>>,
+    ctx_keys: FxHashMap<TypeId, Id>,
 }
 
 impl LocalState {
-    fn next_id(&mut self) -> u32 {
+    fn next_id(&mut self) -> Id {
         self.next_id = self.next_id.checked_add(1).expect("bridge: local ids exhausted");
         self.next_id
     }
 
-    fn ctx_key(&mut self, key: TypeId) -> u32 {
-        let next = self.ctx_keys.len() as u32 + 1;
+    fn ctx_key(&mut self, key: TypeId) -> Id {
+        let next = self.ctx_keys.len() as Id + 1;
         *self.ctx_keys.entry(key).or_insert(next)
     }
 }
@@ -98,7 +98,7 @@ fn try_local<R>(f: impl FnOnce(&mut LocalState) -> R) -> Option<R> {
     LOCAL.try_with(|l| f(&mut l.borrow_mut())).ok()
 }
 
-fn ctx_key(key: TypeId) -> u32 {
+fn ctx_key(key: TypeId) -> Id {
     with_local(|l| l.ctx_key(key))
 }
 
@@ -106,7 +106,7 @@ fn ctx_key(key: TypeId) -> u32 {
 /// The host has already vouched for the handle (live world, live slot).
 fn with_value<R>(handle: Handle, f: impl FnOnce(&mut dyn AnySignal) -> R) -> R {
     enum Taken {
-        Got(u32, Box<dyn AnySignal>),
+        Got(Id, Box<dyn AnySignal>),
         Reentrant,
         Missing,
     }
@@ -148,7 +148,7 @@ fn with_value<R>(handle: Handle, f: impl FnOnce(&mut dyn AnySignal) -> R) -> R {
 }
 
 impl GuestHooks for Local {
-    fn commit(value: u32, forced: bool) -> bool {
+    fn commit(value: Id, forced: bool) -> bool {
         // The native flush moves a slot's box out to commit it; a box that is
         // already out (accessed from inside its own operation) is skipped —
         // `continue` there, "nothing changed" here, identical downstream.
@@ -172,7 +172,7 @@ impl GuestHooks for Local {
         changed
     }
 
-    fn drop_value(value: u32) {
+    fn drop_value(value: Id) {
         let removed = try_local(|l| match l.values.get_mut(&value) {
             // Out for an operation: mark, and the operation drops it.
             Some(e) if e.data.is_none() => {
@@ -189,7 +189,7 @@ impl GuestHooks for Local {
         drop(removed);
     }
 
-    fn run_effect(effect: u32) {
+    fn run_effect(effect: Id) {
         let body = try_local(|l| match l.effects.get_mut(&effect) {
             Some(slot) if matches!(slot, Body::Ready(_)) => {
                 match std::mem::replace(slot, Body::Running { freed: false }) {
@@ -216,7 +216,7 @@ impl GuestHooks for Local {
         drop(leftover);
     }
 
-    fn drop_effect(effect: u32) {
+    fn drop_effect(effect: Id) {
         let removed = try_local(|l| match l.effects.get_mut(&effect) {
             Some(Body::Running { freed }) => {
                 *freed = true;
@@ -228,24 +228,24 @@ impl GuestHooks for Local {
         drop(removed);
     }
 
-    fn run_cleanup(cleanup: u32) {
+    fn run_cleanup(cleanup: Id) {
         if let Some(f) = try_local(|l| l.cleanups.remove(&cleanup)).flatten() {
             f();
         }
     }
 
-    fn drop_cleanup(cleanup: u32) {
+    fn drop_cleanup(cleanup: Id) {
         let removed = try_local(|l| l.cleanups.remove(&cleanup));
         drop(removed);
     }
 
-    fn drop_context(ctx: u32) {
+    fn drop_context(ctx: Id) {
         let removed = try_local(|l| l.ctx.remove(&ctx));
         drop(removed);
     }
 }
 
-fn store_ctx(value: Box<dyn Any>) -> u32 {
+fn store_ctx(value: Box<dyn Any>) -> Id {
     with_local(|l| {
         let id = l.next_id();
         l.ctx.insert(id, value);
@@ -256,7 +256,7 @@ fn store_ctx(value: Box<dyn Any>) -> u32 {
 /// `f` sees bundle-side context value `ctx`. Held under the table borrow,
 /// as the native engine holds its context borrow across the same `f` (a
 /// downcast and a `Clone`).
-fn read_ctx<R>(ctx: u32, f: impl FnOnce(&dyn Any) -> R) -> Option<R> {
+fn read_ctx<R>(ctx: Id, f: impl FnOnce(&dyn Any) -> R) -> Option<R> {
     LOCAL.with(|l| l.borrow().ctx.get(&ctx).map(|v| f(&**v)))
 }
 

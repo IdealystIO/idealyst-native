@@ -26,7 +26,7 @@ pub(crate) struct Native;
 pub(crate) enum CtxKey {
     Type(TypeId),
     #[cfg_attr(not(any(test, feature = "bridge")), allow(dead_code))]
-    Foreign(u32),
+    Foreign(u64),
 }
 
 // ============================================================================

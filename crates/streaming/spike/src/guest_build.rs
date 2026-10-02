@@ -11,7 +11,15 @@ pub const GUEST_SOURCES: &[&str] =
 /// Sources of the full-framework prototype bundle (`spike-fullguest`) that
 /// live in this directory tree. It also depends on the framework crates;
 /// cargo's own fingerprinting covers those inside the nested build.
-pub const FULL_GUEST_SOURCES: &[&str] = &["fullguest/src", "fullguest/Cargo.toml", "components/src", "../abi/src"];
+pub const FULL_GUEST_SOURCES: &[&str] = &[
+    "fullguest/src",
+    "fullguest/Cargo.toml",
+    "components/src",
+    "kernelguest/src",
+    "kernelguest/Cargo.toml",
+    "../abi/src",
+    "../../runtime/world/src",
+];
 
 /// A `cargo build` of bundle crate `package` for wasm32 into `target_dir`.
 ///

@@ -110,8 +110,8 @@ mod native;
 // bridge's (unused) code in the crate shifted the size optimizer's outlining
 // on hot paths in the web release profile (opt "z", no LTO) — fan-out +3.3%
 // with it, -2.0% without.
-#[cfg(any(test, feature = "bridge", feature = "loopback-engine"))]
-#[cfg_attr(not(any(feature = "bridge", feature = "loopback-engine")), allow(dead_code))]
+#[cfg(any(test, feature = "bridge", feature = "loopback-engine", idealyst_stream_guest))]
+#[cfg_attr(not(any(feature = "bridge", feature = "loopback-engine", idealyst_stream_guest)), allow(dead_code))]
 mod bridge;
 
 use engine::{Access, AnySignal, EffectClass, Engine, WorldId};
@@ -119,13 +119,31 @@ use engine::{Access, AnySignal, EffectClass, Engine, WorldId};
 /// The engine this build runs. Every app runs the native arena; the
 /// `loopback-engine` feature runs the whole crate through the bridge instead
 /// (a test configuration — see `bridge/mod.rs`).
-#[cfg(not(feature = "loopback-engine"))]
+///
+/// A remote bundle (`--cfg idealyst_stream_guest`, set by the bundle build)
+/// runs the bridged engine over its wasm imports: the bundle's kernel lives
+/// on the host app's graph.
+#[cfg(not(any(feature = "loopback-engine", idealyst_stream_guest)))]
 type Active = native::Native;
-#[cfg(feature = "loopback-engine")]
+#[cfg(all(feature = "loopback-engine", not(idealyst_stream_guest)))]
 type Active = bridge::Loopback;
+#[cfg(idealyst_stream_guest)]
+type Active = bridge::guest::Bridged<bridge::wasm::Imports>;
+
+/// The host side of the kernel bridge, for a remote-component host (the
+/// app that loads bundles): implement [`remote::GuestHooks`] for the
+/// transport that reaches a bundle, and serve the bundle's kernel calls with
+/// [`remote::Host`]'s [`remote::HostOps`]. See `bridge/mod.rs` for the
+/// model and `crates/streaming` for the wasm transport.
+#[cfg(feature = "bridge")]
+pub mod remote {
+    pub use crate::bridge::host::Host;
+    pub use crate::bridge::{GuestHooks, Handle, HostOps, Id};
+    pub use crate::engine::{EffectClass, WorldId};
+}
 
 /// Compile-time parity: the bridged engine implements the full contract.
-#[cfg(any(test, feature = "bridge", feature = "loopback-engine"))]
+#[cfg(any(test, feature = "bridge", feature = "loopback-engine", idealyst_stream_guest))]
 const _: fn() = || {
     fn implements_engine<E: Engine>() {}
     implements_engine::<bridge::Loopback>();

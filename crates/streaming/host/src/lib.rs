@@ -42,6 +42,10 @@ use wasmi::{AsContextMut, Caller, CompilationMode, Config, ExternType, Linker, M
 
 pub use stream_abi;
 
+/// The kernel bridge over wasm (host side): a bundle's reactive kernel on
+/// this app's graph.
+pub mod kernel;
+
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
