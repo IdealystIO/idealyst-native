@@ -24,4 +24,5 @@ runtime-vocabulary = { workspace = true }
 host-mock = { workspace = true }
 spike-components = { path = "components" }
 spike-remoteattr = { path = "remoteattr" }
+stack-navigator = { path = "../../sdk/client/navigators/stack" }
 runtime-core = { workspace = true }

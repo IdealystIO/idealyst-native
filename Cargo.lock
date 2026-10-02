@@ -11263,6 +11263,7 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "spike-camera",
+ "stack-navigator",
 ]
 
 [[package]]
@@ -11571,6 +11572,7 @@ dependencies = [
  "spike-camera",
  "spike-components",
  "spike-remoteattr",
+ "stack-navigator",
  "stream-abi",
  "stream-host",
  "wasmi",

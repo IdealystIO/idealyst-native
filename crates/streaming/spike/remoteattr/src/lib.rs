@@ -298,3 +298,37 @@ pub fn Themed() -> Element {
         }
     }
 }
+
+/// An APP component taking the SDK's handle — `Option<StackHandle>`: a
+/// component prop needs a `Default`, which a handle has no sensible value
+/// for (so natively, too, it is an `Option` or a `Ref`). `static`: the
+/// handle is a value, not reactive data.
+#[component]
+pub fn PopButton(#[prop(static)] nav: Option<stack_navigator::StackHandle>) -> Element {
+    ui! {
+        button(label = "app pop", on_click = move || {
+            if let Some(nav) = &nav {
+                nav.pop();
+            }
+        })
+    }
+}
+
+/// A remote screen taking the SDK's `StackHandle` as a prop (a pushed
+/// screen: built after its navigator's handle exists), handing it on to an
+/// app component.
+#[component(remote)]
+pub fn DetailScreen(nav: Option<stack_navigator::StackHandle>, id: u32) -> Element {
+    let pop = nav.clone();
+    ui! {
+        view() {
+            text { "remote detail {id}" }
+            button(label = "remote pop", on_click = move || {
+                if let Some(pop) = &pop {
+                    pop.pop();
+                }
+            })
+            PopButton(nav = nav)
+        }
+    }
+}

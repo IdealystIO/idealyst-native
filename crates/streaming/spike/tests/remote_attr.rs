@@ -561,3 +561,43 @@ fn an_unprovided_remote_context_injects_nothing() {
     a.h.flush();
     assert!(text(&a, &realized).contains("no theme"));
 }
+
+// ---- the SDK's own handle types as props ----
+
+/// A remote screen whose prop is the SDK's `StackHandle` itself (here
+/// `Option<StackHandle>`; not a `Ref` or `NavHandle`) pops the app's stack,
+/// and hands the handle on to an app component that pops it too.
+#[test]
+fn an_sdk_stack_handle_crosses_both_ways() {
+    use runtime_core::primitives::navigator::Route;
+    use spike_remoteattr::{DetailScreen, ItemId, DETAIL};
+    use stack_navigator::{StackBuilder, StackHandle, StackNavigator};
+    const HOME: Route = Route::new("home", "/");
+    let a = app();
+    let nav = a.h.world.enter(runtime_core::Ref::<StackHandle>::new);
+    let tree = a.h.world.enter(|| {
+        runtime_core::IntoElement::into_element(
+            StackNavigator::new(&HOME)
+                .screen(HOME, |()| runtime_vocabulary::builders::text().content("home").build())
+                .screen(DETAIL, move |ItemId(id)| ui! { DetailScreen(nav = nav.get(), id = id) })
+                .bind(nav),
+        )
+    });
+    let realized = a.h.mount(tree);
+    a.h.flush();
+    for (press, label) in [(0usize, "remote pop"), (1, "app pop")] {
+        a.h.world.enter(|| nav.get().unwrap().push(&DETAIL, ItemId(5)));
+        a.h.flush();
+        let t = screen_texts(&a);
+        assert!(t.contains("remote detail 5"), "{t}");
+        let presses = a.h.shared.button_presses.borrow().clone();
+        (presses[presses.len() - 2 + press])();
+        a.h.flush();
+        let t = screen_texts(&a);
+        assert!(!t.contains("remote detail 5"), "`{label}` popped the app's stack:\n{t}");
+    }
+    drop(realized);
+    a.h.flush();
+    a.h.forget_handlers();
+    assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0);
+}

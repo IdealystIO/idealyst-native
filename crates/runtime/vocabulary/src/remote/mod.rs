@@ -1518,3 +1518,55 @@ macro_rules! __remote_receive_side {
 macro_rules! __remote_receive_side {
     ($($t:tt)*) => {};
 }
+
+/// Let an SDK's navigator handle type (`StackHandle`, `SwapHandle`) be a
+/// remote component's prop, and be handed from a remote component to an app
+/// component, as itself — not only as a `Ref` or a `NavHandle`.
+///
+/// The impls can't live here as one blanket impl over `NavHandleType`: it
+/// would overlap the other `RemoteProp` / `ImportArg` impls (coherence
+/// can't rule out `String` implementing `NavHandleType`). And a plain impl
+/// written in the SDK crate can't follow the vocabulary's build flags. So
+/// the SDK invokes this once per type, and the expansion is gated here.
+#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_nav_handle {
+    ($t:ty) => {
+        impl $crate::remote::RemoteProp for $t {
+            $crate::__remote_send_side! {
+                fn send(&self, __out: &mut ::std::vec::Vec<u8>, __keep: &mut $crate::remote::host::Keep) {
+                    $crate::remote::RemoteProp::send(<$t as $crate::prims::NavHandleType>::nav_handle(self), __out, __keep)
+                }
+            }
+            $crate::__remote_receive_side! {
+                fn receive(__in: &mut &[u8]) -> Self {
+                    <$t as $crate::prims::NavHandleType>::from_nav_handle(
+                        <$crate::prims::NavHandle as $crate::remote::RemoteProp>::receive(__in),
+                    )
+                }
+            }
+        }
+        // `ImportArg` runs the other way: sent by the bundle side, received
+        // by the app side.
+        impl $crate::remote::ImportArg for $t {
+            $crate::__remote_receive_side! {
+                fn send(self, __out: &mut ::std::vec::Vec<u8>) {
+                    $crate::remote::ImportArg::send(
+                        <$t as $crate::prims::NavHandleType>::nav_handle(&self).clone(),
+                        __out,
+                    )
+                }
+            }
+            $crate::__remote_send_side! {
+                fn receive(
+                    __in: &mut &[u8],
+                    __cx: &$crate::remote::host::ImportCx,
+                ) -> ::core::result::Result<Self, ::std::string::String> {
+                    <$crate::prims::NavHandle as $crate::remote::ImportArg>::receive(__in, __cx)
+                        .map(<$t as $crate::prims::NavHandleType>::from_nav_handle)
+                }
+            }
+        }
+    };
+}

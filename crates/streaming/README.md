@@ -193,7 +193,7 @@ pub fn Home(nav: Ref<StackHandle>) -> Element {
 
 - **Typed params cross as the url.** A route's params are values of the bundle's build of the type, which the app's navigator can't downcast, so a command crosses as its route name, url and query, and the navigator rebuilds the params from the url with the screen's own `from_segments` — exactly as for a deep link (`ParamsFromUrl`). The routes must be the same on both sides (one shared definition, as for any component).
 - **A `Ref` crosses as the ref.** A screen is built before its navigator fills the ref, so the app keeps its `Ref` in the handle table and reads it when the bundle navigates, as native code reads its ref at call time. Handing the ref on to an app component (a header's back button) gives that component the app's original `Ref`.
-- `StackHandle` / `SwapHandle` implement `NavHandleType`, which is what lets them cross.
+- `StackHandle` / `SwapHandle` cross as themselves too (`Option<StackHandle>` as a prop — a component prop needs a `Default`, natively as well): each SDK invokes `runtime_vocabulary::__remote_nav_handle!` once, because the impls can't be one blanket impl in the vocabulary (it would overlap the other prop impls) and a plain impl in the SDK couldn't follow the vocabulary's build flags.
 
 `tests/remote_attr.rs` (`a_remote_screen_navigates_the_apps_navigator`) runs it over wasm: a remote home screen in an app stack pushes `/items/7`, pops, follows a route link to `/items/9`, and hands its ref to an app component that pops.
 
