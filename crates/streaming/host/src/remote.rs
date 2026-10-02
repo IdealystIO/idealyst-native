@@ -79,8 +79,25 @@ pub fn install(wasm: &[u8]) -> Result<RemoteApp, String> {
         current: RefCell::new(Rc::new(bundle)),
         generation: Cell::new(None),
     });
+    watch(&loader);
     install_loader(loader.clone());
     Ok(RemoteApp { loader })
+}
+
+/// When the current bundle panics, remount every remote component: the
+/// poisoned bundle refuses the mounts, so each shows the panic message in
+/// its place (`__mount_remote`'s error text), and its old tree — whose
+/// callbacks can no longer reach the bundle — is torn down.
+fn watch(loader: &Rc<BundleLoader>) {
+    let weak = Rc::downgrade(loader);
+    let bundle = loader.current.borrow().clone();
+    bundle.on_poison(move |_| {
+        if let Some(loader) = weak.upgrade() {
+            if let Some(g) = loader.generation.get() {
+                g.update(|n| n + 1);
+            }
+        }
+    });
 }
 
 impl RemoteApp {
@@ -89,6 +106,7 @@ impl RemoteApp {
     pub fn reload(&self, wasm: &[u8]) -> Result<(), String> {
         let bundle = KernelBundle::load(&self.loader.engine, wasm).map_err(|e| e.to_string())?;
         *self.loader.current.borrow_mut() = Rc::new(bundle);
+        watch(&self.loader);
         if let Some(g) = self.loader.generation.get() {
             g.update(|n| n + 1);
         }

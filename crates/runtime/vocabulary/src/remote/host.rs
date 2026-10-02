@@ -24,8 +24,13 @@ use crate::style_attach::StyleProp;
 /// How the host reaches one bundle's callback table. In-process for the
 /// codec's tests; over wasm in `stream-host`.
 pub trait Link: 'static {
-    /// Run callback `cb` with `args`; its encoded reply.
-    fn call(&self, cb: Cb, args: &[u8]) -> Vec<u8>;
+    /// Run callback `cb` with `args`; its encoded reply. `None` when the
+    /// bundle can no longer be called — it panicked (trapped) and was
+    /// POISONED, or it is gone. Every reply site then falls back to a safe
+    /// value (see [`CbRef`]) instead of panicking the app: the bundle's
+    /// loader replaces its components with the panic message on the next
+    /// flush, so the fallbacks only bridge the calls already in progress.
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>>;
     /// The host dropped one copy of `cb`.
     fn release(&self, cb: Cb);
 }
@@ -70,6 +75,11 @@ struct Conn {
 struct CbRef {
     id: Cb,
     conn: Rc<Conn>,
+    /// The last reply to an argument-less call: what a getter answers once
+    /// its bundle can't be called (poisoned) — its last real value, rather
+    /// than a made-up one. Argument-less only: a reply to one set of
+    /// arguments says nothing about another.
+    last: RefCell<Option<Vec<u8>>>,
 }
 
 impl Drop for CbRef {
@@ -79,16 +89,41 @@ impl Drop for CbRef {
 }
 
 impl CbRef {
-    fn call(&self, args: &[u8]) -> Vec<u8> {
+    fn new(id: Cb, conn: Rc<Conn>) -> CbRef {
+        CbRef { id, conn, last: RefCell::new(None) }
+    }
+
+    /// `None` when the bundle can't be called (see [`Link::call`]).
+    fn call(&self, args: &[u8]) -> Option<Vec<u8>> {
         self.conn.link.call(self.id, args)
     }
 
-    /// Call and decode the reply. A reply that does not decode is the two
-    /// sides disagreeing about the protocol: a bug, so it panics.
-    fn get<T: DeserializeOwned>(&self, args: &[u8]) -> T {
-        let bytes = self.call(args);
-        from_bytes(&bytes).unwrap_or_else(|e| panic!("remote codec: callback {}'s reply does not decode: {e}", self.id))
+    /// Call and decode the reply; for an argument-less call to a bundle that
+    /// can't be called, the last reply. `None` only when there is neither.
+    /// A reply that does not decode is the two sides disagreeing about the
+    /// protocol: a bug, so it panics.
+    fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
+        let decode = |b: &[u8]| -> T {
+            from_bytes(b).unwrap_or_else(|e| panic!("remote codec: callback {}'s reply does not decode: {e}", self.id))
+        };
+        match self.call(args) {
+            Some(bytes) => {
+                let v = decode(&bytes);
+                if args.is_empty() {
+                    *self.last.borrow_mut() = Some(bytes);
+                }
+                Some(v)
+            }
+            None if args.is_empty() => self.last.borrow().as_deref().map(decode),
+            None => None,
+        }
     }
+}
+
+/// What a `Dyn` hole or keyed row shows when its bundle can't be called:
+/// nothing (the loader is about to replace the whole component).
+fn nothing() -> Element {
+    runtime_scene::fragment(Vec::new())
 }
 
 /// Decode a bundle's tree. Errors in the tree itself are reported here;
@@ -107,7 +142,7 @@ fn subtree(conn: &Rc<Conn>, bytes: &[u8]) -> Element {
 }
 
 fn cb(conn: &Rc<Conn>, id: Cb) -> Rc<CbRef> {
-    Rc::new(CbRef { id, conn: conn.clone() })
+    Rc::new(CbRef::new(id, conn.clone()))
 }
 
 fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
@@ -179,12 +214,15 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
         Node::Fragment(children) => runtime_scene::fragment(build_all(conn, children)?),
         Node::Dyn { build } => {
             let (c, b) = (conn.clone(), cb(conn, build));
-            dyn_element(move || subtree(&c, &b.call(&[])))
+            dyn_element(move || b.call(&[]).map_or_else(nothing, |bytes| subtree(&c, &bytes)))
         }
         Node::Guarded { changed, build } => {
             let changed = cb(conn, changed);
             let (c, b) = (conn.clone(), cb(conn, build));
-            dyn_guarded(move || changed.get::<bool>(&[]), move || subtree(&c, &b.call(&[])))
+            dyn_guarded(
+                move || changed.get::<bool>(&[]).unwrap_or(false),
+                move || b.call(&[]).map_or_else(nothing, |bytes| subtree(&c, &bytes)),
+            )
         }
         Node::Keyed { items, render } => keyed(conn, cb(conn, items), cb(conn, render)),
         Node::Owned { scope, element } => {
@@ -223,17 +261,17 @@ fn keyed(conn: &Rc<Conn>, items: Rc<CbRef>, render: Rc<CbRef>) -> Element {
     let rc = conn.clone();
     Element::Keyed {
         items: Box::new(move || {
-            let rows: Vec<(WireKey, Cb)> = items.get(&[]);
+            let rows: Vec<(WireKey, Cb)> = items.get(&[]).unwrap_or_default();
             rows.into_iter()
                 .map(|(key, id)| {
-                    let item = ItemRef(CbRef { id, conn: c.clone() });
+                    let item = ItemRef(CbRef::new(id, c.clone()));
                     (key.into(), Box::new(item) as Box<dyn std::any::Any>)
                 })
                 .collect()
         }),
         render: Box::new(move |item| {
             let item = item.downcast::<ItemRef>().expect("remote codec: keyed render got a foreign item");
-            subtree(&rc, &render.call(&to_bytes(&item.0.id)))
+            render.call(&to_bytes(&item.0.id)).map_or_else(nothing, |bytes| subtree(&rc, &bytes))
         }),
     }
 }
@@ -245,12 +283,12 @@ fn fire(conn: &Rc<Conn>, id: Cb) -> Rc<dyn Fn()> {
     })
 }
 
-fn value<T: DeserializeOwned + 'static>(conn: &Rc<Conn>, v: Val<T>) -> Value<T> {
+fn value<T: DeserializeOwned + Default + 'static>(conn: &Rc<Conn>, v: Val<T>) -> Value<T> {
     match v {
         Val::Const(v) => Value::Const(v),
         Val::Dyn(id) => {
             let r = cb(conn, id);
-            Value::Dyn(Box::new(move || r.get::<T>(&[])))
+            Value::Dyn(Box::new(move || r.get::<T>(&[]).unwrap_or_default()))
         }
     }
 }
@@ -288,12 +326,15 @@ fn style(conn: &Rc<Conn>, s: Style) -> StyleProp {
         Style::Rules(rules) => StyleProp::Static(Rc::new(rules)),
         Style::Dynamic(id) => {
             let r = cb(conn, id);
-            StyleProp::Dynamic(Box::new(move || Rc::new(r.get::<StyleRules>(&[]))))
+            StyleProp::Dynamic(Box::new(move || Rc::new(r.get::<StyleRules>(&[]).unwrap_or_default())))
         }
         Style::Sheet(app) => StyleProp::Sheet(Box::new(application(conn, app))),
         Style::SheetDynamic(id) => {
             let (c, r) = (conn.clone(), cb(conn, id));
-            StyleProp::SheetDynamic(Box::new(move || application(&c, r.get::<App>(&[]))))
+            StyleProp::SheetDynamic(Box::new(move || match r.get::<App>(&[]) {
+                Some(app) => application(&c, app),
+                None => StyleApplication::new(Rc::new(StyleSheet::new(|_| StyleRules::default()))),
+            }))
         }
     }
 }
@@ -309,7 +350,7 @@ fn application(conn: &Rc<Conn>, app: App) -> StyleApplication {
     }
     if let Some((key, id)) = app.computed {
         let r = cb(conn, id);
-        out = out.with_computed(key, move || r.get::<StyleRules>(&[]));
+        out = out.with_computed(key, move || r.get::<StyleRules>(&[]).unwrap_or_default());
     }
     out
 }
@@ -326,7 +367,7 @@ fn sheet(conn: &Rc<Conn>, r: SheetRef) -> Rc<StyleSheet> {
     let sheet = Rc::new(StyleSheet::from_shape(
         &r.shape,
         Rc::new(move |part: &SheetPart, variants: &VariantSet| {
-            eval.get::<StyleRules>(&to_bytes(&(part, variants)))
+            eval.get::<StyleRules>(&to_bytes(&(part, variants))).unwrap_or_default()
         }),
     ));
     conn.sheets.borrow_mut().insert(r.id, Rc::downgrade(&sheet));
@@ -488,10 +529,12 @@ impl ImportCx {
 pub(crate) struct CallbackRef(Rc<CbRef>);
 
 impl CallbackRef {
-    pub(crate) fn call(&self, args: &[u8]) -> Vec<u8> {
+    /// `None` when the bundle can't be called (poisoned or gone).
+    pub(crate) fn call(&self, args: &[u8]) -> Option<Vec<u8>> {
         self.0.call(args)
     }
-    pub(crate) fn get<T: DeserializeOwned>(&self, args: &[u8]) -> T {
+    /// See `CbRef::get`.
+    pub(crate) fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
         self.0.get(args)
     }
 }

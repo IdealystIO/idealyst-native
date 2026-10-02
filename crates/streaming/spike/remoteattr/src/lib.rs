@@ -57,3 +57,21 @@ pub fn Greeting(name: String, count: ReadSignal<i64>, likes: Signal<i64>) -> Ele
         }
     }
 }
+
+/// A remote component that panics on purpose: its button's handler, and
+/// its effect when the app's `trigger` reaches 13. For the containment
+/// tests — a panic in a bundle must not take the app down.
+#[component(remote)]
+pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
+    runtime_world::effect(move || {
+        if trigger.get() == 13 {
+            panic!("unlucky trigger");
+        }
+    });
+    ui! {
+        view() {
+            text { "fragile sees {trigger}" }
+            button(label = "boom", on_click = move || panic!("boom pressed"))
+        }
+    }
+}

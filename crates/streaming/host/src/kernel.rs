@@ -76,6 +76,33 @@ struct Inner {
     store: RefCell<Store<KState>>,
     instance: wasmi::Instance,
     hooks: Hooks,
+    /// Set by the bundle's first trap, with its panic message: the bundle is
+    /// POISONED and never called again (see [`poison`]).
+    poisoned: RefCell<Option<String>>,
+    /// Told once, when the bundle is poisoned (`KernelBundle::on_poison`).
+    on_poison: RefCell<Vec<Rc<dyn Fn(&str)>>>,
+}
+
+/// A trap ends a bundle. A Rust panic in wasm is `panic = "abort"`: the
+/// trap unwinds the interpreter, but no destructor in the bundle runs, so a
+/// `RefCell` it had borrowed stays borrowed and a table it was updating
+/// stays half-updated. Calling it again would trip over that state — at
+/// best another trap, at worst wrong answers. So the first trap POISONS
+/// it: every later call answers `None` without entering the bundle (each
+/// hook's caller already treats `None` as "bundle gone"), and the
+/// `on_poison` listeners (the remote loader) replace its components with
+/// the panic message. The app keeps running.
+fn poison(inner: &Inner, msg: String) {
+    if inner.poisoned.borrow().is_some() {
+        return;
+    }
+    eprintln!("[remote] bundle {} panicked and was stopped: {msg}", inner.id);
+    *inner.poisoned.borrow_mut() = Some(msg.clone());
+    // Listeners run outside the borrow: they may register more.
+    let listeners = inner.on_poison.borrow().clone();
+    for f in listeners {
+        f(&msg);
+    }
 }
 
 impl Drop for Inner {
@@ -184,10 +211,14 @@ fn read_packed(ctx: impl wasmi::AsContext, memory: Memory, packed: i64) -> Vec<u
 
 /// Route one hook to bundle `bundle`: through its in-flight import's
 /// `Caller` if it has one, else through its `Store`. `None` when the bundle
-/// is gone (its proxies outlived it) or the thread is tearing down — the
-/// bundle's side is then already destroyed, and there is nothing to call.
+/// is gone (its proxies outlived it), the thread is tearing down, or the
+/// bundle is POISONED — by an earlier trap, or by trapping in this very
+/// call (see [`poison`]).
 fn route<R>(bundle: u32, f: impl FnOnce(&mut dyn GuestCall, Hooks) -> Result<R, wasmi::Error>) -> Option<R> {
     let inner = BUNDLES.try_with(|b| b.borrow().get(&bundle).and_then(Weak::upgrade)).ok().flatten()?;
+    if inner.poisoned.borrow().is_some() {
+        return None;
+    }
     let active = ACTIVE.try_with(|a| a.borrow().iter().rev().find(|(b, _)| *b == bundle).map(|(_, p)| *p)).ok().flatten();
     let result = match active {
         Some(ptr) => {
@@ -209,7 +240,13 @@ fn route<R>(bundle: u32, f: impl FnOnce(&mut dyn GuestCall, Hooks) -> Result<R, 
             f(&mut *store, inner.hooks).map_err(|e| with_panic(e, &mut *store, inner.hooks))
         }
     };
-    Some(result.unwrap_or_else(|e| panic!("kernel bridge: bundle {bundle} trapped in a call from the host: {e}")))
+    match result {
+        Ok(r) => Some(r),
+        Err(msg) => {
+            poison(&inner, msg);
+            None
+        }
+    }
 }
 
 /// A trap, described with the bundle's own panic message when it kept one.
@@ -523,7 +560,14 @@ impl KernelBundle {
         if let Ok(init) = instance.get_typed_func::<(), ()>(&store, "idealyst_ui_init") {
             init.call(&mut store, ())?;
         }
-        let inner = Rc::new(Inner { id: bundle, store: RefCell::new(store), instance, hooks });
+        let inner = Rc::new(Inner {
+            id: bundle,
+            store: RefCell::new(store),
+            instance,
+            hooks,
+            poisoned: RefCell::new(None),
+            on_poison: RefCell::new(Vec::new()),
+        });
         BUNDLES.with(|b| b.borrow_mut().insert(bundle, Rc::downgrade(&inner)));
         Ok(KernelBundle { inner })
     }
@@ -615,10 +659,9 @@ struct UiLink {
 }
 
 impl Link for UiLink {
-    fn call(&self, cb: u32, args: &[u8]) -> Vec<u8> {
+    fn call(&self, cb: u32, args: &[u8]) -> Option<Vec<u8>> {
         let bundle = self.bundle;
         route(bundle, |c, h| c.ui_invoke(ui_hooks(bundle, h), cb, args))
-            .unwrap_or_else(|| panic!("remote component: bundle {bundle} is gone, but a node it built is still live"))
     }
     fn release(&self, cb: u32) {
         // A bundle already gone took its table with it: nothing to release.
@@ -672,12 +715,26 @@ impl KernelBundle {
     /// returns. Call inside the world the component should live in; realize
     /// the result with the app's own registry.
     ///
-    /// A panic in the bundle while it builds the tree is an `Err` carrying
-    /// the bundle's panic message, not a host panic: a bundle is code the
-    /// app did not compile, and an app shows its failure instead of dying
-    /// with it. (A panic in a callback LATER — a press handler, a getter —
-    /// still panics the host; see `UiLink`.)
+    /// A panic in the bundle — while it builds the tree, or at any point
+    /// before (a handler, an effect) — is an `Err` carrying the bundle's
+    /// panic message, never a host panic: a bundle is code the app did not
+    /// compile, and the app shows its failure instead of dying with it. A
+    /// panicked bundle is poisoned and every later mount fails the same way.
+    /// The panic message that poisoned this bundle, if it has panicked.
+    pub fn poisoned(&self) -> Option<String> {
+        self.inner.poisoned.borrow().clone()
+    }
+
+    /// Run `f` with the panic message when this bundle panics (once). The
+    /// remote loader uses it to replace the bundle's components.
+    pub fn on_poison(&self, f: impl Fn(&str) + 'static) {
+        self.inner.on_poison.borrow_mut().push(Rc::new(f));
+    }
+
     pub fn mount_remote(&self, export: &str, args: &[u8]) -> Result<Element, MountError> {
+        if let Some(msg) = self.poisoned() {
+            return Err(MountError::Panicked(msg));
+        }
         let mount: TypedFunc<(u32, u32), i64> = {
             let store = self.inner.store.borrow();
             self.inner
@@ -691,15 +748,16 @@ impl KernelBundle {
                 panic!("remote component: mount `{export}` re-entered a bundle that is already running")
             });
             let memory = store.data().memory.expect("kernel bridge: bundle exports no memory");
-            let ptr = ui
-                .alloc
-                .call(&mut *store, args.len() as u32)
-                .unwrap_or_else(|e| panic!("remote component: alloc trapped: {e}"));
-            memory.write(&mut *store, ptr as usize, args).expect("argument buffer in bounds");
-            match mount.call(&mut *store, (ptr, args.len() as u32)) {
+            let called = ui.alloc.call(&mut *store, args.len() as u32).and_then(|ptr| {
+                memory.write(&mut *store, ptr as usize, args).expect("argument buffer in bounds");
+                mount.call(&mut *store, (ptr, args.len() as u32))
+            });
+            match called {
                 Ok(packed) => read_packed(&*store, memory, packed),
                 Err(e) => {
                     let msg = panic_message(&mut *store, ui).unwrap_or_else(|| e.to_string());
+                    drop(store);
+                    poison(&self.inner, msg.clone());
                     return Err(MountError::Panicked(msg));
                 }
             }

@@ -160,13 +160,18 @@ fn bridged(external: Signal<i64>, user: Signal<String>) -> Element {
             format!("using the built-in bundle:\n{e}"),
         ),
     };
-    let current = Rc::new(RefCell::new(Rc::new(initial)));
     let generation = signal(0u32);
+    // A panic in the bundle stops it; remount so the region shows the
+    // panic message instead of a tree that can no longer reach the bundle.
+    let watch = move |bundle: &KernelBundle| bundle.on_poison(move |_| generation.update(|g| g + 1));
+    watch(&initial);
+    let current = Rc::new(RefCell::new(Rc::new(initial)));
     let status: Signal<String> = signal(initial_status);
     REMOTE_REFRESH.with(|r| {
         let current = current.clone();
         *r.borrow_mut() = Some(Box::new(move || match fetch_remote(&engine) {
             Ok((bundle, msg)) => {
+                watch(&bundle);
                 *current.borrow_mut() = Rc::new(bundle);
                 generation.update(|g| g + 1);
                 status.set(msg);

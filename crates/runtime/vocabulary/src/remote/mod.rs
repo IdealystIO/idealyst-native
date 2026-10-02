@@ -616,7 +616,13 @@ where
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
         if __try_receive_value::<bool>(input)? {
             let get = cx.callback(__try_receive_value(input)?);
-            Ok(crate::glue::Reactive::Dynamic(std::rc::Rc::new(move || get.get::<T>(&[]))))
+            // Read once now, while the bundle is known to be callable: the
+            // getter then always has a last value to fall back on if the
+            // bundle is poisoned later (`T` has no default to invent).
+            get.get::<T>(&[]).ok_or_else(|| "the bundle stopped (it panicked)".to_string())?;
+            Ok(crate::glue::Reactive::Dynamic(std::rc::Rc::new(move || {
+                get.get::<T>(&[]).expect("primed at receive: a last value always exists")
+            })))
         } else {
             Ok(crate::glue::Reactive::Static(__try_receive_value(input)?))
         }

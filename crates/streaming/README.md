@@ -109,7 +109,7 @@ The window shows the **bridged** RemoteCounter (green, from `/remote.wasm`) next
 2. Press **Refresh bundle**. The tinted sections remount from the new builds; the app is not rebuilt or restarted. The grey native copy keeps the old code, which is the point of comparison.
 3. The host buttons drive host state the bridged component reads: `external ± 1` is a prop, **switch user** is context.
 
-In the bridged component only `view`, `pressable`, `text` and `button` cross today. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic later, in a press handler, still takes the app down.
+In the bridged component only `view`, `pressable`, `text` and `button` cross today. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic at any other time (a press handler, an effect) does the same; see [Panics](#panics-in-a-bundle).
 
 How it behaves:
 
@@ -161,6 +161,16 @@ A prop type with no `ImportArg` doesn't stop anything compiling: it fails by nam
 **Promotion.** A bundle-created signal keeps its value in the bundle until the bundle hands it to native code. Then the app's prop decoder (which knows `T`) takes the value over: the slot keeps its subscribers and the bundle keeps its handle, but the value is now a real `SignalData<T>` in the app's arena, and the bundle reads and writes it the way it does any app signal. Native code reads it at native speed; a memo's output promotes too, and its derivation keeps writing the native value. It is two-phase (`GuestHooks::promote` / `promote_finish`), so a value the app can't decode leaves the bundle untouched. The native slot holds a `Promoted<T>` whose `as_any_mut` returns the inner `SignalData<T>`, so every native read, write and commit runs unchanged code — measured on the shipped profiles: no regression with `bridge` on or off.
 
 **Web never compiles any of this.** `remote` is a no-op on web, and the bridge, the codec and the registrations are compiled only for native targets or a bundle build, whatever features an app enables.
+
+## Panics in a bundle
+
+A panic in a bundle never takes the app down. A Rust panic in wasm is `panic = "abort"`: it traps the interpreter, and no destructor in the bundle runs, so a `RefCell` it held stays borrowed and its tables stay half-updated. So the first trap **poisons** the bundle (`stream-host`, `kernel.rs`):
+
+1. The call that trapped, and every later call into that bundle, answers nothing. Each kind of call has a safe answer: an effect doesn't run, a commit reports no change, a handler does nothing, a getter returns its last value, a `Dyn` hole or keyed row renders nothing, a style getter resolves to defaults (`runtime_vocabulary::remote::host`).
+2. The loader is told (`KernelBundle::on_poison`) and remounts every remote component. The poisoned bundle refuses the mounts, so each shows the bundle's own panic message (kept by the bundle's panic hook) in its place, and its old tree is torn down.
+3. The app's own UI and state carry on. Reloading a new bundle brings the components back.
+
+`tests/remote_attr.rs` covers a panicking press handler, a panicking effect and recovery by reload, against a real wasm bundle. Each regression test was checked to fail with the old "trap panics the app" code.
 
 ## The bridged design
 
@@ -215,10 +225,10 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
 - **`#[component(remote)]` carries props, not context yet,** and has no manifest.
 - **`#[host_fn]` is not on the bridged loader yet.** It exists for model A (`HostExports`); `KernelBundle` doesn't link host functions.
-- **A panic in bundle code after mount** (a handler, a getter) still takes the app down; a panic while mounting is shown in place. Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
+- Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
 - **The bridged design carries four primitives.** The rest of the vocabulary (`crossing` lists each), event handlers on `view`, `ref`s and handles still have to cross.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
-- **Guest trap handling.** It's a panic for now. Whether a trap should be contained to the bundle in release builds is still an open decision.
+- **A poisoned bundle can keep running in one case.** If a host→bundle call made *from inside* a bundle call traps (a bundle calling `flush`, whose effects then panic), the outer bundle frame is still on the stack and resumes. Its later imports still reach the app's graph. Imports could refuse a poisoned bundle, at the cost of every import returning a `Result`.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.
 - **Host component imports are still hand-listed** in `bundle!`. They could use the same import-section trick as `#[host_fn]`.
 - **Bundle signing, and caching compiled modules by content hash.**

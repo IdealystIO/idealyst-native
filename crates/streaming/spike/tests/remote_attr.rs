@@ -179,3 +179,93 @@ fn regression_bundle_runs_on_a_2mb_thread() {
         .join()
         .expect("mount + updates on a 2 MB thread");
 }
+
+// ---- containment: a panicking bundle never takes the app down ----
+
+use spike_remoteattr::Fragile;
+
+/// `Greeting` and `Fragile`, both from the bundle, next to app-owned text.
+fn fragile_tree(a: &App, trigger: Signal<i64>) -> Element {
+    let (count, likes) = (a.count, a.likes);
+    a.h.world.enter(|| {
+        ui! {
+            view() {
+                text { "app count {count}" }
+                Greeting(name = "ada".to_string(), count = count.read_only(), likes = likes)
+                Fragile(trigger = trigger.read_only())
+            }
+        }
+    })
+}
+
+/// Regression: a panic in a bundle's press handler trapped the
+/// interpreter, and the trap became a panic in the app — one bad handler in
+/// a downloaded component crashed the whole app. Now the trap POISONS the
+/// bundle: the handler's call answers nothing, and on the next flush every
+/// component from that bundle shows the panic message in its place, while
+/// the app's own UI keeps working.
+#[test]
+fn regression_a_panicking_handler_stops_the_bundle_not_the_app() {
+    let a = app();
+    let trigger = a.h.world.enter(|| runtime_world::signal(0i64));
+    let realized = a.h.mount(fragile_tree(&a, trigger));
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("hello ada") && t.contains("fragile sees 0"), "{t}");
+
+    let presses = a.h.shared.button_presses.borrow().clone();
+    let boom = presses.last().expect("Fragile's button").clone();
+    boom();
+    a.h.flush();
+
+    let t = text(&a, &realized);
+    assert!(t.contains("remote component `Greeting`") && t.contains("remote component `Fragile`"), "{t}");
+    assert!(t.contains("boom pressed"), "the bundle's own panic message is shown: {t}");
+    assert!(!t.contains("hello ada"), "the poisoned bundle's tree is gone: {t}");
+
+    // The app is fine: its own state and UI keep updating.
+    a.count.set(41);
+    a.h.flush();
+    assert!(text(&a, &realized).contains("app count 41"));
+    // Handlers still held by the backend are inert, not crashes.
+    for p in &presses {
+        p();
+    }
+    a.h.flush();
+}
+
+/// The same for a panic inside a bundle EFFECT, which runs in the app's
+/// flush: the flush completes, the bundle is stopped.
+#[test]
+fn regression_a_panicking_effect_stops_the_bundle_not_the_app() {
+    let a = app();
+    let trigger = a.h.world.enter(|| runtime_world::signal(0i64));
+    let realized = a.h.mount(fragile_tree(&a, trigger));
+    a.h.flush();
+    trigger.set(13);
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("unlucky trigger") && t.contains("remote component `Greeting`"), "{t}");
+    a.count.set(7);
+    a.h.flush();
+    assert!(text(&a, &realized).contains("app count 7"));
+}
+
+/// A fresh bundle brings a poisoned app back: reloading remounts every
+/// remote component from it.
+#[test]
+fn reloading_after_a_panic_recovers() {
+    let a = app();
+    let trigger = a.h.world.enter(|| runtime_world::signal(0i64));
+    let realized = a.h.mount(fragile_tree(&a, trigger));
+    a.h.flush();
+    let boom = a.h.shared.button_presses.borrow().last().unwrap().clone();
+    boom();
+    a.h.flush();
+    assert!(text(&a, &realized).contains("boom pressed"));
+
+    a.remote.reload(REMOTE_ATTR_WASM).expect("reloads");
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("hello ada") && t.contains("fragile sees 0") && !t.contains("boom pressed"), "{t}");
+}

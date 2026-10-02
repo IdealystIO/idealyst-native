@@ -30,8 +30,8 @@ use runtime_world::{signal, Signal};
 struct InProc;
 
 impl Link for InProc {
-    fn call(&self, cb: Cb, args: &[u8]) -> Vec<u8> {
-        bundle::invoke(cb, args)
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>> {
+        Some(bundle::invoke(cb, args))
     }
     fn release(&self, cb: Cb) {
         bundle::release(cb)
@@ -247,4 +247,52 @@ fn every_builtin_primitive_has_a_crossing_decision() {
     let supported: Vec<_> =
         kinds.iter().filter_map(|k| match crossing(*k) { Some(Crossing::Supported(n)) => Some(n), _ => None }).collect();
     assert_eq!(supported.len(), 4, "view, pressable, text, button: {supported:?}");
+}
+
+/// A link whose bundle can be POISONED mid-life, as a trap poisons a wasm
+/// bundle: from then on every call answers `None`.
+struct Poisonable(Rc<std::cell::Cell<bool>>);
+
+impl Link for Poisonable {
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>> {
+        (!self.0.get()).then(|| bundle::invoke(cb, args))
+    }
+    fn release(&self, cb: Cb) {
+        bundle::release(cb)
+    }
+}
+
+/// Regression: a reply from a bundle that can no longer be called used to
+/// panic the app ("bundle is gone, but a node it built is still live") —
+/// so one panic in a bundle's handler took the whole app down with it.
+/// Every reply site now falls back: getters keep their last value, holes
+/// and keyed rows render nothing, handlers do nothing, style getters
+/// resolve to defaults. Driven here through every node kind the codec
+/// carries, after the link is cut.
+#[test]
+fn regression_a_poisoned_bundles_tree_keeps_running_without_it() {
+    let h = Harness::new();
+    let inputs = h.world.enter(|| Inputs { count: signal(1), items: signal(vec![1, 2, 3]), show: signal(false) });
+    let poisoned = Rc::new(std::cell::Cell::new(false));
+    let link = Rc::new(Poisonable(poisoned.clone()));
+    let tree = h.world.enter(|| decode(link, &to_bytes(&bundle::encode(app(&inputs)))).expect("decodes"));
+    let realized = h.mount(tree);
+    h.flush();
+    let before = h.live_tree(realized.collect_nodes()[0]);
+    assert!(before.contains("count 1 clicks 0"), "{before}");
+
+    poisoned.set(true);
+    (h.shared.button_presses.borrow()[0].clone())();
+    (h.press_handler(0))();
+    (h.state_setter(0))(runtime_shared::StateBits::HOVERED, true);
+    inputs.count.set(5);
+    inputs.show.set(true);
+    inputs.items.set(vec![9]);
+    h.flush();
+
+    let after = h.live_tree(realized.collect_nodes()[0]);
+    assert!(after.contains("count 1 clicks 0"), "a getter keeps its last value: {after}");
+    assert!(!after.contains("shown") && !after.contains("row 9"), "new subtrees render nothing: {after}");
+    drop(realized);
+    h.flush();
 }
