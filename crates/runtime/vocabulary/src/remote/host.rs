@@ -20,6 +20,7 @@ use runtime_world::Value;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use super::handles::Held;
 use super::*;
 use crate::prims::*;
 use crate::style_attach::StyleProp;
@@ -72,6 +73,16 @@ struct Conn {
     /// Proxy sheets by bundle sheet id, so every node styled by one bundle
     /// sheet shares one host sheet (and its variant cache).
     sheets: RefCell<HashMap<Cb, Weak<StyleSheet>>>,
+}
+
+impl Drop for Conn {
+    /// The tree is gone: so are the handles the app held for it, whether
+    /// or not the bundle released them (it may keep a handle in a `Ref`
+    /// slot that outlives the tree, or have been stopped).
+    fn drop(&mut self) {
+        let _ = LIVE_TREES.try_with(|n| n.set(n.get() - 1));
+        super::handles::purge_dead();
+    }
 }
 
 /// One received copy of a callback id; released on drop.
@@ -136,7 +147,23 @@ fn nothing() -> Element {
 pub fn decode(link: Rc<dyn Link>, bytes: &[u8]) -> Result<Element, DecodeError> {
     let node: Node = from_bytes(bytes).map_err(|e| DecodeError::Malformed(e.to_string()))?;
     let conn = Rc::new(Conn { link, sheets: RefCell::new(HashMap::new()) });
-    build(&conn, node)
+    LIVE_TREES.with(|n| n.set(n.get() + 1));
+    let element = build(&conn, node)?;
+    // The mounted tree owns its connection: the handles the app holds for
+    // the bundle (`handles`) live exactly as long as the tree, even one
+    // with no callbacks to keep the connection alive (a view with a ref).
+    let ((), owned) = runtime_world::collect_owned(|| runtime_world::on_scope_drop(move || drop(conn)));
+    Ok(runtime_scene::owned(element, owned))
+}
+
+thread_local! {
+    static LIVE_TREES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Decoded trees whose connection is still alive — for leak checks: `0`
+/// once every remote tree is unmounted and nothing holds its callbacks.
+pub fn live_trees() -> usize {
+    LIVE_TREES.with(|n| n.get())
 }
 
 fn subtree(conn: &Rc<Conn>, bytes: &[u8]) -> Element {
@@ -161,7 +188,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             on_file_drop,
             children,
         } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ViewPrim {
                     test_id,
@@ -180,13 +207,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     preserves_focus,
                     is_container,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::View),
                 }),
                 build_all(conn, children)?,
             )
         }
         Node::Pressable { common, on_press, disabled, preserves_focus, children } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(PressablePrim {
                     test_id,
@@ -195,13 +222,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     preserves_focus,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Pressable),
                 }),
                 build_all(conn, children)?,
             )
         }
         Node::Text { common, content } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(TextPrim {
                     test_id,
@@ -211,13 +238,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     },
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Text),
                 }),
                 Vec::new(),
             )
         }
         Node::Button { common, label, on_press, leading_icon, trailing_icon, disabled } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ButtonPrim {
                     test_id,
@@ -228,13 +255,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     disabled: disabled.map(|v| value(conn, v)),
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Button),
                 }),
                 Vec::new(),
             )
         }
         Node::Image { common, src, alt, on_load, on_error, asset } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ImagePrim {
                     test_id,
@@ -250,13 +277,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     }),
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Image),
                 }),
                 Vec::new(),
             )
         }
         Node::Icon { common, data, color, stroke, draw_in } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(IconPrim {
                     test_id,
@@ -266,13 +293,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     draw_in,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Icon),
                 }),
                 Vec::new(),
             )
         }
         Node::Link { common, url, external, on_activate, children } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(LinkPrim {
                     test_id,
@@ -282,13 +309,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     route_link: None,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Link),
                 }),
                 build_all(conn, children)?,
             )
         }
         Node::Toggle { common, value: v, on_change } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             let h = handler::<bool, ()>(conn, on_change, || ());
             runtime_scene::item(
                 PrimCell::new(TogglePrim {
@@ -297,13 +324,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     on_change: Rc::new(move |b: bool| h(&b)),
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Toggle),
                 }),
                 Vec::new(),
             )
         }
         Node::Slider { common, value: v, on_change, min, max, step } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             let h = handler::<f32, ()>(conn, on_change, || ());
             runtime_scene::item(
                 PrimCell::new(SliderPrim {
@@ -315,13 +342,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     step,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Slider),
                 }),
                 Vec::new(),
             )
         }
         Node::ActivityIndicator { common, size, color } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ActivityIndicatorPrim {
                     test_id,
@@ -331,13 +358,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     color,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::ActivityIndicator),
                 }),
                 Vec::new(),
             )
         }
         Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
                 PrimCell::new(TextInputPrim {
@@ -357,13 +384,13 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     secure: value(conn, secure),
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::TextInput),
                 }),
                 Vec::new(),
             )
         }
         Node::TextArea { common, value: v, on_change, on_key_down, placeholder, wrap, min_rows, max_rows } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
                 PrimCell::new(TextAreaPrim {
@@ -377,7 +404,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     max_rows,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::TextArea),
                 }),
                 Vec::new(),
             )
@@ -393,7 +420,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             always_bounce,
             children,
         } => {
-            let (test_id, style, a11y) = self::common(conn, common);
+            let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(ScrollViewPrim {
                     test_id,
@@ -409,7 +436,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     always_bounce,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::ScrollView),
                 }),
                 build_all(conn, children)?,
             )
@@ -418,7 +445,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             let row = render_with::<usize>(conn, row);
             runtime_scene::many(PrimCell::new(RepeatPrim { count, row_builder: Box::new(move |i| row(&i)) }))
         }
-        Node::Presence { test_id, a11y: a, child, present, enter, exit } => {
+        Node::Presence { test_id, a11y: a, fill, child, present, enter, exit } => {
             let (c, child) = (conn.clone(), cb(conn, child));
             let present = cb(conn, present);
             runtime_scene::item(
@@ -428,25 +455,34 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     present: Rc::new(move || present.get::<bool>(&[]).unwrap_or(false)),
                     enter,
                     exit,
-                    a11y: a.map(|a| a11y(conn, a)).unwrap_or_default(),
-                    ref_fill: None,
+                    a11y: a.map(|a| a11y(conn, *a)).unwrap_or_default(),
+                    ref_fill: fill_handle(conn, fill, Held::Presence),
                 }),
                 Vec::new(),
             )
         }
-        Node::Portal { target, on_dismiss, trap_focus, style: st, a11y: a, children } => {
+        Node::Portal { target, fill, on_dismiss, trap_focus, style: st, a11y: a, children } => {
             use runtime_shared::primitives::portal::PortalTarget;
             runtime_scene::item(
                 PrimCell::new(PortalPrim {
                     target: match target {
                         WirePortalTarget::Viewport(v) => PortalTarget::Viewport(v),
                         WirePortalTarget::Named(n) => PortalTarget::Named(intern(&n)),
+                        WirePortalTarget::Anchor { rect, side, align, offset } => {
+                            let rect = handler::<(), Option<runtime_shared::primitives::portal::ViewportRect>>(conn, rect, || None);
+                            PortalTarget::Anchor {
+                                target: runtime_shared::primitives::portal::AnchorTarget::from_fn(move || rect(&())),
+                                side,
+                                align,
+                                offset,
+                            }
+                        }
                     },
                     on_dismiss: on_dismiss.map(|id| fire(conn, id)),
                     trap_focus,
-                    style: st.map(|st| style(conn, st)),
-                    a11y: a.map(|a| a11y(conn, a)).unwrap_or_default(),
-                    ref_fill: None,
+                    style: st.map(|st| style(conn, *st)),
+                    a11y: a.map(|a| a11y(conn, *a)).unwrap_or_default(),
+                    ref_fill: fill_handle(conn, fill, Held::Portal),
                 }),
                 build_all(conn, children)?,
             )
@@ -467,7 +503,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             safe_area,
         } => {
             use runtime_shared::primitives::virtualizer::{ItemDiff, ItemSize};
-            let (_, style, a11y) = self::common(conn, common);
+            let (_, style, a11y, fill) = self::common(conn, common);
             let count = handler::<(), usize>(conn, item_count, || 0);
             let key = handler::<usize, u64>(conn, item_key, || 0);
             let size: Rc<dyn Fn(usize) -> f32> = {
@@ -499,7 +535,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     layout,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::Virtualizer),
                     on_scroll: on_scroll.map(|id| {
                         let h = handler::<(f32, f32), ()>(conn, id, || ());
                         Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
@@ -512,7 +548,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             )
         }
         Node::VirtualGrid { common, col_count, row_count, col_width, row_height, cell_key, render_cell, overscan, on_scroll } => {
-            let (_, style, a11y) = self::common(conn, common);
+            let (_, style, a11y, fill) = self::common(conn, common);
             let cols = handler::<(), usize>(conn, col_count, || 0);
             let rows = handler::<(), usize>(conn, row_count, || 0);
             let cw = handler::<usize, f32>(conn, col_width, || 0.0);
@@ -530,7 +566,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     overscan,
                     style,
                     a11y,
-                    ref_fill: None,
+                    ref_fill: fill_handle(conn, fill, Held::VirtualGrid),
                     on_scroll: on_scroll.map(|id| {
                         let h = handler::<(f32, f32), ()>(conn, id, || ());
                         Rc::new(move |x: f32, y: f32| h(&(x, y))) as _
@@ -738,8 +774,36 @@ fn action(conn: &Rc<Conn>, a: WireAction) -> Action {
     }
 }
 
-fn common(conn: &Rc<Conn>, c: Common) -> (Option<&'static str>, Option<StyleProp>, AccessibilityProps) {
-    (c.test_id.as_deref().map(intern), c.style.map(|s| style(conn, s)), c.a11y.map_or_else(Default::default, |a| a11y(conn, a)))
+fn common(conn: &Rc<Conn>, c: Common) -> (Option<&'static str>, Option<StyleProp>, AccessibilityProps, Option<Cb>) {
+    (
+        c.test_id.as_deref().map(intern),
+        c.style.map(|s| style(conn, *s)),
+        c.a11y.map_or_else(Default::default, |a| a11y(conn, *a)),
+        c.fill,
+    )
+}
+
+/// A prim's `ref_fill`, decoded: when the backend fills the ref, hold the
+/// real handle for the bundle (`handles::hold`) and send the bundle its id.
+/// The bundle's fill callback is released with this closure — after the
+/// call, or unrun if the prim never mounts.
+fn fill_handle<H: 'static>(
+    conn: &Rc<Conn>,
+    fill: Option<Cb>,
+    wrap: fn(H) -> super::handles::Held,
+) -> Option<Box<dyn FnOnce(H)>> {
+    let (c, r) = (Rc::downgrade(conn), cb(conn, fill?));
+    Some(Box::new(move |h: H| {
+        let tree: std::rc::Weak<dyn std::any::Any> = c;
+        let id = super::handles::hold(wrap(h), tree);
+        r.call(&to_bytes(&id));
+    }))
+}
+
+/// Callback `id` of the tree `conn` (a handle table entry's tree).
+pub(crate) fn callback_for(conn: &Rc<dyn std::any::Any>, id: Cb) -> CallbackRef {
+    let conn = conn.clone().downcast::<Conn>().unwrap_or_else(|_| panic!("remote codec: a handle's tree is not a Conn"));
+    CallbackRef(cb(&conn, id))
 }
 
 fn a11y(conn: &Rc<Conn>, a: A11y) -> AccessibilityProps {

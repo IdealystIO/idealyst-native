@@ -349,3 +349,30 @@ fn a_host_result_for_a_stopped_bundle_is_dropped() {
     let t = text(&a, &realized);
     assert!(t.contains("boom pressed") && !t.contains("photo #"), "{t}");
 }
+
+// ---- refs over the wasm transport ----
+
+/// A remote component's ref reaches the app's real handle over the
+/// `idealyst_ui.handle_call` import: its button focuses and types into a
+/// text input the app mounted. Unmounting releases the app's entry.
+#[test]
+fn a_remote_components_ref_drives_the_apps_handle() {
+    let a = app();
+    host_mock::take_handle_log();
+    let realized = a.h.mount(a.h.world.enter(|| ui! { spike_remoteattr::Focuser() }));
+    a.h.flush();
+    assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 1);
+    let press = a.h.shared.button_presses.borrow().last().unwrap().clone();
+    press();
+    a.h.flush();
+    let calls = host_mock::take_handle_log();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[0].starts_with("focus n") && calls[1].starts_with("insert_text \"from the bundle\""), "{calls:?}");
+    drop(press);
+    drop(realized);
+    a.h.flush();
+    a.h.forget_handlers();
+    assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0, "the handle went with its tree");
+    assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0);
+}
+

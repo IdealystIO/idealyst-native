@@ -378,6 +378,30 @@ pub fn define_imports(linker: &mut Linker<KState>) {
         .expect("define current_effect");
     import!(linker, "in_collector", |c| -> u32 { H::in_collector() as u32 });
 
+    // A bundle calling a method on a handle the app holds for it (a `ref`;
+    // see runtime_vocabulary::remote::handles). The reply goes into the
+    // bundle's argument buffer, like a sync host function's.
+    linker
+        .func_wrap("idealyst_ui", "handle_call", |mut c: Caller<'_, KState>, id: u32, ptr: u32, len: u32| -> Result<i64, wasmi::Error> {
+            let memory = c.data().memory.expect("kernel bridge: bundle exports no memory");
+            let mut args = vec![0u8; len as usize];
+            memory
+                .read(&c, ptr as usize, &mut args)
+                .map_err(|_| wasmi::Error::new(format!("handle_call: bundle pointer {ptr}+{len} is out of bounds")))?;
+            let reply = with_active(&mut c, || runtime_vocabulary::remote::handles::handle_call(id, &args));
+            let alloc = c
+                .get_export("idealyst_ui_alloc")
+                .and_then(|e| e.into_func())
+                .ok_or_else(|| wasmi::Error::new("handle_call: the bundle exports no idealyst_ui_alloc"))?
+                .typed::<u32, u32>(&c)?;
+            let out = alloc.call(&mut c, reply.len() as u32)?;
+            memory
+                .write(&mut c, out as usize, &reply)
+                .map_err(|_| wasmi::Error::new("handle_call: reply buffer out of bounds"))?;
+            Ok(reply.len() as i64)
+        })
+        .expect("define handle_call");
+
     linker
         .func_wrap(MODULE, "signal_create", |mut c: Caller<'_, KState>, world: i64, value: i64, out: u32| {
             let b = c.data().bundle;

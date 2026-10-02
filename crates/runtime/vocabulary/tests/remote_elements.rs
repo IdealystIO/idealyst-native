@@ -223,9 +223,10 @@ fn an_unsupported_primitive_panics_at_encode_by_name() {
 }
 
 #[test]
-#[should_panic(expected = "`view`'s `ref` can't cross")]
+#[should_panic(expected = "`link`'s `route (typed route params)` can't cross")]
 fn an_unsupported_field_panics_at_encode_by_name() {
-    let tree = view().on_handle(|_| {}).build();
+    const HOME: runtime_shared::primitives::navigator::Route = runtime_shared::primitives::navigator::Route::new("home", "/");
+    let tree = runtime_vocabulary::builders::link().route(&HOME, ()).child(text().content("home")).build();
     bundle::encode(tree);
 }
 
@@ -599,4 +600,196 @@ mod structural {
         assert_eq!(remote_replies, native_replies);
         assert_eq!(native_replies[2], "changed false true false", "{native_replies:?}");
     }
+}
+
+// ---- phase C: refs (imperative handles) ----
+
+mod refs {
+    use std::cell::RefCell;
+
+    use super::*;
+    use runtime_shared::handles::{PressableHandle, ViewHandle};
+    use runtime_shared::primitives::portal::AnchorableHandle;
+    use runtime_shared::primitives::scroll_view::ScrollViewHandle;
+    use runtime_shared::primitives::text_input::TextInputHandle;
+    use runtime_vocabulary::builders::{scroll_view, text_input};
+
+    #[derive(Default)]
+    struct Held {
+        view: Option<ViewHandle>,
+        input: Option<TextInputHandle>,
+        scroll: Option<ScrollViewHandle>,
+        press: Option<PressableHandle>,
+        layout: Option<runtime_shared::handles::LayoutSubscription>,
+    }
+
+    /// A component that takes refs and, from its button, drives them — the
+    /// handles' methods run the bundle's code against nodes the app mounted.
+    fn app(log: Rc<RefCell<Vec<String>>>) -> Element {
+        component_scope(move || {
+            let held = Rc::new(RefCell::new(Held::default()));
+            let (h1, h2, h3, h4, h5) = (held.clone(), held.clone(), held.clone(), held.clone(), held.clone());
+            let l = log.clone();
+            view()
+                .on_handle(move |h| h1.borrow_mut().view = Some(h))
+                .child(text_input().value("x").on_change(|_| {}).on_handle(move |h| h2.borrow_mut().input = Some(h)))
+                .child(scroll_view().on_handle(move |h| h3.borrow_mut().scroll = Some(h)).child(text().content("body")))
+                .child(pressable(|| {}).on_handle(move |h| h4.borrow_mut().press = Some(h)).child(text().content("p")))
+                .child(button().label("drive").on_press(move || {
+                    let held = h5.borrow();
+                    let view = held.view.clone().expect("view ref filled");
+                    l.borrow_mut().push(format!("frame {:?} rect {:?}", view.frame(), view.rect()));
+                    let input = held.input.clone().expect("input ref filled");
+                    input.focus();
+                    input.insert_text("hi");
+                    input.select_all();
+                    input.blur();
+                    held.scroll.clone().expect("scroll ref filled").scroll_to(0.0, 40.0);
+                    held.press.clone().expect("press ref filled").click();
+                    drop(held);
+                    let l2 = l.clone();
+                    let sub = view.on_layout(move |w, h| l2.borrow_mut().push(format!("layout {w}x{h}")));
+                    h5.borrow_mut().layout = Some(sub);
+                }))
+                .build()
+        })
+    }
+
+    /// The backend log and host-mock's handle-method log per step, and what
+    /// the component's own code observed.
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let tree = h.world.enter(|| app(log.clone()));
+        let tree = if remote { cross(tree) } else { tree };
+        let mut steps = Vec::new();
+        host_mock::take_handle_log();
+        let realized = h.mount(tree);
+        h.flush();
+        steps.push(h.take_log());
+        steps.push(host_mock::take_handle_log());
+        (h.shared.button_presses.borrow()[0].clone())();
+        h.flush();
+        steps.push(h.take_log());
+        steps.push(host_mock::take_handle_log());
+        drop(realized);
+        h.flush();
+        h.shared.button_presses.borrow_mut().clear();
+        h.shared.press_handlers.borrow_mut().clear();
+        steps.push(h.take_log());
+        steps.push(host_mock::take_handle_log());
+        let out = log.borrow().clone();
+        (steps, out)
+    }
+
+    #[test]
+    fn handles_drive_the_backend_exactly_like_native_ones() {
+        let (native, native_log) = script(false);
+        let (remote, remote_log) = script(true);
+        for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+            assert_eq!(r, n, "step {step}: remote and native diverge");
+        }
+        assert_eq!(remote_log, native_log);
+        // Every method reached the backend's handle (step 3: the press).
+        let methods: Vec<&str> = native[3].iter().map(|l| l.split(' ').next().unwrap_or("")).collect();
+        assert_eq!(
+            methods,
+            ["frame", "rect", "focus", "insert_text", "select_all", "blur", "scroll_to", "click", "subscribe_layout"],
+            "{:?}",
+            native[3]
+        );
+        assert_eq!(native[5], ["unsubscribe_layout n0"], "the subscription ends with the component");
+    }
+
+    /// A portal anchored to a node the bundle holds a ref to: the app's
+    /// portal asks the bundle for the anchor's rect, and the bundle asks
+    /// the app's real handle — the same calls reach the backend as natively.
+    #[test]
+    fn an_anchored_portal_measures_through_the_bundles_ref() {
+        use runtime_shared::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, PortalTarget};
+        use runtime_shared::Ref;
+        use runtime_vocabulary::builders::portal;
+        fn anchored() -> Element {
+            component_scope(|| {
+                let anchor = Ref::<ViewHandle>::new();
+                view()
+                    .child(view().on_handle(move |h| anchor.fill(h)).child(text().content("anchor")))
+                    .child(
+                        portal(PortalTarget::Anchor {
+                            target: AnchorTarget::from(anchor),
+                            side: ElementSide::Below,
+                            align: ElementAlign::Start,
+                            offset: 4.0,
+                        })
+                        .child(text().content("popover")),
+                    )
+                    .build()
+            })
+        }
+        let run = |remote: bool| {
+            let h = Harness::new();
+            host_mock::take_handle_log();
+            let tree = h.world.enter(anchored);
+            let tree = if remote { cross(tree) } else { tree };
+            let realized = h.mount(tree);
+            h.flush();
+            let out = (h.take_log(), host_mock::take_handle_log());
+            drop(realized);
+            h.flush();
+            out
+        };
+        let (native, remote) = (run(false), run(true));
+        assert_eq!(remote, native);
+        assert!(native.0.iter().any(|l| l.contains("portal")), "{:?}", native.0);
+        // The portal measured its anchor through the view's handle.
+        assert_eq!(native.1.len(), 2, "{:?}", native.1);
+        assert!(native.1[0].starts_with("rect n") && native.1[1].starts_with("anchor Below Start 4 Some("), "{:?}", native.1);
+    }
+
+    /// The app releases every handle it held for a bundle: when the bundle
+    /// drops its copy, and — for a bundle that never does (it was stopped)
+    /// — when the tree that made it is gone.
+    #[test]
+    fn held_handles_are_released() {
+        let h = Harness::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let tree = h.world.enter(|| cross(app(log.clone())));
+        let realized = h.mount(tree);
+        h.flush();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 4);
+        drop(realized);
+        h.flush();
+        // The mock keeps every handler so tests can fire it — real owners
+        // of what they capture, unlike a backend's, which unmount drops.
+        h.forget_handlers();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0, "the bundle dropped its handles with its scope");
+
+        // A bundle that keeps its handle beyond its tree (here: in a
+        // global; in practice a `Ref` slot, or a bundle stopped before it
+        // could release) never releases it; the app's entry goes with the
+        // tree anyway.
+        thread_local! { static KEPT: RefCell<Vec<ViewHandle>> = const { RefCell::new(Vec::new()) }; }
+        let tree = h.world.enter(|| cross(view().on_handle(|v| KEPT.with(|k| k.borrow_mut().push(v))).build()));
+        let realized = h.mount(tree);
+        h.flush();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 1);
+        drop(realized);
+        h.flush();
+        h.forget_handlers();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0, "the tree's handle went with the tree");
+        assert_eq!(KEPT.with(|k| k.borrow().len()), 1, "the bundle still holds its (now inert) handle");
+        KEPT.with(|k| k.borrow_mut().clear());
+    }
+}
+
+/// Regression: a bundle runs on a 64 KB wasm stack (see stream-spike's
+/// `guest_build`), and the encoder recurses once per tree level holding a
+/// few `Node`s. With a `StyleRules` inline (2.2 KB, twice in a sheet
+/// application) a `Node` was ~5 KB and a modest tree overflowed the stack —
+/// which in wasm is an "out of bounds memory access" trap mid-mount, not a
+/// stack-overflow message. Styles are boxed; this pins the size.
+#[test]
+fn regression_a_node_stays_small_enough_for_a_bundles_stack() {
+    let size = std::mem::size_of::<runtime_vocabulary::remote::Node>();
+    assert!(size <= 512, "Node is {size} bytes — box the large field you added");
 }

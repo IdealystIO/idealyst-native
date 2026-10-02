@@ -103,3 +103,21 @@ pub fn Snapshot() -> Element {
         }
     }
 }
+
+/// A remote component using a `ref`: its button focuses its text input and
+/// types into it — through the app's real handle.
+#[component(remote)]
+pub fn Focuser() -> Element {
+    let input: runtime_core::Ref<runtime_core::TextInputHandle> = runtime_core::Ref::new();
+    ui! {
+        view() {
+            text_input(value = "", on_change = |_| {}, bind = input)
+            button(label = "focus", on_click = move || {
+                if let Some(h) = input.get() {
+                    h.focus();
+                    h.insert_text("from the bundle");
+                }
+            })
+        }
+    }
+}

@@ -340,6 +340,21 @@ pub fn take_animated_log() -> Vec<String> {
 }
 
 impl runtime_shared::ViewOps for RecordingViewOps {
+    fn frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        handle_rec(node, "frame".into());
+        None
+    }
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        handle_rec(node, "rect".into());
+        ViewportRect::default()
+    }
+    fn subscribe_layout(&self, node: &dyn Any, _callback: Box<dyn Fn(f32, f32)>) -> runtime_shared::handles::LayoutSubscription {
+        handle_rec(node, "subscribe_layout".into());
+        let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
+        runtime_shared::handles::LayoutSubscription::new(move || {
+            let _ = HANDLE_LOG.try_with(|l| l.borrow_mut().push(format!("unsubscribe_layout n{n}")));
+        })
+    }
     fn set_animated_f32(&self, node: &dyn Any, prop: AnimProp, value: f32) {
         let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
         ANIMATED_LOG.with(|l| {
@@ -350,6 +365,81 @@ impl runtime_shared::ViewOps for RecordingViewOps {
 }
 
 static RECORDING_VIEW_OPS: RecordingViewOps = RecordingViewOps;
+
+// ---------------------------------------------------------------------------
+// Recording handle ops (imperative refs)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static HANDLE_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the thread-local handle-method log (`"focus n3"`, `"scroll_to n5
+/// 0 40"`, …): every imperative-ref method a test's code called on a
+/// handle this mock made. The methods answer exactly what the trait
+/// defaults do (zero rect, no frame, a subscription that never fires) —
+/// they only record.
+pub fn take_handle_log() -> Vec<String> {
+    HANDLE_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+fn handle_rec(node: &dyn Any, what: String) {
+    let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
+    HANDLE_LOG.with(|l| l.borrow_mut().push(format!("{what} n{n}")));
+}
+
+/// Every handle-ops trait the vocabulary's refs use, recording.
+struct RecordingHandleOps;
+
+static RECORDING_HANDLE_OPS: RecordingHandleOps = RecordingHandleOps;
+
+impl runtime_shared::PressableOps for RecordingHandleOps {
+    fn click(&self, node: &dyn Any) {
+        handle_rec(node, "click".into())
+    }
+}
+
+impl runtime_shared::ButtonOps for RecordingHandleOps {
+    fn click(&self, node: &dyn Any) {
+        handle_rec(node, "click".into())
+    }
+}
+
+impl primitives::text_input::TextInputOps for RecordingHandleOps {
+    fn focus(&self, node: &dyn Any) {
+        handle_rec(node, "focus".into())
+    }
+    fn blur(&self, node: &dyn Any) {
+        handle_rec(node, "blur".into())
+    }
+    fn select_all(&self, node: &dyn Any) {
+        handle_rec(node, "select_all".into())
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        handle_rec(node, format!("insert_text {text:?}"))
+    }
+}
+
+impl primitives::text_area::TextAreaOps for RecordingHandleOps {
+    fn focus(&self, node: &dyn Any) {
+        handle_rec(node, "focus".into())
+    }
+    fn blur(&self, node: &dyn Any) {
+        handle_rec(node, "blur".into())
+    }
+    fn select_all(&self, node: &dyn Any) {
+        handle_rec(node, "select_all".into())
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        handle_rec(node, format!("insert_text {text:?}"))
+    }
+}
+
+impl primitives::scroll_view::ScrollViewOps for RecordingHandleOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        handle_rec(node, format!("scroll_to {x} {y}"))
+    }
+}
 
 // ===========================================================================
 // HostMock
@@ -583,6 +673,10 @@ impl caps::PressableOps for HostMock {
         self.s.press_handlers.borrow_mut().push(on_click);
         self.mint("pressable".into())
     }
+
+    fn make_pressable_handle(&self, node: &Node) -> runtime_shared::PressableHandle {
+        runtime_shared::PressableHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +710,10 @@ impl caps::TextOps for HostMock {
 }
 
 impl caps::ButtonOps for HostMock {
+    fn make_button_handle(&self, node: &Node) -> runtime_shared::ButtonHandle {
+        runtime_shared::ButtonHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -739,6 +837,14 @@ impl caps::LinkOps for HostMock {
 // ---------------------------------------------------------------------------
 
 impl caps::TextInputOps for HostMock {
+    fn make_text_input_handle(&self, node: &Node) -> primitives::text_input::TextInputHandle {
+        primitives::text_input::TextInputHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
+    fn make_text_area_handle(&self, node: &Node) -> primitives::text_area::TextAreaHandle {
+        primitives::text_area::TextAreaHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_text_input(
         &mut self,
         _initial_value: &str,
@@ -882,6 +988,10 @@ impl caps::ActivityIndicatorOps for HostMock {
 // ---------------------------------------------------------------------------
 
 impl caps::ScrollOps for HostMock {
+    fn make_scroll_view_handle(&self, node: &Node) -> primitives::scroll_view::ScrollViewHandle {
+        primitives::scroll_view::ScrollViewHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_scroll_view(
         &mut self,
         _horizontal: bool,
@@ -1038,11 +1148,17 @@ impl caps::GraphicsOps for HostMock {
 impl caps::PortalOps for HostMock {
     fn create_portal(
         &mut self,
-        _target: PortalTarget,
+        target: PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
     ) -> Node {
+        // Measure an anchor the way a real backend positions the portal —
+        // recorded in the handle log (`take_handle_log`), not the main one.
+        if let PortalTarget::Anchor { target, side, align, offset } = &target {
+            let rect = target.rect();
+            HANDLE_LOG.with(|l| l.borrow_mut().push(format!("anchor {side:?} {align:?} {offset} {rect:?}")));
+        }
         self.s.portal_dismissals.borrow_mut().push(on_dismiss);
         self.mint("portal".into())
     }
@@ -1483,6 +1599,35 @@ impl Harness {
 
     pub fn state_setter(&self, i: usize) -> Rc<dyn Fn(StateBits, bool)> {
         self.shared.state_setters.borrow()[i].clone()
+    }
+
+    /// Drop every handler this mock kept so tests could fire it. A real
+    /// backend drops a node's handlers when it unmounts; the mock keeps
+    /// them, which makes them owners of whatever they capture. Leak checks
+    /// call this after unmounting.
+    pub fn forget_handlers(&self) {
+        drop(std::mem::take(&mut *self.shared.state_setters.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.press_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.button_presses.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.slider_changes.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.toggle_changes.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.text_input_changes.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.blur_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.key_down_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.link_activations.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.scroll_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.end_observers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.virtualizers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.virtual_grids.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.graphics.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.portal_dismissals.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.file_drop_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.touch_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.hover_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.wheel_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.image_load_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.image_error_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.focus_handlers.borrow_mut()));
     }
 
     pub fn press_handler(&self, i: usize) -> Rc<dyn Fn()> {

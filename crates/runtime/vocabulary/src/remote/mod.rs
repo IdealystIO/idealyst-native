@@ -53,6 +53,7 @@ use runtime_shared::{SheetShape, StyleRules, VariantSet};
 
 #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
 pub mod bundle;
+pub mod handles;
 #[cfg(not(idealyst_stream_guest))]
 pub mod host;
 /// The bundle half's wasm exports.
@@ -182,7 +183,8 @@ pub enum Node {
     Repeat { count: usize, row: Cb },
     Presence {
         test_id: Option<String>,
-        a11y: Option<A11y>,
+        a11y: Option<Box<A11y>>,
+        fill: Option<Cb>,
         /// Replies a [`Node`].
         child: Cb,
         /// Replies a `bool`.
@@ -192,10 +194,11 @@ pub enum Node {
     },
     Portal {
         target: WirePortalTarget,
+        fill: Option<Cb>,
         on_dismiss: Option<Cb>,
         trap_focus: bool,
-        style: Option<Style>,
-        a11y: Option<A11y>,
+        style: Option<Box<Style>>,
+        a11y: Option<Box<A11y>>,
         children: Vec<Node>,
     },
     Virtualizer {
@@ -322,20 +325,41 @@ pub struct WireDroppedFile {
     pub path: Option<std::path::PathBuf>,
 }
 
-/// A portal's target. An anchor to a node needs that node's handle (a
-/// `ref`), which does not cross yet.
+/// A portal's target.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum WirePortalTarget {
     Viewport(runtime_shared::primitives::portal::ViewportPlacement),
     Named(String),
+    /// An anchor to a node the bundle holds a `ref` to. `rect` replies an
+    /// `Option<ViewportRect>` — the bundle's `AnchorTarget::rect`, which
+    /// asks the app's real handle (see [`handles`]).
+    Anchor {
+        rect: Cb,
+        side: runtime_shared::primitives::portal::ElementSide,
+        align: runtime_shared::primitives::portal::ElementAlign,
+        offset: f32,
+    },
 }
 
 /// What every crossing primitive carries.
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Common {
     pub test_id: Option<String>,
-    pub style: Option<Style>,
-    pub a11y: Option<A11y>,
+    /// Boxed: a `Style` carries `StyleRules` inline (kilobytes), and the
+    /// encoder recurses on a bundle's small stack — see
+    /// `regression_a_node_stays_small_enough_for_a_bundles_stack`.
+    pub style: Option<Box<Style>>,
+    pub a11y: Option<Box<A11y>>,
+    /// The prim's `ref_fill`: called once with the app's id for the real
+    /// handle (see [`handles`]).
+    pub fill: Option<Cb>,
+}
+
+impl Common {
+    pub fn with_fill(mut self, fill: Option<Cb>) -> Self {
+        self.fill = fill;
+        self
+    }
 }
 
 /// A `Value<T>`: a constant, or a getter the host's binding effect calls

@@ -36,6 +36,7 @@
 /// for `Scale*`, in DIPs for translates). The color family takes
 /// sRGB `[r, g, b, a]` with channels in `0..=1`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AnimProp {
     // --- Scalar (f32) ---
     /// Compositing opacity. `0.0` = invisible, `1.0` = opaque.

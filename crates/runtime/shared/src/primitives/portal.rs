@@ -97,6 +97,25 @@ impl AnchorTarget {
     pub fn rect(&self) -> Option<ViewportRect> {
         self.inner.rect()
     }
+
+    /// An anchor whose rect `rect` computes — for a remote component's
+    /// anchor, whose `Ref` lives in the bundle: the app asks the bundle for
+    /// the rect (feature `remote-serde`).
+    #[cfg(feature = "remote-serde")]
+    #[doc(hidden)]
+    pub fn from_fn(rect: impl Fn() -> Option<ViewportRect> + 'static) -> Self {
+        Self { inner: Rc::new(AnchorTargetFn(rect)) }
+    }
+}
+
+#[cfg(feature = "remote-serde")]
+struct AnchorTargetFn<F>(F);
+
+#[cfg(feature = "remote-serde")]
+impl<F: Fn() -> Option<ViewportRect>> AnchorTargetInner for AnchorTargetFn<F> {
+    fn rect(&self) -> Option<ViewportRect> {
+        (self.0)()
+    }
 }
 
 trait AnchorTargetInner {
@@ -122,6 +141,7 @@ pub trait AnchorableHandle: Clone + 'static {
 /// Viewport-relative rect, in CSS pixels (or the backend's
 /// equivalent point unit). Origin is top-left of the viewport.
 #[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ViewportRect {
     pub x: f32,
     pub y: f32,

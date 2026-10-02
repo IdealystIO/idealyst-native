@@ -309,11 +309,9 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     };
     if let Some(cell) = data.downcast_ref::<PrimCell<ViewPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("view", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::handles::ViewHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::View {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             safe_area: p.safe_area.0,
             preserves_focus: p.preserves_focus,
             is_container: p.is_container,
@@ -326,11 +324,9 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<PressablePrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("pressable", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::handles::PressableHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::Pressable {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             on_press: register(Entry::Fire(p.on_press)),
             disabled: p.disabled.map(val),
             preserves_focus: p.preserves_focus,
@@ -339,9 +335,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TextPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("text", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::handles::TextHandle::new(n, &super::handles::REMOTE_OPS));
         let content = match p.content {
             TextSourceProp::Value(v) => TextContent::Value(val(v)),
             // The f-string fast path exists for JS-binding backends (web),
@@ -350,15 +344,13 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             TextSourceProp::JsBinding(b) => TextContent::Value(getter(b.compute_fallback)),
             TextSourceProp::Runs(runs) => TextContent::Runs(runs),
         };
-        return Node::Text { common: common(p.test_id, p.style, p.a11y), content };
+        return Node::Text { common: common(p.test_id, p.style, p.a11y).with_fill(fill), content };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ButtonPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("button", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::handles::ButtonHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::Button {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             label: val(p.label),
             on_press: action(p.on_press),
             leading_icon: p.leading_icon.map(WireIcon::from),
@@ -368,11 +360,9 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ImagePrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("image", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::image::ImageHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::Image {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             src: val(p.src),
             alt: val(p.alt),
             on_load: p.on_load.map(|f| handler(move |e| f(e))),
@@ -382,11 +372,9 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<IconPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("icon", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::icon::IconHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::Icon {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             data: val_map(p.data, WireIcon::from),
             color: p.color.map(val),
             stroke: p.stroke.map(val),
@@ -395,14 +383,12 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<LinkPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("link", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::link::LinkHandle::new(n, &super::handles::REMOTE_OPS));
         if p.route_link.is_some() {
             refuse("link", "route (typed route params)");
         }
         return Node::Link {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             url: val(p.url),
             external: p.external,
             on_activate: p.on_activate.map(|f| register(Entry::Fire(f))),
@@ -411,24 +397,20 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TogglePrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("toggle", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::toggle::ToggleHandle::new(n, &super::handles::REMOTE_OPS));
         let f = p.on_change;
         return Node::Toggle {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             value: val(p.value),
             on_change: handler(move |v: &bool| f(*v)),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<SliderPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("slider", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::slider::SliderHandle::new(n, &super::handles::REMOTE_OPS));
         let f = p.on_change;
         return Node::Slider {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             value: val(p.value),
             on_change: handler(move |v: &f32| f(*v)),
             min: p.min,
@@ -438,19 +420,15 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ActivityIndicatorPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("activity_indicator", "ref");
-        }
-        return Node::ActivityIndicator { common: common(p.test_id, p.style, p.a11y), size: val(p.size), color: p.color };
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::activity_indicator::ActivityIndicatorHandle::new(n, &super::handles::REMOTE_OPS));
+        return Node::ActivityIndicator { common: common(p.test_id, p.style, p.a11y).with_fill(fill), size: val(p.size), color: p.color };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TextInputPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("text_input", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::text_input::TextInputHandle::new(n, &super::handles::REMOTE_OPS));
         let f = p.on_change;
         return Node::TextInput {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             value: val(p.value),
             on_change: handler(move |v: &String| f(v.clone())),
             on_key_down: p.on_key_down.map(|f| handler(move |e| f(e))),
@@ -462,12 +440,10 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TextAreaPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("text_area", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::text_area::TextAreaHandle::new(n, &super::handles::REMOTE_OPS));
         let f = p.on_change;
         return Node::TextArea {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             value: val(p.value),
             on_change: handler(move |v: &String| f(v.clone())),
             on_key_down: p.on_key_down.map(|f| handler(move |e| f(e))),
@@ -479,11 +455,9 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ScrollViewPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("scroll_view", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::scroll_view::ScrollViewHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::ScrollView {
-            common: common(p.test_id, p.style, p.a11y),
+            common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             horizontal: p.horizontal,
             on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
             on_end_reached: p.on_end_reached.map(|f| register(Entry::Fire(f))),
@@ -496,13 +470,12 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<PresencePrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("presence", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::presence::PresenceHandle::new(n, &super::handles::REMOTE_OPS));
         let child: Rc<dyn Fn() -> Element> = Rc::from(p.child);
         return Node::Presence {
             test_id: p.test_id.map(str::to_owned),
-            a11y: wire_a11y(p.a11y),
+            a11y: wire_a11y(p.a11y).map(Box::new),
+            fill,
             child: register(Entry::Build(child)),
             present: register(Entry::Changed(p.present)),
             enter: p.enter,
@@ -512,36 +485,35 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     if let Some(cell) = data.downcast_ref::<PrimCell<PortalPrim>>() {
         use runtime_shared::primitives::portal::PortalTarget;
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("portal", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::portal::PortalHandle::new(n, &super::handles::REMOTE_OPS));
         let target = match p.target {
             PortalTarget::Viewport(v) => WirePortalTarget::Viewport(v),
             PortalTarget::Named(n) => WirePortalTarget::Named(n.to_owned()),
-            PortalTarget::Anchor { .. } => refuse("portal", "anchor target (a node's handle)"),
+            PortalTarget::Anchor { target, side, align, offset } => {
+                WirePortalTarget::Anchor { rect: handler(move |_: &()| target.rect()), side, align, offset }
+            }
         };
         return Node::Portal {
             target,
+            fill,
             on_dismiss: p.on_dismiss.map(|f| register(Entry::Fire(f))),
             trap_focus: p.trap_focus,
-            style: p.style.map(style_prop),
-            a11y: wire_a11y(p.a11y),
+            style: p.style.map(|s| Box::new(style_prop(s))),
+            a11y: wire_a11y(p.a11y).map(Box::new),
             children: encode_all(children),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<VirtualizerPrim>>() {
         use runtime_shared::primitives::virtualizer::ItemSize;
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("virtualizer", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::virtualizer::VirtualizerHandle::new(n, &super::handles::REMOTE_OPS));
         let (count, key, render) = (p.item_count, p.item_key, p.render_item);
         let (measured, size) = match p.item_size {
             ItemSize::Known(f) => (false, f),
             ItemSize::Measured(f) => (true, f),
         };
         return Node::Virtualizer {
-            common: common(None, p.style, p.a11y),
+            common: common(None, p.style, p.a11y).with_fill(fill),
             item_count: handler(move |_: &()| count()),
             item_key: handler(move |i: &usize| key(*i)),
             measured,
@@ -567,13 +539,11 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<VirtualGridPrim>>() {
         let p = cell.take();
-        if p.ref_fill.is_some() {
-            refuse("virtual_grid", "ref");
-        }
+        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::virtual_grid::VirtualGridHandle::new(n, &super::handles::REMOTE_OPS));
         let (cols, rows, cw, rh, key, render) =
             (p.col_count, p.row_count, p.col_width, p.row_height, p.cell_key, p.render_cell);
         return Node::VirtualGrid {
-            common: common(None, p.style, p.a11y),
+            common: common(None, p.style, p.a11y).with_fill(fill),
             col_count: handler(move |_: &()| cols()),
             row_count: handler(move |_: &()| rows()),
             col_width: handler(move |i: &usize| cw(*i)),
@@ -595,7 +565,12 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
 }
 
 fn common(test_id: Option<&'static str>, style: Option<StyleProp>, a11y: AccessibilityProps) -> Common {
-    Common { test_id: test_id.map(str::to_owned), style: style.map(style_prop), a11y: wire_a11y(a11y) }
+    Common {
+        test_id: test_id.map(str::to_owned),
+        style: style.map(|s| Box::new(style_prop(s))),
+        a11y: wire_a11y(a11y).map(Box::new),
+        fill: None,
+    }
 }
 
 fn getter<T: Serialize + 'static>(f: Rc<dyn Fn() -> T>) -> Val<T> {
