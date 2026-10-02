@@ -437,3 +437,91 @@ fn a_remote_screen_navigates_the_apps_navigator() {
     a.h.forget_handlers();
     assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0);
 }
+
+// ---- navigation: a navigator DEFINED in a remote component ----
+
+/// What a run showed after each step: every text, without node ids.
+fn nav_steps(remote: bool) -> Vec<String> {
+    let a = app();
+    let tree = a.h.world.enter(|| if remote { ui! { spike_remoteattr::RemoteNavApp() } } else { ui! { spike_remoteattr::NativeNavApp() } });
+    let realized = a.h.mount(tree);
+    a.h.flush();
+    let shown = |a: &App| {
+        let mut texts: Vec<String> = screen_texts(a)
+            .lines()
+            .filter_map(|l| l.split_once(" text ").map(|(_, t)| t.to_string()))
+            .collect();
+        texts.sort();
+        texts.join(" | ")
+    };
+    let mut steps = vec![shown(&a)];
+    let press = |a: &App, label: &str| {
+        let i = ["back", "push 7"].iter().position(|l| *l == label).unwrap();
+        (a.h.shared.button_presses.borrow()[i].clone())();
+        a.h.flush();
+    };
+    press(&a, "push 7");
+    steps.push(shown(&a));
+    press(&a, "back");
+    steps.push(shown(&a));
+    (a.h.link_activation(0))();
+    a.h.flush();
+    steps.push(shown(&a));
+    drop(realized);
+    a.h.flush();
+    a.h.forget_handlers();
+    steps.push(format!("held {} live {}", runtime_vocabulary::remote::handles::held_handles(), runtime_vocabulary::remote::host::live_trees()));
+    steps
+}
+
+/// A stack navigator defined INSIDE a remote component — its screens,
+/// typed params, layout and chrome options in the bundle, the navigator
+/// machinery in the app — shows exactly what the same navigator compiled
+/// into the app shows, through a typed push, a pop and a route link.
+#[test]
+fn a_navigator_defined_in_a_remote_component_behaves_like_the_native_one() {
+    let native = nav_steps(false);
+    let remote = nav_steps(true);
+    assert_eq!(remote, native);
+    assert!(native[0].contains("depth 1 back false title -") && native[0].contains("home"), "{native:?}");
+    assert!(native[1].contains("item 7") && native[1].contains("depth 2 back true title Item"), "{native:?}");
+    assert!(native[2].contains("depth 1 back false"), "{native:?}");
+    assert!(native[3].contains("item 4"), "{native:?}");
+    assert_eq!(native[4], "held 0 live 0");
+}
+
+fn tab_steps(remote: bool) -> Vec<String> {
+    let a = app();
+    let tree = a.h.world.enter(|| if remote { ui! { spike_remoteattr::RemoteTabs() } } else { ui! { spike_remoteattr::NativeTabs() } });
+    let realized = a.h.mount(tree);
+    a.h.flush();
+    let shown = |a: &App| {
+        let mut texts: Vec<String> =
+            screen_texts(a).lines().filter_map(|l| l.split_once(" text ").map(|(_, t)| t.to_string())).collect();
+        texts.sort();
+        texts.join(" | ")
+    };
+    let mut steps = vec![shown(&a)];
+    for i in [1, 0] {
+        (a.h.shared.button_presses.borrow()[i].clone())();
+        a.h.flush();
+        steps.push(shown(&a));
+    }
+    drop(realized);
+    a.h.flush();
+    a.h.forget_handlers();
+    steps.push(format!("held {} live {}", runtime_vocabulary::remote::handles::held_handles(), runtime_vocabulary::remote::host::live_trees()));
+    steps
+}
+
+/// The same for a swap navigator: tabs selected through `SwapNav`.
+#[test]
+fn a_swap_navigator_defined_in_a_remote_component_behaves_like_the_native_one() {
+    let native = tab_steps(false);
+    let remote = tab_steps(true);
+    assert_eq!(remote, native);
+    assert!(native[0].contains("tab feed") && native[0].contains("feed screen"), "{native:?}");
+    assert!(native[1].contains("tab profile") && native[1].contains("profile screen"), "{native:?}");
+    assert!(native[2].contains("tab feed"), "{native:?}");
+    assert_eq!(native[3], "held 0 live 0");
+}

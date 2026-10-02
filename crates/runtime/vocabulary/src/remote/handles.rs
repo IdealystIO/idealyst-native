@@ -62,6 +62,9 @@ pub enum HandleCall {
     Release,
     /// A navigation command on a navigator handle (`NavHandle`).
     Nav(WireNav),
+    /// Call an app closure handed to the bundle (`Held::Call`) with encoded
+    /// arguments; → its encoded reply.
+    Invoke(Vec<u8>),
 }
 
 /// A `NavCommand` as it crosses. Typed params never do: the receiving
@@ -353,6 +356,13 @@ mod bundle_side {
         handle
     }
 
+    /// A bundle closure calling app closure `id` (`Held::Call`) with
+    /// encoded arguments. Dropping its last copy releases the app's entry.
+    pub fn app_call(id: u32) -> Rc<dyn Fn(&[u8]) -> Vec<u8>> {
+        let node = Rc::new(RemoteNode(id));
+        Rc::new(move |args: &[u8]| try_send(node.0, &HandleCall::Invoke(args.to_vec())).unwrap_or_default())
+    }
+
     /// The app's id for `handle`, if it is one this bundle received.
     pub fn nav_id(handle: &crate::prims::NavHandle) -> Option<u32> {
         NAV_IDS.with(|m| m.borrow().get(&handle.identity()).copied())
@@ -428,6 +438,8 @@ mod host_side {
         /// `Ref<H>` itself, so handing it back to an app component returns
         /// the same ref.
         NavRef { get: Rc<dyn Fn() -> Option<crate::prims::NavHandle>>, original: Rc<dyn std::any::Any> },
+        /// An app closure a bundle may call (a navigator's `pop`).
+        Call(Rc<dyn Fn(&[u8]) -> Vec<u8>>),
     }
 
     struct Entry {
@@ -493,6 +505,22 @@ mod host_side {
             Some(Held::NavRef { original, .. }) => Some(original.clone()),
             _ => None,
         })
+    }
+
+    /// Drop the entries `tree` made (it unmounted).
+    pub(crate) fn purge_tree(tree: &Weak<dyn std::any::Any>) {
+        let gone: Vec<Entry> = HANDLES
+            .try_with(|h| {
+                let mut h = h.borrow_mut();
+                let ids: Vec<u32> = h
+                    .iter()
+                    .filter(|(_, e)| e.tree.as_ref().is_some_and(|t| Weak::ptr_eq(t, tree)))
+                    .map(|(id, _)| *id)
+                    .collect();
+                ids.into_iter().filter_map(|id| h.remove(&id)).collect()
+            })
+            .unwrap_or_default();
+        drop(gone);
     }
 
     /// Drop the entries whose tree is gone (`host::Conn`'s drop).
@@ -603,6 +631,7 @@ mod host_side {
             (H::Virtualizer(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::VirtualGrid(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::Nav(nav), C::Nav(cmd)) => unit(nav.dispatch(nav_command(cmd))),
+            (H::Call(f), C::Invoke(args)) => f(&args),
             // An unfilled ref drops the command, as native code's
             // `if let Some(h) = nav.get()` would.
             (H::NavRef { get, .. }, C::Nav(cmd)) => unit(if let Some(nav) = get() {

@@ -185,6 +185,15 @@ pub fn Home(nav: Ref<StackHandle>) -> Element {
 
 `tests/remote_attr.rs` (`a_remote_screen_navigates_the_apps_navigator`) runs it over wasm: a remote home screen in an app stack pushes `/items/7`, pops, follows a route link to `/items/9`, and hands its ref to an app component that pops.
 
+**A remote component can also define a navigator** — its screens, their typed params, its layout and the screens' chrome options are bundle code; the navigator machinery (stack, url sync, mount policy, presentation) is the app's, as for any navigator:
+
+- Each screen's params stay in the bundle as held items: its `from_segments` makes one from the url's segments, its `build` consumes one (the initial `Route<()>` screen is built with unit params). Commands from the bundle cross with `ParamsFromUrl`, which the navigator resolves through those same `from_segments`.
+- The layout reads `StackNav` / `SwapNav` from context as natively: the app's layout closure (which runs inside the navigator's `provide`) exports them — signals as handles, `pop` / `on_select` as app closures the bundle calls — and the bundle provides its own copy around the author's layout. Both live as long as the layout.
+- A screen's chrome options stay in the bundle; the layout reads them back through `screen_chrome`.
+- `on_handle` gets a handle to the app's real navigator. A tree's handles are dropped when it unmounts (a navigator's handle reaches its screens' callbacks, so waiting for the tree's connection to drop would be a cycle).
+
+`tests/remote_attr.rs` mounts one stack navigator and one swap navigator definition natively and from the bundle and requires the same screens after every step (typed push, pop, route link; tab selects), and nothing left after unmount.
+
 ## Calling native code: `#[host_fn]`
 
 A remote component calls native code through `#[host_fn]` (`stream-macros`). One definition, in a crate both builds see:
@@ -267,7 +276,7 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
 - **`#[component(remote)]` carries props, not context yet,** and has no manifest.
 - Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
-- **Not crossing yet:** a navigator *defined in* a remote component (remote screens inside an app's navigator work; see [Navigation](#navigation)). `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.
+- **Every builtin primitive crosses except `graphics`** (and `lazy`, which has no meaning in a bundle). `crossing` records each decision. `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **A poisoned bundle can keep running in one case.** If a host→bundle call made *from inside* a bundle call traps (a bundle calling `flush`, whose effects then panic), the outer bundle frame is still on the stack and resumes. Its later imports still reach the app's graph. Imports could refuse a poisoned bundle, at the cost of every import returning a `Result`.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.

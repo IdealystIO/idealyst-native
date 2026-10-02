@@ -554,6 +554,70 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
         };
     }
+    if let Some(cell) = data.downcast_ref::<PrimCell<StackNavigatorPrim>>() {
+        let p = cell.take();
+        let layout = p.layout.map(|f| {
+            handler(move |nav: &Option<WireStackNav>| {
+                let nav = nav.as_ref().map(import_stack_nav);
+                let f = f.clone();
+                encode(runtime_scene::component_scope(move || {
+                    if let Some(nav) = nav {
+                        runtime_world::provide(nav);
+                    }
+                    f()
+                }))
+            })
+        });
+        return Node::StackNavigator {
+            config: nav_config(p.config),
+            layout,
+            retention: p.retention,
+            style: p.style.map(|s| Box::new(style_prop(s))),
+            a11y: wire_a11y(p.a11y).map(Box::new),
+            on_handle: nav_fill(p.on_handle),
+            nav_label: p.nav_label.map(str::to_owned),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<SwapNavigatorPrim>>() {
+        let p = cell.take();
+        let layout = p.layout.map(|f| {
+            handler(move |nav: &Option<WireSwapNav>| {
+                let nav = nav.as_ref().map(import_swap_nav);
+                let f = f.clone();
+                encode(runtime_scene::component_scope(move || {
+                    if let Some(nav) = nav {
+                        runtime_world::provide(nav);
+                    }
+                    f()
+                }))
+            })
+        });
+        let select_args = p
+            .select_args
+            .into_iter()
+            .map(|(route, f)| {
+                let args = handler(move |_: &()| f().map(|(url, params)| (url, register(Entry::Item(Some(params))))));
+                (route.to_owned(), args)
+            })
+            .collect();
+        return Node::SwapNavigator {
+            config: nav_config(p.config),
+            layout,
+            mount_policy: p.mount_policy,
+            select_args,
+            style: p.style.map(|s| Box::new(style_prop(s))),
+            a11y: wire_a11y(p.a11y).map(Box::new),
+            on_handle: nav_fill(p.on_handle),
+            nav_label: p.nav_label.map(str::to_owned),
+        };
+    }
+    if let Some(cell) = data.downcast_ref::<PrimCell<NavigatorOutletPrim>>() {
+        let p = cell.take();
+        return Node::NavigatorOutlet {
+            style: p.style.map(|s| Box::new(style_prop(s))),
+            a11y: wire_a11y(p.a11y).map(Box::new),
+        };
+    }
     let name = crate::remote::crossing((*data).type_id()).map_or_else(
         || runtime_scene::payload_type_name((*data).type_id()).unwrap_or("an unknown payload"),
         Crossing::name,
@@ -835,5 +899,98 @@ impl<T> std::future::Future for HostFuture<T> {
                 std::task::Poll::Pending
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Navigators a bundle defines
+// ---------------------------------------------------------------------------
+
+/// A navigator's screens. Typed params stay in the bundle as held items
+/// (`Entry::Item`): `from_segments` makes one, `build` consumes one.
+fn nav_config(c: crate::prims::NavConfig) -> WireNavConfig {
+    let screens = c
+        .screens
+        .into_iter()
+        .map(|(name, e)| {
+            let (build, from) = (e.build, e.from_segments);
+            WireScreenEntry {
+                name: name.to_owned(),
+                path: e.path.to_owned(),
+                order: e.order,
+                build: handler(move |p: &WireParams| {
+                    let params = match *p {
+                        WireParams::Item(item) => take_item(item)
+                            .unwrap_or_else(|| panic!("remote codec: a screen build for params {item}, which are gone")),
+                        WireParams::Unit => Box::new(()),
+                    };
+                    let screen = build(params);
+                    WireScreen {
+                        element: encode(screen.element),
+                        options: screen.options.map(|o| register(Entry::Item(Some(Box::new(o))))),
+                    }
+                }),
+                from_segments: handler(move |segs: &HashMap<String, String>| {
+                    from(segs).map(|params| register(Entry::Item(Some(params))))
+                }),
+            }
+        })
+        .collect();
+    WireNavConfig { initial: c.initial.to_owned(), initial_path: c.initial_path.to_owned(), screens }
+}
+
+/// A navigator's `on_handle`: the app fills it with its id for the real
+/// navigator's handle.
+fn nav_fill(f: Option<Box<dyn FnOnce(crate::prims::NavHandle)>>) -> Option<Cb> {
+    let once = RefCell::new(Some(f?));
+    Some(register_call(Rc::new(move |args: &[u8]| {
+        let id: u32 = from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a navigator id does not decode: {e}"));
+        if let Some(f) = once.borrow_mut().take() {
+            f(super::handles::nav_proxy(id));
+        }
+        Vec::new()
+    })))
+}
+
+/// Take held item `id` out (consumed: the entry stays, emptied, until the
+/// app releases it).
+fn take_item(id: Cb) -> Option<Box<dyn Any>> {
+    TABLE.with(|t| match t.borrow_mut().slots.get_mut(&id).map(|s| &mut s.entry) {
+        Some(Entry::Item(item)) => item.take(),
+        _ => None,
+    })
+}
+
+/// A screen's chrome options held under `id` (a screen this bundle built).
+pub(crate) fn screen_options(id: Cb) -> Option<Rc<dyn Any>> {
+    with_item(id, |b| b.downcast_ref::<Rc<dyn Any>>().cloned()).flatten()
+}
+
+fn import_stack_nav(w: &WireStackNav) -> crate::prims::StackNav {
+    use runtime_world::remote_guest::import_signal;
+    let pop = super::handles::app_call(w.pop);
+    crate::prims::StackNav {
+        active_route: import_signal(w.active_route, nav_codecs::route()),
+        active_path: import_signal(w.active_path, signal_codec::<String>()),
+        query: import_signal(w.query, nav_codecs::query()),
+        depth: import_signal(w.depth, signal_codec::<usize>()),
+        can_go_back: import_signal(w.can_go_back, signal_codec::<bool>()),
+        pop: Rc::new(move || {
+            pop(&[]);
+        }),
+        screen_chrome: import_signal(w.screen_chrome, nav_codecs::chrome()),
+    }
+}
+
+fn import_swap_nav(w: &WireSwapNav) -> crate::prims::SwapNav {
+    use runtime_world::remote_guest::import_signal;
+    let select = super::handles::app_call(w.on_select);
+    crate::prims::SwapNav {
+        active_route: import_signal(w.active_route, nav_codecs::route()),
+        active_path: import_signal(w.active_path, signal_codec::<String>()),
+        query: import_signal(w.query, nav_codecs::query()),
+        on_select: Rc::new(move |route: &'static str| {
+            select(&to_bytes(route));
+        }),
     }
 }

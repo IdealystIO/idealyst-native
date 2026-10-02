@@ -152,7 +152,17 @@ pub fn decode(link: Rc<dyn Link>, bytes: &[u8]) -> Result<Element, DecodeError> 
     // The mounted tree owns its connection: the handles the app holds for
     // the bundle (`handles`) live exactly as long as the tree, even one
     // with no callbacks to keep the connection alive (a view with a ref).
-    let ((), owned) = runtime_world::collect_owned(|| runtime_world::on_scope_drop(move || drop(conn)));
+    // Unmounting it also drops the handles the app holds for it — not
+    // waiting for the connection to drop, which a held handle can keep alive
+    // (a navigator's handle reaches its screens' callbacks, and through them
+    // this connection: a cycle through the handle table).
+    let ((), owned) = runtime_world::collect_owned(|| {
+        runtime_world::on_scope_drop(move || {
+            let tree: std::rc::Rc<dyn std::any::Any> = conn;
+            super::handles::purge_tree(&std::rc::Rc::downgrade(&tree));
+            drop(tree);
+        })
+    });
     Ok(runtime_scene::owned(element, owned))
 }
 
@@ -578,6 +588,70 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
+        Node::StackNavigator { config, layout, retention, style: st, a11y: a, on_handle, nav_label } => {
+            let layout = layout.map(|id| {
+                let render = render_with::<Option<WireStackNav>>(conn, id);
+                Rc::new(move || {
+                    // The app's `StackNav` (provided by the navigator around
+                    // this call), exported for the bundle's layout to read.
+                    let mut keep: Vec<Box<dyn std::any::Any>> = Vec::new();
+                    let nav = runtime_world::inject::<StackNav>().map(|n| export_stack_nav(&n, &mut keep));
+                    keeping(render(&nav), keep)
+                }) as Rc<dyn Fn() -> Element>
+            });
+            runtime_scene::item(
+                PrimCell::new(StackNavigatorPrim {
+                    config: nav_config(conn, config),
+                    layout,
+                    retention,
+                    style: st.map(|s| style(conn, *s)),
+                    a11y: a.map(|a| a11y(conn, *a)).unwrap_or_default(),
+                    on_handle: fill_handle(conn, on_handle, Held::Nav),
+                    nav_label: nav_label.as_deref().map(intern),
+                }),
+                Vec::new(),
+            )
+        }
+        Node::SwapNavigator { config, layout, mount_policy, select_args, style: st, a11y: a, on_handle, nav_label } => {
+            let layout = layout.map(|id| {
+                let render = render_with::<Option<WireSwapNav>>(conn, id);
+                Rc::new(move || {
+                    let mut keep: Vec<Box<dyn std::any::Any>> = Vec::new();
+                    let nav = runtime_world::inject::<SwapNav>().map(|n| export_swap_nav(&n, &mut keep));
+                    keeping(render(&nav), keep)
+                }) as Rc<dyn Fn() -> Element>
+            });
+            let select_args = select_args
+                .into_iter()
+                .map(|(route, id)| {
+                    let (c, h) = (conn.clone(), handler::<(), Option<(String, Cb)>>(conn, id, || None));
+                    let args: SelectArgs = Rc::new(move || {
+                        h(&()).map(|(url, item)| (url, Box::new(ItemRef(CbRef::new(item, c.clone()))) as Box<dyn std::any::Any>))
+                    });
+                    (intern(&route), args)
+                })
+                .collect();
+            runtime_scene::item(
+                PrimCell::new(SwapNavigatorPrim {
+                    config: nav_config(conn, config),
+                    layout,
+                    mount_policy,
+                    select_args,
+                    style: st.map(|s| style(conn, *s)),
+                    a11y: a.map(|a| a11y(conn, *a)).unwrap_or_default(),
+                    on_handle: fill_handle(conn, on_handle, Held::Nav),
+                    nav_label: nav_label.as_deref().map(intern),
+                }),
+                Vec::new(),
+            )
+        }
+        Node::NavigatorOutlet { style: st, a11y: a } => runtime_scene::item(
+            PrimCell::new(NavigatorOutletPrim {
+                style: st.map(|s| style(conn, *s)),
+                a11y: a.map(|a| a11y(conn, *a)).unwrap_or_default(),
+            }),
+            Vec::new(),
+        ),
         Node::Fragment(children) => runtime_scene::fragment(build_all(conn, children)?),
         Node::Dyn { build } => {
             let (c, b) = (conn.clone(), cb(conn, build));
@@ -1043,5 +1117,122 @@ impl CallbackRef {
     /// See `CbRef::get`.
     pub(crate) fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
         self.0.get(args)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Navigators a bundle defines
+// ---------------------------------------------------------------------------
+
+/// A bundle screen's chrome options, held bundle-side.
+struct OptionsRef(CbRef);
+
+/// The bundle's id for chrome options it built (`nav_codecs::chrome`).
+pub(crate) fn options_id(options: &dyn std::any::Any) -> Option<Cb> {
+    options.downcast_ref::<OptionsRef>().map(|o| o.0.id)
+}
+
+/// A bundle navigator's screens: their typed params are items held in the
+/// bundle (`ItemRef` here), made by its `from_segments` and consumed by its
+/// `build`.
+fn nav_config(conn: &Rc<Conn>, w: WireNavConfig) -> NavConfig {
+    let mut screens = HashMap::new();
+    for e in w.screens {
+        let (c1, c2) = (conn.clone(), conn.clone());
+        let build = cb(conn, e.build);
+        let from = handler::<HashMap<String, String>, Option<Cb>>(conn, e.from_segments, || None);
+        let name = intern(&e.name);
+        screens.insert(
+            name,
+            NavScreenEntry {
+                path: intern(&e.path),
+                order: e.order,
+                build: Rc::new(move |params: Box<dyn std::any::Any>| {
+                    // The item (if any) is released after the call, which
+                    // consumed it bundle-side.
+                    let (wire, item) = match params.downcast::<ItemRef>() {
+                        Ok(item) => (WireParams::Item(item.0.id), Some(item)),
+                        Err(params) if params.is::<()>() => (WireParams::Unit, None),
+                        Err(_) => panic!("remote navigator: screen `{name}` was given params the bundle didn't make"),
+                    };
+                    let reply = build.call(&to_bytes(&wire));
+                    drop(item);
+                    match reply {
+                        Some(bytes) => {
+                            let ws: WireScreen = from_bytes(&bytes)
+                                .unwrap_or_else(|e| panic!("remote codec: a screen does not decode: {e}"));
+                            Screen {
+                                element: self::build(&c1, ws.element).unwrap_or_else(|e| panic!("remote component: {e}")),
+                                options: ws.options.map(|id| Rc::new(OptionsRef(CbRef::new(id, c1.clone()))) as Rc<dyn std::any::Any>),
+                            }
+                        }
+                        None => Screen::new(nothing()),
+                    }
+                }),
+                from_segments: Rc::new(move |segs: &HashMap<String, String>| {
+                    from(segs).map(|id| Box::new(ItemRef(CbRef::new(id, c2.clone()))) as Box<dyn std::any::Any>)
+                }),
+            },
+        );
+    }
+    NavConfig { initial: intern(&w.initial), initial_path: intern(&w.initial_path), screens }
+}
+
+/// `element`, owning `keep` (export guards) for as long as it is mounted.
+fn keeping(element: Element, keep: Vec<Box<dyn std::any::Any>>) -> Element {
+    let ((), owned) = runtime_world::collect_owned(|| runtime_world::on_scope_drop(move || drop(keep)));
+    runtime_scene::owned(element, owned)
+}
+
+fn export_handle<T: PartialEq + 'static>(
+    s: runtime_world::Signal<T>,
+    codec: runtime_world::remote::Codec<T>,
+    keep: &mut Vec<Box<dyn std::any::Any>>,
+) -> SignalHandle {
+    let (h, guard) = runtime_world::remote::export_signal(s, codec);
+    keep.push(Box::new(guard));
+    h
+}
+
+fn export_call(f: Rc<dyn Fn(&[u8]) -> Vec<u8>>, keep: &mut Vec<Box<dyn std::any::Any>>) -> u32 {
+    let (id, guard) = super::handles::hold_scoped(Held::Call(f));
+    keep.push(Box::new(guard));
+    id
+}
+
+fn export_stack_nav(n: &StackNav, keep: &mut Vec<Box<dyn std::any::Any>>) -> WireStackNav {
+    let pop = n.pop.clone();
+    WireStackNav {
+        active_route: export_handle(n.active_route, nav_codecs::route(), keep),
+        active_path: export_handle(n.active_path, signal_codec::<String>(), keep),
+        query: export_handle(n.query, nav_codecs::query(), keep),
+        depth: export_handle(n.depth, signal_codec::<usize>(), keep),
+        can_go_back: export_handle(n.can_go_back, signal_codec::<bool>(), keep),
+        screen_chrome: export_handle(n.screen_chrome, nav_codecs::chrome(), keep),
+        pop: export_call(
+            Rc::new(move |_: &[u8]| {
+                pop();
+                Vec::new()
+            }),
+            keep,
+        ),
+    }
+}
+
+fn export_swap_nav(n: &SwapNav, keep: &mut Vec<Box<dyn std::any::Any>>) -> WireSwapNav {
+    let select = n.on_select.clone();
+    WireSwapNav {
+        active_route: export_handle(n.active_route, nav_codecs::route(), keep),
+        active_path: export_handle(n.active_path, signal_codec::<String>(), keep),
+        query: export_handle(n.query, nav_codecs::query(), keep),
+        on_select: export_call(
+            Rc::new(move |args: &[u8]| {
+                let route: String =
+                    from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a route name does not decode: {e}"));
+                select(intern(&route));
+                Vec::new()
+            }),
+            keep,
+        ),
     }
 }

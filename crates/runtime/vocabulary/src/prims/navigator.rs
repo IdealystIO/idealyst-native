@@ -222,6 +222,7 @@ impl NavConfig {
 /// exactly like `LazyPersistent` there, and this port preserves that
 /// behavior rather than inventing it.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "remote", derive(serde::Serialize, serde::Deserialize))]
 pub enum MountPolicy {
     /// Reserved: behaves like `LazyPersistent` (old-handler parity).
     EagerPersistent,
@@ -237,6 +238,7 @@ pub enum MountPolicy {
 /// What happens to a stack screen when a `push` covers it (old
 /// `stack_navigator::StackRetention`).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "remote", derive(serde::Serialize, serde::Deserialize))]
 pub enum StackRetention {
     /// Resolve at mount: `Rebuild` on `Platform::Web`, `Retain`
     /// everywhere else.

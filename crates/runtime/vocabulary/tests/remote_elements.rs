@@ -253,9 +253,9 @@ fn every_builtin_primitive_has_a_crossing_decision() {
     assert_eq!(
         supported,
         [
-            "activity_indicator", "button", "icon", "image", "link", "portal", "presence", "pressable",
-            "repeat (static `for` lowering)", "scroll_view", "slider", "text", "text_area", "text_input", "toggle",
-            "view", "virtual_grid", "virtualizer",
+            "activity_indicator", "button", "icon", "image", "link", "navigator outlet", "portal", "presence",
+            "pressable", "repeat (static `for` lowering)", "scroll_view", "slider", "stack navigator", "swap navigator",
+            "text", "text_area", "text_input", "toggle", "view", "virtual_grid", "virtualizer",
         ]
     );
 }
@@ -795,3 +795,8 @@ fn regression_a_node_stays_small_enough_for_a_bundles_stack() {
     let size = std::mem::size_of::<runtime_vocabulary::remote::Node>();
     assert!(size <= 512, "Node is {size} bytes — box the large field you added");
 }
+
+// A navigator DEFINED in a remote tree is tested over real wasm
+// (crates/streaming/spike/tests/remote_attr.rs): in-process, the "app"
+// navigator's own signals would be created through the bridged engine too,
+// which never happens in an app (the app side runs the native engine).

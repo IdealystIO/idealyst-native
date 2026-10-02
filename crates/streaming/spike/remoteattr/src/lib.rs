@@ -179,3 +179,91 @@ pub fn Navigating(nav: runtime_core::Ref<runtime_vocabulary::prims::NavHandle>) 
         }
     }
 }
+
+/// Chrome options a navigator screen sets and its layout reads.
+pub struct Title(pub &'static str);
+
+/// A whole stack navigator, compiled into BOTH builds: the app mounts it
+/// natively (`NativeNavApp`) and from the bundle (`RemoteNavApp`), and the
+/// test compares the two. Its layout reads `StackNav` (depth, back, the
+/// current screen's options) and has a back button calling its `pop` and a
+/// button pushing a typed route through the navigator's handle; the home
+/// screen has a route link.
+pub fn nav_app_view() -> Element {
+    use runtime_shared::primitives::navigator::Route;
+    use runtime_vocabulary::builders::{button, link, navigator_outlet, stack_navigator, text, view};
+    use runtime_vocabulary::prims::{NavHandle, Screen, StackNav};
+    const HOME: Route = Route::new("home", "/");
+    let handle = runtime_core::Ref::<NavHandle>::new();
+    stack_navigator(&HOME)
+        .layout(move || {
+            let nav = runtime_world::inject::<StackNav>().expect("StackNav in the layout");
+            let (depth, back, chrome, pop) = (nav.depth, nav.can_go_back, nav.screen_chrome, nav.pop.clone());
+            view()
+                .child(text().content(move || {
+                    let title = chrome.get().options.as_ref().and_then(|o| o.downcast_ref::<Title>().map(|t| t.0)).unwrap_or("-");
+                    format!("depth {} back {} title {title}", depth.get(), back.get())
+                }))
+                .child(button().label("back").on_press(move || pop()))
+                .child(button().label("push 7").on_press(move || {
+                    if let Some(h) = handle.get() {
+                        h.push(&DETAIL, ItemId(7));
+                    }
+                }))
+                .child(navigator_outlet().build())
+                .build()
+        })
+        .screen(HOME, |()| {
+            view().child(text().content("home")).child(link().route(&DETAIL, ItemId(4)).child(text().content("open 4"))).build()
+        })
+        .screen(DETAIL, |ItemId(id)| Screen::new(text().content(format!("item {id}")).build()).with(Title("Item")))
+        .on_handle(move |h| handle.fill(h))
+        .build()
+}
+
+/// [`nav_app_view`], from the bundle.
+#[component(remote)]
+pub fn RemoteNavApp() -> Element {
+    nav_app_view()
+}
+
+/// [`nav_app_view`], compiled into the app.
+#[component]
+pub fn NativeNavApp() -> Element {
+    nav_app_view()
+}
+
+/// A swap navigator (tabs), compiled into both builds like
+/// [`nav_app_view`]: its layout's tab buttons select through `SwapNav`'s
+/// `on_select` (which runs the screen's select recipe, made in the bundle).
+pub fn tabs_view() -> Element {
+    use runtime_shared::primitives::navigator::Route;
+    use runtime_vocabulary::builders::{button, navigator_outlet, swap_navigator, text, view};
+    use runtime_vocabulary::prims::SwapNav;
+    const FEED: Route = Route::new("feed", "/feed");
+    const PROFILE: Route = Route::new("profile", "/profile");
+    swap_navigator(&FEED)
+        .layout(|| {
+            let nav = runtime_world::inject::<SwapNav>().expect("SwapNav in the layout");
+            let (active, select, select2) = (nav.active_route, nav.on_select.clone(), nav.on_select.clone());
+            view()
+                .child(text().content(move || format!("tab {}", active.get())))
+                .child(button().label("feed").on_press(move || select("feed")))
+                .child(button().label("profile").on_press(move || select2("profile")))
+                .child(navigator_outlet().build())
+                .build()
+        })
+        .screen(FEED, |()| text().content("feed screen").build())
+        .screen(PROFILE, |()| text().content("profile screen").build())
+        .build()
+}
+
+#[component(remote)]
+pub fn RemoteTabs() -> Element {
+    tabs_view()
+}
+
+#[component]
+pub fn NativeTabs() -> Element {
+    tabs_view()
+}

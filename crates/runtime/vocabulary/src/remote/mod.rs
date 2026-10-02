@@ -241,6 +241,34 @@ pub enum Node {
         overscan: f32,
         on_scroll: Option<Cb>,
     },
+    StackNavigator {
+        config: WireNavConfig,
+        /// The author layout: replies a [`Node`]. Reads `StackNav` from
+        /// context, which crosses from the app (`navigation_contexts`).
+        layout: Option<Cb>,
+        retention: crate::prims::StackRetention,
+        style: Option<Box<Style>>,
+        a11y: Option<Box<A11y>>,
+        /// Takes the app's id for the navigator's handle.
+        on_handle: Option<Cb>,
+        nav_label: Option<String>,
+    },
+    SwapNavigator {
+        config: WireNavConfig,
+        layout: Option<Cb>,
+        mount_policy: crate::prims::MountPolicy,
+        /// `(route, select args)`: replies `Option<(String, Cb)>` — a url and
+        /// a params item held bundle-side.
+        select_args: Vec<(String, Cb)>,
+        style: Option<Box<Style>>,
+        a11y: Option<Box<A11y>>,
+        on_handle: Option<Cb>,
+        nav_label: Option<String>,
+    },
+    NavigatorOutlet {
+        style: Option<Box<Style>>,
+        a11y: Option<Box<A11y>>,
+    },
     Fragment(Vec<Node>),
     /// `dyn_element`: rebuild on every fire. `build` replies a [`Node`].
     Dyn { build: Cb },
@@ -324,6 +352,43 @@ pub struct WireDroppedFile {
     pub mime: String,
     pub size: Option<u64>,
     pub path: Option<std::path::PathBuf>,
+}
+
+/// A navigator's screens. Each screen's typed params live in the bundle:
+/// `from_segments` takes the url's segments (`HashMap<String, String>`)
+/// and replies `Option<Cb>` — a params item held bundle-side; `build` takes
+/// such an item and replies a [`WireScreen`].
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireNavConfig {
+    pub initial: String,
+    pub initial_path: String,
+    pub screens: Vec<WireScreenEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireScreenEntry {
+    pub name: String,
+    pub path: String,
+    pub order: usize,
+    pub build: Cb,
+    pub from_segments: Cb,
+}
+
+/// A screen build's params: an item the bundle holds (it made them —
+/// `from_segments`, `select_args`), or `()` (the navigator builds its
+/// initial `Route<()>` screen with unit params of its own).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum WireParams {
+    Item(Cb),
+    Unit,
+}
+
+/// A built screen: its tree, and its chrome options — held bundle-side
+/// (the bundle's layout reads them back through `StackNav::screen_chrome`).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireScreen {
+    pub element: Node,
+    pub options: Option<Cb>,
 }
 
 /// A portal's target.
@@ -491,7 +556,6 @@ impl Crossing {
 pub fn crossing(ty: std::any::TypeId) -> Option<Crossing> {
     use crate::prims::*;
     use std::any::TypeId;
-    const LATER: &str = "not carried by the remote codec yet";
     macro_rules! table {
         ($($prim:ty => $c:expr),* $(,)?) => {
             $(if ty == TypeId::of::<PrimCell<$prim>>() { return Some($c); })*
@@ -525,9 +589,9 @@ pub fn crossing(ty: std::any::TypeId) -> Option<Crossing> {
         ),
         PortalPrim => Crossing::Supported("portal"),
         PresencePrim => Crossing::Supported("presence"),
-        StackNavigatorPrim => Crossing::Unsupported("stack navigator", LATER),
-        SwapNavigatorPrim => Crossing::Unsupported("swap navigator", LATER),
-        NavigatorOutletPrim => Crossing::Unsupported("navigator outlet", LATER),
+        StackNavigatorPrim => Crossing::Supported("stack navigator"),
+        SwapNavigatorPrim => Crossing::Supported("swap navigator"),
+        NavigatorOutletPrim => Crossing::Supported("navigator outlet"),
     }
     None
 }
@@ -649,7 +713,7 @@ fn signal_codec<T: Serialize + serde::de::DeserializeOwned>() -> runtime_world::
     runtime_world::remote::Codec { encode: codec_encode::<T>, decode: codec_decode::<T> }
 }
 
-type SignalHandle = (u32, u32, u32);
+pub type SignalHandle = (u32, u32, u32);
 
 impl<T: Serialize + serde::de::DeserializeOwned + PartialEq + 'static> RemoteProp for runtime_world::ReadSignal<T> {
     #[cfg(not(idealyst_stream_guest))]
@@ -1163,4 +1227,96 @@ impl<H: crate::prims::NavHandleType> ImportArg for runtime_shared::Ref<H> {
         }
         Ok(r)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Navigation context, for a navigator a bundle defines
+// ---------------------------------------------------------------------------
+
+/// `StackNav` as it crosses to a bundle's navigator layout: its signals as
+/// handles into the app's graph, `pop` as an app closure (`handles`).
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireStackNav {
+    pub active_route: SignalHandle,
+    pub active_path: SignalHandle,
+    pub query: SignalHandle,
+    pub depth: SignalHandle,
+    pub can_go_back: SignalHandle,
+    pub screen_chrome: SignalHandle,
+    pub pop: u32,
+}
+
+/// `SwapNav` as it crosses; `on_select` takes a route name.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WireSwapNav {
+    pub active_route: SignalHandle,
+    pub active_path: SignalHandle,
+    pub query: SignalHandle,
+    pub on_select: u32,
+}
+
+/// Codecs for the navigation signals' value types.
+pub(crate) mod nav_codecs {
+    use runtime_shared::primitives::navigator::QueryParams;
+    use runtime_world::remote::Codec;
+
+    use super::{from_bytes, to_bytes};
+
+    /// Route names are `&'static str`: interned on decode, one leak per
+    /// distinct name (bounded by the app's routes).
+    pub fn route() -> Codec<&'static str> {
+        fn enc(v: &&'static str, out: &mut Vec<u8>) {
+            out.extend_from_slice(&to_bytes(*v))
+        }
+        fn dec(b: &[u8]) -> Option<&'static str> {
+            from_bytes::<String>(b).ok().map(|s| super::intern_static(&s))
+        }
+        Codec { encode: enc, decode: dec }
+    }
+
+    pub fn query() -> Codec<QueryParams> {
+        fn enc(v: &QueryParams, out: &mut Vec<u8>) {
+            out.extend_from_slice(&to_bytes(&v.to_query_string()))
+        }
+        fn dec(b: &[u8]) -> Option<QueryParams> {
+            from_bytes::<String>(b).ok().map(|s| QueryParams::parse(&s))
+        }
+        Codec { encode: enc, decode: dec }
+    }
+
+    /// `ScreenChrome`: its revision, and its options as the id of the
+    /// bundle-held options they are (a screen the bundle built).
+    pub fn chrome() -> Codec<crate::prims::ScreenChrome> {
+        fn enc(v: &crate::prims::ScreenChrome, out: &mut Vec<u8>) {
+            #[cfg(not(idealyst_stream_guest))]
+            let options = v.options.as_ref().and_then(|o| super::host::options_id(&**o));
+            #[cfg(idealyst_stream_guest)]
+            let options: Option<super::Cb> = None;
+            out.extend_from_slice(&to_bytes(&(v.rev, options)))
+        }
+        fn dec(b: &[u8]) -> Option<crate::prims::ScreenChrome> {
+            let (rev, options): (u64, Option<super::Cb>) = from_bytes(b).ok()?;
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            let options = options.and_then(super::bundle::screen_options);
+            // Decoded only in a bundle; an app build has no options table.
+            #[cfg(not(any(idealyst_stream_guest, feature = "remote-loopback")))]
+            let options: Option<std::rc::Rc<dyn std::any::Any>> = options.and(None);
+            Some(crate::prims::ScreenChrome { rev, options })
+        }
+        Codec { encode: enc, decode: dec }
+    }
+}
+
+/// Intern a string for the process's life — one leak per distinct value.
+pub(crate) fn intern_static(s: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&n) = names.get(s) {
+        return n;
+    }
+    let n: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    names.insert(n);
+    n
 }
