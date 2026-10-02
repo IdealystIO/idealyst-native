@@ -11,6 +11,13 @@ license.workspace = true
 publish = false
 
 [lib]
+# The APP's crate name, not this package's. App components are imported by
+# `module_path::Name`, and the module path starts with the crate name: built
+# as `remote_example_bundle`, the bundle asked the app for
+# `remote_example_bundle::Badge` while the app registered
+# `remote_example::Badge`, and every import failed with MissingImport. The
+# app's build script checks the two names match.
+name = "remote_example"
 path = "../app/src/main.rs"
 crate-type = ["cdylib"]
 

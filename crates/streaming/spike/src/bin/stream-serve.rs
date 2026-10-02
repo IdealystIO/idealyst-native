@@ -34,6 +34,8 @@ use stream_spike::guest_build::{
 /// One served bundle.
 struct State {
     package: &'static str,
+    /// The wasm file's name: the package's `[lib] name`.
+    artifact: &'static str,
     sources: &'static [&'static str],
     crate_dir: PathBuf,
     target_dir: PathBuf,
@@ -72,7 +74,7 @@ impl State {
         let out = guest_build_command("cargo", &self.crate_dir, &self.target_dir, self.package).output();
         self.built_from = stamp;
         match out {
-            Ok(out) if out.status.success() => match std::fs::read(guest_wasm_path(&self.target_dir, self.package)) {
+            Ok(out) if out.status.success() => match std::fs::read(guest_wasm_path(&self.target_dir, self.artifact)) {
                 Ok(wasm) => {
                     self.version += 1;
                     eprintln!(
@@ -152,14 +154,15 @@ fn main() {
     let target_dir = crate_dir.join("../../../target/stream-serve");
     let served: Arc<Vec<(&str, Arc<Mutex<State>>)>> = Arc::new(
         [
-            ("/bundle.wasm", "spike-guest", GUEST_SOURCES),
-            ("/remote.wasm", "spike-remoteguest", REMOTE_GUEST_SOURCES),
-            ("/example.wasm", "remote-example-bundle", EXAMPLE_SOURCES),
+            ("/bundle.wasm", "spike-guest", "spike_guest", GUEST_SOURCES),
+            ("/remote.wasm", "spike-remoteguest", "spike_remoteguest", REMOTE_GUEST_SOURCES),
+            ("/example.wasm", "remote-example-bundle", "remote_example", EXAMPLE_SOURCES),
         ]
             .into_iter()
-            .map(|(path, package, sources)| {
+            .map(|(path, package, artifact, sources)| {
                 let state = State {
                     package,
+                    artifact,
                     sources,
                     crate_dir: crate_dir.clone(),
                     target_dir: target_dir.clone(),

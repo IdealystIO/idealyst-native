@@ -77,6 +77,10 @@ pub fn guest_build_command(
 }
 
 /// Where [`guest_build_command`] leaves package `package`'s bundle.
-pub fn guest_wasm_path(target_dir: &std::path::Path, package: &str) -> std::path::PathBuf {
-    target_dir.join(format!("wasm32-unknown-unknown/release/{}.wasm", package.replace('-', "_")))
+///
+/// `artifact` is the LIBRARY name (`[lib] name`), which is the package name
+/// unless the package renames its lib — as `remote-example-bundle` does, so
+/// it compiles under the app's crate name (see its Cargo.toml).
+pub fn guest_wasm_path(target_dir: &std::path::Path, artifact: &str) -> std::path::PathBuf {
+    target_dir.join(format!("wasm32-unknown-unknown/release/{}.wasm", artifact.replace('-', "_")))
 }

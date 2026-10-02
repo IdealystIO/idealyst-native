@@ -116,8 +116,10 @@ mod app {
         let score = signal(0i64);
         let cheers = signal(0i64);
         let status = signal(format!("built-in bundle ({} KB)", BUILT_IN.len() / 1024));
+        // Scrolls: the page is taller than the window once the remote
+        // component grows, and an unscrolled view just clips the bottom.
         ui! {
-            view() {
+            scroll_view() {
                 text { "Native app" }
                 button(label = "Score + 1", on_click = move || score.update(|s| s + 1))
                 text { "Cheers the app has received 123: {cheers}" }
@@ -139,7 +141,7 @@ mod app {
 #[cfg(all(not(idealyst_stream_guest), target_os = "macos"))]
 fn main() {
     app::install();
-    let opts = host_appkit::RunOptions { title: "Remote components".to_string(), width: 520.0, height: 420.0 };
+    let opts = host_appkit::RunOptions { title: "Remote components".to_string(), width: 560.0, height: 900.0 };
     if let Err(e) = host_appkit::newcore::run(|| ui! { app::App() }, opts) {
         eprintln!("[remote-example] failed to boot: {e}");
         std::process::exit(1);
