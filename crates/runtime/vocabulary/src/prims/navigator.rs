@@ -508,7 +508,8 @@ impl NavHandle {
     /// The dispatcher's address — this navigator's identity (see the
     /// `PartialEq` impl). How a remote component recognises a handle it
     /// received from the app.
-    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    // Only the bundle side calls it (`remote::handles`).
+    #[cfg_attr(not(any(idealyst_stream_guest, feature = "remote-loopback")), allow(dead_code))]
     pub(crate) fn identity(&self) -> *const () {
         Rc::as_ptr(&self.dispatch) as *const ()
     }

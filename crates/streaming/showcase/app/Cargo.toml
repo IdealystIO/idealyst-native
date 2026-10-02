@@ -2,7 +2,9 @@
 # tab shell, a remote feed, a remote shop that defines its own navigator,
 # native settings driving context the remote screens read. The components
 # live in `src/lib.rs`, which `../bundle` compiles as the bundle; the
-# window is `src/main.rs`. `cargo run --release -p remote-showcase`.
+# desktop window is `src/main.rs` (`cargo run --release -p
+# remote-showcase`); the CLI's iOS/Android shells mount `app()` from the lib
+# (`idealyst build --ios --release` from this directory).
 
 [package]
 name = "remote-showcase"
@@ -39,6 +41,12 @@ host-appkit = { workspace = true }
 
 [dev-dependencies]
 host-mock = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Remote Showcase"
+bundle_id = "ai.truday.idealyst.remoteshowcase"
+version   = "0.0.1"
+targets   = ["ios", "android", "macos"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }

@@ -24,6 +24,10 @@
 //! edit a remote component below, press **Reload** in the window.
 
 #![cfg_attr(idealyst_stream_guest, allow(dead_code, unused_imports))]
+// And in an app build the remote bodies are compiled out (the bundle has
+// them), so the helpers only they call — `product_list`, `price`, … — are
+// dead here. `--features inline` compiles the bodies in and uses them.
+#![cfg_attr(not(any(idealyst_stream_guest, feature = "inline")), allow(dead_code))]
 
 use std::rc::Rc;
 
@@ -357,6 +361,24 @@ mod app {
         Ok(())
     }
 
+    /// The app's root, for `idealyst::entry!` and the platform shells:
+    /// installs the built-in bundle (once), then the tab shell.
+    pub fn app() -> Element {
+        if REMOTE.with(|r| r.borrow().is_none()) {
+            install();
+        }
+        ui! { App() }
+    }
+
+    /// The Android shell's name for [`app`].
+    pub fn scene_app() -> Element {
+        app()
+    }
+
+    /// The platform shells' registration seam. The showcase renders only
+    /// builtin primitives, so there is nothing to register.
+    pub fn register_scene_extensions<H: runtime_scene::Host>(_registry: &mut runtime_scene::Registry<H>) {}
+
     /// The installed bundle's linear memory, in bytes (0 before `install`).
     pub fn bundle_memory_bytes() -> usize {
         REMOTE.with(|r| r.borrow().as_ref().map_or(0, RemoteApp::memory_bytes))
@@ -390,15 +412,27 @@ mod app {
                         .on_press(move || select(route))
                         .build()
                 };
+                // The shell is the root: it keeps clear of the status bar,
+                // notch and home indicator (safe area, read live).
                 view()
-                    .style(screen_fill())
+                    .style(|| {
+                        let ins = runtime_core::safe_area_insets().get();
+                        Rc::new(StyleRules { padding_bottom: px(ins.bottom), ..screen_fill() })
+                    })
                     .child(
                         view()
-                            .style(StyleRules { background: color("#111827"), ..column(6.0) })
+                            .style(|| {
+                                let ins = runtime_core::safe_area_insets().get();
+                                Rc::new(StyleRules { background: color("#111827"), padding_top: px(12.0 + ins.top), ..column(6.0) })
+                            })
                             .child(tab("feed", "Feed"))
                             .child(tab("shop", "Shop"))
                             .child(tab("settings", "Settings"))
-                            .child(text().content(move || format!("cart: {}   ·   {}", cart.get(), status.get())))
+                            .child(
+                                text()
+                                    .style(StyleRules { color: color("#e5e7eb"), ..StyleRules::default() })
+                                    .content(move || format!("cart: {}   ·   {}", cart.get(), status.get())),
+                            )
                             .child(button().label("Reload remote").on_press(move || reload(status)))
                             .build(),
                     )
