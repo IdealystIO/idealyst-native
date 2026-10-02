@@ -75,6 +75,25 @@ fn reloading_the_bundle_remounts_the_component() {
     assert!(t.contains("count 1"), "app state survives the reload:\n{t}");
 }
 
+/// Reloading frees the replaced bundle's compiled code once its trees are
+/// gone. wasmi's `Engine` keeps every function it compiled until the engine
+/// drops, so a loader sharing one engine across reloads kept each old
+/// bundle's code (~750 KB per reload of the showcase) for the app's life.
+#[test]
+fn regression_a_reload_frees_the_replaced_bundles_code() {
+    let a = app();
+    let realized = a.h.mount(tree(&a));
+    a.h.flush();
+    let old = a.remote.__engine();
+    a.remote.reload(REMOTE_ATTR_WASM).expect("reloads");
+    a.h.flush();
+    // The old tree is gone; the handlers the mock kept would still own it.
+    a.h.forget_handlers();
+    assert!(old.upgrade().is_none(), "the replaced bundle's engine (and its compiled code) is still alive");
+    assert!(a.remote.__engine().upgrade().is_some(), "the current bundle's engine lives");
+    drop(realized);
+}
+
 /// Unmounting releases the props' exports: the app's signals are no longer
 /// read by anything.
 #[test]

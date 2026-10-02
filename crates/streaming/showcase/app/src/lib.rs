@@ -346,8 +346,20 @@ mod app {
 
     /// Install the built-in bundle (call before mounting `App`).
     pub fn install() {
-        let remote = stream_host::remote::install_with(BUILT_IN, host_fns()).unwrap_or_else(|e| panic!("built-in bundle: {e}"));
+        install_from(BUILT_IN).unwrap_or_else(|e| panic!("built-in bundle: {e}"));
+    }
+
+    /// Install `wasm` instead of the built-in bundle (a served build, or
+    /// another build of it to measure).
+    pub fn install_from(wasm: &[u8]) -> Result<(), String> {
+        let remote = stream_host::remote::install_with(wasm, host_fns())?;
         REMOTE.with(|r| *r.borrow_mut() = Some(remote));
+        Ok(())
+    }
+
+    /// The installed bundle's linear memory, in bytes (0 before `install`).
+    pub fn bundle_memory_bytes() -> usize {
+        REMOTE.with(|r| r.borrow().as_ref().map_or(0, RemoteApp::memory_bytes))
     }
 
     fn reload(status: Signal<String>) {

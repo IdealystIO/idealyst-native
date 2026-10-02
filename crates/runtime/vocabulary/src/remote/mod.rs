@@ -1492,6 +1492,23 @@ macro_rules! __remote_context_entry {
     };
 }
 
+// `#[component(remote)]` in a native app build: run the body in-process
+// (`remote-inline`), or mount it from the installed bundle (the default).
+// Decided by the VOCABULARY's feature, so the component's crate needs no
+// cfg of its own.
+#[cfg(feature = "remote-inline")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_native_body {
+    (inline: { $($inline:tt)* } mount: { $($mount:tt)* }) => { $($inline)* };
+}
+#[cfg(not(feature = "remote-inline"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_native_body {
+    (inline: { $($inline:tt)* } mount: { $($mount:tt)* }) => { $($mount)* };
+}
+
 // The `RemoteProp` methods exist per build side; these keep a macro's
 // expansion in step with the VOCABULARY's build, not the calling crate's.
 #[cfg(not(idealyst_stream_guest))]

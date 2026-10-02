@@ -18,6 +18,12 @@ path = "src/lib.rs"
 name = "remote-showcase"
 path = "src/main.rs"
 
+[features]
+# Run the remote screens in-process (the same source, compiled natively)
+# instead of from the bundle: the native baseline `examples/measure.rs`
+# compares against, and the flow test's second run.
+inline = ["runtime-vocabulary/remote-inline"]
+
 [dependencies]
 runtime-core = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["remote"] }

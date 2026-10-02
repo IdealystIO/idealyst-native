@@ -103,6 +103,15 @@ pub fn guest_build_command(
         )
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_TARGET_DIR");
+    // Profile overrides the outer build was given are for the APP: inherited,
+    // they would rebuild the bundle with the app's profile (an opt-3,
+    // no-LTO native profile doubled the showcase bundle, 282 → 575 KB). The
+    // bundle builds with the workspace's release profile.
+    for (key, _) in std::env::vars_os() {
+        if key.to_str().is_some_and(|k| k.starts_with("CARGO_PROFILE_")) {
+            cmd.env_remove(key);
+        }
+    }
     cmd
 }
 

@@ -21,7 +21,6 @@ use runtime_world::Signal;
 use crate::kernel::KernelBundle;
 
 struct BundleLoader {
-    engine: wasmi::Engine,
     /// The `#[host_fn]`s every bundle this loader loads may call.
     host_fns: Vec<stream_abi::host_fn::HostFnDef>,
     current: RefCell<Rc<KernelBundle>>,
@@ -65,6 +64,12 @@ pub struct RemoteApp {
 }
 
 /// An interpreter configured for bundles.
+///
+/// One per loaded bundle, never shared across reloads: a wasmi `Engine`
+/// never frees the code it compiled (its code map only grows) until the
+/// engine itself drops. A bundle's store holds its engine, so the code goes
+/// when the last tree built from that bundle does. A shared engine kept
+/// every reloaded bundle's code: ~750 KB per reload of the showcase.
 pub fn engine() -> wasmi::Engine {
     let mut config = wasmi::Config::default();
     config.compilation_mode(wasmi::CompilationMode::LazyTranslation);
@@ -82,10 +87,8 @@ pub fn install(wasm: &[u8]) -> Result<RemoteApp, String> {
 /// `host_fns` — the app's allowlist, `[my_sdk::take_photo::export(), …]`.
 /// A bundle calling anything else is refused at load, naming it.
 pub fn install_with(wasm: &[u8], host_fns: Vec<stream_abi::host_fn::HostFnDef>) -> Result<RemoteApp, String> {
-    let engine = engine();
-    let bundle = KernelBundle::load_with(&engine, wasm, &host_fns).map_err(|e| e.to_string())?;
+    let bundle = KernelBundle::load_with(&engine(), wasm, &host_fns).map_err(|e| e.to_string())?;
     let loader = Rc::new(BundleLoader {
-        engine,
         host_fns,
         current: RefCell::new(Rc::new(bundle)),
         generation: Cell::new(None),
@@ -112,11 +115,24 @@ fn watch(loader: &Rc<BundleLoader>) {
 }
 
 impl RemoteApp {
+    /// The current bundle's linear memory, in bytes
+    /// ([`KernelBundle::memory_bytes`]).
+    pub fn memory_bytes(&self) -> usize {
+        self.loader.current.borrow().memory_bytes()
+    }
+
+    /// The current bundle's interpreter, weakly (tests: a replaced bundle's
+    /// engine must go once nothing uses it).
+    #[doc(hidden)]
+    pub fn __engine(&self) -> wasmi::EngineWeak {
+        self.loader.current.borrow().__engine()
+    }
+
     /// Replace the bundle; every mounted remote component remounts from it.
     /// On `Err` (it doesn't load) the current bundle stays.
     pub fn reload(&self, wasm: &[u8]) -> Result<(), String> {
         let bundle =
-            KernelBundle::load_with(&self.loader.engine, wasm, &self.loader.host_fns).map_err(|e| e.to_string())?;
+            KernelBundle::load_with(&engine(), wasm, &self.loader.host_fns).map_err(|e| e.to_string())?;
         *self.loader.current.borrow_mut() = Rc::new(bundle);
         watch(&self.loader);
         if let Some(g) = self.loader.generation.get() {

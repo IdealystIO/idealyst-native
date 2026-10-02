@@ -690,6 +690,20 @@ impl KernelBundle {
         memory.read(&*store, ptr as usize, &mut buf).expect("in bounds");
         buf
     }
+
+    /// The size of the bundle's linear memory, in bytes: what it holds
+    /// beside the app (its own heap, stack and data). Wasm memory only
+    /// grows, so this is the high-water mark.
+    pub fn memory_bytes(&self) -> usize {
+        let store = self.inner.store.borrow();
+        store.data().memory.map_or(0, |m| m.data_size(&*store))
+    }
+
+    /// This bundle's interpreter, weakly (see [`crate::remote::engine`]).
+    #[doc(hidden)]
+    pub fn __engine(&self) -> wasmi::EngineWeak {
+        self.inner.store.borrow().engine().weak()
+    }
 }
 
 // ---------------------------------------------------------------------------

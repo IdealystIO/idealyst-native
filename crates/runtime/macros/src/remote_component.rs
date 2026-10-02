@@ -10,6 +10,11 @@
 //!   installed bundle (`runtime_vocabulary::remote::host::__mount_remote`).
 //! - **Web app build**: the body compiles as for any component — remote is
 //!   a native mechanism, and web ships proper bundles.
+//! - **Native app build with the vocabulary's `remote-inline` feature**: the
+//!   body compiles and runs in-process, as on web — the same source as
+//!   native code (to measure a remote component against itself, or debug it
+//!   without the bundle). Picked by `__remote_native_body!`, so it follows
+//!   the vocabulary's feature and the component's crate declares no cfg.
 //!
 //! Everything else (`#[component]`'s props struct, `ui!` dispatch, scope
 //! wrapping) is the ordinary emission: the rewritten fn goes back through
@@ -87,16 +92,24 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
     }
     crate::reactivity::rewrite(&mut body);
 
+    // A native app build mounts from the bundle, unless the vocabulary's
+    // `remote-inline` feature runs the body in-process instead
+    // (`__remote_native_body!` picks; see the module docs).
     item_fn.block = Box::new(syn::parse_quote! {{
         #[cfg(#has_body)]
         let __remote_tree = #body_fn(#(#names),*);
         #[cfg(not(#has_body))]
-        let __remote_tree = ::runtime_vocabulary::remote::host::__mount_remote(
-            #name_str,
-            move |__out: &mut ::std::vec::Vec<u8>, __keep: &mut ::runtime_vocabulary::remote::host::Keep| {
-                #(::runtime_vocabulary::remote::RemoteProp::send(&#names, __out, __keep);)*
-            },
-        );
+        let __remote_tree = ::runtime_vocabulary::__remote_native_body! {
+            inline: { #body_fn(#(#names),*) }
+            mount: {
+                ::runtime_vocabulary::remote::host::__mount_remote(
+                    #name_str,
+                    move |__out: &mut ::std::vec::Vec<u8>, __keep: &mut ::runtime_vocabulary::remote::host::Keep| {
+                        #(::runtime_vocabulary::remote::RemoteProp::send(&#names, __out, __keep);)*
+                    },
+                )
+            }
+        };
         __remote_tree
     }});
 
@@ -104,6 +117,15 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
         #[cfg(#has_body)]
         #[allow(non_snake_case)]
         #body
+
+        #[cfg(not(#has_body))]
+        ::runtime_vocabulary::__remote_native_body! {
+            inline: {
+                #[allow(non_snake_case)]
+                #body
+            }
+            mount: {}
+        }
 
         /// The bundle's mount export for this remote component.
         #[cfg(idealyst_stream_guest)]
@@ -279,6 +301,10 @@ mod tests {
         assert!(extra.contains(&export_name("Greeting")), "{extra}");
         assert!(extra.contains("fn __Greeting_remote_body"), "{extra}");
         assert!(extra.contains("RemoteProp > :: receive"), "{extra}");
+        // The native build's choice between running the body in-process and
+        // mounting it is the vocabulary's (`remote-inline`), in both places.
+        assert!(component.contains("__remote_native_body"), "{component}");
+        assert!(extra.contains("__remote_native_body"), "{extra}");
     }
 
     #[test]

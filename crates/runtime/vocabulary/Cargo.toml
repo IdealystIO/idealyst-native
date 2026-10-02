@@ -113,6 +113,11 @@ remote = ["dep:serde", "dep:postcard", "dep:linkme", "async-driver", "runtime-sh
 # codec's own tests run on (`cargo test -p runtime-vocabulary --features
 # remote-loopback --test remote_elements`).
 remote-loopback = ["remote", "runtime-world/loopback-engine"]
+# A native app runs its `#[component(remote)]` bodies in-process instead of
+# mounting them from the installed bundle: the same source, compiled
+# natively. For measuring a remote component against itself as native code,
+# and for debugging one without the bundle in the way. Off in shipped apps.
+remote-inline = ["remote"]
 
 [dependencies]
 # The shared prop/data types (StyleRules, AccessibilityProps, handler

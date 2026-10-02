@@ -1,6 +1,8 @@
 //! The showcase, driven end to end against the mock backend with its REAL
 //! bundle (the wasm the build script embeds): every tab, the bundle-defined
 //! shop navigator, context, host functions, app components, and teardown.
+//! `--features inline` runs the same flow with the remote screens compiled
+//! in-process (the native baseline).
 
 use host_mock::{pump, Harness};
 use runtime_core::ui;
@@ -62,6 +64,14 @@ fn the_showcase_runs_its_remote_screens() {
 
     // Feed (remote): app components, a sync host function, bundle state.
     assert!(r.sees("Feed — rendered by the bundle"), "{}", r.screen());
+    // Built with `--features inline`, the same screens run in-process: no
+    // tree came from the bundle.
+    assert_eq!(
+        runtime_vocabulary::remote::host::live_trees() > 0,
+        !cfg!(feature = "inline"),
+        "remote trees mounted: {}",
+        runtime_vocabulary::remote::host::live_trees()
+    );
     assert!(r.sees(&format!("running on {}", std::env::consts::OS)), "{}", r.screen());
     assert!(r.sees("Shipping update") && r.sees("Orders placed today"), "{}", r.screen());
     r.press("♥ 0");
