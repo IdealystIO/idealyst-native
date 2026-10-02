@@ -1,0 +1,26 @@
+# idea-ui as a remote component library: remote components that use every
+# idea-ui component. Linked natively by `tests/idea_ui.rs` (where each is a
+# stub that mounts from the bundle, and its tree also renders in-process to
+# compare against) and built for wasm32 by stream-spike's build script.
+
+[package]
+name = "spike-ideaui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["remote"] }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+idea-ui = { workspace = true }
+icons-lucide = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }

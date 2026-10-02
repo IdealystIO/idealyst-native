@@ -155,7 +155,7 @@ pub struct AutocompleteSlotCx {
 /// rather than an `Element` because the panel is structurally rebuilt on
 /// every open, and an `Element` can only be mounted once (the same shape as
 /// `Field`'s [`crate::Adornment::element`] and `Modal`'s content).
-#[derive(Clone)]
+#[derive(Clone, runtime_core::Remote)]
 pub struct AutocompleteSlot(Rc<dyn Fn(AutocompleteSlotCx) -> Element>);
 
 impl AutocompleteSlot {

@@ -100,7 +100,7 @@ use crate::stylesheets::{
 /// Which edge a [`TableCell`] freezes against in a
 /// `Table(scroll_x = true)` — see the module docs. (Named `ColumnPin`
 /// rather than `Pin` to stay clear of `std::pin::Pin`.)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, IdealystSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
 pub enum ColumnPin {
     /// Freeze against the scroller's left edge.
     Left,

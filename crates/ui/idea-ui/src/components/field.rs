@@ -68,7 +68,7 @@ use idea_theme::tokens;
 /// - [`Adornment::Group`] — several of the above side by side in one slot.
 ///
 /// Adornments compose into a flex row alongside the input, so any width works.
-#[derive(Clone)]
+#[derive(Clone, runtime_core::Remote)]
 pub enum Adornment {
     /// No adornment.
     None,

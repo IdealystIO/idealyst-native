@@ -11277,6 +11277,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike-ideaui"
+version = "0.1.0"
+dependencies = [
+ "icons-lucide",
+ "idea-ui",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
 name = "spike-kernelguest"
 version = "0.1.0"
 dependencies = [
@@ -11596,12 +11609,14 @@ name = "stream-spike"
 version = "0.1.0"
 dependencies = [
  "host-mock",
+ "idea-ui",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
  "spike-camera",
  "spike-components",
+ "spike-ideaui",
  "spike-remoteattr",
  "stack-navigator",
  "stream-abi",

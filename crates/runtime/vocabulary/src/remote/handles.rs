@@ -440,6 +440,9 @@ mod host_side {
         NavRef { get: Rc<dyn Fn() -> Option<crate::prims::NavHandle>>, original: Rc<dyn std::any::Any> },
         /// An app closure a bundle may call (a navigator's `pop`).
         Call(Rc<dyn Fn(&[u8]) -> Vec<u8>>),
+        /// An app `Ref` to a node handle, filled by an app component the
+        /// bundle handed it to (`bind_to`); read when the bundle uses it.
+        NodeRef(Rc<dyn Fn() -> Option<Held>>),
     }
 
     struct Entry {
@@ -572,7 +575,14 @@ mod host_side {
         }
         // Cloned out: a handle method may re-enter (and drop entries).
         let held = HANDLES.with(|h| h.borrow().get(&id).map(|e| e.held.clone()));
-        let Some(held) = held else { return default_reply(&call) };
+        let Some(mut held) = held else { return default_reply(&call) };
+        // A ref an app component fills: what it holds now, if anything.
+        if let Held::NodeRef(get) = &held {
+            match get() {
+                Some(now) => held = now,
+                None => return default_reply(&call),
+            }
+        }
         use Held as H;
         use HandleCall as C;
         match (held, call) {

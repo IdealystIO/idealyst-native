@@ -33,7 +33,7 @@ pub use crate::stylesheets::StackPadding;
 /// Which themed neutral fills the surface. Maps to the theme's neutral
 /// color tokens — see [`idea_theme`]'s `background` / `surface` /
 /// `surface_alt`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, runtime_core::Remote)]
 pub enum SurfaceColor {
     /// The page background — the recessed base (often a light gray).
     /// Token `color-background`.

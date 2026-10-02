@@ -793,21 +793,6 @@ fn wire_file_drop(e: &runtime_shared::file_drop::FileDropEvent) -> WireFileDrop 
 /// The prims hold icon and asset data as `&'static`: decoded ones are
 /// interned, one leak per DISTINCT icon / byte blob for the process's
 /// life — bounded by what bundles actually use, like [`intern`].
-fn intern_icon(w: WireIcon) -> runtime_shared::primitives::icon::IconData {
-    use runtime_shared::primitives::icon::IconData;
-    static ICONS: OnceLock<Mutex<HashMap<(Vec<String>, (u16, u16), bool, u8), IconData>>> = OnceLock::new();
-    let rule = w.fill_rule as u8;
-    let key = (w.paths, w.view_box, w.filled, rule);
-    let mut icons = ICONS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(i) = icons.get(&key) {
-        return *i;
-    }
-    let paths: Vec<&'static str> = key.0.iter().map(|p| intern(p)).collect();
-    let icon = IconData { view_box: w.view_box, paths: Box::leak(paths.into_boxed_slice()), fill_rule: w.fill_rule, filled: w.filled };
-    icons.insert(key, icon);
-    icon
-}
-
 fn blank_icon() -> runtime_shared::primitives::icon::IconData {
     runtime_shared::primitives::icon::IconData {
         view_box: (0, 0),
@@ -961,17 +946,6 @@ pub(crate) fn intern_name(s: &str) -> &'static str {
 
 /// `test_id` and an action's `method` are `&'static str` on the prims:
 /// interned, one leak per distinct string for the process's life.
-fn intern(s: &str) -> &'static str {
-    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(&n) = names.get(s) {
-        return n;
-    }
-    let n: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    names.insert(n);
-    n
-}
-
 // ---------------------------------------------------------------------------
 // App components exported to bundles
 // ---------------------------------------------------------------------------
@@ -1125,6 +1099,11 @@ impl ImportCx {
     pub(crate) fn sheet(&self, r: SheetRef) -> Rc<StyleSheet> {
         sheet(&self.0, r)
     }
+    /// Hold `held` for this bundle's tree (it dies with the tree); its id.
+    pub(crate) fn hold(&self, held: super::handles::Held) -> u32 {
+        let tree: std::rc::Weak<dyn std::any::Any> = Rc::downgrade(&self.0) as std::rc::Weak<Conn>;
+        super::handles::hold(held, tree)
+    }
 }
 
 /// A bundle callback a decoded prop holds.
@@ -1134,10 +1113,6 @@ impl CallbackRef {
     /// `None` when the bundle can't be called (poisoned or gone).
     pub(crate) fn call(&self, args: &[u8]) -> Option<Vec<u8>> {
         self.0.call(args)
-    }
-    /// See `CbRef::get`.
-    pub(crate) fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
-        self.0.get(args)
     }
     /// See `CbRef::get_bytes`.
     pub(crate) fn get_bytes(&self, args: &[u8]) -> Option<Vec<u8>> {

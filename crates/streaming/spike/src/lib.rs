@@ -21,6 +21,8 @@ pub const REMOTE_GUEST_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/s
 
 /// `spike-remoteattr`: a `#[component(remote)]` component's bundle build.
 pub const REMOTE_ATTR_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_remoteattr.wasm"));
+/// `spike-ideaui`: remote components using every idea-ui component.
+pub const IDEA_UI_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/spike_ideaui.wasm"));
 
 /// `spike-guest`, release-built for wasm32 by this crate's build script —
 /// the app's built-in copy, used when no bundle server answers.

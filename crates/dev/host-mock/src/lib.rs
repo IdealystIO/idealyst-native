@@ -397,15 +397,26 @@ struct RecordingHandleOps;
 
 static RECORDING_HANDLE_OPS: RecordingHandleOps = RecordingHandleOps;
 
+// `rect` is recorded for every anchorable handle (an overlay measuring its
+// trigger), not just views: the trait default answers a zero rect without a
+// trace, which hid whether a measurement reached the handle at all.
 impl runtime_shared::PressableOps for RecordingHandleOps {
     fn click(&self, node: &dyn Any) {
         handle_rec(node, "click".into())
+    }
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        handle_rec(node, "rect".into());
+        ViewportRect::default()
     }
 }
 
 impl runtime_shared::ButtonOps for RecordingHandleOps {
     fn click(&self, node: &dyn Any) {
         handle_rec(node, "click".into())
+    }
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        handle_rec(node, "rect".into());
+        ViewportRect::default()
     }
 }
 

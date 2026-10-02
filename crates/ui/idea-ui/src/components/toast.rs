@@ -78,7 +78,7 @@ pub const TOAST_EDGE_GAP: f32 = 16.0;
 
 /// One queued toast. Constructed by the `push_toast*` family / the
 /// [`Toast`] builder; consumed by [`ToastHost`]'s reactive list.
-#[derive(Clone)]
+#[derive(Clone, runtime_core::Remote)]
 pub struct ToastEntry {
     /// Process-unique id. Pass to [`dismiss_toast`] to close early.
     pub id: u64,
@@ -493,7 +493,7 @@ runtime_core::stylesheet! {
 /// Where the toast stack anchors on the viewport — any of the nine
 /// regions of a 3×3 grid (the three vertical bands × the three
 /// horizontal bands). Default [`BottomLeft`](ToastPlacement::BottomLeft).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum ToastPlacement {
     /// Top edge, hugging the leading (left) side.
     TopLeft,

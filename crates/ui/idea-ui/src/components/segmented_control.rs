@@ -64,7 +64,7 @@ fn seg_label_base_sheet() -> Rc<StyleSheet> {
 /// One segment in a [`SegmentedControl`]. `id` is the value committed to
 /// the bound signal when this segment is chosen; `label` is what the user
 /// sees.
-#[derive(Clone, IdealystSchema)]
+#[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct SegmentOption {
     /// Stable value committed to the control's `value` signal when this
     /// segment is chosen. Compared against the current value to mark the

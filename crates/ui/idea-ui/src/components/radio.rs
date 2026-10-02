@@ -206,7 +206,7 @@ pub fn Radio(props: &RadioProps) -> Element {
 // =============================================================================
 
 /// One option in a [`RadioGroup`]. `RadioOption::new(id, label)`.
-#[derive(Clone, IdealystSchema)]
+#[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct RadioOption {
     /// Stable identity for this option; matched against the group's
     /// `value` to decide selection and handed to `on_change` on tap.
@@ -224,7 +224,7 @@ impl RadioOption {
 
 /// Layout direction for a [`RadioGroup`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-#[derive(IdealystSchema)]
+#[derive(IdealystSchema, runtime_core::Remote)]
 pub enum RadioAxis {
     /// Stack options vertically. The default.
     #[default]

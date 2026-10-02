@@ -46,7 +46,7 @@ use runtime_core::IdealystSchema;
 
 /// Day of the week, Monday-first (ISO 8601). `as_index` is the
 /// Monday-based ordinal used to index [`DateLabels::weekdays_short`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, IdealystSchema, runtime_core::Remote)]
 pub enum Weekday {
     Monday,
     Tuesday,
@@ -97,7 +97,7 @@ impl Weekday {
 /// A timezone-less calendar date (proleptic Gregorian). Fields are
 /// public but only ever valid — construct via [`CivilDate::new`] /
 /// [`CivilDate::from_days`], which validate/normalize.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, IdealystSchema, runtime_core::Remote)]
 pub struct CivilDate {
     /// Calendar year (e.g. `2026`).
     pub year: i32,
@@ -226,7 +226,7 @@ pub fn days_in_month(year: i32, month: u8) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// A timezone-less time of day, second precision.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, IdealystSchema, runtime_core::Remote)]
 pub struct CivilTime {
     /// `0..=23`.
     pub hour: u8,
@@ -247,7 +247,7 @@ impl CivilTime {
 }
 
 /// A timezone-less date + time-of-day pair.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, IdealystSchema, runtime_core::Remote)]
 pub struct CivilDateTime {
     pub date: CivilDate,
     pub time: CivilTime,
@@ -285,7 +285,7 @@ impl CivilDateTime {
 /// `labels` prop to localize. Weekday arrays are Monday-first
 /// ([`Weekday::as_index`] order) regardless of the calendar's
 /// `first_weekday` — the components rotate for display.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, runtime_core::Remote)]
 pub struct DateLabels {
     /// Full month names, January-first.
     pub months: [String; 12],

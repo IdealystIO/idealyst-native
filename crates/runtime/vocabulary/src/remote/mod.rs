@@ -314,6 +314,41 @@ impl From<runtime_shared::primitives::icon::IconData> for WireIcon {
     }
 }
 
+/// Interned `'static` copies of what crosses as owned data but is
+/// `'static` on the other side (an icon's paths, a name). Either side may
+/// need them: the app for a bundle's icon, a bundle for one the app sends.
+/// Each distinct value is leaked once.
+pub(crate) fn intern(s: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&n) = names.get(s) {
+        return n;
+    }
+    let n: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    names.insert(n);
+    n
+}
+
+/// An `IconData` built from what crossed (see [`intern`]).
+pub(crate) fn intern_icon(w: WireIcon) -> runtime_shared::primitives::icon::IconData {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use runtime_shared::primitives::icon::IconData;
+    static ICONS: OnceLock<Mutex<HashMap<(Vec<String>, (u16, u16), bool, u8), IconData>>> = OnceLock::new();
+    let rule = w.fill_rule as u8;
+    let key = (w.paths, w.view_box, w.filled, rule);
+    let mut icons = ICONS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = icons.get(&key) {
+        return *i;
+    }
+    let paths: Vec<&'static str> = key.0.iter().map(|p| intern(p)).collect();
+    let icon = IconData { view_box: w.view_box, paths: Box::leak(paths.into_boxed_slice()), fill_rule: w.fill_rule, filled: w.filled };
+    icons.insert(key, icon);
+    icon
+}
+
 /// An image `Asset`: its id and where its bytes are. Embedded bytes cross
 /// with it (a bundle's own asset); a bundled path names a file the APP
 /// ships.
@@ -641,6 +676,7 @@ pub fn __receive_value<T: serde::de::DeserializeOwned>(input: &mut &[u8]) -> T {
 macro_rules! remote_value {
     ($($t:ty),* $(,)?) => {$(
         $crate::__import_value!($t);
+        $crate::__value_via_serde!($t);
         impl $crate::remote::RemoteProp for $t {
             #[cfg(not(idealyst_stream_guest))]
             fn send(&self, out: &mut ::std::vec::Vec<u8>, _keep: &mut $crate::remote::host::Keep) {
@@ -700,22 +736,219 @@ impl<T: RemoteProp> RemoteProp for Vec<T> {
     }
 }
 
-fn codec_encode<T: Serialize>(v: &T, out: &mut Vec<u8>) {
-    __send_value(v, out)
+/// A value that crosses as plain data, in either direction, with no
+/// context: what a signal's value needs (once the app holds a bundle's
+/// signal, every bundle read and write re-encodes it), and a callback's
+/// arguments and result. Primitives, `String`, `Option` / `Vec` / tuples /
+/// arrays of values, and every [`remote_value!`] type have it;
+/// `#[derive(Remote)]` gives it field by field.
+pub trait RemoteValue: Sized + 'static {
+    fn encode(&self, out: &mut Vec<u8>);
+    fn decode(input: &mut &[u8]) -> Result<Self, String>;
 }
 
-fn codec_decode<T: serde::de::DeserializeOwned>(b: &[u8]) -> Option<T> {
-    from_bytes(b).ok()
+/// `RemoteValue` through serde (postcard).
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __value_via_serde {
+    ($($t:ty),* $(,)?) => {$(
+        impl $crate::remote::RemoteValue for $t {
+            fn encode(&self, out: &mut ::std::vec::Vec<u8>) {
+                $crate::remote::__send_value(self, out)
+            }
+            fn decode(input: &mut &[u8]) -> ::core::result::Result<Self, ::std::string::String> {
+                $crate::remote::__try_receive_value(input)
+            }
+        }
+    )*};
 }
 
-/// The kernel codec a signal prop's value crosses with (postcard).
-fn signal_codec<T: Serialize + serde::de::DeserializeOwned>() -> runtime_world::remote::Codec<T> {
+__value_via_serde!((), String, bool, char, i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, StyleRules);
+
+impl<T: RemoteValue> RemoteValue for Option<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        __send_value(&self.is_some(), out);
+        if let Some(v) = self {
+            v.encode(out);
+        }
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        Ok(if __try_receive_value::<bool>(input)? { Some(T::decode(input)?) } else { None })
+    }
+}
+
+impl<T: RemoteValue> RemoteValue for Vec<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        __send_value(&(self.len() as u64), out);
+        for v in self {
+            v.encode(out);
+        }
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        let n = __try_receive_value::<u64>(input)?;
+        (0..n).map(|_| T::decode(input)).collect()
+    }
+}
+
+impl<T: RemoteValue, const N: usize> RemoteValue for [T; N] {
+    fn encode(&self, out: &mut Vec<u8>) {
+        for v in self {
+            v.encode(out);
+        }
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        let items = (0..N).map(|_| T::decode(input)).collect::<Result<Vec<T>, String>>()?;
+        items.try_into().map_err(|_| "array length".to_string())
+    }
+}
+
+macro_rules! value_tuple {
+    ($($n:ident),+) => {
+        impl<$($n: RemoteValue),+> RemoteValue for ($($n,)+) {
+            #[allow(non_snake_case)]
+            fn encode(&self, out: &mut Vec<u8>) {
+                let ($($n,)+) = self;
+                $($n.encode(out);)+
+            }
+            fn decode(input: &mut &[u8]) -> Result<Self, String> {
+                Ok(($($n::decode(input)?,)+))
+            }
+        }
+    };
+}
+value_tuple!(A, B);
+value_tuple!(A, B, C);
+value_tuple!(A, B, C, D);
+
+/// A `Reactive<T>` inside a value (an option's label in a `Vec` a signal
+/// holds) crosses as its CURRENT value: data has no closures.
+impl<T: RemoteValue + Clone> RemoteValue for crate::glue::Reactive<T> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.get().encode(out)
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        Ok(crate::glue::Reactive::Static(T::decode(input)?))
+    }
+}
+
+// The framework's own value types: props an app component takes
+// (`align: TextAlign`, `side: ElementSide`), and callback arguments
+// (`Fn(&KeyEvent)`). Plain data, so they cross as copies.
+remote_value!(
+    runtime_shared::style::Color,
+    runtime_shared::style::Length,
+    runtime_shared::style::FlexDirection,
+    runtime_shared::style::FlexWrap,
+    runtime_shared::style::JustifyContent,
+    runtime_shared::style::AlignItems,
+    runtime_shared::style::AlignSelf,
+    runtime_shared::style::Position,
+    runtime_shared::style::FontWeight,
+    runtime_shared::style::FontStyle,
+    runtime_shared::style::TextAlign,
+    runtime_shared::style::TextTransform,
+    runtime_shared::style::Overflow,
+    runtime_shared::style::ObjectFit,
+    runtime_shared::style::Cursor,
+    runtime_shared::style::Easing,
+    runtime_shared::accessibility::Role,
+    runtime_shared::primitives::portal::ElementSide,
+    runtime_shared::primitives::portal::ElementAlign,
+    runtime_shared::primitives::portal::ViewportRect,
+    runtime_shared::primitives::key::KeyEvent,
+    runtime_shared::primitives::key::KeyOutcome,
+    runtime_shared::primitives::image::ImageLoadEvent,
+    runtime_shared::touch::TouchPoint,
+);
+
+/// `ImportArg` + `RemoteProp` for a type that is a [`RemoteValue`]: it
+/// crosses as that plain data, either way.
+macro_rules! cross_as_value {
+    ($($t:ty),* $(,)?) => {$(
+        impl ImportArg for $t {
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn send(self, out: &mut Vec<u8>) {
+                RemoteValue::encode(&self, out)
+            }
+            #[cfg(not(idealyst_stream_guest))]
+            fn receive(input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
+                <$t as RemoteValue>::decode(input)
+            }
+        }
+        impl RemoteProp for $t {
+            #[cfg(not(idealyst_stream_guest))]
+            fn send(&self, out: &mut Vec<u8>, _keep: &mut host::Keep) {
+                RemoteValue::encode(self, out)
+            }
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn receive(input: &mut &[u8]) -> Self {
+                <$t as RemoteValue>::decode(input).unwrap_or_else(|e| panic!("remote codec: a value does not decode: {e}"))
+            }
+        }
+    )*};
+}
+
+/// An icon: its paths are `'static` where it's used, so the receiving side
+/// interns them.
+impl RemoteValue for runtime_shared::primitives::icon::IconData {
+    fn encode(&self, out: &mut Vec<u8>) {
+        __send_value(&WireIcon::from(*self), out)
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        Ok(intern_icon(__try_receive_value(input)?))
+    }
+}
+cross_as_value!(runtime_shared::primitives::icon::IconData);
+
+fn codec_encode<T: RemoteValue>(v: &T, out: &mut Vec<u8>) {
+    v.encode(out)
+}
+
+fn codec_decode<T: RemoteValue>(b: &[u8]) -> Option<T> {
+    T::decode(&mut &b[..]).ok()
+}
+
+/// The kernel codec a signal prop's value crosses with.
+fn signal_codec<T: RemoteValue>() -> runtime_world::remote::Codec<T> {
     runtime_world::remote::Codec { encode: codec_encode::<T>, decode: codec_decode::<T> }
+}
+
+/// [`Arg`]'s probe for a field of a `#[derive(Remote)]` value:
+/// [`ViaValue`] when its type is a [`RemoteValue`], else [`ViaNoValue`],
+/// which fails naming the type when a value actually crosses.
+#[doc(hidden)]
+pub trait ViaValue<T> {
+    fn encode_value(&self, v: &T, out: &mut Vec<u8>);
+    fn decode_value(&self, input: &mut &[u8]) -> Result<T, String>;
+}
+
+impl<T: RemoteValue> ViaValue<T> for Arg<T> {
+    fn encode_value(&self, v: &T, out: &mut Vec<u8>) {
+        v.encode(out)
+    }
+    fn decode_value(&self, input: &mut &[u8]) -> Result<T, String> {
+        T::decode(input)
+    }
+}
+
+#[doc(hidden)]
+pub trait ViaNoValue<T> {
+    fn encode_value(&self, v: &T, out: &mut Vec<u8>);
+    fn decode_value(&self, input: &mut &[u8]) -> Result<T, String>;
+}
+
+impl<T> ViaNoValue<T> for &Arg<T> {
+    fn encode_value(&self, _v: &T, _out: &mut Vec<u8>) {
+        panic!("a value of type `{}` can't cross as plain data (in a signal, or a callback's argument)", std::any::type_name::<T>())
+    }
+    fn decode_value(&self, _input: &mut &[u8]) -> Result<T, String> {
+        Err(format!("a value of type `{}` can't cross as plain data", std::any::type_name::<T>()))
+    }
 }
 
 pub type SignalHandle = (u32, u32, u32);
 
-impl<T: Serialize + serde::de::DeserializeOwned + PartialEq + 'static> RemoteProp for runtime_world::ReadSignal<T> {
+impl<T: RemoteValue + PartialEq> RemoteProp for runtime_world::ReadSignal<T> {
     #[cfg(not(idealyst_stream_guest))]
     fn send(&self, out: &mut Vec<u8>, keep: &mut host::Keep) {
         let (h, guard) = runtime_world::remote::export_read_signal(*self, signal_codec::<T>());
@@ -728,7 +961,7 @@ impl<T: Serialize + serde::de::DeserializeOwned + PartialEq + 'static> RemotePro
     }
 }
 
-impl<T: Serialize + serde::de::DeserializeOwned + PartialEq + 'static> RemoteProp for runtime_world::Signal<T> {
+impl<T: RemoteValue + PartialEq> RemoteProp for runtime_world::Signal<T> {
     #[cfg(not(idealyst_stream_guest))]
     fn send(&self, out: &mut Vec<u8>, keep: &mut host::Keep) {
         let (h, guard) = runtime_world::remote::export_signal(*self, signal_codec::<T>());
@@ -902,6 +1135,48 @@ impl<T> ViaUnsupportedProps<T> for &Arg<T> {
     }
 }
 
+/// [`Arg`]'s probe for the app → bundle direction (a `#[derive(Remote)]`
+/// type's fields as a remote component's prop or context): [`ViaRemoteProp`]
+/// when the field type is [`RemoteProp`], else [`ViaNoRemoteProp`], which
+/// fails naming the type when a value actually crosses.
+#[doc(hidden)]
+pub trait ViaRemoteProp<T> {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send_prop(&self, v: &T, out: &mut Vec<u8>, keep: &mut host::Keep);
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive_prop(&self, input: &mut &[u8]) -> T;
+}
+
+impl<T: RemoteProp> ViaRemoteProp<T> for Arg<T> {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send_prop(&self, v: &T, out: &mut Vec<u8>, keep: &mut host::Keep) {
+        v.send(out, keep)
+    }
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive_prop(&self, input: &mut &[u8]) -> T {
+        T::receive(input)
+    }
+}
+
+#[doc(hidden)]
+pub trait ViaNoRemoteProp<T> {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send_prop(&self, v: &T, out: &mut Vec<u8>, keep: &mut host::Keep);
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive_prop(&self, input: &mut &[u8]) -> T;
+}
+
+impl<T> ViaNoRemoteProp<T> for &Arg<T> {
+    #[cfg(not(idealyst_stream_guest))]
+    fn send_prop(&self, _v: &T, _out: &mut Vec<u8>, _keep: &mut host::Keep) {
+        panic!("a value of type `{}` can't cross from the app to a remote component yet", std::any::type_name::<T>())
+    }
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive_prop(&self, _input: &mut &[u8]) -> T {
+        panic!("a value of type `{}` can't cross from the app to a remote component yet", std::any::type_name::<T>())
+    }
+}
+
 #[doc(hidden)]
 pub fn __try_receive_value<T: serde::de::DeserializeOwned>(input: &mut &[u8]) -> Result<T, String> {
     let (v, rest) = postcard::take_from_bytes(input).map_err(|e| e.to_string())?;
@@ -986,6 +1261,89 @@ impl ImportArg for runtime_scene::Element {
     }
 }
 
+/// A render slot (`ModalContent(Rc<dyn Fn() -> Element>)`): the app calls
+/// it whenever it renders the slot, the bundle builds the tree and it
+/// crosses back. A bundle that can't be called renders nothing.
+impl ImportArg for std::rc::Rc<dyn Fn() -> runtime_scene::Element> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        __send_value(&bundle::register_call(std::rc::Rc::new(move |_: &[u8]| to_bytes(&bundle::encode(self())))), out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
+        let r = cx.callback(__try_receive_value(input)?);
+        let cx = cx.clone();
+        Ok(std::rc::Rc::new(move || {
+            let built = r
+                .call(&[])
+                .ok_or_else(|| "the bundle stopped (it panicked)".to_string())
+                .and_then(|bytes| from_bytes::<Node>(&bytes).map_err(|e| e.to_string()))
+                .and_then(|node| cx.build(node));
+            built.unwrap_or_else(|_| crate::glue::empty_absolute_view())
+        }))
+    }
+}
+
+/// What an overlay anchors to (`Popover(target = AnchorTarget::from(r))`):
+/// a getter into the bundle, which measures its own target — through the
+/// app, when that is a ref an app component filled.
+impl ImportArg for runtime_shared::primitives::portal::AnchorTarget {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        __send_value(&bundle::register_getter(move || to_bytes(&self.rect())), out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
+        use runtime_shared::primitives::portal::ViewportRect;
+        let get = cx.callback(__try_receive_value(input)?);
+        Ok(runtime_shared::primitives::portal::AnchorTarget::from_fn(move || {
+            get.get_bytes(&[]).and_then(|b| from_bytes::<Option<ViewportRect>>(&b).ok()).flatten()
+        }))
+    }
+}
+
+/// A `Ref` to a node handle the bundle hands an app component to fill
+/// (`Button(bind_to = Some(trigger))`). The app passes the component a ref
+/// of its own and holds it; the bundle's ref is filled at once with a
+/// handle whose calls read the app's ref when they run — as native code
+/// reads a `Ref` at call time. A call before the component filled it
+/// answers the method's default.
+macro_rules! node_ref_crossing {
+    ($($handle:ty => $held:ident),* $(,)?) => {$(
+        impl ImportArg for runtime_shared::Ref<$handle> {
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn send(self, out: &mut Vec<u8>) {
+                let r = self;
+                let fill = handles::fill::<$handle>(
+                    Some(Box::new(move |h| r.fill(h))),
+                    |n| <$handle>::new(n, &handles::REMOTE_OPS),
+                );
+                __send_value(&fill.expect("a fill was given"), out)
+            }
+            #[cfg(not(idealyst_stream_guest))]
+            fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
+                let fill: Cb = __try_receive_value(input)?;
+                let app_ref: runtime_shared::Ref<$handle> = runtime_shared::Ref::new();
+                let id = cx.hold(handles::Held::NodeRef(std::rc::Rc::new(move || {
+                    app_ref.get().map(handles::Held::$held)
+                })));
+                cx.callback(fill).call(&to_bytes(&id));
+                Ok(app_ref)
+            }
+        }
+    )*};
+}
+
+node_ref_crossing!(
+    runtime_shared::handles::ViewHandle => View,
+    runtime_shared::handles::PressableHandle => Pressable,
+    runtime_shared::handles::TextHandle => Text,
+    runtime_shared::handles::ButtonHandle => Button,
+    runtime_shared::primitives::text_input::TextInputHandle => TextInput,
+    runtime_shared::primitives::text_area::TextAreaHandle => TextArea,
+    runtime_shared::primitives::scroll_view::ScrollViewHandle => ScrollView,
+);
+
 /// A prop's `Reactive<T>`, for any `T` that crosses: a static value
 /// crosses as `T` does; a live one becomes a getter into the bundle, read by
 /// the app component's binding effects (which subscribe to whatever the
@@ -1054,32 +1412,95 @@ impl ImportArg for std::rc::Rc<dyn Fn()> {
 
 /// A one-argument callback prop (`on_change: Rc<dyn Fn(bool)>`): the app
 /// calls it with a value, which crosses to the bundle.
-impl<A> ImportArg for std::rc::Rc<dyn Fn(A)>
-where
-    A: Serialize + serde::de::DeserializeOwned + 'static,
-{
+/// A two-argument callback prop (`Fn(CivilDate, CivilDate)`).
+impl<A: RemoteValue, B: RemoteValue> ImportArg for std::rc::Rc<dyn Fn(A, B)> {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn send(self, out: &mut Vec<u8>) {
         __send_value(&bundle::register_call(std::rc::Rc::new(move |args: &[u8]| {
-            let a: A = from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a callback argument does not decode: {e}"));
-            self(a);
+            let mut args = args;
+            let a = decode_arg::<A>(&mut args);
+            let b = decode_arg::<B>(&mut args);
+            self(a, b);
             Vec::new()
         })), out)
     }
     #[cfg(not(idealyst_stream_guest))]
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
         let r = cx.callback(__try_receive_value(input)?);
-        Ok(std::rc::Rc::new(move |a: A| {
-            r.call(&to_bytes(&a));
+        Ok(std::rc::Rc::new(move |a: A, b: B| {
+            r.call(&encode_args(|out| {
+                a.encode(out);
+                b.encode(out);
+            }));
         }))
     }
+}
+
+/// A one-argument callback prop: `on_change: Fn(bool)` (`R = ()`), or one
+/// that answers (`is_date_disabled: Fn(CivilDate) -> bool`) — the app calls
+/// it with a value, the bundle runs it and replies. A bundle that can't be
+/// called (it panicked) answers `R::default()`.
+impl<A: RemoteValue, R: RemoteValue + Default> ImportArg for std::rc::Rc<dyn Fn(A) -> R> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        __send_value(&bundle::register_call(std::rc::Rc::new(move |args: &[u8]| {
+            let a = decode_arg::<A>(&mut &args[..]);
+            encode_args(|out| self(a).encode(out))
+        })), out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
+        let r = cx.callback(__try_receive_value(input)?);
+        Ok(std::rc::Rc::new(move |a: A| {
+            r.call(&encode_args(|out| a.encode(out)))
+                .and_then(|reply| R::decode(&mut &reply[..]).ok())
+                .unwrap_or_default()
+        }))
+    }
+}
+
+/// A key handler prop (`on_key_down: Fn(&KeyEvent) -> KeyOutcome`): the
+/// event crosses by value, the bundle answers. Concrete, not a generic
+/// `Fn(&A) -> R`: that would overlap `Fn(A) -> R` for higher-ranked
+/// lifetimes (rustc's `coherence_leak_check`). A bundle that can't be
+/// called answers `KeyOutcome::Default` (the platform's behavior), as a
+/// primitive's key handler does.
+impl ImportArg for std::rc::Rc<dyn Fn(&runtime_shared::primitives::key::KeyEvent) -> runtime_shared::primitives::key::KeyOutcome> {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send(self, out: &mut Vec<u8>) {
+        __send_value(&bundle::register_call(std::rc::Rc::new(move |args: &[u8]| {
+            let e = decode_arg::<runtime_shared::primitives::key::KeyEvent>(&mut &args[..]);
+            encode_args(|out| self(&e).encode(out))
+        })), out)
+    }
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
+        use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
+        let r = cx.callback(__try_receive_value(input)?);
+        Ok(std::rc::Rc::new(move |e: &KeyEvent| {
+            r.call(&encode_args(|out| e.encode(out)))
+                .and_then(|reply| KeyOutcome::decode(&mut &reply[..]).ok())
+                .unwrap_or(KeyOutcome::Default)
+        }))
+    }
+}
+
+#[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+fn decode_arg<A: RemoteValue>(args: &mut &[u8]) -> A {
+    A::decode(args).unwrap_or_else(|e| panic!("remote codec: a callback argument does not decode: {e}"))
+}
+
+fn encode_args(f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+    let mut out = Vec::new();
+    f(&mut out);
+    out
 }
 
 /// A signal prop. If the bundle created it, the app PROMOTES it: the value
 /// moves into the app's arena and both sides share it from then on.
 impl<T> ImportArg for runtime_world::Signal<T>
 where
-    T: Serialize + serde::de::DeserializeOwned + PartialEq + 'static,
+    T: RemoteValue + PartialEq,
 {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn send(self, out: &mut Vec<u8>) {
@@ -1094,7 +1515,7 @@ where
 
 impl<T> ImportArg for runtime_world::ReadSignal<T>
 where
-    T: Serialize + serde::de::DeserializeOwned + PartialEq + 'static,
+    T: RemoteValue + PartialEq,
 {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn send(self, out: &mut Vec<u8>) {
@@ -1669,6 +2090,36 @@ macro_rules! __remote_context_entry {
             };
         };
     };
+}
+
+// Code for one side of the boundary, in a macro's expansion: the BUNDLE
+// side (a bundle build, or both halves in one process for the codec's
+// tests) and the APP side. They follow the VOCABULARY's build, so a crate
+// deriving `Remote` needs no cfg of its own — they match the cfgs on the
+// `ImportArg` / `RemoteProp` methods exactly.
+#[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_bundle_code {
+    ($($t:tt)*) => { $($t)* };
+}
+#[cfg(not(any(idealyst_stream_guest, feature = "remote-loopback")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_bundle_code {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_app_code {
+    ($($t:tt)*) => { $($t)* };
+}
+#[cfg(idealyst_stream_guest)]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_app_code {
+    ($($t:tt)*) => {};
 }
 
 // `#[component(remote)]` in a native app build: run the body in-process

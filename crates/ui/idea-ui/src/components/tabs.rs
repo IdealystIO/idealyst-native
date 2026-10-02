@@ -38,7 +38,7 @@ use std::rc::Rc;
 use crate::stylesheets::{TabBar, TabBarHost, TabBarScroller, TabButton, TabButtonDot, TabDot};
 
 /// How the active tab is marked.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum TabIndicator {
     /// A 2px accent underline beneath the active tab (the default tab strip).
     #[default]
@@ -84,7 +84,7 @@ fn tab_label_base_sheet() -> Rc<StyleSheet> {
 /// as the list grows, shrinks, or reorders).
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
-#[derive(IdealystSchema)]
+#[derive(IdealystSchema, runtime_core::Remote)]
 pub struct Tab {
     /// Stable, unique identity: the keyed-list reconciliation key and the value
     /// `active`/`on_change` compare against. For a fixed strip, any unique

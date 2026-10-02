@@ -81,6 +81,7 @@ use runtime_macros_parse::recovery;
 mod props_attr;
 mod reactivity;
 mod remote_component;
+mod remote_derive;
 mod stylesheet;
 mod ui;
 mod ui_overlay;
@@ -116,6 +117,21 @@ fn finish2(out: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
 /// comment on every named field / enum variant (a missing one is a
 /// `compile_error!`). With neither feature this derive expands to
 /// nothing.
+/// `#[derive(Remote)]` — let a value type cross between an app and its
+/// remote bundles (an app component's prop set by remote code, a remote
+/// component's prop, context), field by field. A field type that can't
+/// cross fails by name when a value does, never at compile time; the whole
+/// expansion is empty unless the app hosts remote components. See
+/// `remote_derive`.
+#[proc_macro_derive(Remote)]
+pub fn derive_remote(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as syn::DeriveInput);
+    match remote_derive::derive(parsed) {
+        Ok(out) => out.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
 #[proc_macro_derive(IdealystSchema, attributes(schema))]
 pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as syn::DeriveInput);

@@ -360,6 +360,7 @@ pub fn MenuLabel(props: MenuLabelProps) -> Element {
     ui! { text(style = MenuLabelStyle()) { props.text.clone() } }
 }
 
+#[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct MenuSeparatorProps {}
@@ -382,7 +383,7 @@ pub fn MenuSeparator(_props: MenuSeparatorProps) -> Element {
 /// One row in a [`SubMenu`] flyout. `MenuEntry::new(label, on_select)`
 /// for a classic pick-and-close row, `MenuEntry::checkable(label,
 /// checked, on_select)` for a multi-select row.
-#[derive(Clone, IdealystSchema)]
+#[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct MenuEntry {
     /// Flyout row label. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
@@ -458,7 +459,7 @@ pub struct SubMenuSlotCx {
 /// mounted once. Mirrors `Autocomplete`'s slots and `Modal`'s content.
 /// (`Menu`'s own slots ARE plain `Element`s — its panel is built once, with
 /// the caller gating the mount.)
-#[derive(Clone)]
+#[derive(Clone, runtime_core::Remote)]
 pub struct SubMenuSlot(Rc<dyn Fn(SubMenuSlotCx) -> Element>);
 
 impl SubMenuSlot {

@@ -34,7 +34,7 @@ fn spinner_hug_sheet() -> Rc<StyleSheet> {
 
 /// Size knob for the [`Spinner`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-#[derive(IdealystSchema)]
+#[derive(IdealystSchema, runtime_core::Remote)]
 pub enum SpinnerSize {
     /// Compact spinner. The default.
     #[default]

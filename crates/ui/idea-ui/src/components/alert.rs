@@ -60,6 +60,7 @@ use crate::stylesheets::{AlertContent, TagClose};
 ///
 /// One prop expresses all three modes so there's no "show a close?" flag
 /// that has to agree with a separate "what does it do?" handler.
+#[derive(runtime_core::Remote)]
 pub enum AlertClose {
     /// No close affordance. (Default.)
     None,

@@ -30,7 +30,7 @@ const SEPARATOR_ICON_PX: f32 = 14.0;
 
 /// One crumb. `Crumb::new(label)` is a plain (non-clickable) crumb;
 /// `Crumb::linked(label, on_press)` is clickable.
-#[derive(Clone, IdealystSchema)]
+#[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct Crumb {
     /// Crumb text. `Reactive<String>` — static or live (signal/`rx!`).
     pub label: Reactive<String>,

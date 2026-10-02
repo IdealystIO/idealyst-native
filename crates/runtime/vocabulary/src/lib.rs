@@ -193,6 +193,22 @@ pub mod prims;
 #[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
 pub mod remote;
 
+/// `#[derive(Remote)]`'s output: kept in a build that hosts or is a remote
+/// bundle, dropped (unexpanded) everywhere else — so a library can derive
+/// it unconditionally and cost nothing in apps without remote components.
+#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_enabled {
+    ($($t:tt)*) => { $($t)* };
+}
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_enabled {
+    ($($t:tt)*) => {};
+}
+
 // What `#[component]` / `#[props]` emit for remote components, as no-ops in
 // every build that neither hosts nor is a remote bundle (the real ones live
 // in `remote`). Each pair's cfgs are exact complements.

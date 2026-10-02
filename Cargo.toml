@@ -119,6 +119,7 @@ members = [
     "crates/streaming/spike/kernelguest",
     "crates/streaming/spike/remoteguest",
     "crates/streaming/spike/remoteattr",
+    "crates/streaming/spike/ideaui",
     "crates/streaming/example/app",
     "crates/streaming/example/bundle",
     "crates/streaming/showcase/app",

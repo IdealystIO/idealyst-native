@@ -11,7 +11,7 @@ fn main() {
     let target_dir = out.join("guest-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
-    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr"] {
+    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
         let status = guest_build_command(&cargo, &manifest, &target_dir, package)
             .status()
             .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));
@@ -27,7 +27,7 @@ fn main() {
     }
     // And every source each bundle compiled (cargo's dep-info): a library
     // one of them uses that the list above doesn't name still reruns it.
-    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr"] {
+    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
         for source in bundle_sources(&target_dir, package) {
             println!("cargo:rerun-if-changed={}", source.display());
         }

@@ -102,7 +102,7 @@ const MEASURED_CHROME_PX: f32 = 25.0;
 /// Adding new transition flavors lands here as new enum variants
 /// — components select stylesheets + animation strategies per
 /// variant inside, no per-app CSS knowledge required.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum CollapsibleTransition {
     /// No animation. State changes apply in one frame. Cheap and
     /// predictable; matches the `prefers-reduced-motion` user
@@ -426,7 +426,7 @@ fn measured_body(value: Signal<bool>, duration_ms: u32, kids: Vec<Element>) -> E
 // =============================================================================
 
 /// Expansion policy for an [`Accordion`].
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
 pub enum AccordionExpand {
     /// Only one item open at a time. Opening item `i` closes any
     /// previously-open one; clicking the already-open item closes
@@ -440,7 +440,7 @@ pub enum AccordionExpand {
 
 /// One item in an [`Accordion`]. Constructed inline at the call site:
 /// `AccordionItem { title: "Shipping".into(), body: ui!{ ... } }`.
-#[derive(IdealystSchema)]
+#[derive(IdealystSchema, runtime_core::Remote)]
 pub struct AccordionItem {
     /// Header text for this item. `Reactive<String>` — static or live.
     #[schema(constraint = "reactive: static String or Signal/rx!")]

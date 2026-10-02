@@ -171,20 +171,28 @@ Each prop that does cross goes through its type's `ImportArg`:
 
 | Prop | How it crosses |
 |---|---|
-| Values (`String`, numbers, `StyleRules`, your types via `remote_value!`) | Copied |
-| `Reactive<T>` (any `T` below) | As `T` if static; a getter into the bundle if live, each reply decoded as `T` |
+| Values (`String`, numbers, `StyleRules`, the framework's style and event types — `TextAlign`, `Color`, `ElementSide`, `KeyEvent`, …) | Copied |
+| Your types, with `#[derive(Remote)]` | Field by field, each as its own type crosses (see below) |
+| A `stylesheet!` variant axis (`StackGap`, `CardPadding`, …) | Copied: `stylesheet!` derives it |
+| `IconData` | Copied; the receiving side interns its `'static` paths |
+| `Reactive<T>` (any `T` here) | As `T` if static; a getter into the bundle if live, each reply decoded as `T` |
 | Things the app defines with behavior, from an open set (idea-theme's `ToneRef`, `VariantRef`, `ButtonSizeRef`, `ShapeRef`, `TypographyKindRef`) | **By key**: the bundle sends `key()`, the app rebuilds its own registered value. A key the app has no value for fails naming it |
-| Callbacks (`Rc<dyn Fn()>`, `Rc<dyn Fn(A)>`, `Option<…>`) | Run in the bundle |
+| Callbacks: `Fn()`, `Fn(A)`, `Fn(A, B)`, answering `Fn(A) -> R`, `Fn(&KeyEvent) -> KeyOutcome`, `Option<…>` | Run in the bundle; arguments and replies cross as values. A stopped bundle answers `R::default()` (a key handler: the platform default) |
+| Render slots (`Fn() -> Element`, idea-ui's `ModalContent`) | The app calls it; the bundle builds the tree and it crosses back |
 | Children, `Element` props | Encoded subtrees, built by the bundle |
 | `Rc<StyleSheet>` | A proxied sheet, resolved by the app's theme |
+| A `Ref` the bundle hands an app component to fill (`Button(bind_to = Some(trigger))`, `Field(field_ref = …)`) | The app passes the component a ref of its own and holds it; the bundle's ref forwards each call to it, read at call time (a call before it's filled answers the method's default) |
+| `AnchorTarget` (`Popover(target = AnchorTarget::from(trigger))`) | A getter into the bundle, which measures its target — through the app, for a ref like the one above |
 | `Signal<T>` / `ReadSignal<T>` the app gave the bundle | The app's own handle |
 | `Signal<T>` / `ReadSignal<T>` the bundle created | **Promoted**: the value moves into the app's arena |
 
 A prop type with no `ImportArg` doesn't stop anything compiling: it fails by name at runtime, in the component's place.
 
+**`#[derive(Remote)]`** makes a type cross in every direction it can: as an app component's prop set by remote code (`ImportArg`), as a remote component's prop (`RemoteProp`), and as plain data — a signal's value, a callback's argument (`RemoteValue`). Each field crosses as its own type does, through probes, so a field that can't (a callback, inside a signal's value) fails naming its type when such a value actually crosses — never at compile time. The expansion is empty unless the app hosts remote components, so a library derives it on its value types unconditionally. `stylesheet!` derives it on the variant enums it generates. A signal's value needs `RemoteValue` (once the app holds a bundle's signal, every bundle read and write re-encodes it); a `Reactive` inside such a value crosses as its current value.
+
 **Crossing by key** is the rule for components ("not remote = in the app") applied to the other things a library defines. A type marks itself with `runtime_vocabulary::__remote_keyed!(MoodRef, |v| v.0.key())`, and each value registers with `__remote_key!(MoodRef, |v| v.0.key(), MoodRef(Rc::new(Loud)))` — a link-time table (`remote::host::KEYED`), like `APP_COMPONENTS`. idea-theme does both: its five ref types are keyed, and every built-in marker, every `tone!` / `variant!` an app declares, and idea-ui's card variants register themselves (`idea_theme::__remote_marker!`). A hand-written `impl Tone for X` in an app needs that one line too. All of it expands to nothing unless the app hosts remote components.
 
-**idea-ui works as a remote component library** with no change to its components: the showcase's remote screens use `Card`, `Badge`, `Button`, `Typography`, `Switch` and `Slider`, which render natively in the app against its theme. What it took: set-only props, keyed token refs, and `Reactive<T>` crossing for any `T` that crosses. Still open: idea-ui's ~40 plain value types (`StackGap`, `ControlSize`, …) don't cross yet, and its global functions (`push_toast`, `set_theme`) would run inside the bundle against the bundle's own empty state.
+**idea-ui works as a remote component library** with no change to its components. `spike/ideaui` uses every one of them from remote code — layout, text and status, actions, forms, dates, navigation, overlays (tooltip, a popover and a menu anchored to a `Button`'s ref, a modal, the toast host), data — and `tests/idea_ui.rs` checks each area against the same tree rendered in-process: the tree, the handle methods the components call, and what a press does to the backend. idea-ui's part: `#[derive(Remote)]` on ~30 value types, keyed token refs, and `#[props]` on its two field-less props structs. Still open: idea-ui's global functions (`push_toast`, `set_theme`, `active_theme`) run inside the bundle against the bundle's own state — a toast remote code pushes never reaches the app's `ToastHost` (checked) — so they either forward to the app or are app-only.
 
 **Promotion.** A bundle-created signal keeps its value in the bundle until the bundle hands it to native code. Then the app's prop decoder (which knows `T`) takes the value over: the slot keeps its subscribers and the bundle keeps its handle, but the value is now a real `SignalData<T>` in the app's arena, and the bundle reads and writes it the way it does any app signal. Native code reads it at native speed; a memo's output promotes too, and its derivation keeps writing the native value. It is two-phase (`GuestHooks::promote` / `promote_finish`), so a value the app can't decode leaves the bundle untouched. The native slot holds a `Promoted<T>` whose `as_any_mut` returns the inner `SignalData<T>`, so every native read, write and commit runs unchanged code — measured on the shipped profiles: no regression with `bridge` on or off.
 
