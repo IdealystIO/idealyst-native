@@ -1030,6 +1030,22 @@ thread_local! {
 /// Install the app's remote component loader.
 pub fn install_loader(loader: Rc<dyn Loader>) {
     LOADER.with(|l| *l.borrow_mut() = Some(loader));
+    export_contexts();
+}
+
+thread_local! {
+    static EXPORTED_CONTEXTS: RefCell<Option<Vec<Box<dyn std::any::Any>>>> = const { RefCell::new(None) };
+}
+
+/// Offer every `#[remote_context]` type to bundles (once per thread; the
+/// remote loader's install does it). Undeclared context stays invisible.
+pub fn export_contexts() {
+    EXPORTED_CONTEXTS.with(|e| {
+        let mut e = e.borrow_mut();
+        if e.is_none() {
+            *e = Some(super::REMOTE_CONTEXTS.iter().map(|c| (c.export)()).collect());
+        }
+    });
 }
 
 /// The app-side body of a `#[component(remote)]` component (macro-emitted):

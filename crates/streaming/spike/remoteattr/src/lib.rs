@@ -267,3 +267,34 @@ pub fn RemoteTabs() -> Element {
 pub fn NativeTabs() -> Element {
     tabs_view()
 }
+
+/// App context a remote component reads with a plain `inject`: marked
+/// `#[remote_context]`, so it crosses — the accent as a live signal, the
+/// flag as a copy.
+#[runtime_core::remote_context]
+#[derive(Clone)]
+pub struct Theme {
+    pub accent: ReadSignal<String>,
+    pub compact: bool,
+}
+
+/// Context NOT marked: invisible to bundles.
+#[derive(Clone)]
+pub struct Secret(pub String);
+
+/// Reads both contexts.
+#[component(remote)]
+pub fn Themed() -> Element {
+    let theme = runtime_world::inject::<Theme>();
+    let secret = runtime_world::inject::<Secret>().map(|s| s.0).unwrap_or_else(|| "hidden".into());
+    ui! {
+        view() {
+            if let Some(theme) = theme {
+                text { move || format!("accent {} compact {}", theme.accent.get(), theme.compact) }
+            } else {
+                text { "no theme" }
+            }
+            text { "secret {secret}" }
+        }
+    }
+}

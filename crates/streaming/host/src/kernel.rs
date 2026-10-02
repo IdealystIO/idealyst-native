@@ -599,6 +599,16 @@ impl KernelBundle {
         if let Ok(init) = instance.get_typed_func::<(), ()>(&store, "idealyst_ui_init") {
             init.call(&mut store, ())?;
         }
+        // Register the bundle's `#[remote_context]` decoders: one export per
+        // marked type (a wasm bundle has no link-time registry).
+        let ctx_exports: Vec<String> = module
+            .exports()
+            .map(|e| e.name().to_string())
+            .filter(|n| n.starts_with(runtime_vocabulary::remote::CONTEXT_EXPORT_PREFIX))
+            .collect();
+        for name in ctx_exports {
+            instance.get_typed_func::<(), ()>(&store, &name)?.call(&mut store, ())?;
+        }
         let inner = Rc::new(Inner {
             id: bundle,
             store: RefCell::new(store),

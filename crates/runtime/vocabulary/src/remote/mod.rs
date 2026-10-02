@@ -1320,3 +1320,201 @@ pub(crate) fn intern_static(s: &str) -> &'static str {
     names.insert(n);
     n
 }
+
+// ---------------------------------------------------------------------------
+// Contexts a remote component may inject from the app (`#[remote_context]`)
+// ---------------------------------------------------------------------------
+//
+// A context type marked `#[remote_context]` crosses like a remote
+// component's props (`RemoteProp`: signals as handles into the app's graph,
+// values as copies). Every marked type registers itself at link time
+// (`REMOTE_CONTEXTS`): the app offers each one to bundles under its path
+// name (`export_contexts`, when a remote loader is installed), and a bundle
+// registers a decoder for each at load (`register_contexts`) — so a plain
+// `inject::<Theme>()` in remote code falls back to the app's value when the
+// remote tree provides none itself. Unmarked context stays invisible to
+// bundles (the kernel's context bridge is an allowlist).
+//
+// The registry is per build: a native build (the app, and in-process
+// tests) uses a link-time slice; `linkme` has no wasm32 support, so in a
+// bundle each marked type exports `__idealyst_ctx_<path>` instead, and the
+// loader calls every such export at load (stream-host) — the module's own
+// export table is the registry.
+
+/// A context type that crosses to remote components. Implemented by
+/// `#[remote_context]`.
+pub trait RemoteContext: RemoteProp + Clone {
+    /// `module_path::Name` — the same in the app and the bundle (they
+    /// compile the same source, under the same crate name).
+    const NAME: &'static str;
+}
+
+/// One `#[remote_context]` type, as registered.
+pub struct ContextEntry {
+    pub name: &'static str,
+    /// App side: offer the type to bundles; the guard withdraws it.
+    pub export: fn() -> Box<dyn std::any::Any>,
+    /// Bundle side: let `inject` fall back to the app's value.
+    pub register: fn(),
+}
+
+#[cfg(not(idealyst_stream_guest))]
+#[linkme::distributed_slice]
+pub static REMOTE_CONTEXTS: [ContextEntry];
+
+/// The names of the contexts that cross (native builds).
+#[cfg(not(idealyst_stream_guest))]
+pub fn remote_context_names() -> Vec<&'static str> {
+    REMOTE_CONTEXTS.iter().map(|e| e.name).collect()
+}
+
+/// The prefix of a bundle's per-context registration exports.
+pub const CONTEXT_EXPORT_PREFIX: &str = "__idealyst_ctx_";
+
+#[doc(hidden)]
+pub fn __export_context<T: RemoteContext>() -> Box<dyn std::any::Any> {
+    #[cfg(not(idealyst_stream_guest))]
+    {
+        Box::new(runtime_world::remote::export_context(T::NAME, |out| {
+            // The app's value where the bundle asked: the ambient context
+            // of the remote component (whose scopes are the app's).
+            let Some(value) = runtime_world::inject::<T>() else { return false };
+            let mut keep = host::Keep::new();
+            value.send(out, &mut keep);
+            // The exports its signals needed live as long as the scope that
+            // asked (the remote component).
+            runtime_world::on_scope_drop(move || drop(keep));
+            true
+        }))
+    }
+    #[cfg(idealyst_stream_guest)]
+    {
+        Box::new(())
+    }
+}
+
+#[doc(hidden)]
+pub fn __register_context<T: RemoteContext>() {
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    runtime_world::remote_guest::register_remote_context::<T>(T::NAME, |bytes| {
+        let mut input = bytes;
+        Some(T::receive(&mut input))
+    });
+}
+
+/// Register every `#[remote_context]` type's decoder, in-process (tests
+/// running both halves natively). A wasm bundle's are registered by the
+/// loader calling its `__idealyst_ctx_*` exports.
+#[cfg(feature = "remote-loopback")]
+pub fn register_contexts() {
+    for e in REMOTE_CONTEXTS.iter() {
+        (e.register)()
+    }
+}
+
+/// `impl RemoteProp + RemoteContext` for a `#[remote_context]` struct, and
+/// its registration. Emitted by the attribute; a no-op without `remote`.
+#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_context {
+    ($name:ident { $($f:ident : $t:ty),* $(,)? }) => {
+        impl $crate::remote::RemoteProp for $name {
+            $crate::__remote_send_side! {
+                fn send(&self, __out: &mut ::std::vec::Vec<u8>, __keep: &mut $crate::remote::host::Keep) {
+                    $( $crate::remote::RemoteProp::send(&self.$f, __out, __keep); )*
+                    let _ = (__out, __keep);
+                }
+            }
+            $crate::__remote_receive_side! {
+                fn receive(__in: &mut &[u8]) -> Self {
+                    let _ = &__in;
+                    $name { $( $f: <$t as $crate::remote::RemoteProp>::receive(__in) ),* }
+                }
+            }
+        }
+        $crate::__remote_context_entry!($name);
+    };
+    ($name:ident ( $($i:tt : $t:ty),* $(,)? )) => {
+        impl $crate::remote::RemoteProp for $name {
+            $crate::__remote_send_side! {
+                fn send(&self, __out: &mut ::std::vec::Vec<u8>, __keep: &mut $crate::remote::host::Keep) {
+                    $( $crate::remote::RemoteProp::send(&self.$i, __out, __keep); )*
+                    let _ = (__out, __keep);
+                }
+            }
+            $crate::__remote_receive_side! {
+                fn receive(__in: &mut &[u8]) -> Self {
+                    let _ = &__in;
+                    $name ( $( <$t as $crate::remote::RemoteProp>::receive(__in) ),* )
+                }
+            }
+        }
+        $crate::__remote_context_entry!($name);
+    };
+}
+
+#[cfg(all(feature = "remote", idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_context_entry {
+    ($name:ident) => {
+        impl $crate::remote::RemoteContext for $name {
+            const NAME: &'static str = ::core::concat!(::core::module_path!(), "::", ::core::stringify!($name));
+        }
+        const _: () = {
+            /// Called by the loader at load (see `CONTEXT_EXPORT_PREFIX`).
+            #[export_name = ::core::concat!("__idealyst_ctx_", ::core::module_path!(), "::", ::core::stringify!($name))]
+            extern "C" fn __register() {
+                $crate::remote::__register_context::<$name>()
+            }
+        };
+    };
+}
+
+#[cfg(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_context_entry {
+    ($name:ident) => {
+        impl $crate::remote::RemoteContext for $name {
+            const NAME: &'static str = ::core::concat!(::core::module_path!(), "::", ::core::stringify!($name));
+        }
+        const _: () = {
+            #[$crate::remote::__linkme::distributed_slice($crate::remote::REMOTE_CONTEXTS)]
+            #[linkme(crate = $crate::remote::__linkme)]
+            static __ENTRY: $crate::remote::ContextEntry = $crate::remote::ContextEntry {
+                name: <$name as $crate::remote::RemoteContext>::NAME,
+                export: $crate::remote::__export_context::<$name>,
+                register: $crate::remote::__register_context::<$name>,
+            };
+        };
+    };
+}
+
+// The `RemoteProp` methods exist per build side; these keep a macro's
+// expansion in step with the VOCABULARY's build, not the calling crate's.
+#[cfg(not(idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_send_side {
+    ($($t:tt)*) => { $($t)* };
+}
+#[cfg(idealyst_stream_guest)]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_send_side {
+    ($($t:tt)*) => {};
+}
+#[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_receive_side {
+    ($($t:tt)*) => { $($t)* };
+}
+#[cfg(not(any(idealyst_stream_guest, feature = "remote-loopback")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_receive_side {
+    ($($t:tt)*) => {};
+}

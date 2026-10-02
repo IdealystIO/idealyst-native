@@ -525,3 +525,39 @@ fn a_swap_navigator_defined_in_a_remote_component_behaves_like_the_native_one() 
     assert!(native[2].contains("tab feed"), "{native:?}");
     assert_eq!(native[3], "held 0 live 0");
 }
+
+// ---- contexts: `#[remote_context]` ----
+
+/// A remote component injects the app's `#[remote_context]` Theme — its
+/// signal live — while unmarked context stays invisible to it.
+#[test]
+fn a_remote_component_injects_marked_app_context() {
+    use spike_remoteattr::{Secret, Theme, Themed};
+    assert!(runtime_vocabulary::remote::remote_context_names().contains(&"spike_remoteattr::Theme"));
+    let a = app();
+    let accent = a.h.world.enter(|| runtime_world::signal("blue".to_string()));
+    let tree = a.h.world.enter(|| {
+        runtime_world::provide(Theme { accent: accent.read_only(), compact: true });
+        runtime_world::provide(Secret("s3cret".into()));
+        ui! { Themed() }
+    });
+    let realized = a.h.mount(tree);
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("accent blue compact true") && t.contains("secret hidden"), "{t}");
+    accent.set("red".into());
+    a.h.flush();
+    assert!(text(&a, &realized).contains("accent red compact true"));
+    drop(realized);
+    a.h.flush();
+    assert_eq!(accent.subscriber_count(), 0, "the export ended with the component");
+}
+
+/// Without the app providing it, `inject` finds nothing, as natively.
+#[test]
+fn an_unprovided_remote_context_injects_nothing() {
+    let a = app();
+    let realized = a.h.mount(a.h.world.enter(|| ui! { spike_remoteattr::Themed() }));
+    a.h.flush();
+    assert!(text(&a, &realized).contains("no theme"));
+}

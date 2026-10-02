@@ -168,6 +168,18 @@ A remote component takes refs like any component (`text_input(..., bind = input)
 
 The app's entry goes when the bundle drops its handle, and in any case when the tree that made it unmounts. The decoded root owns its connection, so the handle lives exactly as long as the tree, whether or not the bundle releases it (it may keep it in a `Ref` slot, or have been stopped). `tests/remote_elements.rs` (`refs`) checks every method reaches the backend's handle in the same order as natively; `tests/remote_attr.rs` checks it over wasm.
 
+## Context
+
+A remote component reads the app's context with a plain `inject`, for context types marked `#[remote_context]`:
+
+```rust
+#[remote_context]
+#[derive(Clone)]
+pub struct Theme { pub accent: ReadSignal<String>, pub compact: bool }
+```
+
+Fields cross like a remote component's props: a `ReadSignal` / `Signal` as a handle into the app's graph (read live, writable for `Signal`), a value as a copy. Each marked type registers itself — natively in a link-time slice, which the app's remote loader offers to bundles under the type's path; in a bundle (`linkme` has no wasm32 support) as an `__idealyst_ctx_<path>` export the loader calls at load to register its decoder. A bundle's `inject::<Theme>()` then falls back to the app's value when the remote tree provides none itself; the exports live as long as the component that asked. Unmarked context stays invisible to bundles. `tests/remote_attr.rs` covers it over wasm (live signal, unmarked context hidden, unprovided context absent).
+
 ## Navigation
 
 A remote component can be a screen in the app's navigator, and navigate it. It gets the navigator's handle as a prop, as app screens do (`nav: Ref<StackHandle>`, `Ref<NavHandle>` or a `NavHandle`), and pushes, pops, selects and follows route links with typed routes, written exactly as natively:
@@ -274,7 +286,7 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **On-device numbers.** These were measured on a Mac. An iPhone run is the next measurement.
 - **Props passed from a bundle to a host component** (`Node::Host`, e.g. `Badge`) are still positional and unchecked. The same schema mechanism applies in that direction.
 - **Plain value props are fixed at mount.** A live prop is declared `ReadSignal<T>`; `#[component(remote)]` could make plain props reactive by default, as `#[props]` does natively.
-- **`#[component(remote)]` carries props, not context yet,** and has no manifest.
+- **No manifest.** A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do (by choice: see where things break first). `remote` can't be combined with `lazy` yet.
 - Context still needs the hand-written registration `spike/remoteguest` shows. A manifest listing the props, app components and context names a bundle needs, checked before mount, is still to do. `remote` can't be combined with `lazy` yet.
 - **Every builtin primitive crosses except `graphics`** (and `lazy`, which has no meaning in a bundle). `crossing` records each decision. `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
