@@ -168,6 +168,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   install it with `runtime_layout::grid_intrinsic_measure` and measure
   again when the data changes.
 
+- **`idea-ui`: `ModalPresentation::Top`, a top-anchored modal.** The
+  card's top edge sits a fixed distance below the top of the safe area,
+  and the card grows downward as its content grows. A `Centered` modal
+  re-centers on every height change, so in a command palette the search
+  field moved under the caret as the results filtered (35px of growth
+  moved it up about 17px). The new `ModalProps::top_offset` sets the
+  distance in DIPs. It defaults to 15% of the safe height and shrinks on
+  a viewport too short to fit it. A top card is width-capped like a
+  centered one, is capped to the height below the offset, then scrolls,
+  and drops a few DIPs into place. Recipe: `modal_command_palette`. Code
+  that `match`es `ModalPresentation` exhaustively needs a `Top` arm.
+
 - **`runtime_core` re-exports `GridPlacement` and `OverscrollBehavior`**,
   so `StyleRules::grid_row` / `grid_column` / `overscroll_behavior` can be
   filled without a direct `runtime-shared` dependency. A compile test

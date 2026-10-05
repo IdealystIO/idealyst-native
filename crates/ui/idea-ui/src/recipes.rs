@@ -258,6 +258,45 @@ recipe!(
 );
 
 recipe!(
+    Modal,
+    /// A command palette: `presentation = ModalPresentation::Top` pins the
+    /// card's TOP edge below the top of the safe area (`top_offset`, default
+    /// 15% of the safe height), so the card grows downward as results
+    /// filter and the search field never moves under the caret. A
+    /// `Centered` modal would re-center on every height change.
+    pub fn modal_command_palette() -> ::runtime_core::Element {
+        use crate::{Field, Modal, ModalPresentation, Stack, StackGap, Typography};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let open = signal(true);
+        let query = signal(String::new());
+        let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+        ui! {
+            Modal(
+                open = open,
+                presentation = ModalPresentation::Top,
+                on_dismiss = Some(on_dismiss.clone()),
+                content = move || {
+                    let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| query.set(v));
+                    ui! {
+                        Stack(gap = StackGap::Sm) {
+                            Field(
+                                value = query,
+                                on_change = on_change,
+                                placeholder = Some("Search commands…".to_string()),
+                            )
+                            Typography(content = "Open file")
+                            Typography(content = "Go to line", muted = true)
+                        }
+                    }
+                },
+            )
+        }
+    }
+);
+
+recipe!(
     Tabs,
     /// A clickable tab strip. Tabs is pure UI: the host owns the active tab's
     /// `id` (a `Signal<String>`) and renders that tab's content itself (e.g. a

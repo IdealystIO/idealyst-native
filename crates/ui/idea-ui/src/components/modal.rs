@@ -1,26 +1,38 @@
-//! `Modal` — a centered viewport overlay with a themed surface.
+//! `Modal` — a viewport overlay with a themed surface.
 //!
 //! Sugar over [`runtime_core::overlay`]: one fullscreen portal holding a
-//! dimming backdrop and a centered, themed `Card`-like surface. A typical
-//! call site is:
+//! dimming backdrop and a themed, `Card`-like surface. The modal is ALWAYS
+//! mounted and driven by its `open` prop; a typical call site is:
 //!
 //! ```ignore
 //! let open = signal(false);
 //! ui! {
-//!     Pressable(label = "Open".to_string(), on_click = move || open.set(true), intent = Primary.into_rc())
-//!     if open.get() {
-//!         Modal(on_dismiss = move || open.set(false)) {
-//!             Typography(content = "Confirm".to_string(), kind = TypographyKind::H2)
-//!             Typography(content = "Are you sure?".to_string())
-//!         }
-//!     }
+//!     Button(label = "Open", on_click = move || open.set(true))
+//!     Modal(
+//!         open = open,
+//!         on_dismiss = Some(Rc::new(move || open.set(false)) as Rc<dyn Fn()>),
+//!         content = move || ui! {
+//!             Typography(content = "Confirm", kind = typography_kind::H2)
+//!             Typography(content = "Are you sure?")
+//!         },
+//!     )
 //! }
 //! ```
+//!
+//! ## Presentations
+//! [`ModalPresentation`] picks where the surface sits: `Centered` (the
+//! default) centers a card in the safe rect; `Top` pins the card's TOP edge
+//! a fixed distance below the top of the safe rect, so its top — and a
+//! search field in it — stays put while the content height changes (a
+//! command palette); `Sheet` pins a full-width surface to the bottom edge.
+//! Only the placement container, the surface geometry and the enter/exit
+//! motion differ — the portal, backdrop, focus trap, dismissal and
+//! scrolling body are shared.
 //!
 //! ## One portal, two layered children
 //! A single fullscreen portal whose content is `[backdrop, card]` as
 //! siblings — the backdrop is an absolutely-positioned full-bleed layer
-//! behind a flex-centered card. (Two separate portals layer fine on web/iOS
+//! behind a flex-placed card. (Two separate portals layer fine on web/iOS
 //! but break on Android, where each portal is its own touch-modal Dialog
 //! window and the scrim window never gets the outside tap.) The card is
 //! content-sized, so a tap outside it lands on the backdrop on every
@@ -28,17 +40,18 @@
 //! absolutely-positioned backdrop on web (where positioned elements stack
 //! above in-flow siblings regardless of DOM order).
 //!
-//! ## Enter animation
+//! ## Enter and exit animation
 //! Driven by [`runtime_core::AnimatedValue`] bound to the layers'
 //! `ViewHandle`s (this reliably animates portal content on every backend —
 //! `presence` only animates its direct child, which for a portal is the
-//! escaped placeholder, so it no-ops on iOS). The **backdrop fades** in
-//! (opacity only — no slide, so there's no hard dark edge sweeping across),
-//! while the **card fades and slides** up a few DIPs. Opacity/translate are
-//! used rather than scale, which raced with layout and stuttered.
-//!
-//! Exit is not yet animated here — a bare `if open { Modal }` unmounts
-//! instantly. A delayed-unmount exit is tracked separately.
+//! escaped placeholder). The **backdrop fades** (opacity only — no slide,
+//! so there's no hard dark edge sweeping across), while the **card fades
+//! and slides** a few DIPs: up from below for a centered card, down from
+//! above for a top-anchored one (it settles toward the edge it hangs
+//! from), and a sheet rises from and leaves by the bottom edge. Opacity/
+//! translate are used rather than scale, which raced with layout and
+//! stuttered. `presence` holds the portal mounted through the exit, then
+//! unmounts it.
 //!
 //! ## Backdrop press is a handler, not a hardcoded close
 //! [`ModalProps::on_backdrop_press`] fires when the backdrop is tapped.
@@ -50,18 +63,19 @@
 //! ## Width and height
 //! [`ModalProps::width`] is the surface's desired width on a roomy viewport;
 //! it is capped to the viewport width (minus a margin) reactively so the
-//! surface never overflows a phone. For a centered card it REPLACES the
-//! theme sheet's `max_width` (560) — any width, including one above 560,
-//! is honored up to the viewport cap. A sheet fills its container up to
-//! the theme's `max_width`. The surface height is likewise capped to
-//! the viewport height (minus the same margin) — a `max-height`, not a fixed
-//! height, so a short modal stays content-sized. When the content is taller
-//! than the cap, the card clips (`overflow: hidden`, keeping the rounded
-//! corners) and an inner `scroll_view` scrolls the body. The frame keeps
-//! `ModalStyle`'s visuals (bg, radius, border, shadow); its `padding`/`gap`
-//! move to the inner body view so the spacing lives *inside* the scroller.
-//! (v1 scrolls the whole body — a fixed, non-scrolling footer is not split
-//! out yet.)
+//! surface never overflows a phone. For a centered or top-anchored card it
+//! REPLACES the theme sheet's `max_width` (560) — any width, including one
+//! above 560, is honored up to the viewport cap. A sheet fills its
+//! container up to the theme's `max_width`. The surface height is likewise
+//! capped to the safe viewport height (a centered card keeps a margin top
+//! and bottom; a top-anchored card keeps its offset above and a margin
+//! below) — a `max-height`, not a fixed height, so a short modal stays
+//! content-sized. When the content is taller than the cap, the card clips
+//! (`overflow: hidden`, keeping the rounded corners) and an inner
+//! `scroll_view` scrolls the body. The frame keeps `ModalStyle`'s visuals
+//! (bg, radius, border, shadow); its `padding`/`gap` move to the inner body
+//! view so the spacing lives *inside* the scroller. (v1 scrolls the whole
+//! body — a fixed, non-scrolling footer is not split out yet.)
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -70,7 +84,7 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    component, effect, presence, safe_area_insets, stylesheet, viewport_size, AlignItems, Color,
+    component, effect, presence, EdgeInsets, safe_area_insets, stylesheet, viewport_size, AlignItems, Color,
     Easing, Element, FlexDirection, IdealystSchema, IntoElement, JustifyContent, Length, Overflow,
     Position, PresenceAnim, PresenceState, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
     Tokenized, ViewHandle
@@ -126,7 +140,7 @@ const SHEET_SLIDE_PX: f32 = 32.0;
 /// the one surface whose whole identity is the edge it came from, so it
 /// has to go back there.
 fn sheet_exit_travel(avail_h: f32) -> f32 {
-    presentation_max_height(ModalPresentation::Sheet, avail_h)
+    presentation_max_height(ModalPresentation::Sheet, avail_h, None)
 }
 
 /// A sheet's height cap, as a fraction of the SAFE viewport height. A sheet
@@ -134,6 +148,14 @@ fn sheet_exit_travel(avail_h: f32) -> f32 {
 /// visible above it is what says "layered over what you were reading"
 /// rather than "a new screen".
 const SHEET_MAX_HEIGHT_FRACTION: f32 = 0.78;
+/// A top-anchored card's default distance below the top of the SAFE rect,
+/// as a fraction of the safe height. A fraction rather than a fixed DIP
+/// value because the command palettes this presentation exists for float
+/// in the upper part of the window at a viewport-relative height — about
+/// a sixth of the way down — rather than hugging the edge: on a 900pt
+/// desktop window it is 135pt, on an 800pt phone 120pt. Override per
+/// call site with [`ModalProps::top_offset`].
+const TOP_OFFSET_FRACTION: f32 = 0.15;
 /// How a [`Modal`] presents itself.
 ///
 /// It is the SAME component either way — one portal, one backdrop, the same
@@ -148,6 +170,19 @@ pub enum ModalPresentation {
     /// The default, and what every existing call site gets.
     #[default]
     Centered,
+    /// A width-capped card whose TOP edge is pinned a fixed distance below
+    /// the top of the safe rect ([`ModalProps::top_offset`], default
+    /// [`TOP_OFFSET_FRACTION`] of the safe height), growing DOWNWARD as its
+    /// content grows.
+    ///
+    /// Reach for it when the content height changes while the user is
+    /// typing into it — a command palette or a search-as-you-type picker.
+    /// A centered card re-centers on every height change, so a field at
+    /// its top moves under the caret; a top-anchored card keeps the field
+    /// still at any height. It is capped to the safe height below the
+    /// offset (minus a margin), then scrolls, like a centered card. It
+    /// drops into place from a few DIPs above and fades out the same way.
+    Top,
     /// A full-width surface pinned to the BOTTOM edge — rounded top corners,
     /// capped at [`SHEET_MAX_HEIGHT_FRACTION`] of the safe height — that
     /// rises from below.
@@ -187,9 +222,17 @@ pub struct ModalProps {
     #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub content: ModalContent,
-    /// Centered card (default) or bottom sheet — see [`ModalPresentation`].
-    /// Everything else about the modal is unchanged by this choice.
+    /// Centered card (default), top-anchored card, or bottom sheet — see
+    /// [`ModalPresentation`]. Everything else about the modal is unchanged
+    /// by this choice.
     pub presentation: ModalPresentation,
+    /// Distance in DIPs from the top of the safe rect to the card's top
+    /// edge, for [`ModalPresentation::Top`]. `None` (the default) uses
+    /// [`TOP_OFFSET_FRACTION`] of the safe height. Read live, so a signal
+    /// moves the card. On a viewport too short to fit it, the offset gives
+    /// way so the card keeps its minimum usable height. Ignored by the
+    /// other presentations.
+    pub top_offset: Option<f32>,
     /// Fires when the user dismisses (backdrop tap — unless
     /// `on_backdrop_press` overrides it — or Escape / back), only while
     /// `dismissable`. The host is
@@ -211,8 +254,8 @@ pub struct ModalProps {
     /// Desired surface width on a roomy viewport, in DIPs (default 520).
     /// Capped to the viewport width reactively so it never overflows a
     /// phone; otherwise honored as given — it overrides the theme sheet's
-    /// 560 `max_width`. Ignored by `ModalPresentation::Sheet`, which
-    /// spans its container.
+    /// 560 `max_width`. Applies to `Centered` and `Top`; ignored by
+    /// `ModalPresentation::Sheet`, which spans its container.
     pub width: f32,
     /// Custom backdrop scrim style. `None` uses the default dimming scrim.
     /// Must keep the backdrop full-bleed (`position: absolute` + zero
@@ -287,6 +330,7 @@ impl Default for ModalProps {
             open: Reactive::Static(false),
             content: ModalContent::default(),
             presentation: Reactive::Static(ModalPresentation::Centered),
+            top_offset: Reactive::Static(None),
             on_dismiss: None,
             on_backdrop_press: None,
             dismissable: Reactive::Static(true),
@@ -316,16 +360,128 @@ fn effective_modal_max_height(viewport_height: f32) -> f32 {
     (viewport_height - MODAL_EDGE_MARGIN * 2.0).max(MODAL_MIN_HEIGHT_FIT)
 }
 
+/// A top-anchored card's resolved distance below the top of the safe rect.
+///
+/// `requested` is the author's [`ModalProps::top_offset`] (honored as given,
+/// floored at 0); `None` is [`TOP_OFFSET_FRACTION`] of the safe height.
+/// Either way it is then capped so the
+/// card still gets [`MODAL_MIN_HEIGHT_FIT`] above a bottom margin — on a
+/// landscape phone the offset gives way before the card becomes a sliver.
+/// Depends only on the safe height, never on the content, which is the
+/// whole point: the card's top does not move as its content grows.
+fn resolve_top_offset(requested: Option<f32>, safe_height: f32) -> f32 {
+    let wanted = match requested {
+        Some(v) => v.max(0.0),
+        None => safe_height * TOP_OFFSET_FRACTION,
+    };
+    let room = (safe_height - MODAL_EDGE_MARGIN - MODAL_MIN_HEIGHT_FIT).max(0.0);
+    wanted.min(room)
+}
+
 /// The surface's height cap for one presentation, given the SAFE viewport
 /// height (insets already subtracted). A centered card keeps a margin top
-/// and bottom; a sheet takes a fixed fraction, so a strip of the page it is
-/// layered over stays visible above it. Pure, so both arms are testable
+/// and bottom; a top-anchored card keeps its offset above and a margin
+/// below; a sheet takes a fixed fraction, so a strip of the page it is
+/// layered over stays visible above it. `top_offset` is the author's
+/// request, read only by the `Top` arm. Pure, so every arm is testable
 /// without a backend.
-fn presentation_max_height(presentation: ModalPresentation, safe_height: f32) -> f32 {
+fn presentation_max_height(
+    presentation: ModalPresentation,
+    safe_height: f32,
+    top_offset: Option<f32>,
+) -> f32 {
     match presentation {
         ModalPresentation::Centered => effective_modal_max_height(safe_height),
+        ModalPresentation::Top => {
+            let offset = resolve_top_offset(top_offset, safe_height);
+            (safe_height - offset - MODAL_EDGE_MARGIN).max(MODAL_MIN_HEIGHT_FIT)
+        }
         ModalPresentation::Sheet => {
             (safe_height * SHEET_MAX_HEIGHT_FRACTION).max(MODAL_MIN_HEIGHT_FIT)
+        }
+    }
+}
+
+/// How far the card starts from its resting position on entry (DIPs,
+/// positive = below), and returns to on a card's exit. A centered card
+/// rises a little into place; a top-anchored card DROPS a little into
+/// place, toward the edge it hangs from (rising into a top anchor reads as
+/// overshooting it); a sheet rises further — see [`SHEET_SLIDE_PX`].
+fn enter_slide_px(presentation: ModalPresentation) -> f32 {
+    match presentation {
+        ModalPresentation::Centered => CARD_SLIDE_PX,
+        ModalPresentation::Top => -CARD_SLIDE_PX,
+        ModalPresentation::Sheet => SHEET_SLIDE_PX,
+    }
+}
+
+/// The placement container's style: which sheet lays the card out, plus
+/// the safe-area padding (and, for `Top`, the offset) on the INLINE layer.
+///
+/// - `Centered`: centered in the safe rect — padded by every inset.
+/// - `Top`: `justify_content: FlexStart`, padded by every inset, with the
+///   resolved top offset added to the top padding. The card's top edge is
+///   therefore `insets.top + offset` regardless of its height.
+/// - `Sheet`: pinned to the bottom edge and full-bleed, so only the TOP
+///   inset constrains it (it must not grow under the notch); the surface
+///   itself carries the bottom inset as frame padding so its background
+///   reaches the screen edge.
+///
+/// Insets/offset are viewport-derived continuous values — the INLINE layer,
+/// not a `with_computed` keyed on them: inline stays premintable (the
+/// computed layer forced this one node onto the live engine, a
+/// `--premint-only` panic) and applies out of band. Pure so each arm is
+/// testable without a backend.
+fn placement_container_style(
+    presentation: ModalPresentation,
+    insets: EdgeInsets,
+    safe_height: f32,
+    top_offset: Option<f32>,
+) -> StyleApplication {
+    let (sheet, pad_t, pad_r, pad_b, pad_l) = match presentation {
+        ModalPresentation::Centered => (
+            center_container_sheet(),
+            insets.top,
+            insets.right,
+            insets.bottom,
+            insets.left,
+        ),
+        ModalPresentation::Top => (
+            top_container_sheet(),
+            insets.top + resolve_top_offset(top_offset, safe_height),
+            insets.right,
+            insets.bottom,
+            insets.left,
+        ),
+        ModalPresentation::Sheet => (sheet_container_sheet(), insets.top, 0.0, 0.0, 0.0),
+    };
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    StyleApplication::new(sheet).with_inline(StyleRules {
+        padding_top: px(pad_t),
+        padding_right: px(pad_r),
+        padding_bottom: px(pad_b),
+        padding_left: px(pad_l),
+        ..Default::default()
+    })
+}
+
+/// Fullscreen flex container that pins the card's TOP edge (the offset
+/// rides the inline padding — see [`placement_container_style`]) and
+/// centers it horizontally. The `Top` counterpart of
+/// [`center_container_sheet`]: identical but for `justify_content`, so a
+/// change in the card's height grows it downward instead of re-centering.
+fn top_container_sheet() -> Rc<StyleSheet> {
+    ModalTopContainerSheet::sheet()
+}
+
+stylesheet! {
+    ModalTopContainerSheet<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::FlexStart,
+            width: Length::pct(100.0),
+            height: Length::pct(100.0),
         }
     }
 }
@@ -555,6 +711,9 @@ pub fn Modal(props: ModalProps) -> Element {
     // so a live change would need the whole overlay rebuilt. `presence`
     // rebuilds `build` per open, so a change between opens is picked up.
     let presentation = props.presentation.get();
+    // Read LIVE (inside the container/surface style closures), unlike the
+    // snapshots above: it moves the card but changes no structure.
+    let top_offset = props.top_offset;
     let backdrop_style = props.backdrop_style;
     let sheet_slide = props.sheet_slide;
     let surface_style = props.surface_style;
@@ -580,6 +739,7 @@ pub fn Modal(props: ModalProps) -> Element {
             dismissable,
             desired,
             presentation,
+            top_offset.clone(),
             backdrop_style.clone(),
             surface_style.clone(),
             content_style.clone(),
@@ -600,7 +760,7 @@ pub fn Modal(props: ModalProps) -> Element {
             PresenceState::default(),
             match presentation {
                 ModalPresentation::Sheet => SHEET_EXIT_MS as u32,
-                ModalPresentation::Centered => EXIT_MS as u32,
+                ModalPresentation::Centered | ModalPresentation::Top => EXIT_MS as u32,
             },
             Easing::EaseIn,
         ))
@@ -618,6 +778,7 @@ fn build_overlay(
     dismissable: bool,
     desired: f32,
     presentation: ModalPresentation,
+    top_offset: Reactive<Option<f32>>,
     backdrop_style: Option<Rc<StyleSheet>>,
     surface_style: Option<Rc<StyleSheet>>,
     content_style: Option<Rc<StyleSheet>>,
@@ -637,11 +798,8 @@ fn build_overlay(
     let surface_ref: Ref<ViewHandle> = Ref::new();
     let card_opacity = AnimatedValue::new(0.0_f32);
     card_opacity.bind(surface_ref, AnimProp::Opacity);
-    // A sheet travels further than a card — see `SHEET_SLIDE_PX`.
-    let slide_from = match presentation {
-        ModalPresentation::Centered => CARD_SLIDE_PX,
-        ModalPresentation::Sheet => SHEET_SLIDE_PX,
-    };
+    // Per presentation — see `enter_slide_px`.
+    let slide_from = enter_slide_px(presentation);
     // An app-supplied animator outlives the open cycle (the app owns it), so
     // it still holds wherever the last exit left it. Reset BEFORE the bind:
     // `bind` re-applies the current value once the mount fills the ref, so
@@ -705,6 +863,7 @@ fn build_overlay(
         backdrop_style,
         desired,
         presentation,
+        top_offset,
         platform_dismiss,
         surface_style,
         content_style,
@@ -759,6 +918,7 @@ fn assemble_overlay(
     backdrop_style: Option<Rc<StyleSheet>>,
     desired: f32,
     presentation: ModalPresentation,
+    top_offset: Reactive<Option<f32>>,
     on_dismiss: Option<Rc<dyn Fn()>>,
     surface_style: Option<Rc<StyleSheet>>,
     content_style: Option<Rc<StyleSheet>>,
@@ -812,6 +972,7 @@ fn assemble_overlay(
     // `max_height`, then `overflow:scroll` takes over. Reactive so the cap
     // tracks orientation / split-view resizes, mirroring the surface width.
     let viewport_for_scroll = viewport_size();
+    let top_offset_for_scroll = top_offset.clone();
     let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![body])
         // No spring when there is nothing to scroll.
         //
@@ -838,7 +999,8 @@ fn assemble_overlay(
             // Same cap the surface uses, or the scroller would want to be
             // taller than the frame that clips it and the overflow would be
             // clipped instead of scrolled.
-            let max_h = presentation_max_height(presentation, avail_h);
+            let max_h =
+                presentation_max_height(presentation, avail_h, top_offset_for_scroll.get());
             // Measured from the live viewport — continuous, so inline.
             StyleApplication::new(modal_scroll_sheet()).with_inline(StyleRules {
                 max_height: Some(Tokenized::Literal(Length::Px(max_h))),
@@ -849,6 +1011,7 @@ fn assemble_overlay(
 
     // Both presentations hold the scroller alone. A sheet used to wear a
     // grabber here; it is the app's now — see [`ModalProps::sheet_slide`].
+    let top_offset_for_surface = top_offset.clone();
     let surface = runtime_core::view(vec![scroller])
         .with_style(move || {
             let vp = viewport.get();
@@ -859,11 +1022,12 @@ fn assemble_overlay(
             let max_h = presentation_max_height(
                 presentation,
                 vp.height - insets.top - insets.bottom,
+                top_offset_for_surface.get(),
             );
             // A card is width-capped and centered; a sheet is full-bleed and
             // takes the whole width its stretching container gives it.
             let width = match presentation {
-                ModalPresentation::Centered => Length::Px(effective_modal_width(
+                ModalPresentation::Centered | ModalPresentation::Top => Length::Px(effective_modal_width(
                     desired,
                     vp.width - insets.left - insets.right,
                 )),
@@ -874,7 +1038,7 @@ fn assemble_overlay(
             // content stops above it (the bottom inset becomes frame padding
             // rather than being subtracted from the surface).
             let (bottom_radius, pad_bottom) = match presentation {
-                ModalPresentation::Centered => (None, 0.0),
+                ModalPresentation::Centered | ModalPresentation::Top => (None, 0.0),
                 ModalPresentation::Sheet => {
                     (Some(Tokenized::Literal(Length::Px(0.0))), insets.bottom)
                 }
@@ -888,7 +1052,7 @@ fn assemble_overlay(
             // A sheet keeps the sheet's cap (it fills its container up to
             // it, which is what keeps a sheet phone-shaped on a tablet).
             let max_width = match presentation {
-                ModalPresentation::Centered => Some(Tokenized::Literal(width.clone())),
+                ModalPresentation::Centered | ModalPresentation::Top => Some(Tokenized::Literal(width.clone())),
                 ModalPresentation::Sheet => None,
             };
             let app = StyleApplication::new(ModalStyle::sheet()).with_inline(
@@ -946,15 +1110,18 @@ fn assemble_overlay(
         .with_style(StyleApplication::new(card_layer_sheet()))
         .into_element();
 
-    // One fullscreen portal: backdrop (behind) + card (centered) as siblings
-    // in a flex-centering content wrapper. `backdrop(None)` because we supply
-    // our own backdrop child; Escape/back routes to `on_dismiss` (`None`
-    // for a non-dismissable modal, see `DismissRouting`).
+    // One fullscreen portal: backdrop (behind) + card as siblings in a
+    // placement container (centered, top-anchored or bottom-pinned).
+    // `backdrop(None)` because we supply our own backdrop child; Escape/back
+    // routes to `on_dismiss` (`None` for a non-dismissable modal, see
+    // `DismissRouting`).
+    let viewport_for_container = viewport_size();
     let mut overlay = runtime_core::overlay(vec![backdrop, card])
         .placement(ViewportPlacement::FullScreen)
         .backdrop(BackdropMode::None)
-        // Center the card within the SAFE rect, not the full window: pad the
-        // fullscreen centering container by the platform safe-area insets.
+        // Place the card within the SAFE rect, not the full window: pad the
+        // fullscreen placement container by the platform safe-area insets
+        // (see `placement_container_style` for the per-presentation arms).
         // This is what guarantees the card clears the notch / Dynamic Island /
         // home indicator even when the insets are asymmetric (centering in the
         // full window would leave the card under the larger inset). The
@@ -966,33 +1133,16 @@ fn assemble_overlay(
         // (web today), degrading to the previous full-window centering.
         .with_style(move || {
             let insets = safe_area_insets().get();
-            // Insets are viewport-derived continuous values — the INLINE
-            // layer, not a `with_computed` keyed on them: inline stays
-            // premintable (the computed layer forced this one node onto
-            // the live engine, a `--premint-only` panic), applies out of
-            // band, and this is a single overlay node so per-key caching
-            // bought nothing.
-            // A card is centered inside the SAFE rect, so it clears every
-            // inset. A sheet is pinned to the bottom edge and full-bleed, so
-            // only the TOP inset constrains it (it must not grow under the
-            // notch); its left/right/bottom insets are deliberately not
-            // padded — the surface itself carries the bottom inset as frame
-            // padding so its background reaches the screen edge.
-            let (pad_r, pad_b, pad_l) = match presentation {
-                ModalPresentation::Centered => (insets.right, insets.bottom, insets.left),
-                ModalPresentation::Sheet => (0.0, 0.0, 0.0),
+            // Only `Top` needs the safe height (its offset is a fraction of
+            // it) and its offset; the other arms don't subscribe to them.
+            let (safe_h, requested) = match presentation {
+                ModalPresentation::Top => (
+                    viewport_for_container.get().height - insets.top - insets.bottom,
+                    top_offset.get(),
+                ),
+                _ => (0.0, None),
             };
-            let container = match presentation {
-                ModalPresentation::Centered => center_container_sheet(),
-                ModalPresentation::Sheet => sheet_container_sheet(),
-            };
-            StyleApplication::new(container).with_inline(StyleRules {
-                padding_top: Some(Tokenized::Literal(Length::Px(insets.top))),
-                padding_right: Some(Tokenized::Literal(Length::Px(pad_r))),
-                padding_bottom: Some(Tokenized::Literal(Length::Px(pad_b))),
-                padding_left: Some(Tokenized::Literal(Length::Px(pad_l))),
-                ..Default::default()
-            })
+            placement_container_style(presentation, insets, safe_h, requested)
         })
         .trap_focus(true);
     if let Some(d) = on_dismiss {
@@ -1151,6 +1301,7 @@ mod tests {
                 None,
                 DEFAULT_MODAL_WIDTH,
                 ModalPresentation::Centered,
+                Reactive::Static(None),
                 None,
                 None,
                 None,
@@ -1242,6 +1393,8 @@ mod tests {
                 ("body", modal_body_sheet()),
                 ("scroll", modal_scroll_sheet()),
                 ("center", center_container_sheet()),
+                ("top", top_container_sheet()),
+                ("sheet_container", sheet_container_sheet()),
             ] {
                 assert!(
                     StyleApplication::new(sheet).preminted_class_list().is_some(),
@@ -1280,6 +1433,7 @@ mod tests {
                 None,
                 DEFAULT_MODAL_WIDTH,
                 ModalPresentation::Centered,
+                Reactive::Static(None),
                 None,
                 None,
                 None,
@@ -1313,6 +1467,7 @@ mod tests {
                 None,
                 DEFAULT_MODAL_WIDTH,
                 ModalPresentation::Centered,
+                Reactive::Static(None),
                 None,
                 None,
                 Some(flush),
@@ -1343,7 +1498,7 @@ mod tests {
             // A sheet is layered OVER what you were reading; if it could grow
             // to the full height it would read as a new screen instead.
             let safe = 852.0;
-            let h = presentation_max_height(ModalPresentation::Sheet, safe);
+            let h = presentation_max_height(ModalPresentation::Sheet, safe, None);
             assert_eq!(h, safe * SHEET_MAX_HEIGHT_FRACTION);
             assert!(h < safe, "a sheet never covers the whole viewport");
     });
@@ -1356,8 +1511,8 @@ mod tests {
             // number reached twice: a card keeps a fixed margin top and
             // bottom, a sheet takes a fraction.
             let safe = 852.0;
-            let card = presentation_max_height(ModalPresentation::Centered, safe);
-            let sheet = presentation_max_height(ModalPresentation::Sheet, safe);
+            let card = presentation_max_height(ModalPresentation::Centered, safe, None);
+            let sheet = presentation_max_height(ModalPresentation::Sheet, safe, None);
             assert_eq!(card, safe - MODAL_EDGE_MARGIN * 2.0);
             assert!(
                 sheet < card,
@@ -1373,7 +1528,7 @@ mod tests {
             // for the sheet arm: a landscape phone still gets a usable,
             // scrollable surface rather than a sliver.
             assert_eq!(
-                presentation_max_height(ModalPresentation::Sheet, 150.0),
+                presentation_max_height(ModalPresentation::Sheet, 150.0, None),
                 MODAL_MIN_HEIGHT_FIT
             );
     });
@@ -1440,6 +1595,7 @@ mod tests {
                 None,
                 1200.0,
                 ModalPresentation::Centered,
+                Reactive::Static(None),
                 None,
                 None,
                 None,
@@ -1468,6 +1624,7 @@ mod tests {
                 None,
                 1200.0,
                 ModalPresentation::Centered,
+                Reactive::Static(None),
                 None,
                 None,
                 None,
@@ -1508,6 +1665,7 @@ mod tests {
                     None,
                     DEFAULT_MODAL_WIDTH,
                     presentation,
+                    Reactive::Static(None),
                     None,
                     None,
                     None,
@@ -1545,6 +1703,11 @@ mod tests {
                 "a centered card holds the scroller alone"
             );
             assert_eq!(
+                surface_children(ModalPresentation::Top),
+                1,
+                "a top-anchored card holds the scroller alone"
+            );
+            assert_eq!(
                 surface_children(ModalPresentation::Sheet),
                 1,
                 "a sheet holds the scroller alone too — no grabber, no \
@@ -1552,5 +1715,175 @@ mod tests {
                  `ModalProps::sheet_slide`."
             );
     });
+    }
+
+    // ---- ModalPresentation::Top (CrewForge report: a command palette's
+    // search field moved under the caret as results filtered, because the
+    // only placement on offer re-centered the card on every height change).
+
+    /// The placement container for `Top` must anchor the card's top edge:
+    /// `justify_content: FlexStart` and the offset added to the top inset.
+    /// Against the pre-fix code there was no `Top` arm at all — the only
+    /// non-sheet container was `ModalCenterSheet` (`justify_content:
+    /// Center`), under which a card that grew 35px moved its top up ~17px.
+    #[test]
+    fn regression_top_modal_anchors_card_top_edge() {
+        with_test_world(|| {
+            let insets = EdgeInsets { top: 47.0, right: 0.0, bottom: 34.0, left: 0.0 };
+            let safe_h = 900.0;
+            let rules = resolve_style(&placement_container_style(
+                ModalPresentation::Top,
+                insets,
+                safe_h,
+                None,
+            ));
+            assert_eq!(rules.justify_content, Some(JustifyContent::FlexStart));
+            assert_eq!(rules.align_items, Some(AlignItems::Center));
+            let pad_top = match rules.padding_top.as_ref().map(|t| t.resolve()) {
+                Some(Length::Px(v)) => v,
+                other => panic!("expected a px top padding, got {other:?}"),
+            };
+            assert_eq!(pad_top, 47.0 + safe_h * TOP_OFFSET_FRACTION);
+            // The bottom inset is still honored (the card can't grow under
+            // the home indicator).
+            assert_eq!(
+                rules.padding_bottom.as_ref().map(|t| t.resolve()),
+                Some(Length::Px(34.0))
+            );
+        });
+    }
+
+    /// `Centered` keeps the exact container it had before `Top` existed:
+    /// centered on both axes, padded by every inset, no offset.
+    #[test]
+    fn centered_container_is_unchanged_by_top() {
+        with_test_world(|| {
+            let insets = EdgeInsets { top: 47.0, right: 5.0, bottom: 34.0, left: 6.0 };
+            let rules = resolve_style(&placement_container_style(
+                ModalPresentation::Centered,
+                insets,
+                900.0,
+                // Ignored by every arm but `Top`.
+                Some(200.0),
+            ));
+            assert_eq!(rules.justify_content, Some(JustifyContent::Center));
+            assert_eq!(rules.align_items, Some(AlignItems::Center));
+            let px = |l: &Option<Tokenized<Length>>| l.as_ref().map(|t| t.resolve());
+            assert_eq!(px(&rules.padding_top), Some(Length::Px(47.0)));
+            assert_eq!(px(&rules.padding_right), Some(Length::Px(5.0)));
+            assert_eq!(px(&rules.padding_bottom), Some(Length::Px(34.0)));
+            assert_eq!(px(&rules.padding_left), Some(Length::Px(6.0)));
+        });
+    }
+
+    #[test]
+    fn top_offset_explicit_value_is_honored() {
+        with_test_world(|| {
+            assert_eq!(resolve_top_offset(Some(80.0), 900.0), 80.0);
+            // Flush to the safe top is a legitimate request.
+            assert_eq!(resolve_top_offset(Some(0.0), 900.0), 0.0);
+            assert_eq!(resolve_top_offset(Some(-10.0), 900.0), 0.0);
+            let rules = resolve_style(&placement_container_style(
+                ModalPresentation::Top,
+                EdgeInsets::ZERO,
+                900.0,
+                Some(80.0),
+            ));
+            assert_eq!(
+                rules.padding_top.as_ref().map(|t| t.resolve()),
+                Some(Length::Px(80.0))
+            );
+        });
+    }
+
+    #[test]
+    fn top_offset_default_is_a_fraction_of_the_safe_height() {
+        with_test_world(|| {
+            assert_eq!(resolve_top_offset(None, 1000.0), 1000.0 * TOP_OFFSET_FRACTION);
+            assert_eq!(resolve_top_offset(None, 800.0), 800.0 * TOP_OFFSET_FRACTION);
+        });
+    }
+
+    /// On a viewport too short for the offset AND a usable card, the offset
+    /// gives way: the card keeps `MODAL_MIN_HEIGHT_FIT` above a margin and
+    /// never runs off the bottom.
+    #[test]
+    fn top_offset_gives_way_on_a_short_viewport() {
+        with_test_world(|| {
+            let safe = 260.0;
+            let offset = resolve_top_offset(Some(120.0), safe);
+            assert_eq!(offset, safe - MODAL_EDGE_MARGIN - MODAL_MIN_HEIGHT_FIT);
+            let cap = presentation_max_height(ModalPresentation::Top, safe, Some(120.0));
+            assert_eq!(cap, MODAL_MIN_HEIGHT_FIT);
+            assert!(offset + cap + MODAL_EDGE_MARGIN <= safe, "card fits the safe rect");
+        });
+    }
+
+    /// A top-anchored card is capped to the room BELOW its offset (minus
+    /// the bottom margin), so tall content scrolls inside the card instead
+    /// of pushing it off the bottom of the screen.
+    #[test]
+    fn top_cap_is_the_room_below_the_offset() {
+        with_test_world(|| {
+            let safe = 900.0;
+            let offset = resolve_top_offset(None, safe);
+            assert_eq!(
+                presentation_max_height(ModalPresentation::Top, safe, None),
+                safe - offset - MODAL_EDGE_MARGIN
+            );
+            assert_eq!(
+                presentation_max_height(ModalPresentation::Top, safe, Some(100.0)),
+                safe - 100.0 - MODAL_EDGE_MARGIN
+            );
+            // The `Top` request never leaks into the other arms.
+            assert_eq!(
+                presentation_max_height(ModalPresentation::Centered, safe, Some(100.0)),
+                effective_modal_max_height(safe)
+            );
+        });
+    }
+
+    /// A top-anchored card drops toward the edge it hangs from; a centered
+    /// card still rises the same 14px it always did.
+    #[test]
+    fn top_card_enters_from_above_centered_unchanged() {
+        assert_eq!(enter_slide_px(ModalPresentation::Centered), CARD_SLIDE_PX);
+        assert_eq!(enter_slide_px(ModalPresentation::Top), -CARD_SLIDE_PX);
+        assert_eq!(enter_slide_px(ModalPresentation::Sheet), SHEET_SLIDE_PX);
+    }
+
+    /// The `Top` surface is a width-capped card, like `Centered`: the
+    /// author width is honored and viewport-capped, not stretched like a
+    /// sheet's.
+    #[test]
+    fn top_surface_is_width_capped_like_a_card() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            runtime_core::viewport_size().set(runtime_core::ViewportSize {
+                width: 800.0,
+                height: 1000.0,
+            });
+            idea_theme::testing::commit();
+            let portal = assemble_overlay(
+                runtime_core::text("hi").into_element(),
+                Ref::new(),
+                Ref::new(),
+                None,
+                None,
+                1200.0,
+                ModalPresentation::Top,
+                Reactive::Static(None),
+                None,
+                None,
+                None,
+            );
+            let rules = surface_rules(portal);
+            assert_eq!(laid_out_width(&rules), 800.0 - MODAL_EDGE_MARGIN * 2.0);
+            let offset = resolve_top_offset(None, 1000.0);
+            assert_eq!(
+                rules.max_height.as_ref().map(|t| t.resolve()),
+                Some(Length::Px(1000.0 - offset - MODAL_EDGE_MARGIN))
+            );
+        });
     }
 }
