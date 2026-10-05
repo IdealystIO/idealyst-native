@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "css",
  "dev-client",
@@ -3391,7 +3391,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -10216,7 +10216,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.15.0"
+version = "1.16.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10245,7 +10245,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "dev-hot",
  "host-mock",
