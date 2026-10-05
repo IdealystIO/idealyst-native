@@ -908,43 +908,56 @@ impl CommandChannel {
 /// command): match the url against the named screen's pattern and run its
 /// own `from_segments`, as a deep link does. The url here is still
 /// navigator-relative (before [`compose_url`]).
-fn params_from_url(screens: &HashMap<&'static str, NavScreenEntry>, cmd: NavCommand) -> NavCommand {
-    fn resolve(screens: &HashMap<&'static str, NavScreenEntry>, name: &'static str, url: &str, params: Box<dyn Any>) -> Box<dyn Any> {
+///
+/// `None` when a remote component's command can't be resolved — a screen
+/// this navigator doesn't have, or a url its route doesn't match: the
+/// remote component and the app disagree, and the command is refused (no
+/// navigation), as for an unfilled ref. It came from code the app did not
+/// compile, so it must not take the app down.
+fn params_from_url(screens: &HashMap<&'static str, NavScreenEntry>, cmd: NavCommand) -> Option<NavCommand> {
+    fn resolve(
+        screens: &HashMap<&'static str, NavScreenEntry>,
+        name: &'static str,
+        url: &str,
+        params: Box<dyn Any>,
+    ) -> Option<Box<dyn Any>> {
         if !params.is::<crate::prims::ParamsFromUrl>() {
-            return params;
+            return Some(params);
         }
-        let entry = screens
-            .get(name)
-            .unwrap_or_else(|| panic!("navigation to `{name}`, which this navigator has no screen for"));
-        match_pattern(split_query(url).0, entry.path)
-            .and_then(|segs| (entry.from_segments)(&segs))
-            .unwrap_or_else(|| {
-                panic!(
-                    "navigation to `{name}` with url `{url}` doesn't match its route `{}` — the remote component \
-                     and the app disagree about the route",
-                    entry.path
-                )
-            })
+        let resolved = screens.get(name).map(|entry| {
+            match_pattern(split_query(url).0, entry.path).and_then(|segs| (entry.from_segments)(&segs)).ok_or(entry.path)
+        });
+        match resolved {
+            Some(Ok(params)) => Some(params),
+            Some(Err(route)) => {
+                eprintln!("[remote] navigation refused: `{name}` with url `{url}` doesn't match its route `{route}`");
+                None
+            }
+            None => {
+                eprintln!("[remote] navigation refused: this navigator has no screen `{name}`");
+                None
+            }
+        }
     }
-    match cmd {
+    Some(match cmd {
         NavCommand::Push { name, url, params, query } => {
-            let params = resolve(screens, name, &url, params);
+            let params = resolve(screens, name, &url, params)?;
             NavCommand::Push { name, url, params, query }
         }
         NavCommand::Replace { name, url, params, query } => {
-            let params = resolve(screens, name, &url, params);
+            let params = resolve(screens, name, &url, params)?;
             NavCommand::Replace { name, url, params, query }
         }
         NavCommand::Reset { name, url, params, query } => {
-            let params = resolve(screens, name, &url, params);
+            let params = resolve(screens, name, &url, params)?;
             NavCommand::Reset { name, url, params, query }
         }
         NavCommand::Select { name, url, params, query } => {
-            let params = resolve(screens, name, &url, params);
+            let params = resolve(screens, name, &url, params)?;
             NavCommand::Select { name, url, params, query }
         }
         other => other,
-    }
+    })
 }
 
 /// Compose this navigator's base prefix onto a command's
@@ -1368,7 +1381,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             // Last-driven navigator = the inspector's "current".
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
-            let cmd = params_from_url(&screens, cmd);
+            let Some(cmd) = params_from_url(&screens, cmd) else { return };
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
@@ -2091,7 +2104,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             // Last-driven navigator = the inspector's "current".
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
-            let cmd = params_from_url(&screens, cmd);
+            let Some(cmd) = params_from_url(&screens, cmd) else { return };
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
@@ -2384,6 +2397,23 @@ mod route_rank_tests {
             from_segments: Rc::new(|_| Some(Box::new(()) as Box<dyn Any>)),
             order: 0,
         }
+    }
+
+    /// Regression: a remote component's command naming a screen this
+    /// navigator lacks, or a url its route doesn't match, PANICKED the app.
+    /// It is refused now (no navigation); a matching one still resolves.
+    #[test]
+    fn regression_an_unresolvable_remote_command_is_refused_not_a_panic() {
+        let screens = screens(&[("home", "/"), ("item", "/item/:id")]);
+        let push = |name: &'static str, url: &str| NavCommand::Push {
+            name,
+            url: url.to_string(),
+            params: Box::new(crate::prims::ParamsFromUrl),
+            query: Default::default(),
+        };
+        assert!(params_from_url(&screens, push("missing", "/x")).is_none(), "no such screen");
+        assert!(params_from_url(&screens, push("item", "/other/3")).is_none(), "url doesn't match the route");
+        assert!(params_from_url(&screens, push("item", "/item/3")).is_some());
     }
 
     fn screens(routes: &[(&'static str, &'static str)]) -> HashMap<&'static str, NavScreenEntry> {
