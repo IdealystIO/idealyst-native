@@ -221,6 +221,9 @@ mod bridge_typed {
                 Access::DeadWorld => false,
             }
         }
+        fn writable(&self) -> bool {
+            self.writable
+        }
         fn stage(&self, bytes: &[u8], mode: StageMode) {
             assert!(
                 self.writable,

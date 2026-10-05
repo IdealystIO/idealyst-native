@@ -3112,6 +3112,46 @@ mod host_owned_values {
         forged.set(2);
     }
 
+    /// Regression: two remote components sharing one app signal export it
+    /// twice; the first to unmount withdrew it from BOTH (exports were keyed
+    /// by slot alone), so the survivor's reads went dead. Either drop order.
+    #[test]
+    fn regression_one_unmount_withdraws_a_signal_another_mount_shares() {
+        for first_drops_first in [true, false] {
+            let w = World::new();
+            let host = host_signal(&w, 3);
+            let (h1, g1) = export_signal(host, U32);
+            let (h2, g2) = export_read_signal(host.read_only(), U32);
+            assert_eq!(h1, h2, "the same slot");
+            let (gone, kept) = if first_drops_first { (g1, g2) } else { (g2, g1) };
+            drop(gone);
+            let mut buf = Vec::new();
+            assert!(Active::fetch(h1, &mut buf), "still exported for the other mount (order {first_drops_first})");
+            let imported = w.enter(|| import_read_signal(h1, U32));
+            assert_eq!(imported.get(), 3);
+            drop(kept);
+            assert!(!Active::fetch(h1, &mut buf), "withdrawn once every mount let go");
+        }
+    }
+
+    /// Regression: a read-only re-export of a signal must not take away a
+    /// bundle's right to write it while a writable export is still live.
+    #[test]
+    fn regression_a_read_only_reexport_does_not_downgrade_a_writable_one() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _rw) = export_signal(host, U32);
+        let (_, ro) = export_read_signal(host.read_only(), U32);
+        let imported = w.enter(|| import_signal(h, U32));
+        imported.set(5);
+        w.flush();
+        assert_eq!(host_get(host), 5);
+        drop(ro);
+        imported.set(6);
+        w.flush();
+        assert_eq!(host_get(host), 6, "the writable export outlives the read-only one");
+    }
+
     #[derive(Clone)]
     struct Theme(u32);
     #[derive(Clone)]
@@ -3295,6 +3335,25 @@ mod host_owned_values {
         drop(owned);
         assert!(!s.is_alive());
         assert!(!Active::fetch(h, &mut buf), "export withdrawn");
+    }
+
+    /// Regression: a promoted signal handed on as a prop is re-exported;
+    /// that guard dropping (the prop's mount going away) withdrew the
+    /// promoted slot's OWN export, so its bundle could no longer reach it.
+    #[test]
+    fn regression_a_reexported_promoted_signal_keeps_its_own_export() {
+        let w = World::new();
+        let s = w.enter(|| signal(4u32));
+        let h = offer_signal(s, U32);
+        let native = receive_signal(h, U32).unwrap();
+        let (h2, guard) = export_read_signal(native.read_only(), U32);
+        assert_eq!(h, h2);
+        drop(guard);
+        let mut buf = Vec::new();
+        assert!(Active::fetch(h, &mut buf), "the promoted slot's own export survives");
+        s.set(8);
+        w.flush();
+        assert_eq!(host_get(native), 8, "and its bundle still writes through it");
     }
 
     #[test]

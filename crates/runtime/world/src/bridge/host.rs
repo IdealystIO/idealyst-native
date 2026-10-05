@@ -37,10 +37,51 @@ struct HostState {
     next_scope: u32,
     unscoped: Vec<SavedCollectors>,
     unanchored: Vec<EffectFrames>,
-    /// Host-owned signals handed to bundles (props), by slot.
-    exports: FxHashMap<Handle, Rc<dyn Exported>>,
-    /// Host context declared to bundles, by name.
-    contexts: FxHashMap<String, ContextFetch>,
+    /// Host-owned signals handed to bundles (props), by slot: EVERY live
+    /// registration, each under its guard's token. The same signal is
+    /// exported once per mount it's passed to (two remote components, a
+    /// remount before the old one drops), so a guard withdraws only its
+    /// own registration — keyed by slot alone, the first unmount withdrew
+    /// the export the other mount still used.
+    exports: FxHashMap<Handle, Vec<Registration<Rc<dyn Exported>>>>,
+    /// Host context declared to bundles, by name (the same rule).
+    contexts: FxHashMap<String, Vec<Registration<ContextFetch>>>,
+    next_token: u64,
+}
+
+/// One registration of an export: its guard's token, and the export.
+struct Registration<T> {
+    token: u64,
+    value: T,
+}
+
+/// The token of a PROMOTED slot's own export ([`register_export_owned`]):
+/// a slot is promoted at most once, and its value withdraws it.
+const OWNED: u64 = 0;
+
+impl HostState {
+    fn token(&mut self) -> u64 {
+        self.next_token += 1;
+        self.next_token
+    }
+
+    /// The export bundles reach slot `h` through: a writable one if any
+    /// registration is (a read-only re-export of a signal must not take
+    /// away a bundle's right to write it), else the latest.
+    fn export(&self, h: &Handle) -> Option<Rc<dyn Exported>> {
+        let regs = self.exports.get(h)?;
+        regs.iter().find(|r| r.value.writable()).or(regs.last()).map(|r| r.value.clone())
+    }
+
+    fn remove_export(&mut self, h: &Handle, token: u64) -> Option<Rc<dyn Exported>> {
+        let regs = self.exports.get_mut(h)?;
+        let at = regs.iter().position(|r| r.token == token)?;
+        let removed = regs.remove(at).value;
+        if regs.is_empty() {
+            self.exports.remove(h);
+        }
+        Some(removed)
+    }
 }
 
 /// Encodes the host context declared under a name; `false` for none.
@@ -51,6 +92,9 @@ pub(crate) type ContextFetch = Rc<dyn Fn(&mut Vec<u8>) -> bool>;
 pub(crate) trait Exported {
     fn fetch(&self, staged: bool, out: &mut Vec<u8>) -> bool;
     fn stage(&self, bytes: &[u8], mode: StageMode);
+    /// Whether a bundle may write through it (a two-way prop, or a
+    /// promoted slot's own export).
+    fn writable(&self) -> bool;
 }
 
 /// Registers an export; unregisters it on drop. The host ties it to
@@ -61,8 +105,8 @@ pub struct ExportGuard {
 }
 
 enum GuardKind {
-    Signal(Handle),
-    Context(String),
+    Signal(Handle, u64),
+    Context(String, u64),
 }
 
 impl Drop for ExportGuard {
@@ -70,8 +114,16 @@ impl Drop for ExportGuard {
         // Out of the table first, dropped after (a codec's captures may run
         // user `Drop` code).
         let removed: Option<Box<dyn Any>> = try_host(|h| match &self.kind {
-            GuardKind::Signal(handle) => h.exports.remove(handle).map(|e| Box::new(e) as Box<dyn Any>),
-            GuardKind::Context(name) => h.contexts.remove(name).map(|f| Box::new(f) as Box<dyn Any>),
+            GuardKind::Signal(handle, token) => h.remove_export(handle, *token).map(|e| Box::new(e) as Box<dyn Any>),
+            GuardKind::Context(name, token) => {
+                let regs = h.contexts.get_mut(name)?;
+                let at = regs.iter().position(|r| r.token == *token)?;
+                let removed = regs.remove(at).value;
+                if regs.is_empty() {
+                    h.contexts.remove(name);
+                }
+                Some(Box::new(removed) as Box<dyn Any>)
+            }
         })
         .flatten();
         drop(removed);
@@ -79,13 +131,21 @@ impl Drop for ExportGuard {
 }
 
 pub(crate) fn register_export(handle: Handle, export: Rc<dyn Exported>) -> ExportGuard {
-    with_host(|h| h.exports.insert(handle, export));
-    ExportGuard { kind: GuardKind::Signal(handle) }
+    let token = with_host(|h| {
+        let token = h.token();
+        h.exports.entry(handle).or_default().push(Registration { token, value: export });
+        token
+    });
+    ExportGuard { kind: GuardKind::Signal(handle, token) }
 }
 
 pub(crate) fn register_context(name: &str, fetch: ContextFetch) -> ExportGuard {
-    with_host(|h| h.contexts.insert(name.to_string(), fetch));
-    ExportGuard { kind: GuardKind::Context(name.to_string()) }
+    let token = with_host(|h| {
+        let token = h.token();
+        h.contexts.entry(name.to_string()).or_default().push(Registration { token, value: fetch });
+        token
+    });
+    ExportGuard { kind: GuardKind::Context(name.to_string(), token) }
 }
 
 thread_local! {
@@ -416,11 +476,11 @@ impl<G: GuestHooks> HostOps for Host<G> {
     fn value_fetch(h: Handle, staged: bool, out: &mut Vec<u8>) -> bool {
         out.clear();
         // The `Rc` comes out of the table before the codec runs.
-        let Some(export) = with_host(|s| s.exports.get(&h).cloned()) else { return false };
+        let Some(export) = with_host(|s| s.export(&h)) else { return false };
         export.fetch(staged, out)
     }
     fn value_stage(h: Handle, bytes: &[u8], mode: StageMode) {
-        let export = with_host(|s| s.exports.get(&h).cloned()).unwrap_or_else(|| {
+        let export = with_host(|s| s.export(&h)).unwrap_or_else(|| {
             panic!(
                 "kernel bridge: a bundle wrote host signal (world {}, slot {}), which was not \
                  exported to it",
@@ -431,7 +491,9 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
     fn ctx_fetch(name: &str, out: &mut Vec<u8>) -> bool {
         out.clear();
-        let Some(fetch) = with_host(|s| s.contexts.get(name).cloned()) else { return false };
+        let Some(fetch) = with_host(|s| s.contexts.get(name).and_then(|r| r.last()).map(|r| r.value.clone())) else {
+            return false;
+        };
         fetch(out)
     }
 }
@@ -456,10 +518,12 @@ pub(crate) fn pending_scopes() -> usize {
 /// Register `export` for slot `h` with no guard: a PROMOTED slot's value
 /// withdraws it itself, when the slot is freed ([`unregister_export`]).
 pub(crate) fn register_export_owned(h: Handle, export: Rc<dyn Exported>) {
-    with_host(|s| s.exports.insert(h, export));
+    with_host(|s| s.exports.entry(h).or_default().push(Registration { token: OWNED, value: export }));
 }
 
+/// Withdraw a promoted slot's own export; any guard-held re-exports of it
+/// stay until their guards drop.
 pub(crate) fn unregister_export(h: Handle) {
-    let removed = try_host(|s| s.exports.remove(&h)).flatten();
+    let removed = try_host(|s| s.remove_export(&h, OWNED)).flatten();
     drop(removed);
 }
