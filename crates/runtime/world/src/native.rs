@@ -115,6 +115,27 @@ impl Tls {
     }
 }
 
+/// The thread is ending with worlds still registered (held past the
+/// kernel's own thread-locals, e.g. in an app thread-local): run their
+/// effects' cleanups now, as `world_drop` would have. A `World` is only an
+/// id, so one dropped AFTER this point finds no arena and can't run them —
+/// before the engine seam it held its arena, and its cleanups ran at that
+/// drop. Cleanups run once either way (`run_cleanups` takes them). Kernel
+/// access from a cleanup here sees dead worlds: the thread-local is being
+/// destroyed, as it was at a post-teardown drop.
+impl Drop for Tls {
+    fn drop(&mut self) {
+        let worlds: Vec<Rc<WorldArena>> = self.worlds.values().cloned().collect();
+        for arena in worlds {
+            let datas: Vec<Rc<EffectData>> =
+                arena.effects.borrow().iter().filter_map(|slot| slot.data.clone()).collect();
+            for data in datas {
+                run_cleanups(&data);
+            }
+        }
+    }
+}
+
 thread_local! {
     static TLS: RefCell<Tls> = RefCell::new(Tls {
         worlds: FxHashMap::default(),

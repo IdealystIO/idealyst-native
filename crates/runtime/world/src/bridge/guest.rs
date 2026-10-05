@@ -382,6 +382,13 @@ impl<H: HostOps> Engine for Bridged<H> {
     type Scope = Option<u32>;
 
     fn world_new() -> WorldId {
+        // In one process (`loopback-engine`) this table and the host
+        // kernel's are both thread-locals, destroyed in reverse order of
+        // first use. Touch this one first so it outlives the kernel's: the
+        // kernel's teardown runs live effects' cleanups, which call back
+        // here for the closures. (In a wasm bundle the table lives in the
+        // bundle's instance; the order is moot.)
+        with_local(|_| ());
         H::world_new()
     }
     fn world_drop(world: WorldId) {

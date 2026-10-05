@@ -2985,9 +2985,16 @@ fn world_cache_routes_interleaved_worlds_to_their_own_arenas() {
 /// The holder's thread-local is touched FIRST so its destructor is
 /// registered first; destructors run in reverse registration order, so the
 /// world is dropped after the kernel's state is destroyed.
+///
+/// It must also still run the world's effect cleanups (regression: since
+/// `World` became an id, a drop after the kernel's thread-local found no
+/// arena and skipped them — an effect's `on_cleanup` releasing a resource
+/// silently never ran).
 #[test]
 fn regression_world_dropped_during_thread_teardown_is_quiet() {
-    let joined = std::thread::spawn(|| {
+    let cleaned = std::sync::Arc::new(AtomicU32::new(0));
+    let c2 = cleaned.clone();
+    let joined = std::thread::spawn(move || {
         thread_local! {
             static HOLD: RefCell<Option<(World, Signal<u32>)>> = const { RefCell::new(None) };
         }
@@ -2997,7 +3004,10 @@ fn regression_world_dropped_during_thread_teardown_is_quiet() {
         w.enter(|| {
             effect(move || {
                 let _ = s.get();
-                on_cleanup(|| {});
+                let c3 = c2.clone();
+                on_cleanup(move || {
+                    c3.fetch_add(1, Ordering::SeqCst);
+                });
             });
             provide(7u64);
         });
@@ -3005,6 +3015,7 @@ fn regression_world_dropped_during_thread_teardown_is_quiet() {
     })
     .join();
     assert!(joined.is_ok(), "tearing a world down during TLS destruction must not panic");
+    assert_eq!(cleaned.load(Ordering::SeqCst), 1, "the effect's cleanup ran, once");
 }
 
 // ---------------------------------------------------------------------------
