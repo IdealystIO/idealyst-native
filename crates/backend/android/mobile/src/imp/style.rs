@@ -301,6 +301,64 @@ pub(crate) fn apply_rules(
                 &[JValue::Int(gravity)],
             );
         }
+        // max_lines → `setMaxLines(n)` + `setEllipsize(TruncateAt.END)`:
+        // at most n lines, the last cut at the tail with "…" (n = 1 is one
+        // line — StaticLayout folds the rest of the text into the last
+        // allowed line before ellipsizing it, so it does not wrap; no
+        // `setSingleLine`, which also swaps the input transformation).
+        // Removing the limit restores TextView's defaults (MAX_VALUE,
+        // null). Skipped on `EditText`: an input's line count is
+        // `text_area`'s min/max rows, and `setMaxLines` would undo a
+        // single-line input's own `maxLines = 1`. The measure_fn picks
+        // the limit up through `TextView.measure` — see
+        // `crate::text_truncation_policy` for that and the cache.
+        if !is_edit {
+            if let Some(call) = crate::text_truncation_policy::line_limit_update(
+                state.last_max_lines,
+                rules.max_lines,
+            ) {
+                let applied = (|| -> jni::errors::Result<()> {
+                    env.call_method(
+                        &view,
+                        "setMaxLines",
+                        "(I)V",
+                        &[JValue::Int(call.max_lines)],
+                    )?;
+                    let truncate_at = if call.ellipsize_end {
+                        env.get_static_field(
+                            "android/text/TextUtils$TruncateAt",
+                            "END",
+                            "Landroid/text/TextUtils$TruncateAt;",
+                        )?
+                        .l()?
+                    } else {
+                        JObject::null()
+                    };
+                    env.call_method(
+                        &view,
+                        "setEllipsize",
+                        "(Landroid/text/TextUtils$TruncateAt;)V",
+                        &[JValue::Object(&truncate_at)],
+                    )?;
+                    Ok(())
+                })();
+                match applied {
+                    Ok(()) => {
+                        state.last_max_lines =
+                            crate::text_truncation_policy::effective_limit(rules.max_lines);
+                    }
+                    Err(e) => {
+                        // Leave the cache alone so the next apply retries,
+                        // and never leak a pending exception into the next
+                        // JNI call ([[project_android_net_pending_exception_clear]]).
+                        if env.exception_check().unwrap_or(false) {
+                            let _ = env.exception_clear();
+                        }
+                        log::error!("max_lines apply failed: {e}");
+                    }
+                }
+            }
+        }
         // Drop shadow → `TextView.setShadowLayer(radius, dx, dy, color)`,
         // Android's native GLYPH shadow — the `text_shadow` field (web
         // lowers it to `text-shadow`; this converges the output,

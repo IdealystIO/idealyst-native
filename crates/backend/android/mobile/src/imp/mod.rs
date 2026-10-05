@@ -205,6 +205,10 @@ pub(crate) struct NodeAnim {
     pub(crate) last_bg: Option<i32>,           // packed ARGB
     pub(crate) last_text_color: Option<i32>,   // packed ARGB
     pub(crate) last_caret_color: Option<i32>,  // packed ARGB — short-circuits redundant setTextCursorDrawable
+    /// Effective `max_lines` last pushed to the TextView (`None` = the
+    /// widget's own defaults: never limited, or the limit was removed).
+    /// See `crate::text_truncation_policy`.
+    pub(crate) last_max_lines: Option<u32>,
     pub(crate) last_alpha: Option<f32>,
     pub(crate) last_padding: [Option<i32>; 4], // L, T, R, B
     pub(crate) last_radii: [Option<f32>; 4],   // tl, tr, br, bl (px)

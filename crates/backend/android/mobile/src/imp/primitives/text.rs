@@ -341,7 +341,12 @@ fn measure_textview(
             unspec
         };
         // No height constraint: UNSPECIFIED → TextView picks its
-        // natural height for the given width.
+        // natural height for the given width. A `max_lines` limit
+        // (`setMaxLines` + `setEllipsize(END)`, `imp/style.rs`) is
+        // honoured here by TextView's own `onMeasure`: the height is
+        // capped at that many lines and a 1-line limit measures one
+        // ellipsized line, so no limit-specific code (or cache key) is
+        // needed — the node is re-dirtied on every style apply.
         let height_spec = unspec;
         let _ = env.call_method(
             &view_obj,
