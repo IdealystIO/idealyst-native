@@ -90,7 +90,9 @@ fn crossed(f: impl FnOnce(&mut Crossed)) {
 pub fn tree(element: Element) -> Tree {
     let open = open_crossing();
     let node = encode(element);
-    Tree { node, crossed: close_crossing(open) }
+    let (range, mut crossed) = close_crossing(open);
+    add_range(&mut crossed.fresh, range);
+    Tree { node, crossed }
 }
 
 /// Start recording a crossing: returns the first id it will register.
@@ -100,26 +102,49 @@ fn open_crossing() -> Cb {
     first
 }
 
-/// Stop recording the innermost crossing, opened at `first`.
-fn close_crossing(first: Cb) -> Crossed {
-    let (opened, mut crossed) = CROSSING.with(|c| c.borrow_mut().pop()).expect("an open crossing");
+/// Stop recording the innermost crossing, opened at `first`: the range of
+/// ids it registered, and what else crossed. The range is returned apart
+/// (not pushed into `fresh`) so an import whose props registered nothing —
+/// most of them — allocates nothing for it.
+fn close_crossing(first: Cb) -> ((Cb, Cb), Crossed) {
+    let (opened, crossed) = CROSSING.with(|c| c.borrow_mut().pop()).expect("an open crossing");
     debug_assert_eq!(opened, first, "crossings close innermost first");
-    crossed.fresh.push((first, TABLE.with(|t| t.borrow().next)));
-    crossed
+    ((first, TABLE.with(|t| t.borrow().next)), crossed)
+}
+
+/// Add id range `r` to `ranges`: nothing when empty, merged into the last
+/// when contiguous (consecutive imports' props usually are).
+fn add_range(ranges: &mut Vec<(Cb, Cb)>, r: (Cb, Cb)) {
+    if r.0 > r.1 {
+        return;
+    }
+    match ranges.last_mut() {
+        Some(last) if last.1.checked_add(1) == Some(r.0) => last.1 = r.1,
+        _ => ranges.push(r),
+    }
 }
 
 /// An import's props crossings, joining the innermost record. A props
 /// range registered after that record opened is inside its own fresh
 /// range already (the import was built while it was open — an `Element`
 /// prop of another import), so only earlier ranges are added.
-fn join_crossing(props: Crossed) {
+fn join_crossing(props: PropsCrossing) {
     CROSSING.with(|c| {
         if let Some((first, top)) = c.borrow_mut().last_mut() {
-            top.fresh.extend(props.fresh.into_iter().filter(|&(_, last)| last < *first));
-            top.again.extend(props.again);
-            top.scopes.extend(props.scopes);
+            if props.range.1 < *first {
+                add_range(&mut top.fresh, props.range);
+            }
+            top.again.extend(props.rest.again);
+            top.scopes.extend(props.rest.scopes);
         }
     });
+}
+
+/// What sending an import's props registered: the id range, and any
+/// re-crossings or scopes (almost always none).
+struct PropsCrossing {
+    range: (Cb, Cb),
+    rest: Crossed,
 }
 
 fn register(entry: Entry) -> Cb {
@@ -301,16 +326,15 @@ pub struct ImportPrim {
     /// What sending the props registered (callbacks, getters…): handed to
     /// the tree that encodes this, so an app that can't decode the props
     /// still releases them. `None` once encoded.
-    crossed: Option<Crossed>,
+    crossed: Option<PropsCrossing>,
 }
 
 impl Drop for ImportPrim {
     /// Built but never encoded (the element was dropped bundle-side): the
     /// props' callbacks never crossed, so nothing will release them.
     fn drop(&mut self) {
-        if let Some(crossed) = self.crossed.take() {
-            let ranges = crossed.fresh.into_iter().flat_map(|(first, last)| first..=last);
-            for id in ranges.chain(crossed.again) {
+        if let Some(PropsCrossing { range: (first, last), rest }) = self.crossed.take() {
+            for id in (first..=last).chain(rest.again) {
                 release(id);
             }
         }
@@ -887,7 +911,8 @@ pub fn __props_begin() -> Cb {
 /// ([`__props_begin`]).
 #[doc(hidden)]
 pub fn import_component(name: &'static str, props: Vec<u8>, crossing: Cb) -> Element {
-    let crossed = close_crossing(crossing);
+    let (range, rest) = close_crossing(crossing);
+    let crossed = PropsCrossing { range, rest };
     runtime_scene::item(ImportPrim { name: name.to_owned(), props, crossed: Some(crossed) }, Vec::new())
 }
 
