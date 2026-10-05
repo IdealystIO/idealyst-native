@@ -168,3 +168,19 @@ fn a_panicking_mount_is_an_error_carrying_the_bundles_message() {
         other => panic!("expected a panic, got {other}"),
     }
 }
+
+/// Regression: `KernelBundle::call` (the test and benchmark helper)
+/// panicked on a trap WITHOUT stopping the bundle, so the next call ran a
+/// bundle left half-updated by the abort; it also ignored a bundle already
+/// stopped. A trap through it now stops the bundle first.
+#[test]
+fn regression_a_trap_through_call_stops_the_bundle() {
+    let h = Harness::new();
+    let bundle = KernelBundle::load(&stream_host::remote::engine(), REMOTE_GUEST_WASM).expect("loads");
+    // No props: the mount export fails decoding its title, and traps.
+    let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        h.world.enter(|| bundle.call::<(u32, u32), i64>("rc_mount", (0, 0)))
+    }));
+    assert!(trapped.is_err());
+    assert!(bundle.poisoned().is_some_and(|m| m.contains("rc_mount: title")), "{:?}", bundle.poisoned());
+}

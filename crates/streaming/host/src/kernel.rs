@@ -704,8 +704,16 @@ impl KernelBundle {
     }
 
     /// Call a bundle export of shape `(params) -> results` from host code
-    /// (outside any import). Panics on a trap, like every bridge call.
+    /// (outside any import) — a TEST AND BENCHMARK helper, not app API.
+    /// It panics where app paths degrade: on a bundle already stopped, and
+    /// on a trap — after stopping the bundle as any trap does (its kernel
+    /// frames closed, [`poison`]), so what the test does next sees the
+    /// state an app would.
+    #[doc(hidden)]
     pub fn call<P: wasmi::WasmParams, R: wasmi::WasmResults>(&self, export: &str, params: P) -> R {
+        if let Some(msg) = self.poisoned() {
+            panic!("kernel bridge: `{export}` called on a stopped bundle ({msg})");
+        }
         let f: TypedFunc<P, R> = {
             let store = self.inner.store.borrow();
             self.inner
@@ -713,10 +721,18 @@ impl KernelBundle {
                 .get_typed_func(&*store, export)
                 .unwrap_or_else(|e| panic!("kernel bridge: no export `{export}` of that shape: {e}"))
         };
-        let mut store = self.inner.store.try_borrow_mut().unwrap_or_else(|_| {
-            panic!("kernel bridge: KernelBundle::call(`{export}`) re-entered a bundle that is already running")
-        });
-        f.call(&mut *store, params).unwrap_or_else(|e| panic!("kernel bridge: `{export}` trapped: {e}"))
+        let mark = runtime_world::remote::bundle_frames_mark();
+        let called = {
+            let mut store = self.inner.store.try_borrow_mut().unwrap_or_else(|_| {
+                panic!("kernel bridge: KernelBundle::call(`{export}`) re-entered a bundle that is already running")
+            });
+            f.call(&mut *store, params).map_err(|e| with_panic(e, &mut *store, self.inner.hooks))
+        };
+        called.unwrap_or_else(|msg| {
+            runtime_world::remote::unwind_bundle_frames(mark);
+            poison(&self.inner, msg.clone());
+            panic!("kernel bridge: `{export}` trapped: {msg}")
+        })
     }
 }
 
