@@ -29,3 +29,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# `tests/robot_relay_front.rs`: the real relay behind the static server's
+# same-origin `/__idealyst/relay`, and a WebSocket client playing the page.
+robot-relay = { workspace = true }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

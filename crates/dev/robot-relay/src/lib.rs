@@ -89,6 +89,12 @@ struct Inner {
     /// Outbound channel to the currently-connected app (None when no app is
     /// connected). Cloned by TCP sessions to send forwarded requests.
     app_outbound: Mutex<Option<Sender<String>>>,
+    /// Which app session owns `app_outbound` (written under its lock). An
+    /// app that redials — the web client reconnects after a dropped socket,
+    /// e.g. a same-origin proxy that went away with a restarting app server
+    /// — gets a new session while the old one may still be noticing its
+    /// socket died; the old one must not clear the new one's channel.
+    app_session: AtomicU64,
     /// Forwarded-request id → response sink.
     pending: Mutex<HashMap<u64, Sender<Value>>>,
     /// TCP connections that issued `subscribe`, to fan pushes out to.
@@ -109,8 +115,27 @@ struct Inner {
 }
 
 impl Inner {
-    fn clear_app(&self) {
-        *self.app_outbound.lock().unwrap() = None;
+    /// Install `tx` as the connected app's channel, for a new session.
+    fn set_app(&self, session: u64, tx: Sender<String>) {
+        let mut out = self.app_outbound.lock().unwrap();
+        self.app_session.store(session, Ordering::SeqCst);
+        *out = Some(tx);
+        drop(out);
+        // Requests forwarded to the previous app will not be answered by
+        // this one: fail them now rather than at their timeout.
+        self.pending.lock().unwrap().clear();
+        // The new app has not been told to push yet.
+        self.app_subscribed.store(false, Ordering::SeqCst);
+    }
+
+    /// Forget the app — if `session` is still the connected one.
+    fn clear_app(&self, session: u64) {
+        let mut out = self.app_outbound.lock().unwrap();
+        if self.app_session.load(Ordering::SeqCst) != session {
+            return;
+        }
+        *out = None;
+        drop(out);
         self.app_subscribed.store(false, Ordering::SeqCst);
         // Fail any in-flight requests so their TCP sessions don't hang.
         self.pending.lock().unwrap().clear();
@@ -158,6 +183,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
 
     let inner = Arc::new(Inner {
         app_outbound: Mutex::new(None),
+        app_session: AtomicU64::new(0),
         pending: Mutex::new(HashMap::new()),
         subscribers: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
@@ -219,14 +245,21 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
 fn app_session(mut ws: tungstenite::WebSocket<TcpStream>, inner: &Arc<Inner>) {
     let _ = ws.get_ref().set_read_timeout(Some(WS_POLL));
     let (out_tx, out_rx) = channel::<String>();
-    *inner.app_outbound.lock().unwrap() = Some(out_tx);
+    static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+    let session = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
+    inner.set_app(session, out_tx);
+    // A redialing app inherits the subscribers its predecessor had: tell it
+    // to push, or they would go quiet.
+    if !inner.subscribers.lock().unwrap().is_empty() {
+        ensure_app_subscribed(inner);
+    }
 
     loop {
         // Send any queued forwarded requests.
         let mut wrote = false;
         while let Ok(frame) = out_rx.try_recv() {
             if ws.send(Message::Text(frame.into())).is_err() {
-                inner.clear_app();
+                inner.clear_app(session);
                 return;
             }
             wrote = true;
@@ -252,7 +285,7 @@ fn app_session(mut ws: tungstenite::WebSocket<TcpStream>, inner: &Arc<Inner>) {
             Err(_) => break,
         }
     }
-    inner.clear_app();
+    inner.clear_app(session);
 }
 
 /// Route a frame the app sent us: a response to a forwarded request, a push, or
@@ -483,6 +516,7 @@ mod tests {
             reg_path,
             _inner: Arc::new(Inner {
                 app_outbound: Mutex::new(None),
+                app_session: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(Vec::new()),
                 next_id: AtomicU64::new(1),

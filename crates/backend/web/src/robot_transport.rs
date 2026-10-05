@@ -84,11 +84,65 @@ pub(crate) fn clear_newcore_driver_env() {
     runtime_vocabulary::robot::clear_driver_env();
 }
 
-/// Kept alive for the page lifetime so the socket + closures + push pump aren't
-/// dropped (which would tear the connection down).
+/// The page-origin path the dev servers splice to the relay
+/// (`dev_http::ROBOT_RELAY_URL`, `server::dev_stream::RELAY_PATH`).
+pub const SAME_ORIGIN_RELAY_PATH: &str = "/__idealyst/relay";
+
+/// Wait before redialing after a connected session drops (the relay or the
+/// same-origin proxy restarting).
+const REDIAL_MS: i32 = 500;
+/// Cap of the backoff between rounds in which no candidate answered.
+const RETRY_MAX_MS: i32 = 5_000;
+
+/// The URLs to dial, in order: the page's own origin first, then the
+/// relay URL the dev server injected.
+///
+/// The injected URL is the relay's own listener, `ws://127.0.0.1:<port>`
+/// on the machine running `idealyst dev`. A browser elsewhere — on the
+/// host of a devcontainer, where only the app's port is forwarded — cannot
+/// reach it, and the robot was silently unplugged ("no app connected to
+/// the relay") while the app ran. Both dev servers also splice the relay
+/// at [`SAME_ORIGIN_RELAY_PATH`] on the page's origin, the one address a
+/// browser that loaded the page can always reach; the injected URL stays
+/// as the fallback for a page served by something that does not (a server
+/// not built on the framework's router, a hand-served bundle).
+///
+/// Only `http:`/`https:` pages have an origin to dial (`ws:`/`wss:`, the
+/// page's scheme decides, so an https page never dials plain ws).
+pub(crate) fn relay_candidates(page_protocol: &str, page_host: &str, injected: &str) -> Vec<String> {
+    let scheme = match page_protocol {
+        "http:" => Some("ws"),
+        "https:" => Some("wss"),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(2);
+    if let (Some(scheme), false) = (scheme, page_host.is_empty()) {
+        out.push(format!("{scheme}://{page_host}{SAME_ORIGIN_RELAY_PATH}"));
+    }
+    if !injected.is_empty() && !out.iter().any(|u| u == injected) {
+        out.push(injected.to_string());
+    }
+    out
+}
+
+/// The connection state: which candidate is being tried, the live socket
+/// and its listeners, and the pending redial timer.
+struct Dialer {
+    candidates: Vec<String>,
+    socket: Option<WebSocket>,
+    listeners: Vec<web_glue::dom::Listener>,
+    /// Pending redial (the timer's closure lives here until it fires or is
+    /// replaced; a closure dropping itself mid-call is safe in web-glue).
+    timer: Option<web_glue::Closure>,
+    backoff_ms: i32,
+    /// Whether the relay asked this connection to push change events.
+    subscribed: Rc<Cell<bool>>,
+}
+
+/// Kept alive for the page lifetime so the dialer (socket + closures) and
+/// the push pump aren't dropped (which would tear the connection down).
 struct RobotRelayState {
-    _socket: WebSocket,
-    _listeners: [web_glue::dom::Listener; 2],
+    _dialer: Rc<RefCell<Dialer>>,
     _push_pump: runtime_shared::scheduling::RafLoop,
 }
 
@@ -96,32 +150,142 @@ thread_local! {
     static INSTALLED: RefCell<Option<RobotRelayState>> = const { RefCell::new(None) };
 }
 
-/// Connect this web app's Robot bridge to a relay at `url` (e.g.
-/// `ws://127.0.0.1:9719`). Idempotent per page; the connection persists for the
-/// page lifetime. Called from the generated web wrapper when the build enabled
-/// robot and the dev sidecar injected a relay URL.
+/// Connect this web app's Robot bridge to the dev session's relay.
+/// `url` is the relay URL the dev server injected (e.g.
+/// `ws://127.0.0.1:9719`); the page's own origin is tried first — see
+/// [`relay_candidates`]. A dropped connection is redialed, so the app
+/// survives the relay or the app server restarting. Idempotent per page.
+/// Called from the generated web wrapper when the build enabled robot and
+/// the dev server injected a relay URL.
 pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
     if INSTALLED.with(|s| s.borrow().is_some()) {
         return Ok(());
     }
+    let (protocol, host) = web_glue::dom::window()
+        .map(|w| {
+            let loc = w.location();
+            (loc.protocol().unwrap_or_default(), loc.host().unwrap_or_default())
+        })
+        .unwrap_or_default();
+    let candidates = relay_candidates(&protocol, &host, url);
+    if candidates.is_empty() {
+        return Err(JsValue::from_str("no robot relay URL to dial"));
+    }
 
-    let socket = WebSocket::new(url)?;
+    let subscribed = Rc::new(Cell::new(false));
+    let dialer = Rc::new(RefCell::new(Dialer {
+        candidates,
+        socket: None,
+        listeners: Vec::new(),
+        timer: None,
+        backoff_ms: REDIAL_MS,
+        subscribed: subscribed.clone(),
+    }));
+    dial(&dialer, 0);
+
+    // --- push pump: emit {event:changed,rev} when the registry advances -----
+    let dialer_for_push = Rc::downgrade(&dialer);
+    let last_rev = Cell::new(robot_revision());
+    let push_pump = runtime_shared::raf_loop(move || {
+        if !subscribed.get() {
+            return;
+        }
+        let Some(dialer) = dialer_for_push.upgrade() else { return };
+        let dialer = dialer.borrow();
+        let Some(socket) = dialer.socket.as_ref().filter(|s| s.ready_state() == WebSocket::OPEN) else {
+            return;
+        };
+        let rev = robot_revision();
+        if rev != last_rev.get() {
+            last_rev.set(rev);
+            let _ = socket.send_with_str(&format!("{{\"event\":\"changed\",\"rev\":{rev}}}"));
+        }
+    });
+
+    INSTALLED.with(|s| {
+        *s.borrow_mut() = Some(RobotRelayState { _dialer: dialer, _push_pump: push_pump });
+    });
+    Ok(())
+}
+
+/// Redial candidate `idx` after `ms`. Always through a timer, so a socket's
+/// own `close` handler never tears down its listeners while running.
+fn schedule(dialer: &Rc<RefCell<Dialer>>, idx: usize, ms: i32) {
+    let Some(window) = web_glue::dom::window() else { return };
+    let weak = Rc::downgrade(dialer);
+    let closure = web_glue::Closure::once(move |_| {
+        if let Some(d) = weak.upgrade() {
+            dial(&d, idx);
+        }
+    });
+    window.set_timeout(&closure, ms);
+    dialer.borrow_mut().timer = Some(closure);
+}
+
+/// The candidate after `idx` failed to connect: the next one now, or —
+/// when every candidate failed this round — the first again after a
+/// backoff that doubles up to [`RETRY_MAX_MS`].
+fn after_failure(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
+    let (count, backoff) = {
+        let d = dialer.borrow();
+        (d.candidates.len(), d.backoff_ms)
+    };
+    if idx + 1 < count {
+        schedule(dialer, idx + 1, 0);
+    } else {
+        dialer.borrow_mut().backoff_ms = (backoff * 2).min(RETRY_MAX_MS);
+        schedule(dialer, 0, backoff);
+    }
+}
+
+/// Open a socket to candidate `idx`, replacing any previous one.
+fn dial(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
+    let (url, subscribed) = {
+        let mut d = dialer.borrow_mut();
+        d.listeners.clear();
+        if let Some(old) = d.socket.take() {
+            let _ = old.close();
+        }
+        d.subscribed.set(false);
+        (d.candidates[idx].clone(), d.subscribed.clone())
+    };
+    // A malformed URL throws synchronously; treat it as a failed attempt.
+    let socket = match WebSocket::new(&url) {
+        Ok(s) => s,
+        Err(_) => return after_failure(dialer, idx),
+    };
+    let opened = Rc::new(Cell::new(false));
 
     // --- on_open: announce identity -----------------------------------------
     let socket_for_open = socket.clone();
+    let opened_for_open = opened.clone();
+    let weak = Rc::downgrade(dialer);
     let on_open = crate::glue_dom::listen(&socket, "open", Default::default(), move |_evt| {
+        opened_for_open.set(true);
+        if let Some(d) = weak.upgrade() {
+            d.borrow_mut().backoff_ms = REDIAL_MS;
+        }
         let hello = serde_json::json!({
             "hello": { "name": env!("CARGO_PKG_NAME"), "platform": "web" }
         });
         let _ = socket_for_open.send_with_str(&hello.to_string());
     });
 
-    // --- subscription state (shared with the push pump) ---------------------
-    let subscribed = Rc::new(Cell::new(false));
+    // --- on_close: redial ---------------------------------------------------
+    // A handshake that fails (the origin has no relay route: a 404, a
+    // catch-all's index.html) also ends here, with `open` never fired.
+    let weak = Rc::downgrade(dialer);
+    let on_close = crate::glue_dom::listen(&socket, "close", Default::default(), move |_evt| {
+        let Some(d) = weak.upgrade() else { return };
+        if opened.get() {
+            schedule(&d, 0, REDIAL_MS);
+        } else {
+            after_failure(&d, idx);
+        }
+    });
 
     // --- on_message: dispatch forwarded verbs -------------------------------
     let socket_for_msg = socket.clone();
-    let subscribed_msg = subscribed.clone();
     let on_message = crate::glue_dom::listen(&socket, "message", Default::default(), move |evt| {
         let evt: MessageEvent = evt.unchecked_into();
         let Some(text) = evt.data().as_string() else {
@@ -141,7 +305,7 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
         // connection loop), not the dispatch core: ack, then let the push pump
         // emit change events.
         if cmd == "subscribe" {
-            subscribed_msg.set(true);
+            subscribed.set(true);
             let _ = socket_for_msg.send_with_str(&format!("{{\"id\":{id},\"ok\":\"subscribed\"}}"));
             return;
         }
@@ -179,35 +343,59 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
         let _ = socket_for_msg.send_with_str(&resp);
     });
 
-    // --- push pump: emit {event:changed,rev} when the registry advances -----
-    let socket_for_push = socket.clone();
-    let subscribed_push = subscribed.clone();
-    let last_rev = Cell::new(robot_revision());
-    let push_pump = runtime_shared::raf_loop(move || {
-        if socket_for_push.ready_state() != WebSocket::OPEN || !subscribed_push.get() {
-            return;
-        }
-        let rev = robot_revision();
-        if rev != last_rev.get() {
-            last_rev.set(rev);
-            let _ = socket_for_push.send_with_str(&format!("{{\"event\":\"changed\",\"rev\":{rev}}}"));
-        }
-    });
+    let mut d = dialer.borrow_mut();
+    d.socket = Some(socket);
+    d.listeners = vec![on_open, on_close, on_message];
+}
 
-    INSTALLED.with(|s| {
-        *s.borrow_mut() = Some(RobotRelayState {
-            _socket: socket,
-            _listeners: [on_open, on_message],
-            _push_pump: push_pump,
-        });
-    });
-    Ok(())
+#[cfg(test)]
+mod candidate_tests {
+    //! Pure URL selection — no DOM. `#[wasm_bindgen_test]`, not `#[test]`:
+    //! backend-web only builds for wasm32, where the test runner skips plain
+    //! `#[test]` functions.
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Regression (CrewForge, `idealyst dev --web --local` in a
+    /// devcontainer): the page dialed only the injected
+    /// `ws://127.0.0.1:<port>`, the container's loopback, which the host
+    /// browser cannot reach. The page's own origin comes first now.
+    #[wasm_bindgen_test]
+    fn regression_same_origin_relay_is_dialed_before_the_loopback_url() {
+        assert_eq!(
+            relay_candidates("http:", "localhost:3100", "ws://127.0.0.1:35109"),
+            vec!["ws://localhost:3100/__idealyst/relay".to_string(), "ws://127.0.0.1:35109".to_string()]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn an_https_page_dials_wss_on_its_origin() {
+        assert_eq!(
+            relay_candidates("https:", "app.example.dev", "ws://127.0.0.1:1")[0],
+            "wss://app.example.dev/__idealyst/relay"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn a_page_with_no_http_origin_dials_only_the_injected_url() {
+        assert_eq!(relay_candidates("file:", "", "ws://127.0.0.1:1"), vec!["ws://127.0.0.1:1".to_string()]);
+        assert_eq!(relay_candidates("http:", "", "ws://127.0.0.1:1"), vec!["ws://127.0.0.1:1".to_string()]);
+    }
+
+    #[wasm_bindgen_test]
+    fn an_injected_url_equal_to_the_origin_route_is_not_dialed_twice() {
+        assert_eq!(
+            relay_candidates("http:", "h:1", "ws://h:1/__idealyst/relay"),
+            vec!["ws://h:1/__idealyst/relay".to_string()]
+        );
+    }
 }
 
 // ===========================================================================
-// Browser-side regression tests (new-core transport adapter). Run with:
+// Browser-side regression tests (new-core transport adapter). Run with
+// plain cargo, not wasm-pack (see the `tests.rs` module docs):
 //   cd crates/backend/web
-//   wasm-pack test --headless --chrome -- --features new-core,robot
+//   CHROMEDRIVER=<path> cargo test --target wasm32-unknown-unknown --features robot --lib
 // ===========================================================================
 
 #[cfg(test)]

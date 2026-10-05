@@ -209,3 +209,57 @@ fn screenshot_response_is_saved_to_the_configured_dir() {
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "saved file is the decoded PNG");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Regression: a web app redials the relay when its socket drops (the
+/// same-origin `/__idealyst/relay` proxy goes away with a restarting app
+/// server). The new session takes over while the old one may still be
+/// noticing its dead socket — and the old session's teardown used to
+/// clear the app channel unconditionally, unplugging the NEW app: every
+/// verb then failed "no app connected to the relay" with the page
+/// connected.
+#[test]
+fn regression_an_old_session_closing_does_not_unplug_the_redialed_app() {
+    let relay = start_relay();
+    // The stale session: connected, never answers, closed after the new
+    // app is in.
+    let (mut stale, _) = tungstenite::connect(format!("ws://{}/", relay.ws_addr)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    spawn_fake_app(relay.ws_addr);
+    std::thread::sleep(Duration::from_millis(200));
+    stale.close(None).unwrap();
+    let _ = stale.flush();
+    drop(stale);
+    // Several relay poll slices: the stale session has seen the close.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let mut bridge = TcpBridge::connect(relay.tcp_addr);
+    let pong = bridge.call("ping", json!({}));
+    assert_eq!(pong["ok"], "pong", "the redialed app still serves verbs: {pong}");
+}
+
+/// A redialed app inherits its predecessor's subscribers: it is told to
+/// push, so a subscribed inspector keeps getting `changed` events.
+#[test]
+fn a_redialed_app_is_resubscribed_for_existing_subscribers() {
+    let relay = start_relay();
+    let (mut first, _) = tungstenite::connect(format!("ws://{}/", relay.ws_addr)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let mut bridge = TcpBridge::connect(relay.tcp_addr);
+    let mut line = json!({ "id": 1, "cmd": "subscribe", "args": {} }).to_string();
+    line.push('\n');
+    bridge.writer.write_all(line.as_bytes()).unwrap();
+    assert_eq!(bridge.read_frame()["ok"], "subscribed");
+    // The first app got its subscribe; it goes away.
+    let _ = first.read().unwrap();
+    first.close(None).unwrap();
+    let _ = first.flush();
+    drop(first);
+    std::thread::sleep(Duration::from_millis(100));
+
+    // The redialed app is told to subscribe (the fake app pushes rev 42
+    // on its `subscribe`), and the push reaches the old subscriber.
+    spawn_fake_app(relay.ws_addr);
+    let push = bridge.read_frame();
+    assert_eq!(push["event"], "changed", "{push}");
+    assert_eq!(push["rev"], 42);
+}

@@ -45,7 +45,36 @@ use tiny_http::{Header, Method, Request, Response, Server};
 #[derive(Clone)]
 pub struct ReloadContext {
     pub signal: Arc<ReloadSignal>,
+    /// The dev session's Robot relay (its WebSocket listener), when one
+    /// runs. The server then also answers [`ROBOT_RELAY_URL`] on its own
+    /// port by splicing that WebSocket to the relay — see [`ROBOT_RELAY_URL`].
+    pub relay: Option<std::net::SocketAddr>,
 }
+
+/// Where the page dials the Robot relay on its own origin.
+///
+/// The relay listens on a random loopback port of the dev process, and a
+/// page whose browser is not on that machine's loopback — a host browser
+/// on a devcontainer, where only the app's port is forwarded — could never
+/// reach it: every robot verb failed with "no app connected to the relay"
+/// while the app ran fine. So, like the reload stream, the relay is also
+/// reachable on the page's origin, and the page's robot client
+/// (`backend_web::install_robot_relay_client`) dials this path first and
+/// the relay's own URL second.
+///
+/// tiny_http can hand over an upgraded connection only as one
+/// `Read + Write` object, which a splice cannot read and write from two
+/// threads at once (a blocked read of the page would hold back every
+/// frame the relay sends it). So with a relay the server's port is
+/// fronted by a plain accept loop: it peeks each new connection's request
+/// line, splices `GET /__idealyst/relay` straight to the relay, and every
+/// other connection to the tiny_http server on an internal loopback port.
+/// Browsers open a fresh connection for every WebSocket handshake, so the
+/// first request line of a connection is the one that decides.
+///
+/// Restated in `server::dev_stream::RELAY_PATH` (the full-stack app server
+/// proxies it the same way) and in backend-web's robot client.
+pub const ROBOT_RELAY_URL: &str = "/__idealyst/relay";
 
 /// SSE endpoint advertised in [`ReloadContext`]. Each event is
 /// `data: <decimal generation>\n\n`. Comment-only pings (`:\n\n`)
@@ -589,6 +618,118 @@ pub fn serve_signal_only(host: &str, port: u16, signal: Arc<ReloadSignal>) -> Re
     Ok(())
 }
 
+/// Bind `addr` with a front accept loop that splices [`ROBOT_RELAY_URL`]
+/// connections to `relay` and everything else to a tiny_http server on an
+/// internal loopback port, which is returned. See [`ROBOT_RELAY_URL`] for
+/// why the front exists.
+fn front_with_relay(addr: &str, relay: std::net::SocketAddr) -> Result<Server> {
+    let public = std::net::TcpListener::bind(addr)
+        .map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
+    let server = Server::http("127.0.0.1:0")
+        .map_err(|e| anyhow::anyhow!("failed to bind the internal dev server: {e}"))?;
+    let inner = server
+        .server_addr()
+        .to_ip()
+        .context("the internal dev server has no IP address")?;
+    thread::Builder::new()
+        .name("dev-http-front".into())
+        .spawn(move || {
+            for conn in public.incoming().flatten() {
+                let _ = thread::Builder::new()
+                    .name("dev-http-conn".into())
+                    .spawn(move || route_connection(conn, inner, relay));
+            }
+        })
+        .context("spawn the dev server's accept loop")?;
+    Ok(server)
+}
+
+/// Where a fronted connection goes, by its first request line.
+#[derive(Debug, PartialEq, Eq)]
+enum FrontRoute {
+    Relay,
+    App,
+}
+
+/// Decide from the bytes seen so far; `None` until the request target is
+/// complete enough to tell.
+fn front_route(seen: &[u8]) -> Option<FrontRoute> {
+    let prefix = format!("GET {ROBOT_RELAY_URL}");
+    let prefix = prefix.as_bytes();
+    if seen.len() <= prefix.len() {
+        return if prefix.starts_with(seen) { None } else { Some(FrontRoute::App) };
+    }
+    let relay = seen.starts_with(prefix) && matches!(seen[prefix.len()], b' ' | b'?');
+    Some(if relay { FrontRoute::Relay } else { FrontRoute::App })
+}
+
+fn route_connection(conn: std::net::TcpStream, inner: std::net::SocketAddr, relay: std::net::SocketAddr) {
+    // `peek` leaves the bytes in the socket, so the destination reads the
+    // whole request as the browser sent it. A blocking peek waits for the
+    // first bytes; a request line split across segments re-peeks.
+    let mut buf = [0u8; 64];
+    let route = loop {
+        match conn.peek(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if let Some(route) = front_route(&buf[..n]) {
+                    break route;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+    };
+    let target = match route {
+        FrontRoute::Relay => relay,
+        FrontRoute::App => inner,
+    };
+    match std::net::TcpStream::connect(target) {
+        Ok(upstream) => splice(conn, upstream),
+        Err(e) => {
+            if route == FrontRoute::Relay {
+                dev_events::global().warn("dev-http", format!("robot relay unreachable at {relay}: {e}"));
+            }
+            // The page sees a dropped connection: a WebSocket error, after
+            // which its robot client tries the relay's own URL.
+        }
+    }
+}
+
+/// Copy bytes both ways until both directions end. Each direction's EOF
+/// is passed on as a write shutdown, so a `Connection: close` response or
+/// a WebSocket close reaches the other side as it would directly.
+fn splice(a: std::net::TcpStream, b: std::net::TcpStream) {
+    let _ = a.set_nodelay(true);
+    let _ = b.set_nodelay(true);
+    let (Ok(a2), Ok(b2)) = (a.try_clone(), b.try_clone()) else { return };
+    let back = thread::Builder::new().name("dev-http-splice".into()).spawn(move || pipe(b2, a2));
+    pipe(a, b);
+    if let Ok(back) = back {
+        let _ = back.join();
+    }
+}
+
+fn pipe(mut from: std::net::TcpStream, mut to: std::net::TcpStream) {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if to.write_all(&buf[..n]).is_err() {
+                    let _ = from.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                let _ = to.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+        }
+    }
+    let _ = to.shutdown(std::net::Shutdown::Write);
+}
+
 /// Add the permissive CORS header every route on the signal-only server
 /// carries. See [`serve_signal_only`].
 fn cors<R: std::io::Read>(response: Response<R>) -> Response<R> {
@@ -612,8 +753,11 @@ pub fn serve_static(
     precompressed: bool,
 ) -> Result<()> {
     let addr = format!("{host}:{port}");
-    let server = Server::http(&addr)
-        .map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?;
+    let relay = reload.as_ref().and_then(|r| r.relay);
+    let server = match relay {
+        None => Server::http(&addr).map_err(|e| anyhow::anyhow!("failed to bind {addr}: {e}"))?,
+        Some(relay) => front_with_relay(&addr, relay)?,
+    };
 
     let root = fs::canonicalize(root)
         .with_context(|| format!("cannot canonicalize serve root {}", root.display()))?;
@@ -640,6 +784,9 @@ pub fn serve_static(
     let mut extras = Vec::new();
     if reload.is_some() {
         extras.push("livereload".to_string());
+    }
+    if relay.is_some() {
+        extras.push("robot-relay".to_string());
     }
     if aas.is_some() {
         extras.push("aas-url".to_string());
@@ -1286,5 +1433,23 @@ fn content_type(path: &Path) -> &'static str {
         "otf" => "font/otf",
         "txt" | "map" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod front_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_relay_path_goes_to_the_relay() {
+        assert_eq!(front_route(b"GET /__idealyst/relay HTTP/1.1\r\n"), Some(FrontRoute::Relay));
+        assert_eq!(front_route(b"GET /__idealyst/relay?x=1 HTTP/1.1"), Some(FrontRoute::Relay));
+        assert_eq!(front_route(b"GET /__idealyst/relayx HTTP/1.1"), Some(FrontRoute::App));
+        assert_eq!(front_route(b"GET /__idealyst/reload HTTP/1.1"), Some(FrontRoute::App));
+        assert_eq!(front_route(b"GET / HTTP/1.1"), Some(FrontRoute::App));
+        assert_eq!(front_route(b"POST /__idealyst/relay HTTP/1.1"), Some(FrontRoute::App));
+        // Not enough yet to tell.
+        assert_eq!(front_route(b"GET /__ide"), None);
+        assert_eq!(front_route(b"GET /__idealyst/relay"), None);
     }
 }

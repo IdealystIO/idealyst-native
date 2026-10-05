@@ -1837,7 +1837,9 @@ fn launch_web(
             &args.host,
             web_port,
             dir,
-            Some(ReloadContext { signal: state_signal }),
+            // No relay: in runtime-server mode the app (and its robot
+            // bridge) runs in the native sidecar, not the page.
+            Some(ReloadContext { signal: state_signal, relay: None }),
             Some(ctx),
             preload_ctx,
             overlay_ctx.clone(),
@@ -1955,11 +1957,19 @@ fn launch_web(
                 ),
             }
         }
-        let ctx = ReloadContext { signal };
+        // With the relay this session hosts, the page also reaches it on
+        // its own origin (`dev_http::ROBOT_RELAY_URL`) — see below.
+        let ctx = ReloadContext {
+            signal,
+            relay: relay_socket_addr(std::env::var("IDEALYST_ROBOT_RELAY_URL").ok().as_deref()),
+        };
 
         // ── Robot-on-web: run() hosts the relay and exported
         //    IDEALYST_ROBOT_RELAY_URL; inject it so the browser app dials in.
-        //    (Default on; --no-robot leaves the env unset and skips this.)
+        //    The page dials its own origin's `/__idealyst/relay` first (the
+        //    splice above — the one route a forwarded app port always has)
+        //    and this URL second. (Default on; --no-robot leaves the env
+        //    unset and skips this.)
         if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
             // Same tag builder the staged-bundle path uses, so both
             // web paths advertise the relay identically — and both
@@ -3019,6 +3029,15 @@ fn server_proxies_stream(port: u16) -> bool {
 /// two are held together by `the_probe_matches_the_server_crates_route`.
 const DEV_STREAM_PROBE_PATH: &str = "/__idealyst/stream";
 const DEV_STREAM_HEADER: &str = "x-idealyst-dev-stream";
+/// `server::dev_stream::RELAY_ENV`, restated for the same reason.
+const DEV_RELAY_ENV: &str = "IDEALYST_DEV_RELAY";
+
+/// The relay's WebSocket listener, from the `ws://127.0.0.1:<port>` this
+/// session exported as `IDEALYST_ROBOT_RELAY_URL` — what the static web
+/// server splices `/__idealyst/relay` to.
+fn relay_socket_addr(url: Option<&str>) -> Option<std::net::SocketAddr> {
+    url?.strip_prefix("ws://")?.trim_end_matches('/').parse().ok()
+}
 
 fn stream_probe_answered(head: &str) -> bool {
     let mut lines = head.split("\r\n");
@@ -3597,6 +3616,14 @@ fn spawn_backend(
     // reaches it on its own origin.
     if let Some(stream) = dev_stream {
         cmd.env("IDEALYST_DEV_STREAM", stream);
+    }
+    // And where the Robot relay is, so the same server proxies the page's
+    // robot WebSocket at `/__idealyst/relay` (`server::dev_stream::RELAY_PATH`):
+    // the relay's own port is a loopback port of this process, unreachable
+    // from a browser outside it (a devcontainer forwards the app's port
+    // only), and the page's robot client dials its own origin first.
+    if let Ok(relay) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
+        cmd.env(DEV_RELAY_ENV, relay);
     }
     apply_pubsub_env(&mut cmd, dir);
     // Its output is captured, never inherited: request logs, tracing and
@@ -4760,6 +4787,7 @@ mod tests {
         let src = std::fs::read_to_string(root.join("crates/api/server/src/dev_stream.rs")).unwrap();
         assert!(src.contains(&format!("pub const PROBE_PATH: &str = \"{DEV_STREAM_PROBE_PATH}\";")));
         assert!(src.contains(&format!("pub const HEADER: &str = \"{DEV_STREAM_HEADER}\";")));
+        assert!(src.contains(&format!("pub const RELAY_ENV: &str = \"{DEV_RELAY_ENV}\";")));
         assert!(stream_probe_answered(
             "HTTP/1.1 204 No Content\r\nx-idealyst-dev-stream: 1\r\ndate: now\r\n"
         ));
@@ -4767,6 +4795,19 @@ mod tests {
         assert!(!stream_probe_answered("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\n"));
         assert!(!stream_probe_answered("HTTP/1.1 204 No Content\r\n"));
         assert!(!stream_probe_answered(""));
+    }
+
+    /// The static server splices `/__idealyst/relay` to the relay the
+    /// session exported; anything that is not `ws://ip:port` means no splice.
+    #[test]
+    fn the_relay_url_names_the_relays_socket() {
+        assert_eq!(
+            relay_socket_addr(Some("ws://127.0.0.1:35109")),
+            Some("127.0.0.1:35109".parse().unwrap())
+        );
+        assert_eq!(relay_socket_addr(Some("ws://127.0.0.1:35109/")), Some("127.0.0.1:35109".parse().unwrap()));
+        assert_eq!(relay_socket_addr(Some("http://127.0.0.1:35109")), None);
+        assert_eq!(relay_socket_addr(None), None);
     }
 
     /// A server's panic line becomes an error naming its log; request

@@ -1525,7 +1525,9 @@ pub fn runtime_server_url_script_tag(url: &str) -> String {
 
 /// Splice `window.IDEALYST_ROBOT_RELAY_URL` into the staged
 /// `index.html` head, so a browser-hosted app dials the dev session's
-/// robot relay. Same read-modify-write shape as the injectors above,
+/// robot relay. The page tries its own origin's `/__idealyst/relay` first
+/// (the dev servers splice it to the relay) and this URL second — see
+/// `backend_web::install_robot_relay_client`. Same read-modify-write shape as the injectors above,
 /// and it must run BEFORE gzip for the same reason.
 fn inject_robot_relay_url_into_staged_index(index_path: &Path, url: &str) -> Result<()> {
     let html = fs::read_to_string(index_path)

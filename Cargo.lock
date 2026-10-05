@@ -3404,9 +3404,11 @@ dependencies = [
  "build-ios",
  "dev-events",
  "dev-reload",
+ "robot-relay",
  "serde_json",
  "tempfile",
  "tiny_http",
+ "tungstenite 0.24.0",
 ]
 
 [[package]]

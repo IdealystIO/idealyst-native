@@ -171,3 +171,96 @@ async fn the_route_is_absent_without_the_variable() {
     assert_eq!(probe.status(), 404);
     assert!(probe.headers().get(server::dev_stream::HEADER).is_none());
 }
+
+/// A Robot relay stand-in: accepts one WebSocket (with the real
+/// `tungstenite` server handshake, as `robot-relay` does), pushes a
+/// request frame first — the relay speaks first on a real session — then
+/// echoes every text frame back with a `relay:` prefix.
+async fn fake_relay() -> SocketAddr {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+        ws.send(Message::Text(r#"{"id":1,"cmd":"ping","args":{}}"#.into())).await.unwrap();
+        while let Some(Ok(msg)) = ws.next().await {
+            if let Message::Text(t) = msg {
+                ws.send(Message::Text(format!("relay:{t}"))).await.unwrap();
+            }
+        }
+    });
+    addr
+}
+
+/// Regression (CrewForge, `idealyst dev --web --local` in a devcontainer):
+/// the page could only reach the Robot relay on its own random loopback
+/// port, which a host browser cannot see — every robot verb answered "no
+/// app connected to the relay". The app server now proxies the relay at
+/// `/__idealyst/relay`: the WebSocket handshake goes through, and frames
+/// flow both ways — relay → page (a forwarded verb) and page → relay (its
+/// response).
+#[tokio::test(flavor = "multi_thread")]
+async fn regression_robot_relay_reachable_same_origin_through_the_app_server() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let relay = fake_relay().await;
+    let addr = serve(server::dev_stream::relay_route(axum::Router::new(), relay)).await;
+
+    let (mut ws, response) = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(format!("ws://{addr}{}", server::dev_stream::RELAY_PATH)),
+    )
+    .await
+    .expect("handshake hung")
+    .expect("the proxied handshake failed");
+    assert_eq!(response.status(), 101);
+    assert_eq!(response.headers()[server::dev_stream::HEADER], "1");
+
+    async fn next<S>(ws: &mut tokio_tungstenite::WebSocketStream<S>) -> String
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        match tokio::time::timeout(Duration::from_secs(5), ws.next()).await.expect("frame held back") {
+            Some(Ok(Message::Text(t))) => t,
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+    // relay → page, with nothing sent first: the splice is not request-driven.
+    assert_eq!(next(&mut ws).await, r#"{"id":1,"cmd":"ping","args":{}}"#);
+    // page → relay → page, twice: the connection stays spliced.
+    for reply in [r#"{"id":1,"ok":"pong"}"#, r#"{"event":"changed","rev":2}"#] {
+        ws.send(Message::Text(reply.into())).await.unwrap();
+        assert_eq!(next(&mut ws).await, format!("relay:{reply}"));
+    }
+}
+
+/// No relay listening is a `502` on the handshake (the page's client then
+/// moves to the relay's own URL), and a plain GET is told to upgrade.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_relay_route_reports_a_dead_relay_and_refuses_plain_gets() {
+    let dead: SocketAddr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let addr = serve(server::dev_stream::relay_route(axum::Router::new(), dead)).await;
+    let err = tokio_tungstenite::connect_async(format!("ws://{addr}{}", server::dev_stream::RELAY_PATH))
+        .await
+        .expect_err("a dead relay must not look connected");
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(r) => assert_eq!(r.status(), 502),
+        other => panic!("expected an HTTP 502, got {other:?}"),
+    }
+    let plain = reqwest::get(format!("http://{addr}{}", server::dev_stream::RELAY_PATH)).await.unwrap();
+    assert_eq!(plain.status(), 426);
+}
+
+/// Without `IDEALYST_DEV_RELAY`, `server::router()` has no relay route.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_relay_route_is_absent_without_the_variable() {
+    assert!(std::env::var_os(server::dev_stream::RELAY_ENV).is_none(), "the test env must not set it");
+    let addr = serve(server::router()).await;
+    let r = reqwest::get(format!("http://{addr}{}", server::dev_stream::RELAY_PATH)).await.unwrap();
+    assert_eq!(r.status(), 404);
+}

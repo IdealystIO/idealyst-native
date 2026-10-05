@@ -45,7 +45,11 @@ refresh and sends each front end its own snapshot.
 
 The app side is unchanged. The server speaks the same newline-JSON
 bridge protocol the MCP server and `idealyst test` use, to a native
-app's bridge or to the relay an `idealyst dev --local` app dials.
+app's bridge or to the relay an `idealyst dev --local` app dials. A web
+app dials the relay at `/__idealyst/relay` on the page's own origin
+first, then at the relay's own port, so the relay also works when the
+browser is outside the dev container (see
+[devcontainer.md](devcontainer.md#the-robot-relay)).
 
 ## The CLI
 

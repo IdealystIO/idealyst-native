@@ -217,6 +217,11 @@ Two properties are load-bearing:
   devcontainer forwards. Without the variable there is no such route. A
   server not built on the router can pin the stream to a port instead
   (`stream_port` in `dev.toml`).
+- **`server::router()` also proxies the Robot relay** at
+  `/__idealyst/relay` when `idealyst dev` sets `IDEALYST_DEV_RELAY`. It
+  is a WebSocket spliced byte for byte to the session's relay, so the
+  page's robot bridge connects on its own origin too. See
+  `docs/devcontainer.md`, "The Robot relay".
 
 The dev server also builds into its own target directory rather than the
 workspace's `target/`. Cargo locks a build directory exclusively for the

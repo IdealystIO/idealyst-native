@@ -72,6 +72,7 @@ fn sse_stream_pushes_initial_and_bumped_events() {
     let _server = thread::spawn(move || {
         let ctx = ReloadContext {
             signal: signal_for_server,
+            relay: None,
         };
         // Will block forever; the test thread exits and tears down
         // the process when done. tiny_http doesn't expose a clean

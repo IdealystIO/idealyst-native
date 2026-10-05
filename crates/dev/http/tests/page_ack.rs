@@ -104,7 +104,7 @@ fn the_static_server_takes_an_ack_and_ignores_what_it_does_not_understand() {
     std::fs::write(root.path().join("index.html"), "<html></html>").unwrap();
     let signal = ReloadSignal::new();
     let q = listening(&signal);
-    let ctx = ReloadContext { signal: signal.clone() };
+    let ctx = ReloadContext { signal: signal.clone(), relay: None };
     let dir = root.path().to_path_buf();
     thread::spawn(move || {
         let _ = serve_static("127.0.0.1", port, &dir, Some(ctx), None, None, None, None, None, false);

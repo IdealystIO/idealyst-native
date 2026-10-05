@@ -168,6 +168,27 @@ reach ports that are forwarded, so where that stream lives matters:
 With neither, the stream is on a random loopback port and the session
 warns that a devcontainer will not forward it.
 
+## The Robot relay
+
+`idealyst dev` hosts a Robot relay that a web app dials (over a WebSocket)
+so the MCP server, `idealyst test` and the inspector can drive it. The
+relay listens on a random loopback port of the dev process, which a host
+browser cannot reach through a container. So the page reaches the relay
+on its own origin instead, the same way it reaches the dev stream:
+
+- `--web --local` without a server: the dev web server answers
+  `/__idealyst/relay` on the app's port and splices it to the relay.
+- A full-stack app whose server is built on `server::router()`: the
+  server proxies `/__idealyst/relay` to the relay (it names the relay in
+  `IDEALYST_DEV_RELAY` when it starts the server).
+
+The page's robot client dials `/__idealyst/relay` on its own origin
+first, then the relay's own URL (`window.IDEALYST_ROBOT_RELAY_URL`).
+If the connection drops, it dials again. Nothing to configure and no
+extra port to forward. A full-stack server that is not built on the
+framework's router cannot proxy the relay, so in a container its page
+has no robot bridge.
+
 ## Interactive mode (default)
 
 Running with no flags (and a real terminal) opens a wizard:
