@@ -143,6 +143,31 @@ fn regression_same_named_remote_components_in_different_modules_coexist() {
     assert!(t.contains("hello ada") && t.contains("elsewhere: bo"), "{t}");
 }
 
+/// Regression: setting an app component's prop of a type that can't cross
+/// PANICKED in the bundle (`send`), which stopped the whole bundle and
+/// replaced every remote component with the message. Only the component
+/// using it fails now; its siblings from the same bundle keep running.
+#[test]
+fn regression_an_unsupported_prop_fails_only_its_component() {
+    use spike_remoteattr::UsesOpaque;
+    let a = app();
+    let (count, likes) = (a.count, a.likes);
+    let realized = a.h.mount(a.h.world.enter(|| {
+        ui! {
+            view() {
+                Greeting(name = "ada".to_string(), count = count.read_only(), likes = likes)
+                UsesOpaque()
+            }
+        }
+    }));
+    a.h.flush();
+    // A stopped bundle replaces every component on the next flush.
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("remote component `UsesOpaque`") && t.contains("NotRemote"), "{t}");
+    assert!(t.contains("hello ada"), "the bundle still runs: {t}");
+}
+
 /// The remote component renders an APP component (`Panel`, not `remote`):
 /// the bundle imports the app's copy by name, and every prop crosses.
 #[test]

@@ -1143,13 +1143,11 @@ pub trait ViaUnsupported<T> {
 }
 
 impl<T> ViaUnsupported<T> for &Arg<T> {
+    /// Sends nothing: the app's `receive` for the same type fails naming
+    /// it before reading any bytes, so the APP COMPONENT shows `BadProps` in
+    /// its place. (A panic here would trap — and stop — the whole bundle.)
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
-    fn send(&self, _v: T, _out: &mut Vec<u8>) {
-        panic!(
-            "a prop of type `{}` can't cross from a remote component to an app component yet",
-            std::any::type_name::<T>()
-        )
-    }
+    fn send(&self, _v: T, _out: &mut Vec<u8>) {}
     #[cfg(not(idealyst_stream_guest))]
     fn receive(&self, _input: &mut &[u8], _cx: &host::ImportCx) -> Result<T, String> {
         Err(format!("a prop of type `{}` can't cross from a remote component yet", std::any::type_name::<T>()))
@@ -1221,16 +1219,16 @@ pub trait ViaUnsupportedProps<T> {
 }
 
 impl<T> ViaUnsupportedProps<T> for &Arg<T> {
+    /// Sends nothing, as [`ViaUnsupported::send`]: the app's side fails
+    /// naming the type, and only that component shows the error.
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
-    fn send_props(&self, _v: T, _set: Option<&[&str]>, _out: &mut Vec<u8>) {
-        panic!(
-            "props of type `{}` can't cross from a remote component to an app component (declare them with `#[props]`)",
-            std::any::type_name::<T>()
-        )
-    }
+    fn send_props(&self, _v: T, _set: Option<&[&str]>, _out: &mut Vec<u8>) {}
     #[cfg(not(idealyst_stream_guest))]
     fn receive_props(&self, _base: T, _input: &mut &[u8], _cx: &host::ImportCx) -> Result<T, String> {
-        Err(format!("props of type `{}` can't cross from a remote component", std::any::type_name::<T>()))
+        Err(format!(
+            "props of type `{}` can't cross from a remote component (declare them with `#[props]`)",
+            std::any::type_name::<T>()
+        ))
     }
 }
 

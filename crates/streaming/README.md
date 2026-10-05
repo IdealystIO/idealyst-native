@@ -125,7 +125,7 @@ Each prop that does cross goes through its type's `ImportArg`:
 | `Signal<T>` / `ReadSignal<T>` the app gave the bundle | The app's own handle |
 | `Signal<T>` / `ReadSignal<T>` the bundle created | **Promoted**: the value moves into the app's arena |
 
-A prop type with no `ImportArg` doesn't stop anything compiling: it fails by name at runtime, in the component's place.
+A prop type with no `ImportArg` doesn't stop anything compiling: it fails by name at runtime, in the place of the remote component that set it. The rest of the bundle keeps running (the bundle sends nothing for it; the app's decoder refuses it, `BadProps`).
 
 **`#[derive(Remote)]`** makes a type cross in every direction it can: as an app component's prop set by remote code (`ImportArg`), as a remote component's prop (`RemoteProp`), and as plain data — a signal's value, a callback's argument (`RemoteValue`). Each field crosses as its own type does, through probes, so a field that can't (a callback, inside a signal's value) fails naming its type when such a value actually crosses — never at compile time. The expansion is empty unless the app hosts remote components, so a library derives it on its value types unconditionally. `stylesheet!` derives it on the variant enums it generates. A signal's value needs `RemoteValue` (once the app holds a bundle's signal, every bundle read and write re-encodes it); a `Reactive` inside such a value crosses as its current value.
 

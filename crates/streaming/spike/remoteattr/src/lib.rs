@@ -81,6 +81,24 @@ pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
     }
 }
 
+/// A prop type that can't cross to the app (no `Remote`, not plain data).
+#[derive(Clone, Default)]
+pub struct NotRemote(pub Option<Rc<dyn std::any::Any>>);
+
+/// An APP component taking it.
+#[component]
+pub fn Opaque(#[prop(static)] blob: NotRemote) -> Element {
+    let _ = blob;
+    ui! { text { "opaque" } }
+}
+
+/// A remote component that sets that prop: only this component fails (the
+/// app can't decode `Opaque`'s props), never its bundle.
+#[component(remote)]
+pub fn UsesOpaque() -> Element {
+    ui! { Opaque(blob = NotRemote::default()) }
+}
+
 /// A second remote component named `Greeting`, in another module: its
 /// mount export is keyed by path, so the two coexist in one bundle.
 pub mod elsewhere {
