@@ -206,10 +206,16 @@ mod bundle_side {
             }));
             let handle = id(node);
             match call::<u32>(node, HandleCall::SubscribeLayout { callback: cb }) {
-                Some(sub) => LayoutSubscription::new(move || {
+                Some(sub) if sub != 0 => LayoutSubscription::new(move || {
                     try_send(handle, &HandleCall::Unsubscribe(sub));
                 }),
-                None => LayoutSubscription::noop(),
+                // The app didn't take the callback (its handle is gone, a
+                // ref it holds is unfilled) or couldn't be reached: nothing
+                // will release it but us.
+                _ => {
+                    crate::remote::bundle::release(cb);
+                    LayoutSubscription::noop()
+                }
             }
         }
     }
@@ -332,8 +338,20 @@ mod bundle_side {
     /// app's entry.
     pub fn nav_proxy(id: u32) -> crate::prims::NavHandle {
         use runtime_shared::primitives::navigator::NavCommand;
+        /// Forgets the handle's `NAV_IDS` entry with its last copy: left
+        /// behind, a later handle allocated at the same address would pass
+        /// for this one and drive the wrong app navigator.
+        struct Forget(std::cell::Cell<*const ()>);
+        impl Drop for Forget {
+            fn drop(&mut self) {
+                let _ = NAV_IDS.try_with(|m| m.borrow_mut().remove(&self.0.get()));
+            }
+        }
         let node = Rc::new(RemoteNode(id));
+        let forget = Rc::new(Forget(std::cell::Cell::new(std::ptr::null())));
+        let owned_forget = forget.clone();
         let handle = crate::prims::NavHandle::new(Rc::new(move |cmd: NavCommand| {
+            let _ = &owned_forget;
             let wire = match cmd {
                 NavCommand::Push { name, url, query, .. } => {
                     super::WireNav::Push { name: name.into(), url, query: query.to_query_string() }
@@ -352,8 +370,15 @@ mod bundle_side {
             };
             try_send(node.0, &HandleCall::Nav(wire));
         }));
+        forget.0.set(handle.identity());
         NAV_IDS.with(|m| m.borrow_mut().insert(handle.identity(), id));
         handle
+    }
+
+    /// Navigator handles this bundle holds for the app (for leak checks).
+    #[doc(hidden)]
+    pub fn live_nav_ids() -> usize {
+        NAV_IDS.with(|m| m.borrow().len())
     }
 
     /// A bundle closure calling app closure `id` (`Held::Call`) with

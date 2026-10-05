@@ -896,6 +896,36 @@ mod refs {
     /// The app releases every handle it held for a bundle: when the bundle
     /// drops its copy, and — for a bundle that never does (it was stopped)
     /// — when the tree that made it is gone.
+    /// Regression: the bundle kept every navigator handle it received in
+    /// `NAV_IDS` (by address) forever — and a later handle allocated at a
+    /// freed one's address would have passed for it, driving the wrong app
+    /// navigator. The entry goes with the handle's last copy.
+    #[test]
+    fn regression_a_dropped_navigator_handle_is_forgotten() {
+        use runtime_vocabulary::remote::handles::{live_nav_ids, nav_id, nav_proxy};
+        let nav = nav_proxy(42);
+        let copy = nav.clone();
+        assert_eq!(nav_id(&copy), Some(42));
+        drop(nav);
+        assert_eq!(live_nav_ids(), 1, "a copy still holds it");
+        drop(copy);
+        assert_eq!(live_nav_ids(), 0);
+    }
+
+    /// Regression: a layout subscription the app didn't take (the handle
+    /// gone, an unfilled ref) left the bundle's callback registered for
+    /// good — nothing on either side would release it.
+    #[test]
+    fn regression_an_untaken_layout_subscription_releases_its_callback() {
+        use runtime_shared::handles::ViewOps;
+        use runtime_vocabulary::remote::handles::{RemoteNode, REMOTE_OPS};
+        let _h = Harness::new();
+        let node = RemoteNode(999_999);
+        let sub = REMOTE_OPS.subscribe_layout(&node, Box::new(|_, _| {}));
+        assert_eq!(bundle::live_callbacks(), 0, "the refused callback was released");
+        drop(sub);
+    }
+
     #[test]
     fn held_handles_are_released() {
         let h = Harness::new();
