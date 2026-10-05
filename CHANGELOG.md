@@ -14,8 +14,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 - **Remote bundles must be rebuilt** (`runtime-vocabulary`). A list of
   numbers (`Vec<u32>`, `[f64; N]`, …) now crosses between an app and a
   remote bundle as one little-endian byte run instead of element by
-  element. Sorting 200k numbers through a `#[host_fn]` took 339 ms
-  before, slower than sorting inside the bundle, and takes 16.6 ms now.
+  element, and the bundle's receive buffer is reused instead of being
+  cleared byte by byte. Sorting 200k numbers through a `#[host_fn]` took
+  339 ms before, slower than sorting inside the bundle, and takes 7.8 ms
+  now (2.0 ms natively).
   A bundle reports the codec version it was built with
   (`remote::CODEC_VERSION`, now 2), and the app refuses one that reports
   another version or none with `LoadError::IncompatibleCodec`, so an old

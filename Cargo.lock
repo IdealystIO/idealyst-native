@@ -11588,6 +11588,7 @@ dependencies = [
  "stack-navigator",
  "stream-abi",
  "stream-host",
+ "wasmi",
 ]
 
 [[package]]

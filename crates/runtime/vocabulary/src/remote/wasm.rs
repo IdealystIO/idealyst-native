@@ -30,12 +30,20 @@ pub extern "C" fn idealyst_ui_codec_version() -> u32 {
 }
 
 /// Room for `len` bytes of arguments; where to write them.
+///
+/// The buffer only grows: a call reads back just the `len` bytes the host
+/// wrote (`take_args`), so one already that long is reused untouched. A
+/// new one comes zeroed from the allocator (`vec!`, one `memory.fill`),
+/// never from `Vec::resize`, which this size-optimized build compiles to a
+/// loop storing a byte per iteration: interpreted, it made receiving a
+/// list cost ~12× sending one (`tests/bundle_cost.rs` in stream-spike).
 #[no_mangle]
 pub extern "C" fn idealyst_ui_alloc(len: u32) -> *mut u8 {
     ARGS.with(|a| {
         let mut a = a.borrow_mut();
-        a.clear();
-        a.resize(len as usize, 0);
+        if a.len() < len as usize {
+            *a = vec![0u8; len as usize];
+        }
         a.as_mut_ptr()
     })
 }

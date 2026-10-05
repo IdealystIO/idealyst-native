@@ -27,3 +27,5 @@ spike-ideaui = { path = "ideaui" }
 idea-ui = { workspace = true }
 stack-navigator = { path = "../../sdk/client/navigators/stack" }
 runtime-core = { workspace = true }
+# Fuel metering, to count the instructions a bundle runs (tests/bundle_cost.rs).
+wasmi = { version = "2", default-features = false, features = ["std", "validate"] }

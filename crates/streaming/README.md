@@ -277,10 +277,10 @@ The screens use idea-ui, which renders natively either way: only the screen's ow
 
 | | In the bundle | By the app | Native |
 |---|---|---|---|
-| Sort 200k u32s (`Vec<u32>` there and back) | 180.8 ms | 16.6 ms | 2.13 ms |
-| Sort 200k items by a `(u16, u32)` key (the bundle sends big-endian key bytes, the app returns the order) | 201.3 ms | 63.5 ms | 3.94 ms |
+| Sort 200k u32s (`Vec<u32>` there and back) | 177.6 ms | 7.8 ms | 2.0 ms |
+| Sort 200k items by a `(u16, u32)` key (the bundle sends big-endian key bytes, the app returns the order) | 196.2 ms | 51.4 ms | 3.8 ms |
 
-What's left is the bundle's own share: generating the numbers and, for the keyed sort, encoding each key and applying the order, all interpreted. The crossing itself is a memcpy each way, because a list of numbers crosses as one byte run (`runtime_vocabulary::remote::bulk`). Before it did, each element was encoded on its own, and the app's sort took 339 ms: slower than sorting in the bundle.
+The crossing itself is now close to free, in both directions. A list of numbers crosses as one byte run (`runtime_vocabulary::remote::bulk`), and the bundle's receive buffer is reused, not cleared byte by byte. Sending 100k `u32`s to the app and getting them back unchanged costs about 0.1 ms on top of generating them, and the cost grows with the data at well under a millisecond per MB. What's left in "By the app" is the bundle's own interpreted work: generating the 200k numbers (about 29 ns each, so ~6 ms), and for the keyed sort, encoding each key and applying the order. Before these two changes, the plain sort through the app took 339 ms, slower than sorting in the bundle.
 
 Tree-building paths (mounts, push, the context toggle) cost about 5% more than before the review fixes, measured against the pre-fix build side by side: the record of what crossed with each tree, which lets a failed decode release everything it received. Presses and updates are unchanged. UI work costs 8–25× in-process and stays well under a frame; heavy computation costs 16–340× and belongs in the app (a `#[host_fn]`) when it matters.
 
