@@ -175,6 +175,7 @@ fn the_tools_tab_calls_every_kind_of_host_function() {
         "orders: Ada→Mug, Sam→Lamp, Sam→Tent",
         "stats: n=4 min=1.5 max=9 mean=4.25",
         "sorted: [-40, -3, 0, 7, 12]",
+        "area: circles 15.71, rects 6.00",
         "digest: …",
     ] {
         assert!(r.sees(want), "missing {want:?}:\n{}", r.screen());
@@ -188,6 +189,26 @@ fn the_tools_tab_calls_every_kind_of_host_function() {
     }
     assert!(r.sees("latest hires: [2021, 2021]"), "{}", r.screen());
     assert!(r.sees(&format!("digest: {h:016x}")), "{}", r.screen());
+}
+
+/// A generic host function over an app trait runs only for the types the
+/// app lists: the bundle calling `total_area::<Triangle>` is stopped, and
+/// its screen is replaced by the error naming the instance. The app keeps
+/// running (its native Settings tab still works).
+#[cfg(not(feature = "inline"))]
+#[test]
+fn an_unlisted_instance_stops_the_bundle_naming_it() {
+    let r = Run::start();
+    r.press("Tools");
+    assert!(r.sees("area: circles"), "{}", r.screen());
+    r.press("Unlisted shape");
+    assert!(
+        r.sees("total_area::<remote_showcase::tools::Triangle>") && r.sees("doesn't list that instance"),
+        "{}",
+        r.screen()
+    );
+    r.press("Settings");
+    assert!(r.sees("Settings — native"), "{}", r.screen());
 }
 
 fn touch_at(x: f32) -> runtime_core::TouchEvent {

@@ -33,6 +33,12 @@
 //! - **`T: Numeric`** — the app compiles the body for all ten number types
 //!   and the call carries which (a tag byte per such parameter; at most
 //!   two, since each multiplies the copies by ten).
+//! - **Any other bound** (`S: Area`) — the type must be one the app knows,
+//!   so the app lists the ones bundles may use
+//!   (`host_fn_instances!(tools::total_area: Circle, Rect)`), and the call
+//!   starts with the type's `RemoteName`. A bundle calling an instance the
+//!   app didn't list is stopped, with an error naming it. At most one such
+//!   parameter.
 //!
 //! Native callers in the app call the generic function with their own
 //! types, as any Rust function. Erased parameters may appear in an
@@ -66,6 +72,8 @@ enum Kind {
     Opaque,
     /// One instantiation per number type, picked by a tag.
     Numeric,
+    /// One instantiation per type the app lists, picked by name.
+    Listed,
 }
 
 impl Kind {
@@ -74,6 +82,7 @@ impl Kind {
             Kind::Key => "Key",
             Kind::Opaque => "Opaque",
             Kind::Numeric => "Numeric",
+            Kind::Listed => "Listed",
         }
     }
 }
@@ -90,6 +99,12 @@ fn bound_name(b: &TypeParamBound) -> Option<(String, &syn::TraitBound)> {
 /// Each type parameter's kind, from its bounds (inline and in the where
 /// clause).
 fn classify(func: &ItemFn) -> syn::Result<Vec<(syn::Ident, Kind)>> {
+    classify_with_bounds(func).map(|(p, _)| p)
+}
+
+/// [`classify`], with each parameter's bounds (a listed parameter's
+/// instantiation repeats them).
+fn classify_with_bounds(func: &ItemFn) -> syn::Result<(Vec<(syn::Ident, Kind)>, HashMap<String, Vec<TypeParamBound>>)> {
     let mut bounds: HashMap<String, Vec<&TypeParamBound>> = HashMap::new();
     let mut order = Vec::new();
     for p in &func.sig.generics.params {
@@ -151,14 +166,17 @@ fn classify(func: &ItemFn) -> syn::Result<Vec<(syn::Ident, Kind)>> {
             (Kind::Numeric, NUMERIC_EXTRAS)
         } else if has("Key") {
             (Kind::Key, KEY_EXTRAS)
-        } else {
+        } else if names.iter().all(|(n, _)| OPAQUE_EXTRAS.contains(&n.as_str())) {
             (Kind::Opaque, OPAQUE_EXTRAS)
+        } else {
+            // Another trait: the app's types, listed.
+            (Kind::Listed, &[][..])
         };
-        if let Some((n, t)) = names.iter().find(|(n, _)| !allowed.contains(&n.as_str())) {
+        if let Some((n, t)) = names.iter().find(|(n, _)| kind != Kind::Listed && !allowed.contains(&n.as_str())) {
             let hint = match kind {
-                Kind::Opaque => "a parameter without `Key` or `Numeric` is carried unread (`Opaque`)",
                 Kind::Key => "a `Key` parameter is compared, hashed and cloned as its bytes",
                 Kind::Numeric => "a `Numeric` parameter is one of the number types",
+                Kind::Opaque | Kind::Listed => unreachable!("an Opaque parameter has only Opaque's bounds"),
             };
             return Err(syn::Error::new_spanned(
                 t,
@@ -173,13 +191,20 @@ fn classify(func: &ItemFn) -> syn::Result<Vec<(syn::Ident, Kind)>> {
         }
         out.push((id, kind));
     }
+    if out.iter().filter(|(_, k)| *k == Kind::Listed).count() > 1 {
+        return Err(syn::Error::new_spanned(
+            &func.sig.generics,
+            "#[host_fn]: at most one parameter bounded by an app trait (each is listed by the app, one instance per type)",
+        ));
+    }
     if numeric > 2 {
         return Err(syn::Error::new_spanned(
             &func.sig.generics,
             "#[host_fn]: at most two `Numeric` parameters (each multiplies the app's copies of the body by ten)",
         ));
     }
-    Ok(out)
+    let bounds = bounds.into_iter().map(|(k, v)| (k, v.into_iter().cloned().collect())).collect();
+    Ok((out, bounds))
 }
 
 /// Replace each type parameter with `with(ident, kind)` throughout a type.
@@ -386,7 +411,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     let name = &sig.ident;
     let vis = &func.vis;
     let is_async = sig.asyncness.is_some();
-    let params = classify(&func)?;
+    let (params, bounds) = classify_with_bounds(&func)?;
     let mut arg_names = Vec::new();
     let mut arg_types: Vec<&Type> = Vec::new();
     for arg in &sig.inputs {
@@ -448,7 +473,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         subst(ty, &params, |_, kind| match kind {
             Kind::Key => Some(syn::parse_quote!(#ht::KeyBytes)),
             Kind::Opaque => Some(syn::parse_quote!(#ht::OpaqueBytes)),
-            Kind::Numeric => None,
+            Kind::Numeric | Kind::Listed => None,
         })
     };
     let app_arg_types: Vec<Type> = arg_types.iter().map(|t| app_subst(t)).collect();
@@ -459,15 +484,27 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         let args = params.iter().map(|(id, kind)| match kind {
             Kind::Key => quote!(#ht::KeyBytes),
             Kind::Opaque => quote!(#ht::OpaqueBytes),
-            Kind::Numeric => quote!(#id),
+            Kind::Numeric | Kind::Listed => quote!(#id),
         });
         quote!(::<#(#args),*>)
     };
-    let inner_generics = if numeric.is_empty() {
+    // A listed parameter keeps its own bounds (the body needs them) and
+    // crosses as a value.
+    let listed: Vec<&syn::Ident> = params.iter().filter(|(_, k)| *k == Kind::Listed).map(|(i, _)| i).collect();
+    let listed_decl: Vec<TokenStream2> = listed
+        .iter()
+        .map(|l| {
+            let b = &bounds[&l.to_string()];
+            quote!(#l: #(#b +)* #v::RemoteValue)
+        })
+        .collect();
+    let listed_generics = if listed.is_empty() { quote!() } else { quote!(<#(#listed_decl),*>) };
+    let inner_generics = if numeric.is_empty() && listed.is_empty() {
         quote!()
     } else {
-        quote!(<#(#numeric: #ht::Numeric + #v::RemoteValue),*>)
+        quote!(<#(#listed_decl,)* #(#numeric: #ht::Numeric + #v::RemoteValue),*>)
     };
+    let listed_args = quote!(#(#listed,)*);
 
     let call_ident = format_ident!("__host_fn_call_{}", name);
     let inner_ident = format_ident!("__host_fn_inner_{}", name);
@@ -547,22 +584,22 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
             }
         };
         let body = if numeric.is_empty() {
-            quote! { #inner_ident(&__args) }
+            quote! { #inner_ident::<#listed_args>(&__args) }
         } else {
-            let d = dispatch(&|ts| quote! { #inner_ident::<#(#ts),*>(__rest) });
+            let d = dispatch(&|ts| quote! { #inner_ident::<#listed_args #(#ts),*>(__rest) });
             quote! { #take_tags #d }
         };
         (
             quote! {
                 #inner
-                fn #call_ident(__args: ::std::vec::Vec<u8>) -> ::core::result::Result<
+                fn #call_ident #listed_generics (__args: ::std::vec::Vec<u8>) -> ::core::result::Result<
                     ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::std::vec::Vec<u8>>>>,
                     ::std::string::String,
                 > {
                     #body
                 }
             },
-            quote!(#v::host_fn::HostFnKind::Async(#call_ident)),
+            quote!(#v::host_fn::HostFnKind::Async(#call_ident::<#listed_args>)),
         )
     } else {
         let reply = encode_reply(quote!(#name #turbofish (#(#arg_names),*)));
@@ -574,24 +611,27 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
             }
         };
         let body = if numeric.is_empty() {
-            quote! { #inner_ident(__args) }
+            quote! { #inner_ident::<#listed_args>(__args) }
         } else {
-            let d = dispatch(&|ts| quote! { #inner_ident::<#(#ts),*>(__rest) });
+            let d = dispatch(&|ts| quote! { #inner_ident::<#listed_args #(#ts),*>(__rest) });
             quote! { #take_tags #d }
         };
         (
             quote! {
                 #inner
-                fn #call_ident(__args: &[u8]) -> ::core::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
+                fn #call_ident #listed_generics (__args: &[u8]) -> ::core::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
                     #body
                 }
             },
-            quote!(#v::host_fn::HostFnKind::Sync(#call_ident)),
+            quote!(#v::host_fn::HostFnKind::Sync(#call_ident::<#listed_args>)),
         )
     };
 
     // --- Bundle side -----------------------------------------------------------
-    let erased: Vec<(syn::Ident, Kind)> = params.iter().filter(|(_, k)| *k != Kind::Numeric).cloned().collect();
+    // Only `Key` and `Opaque` stand in for the bundle's type; a numeric or
+    // listed one is a type the app has, crossing as its value.
+    let erased: Vec<(syn::Ident, Kind)> =
+        params.iter().filter(|(_, k)| matches!(k, Kind::Key | Kind::Opaque)).cloned().collect();
     let mut walk = Walk { erased: &erased, v: v.clone(), depth: 0 };
     let mut encode_each = Vec::new();
     for (n, ty) in arg_names.iter().zip(&arg_types) {
@@ -599,10 +639,12 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     }
     let decode_ret = walk.decode(&ret_ty)?;
     let tags = numeric.iter().map(|t| quote! { __out.push(<#t as #ht::Numeric>::TAG); });
+    let names = listed.iter().map(|l| quote! { #v::__send_value(&<#l as #v::host_fn::RemoteName>::NAME, __out); });
     let encode_args = quote! {
         let mut __args = ::std::vec::Vec::new();
         {
             let __out = &mut __args;
+            #(#names)*
             #(#tags)*
             #(#encode_each)*
         }
@@ -614,6 +656,9 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     for (id, kind) in &params {
         if *kind != Kind::Key {
             stub_generics.make_where_clause().predicates.push(syn::parse_quote!(#id: #v::RemoteValue));
+        }
+        if *kind == Kind::Listed {
+            stub_generics.make_where_clause().predicates.push(syn::parse_quote!(#id: #v::host_fn::RemoteName));
         }
     }
     let (stub_impl_g, _, stub_where) = stub_generics.split_for_impl();
@@ -672,6 +717,67 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         }
     };
 
+    let export_items = if listed.is_empty() {
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            fn #export_ident() -> #v::HostFnDef {
+                #v::HostFnDef {
+                    path: concat!(module_path!(), "::", stringify!(#name)),
+                    schema: #schema,
+                    kind: #kind,
+                }
+            }
+
+            /// The allowlist record for this host function: list it
+            /// in `install_with` to let remote code call it.
+            #[allow(non_snake_case)]
+            #vis mod #name {
+                pub fn export() -> ::runtime_vocabulary::remote::HostFnDef {
+                    super::#export_ident()
+                }
+            }
+        }
+    } else {
+        // The app lists the types (`host_fn_instances!`): one instance
+        // each, and the record dispatching to them by name. Declared beside
+        // the function, where its bounds' paths resolve, and re-exported
+        // under its name.
+        let instance_ident = format_ident!("__host_fn_instance_{}", name);
+        let listed_ident = format_ident!("__host_fn_export_listed_{}", name);
+        let reexport_vis = match vis {
+            syn::Visibility::Inherited => quote!(pub(super)),
+            other => quote!(#other),
+        };
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            #vis fn #instance_ident #listed_generics () -> #v::host_fn::HostFnKind {
+                #kind
+            }
+
+            #[doc(hidden)]
+            #[allow(non_snake_case)]
+            #vis fn #listed_ident(lookup: fn(&str) -> ::core::option::Option<#v::host_fn::HostFnKind>) -> #v::HostFnDef {
+                #v::HostFnDef {
+                    path: concat!(module_path!(), "::", stringify!(#name)),
+                    schema: #schema,
+                    kind: #v::host_fn::HostFnKind::Listed { asynchronous: #is_async, lookup },
+                }
+            }
+
+            /// The allowlist record for this host function, per type:
+            /// `host_fn_instances!(path::to::this_fn: TypeA, TypeB)`.
+            #[allow(non_snake_case)]
+            #vis mod #name {
+                #[doc(hidden)]
+                #reexport_vis use super::#instance_ident as instance;
+                #[doc(hidden)]
+                #reexport_vis use super::#listed_ident as export_listed;
+            }
+        }
+    };
+
     Ok(quote! {
         ::runtime_vocabulary::__remote_guest_split! {
             bundle: { #stub }
@@ -686,24 +792,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
                     #[allow(non_snake_case)]
                     #call_fn
 
-                    #[doc(hidden)]
-                    #[allow(non_snake_case)]
-                    fn #export_ident() -> #v::HostFnDef {
-                        #v::HostFnDef {
-                            path: concat!(module_path!(), "::", stringify!(#name)),
-                            schema: #schema,
-                            kind: #kind,
-                        }
-                    }
-
-                    /// The allowlist record for this host function: list it
-                    /// in `install_with` to let remote code call it.
-                    #[allow(non_snake_case)]
-                    #vis mod #name {
-                        pub fn export() -> ::runtime_vocabulary::remote::HostFnDef {
-                            super::#export_ident()
-                        }
-                    }
+                    #export_items
                 }
             }
         }
@@ -780,10 +869,26 @@ mod tests {
     #[test]
     fn parameters_are_classified_by_their_bounds() {
         let f: ItemFn = syn::parse_quote! {
-            fn f<K: Key + Clone, V, N: Numeric, W>(a: Vec<(K, V)>, n: Vec<N>, w: W) -> u32 where W: Opaque + Send { 0 }
+            fn f<K: Key + Clone, V, N: Numeric, W, S: Area + Clone>(a: Vec<(K, V)>, n: Vec<N>, w: W, s: S) -> u32 where W: Opaque + Send { 0 }
         };
         let kinds: Vec<Kind> = classify(&f).unwrap().into_iter().map(|(_, k)| k).collect();
-        assert_eq!(kinds, [Kind::Key, Kind::Opaque, Kind::Numeric, Kind::Opaque]);
+        assert_eq!(kinds, [Kind::Key, Kind::Opaque, Kind::Numeric, Kind::Opaque, Kind::Listed]);
+    }
+
+    /// A parameter bounded by an app trait gets an instance per listed
+    /// type, keeping its bounds, and a record dispatching by name.
+    #[test]
+    fn an_app_trait_parameter_is_listed_by_the_app() {
+        let f: ItemFn = syn::parse_quote! { pub fn total_area<S: Area>(shapes: Vec<S>) -> f64 { 0.0 } };
+        let out = expand(f).unwrap().to_string();
+        assert!(out.contains("fn __host_fn_instance_total_area < S : Area + :: runtime_vocabulary :: remote :: RemoteValue >"), "{out}");
+        assert!(out.contains("HostFnKind :: Listed { asynchronous : false , lookup }"), "{out}");
+        assert!(out.contains("use super :: __host_fn_instance_total_area as instance"), "{out}");
+        assert!(out.contains("RemoteName > :: NAME"), "the bundle names its type: {out}");
+        // Regression: the stub framed a listed value as an `Opaque` (a
+        // length before each), which the app, decoding the type itself,
+        // misread: every shape's fields came out as garbage.
+        assert!(!out.contains("encode_opaque"), "a listed value crosses as itself: {out}");
     }
 
     /// In the app, `Key` becomes `KeyBytes`, `Opaque` `OpaqueBytes`, and a
@@ -805,7 +910,7 @@ mod tests {
     #[test]
     fn closures_and_other_bounds_are_refused_with_a_reason() {
         assert!(err(syn::parse_quote! { fn f<T, F: Fn(&T) -> bool>(v: Vec<T>, keep: F) {} }).contains("closure"));
-        assert!(err(syn::parse_quote! { fn f<T: Display>(v: T) {} }).contains("`T: Display` isn't supported"));
+        assert!(err(syn::parse_quote! { fn f<A: Display, B: Area>(a: A, b: B) {} }).contains("at most one parameter bounded by an app trait"));
         assert!(err(syn::parse_quote! { fn f<K: Key + Default>(v: K) {} }).contains("`K: Default` isn't supported"));
         assert!(err(syn::parse_quote! { fn f<'a>(v: &'a str) {} }).contains("lifetime"));
         assert!(err(syn::parse_quote! { fn f<const N: usize>(v: [u8; N]) {} }).contains("const"));

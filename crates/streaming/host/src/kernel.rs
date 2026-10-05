@@ -995,6 +995,22 @@ fn check_codec(reported: Option<u32>) -> Result<(), LoadError> {
 ///   result is delivered by calling the bundle's one-shot callback `then`,
 ///   which is then released. A bundle that was stopped (it panicked) in the
 ///   meantime is not called — `route` answers `None`.
+/// The instantiation a call runs, and its arguments: the record's own, or
+/// for a generic function over an app type (`HostFnKind::Listed`) the
+/// instance named at the front of the call. A name the app didn't list is
+/// an `Err` naming the instance (which stops the bundle).
+fn instance(kind: HostFnKind, path: &str, args: Vec<u8>) -> Result<(HostFnKind, Vec<u8>), String> {
+    match kind {
+        HostFnKind::Listed { lookup, .. } => {
+            let (name, rest) = runtime_vocabulary::remote::host_fn::take_instance_name(&args).map_err(|e| format!("host_fn {path}: {e}"))?;
+            let found = lookup(&name)
+                .ok_or_else(|| format!("host_fn {path}::<{name}>: this app doesn't list that instance (`host_fn_instances!`)"))?;
+            Ok((found, rest.to_vec()))
+        }
+        other => Ok((other, args)),
+    }
+}
+
 fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KState>) -> Result<(), LoadError> {
     let mut missing = Vec::new();
     let mut mismatched = Vec::new();
@@ -1015,18 +1031,28 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
             missing.push(path.to_string());
             continue;
         };
-        let shape_ok = match def.kind {
-            HostFnKind::Sync(_) => ty.params() == [ValType::I32, ValType::I32] && ty.results() == [ValType::I64],
-            HostFnKind::Async(_) => ty.params() == [ValType::I32, ValType::I32, ValType::I32] && ty.results().is_empty(),
+        let asynchronous = match def.kind {
+            HostFnKind::Sync(_) => false,
+            HostFnKind::Async(_) => true,
+            HostFnKind::Listed { asynchronous, .. } => asynchronous,
+        };
+        let shape_ok = if asynchronous {
+            ty.params() == [ValType::I32, ValType::I32, ValType::I32] && ty.results().is_empty()
+        } else {
+            ty.params() == [ValType::I32, ValType::I32] && ty.results() == [ValType::I64]
         };
         if def.schema != bundle_schema || !shape_ok {
             mismatched.push(crate::HostFnMismatch { path: path.to_string(), app_schema: def.schema, bundle_schema });
             continue;
         }
         let path: &'static str = def.path;
-        let defined = match def.kind {
-            HostFnKind::Sync(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, results| {
-                let args = read_args(&caller, params)?;
+        let kind = def.kind;
+        let defined = if !asynchronous {
+            linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, results| {
+                let (f, args) = match instance(kind, path, read_args(&caller, params)?).map_err(wasmi::Error::new)? {
+                    (HostFnKind::Sync(f), args) => (f, args),
+                    _ => return Err(wasmi::Error::new(format!("host_fn {path}: an instance of another shape"))),
+                };
                 // App code: it may touch the graph, which may call back into
                 // this bundle — through this import's `Caller`. A stopped
                 // bundle doesn't get to call it, and one stopped during it
@@ -1044,9 +1070,13 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
                     .map_err(|_| wasmi::Error::new(format!("host_fn {path}: reply buffer out of bounds")))?;
                 results[0] = Val::I64(reply.len() as i64);
                 Ok(())
-            }),
-            HostFnKind::Async(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, _| {
-                let args = read_args(&caller, params)?;
+            })
+        } else {
+            linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, _| {
+                let (f, args) = match instance(kind, path, read_args(&caller, params)?).map_err(wasmi::Error::new)? {
+                    (HostFnKind::Async(f), args) => (f, args),
+                    _ => return Err(wasmi::Error::new(format!("host_fn {path}: an instance of another shape"))),
+                };
                 if caller.data().stopped.get() {
                     return Err(stopped_trap(caller.data().bundle));
                 }
@@ -1064,7 +1094,7 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
                     })
                 });
                 Ok(())
-            }),
+            })
         };
         defined.expect("each host-function import name is unique within a module");
     }

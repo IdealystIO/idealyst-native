@@ -172,6 +172,9 @@ pub(crate) fn derive_with(input: DeriveInput, context: bool) -> syn::Result<Toke
     Ok(quote! {
         ::runtime_vocabulary::__remote_enabled! {
             #context_entry
+            impl #v::host_fn::RemoteName for #name {
+                const NAME: &'static str = ::core::concat!(::core::module_path!(), "::", ::core::stringify!(#name));
+            }
             impl #v::ImportArg for #name {
                 ::runtime_vocabulary::__remote_bundle_code! {
                     fn send(self, __out: &mut ::std::vec::Vec<u8>) {

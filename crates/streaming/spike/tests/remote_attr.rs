@@ -447,7 +447,7 @@ fn regression_undecodable_host_fn_arguments_are_an_error_not_a_panic() {
             let err = call(vec![0xff; 2]).err().expect("refused");
             assert!(err.contains("take_photo") && err.contains("does not decode"), "{err}");
         }
-        HostFnKind::Sync(_) => panic!("take_photo is async"),
+        _ => panic!("take_photo is async"),
     }
 }
 

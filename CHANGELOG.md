@@ -143,8 +143,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   parameter bounded by `Opaque`, or not bounded at all, is carried
   unread. A `Numeric` parameter is compiled for each number type. The
   new `#[derive(Key)]` gives a struct or enum `Key` together with
-  `Eq`, `Ord` and `Hash` from the same fields. Closures and other bounds
-  are refused at compile time with the reason. Sorting 200k items by a
+  `Eq`, `Ord` and `Hash` from the same fields. A parameter bounded by
+  another trait runs for the app types the app lists with the new
+  `host_fn_instances!`. A bundle calling an unlisted one is stopped, with
+  an error naming it. Closures are refused at compile time, with the
+  reason. Sorting 200k items by a
   two-field key through the app takes 67 ms from a bundle, against
   196 ms in the bundle itself. See "Generic host functions" in
   `crates/streaming/README.md`; the showcase's Tools tab calls one of

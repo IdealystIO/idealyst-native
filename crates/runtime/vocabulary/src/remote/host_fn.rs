@@ -30,6 +30,14 @@ pub enum HostFnKind {
     /// Import `(args_ptr, args_len, then_callback)`: returns at once; the
     /// app runs the future and calls `then_callback` with the result.
     Async(AsyncCall),
+    /// A generic host function over an app type (`S: Area`): one
+    /// instantiation per type the app lists ([`host_fn_instances!`]), picked
+    /// by the type's [`RemoteName`], which the call starts with. `lookup`
+    /// maps that name to the instantiation (a `Sync` or `Async`, as
+    /// `asynchronous` says); a name it doesn't know is an `Err` naming it.
+    ///
+    /// [`host_fn_instances!`]: crate::host_fn_instances
+    Listed { asynchronous: bool, lookup: fn(&str) -> Option<HostFnKind> },
 }
 
 /// What an app exports for one host function (`<fn>::export()`).
@@ -40,6 +48,64 @@ pub struct HostFnDef {
     /// Fingerprint of the signature (argument and return types, asyncness).
     pub schema: u64,
     pub kind: HostFnKind,
+}
+
+/// A type's name across the boundary, `module_path::Name`, the same in the
+/// app and the bundle: how a call to a listed generic host function says
+/// which instantiation it wants. `#[derive(Remote)]` gives it; the
+/// primitives have their own names.
+pub trait RemoteName {
+    const NAME: &'static str;
+}
+
+macro_rules! remote_name {
+    ($($t:ty),*) => {$(
+        impl RemoteName for $t {
+            const NAME: &'static str = stringify!($t);
+        }
+    )*};
+}
+remote_name!(u8, i8, u16, i16, u32, i32, u64, i64, u128, i128, usize, isize, f32, f64, bool, char, String, ());
+
+/// The instance name a listed call starts with, and the rest of its
+/// arguments.
+#[doc(hidden)]
+pub fn take_instance_name(args: &[u8]) -> Result<(String, &[u8]), String> {
+    let mut input = args;
+    let name = super::__try_receive_value::<String>(&mut input).map_err(|e| format!("the call names no type ({e})"))?;
+    Ok((name, input))
+}
+
+/// The allowlist entry for a generic host function over an app type: the
+/// types bundles may call it with.
+///
+/// ```ignore
+/// #[host_fn]
+/// pub fn total_area<S: Area>(shapes: Vec<S>) -> f64 { … }
+///
+/// // In the app's allowlist:
+/// host_fn_instances!(tools::total_area: Circle, Rect)
+/// ```
+///
+/// Each type must cross as a value and have a stable name: derive
+/// `Remote` on it. A bundle calling the function with a type not listed
+/// is stopped, with an error naming the instance.
+#[macro_export]
+macro_rules! host_fn_instances {
+    ($($f:ident)::+ : $($t:ty),+ $(,)?) => {{
+        // The function's name is also its record module (`instance`,
+        // `export_listed`): one alias reaches both.
+        use $($f)::+ as __host_fn;
+        fn __lookup(name: &str) -> ::core::option::Option<$crate::remote::host_fn::HostFnKind> {
+            $(
+                if name == <$t as $crate::remote::host_fn::RemoteName>::NAME {
+                    return ::core::option::Option::Some(__host_fn::instance::<$t>());
+                }
+            )+
+            ::core::option::Option::None
+        }
+        __host_fn::export_listed(__lookup)
+    }};
 }
 
 /// The import name a bundle's stub links against.

@@ -19,9 +19,13 @@
 //! | [`join`] | two lists matched by key |
 //! | [`stats`] / [`sorted`] | `N: Numeric`: compiled for every number type |
 //! | [`top`] | an async generic function |
+//! | [`total_area`] | `S: Area`, an app trait: runs for the types the app lists |
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use std::rc::Rc;
+
+use idea_ui::{tone, Button};
 use runtime_core::{component, host_fn, signal, ui, Element, Key, Numeric, Remote, Signal};
 
 use super::{column, Body, Heading, Muted, Page};
@@ -181,6 +185,57 @@ pub async fn top<K: Key>(keys: Vec<K>, n: u32) -> Vec<K> {
     keys
 }
 
+// ---------------------------------------------------------------------------
+// A generic host function over an app trait
+// ---------------------------------------------------------------------------
+
+/// Something the app knows how to measure. A host function generic over an
+/// app trait needs the type's code, so it runs for the types the app lists
+/// (`host_fn_instances!` in [`host_fns`]).
+pub trait Area {
+    fn area(&self) -> f64;
+}
+
+#[derive(Clone, Debug, PartialEq, Remote)]
+pub struct Circle {
+    pub r: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Remote)]
+pub struct Rect {
+    pub w: f64,
+    pub h: f64,
+}
+
+/// An `Area` the app does NOT list: a bundle calling [`total_area`] with
+/// it is stopped, with an error naming the instance.
+#[derive(Clone, Debug, PartialEq, Remote)]
+pub struct Triangle {
+    pub base: f64,
+    pub height: f64,
+}
+
+impl Area for Circle {
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * self.r * self.r
+    }
+}
+impl Area for Rect {
+    fn area(&self) -> f64 {
+        self.w * self.h
+    }
+}
+impl Area for Triangle {
+    fn area(&self) -> f64 {
+        self.base * self.height / 2.0
+    }
+}
+
+#[host_fn]
+pub fn total_area<S: Area>(shapes: Vec<S>) -> f64 {
+    shapes.iter().map(Area::area).sum()
+}
+
 /// What remote code may call from here (the app's allowlist adds these).
 #[cfg(not(idealyst_stream_guest))]
 pub fn host_fns() -> Vec<runtime_vocabulary::remote::HostFnDef> {
@@ -196,6 +251,8 @@ pub fn host_fns() -> Vec<runtime_vocabulary::remote::HostFnDef> {
         stats::export(),
         sorted::export(),
         top::export(),
+        // Only these instances: `total_area::<Triangle>` is refused.
+        runtime_vocabulary::host_fn_instances!(total_area: Circle, Rect),
     ]
 }
 
@@ -264,6 +321,12 @@ pub fn ToolsScreen() -> Element {
     let joined: Vec<String> = joined.into_iter().map(|(who, what)| format!("{who}→{what}")).collect();
     let s = stats(vec![2.5f64, 9.0, 1.5, 4.0]);
     let small = sorted(vec![7i16, -3, 0, 12, -40]);
+    let circles = total_area(vec![Circle { r: 1.0 }, Circle { r: 2.0 }]);
+    let rects = total_area(vec![Rect { w: 2.0, h: 3.0 }]);
+    // Not listed by the app: pressing this stops the bundle.
+    let unlisted: Rc<dyn Fn()> = Rc::new(|| {
+        total_area(vec![Triangle { base: 2.0, height: 2.0 }]);
+    });
 
     // Async calls: the results arrive later.
     let latest: Signal<Option<Vec<u16>>> = signal(None);
@@ -287,6 +350,8 @@ pub fn ToolsScreen() -> Element {
                 text(style = Body()) { format!("orders: {}", joined.join(", ")) }
                 text(style = Body()) { format!("stats: n={} min={} max={} mean={}", s.count, s.min, s.max, s.mean) }
                 text(style = Body()) { format!("sorted: {small:?}") }
+                text(style = Body()) { format!("area: circles {circles:.2}, rects {rects:.2}") }
+                Button(label = "Unlisted shape".to_string(), on_click = unlisted, tone = tone::Danger)
                 text(style = Muted()) { move || match latest.get() {
                     None => "latest hires: …".to_string(),
                     Some(t) => format!("latest hires: {t:?}"),
@@ -312,7 +377,7 @@ mod tests {
     fn sync(def: runtime_vocabulary::remote::HostFnDef) -> fn(&[u8]) -> Result<Vec<u8>, String> {
         match def.kind {
             HostFnKind::Sync(f) => f,
-            HostFnKind::Async(_) => panic!("sync"),
+            _ => panic!("sync"),
         }
     }
 
@@ -334,6 +399,21 @@ mod tests {
         let call = sync(super::sorted::export());
         assert!(call(&[]).unwrap_err().contains("missing its number types"));
         assert!(call(&[200, 0]).unwrap_err().contains("no number type has tag 200"));
+    }
+
+    /// The listed record knows exactly the listed types.
+    #[test]
+    fn a_listed_function_dispatches_only_the_listed_types() {
+        use runtime_vocabulary::remote::host_fn::RemoteName;
+        let def = runtime_vocabulary::host_fn_instances!(super::total_area: super::Circle, super::Rect);
+        let HostFnKind::Listed { asynchronous: false, lookup } = def.kind else { panic!("a listed record") };
+        assert!(lookup(super::Circle::NAME).is_some() && lookup(super::Rect::NAME).is_some());
+        assert!(lookup(super::Triangle::NAME).is_none());
+        assert_eq!(super::Circle::NAME, "remote_showcase::tools::Circle");
+        let Some(HostFnKind::Sync(call)) = lookup(super::Rect::NAME) else { panic!("sync") };
+        let mut args = Vec::new();
+        vec![super::Rect { w: 2.0, h: 3.0 }].encode(&mut args);
+        assert_eq!(f64::decode(&mut &call(&args).unwrap()[..]).unwrap(), 6.0);
     }
 
     /// A key call reads the bundle's keys (here: strings, so each one
