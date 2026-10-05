@@ -107,17 +107,6 @@ fn finish2(out: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     new_core::retarget(out)
 }
 
-/// `#[derive(IdealystSchema)]` — registers a props struct's per-field
-/// information into the MCP catalog. Used alongside `#[component]`
-/// on the struct that the component takes as its props parameter.
-/// Recognises `#[schema(constraint = "...")]` field attributes for
-/// free-form constraint hints (spec §4.3).
-///
-/// With the `catalog` feature on, registers the struct's per-field schema
-/// into the catalog. With `strict-docs` on, additionally requires a doc
-/// comment on every named field / enum variant (a missing one is a
-/// `compile_error!`). With neither feature this derive expands to
-/// nothing.
 /// `#[derive(Remote)]` — let a value type cross between an app and its
 /// remote bundles (an app component's prop set by remote code, a remote
 /// component's prop, context), field by field. A field type that can't
@@ -133,6 +122,17 @@ pub fn derive_remote(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[derive(IdealystSchema)]` — registers a props struct's per-field
+/// information into the MCP catalog. Used alongside `#[component]`
+/// on the struct that the component takes as its props parameter.
+/// Recognises `#[schema(constraint = "...")]` field attributes for
+/// free-form constraint hints (spec §4.3).
+///
+/// With the `catalog` feature on, registers the struct's per-field schema
+/// into the catalog. With `strict-docs` on, additionally requires a doc
+/// comment on every named field / enum variant (a missing one is a
+/// `compile_error!`). With neither feature this derive expands to
+/// nothing.
 #[proc_macro_derive(IdealystSchema, attributes(schema))]
 pub fn derive_idealyst_schema(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as syn::DeriveInput);
@@ -322,6 +322,42 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
     finish(stylesheet::emit(parsed, content_hash))
 }
 
+/// `#[host_fn]` — an app function remote code can call: the function in the
+/// app, a stub asking the app to run it in a remote bundle. Arguments and
+/// result cross as `RemoteValue`s. See `host_fn`.
+#[proc_macro_attribute]
+pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(proc_macro2::Span::call_site(), "#[host_fn] takes no arguments").to_compile_error().into();
+    }
+    let func = parse_macro_input!(item as syn::ItemFn);
+    match host_fn::expand(func) {
+        Ok(out) => out.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
+/// field `T` → `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!`
+/// and have it carry through live, while plain values stay zero-overhead
+/// `Static` snapshots. Handlers, children, refs, and existing reactive
+/// sources are left alone (see [`props_attr`]); per-field `#[prop(static)]`
+/// / `#[prop(reactive)]` override the heuristic. Place ABOVE the derives:
+///
+/// ```ignore
+/// #[props]
+/// #[derive(IdealystSchema)]
+/// pub struct FooProps {
+///     content: String,                 // → Reactive<String>
+///     #[prop(static)] size: FooSize,   // stays FooSize
+///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    finish(props_attr::emit(item.into()))
+}
+
 /// `#[component]` — annotates a component function. Rewrites its body for
 /// reactivity (cloning parameter-rooted paths into reactive closures) and
 /// emits the dispatch glue `ui!`/`jsx!` target: a `pub type Name =
@@ -358,42 +394,6 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 ///   form only; inline props use `#[prop(default = …)]`).
 /// - `children` — mark this component as a container (informational; the
 ///   invocation macro is unchanged).
-/// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
-/// field `T` → `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!`
-/// and have it carry through live, while plain values stay zero-overhead
-/// `Static` snapshots. Handlers, children, refs, and existing reactive
-/// sources are left alone (see [`props_attr`]); per-field `#[prop(static)]`
-/// / `#[prop(reactive)]` override the heuristic. Place ABOVE the derives:
-///
-/// ```ignore
-/// #[props]
-/// #[derive(IdealystSchema)]
-/// pub struct FooProps {
-///     content: String,                 // → Reactive<String>
-///     #[prop(static)] size: FooSize,   // stays FooSize
-///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
-/// }
-/// ```
-/// `#[host_fn]` — an app function remote code can call: the function in the
-/// app, a stub asking the app to run it in a remote bundle. Arguments and
-/// result cross as `RemoteValue`s. See `host_fn`.
-#[proc_macro_attribute]
-pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return syn::Error::new(proc_macro2::Span::call_site(), "#[host_fn] takes no arguments").to_compile_error().into();
-    }
-    let func = parse_macro_input!(item as syn::ItemFn);
-    match host_fn::expand(func) {
-        Ok(out) => out.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
-}
-
-#[proc_macro_attribute]
-pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    finish(props_attr::emit(item.into()))
-}
-
 #[proc_macro_attribute]
 pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = match component_attr::parse_component_attr(attr.into()) {
