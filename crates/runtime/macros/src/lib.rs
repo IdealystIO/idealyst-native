@@ -439,10 +439,25 @@ pub(crate) fn emit_component_tokens(
     item: proc_macro2::TokenStream,
     hot_split: bool,
 ) -> proc_macro2::TokenStream {
-    let mut item_fn = match syn::parse2::<ItemFn>(item) {
+    let item_fn = match syn::parse2::<ItemFn>(item) {
         Ok(f) => f,
         Err(e) => return e.to_compile_error(),
     };
+    emit_component_fn(attr, item_fn, hot_split, None)
+}
+
+/// [`emit_component_tokens`], parsed. `authored` is the body as the author
+/// wrote it, for the catalog's walks (`composes`, `animations`): the remote
+/// split hands its rewritten fn back through here, and its body is then a
+/// build-kind macro the walks can't see into.
+fn emit_component_fn(
+    attr: component_attr::ComponentAttr,
+    mut item_fn: ItemFn,
+    hot_split: bool,
+    authored: Option<syn::Block>,
+) -> proc_macro2::TokenStream {
+    #[cfg_attr(not(feature = "catalog"), allow(unused_variables))]
+    let authored = authored.unwrap_or_else(|| (*item_fn.block).clone());
     // `#[component(remote)]`: split the body off by build kind, then run the
     // rewritten fn through this same emission as an ordinary component.
     if attr.remote {
@@ -451,7 +466,7 @@ pub(crate) fn emit_component_tokens(
             Err(e) => return e.to_compile_error(),
         };
         let attr = component_attr::ComponentAttr { remote: false, no_import: true, ..attr };
-        let emitted = emit_component_tokens(attr, quote::quote!(#component), hot_split);
+        let emitted = emit_component_fn(attr, component, hot_split, Some(authored));
         return quote::quote! { #emitted #extra };
     }
     // Unmigrated-shape rejection — loud, named, never silent (repo
@@ -646,8 +661,10 @@ pub(crate) fn emit_component_tokens(
     // submission is a sibling of the function so the linker-section
     // magic in `inventory` works as expected. When the feature is off,
     // this expands to an empty token stream — zero overhead.
+    // The walks read `authored`: `import_split` above has replaced this
+    // body with a build-kind macro they can't see into.
     #[cfg(feature = "catalog")]
-    let mcp_registration = mcp_emit::emit(&item_fn, &method_infos);
+    let mcp_registration = mcp_emit::emit(&item_fn, &authored, &method_infos);
     #[cfg(not(feature = "catalog"))]
     let mcp_registration = {
         let _ = &method_infos;

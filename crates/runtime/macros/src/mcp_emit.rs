@@ -31,15 +31,20 @@ use syn::ItemFn;
 /// Animations declared via `animated!(...)` inside the body are
 /// captured by [`collect_animations`] and submitted as
 /// `AnimationEntry` records.
+///
+/// `body` is the body as the author wrote it (the component's own may have
+/// been rewritten into macros the walks can't see into); the signature
+/// and docs come from `item_fn`.
 pub(crate) fn emit(
     item_fn: &ItemFn,
+    body: &syn::Block,
     methods: &[crate::methods_block::MethodInfo],
 ) -> TokenStream2 {
     let name_str = item_fn.sig.ident.to_string();
     let docs = collect_doc_comments(&item_fn.attrs);
-    let composes = collect_composes(&item_fn.block);
+    let composes = collect_composes(body);
     let params = collect_params(&item_fn.sig);
-    let animations = collect_animations(&item_fn.block);
+    let animations = collect_animations(body);
 
     let edges = composes.iter().map(|(name, line)| {
         quote! {
@@ -378,6 +383,37 @@ fn capture_if_ui_or_jsx(mac: &syn::Macro, out: &mut Vec<(String, u32)>) {
     } else if last.ident == "jsx" {
         if let Ok(parsed) = syn::parse2::<crate::jsx::Jsx>(mac.tokens.clone()) {
             crate::jsx::collect_component_refs(&parsed, out);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "catalog"))]
+mod emission_tests {
+    use quote::quote;
+
+    fn expand(attr: proc_macro2::TokenStream, item: proc_macro2::TokenStream) -> String {
+        let parsed = crate::component_attr::parse_component_attr(attr).expect("valid attr");
+        crate::emit_component_tokens(parsed, item, false).to_string().chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// Regression: the catalog entry's `composes` came out EMPTY for every
+    /// component, because the walk ran after the remote-import split had
+    /// replaced the body with a build-kind macro it can't see into — and
+    /// for `#[component(remote)]` after its own split as well.
+    #[test]
+    fn regression_composes_survives_the_remote_splits() {
+        for attr in [quote!(), quote!(remote)] {
+            let out = expand(
+                attr.clone(),
+                quote! {
+                    pub fn Shell(title: String) -> Element {
+                        ui! { Card() { Badge(label = title) } }
+                    }
+                },
+            );
+            for name in ["\"Card\"", "\"Badge\""] {
+                assert!(out.contains(&format!("EdgeRef{{name:{name}")), "#[component({attr})] composes lost {name}: {out}");
+            }
         }
     }
 }
