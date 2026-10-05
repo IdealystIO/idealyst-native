@@ -11,6 +11,17 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Remote bundles must be rebuilt** (`runtime-vocabulary`). A list of
+  numbers (`Vec<u32>`, `[f64; N]`, …) now crosses between an app and a
+  remote bundle as one little-endian byte run instead of element by
+  element. Sorting 200k numbers through a `#[host_fn]` took 339 ms
+  before, slower than sorting inside the bundle, and takes 16.6 ms now.
+  A bundle reports the codec version it was built with
+  (`remote::CODEC_VERSION`, now 2), and the app refuses one that reports
+  another version or none with `LoadError::IncompatibleCodec`, so an old
+  bundle can't have its lists misread. *Migration:* rebuild your bundles
+  against the new framework version.
+
 - **`DateLabels` gains a `weekdays` field** (`idea-ui` 3.0). The full
   weekday names back the new `dddd` date-format token, which sits beside
   the other new name tokens `ddd`, `MMM` and `MMMM`. The struct's fields

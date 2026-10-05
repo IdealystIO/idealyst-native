@@ -34,6 +34,10 @@ pub enum LoadError {
     MissingHostFunctions(Vec<String>),
     /// Both sides have the host function, with different signatures.
     IncompatibleHostFunctions(Vec<HostFnMismatch>),
+    /// The bundle encodes values differently from this app: it was built
+    /// against another version of the framework's codec (`None`: one from
+    /// before bundles reported it).
+    IncompatibleCodec { app: u32, bundle: Option<u32> },
 }
 
 impl std::fmt::Display for LoadError {
@@ -42,6 +46,10 @@ impl std::fmt::Display for LoadError {
             LoadError::Wasm(e) => write!(f, "bundle failed to load: {e}"),
             LoadError::MissingHostFunctions(names) => {
                 write!(f, "bundle calls host functions this app does not export: {}", names.join(", "))
+            }
+            LoadError::IncompatibleCodec { app, bundle } => {
+                let bundle = bundle.map_or_else(|| "1 (unreported)".to_string(), |v| v.to_string());
+                write!(f, "bundle was built with codec version {bundle}, this app reads version {app}: rebuild the bundle against this app's framework version")
             }
             LoadError::IncompatibleHostFunctions(list) => {
                 write!(f, "bundle calls host functions whose signature changed: ")?;

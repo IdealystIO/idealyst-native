@@ -53,6 +53,7 @@ use runtime_shared::{SheetShape, StyleRules, VariantSet};
 
 #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
 pub mod bundle;
+pub mod bulk;
 pub mod handles;
 #[cfg(not(idealyst_stream_guest))]
 pub mod host;
@@ -61,6 +62,16 @@ pub use host_fn::HostFnDef;
 /// The bundle half's wasm exports.
 #[cfg(idealyst_stream_guest)]
 pub mod wasm;
+
+/// The codec's format version. A bundle reports the one it was built with
+/// (`idealyst_ui_codec_version`) and the app refuses a bundle whose
+/// version differs: two builds that disagree about how a value is laid out
+/// would otherwise misread each other's bytes, sometimes into plausible
+/// values. Raise it with every change to how a value encodes.
+///
+/// - 1: every value through postcard (implicit: those bundles report none).
+/// - 2: a list of numbers is one little-endian byte run ([`bulk`]).
+pub const CODEC_VERSION: u32 = 2;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -740,6 +751,22 @@ pub trait RemoteProp: Sized + 'static {
     /// Decode one prop from the front of `input`.
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn receive(input: &mut &[u8]) -> Self;
+
+    /// A list's elements (after its length). One by one, unless the type
+    /// crosses as a byte run ([`bulk`]).
+    #[doc(hidden)]
+    #[cfg(not(idealyst_stream_guest))]
+    fn send_many(items: &[Self], out: &mut Vec<u8>, keep: &mut host::Keep) {
+        for v in items {
+            v.send(out, keep);
+        }
+    }
+    /// `n` elements of a list, as [`send_many`](Self::send_many) wrote them.
+    #[doc(hidden)]
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn receive_many(n: usize, input: &mut &[u8]) -> Vec<Self> {
+        (0..n).map(|_| Self::receive(input)).collect()
+    }
 }
 
 /// A crossed `Vec`'s element count, checked against the bytes left. Every
@@ -802,7 +829,7 @@ macro_rules! remote_prop_only {
         }
     )*};
 }
-remote_prop_only!(String, bool, char, i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64);
+remote_prop_only!(String, bool, char, usize, isize);
 
 impl<T: RemoteProp> RemoteProp for Option<T> {
     #[cfg(not(idealyst_stream_guest))]
@@ -822,15 +849,13 @@ impl<T: RemoteProp> RemoteProp for Vec<T> {
     #[cfg(not(idealyst_stream_guest))]
     fn send(&self, out: &mut Vec<u8>, keep: &mut host::Keep) {
         __send_value(&(self.len() as u64), out);
-        for v in self {
-            v.send(out, keep);
-        }
+        T::send_many(self, out, keep);
     }
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn receive(input: &mut &[u8]) -> Self {
         let n = __receive_value::<u64>(input);
         let n = checked_len(n, input).unwrap_or_else(|e| panic!("{e}"));
-        (0..n).map(|_| T::receive(input)).collect()
+        T::receive_many(n, input)
     }
 }
 
@@ -843,6 +868,20 @@ impl<T: RemoteProp> RemoteProp for Vec<T> {
 pub trait RemoteValue: Sized + 'static {
     fn encode(&self, out: &mut Vec<u8>);
     fn decode(input: &mut &[u8]) -> Result<Self, String>;
+
+    /// A list's (or array's) elements. One by one, unless the type crosses
+    /// as a byte run ([`bulk`]).
+    #[doc(hidden)]
+    fn encode_many(items: &[Self], out: &mut Vec<u8>) {
+        for v in items {
+            v.encode(out);
+        }
+    }
+    /// `n` elements, as [`encode_many`](Self::encode_many) wrote them.
+    #[doc(hidden)]
+    fn decode_many(n: usize, input: &mut &[u8]) -> Result<Vec<Self>, String> {
+        (0..n).map(|_| Self::decode(input)).collect()
+    }
 }
 
 /// `RemoteValue` through serde (postcard).
@@ -861,7 +900,7 @@ macro_rules! __value_via_serde {
     )*};
 }
 
-__value_via_serde!((), String, bool, char, i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, StyleRules);
+__value_via_serde!((), String, bool, char, usize, isize, StyleRules);
 
 impl<T: RemoteValue> RemoteValue for Option<T> {
     fn encode(&self, out: &mut Vec<u8>) {
@@ -894,25 +933,23 @@ impl<T: RemoteValue, E: RemoteValue> RemoteValue for Result<T, E> {
 impl<T: RemoteValue> RemoteValue for Vec<T> {
     fn encode(&self, out: &mut Vec<u8>) {
         __send_value(&(self.len() as u64), out);
-        for v in self {
-            v.encode(out);
-        }
+        T::encode_many(self, out);
     }
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         let n = checked_len(__try_receive_value::<u64>(input)?, input)?;
-        (0..n).map(|_| T::decode(input)).collect()
+        T::decode_many(n, input)
     }
 }
 
 impl<T: RemoteValue, const N: usize> RemoteValue for [T; N] {
     fn encode(&self, out: &mut Vec<u8>) {
-        for v in self {
-            v.encode(out);
-        }
+        T::encode_many(self, out);
     }
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
-        let items = (0..N).map(|_| T::decode(input)).collect::<Result<Vec<T>, String>>()?;
-        items.try_into().map_err(|_| "array length".to_string())
+        // N is the type's, not the input's: still refuse a count the input
+        // can't hold before allocating for it.
+        let n = checked_len(N as u64, input)?;
+        T::decode_many(n, input)?.try_into().map_err(|_| "array length".to_string())
     }
 }
 
@@ -1116,6 +1153,22 @@ pub trait ImportArg: Sized + 'static {
     fn send(self, out: &mut Vec<u8>);
     #[cfg(not(idealyst_stream_guest))]
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String>;
+
+    /// A list's elements. One by one, unless the type crosses as a byte
+    /// run ([`bulk`]).
+    #[doc(hidden)]
+    #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+    fn send_many(items: Vec<Self>, out: &mut Vec<u8>) {
+        for v in items {
+            v.send(out);
+        }
+    }
+    /// `n` elements, as [`send_many`](Self::send_many) wrote them.
+    #[doc(hidden)]
+    #[cfg(not(idealyst_stream_guest))]
+    fn receive_many(n: usize, input: &mut &[u8], cx: &host::ImportCx) -> Result<Vec<Self>, String> {
+        (0..n).map(|_| Self::receive(input, cx)).collect()
+    }
 }
 
 /// The probe the emission calls a prop's crossing through: [`ViaImport`]
@@ -1316,7 +1369,65 @@ macro_rules! __import_value {
     )*};
 }
 
-__import_value!(String, bool, char, i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, StyleRules);
+__import_value!(String, bool, char, usize, isize, StyleRules);
+
+/// The number types: each value through postcard like any other, and a
+/// LIST of them as one byte run ([`bulk`]), through every codec trait.
+macro_rules! bulk_numbers {
+    ($($t:ty),*) => {$(
+        impl RemoteValue for $t {
+            fn encode(&self, out: &mut Vec<u8>) {
+                __send_value(self, out)
+            }
+            fn decode(input: &mut &[u8]) -> Result<Self, String> {
+                __try_receive_value(input)
+            }
+            fn encode_many(items: &[Self], out: &mut Vec<u8>) {
+                bulk::encode(items, out)
+            }
+            fn decode_many(n: usize, input: &mut &[u8]) -> Result<Vec<Self>, String> {
+                bulk::decode(n, input)
+            }
+        }
+        impl RemoteProp for $t {
+            #[cfg(not(idealyst_stream_guest))]
+            fn send(&self, out: &mut Vec<u8>, _keep: &mut host::Keep) {
+                __send_value(self, out)
+            }
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn receive(input: &mut &[u8]) -> Self {
+                __receive_value(input)
+            }
+            #[cfg(not(idealyst_stream_guest))]
+            fn send_many(items: &[Self], out: &mut Vec<u8>, _keep: &mut host::Keep) {
+                bulk::encode(items, out)
+            }
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn receive_many(n: usize, input: &mut &[u8]) -> Vec<Self> {
+                bulk::decode(n, input).unwrap_or_else(|e| panic!("{e}"))
+            }
+        }
+        impl ImportArg for $t {
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn send(self, out: &mut Vec<u8>) {
+                __send_value(&self, out)
+            }
+            #[cfg(not(idealyst_stream_guest))]
+            fn receive(input: &mut &[u8], _cx: &host::ImportCx) -> Result<Self, String> {
+                __try_receive_value(input)
+            }
+            #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
+            fn send_many(items: Vec<Self>, out: &mut Vec<u8>) {
+                bulk::encode(&items, out)
+            }
+            #[cfg(not(idealyst_stream_guest))]
+            fn receive_many(n: usize, input: &mut &[u8], _cx: &host::ImportCx) -> Result<Vec<Self>, String> {
+                bulk::decode(n, input)
+            }
+        }
+    )*};
+}
+bulk_numbers!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64);
 
 impl ImportArg for () {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
@@ -1349,14 +1460,12 @@ impl<T: ImportArg> ImportArg for Vec<T> {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn send(self, out: &mut Vec<u8>) {
         __send_value(&(self.len() as u64), out);
-        for v in self {
-            v.send(out);
-        }
+        T::send_many(self, out);
     }
     #[cfg(not(idealyst_stream_guest))]
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
         let n = checked_len(__try_receive_value::<u64>(input)?, input)?;
-        (0..n).map(|_| T::receive(input, cx)).collect()
+        T::receive_many(n, input, cx)
     }
 }
 

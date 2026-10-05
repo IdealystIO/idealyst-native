@@ -692,6 +692,15 @@ impl KernelBundle {
                 _ => None,
             },
         };
+        // A bundle that crosses values must encode them as this app
+        // decodes them: checked before anything is registered or mounted.
+        if hooks.ui.is_some() {
+            let reported = match instance.get_typed_func::<(), u32>(&store, "idealyst_ui_codec_version") {
+                Ok(f) => Some(f.call(&mut store, ())?),
+                Err(_) => None,
+            };
+            check_codec(reported)?;
+        }
         // Register the bundle's context decoders (`#[derive(Remote)]`): one
         // export per type (a wasm bundle has no link-time registry).
         let ctx_exports: Vec<String> = module
@@ -957,6 +966,19 @@ impl KernelBundle {
     }
 }
 
+
+/// A bundle's codec version against this app's
+/// ([`runtime_vocabulary::remote::CODEC_VERSION`]). `reported` is `None`
+/// for a bundle built before bundles reported one.
+fn check_codec(reported: Option<u32>) -> Result<(), LoadError> {
+    let app = runtime_vocabulary::remote::CODEC_VERSION;
+    if reported == Some(app) {
+        Ok(())
+    } else {
+        Err(LoadError::IncompatibleCodec { app, bundle: reported })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // `#[host_fn]`s a bridged bundle calls
 // ---------------------------------------------------------------------------
@@ -1067,7 +1089,21 @@ fn read_args(caller: &Caller<'_, KState>, params: &[Val]) -> Result<Vec<u8>, was
 
 #[cfg(test)]
 mod tests {
-    use super::parse_promotion;
+    use super::{check_codec, parse_promotion};
+
+    /// Only the app's own codec version loads: an older bundle (none
+    /// reported) or a newer one would misread the app's bytes.
+    #[test]
+    fn a_bundle_with_another_codec_version_is_refused() {
+        let app = runtime_vocabulary::remote::CODEC_VERSION;
+        assert!(check_codec(Some(app)).is_ok());
+        for other in [None, Some(app - 1), Some(app + 1)] {
+            match check_codec(other) {
+                Err(crate::LoadError::IncompatibleCodec { app: a, bundle }) => assert_eq!((a, bundle), (app, other)),
+                _ => panic!("{other:?} loaded"),
+            }
+        }
+    }
 
     /// Regression: a malformed promotion reply indexed out of bounds and
     /// panicked the app; now it parses to `None` (and the bundle is

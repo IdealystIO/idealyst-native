@@ -21,6 +21,14 @@ thread_local! {
     static REPLY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The codec version this bundle was built with
+/// ([`CODEC_VERSION`](super::CODEC_VERSION)): the app refuses to load a
+/// bundle that reports a different one, or none.
+#[no_mangle]
+pub extern "C" fn idealyst_ui_codec_version() -> u32 {
+    super::CODEC_VERSION
+}
+
 /// Room for `len` bytes of arguments; where to write them.
 #[no_mangle]
 pub extern "C" fn idealyst_ui_alloc(len: u32) -> *mut u8 {

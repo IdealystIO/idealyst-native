@@ -407,6 +407,8 @@ mod app {
     /// What remote code may call.
     pub fn host_fns() -> Vec<runtime_vocabulary::remote::HostFnDef> {
         let mut fns = vec![device_name::export(), fetch_reviews::export()];
+        // The compute benchmark's host-side sorts (`bench.rs`).
+        fns.extend([bench::bench_sort_u32::export(), bench::bench_order::export()]);
         // What remote code calling idea-ui's global functions needs
         // (`set_idea_color_scheme`, `push_toast`, …).
         fns.extend(idea_ui::host_fns());

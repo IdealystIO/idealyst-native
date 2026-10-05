@@ -204,7 +204,7 @@ pub async fn fetch_reviews(product: u32) -> Vec<String> { … }
 
 In the app it is the function as written. In a bundle it becomes a stub that asks the app to run it: a sync call answers inline, and an async one returns a future (`runtime_vocabulary::remote::bundle::HostFuture`) that the framework's own `spawn_then` drives, the same call shape as natively. The app runs the real future on its own executor and delivers the result to the bundle as a one-shot callback. Arguments and results cross as `RemoteValue`s — plain data, including values that cross by key (an idea-theme `ToneRef`). The choice of build goes through the vocabulary, so a library using it declares no cfg, and an app without remote components gets only the function.
 
-The app lists what bundles may call: `stream_host::remote::install_with(wasm, vec![device_name::export(), …])`. A bundle that calls anything else is refused at load with `MissingHostFunctions`, naming it; one whose signature changed since the app was built (the import name carries an FNV-1a fingerprint of the signature's type spellings, stable across toolchains) with `IncompatibleHostFunctions`. Arguments that still don't decode stop the bundle, never the app. A result that arrives after its bundle was stopped is dropped.
+The app lists what bundles may call: `stream_host::remote::install_with(wasm, vec![device_name::export(), …])`. A bundle that calls anything else is refused at load with `MissingHostFunctions`, naming it; one whose signature changed since the app was built (the import name carries an FNV-1a fingerprint of the signature's type spellings, stable across toolchains) with `IncompatibleHostFunctions`. A bundle that encodes values differently from the app (it was built against another version of the codec: `runtime_vocabulary::remote::CODEC_VERSION`, which a bundle reports through its `idealyst_ui_codec_version` export) is refused with `IncompatibleCodec`, telling you to rebuild it: version 2 made a list of numbers one little-endian byte run, which a version-1 bundle would send element by element and the app would misread. Arguments that still don't decode stop the bundle, never the app. A result that arrives after its bundle was stopped is dropped.
 
 **Libraries' global functions.** A function that changes the APP's state has to be a host function, or remote code changes the bundle's own copy of that state. idea-ui's are: `set_idea_color_scheme` (the theme), `push_standard_toast` (what `push_toast` / `push_toast_with` call, with a concrete signature) and `dismiss_toast`. An app adds them all with `idea_ui::host_fns()`. The showcase's feed switches the app's theme and pushes a toast from the bundle; `showcase/app/tests/flow.rs` checks both land in the app (and was checked to fail with the functions run bundle-side). Toasts built from closures (`Toast` with an `action`, `push_toast_node`) aren't data, so they stay on whichever side builds them.
 
@@ -272,6 +272,15 @@ The screens use idea-ui, which renders natively either way: only the screen's ow
 | Build + parse 20k JSON-like records: allocation, strings | 99.8 ms (49×) | 52.3 ms (26×) | 2.03 ms |
 | Sort 200k u32s: memory, branches | 177.7 ms (87×) | 79.9 ms (39×) | 2.04 ms |
 | 96×96 f64 matrix multiply (native vectorizes) | 45.8 ms (339×) | 32.4 ms (240×) | 0.13 ms |
+
+**Handing the work to the app.** The same sorts with the sort done by a `#[host_fn]`: the bundle builds its data, sends it, and reads the answer (opt z bundle, median of 3 runs of 5):
+
+| | In the bundle | By the app | Native |
+|---|---|---|---|
+| Sort 200k u32s (`Vec<u32>` there and back) | 180.8 ms | 16.6 ms | 2.13 ms |
+| Sort 200k items by a `(u16, u32)` key (the bundle sends big-endian key bytes, the app returns the order) | 201.3 ms | 63.5 ms | 3.94 ms |
+
+What's left is the bundle's own share: generating the numbers and, for the keyed sort, encoding each key and applying the order, all interpreted. The crossing itself is a memcpy each way, because a list of numbers crosses as one byte run (`runtime_vocabulary::remote::bulk`). Before it did, each element was encoded on its own, and the app's sort took 339 ms: slower than sorting in the bundle.
 
 Tree-building paths (mounts, push, the context toggle) cost about 5% more than before the review fixes, measured against the pre-fix build side by side: the record of what crossed with each tree, which lets a failed decode release everything it received. Presses and updates are unchanged. UI work costs 8–25× in-process and stays well under a frame; heavy computation costs 16–340× and belongs in the app (a `#[host_fn]`) when it matters.
 

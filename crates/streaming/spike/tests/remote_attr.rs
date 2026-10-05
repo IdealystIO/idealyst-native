@@ -577,6 +577,20 @@ fn a_host_function_with_a_changed_signature_is_refused_at_load() {
     assert!(err.contains("spike_camera::take_photo"), "{err}");
 }
 
+/// A bundle built before bundles reported their codec version (here: the
+/// real bundle with that export renamed away) is refused at load with an
+/// error that says to rebuild it — it would encode lists of numbers in the
+/// old per-element format, which the app would misread.
+#[test]
+fn a_bundle_without_a_codec_version_is_refused_at_load() {
+    let name = b"idealyst_ui_codec_version";
+    let mut wasm = REMOTE_ATTR_WASM.to_vec();
+    let at = wasm.windows(name.len()).position(|w| w == name).expect("the bundle exports its codec version");
+    wasm[at + name.len() - 1] = b'X';
+    let err = stream_host::remote::install_with(&wasm, camera()).err().expect("refused");
+    assert!(err.contains("codec version 1 (unreported)") && err.contains("rebuild the bundle"), "{err}");
+}
+
 /// A photo still in flight when its bundle is stopped (it panicked) is
 /// simply dropped: the app's future completes, and its result has nowhere
 /// to go — no call into the poisoned bundle, no panic.
