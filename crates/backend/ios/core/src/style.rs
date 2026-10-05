@@ -1057,13 +1057,19 @@ pub fn apply_text_style(
         let _: () = unsafe { msg_send![view, setTextAlignment: align] };
     }
 
-    // Number of lines = 0 for wrapping (UILabel only). Also pin
-    // lineBreakMode to byWordWrapping (= 0) so wrapping happens
-    // instead of mid-line ellipsis when the assigned frame is a
+    // Line limit (UILabel only). Without `max_lines`: numberOfLines = 0
+    // (unlimited) and lineBreakMode pinned to byWordWrapping so wrapping
+    // happens instead of mid-line ellipsis when the assigned frame is a
     // hair narrower than the text wants (rounding off `sizeThatFits:`).
+    // With `max_lines: n`: numberOfLines = n + byTruncatingTail — the
+    // last permitted line ends in "…". Written on EVERY apply so a
+    // restyle that drops the limit restores the unlimited defaults.
+    // Taffy's measure_fn asks this label's `sizeThatFits:`, which honours
+    // `numberOfLines`, so the measured height is capped at n lines (and
+    // n = 1 measures one unwrapped line); `layout_affecting_key` carries
+    // the limit so a change re-measures. See `style_diff::label_line_config`.
     if is_label {
-        let _: () = unsafe { msg_send![view, setNumberOfLines: 0isize] };
-        let _: () = unsafe { msg_send![view, setLineBreakMode: 0isize] };
+        apply_label_line_config(view, style.max_lines);
     }
 
     // Glyph shadow — the `text_shadow` field (web `text-shadow`; the
@@ -1089,6 +1095,19 @@ pub fn apply_text_style(
             let _: () = unsafe { msg_send![&layer, setShadowOpacity: 0.0_f32] };
         }
     }
+}
+
+/// Write [`crate::style_diff::label_line_config`] for `max_lines` onto a
+/// UILabel (`numberOfLines` + `lineBreakMode`). Also called after a
+/// styled-text label's `attributedText` is (re)built: assigning
+/// `attributedText` re-derives the label's style properties from the
+/// string's attributes at index 0, and the runs carry no paragraph style,
+/// so the line break mode is re-asserted afterwards (setting it applies to
+/// the whole attributed string).
+pub fn apply_label_line_config(view: &UIView, max_lines: Option<u32>) {
+    let (lines, mode) = crate::style_diff::label_line_config(max_lines);
+    let _: () = unsafe { msg_send![view, setNumberOfLines: lines] };
+    let _: () = unsafe { msg_send![view, setLineBreakMode: mode] };
 }
 
 /// Apply the theme-resolved background + text color to an editable text control

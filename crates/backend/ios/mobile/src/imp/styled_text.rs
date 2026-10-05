@@ -121,6 +121,13 @@ pub(crate) fn realize(
     let attributed = build_attributed(&assembled);
     let _: () =
         unsafe { msg_send![label, setAttributedText: &*attributed as &NSAttributedString] };
+    // `max_lines`: assigning `attributedText` re-derives the label's style
+    // properties from the string (whose runs carry no paragraph style), so
+    // the line limit + tail truncation `apply_text_style` wrote are
+    // re-asserted AFTER it — `lineBreakMode` set on a styled label applies
+    // to the whole attributed string. `para = None` (pre-style) restores
+    // the unlimited defaults `create_text` set.
+    backend_ios_core::style::apply_label_line_config(label, para.and_then(|s| s.max_lines));
 }
 
 /// Font for a styled run: run deltas over the paragraph base. Walks a

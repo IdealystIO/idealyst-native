@@ -301,8 +301,37 @@ pub fn layout_affecting_key(style: &StyleRules) -> String {
     f32opt!("lh", style.line_height);
     f32opt!("ls", style.letter_spacing);
     enom!("ttf", style.text_transform);
+    // A line limit caps a label's measured height (`sizeThatFits:` honours
+    // `numberOfLines`), so 2 → 3 must re-measure even though the Taffy
+    // style (overflow: hidden either way) is byte-identical. Keyed by the
+    // normalized UIKit value so `None` and `Some(0)` (both "no limit")
+    // don't churn a pass.
+    let _ = write!(s, "mxl={};", label_line_config(style.max_lines).0);
 
     s
+}
+
+/// UIKit `NSLineBreakByWordWrapping` — the label default this backend
+/// pins (wrap, never truncate) when no line limit is set.
+pub const NS_LINE_BREAK_BY_WORD_WRAPPING: isize = 0;
+/// UIKit `NSLineBreakByTruncatingTail` — wrap normally, and end the last
+/// permitted line with "…" where the text is cut.
+pub const NS_LINE_BREAK_BY_TRUNCATING_TAIL: isize = 4;
+
+/// The `(numberOfLines, lineBreakMode)` pair a label gets for
+/// `StyleRules::max_lines`.
+///
+/// `None` / `Some(0)` (no limit) is the backend's unlimited default —
+/// `numberOfLines = 0` + word wrapping — so a reactive restyle that drops
+/// the limit restores exactly what an unlimited label always had. With
+/// `Some(n)`, UIKit's `numberOfLines = n` + tail truncation: for a
+/// multi-line label `byTruncatingTail` still wraps every line but the
+/// last, which is cut with "…" (the web `-webkit-line-clamp` shape).
+pub fn label_line_config(max_lines: Option<u32>) -> (isize, isize) {
+    match max_lines {
+        None | Some(0) => (0, NS_LINE_BREAK_BY_WORD_WRAPPING),
+        Some(n) => (n as isize, NS_LINE_BREAK_BY_TRUNCATING_TAIL),
+    }
 }
 
 /// True iff applying `next` over the previously-applied `prev` changes
@@ -423,6 +452,46 @@ mod tests {
     }
 
     // === Paint-only vs layout-affecting (the perf bug) =================
+
+    // === max_lines → UIKit line config =================================
+
+    #[test]
+    fn max_lines_none_and_zero_are_unlimited_word_wrap() {
+        // The defaults `create_text` sets — a restyle that removes the
+        // limit must land back here.
+        assert_eq!(label_line_config(None), (0, NS_LINE_BREAK_BY_WORD_WRAPPING));
+        assert_eq!(label_line_config(Some(0)), (0, NS_LINE_BREAK_BY_WORD_WRAPPING));
+    }
+
+    #[test]
+    fn max_lines_limit_truncates_tail() {
+        assert_eq!(label_line_config(Some(1)), (1, NS_LINE_BREAK_BY_TRUNCATING_TAIL));
+        assert_eq!(label_line_config(Some(3)), (3, NS_LINE_BREAK_BY_TRUNCATING_TAIL));
+        // UIKit's raw enum values.
+        assert_eq!(NS_LINE_BREAK_BY_WORD_WRAPPING, 0);
+        assert_eq!(NS_LINE_BREAK_BY_TRUNCATING_TAIL, 4);
+    }
+
+    // A line-limit change alters the label's measured height but can
+    // leave the Taffy style byte-identical (2 → 3 lines), so it must
+    // change the layout key or the apply path skips `set_style` and the
+    // label keeps its stale height.
+    #[test]
+    fn regression_ios_max_lines_change_is_layout_affecting() {
+        let mut two = StyleRules::default();
+        two.max_lines = Some(2);
+        let mut three = two.clone();
+        three.max_lines = Some(3);
+        let mut unlimited = two.clone();
+        unlimited.max_lines = None;
+        let k2 = layout_affecting_key(&two);
+        assert!(is_layout_affecting(Some(&k2), &layout_affecting_key(&three)));
+        assert!(is_layout_affecting(Some(&k2), &layout_affecting_key(&unlimited)));
+        // `Some(0)` means "no limit" — same key as `None`, no extra pass.
+        let mut zero = two.clone();
+        zero.max_lines = Some(0);
+        assert_eq!(layout_affecting_key(&zero), layout_affecting_key(&unlimited));
+    }
 
     // The regression: a paint-only re-style (background/opacity/color)
     // used to schedule a layout pass on every press. The layout key
