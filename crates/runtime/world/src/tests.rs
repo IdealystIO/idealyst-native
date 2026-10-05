@@ -3152,6 +3152,28 @@ mod host_owned_values {
         assert_eq!(host_get(host), 6, "the writable export outlives the read-only one");
     }
 
+    /// Regression: two imports of one app signal (two props bound to it, a
+    /// remount overlapping the old tree) each mapped the slot; releasing
+    /// the later one unmapped it under the earlier, whose next read
+    /// panicked "has no value on this side". Either release order.
+    #[test]
+    fn regression_releasing_one_import_unmaps_a_slot_another_import_uses() {
+        for later_goes_first in [true, false] {
+            let w = World::new();
+            let host = host_signal(&w, 2);
+            let (h, _guard) = export_signal(host, U32);
+            let (a, owned_a) = w.enter(|| collect_owned(|| import_signal(h, U32)));
+            let (b, owned_b) = w.enter(|| collect_owned(|| import_signal(h, U32)));
+            let (gone, kept, survivor) = if later_goes_first { (owned_b, owned_a, a) } else { (owned_a, owned_b, b) };
+            drop(gone);
+            assert_eq!(survivor.get(), 2, "the other import still reads (order {later_goes_first})");
+            survivor.set(3);
+            w.flush();
+            assert_eq!(host_get(host), 3, "and writes");
+            drop(kept);
+        }
+    }
+
     #[derive(Clone)]
     struct Theme(u32);
     #[derive(Clone)]
@@ -3354,6 +3376,24 @@ mod host_owned_values {
         s.set(8);
         w.flush();
         assert_eq!(host_get(native), 8, "and its bundle still writes through it");
+    }
+
+    /// Regression: a promoted signal handed back to its own bundle as a
+    /// prop is imported; releasing that import removed the bundle's OWN
+    /// entry for the slot, so the bundle's original handle panicked.
+    #[test]
+    fn regression_releasing_a_reimport_keeps_the_bundles_own_promoted_signal() {
+        let w = World::new();
+        let s = w.enter(|| signal(4u32));
+        let native = receive_signal(offer_signal(s, U32), U32).unwrap();
+        let (h, _guard) = export_signal(native, U32);
+        let (prop, owned) = w.enter(|| collect_owned(|| import_signal(h, U32)));
+        assert_eq!(prop.get(), 4);
+        drop(owned);
+        assert_eq!(s.get(), 4, "the bundle's own handle still reads");
+        s.set(5);
+        w.flush();
+        assert_eq!(host_get(native), 5);
     }
 
     #[test]

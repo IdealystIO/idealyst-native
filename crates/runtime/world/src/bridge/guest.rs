@@ -51,6 +51,16 @@ struct ValueEntry {
     /// to hand it to the host with if the host promotes it (see
     /// [`GuestHooks::promote`]).
     promotable: Option<Rc<dyn ImportSync>>,
+    /// Live imports of this slot ([`Bridged::import`]). One entry per host
+    /// slot: a second import of the same slot (two props bound to one app
+    /// signal, a remount overlapping the old tree) shares it, and the
+    /// entry goes when the last import is released — keyed per import, the
+    /// first release unmapped the slot under the others.
+    imports: u32,
+    /// The host frees this entry ([`GuestHooks::drop_value`]): a value
+    /// this bundle created, promoted or not. Releasing imports of it never
+    /// removes it.
+    owned: bool,
     /// The author's creation site, for the staged-read warning. Kept here
     /// because a source location cannot cross to the host. Read only by the
     /// debug-build diagnostic (in release `SiteLoc` is `()`).
@@ -96,6 +106,13 @@ impl LocalState {
 
 thread_local! {
     static LOCAL: RefCell<LocalState> = RefCell::new(LocalState::default());
+}
+
+/// Remove `handle`'s mapping if it still names entry `id`.
+fn unmap(l: &mut LocalState, handle: Handle, id: Id) {
+    if l.by_handle.get(&handle) == Some(&id) {
+        l.by_handle.remove(&handle);
+    }
 }
 
 /// Short-lived access. Never run user code inside `f`.
@@ -201,7 +218,7 @@ fn with_value<H: HostOps, R>(handle: Handle, op: Op, f: impl FnOnce(&mut dyn Any
         }
         Some(_) => {
             let e = l.values.remove(&id).expect("present");
-            l.by_handle.remove(&e.handle);
+            unmap(l, e.handle, id);
             Some(data)
         }
         None => Some(data),
@@ -226,7 +243,7 @@ impl GuestHooks for Local {
             }
             Some(_) => {
                 let e = l.values.remove(&value).expect("present");
-                l.by_handle.remove(&e.handle);
+                unmap(l, e.handle, value);
                 Some(data)
             }
             None => Some(data),
@@ -244,7 +261,7 @@ impl GuestHooks for Local {
             }
             Some(_) => {
                 let e = l.values.remove(&value).expect("present");
-                l.by_handle.remove(&e.handle);
+                unmap(l, e.handle, value);
                 Some(e)
             }
             None => None,
@@ -420,7 +437,16 @@ impl<H: HostOps> Engine for Bridged<H> {
             let id = l.next_id();
             l.values.insert(
                 id,
-                ValueEntry { handle: (0, 0, 0), data: Some(data), freed: false, sync: None, promotable: None, site },
+                ValueEntry {
+                    handle: (0, 0, 0),
+                    data: Some(data),
+                    freed: false,
+                    sync: None,
+                    promotable: None,
+                    imports: 0,
+                    owned: true,
+                    site,
+                },
             );
             id
         });
@@ -621,18 +647,39 @@ impl<H: HostOps> Bridged<H> {
     /// Make host-owned slot `h` addressable from this bundle: `mirror` is the
     /// typed layer's storage holding the value as last fetched, `sync` keeps
     /// it in step with the host. Returns the local id to release it with.
+    ///
+    /// A slot already addressable here (imported before, or this bundle's
+    /// own promoted value handed back as a prop) is shared: its entry
+    /// counts one more import and `mirror` is dropped. A slot holds one
+    /// type, so every import of it carries the same `T`.
     pub(crate) fn import(h: Handle, mirror: Box<dyn AnySignal>, sync: Rc<dyn ImportSync>, site: SiteLoc) -> Id {
-        with_local(|l| {
+        let (id, unused) = with_local(|l| {
+            if let Some(id) = l.by_handle.get(&h).copied() {
+                if let Some(e) = l.values.get_mut(&id) {
+                    e.imports += 1;
+                    return (id, Some(mirror));
+                }
+            }
             let id = l.next_id();
             l.values.insert(
                 id,
-                ValueEntry { handle: h, data: Some(mirror), freed: false, sync: Some(sync), promotable: None, site },
+                ValueEntry {
+                    handle: h,
+                    data: Some(mirror),
+                    freed: false,
+                    sync: Some(sync),
+                    promotable: None,
+                    imports: 1,
+                    owned: false,
+                    site,
+                },
             );
-            // A later import of the same host slot takes over the handle;
-            // `release_import` of the earlier one leaves it alone.
             l.by_handle.insert(h, id);
-            id
-        })
+            (id, None)
+        });
+        // Typed storage: dropped outside the borrow.
+        drop(unused);
+        id
     }
 
     /// Allow the value behind `h` to be promoted with `sync` — the bundle
@@ -653,12 +700,22 @@ impl<H: HostOps> Bridged<H> {
     /// host's and is untouched.
     pub(crate) fn release_import(id: Id) {
         let removed = try_local(|l| {
-            let e = l.values.remove(&id)?;
-            if l.by_handle.get(&e.handle) == Some(&id) {
-                l.by_handle.remove(&e.handle);
+            let e = l.values.get_mut(&id)?;
+            e.imports = e.imports.saturating_sub(1);
+            if e.imports > 0 || e.owned {
+                return None;
             }
+            if e.data.is_none() {
+                // Out for an operation (a cleanup releasing an import from
+                // inside one): the operation drops it on return.
+                e.freed = true;
+                return None;
+            }
+            let e = l.values.remove(&id).expect("present");
+            unmap(l, e.handle, id);
             Some(e)
-        });
+        })
+        .flatten();
         drop(removed);
     }
 
