@@ -439,7 +439,7 @@ mod host_side {
         /// the same ref.
         NavRef { get: Rc<dyn Fn() -> Option<crate::prims::NavHandle>>, original: Rc<dyn std::any::Any> },
         /// An app closure a bundle may call (a navigator's `pop`).
-        Call(Rc<dyn Fn(&[u8]) -> Vec<u8>>),
+        Call(Rc<dyn Fn(&[u8]) -> Result<Vec<u8>, String>>),
         /// An app `Ref` to a node handle, filled by an app component the
         /// bundle handed it to (`bind_to`); read when the bundle uses it.
         NodeRef(Rc<dyn Fn() -> Option<Held>>),
@@ -548,44 +548,47 @@ mod host_side {
         HANDLES.with(|h| h.borrow().len())
     }
 
-    /// A bundle's handle call. `None` during thread teardown.
+    /// A bundle's handle call, in one process. `None` during thread
+    /// teardown; a malformed call panics (there is no bundle to stop).
     pub fn try_handle_call(id: u32, args: &[u8]) -> Option<Vec<u8>> {
         HANDLES.try_with(|_| ()).ok()?;
-        Some(handle_call(id, args))
+        Some(handle_call(id, args).unwrap_or_else(|e| panic!("{e}")))
     }
 
     /// Run a bundle's handle call against the real handle `id`; the encoded
     /// reply. A call on a handle the app no longer holds (its tree was torn
-    /// down) is a no-op answering the method's default.
-    pub fn handle_call(id: u32, args: &[u8]) -> Vec<u8> {
+    /// down) is a no-op answering the method's default. `Err` for a call
+    /// that does not decode, or a method the handle doesn't have: the
+    /// bundle and the app disagree, and the bundle is stopped.
+    pub fn handle_call(id: u32, args: &[u8]) -> Result<Vec<u8>, String> {
         let call: HandleCall =
-            from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a handle call does not decode: {e}"));
+            from_bytes(args).map_err(|e| format!("remote codec: a handle call does not decode: {e}"))?;
         match call {
             HandleCall::Release => {
                 let gone = HANDLES.with(|h| h.borrow_mut().remove(&id));
                 drop(gone);
-                return Vec::new();
+                return Ok(Vec::new());
             }
             HandleCall::Unsubscribe(sub) => {
                 let gone = HANDLES.with(|h| h.borrow_mut().get_mut(&id).and_then(|e| e.subs.remove(&sub)));
                 drop(gone);
-                return Vec::new();
+                return Ok(Vec::new());
             }
             _ => {}
         }
         // Cloned out: a handle method may re-enter (and drop entries).
         let held = HANDLES.with(|h| h.borrow().get(&id).map(|e| e.held.clone()));
-        let Some(mut held) = held else { return default_reply(&call) };
+        let Some(mut held) = held else { return Ok(default_reply(&call)) };
         // A ref an app component fills: what it holds now, if anything.
         if let Held::NodeRef(get) = &held {
             match get() {
                 Some(now) => held = now,
-                None => return default_reply(&call),
+                None => return Ok(default_reply(&call)),
             }
         }
         use Held as H;
         use HandleCall as C;
-        match (held, call) {
+        Ok(match (held, call) {
             (H::View(h), C::Rect) => to_bytes(&h.rect()),
             (H::Pressable(h), C::Rect) => to_bytes(&h.rect()),
             (H::Button(h), C::Rect) => to_bytes(&h.rect()),
@@ -599,7 +602,7 @@ mod host_side {
             }
             (H::View(h), C::SubscribeLayout { callback }) => {
                 let tree = HANDLES.with(|t| t.borrow().get(&id).and_then(|e| e.tree.clone()));
-                let Some(conn) = tree.and_then(|t| t.upgrade()) else { return to_bytes(&0u32) };
+                let Some(conn) = tree.and_then(|t| t.upgrade()) else { return Ok(to_bytes(&0u32)) };
                 let cb = crate::remote::host::callback_for(&conn, callback);
                 let sub = h.on_layout(move |w, hh| {
                     cb.call(&to_bytes(&(w, hh)));
@@ -641,14 +644,16 @@ mod host_side {
             (H::Virtualizer(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::VirtualGrid(h), C::ScrollOffset) => to_bytes(&h.scroll_offset()),
             (H::Nav(nav), C::Nav(cmd)) => unit(nav.dispatch(nav_command(cmd))),
-            (H::Call(f), C::Invoke(args)) => f(&args),
+            (H::Call(f), C::Invoke(args)) => f(&args)?,
             // An unfilled ref drops the command, as native code's
             // `if let Some(h) = nav.get()` would.
             (H::NavRef { get, .. }, C::Nav(cmd)) => unit(if let Some(nav) = get() {
                 nav.dispatch(nav_command(cmd))
             }),
-            (_, call) => panic!("remote codec: handle {id} has no method for {call:?} — the bundle and the app disagree"),
-        }
+            (_, call) => {
+                return Err(format!("remote codec: handle {id} has no method for {call:?} — the bundle and the app disagree"))
+            }
+        })
     }
 
     /// A remote component's navigation command: its params are rebuilt

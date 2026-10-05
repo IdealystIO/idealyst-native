@@ -42,6 +42,11 @@ struct HostState {
     /// itself ([`unwind_frames`]) instead of running on with a world still
     /// entered, tracking off, or its creations collected into a dead scope.
     frames: Vec<Frame>,
+    /// Bundle requests are untrusted input (see [`fault`]): `true` once a
+    /// host that can stop a bundle (a wasm one) has said so.
+    trap_faults: bool,
+    /// The first fault since the host last asked ([`take_fault`]).
+    fault: Option<String>,
     /// Host-owned signals handed to bundles (props), by slot: EVERY live
     /// registration, each under its guard's token. The same signal is
     /// exported once per mount it's passed to (two remote components, a
@@ -96,6 +101,49 @@ fn pop_frame(kind: Frame) -> Option<Frame> {
         Some(h.frames.remove(at))
     })
     .flatten()
+}
+
+/// A bundle asked the app's kernel for something invalid: a pop with no
+/// matching push, a signal created outside any world, a write to a value
+/// it was not given (or was given read-only), bytes that do not decode.
+/// Natively each is an author bug that panics; here it is input from code
+/// the app did not compile, and with `panic = "abort"` a panic would take
+/// the app down with it. A wasm host turns the fault into a TRAP in the
+/// bundle that made the request, which stops that bundle and nothing else;
+/// the request itself is not carried out. In one process (the loopback
+/// tests) there is no bundle to stop, so it panics, as natively.
+pub(crate) fn fault(msg: String) {
+    let trapped = try_host(|h| {
+        if !h.trap_faults {
+            return false;
+        }
+        h.fault.get_or_insert(msg.clone());
+        true
+    })
+    .unwrap_or(false);
+    if !trapped {
+        panic!("{msg}");
+    }
+}
+
+/// Report faults from now on rather than panicking (see [`fault`]).
+pub(crate) fn trap_faults() {
+    with_host(|h| h.trap_faults = true);
+}
+
+/// The fault the last bundle request raised, if any (see [`fault`]).
+pub(crate) fn take_fault() -> Option<String> {
+    try_host(|h| h.fault.take()).flatten()
+}
+
+/// Close a bundle frame of `kind`'s kind, faulting if it has none open:
+/// a bundle only ends what it began.
+fn end_frame(kind: Frame, what: &str) -> Option<Frame> {
+    let frame = pop_frame(kind);
+    if frame.is_none() {
+        fault(format!("kernel bridge: a bundle ended a `{what}` it never began"));
+    }
+    frame
 }
 
 /// How many bundle frames are open: taken before calling into a bundle, so
@@ -155,7 +203,8 @@ pub(crate) type ContextFetch = Rc<dyn Fn(&mut Vec<u8>) -> bool>;
 /// Implemented by the typed layer, which holds the codec and knows `T`.
 pub(crate) trait Exported {
     fn fetch(&self, staged: bool, out: &mut Vec<u8>) -> bool;
-    fn stage(&self, bytes: &[u8], mode: StageMode);
+    /// `Err` (a [`fault`]) when it is read-only or `bytes` don't decode.
+    fn stage(&self, bytes: &[u8], mode: StageMode) -> Result<(), String>;
     /// Whether a bundle may write through it (a two-way prop, or a
     /// promoted slot's own export).
     fn writable(&self) -> bool;
@@ -337,15 +386,25 @@ fn ctx_id<G: GuestHooks>(v: &dyn Any) -> Option<Id> {
 
 /// Resolve `world` (`None` = ambient) the way `Native::signal_create` does,
 /// including its dead-world panic.
-fn resolve<R>(world: Option<WorldId>, what: &str, f: impl FnOnce(&Rc<WorldArena>) -> R) -> R {
-    match world {
-        None => native::with_ambient(f),
-        Some(world) => match native::arena_of(world) {
-            Some(arena) => f(&arena),
-            None => panic!("runtime-world: {what} created in a dead world {world}"),
-        },
+/// The world a bundle creates `what` in: its own, or the ambient one.
+/// `None` (a [`fault`]) for a dead world or none at all.
+fn resolve(world: Option<WorldId>, what: &str) -> Option<Rc<WorldArena>> {
+    let arena = match world {
+        None => native::try_ambient(),
+        Some(world) => native::arena_of(world),
+    };
+    if arena.is_none() {
+        fault(match world {
+            None => format!("{what}() called outside World::enter — components must run inside a reactive context"),
+            Some(world) => format!("runtime-world: {what} created in a dead world {world}"),
+        });
     }
+    arena
 }
+
+/// The handle a refused creation answers: never live, so nothing reaches
+/// it. (A wasm host never even returns it: the fault traps first.)
+const REFUSED: Handle = (WorldId::MAX, 0, 0);
 
 /// The stale-handle check every bundle-side signal access starts with.
 /// `false` for a dead world.
@@ -380,12 +439,16 @@ impl<G: GuestHooks> HostOps for Host<G> {
         native::context_top(&arena, CtxKey::Foreign(key), ctx_id::<G>).flatten()
     }
     fn enter_push(world: WorldId) {
+        if native::arena_of(world).is_none() {
+            return fault(format!("kernel bridge: a bundle entered world {world}, which does not exist"));
+        }
         native::enter_push(world);
         push_frame(Frame::Enter);
     }
     fn enter_pop() {
-        pop_frame(Frame::Enter);
-        native::enter_pop()
+        if end_frame(Frame::Enter, "enter").is_some() {
+            native::enter_pop()
+        }
     }
 
     fn is_flushing() -> bool {
@@ -408,6 +471,9 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
 
     fn signal_create(world: Option<WorldId>, value: Id) -> (Handle, bool) {
+        // Checked before the proxy exists: a refused proxy's drop would
+        // call back into the bundle mid-request.
+        let Some(arena) = resolve(world, "signal") else { return (REFUSED, false) };
         let proxy: Box<dyn AnySignal> = Box::new(ValueProxy {
             value,
             commit: G::commit,
@@ -416,13 +482,11 @@ impl<G: GuestHooks> HostOps for Host<G> {
             promote_finish: G::promote_finish,
             defused: false,
         });
-        resolve(world, "signal", |arena| {
-            // The host slot's `created_at` is this line: the bundle keeps the
-            // author's site itself (`Engine::signal_created_at`), since a
-            // source location cannot cross a wasm boundary.
-            let (slot, gen, collected) = native::create_signal(arena, proxy, crate::caller_site());
-            ((arena.id, slot, gen), collected)
-        })
+        // The host slot's `created_at` is this line: the bundle keeps the
+        // author's site itself (`Engine::signal_created_at`), since a
+        // source location cannot cross a wasm boundary.
+        let (slot, gen, collected) = native::create_signal(&arena, proxy, crate::caller_site());
+        ((arena.id, slot, gen), collected)
     }
     fn signal_check(h: Handle) -> bool {
         check_live(h)
@@ -449,6 +513,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
 
     fn effect_create(world: Option<WorldId>, class: EffectClass, effect: Id) -> Handle {
+        let Some(arena) = resolve(world, "effect") else { return REFUSED };
         let proxy = EffectProxy::<G> { effect, _g: PhantomData };
         // `&proxy` makes the closure capture the WHOLE proxy (a bare
         // `proxy.effect` would capture only the `u32` under disjoint
@@ -458,15 +523,16 @@ impl<G: GuestHooks> HostOps for Host<G> {
             let p = &proxy;
             G::run_effect(p.effect);
         });
-        resolve(world, "effect", |arena| {
-            let (slot, gen) = native::create_effect(arena, class, body);
-            (arena.id, slot, gen)
-        })
+        let (slot, gen) = native::create_effect(&arena, class, body);
+        (arena.id, slot, gen)
     }
     fn effect_is_alive((world, slot, gen): Handle) -> bool {
         Native::effect_is_alive(world, slot, gen)
     }
     fn on_cleanup(cleanup: Id) {
+        if !Native::in_effect() {
+            return fault(native::ON_CLEANUP_OUTSIDE_EFFECT.to_string());
+        }
         let proxy = CleanupProxy::<G> { cleanup, ran: Cell::new(false), _g: PhantomData };
         native::on_cleanup(Box::new(move || proxy.run()))
     }
@@ -476,8 +542,9 @@ impl<G: GuestHooks> HostOps for Host<G> {
         push_frame(Frame::Untrack);
     }
     fn untrack_pop() {
-        pop_frame(Frame::Untrack);
-        native::untrack_pop()
+        if end_frame(Frame::Untrack, "untrack").is_some() {
+            native::untrack_pop()
+        }
     }
     fn unscoped_begin() {
         let saved = native::unscoped_begin();
@@ -485,7 +552,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
     fn unscoped_end() {
         // A torn-down thread has nothing left to restore.
-        if let Some(Frame::Unscoped(saved)) = pop_frame(Frame::Unscoped(Default::default())) {
+        if let Some(Frame::Unscoped(saved)) = end_frame(Frame::Unscoped(Default::default()), "unscoped") {
             native::unscoped_end(saved);
         }
     }
@@ -494,7 +561,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
         push_frame(Frame::Unanchored(saved));
     }
     fn unanchored_end() {
-        if let Some(Frame::Unanchored(saved)) = pop_frame(Frame::Unanchored(Default::default())) {
+        if let Some(Frame::Unanchored(saved)) = end_frame(Frame::Unanchored(Default::default()), "unanchored") {
             native::unanchored_end(saved);
         }
     }
@@ -504,7 +571,9 @@ impl<G: GuestHooks> HostOps for Host<G> {
         push_frame(Frame::Collect);
     }
     fn collect_end() -> u32 {
-        pop_frame(Frame::Collect);
+        if end_frame(Frame::Collect, "collect_owned").is_none() {
+            return 0;
+        }
         let items = native::collect_end().expect("collector stack imbalance");
         if items.is_empty() {
             return 0;
@@ -518,7 +587,9 @@ impl<G: GuestHooks> HostOps for Host<G> {
         })
     }
     fn collect_abort() {
-        pop_frame(Frame::Collect);
+        if end_frame(Frame::Collect, "collect_owned").is_none() {
+            return;
+        }
         native::drop_items(native::collect_end().unwrap_or_default());
     }
     fn scope_merge(into: u32, other: u32) {
@@ -538,10 +609,14 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
 
     fn ctx_provide(key: Id, ctx: Id) {
+        if resolve(None, "provide").is_none() {
+            return;
+        }
         native::ctx_provide(CtxKey::Foreign(key), ctx_proxy::<G>(ctx))
     }
     fn ctx_inject(key: Id) -> Option<Id> {
-        native::with_ambient(|arena| native::context_top(arena, CtxKey::Foreign(key), ctx_id::<G>)).flatten()
+        let arena = resolve(None, "inject")?;
+        native::context_top(&arena, CtxKey::Foreign(key), ctx_id::<G>).flatten()
     }
 
     fn value_fetch(h: Handle, staged: bool, out: &mut Vec<u8>) -> bool {
@@ -551,14 +626,15 @@ impl<G: GuestHooks> HostOps for Host<G> {
         export.fetch(staged, out)
     }
     fn value_stage(h: Handle, bytes: &[u8], mode: StageMode) {
-        let export = with_host(|s| s.export(&h)).unwrap_or_else(|| {
-            panic!(
-                "kernel bridge: a bundle wrote host signal (world {}, slot {}), which was not \
-                 exported to it",
+        let Some(export) = with_host(|s| s.export(&h)) else {
+            return fault(format!(
+                "kernel bridge: a bundle wrote host signal (world {}, slot {}), which was not exported to it",
                 h.0, h.1
-            )
-        });
-        export.stage(bytes, mode)
+            ));
+        };
+        if let Err(msg) = export.stage(bytes, mode) {
+            fault(msg);
+        }
     }
     fn ctx_fetch(name: &str, out: &mut Vec<u8>) -> bool {
         out.clear();

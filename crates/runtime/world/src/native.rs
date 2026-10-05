@@ -169,6 +169,16 @@ pub(crate) fn arena_of(world: WorldId) -> Option<Rc<WorldArena>> {
 /// "outside enter" message. Only *creation*-side APIs (free `signal()`,
 /// `effect()`, `provide()`, …) consult the ambient world; handle *use*
 /// routes through the handle's own world id.
+/// The ambient world's arena, if code is running inside a live one.
+pub(crate) fn try_ambient() -> Option<Rc<WorldArena>> {
+    TLS.try_with(|t| {
+        let t = t.borrow();
+        t.enter_stack.last().and_then(|&id| t.lookup(id))
+    })
+    .ok()
+    .flatten()
+}
+
 pub(crate) fn with_ambient<R>(f: impl FnOnce(&Rc<WorldArena>) -> R) -> R {
     let arena = TLS.with(|t| {
         let t = t.borrow();
@@ -1279,20 +1289,18 @@ fn unanchored<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+// Keep the leading sentence stable: docs and downstream comments quote
+// it. The rest names the fix for the everyday way to get here — a
+// `#[component]` body or mount handler, which never runs inside an effect.
+pub(crate) const ON_CLEANUP_OUTSIDE_EFFECT: &str = "on_cleanup called outside an effect. It registers on the \
+    innermost RUNNING effect, and component bodies, mount handlers and the initial realize are not effect \
+    bodies. For teardown when a component or scope unmounts, use `on_scope_drop(f)` instead; inside an \
+    effect, `on_cleanup` (or returning the cleanup closure) is correct.";
+
 pub(crate) fn on_cleanup(f: Box<dyn FnOnce()>) {
     let top = TLS.with(|t| t.borrow().effect_stack.last().copied());
     let Some((world, slot, gen)) = top else {
-        // Keep the leading sentence stable: docs and downstream comments
-        // quote it. The rest names the fix for the everyday way to get
-        // here — a `#[component]` body or mount handler, which never runs
-        // inside an effect.
-        panic!(
-            "on_cleanup called outside an effect. It registers on the innermost \
-             RUNNING effect, and component bodies, mount handlers and the \
-             initial realize are not effect bodies. For teardown when a component \
-             or scope unmounts, use `on_scope_drop(f)` instead; inside an effect, \
-             `on_cleanup` (or returning the cleanup closure) is correct."
-        );
+        panic!("{ON_CLEANUP_OUTSIDE_EFFECT}");
     };
     let Some(arena) = arena_of(world) else { return };
     let data = {

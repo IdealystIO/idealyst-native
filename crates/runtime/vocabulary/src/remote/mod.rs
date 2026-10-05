@@ -1417,15 +1417,26 @@ impl<T: ImportArg> ImportArg for crate::glue::Reactive<T> {
         if __try_receive_value::<bool>(input)? {
             let get = cx.callback(__try_receive_value(input)?);
             let cx = cx.clone();
-            let read = move || -> Option<Result<T, String>> { get.get_bytes(&[]).map(|b| T::receive(&mut &b[..], &cx)) };
             // Read once now, while the bundle is known to be callable: the
-            // getter then always has a last value to fall back on if the
-            // bundle is poisoned later (`T` has no default to invent).
-            read().ok_or_else(|| "the bundle stopped (it panicked)".to_string())??;
+            // getter then always has a last good reply to fall back on if
+            // the bundle is stopped later (`T` has no default to invent).
+            let first = get.get_bytes(&[]).ok_or_else(|| "the bundle stopped (it panicked)".to_string())?;
+            T::receive(&mut &first[..], &cx)?;
+            let good = std::cell::RefCell::new(first);
             Ok(crate::glue::Reactive::Dynamic(std::rc::Rc::new(move || {
-                read()
-                    .expect("primed at receive: a last value always exists")
-                    .unwrap_or_else(|e| panic!("remote codec: a live prop's value does not decode: {e}"))
+                let reply = get.get_bytes(&[]).unwrap_or_else(|| good.borrow().clone());
+                match T::receive(&mut &reply[..], &cx) {
+                    Ok(v) => {
+                        *good.borrow_mut() = reply;
+                        v
+                    }
+                    // A reply that does not decode stops the bundle; the
+                    // last good one stands in until its components go.
+                    Err(e) => {
+                        cx.fail(format!("remote codec: a live prop's value does not decode: {e}"));
+                        T::receive(&mut &good.borrow()[..], &cx).expect("decoded before")
+                    }
+                }
             })))
         } else {
             Ok(crate::glue::Reactive::Static(T::receive(input, cx)?))

@@ -224,13 +224,16 @@ mod bridge_typed {
         fn writable(&self) -> bool {
             self.writable
         }
-        fn stage(&self, bytes: &[u8], mode: StageMode) {
-            assert!(
-                self.writable,
-                "kernel bridge: a bundle wrote a host signal it received read-only (world {}, slot {})",
-                self.handle.0, self.handle.1
-            );
-            let value = (self.codec.decode)(bytes).expect("kernel bridge: bundle value does not decode");
+        fn stage(&self, bytes: &[u8], mode: StageMode) -> Result<(), String> {
+            if !self.writable {
+                return Err(format!(
+                    "kernel bridge: a bundle wrote a host signal it received read-only (world {}, slot {})",
+                    self.handle.0, self.handle.1
+                ));
+            }
+            let value = (self.codec.decode)(bytes).ok_or_else(|| {
+                format!("kernel bridge: a bundle's value for host signal (world {}, slot {}) does not decode", self.handle.0, self.handle.1)
+            })?;
             let (w, s, g) = self.handle;
             let _ = match mode {
                 StageMode::Set | StageMode::SetAlways => {
@@ -238,6 +241,7 @@ mod bridge_typed {
                 }
                 StageMode::Untracked => Native::signal_access(w, s, g, |d| typed::<T>(d).value = value),
             };
+            Ok(())
         }
     }
 
@@ -404,6 +408,20 @@ pub mod remote {
     /// the bundle's signals and effects into the host's graph.
     pub fn pending_scopes() -> usize {
         crate::bridge::host::pending_scopes()
+    }
+
+    /// Stop panicking on a bundle's invalid kernel requests on this thread:
+    /// record each as a fault for [`take_fault`] instead, so the host can
+    /// trap the bundle that made it. A wasm host calls this before loading
+    /// a bundle; see `bridge::host::fault`.
+    pub fn trap_faults() {
+        crate::bridge::host::trap_faults()
+    }
+
+    /// The fault the last bundle request raised (see [`trap_faults`]):
+    /// checked after every kernel import, and turned into a trap.
+    pub fn take_fault() -> Option<String> {
+        crate::bridge::host::take_fault()
     }
 
     /// Where the frames bundles hold open on this thread's kernel stacks

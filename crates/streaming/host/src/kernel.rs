@@ -188,16 +188,16 @@ impl<C: AsContextMut<Data = KState>> GuestCall for C {
             return Ok(None);
         }
         let memory = self.as_context().data().memory.expect("kernel bridge: bundle exports no memory");
-        Ok(Some(read_packed(&*self, memory, packed)))
+        Ok(Some(read_packed(&*self, memory, packed)?))
     }
     fn ui_invoke(&mut self, ui: UiHooks, cb: u32, args: &[u8]) -> Result<Vec<u8>, wasmi::Error> {
         let memory = self.as_context().data().memory.expect("kernel bridge: bundle exports no memory");
         let ptr = ui.alloc.call(&mut *self, args.len() as u32)?;
         memory
             .write(&mut *self, ptr as usize, args)
-            .unwrap_or_else(|_| panic!("remote codec: argument buffer {ptr} out of bounds"));
+            .map_err(|_| wasmi::Error::new(format!("remote codec: argument buffer {ptr} out of bounds")))?;
         let packed = ui.invoke.call(&mut *self, (cb, args.len() as u32))?;
-        Ok(read_packed(&*self, memory, packed))
+        read_packed(&*self, memory, packed)
     }
     fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error> {
         ui.release.call(&mut *self, cb)
@@ -208,13 +208,14 @@ impl<C: AsContextMut<Data = KState>> GuestCall for C {
 }
 
 /// Copy a `ptr << 32 | len` result out of the bundle's memory.
-fn read_packed(ctx: impl wasmi::AsContext, memory: Memory, packed: i64) -> Vec<u8> {
+/// `Err` (the bundle is stopped) when the bundle's pointer is out of bounds.
+fn read_packed(ctx: impl wasmi::AsContext, memory: Memory, packed: i64) -> Result<Vec<u8>, wasmi::Error> {
     let (ptr, len) = ((packed >> 32) as u32 as usize, packed as u32 as usize);
     let mut out = vec![0u8; len];
     memory
         .read(&ctx, ptr, &mut out)
-        .unwrap_or_else(|_| panic!("remote codec: reply buffer {ptr}+{len} out of bounds"));
-    out
+        .map_err(|_| wasmi::Error::new(format!("remote codec: reply buffer {ptr}+{len} out of bounds")))?;
+    Ok(out)
 }
 
 /// Route one hook to bundle `bundle`: through its in-flight import's
@@ -307,11 +308,12 @@ impl GuestHooks for WasmGuest {
             Some(f) => c.promote(f, local),
             None => Ok(None),
         })??;
-        // `[has_staged: u8][committed_len: u32 le][committed][staged]`
-        let (&flag, rest) = reply.split_first().expect("kernel bridge: empty promotion reply");
-        let len = u32::from_le_bytes(rest[..4].try_into().expect("promotion reply length")) as usize;
-        committed.extend_from_slice(&rest[4..4 + len]);
-        staged.extend_from_slice(&rest[4 + len..]);
+        let Some((flag, c, s)) = parse_promotion(&reply) else {
+            stop(bundle, format!("kernel bridge: a malformed promotion reply ({} bytes)", reply.len()));
+            return None;
+        };
+        committed.extend_from_slice(c);
+        staged.extend_from_slice(s);
         Some(flag != 0)
     }
     fn promote_finish(value: Id) {
@@ -323,29 +325,84 @@ impl GuestHooks for WasmGuest {
     }
 }
 
+/// A promotion reply, `[has_staged: u8][committed_len: u32 le][committed]
+/// [staged]`: `None` when it is malformed (the bundle is then stopped).
+fn parse_promotion(reply: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let (&flag, rest) = reply.split_first()?;
+    let len = u32::from_le_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+    let body = rest.get(4..)?;
+    Some((flag, body.get(..len)?, body.get(len..)?))
+}
+
 // ---------------------------------------------------------------------------
 // The imports
 // ---------------------------------------------------------------------------
 
-fn write_u32s(caller: &mut Caller<'_, KState>, ptr: u32, vals: &[u32]) {
-    let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
+/// An import's outcome: `Err` traps the bundle that called it (see
+/// [`poison`]) — for a request the app refused (`runtime_world::remote::
+/// take_fault`) or bytes it could not read.
+type Imported<T> = Result<T, wasmi::Error>;
+
+fn refused(msg: impl Into<String>) -> wasmi::Error {
+    wasmi::Error::new(msg.into())
+}
+
+fn memory(caller: &Caller<'_, KState>) -> Imported<Memory> {
+    caller.data().memory.ok_or_else(|| refused("kernel bridge: bundle exports no memory"))
+}
+
+fn write_u32s(caller: &mut Caller<'_, KState>, ptr: u32, vals: &[u32]) -> Imported<()> {
     let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-    memory
-        .write(&mut *caller, ptr as usize, &bytes)
-        .unwrap_or_else(|_| panic!("kernel bridge: out-buffer {ptr} out of bounds"));
+    write_bytes(caller, ptr, &bytes)
+}
+
+fn read_bytes(caller: &Caller<'_, KState>, ptr: u32, len: u32) -> Imported<Vec<u8>> {
+    let mut buf = vec![0u8; len as usize];
+    memory(caller)?
+        .read(caller, ptr as usize, &mut buf)
+        .map_err(|_| refused(format!("kernel bridge: bundle buffer {ptr}+{len} is out of bounds")))?;
+    Ok(buf)
+}
+
+fn write_bytes(caller: &mut Caller<'_, KState>, ptr: u32, bytes: &[u8]) -> Imported<()> {
+    memory(caller)?
+        .write(&mut *caller, ptr as usize, bytes)
+        .map_err(|_| refused(format!("kernel bridge: bundle out-buffer {ptr}+{} is out of bounds", bytes.len())))
 }
 
 fn opt_world(world: i64) -> Option<WorldId> {
     (world >= 0).then_some(world as WorldId)
 }
 
+/// One of the bundle's ids, namespaced by bundle.
+fn ns_checked(bundle: u32, local: i64) -> Imported<Id> {
+    if !(0..=u32::MAX as i64).contains(&local) {
+        return Err(refused(format!("kernel bridge: bundle {bundle} sent id {local}, outside its u32 id space")));
+    }
+    Ok(ns(bundle, local))
+}
+
+/// Run an import's body as [`with_active`] does; a fault it raised in the
+/// app's kernel (an invalid request) traps the bundle instead of being
+/// answered.
+fn kernel<R>(caller: &mut Caller<'_, KState>, f: impl FnOnce() -> R) -> Imported<R> {
+    let r = with_active(caller, f);
+    match runtime_world::remote::take_fault() {
+        Some(msg) => Err(refused(msg)),
+        None => Ok(r),
+    }
+}
+
 macro_rules! import {
-    ($linker:ident, $name:literal, |$caller:ident $(, $arg:ident : $ty:ty)*| $(-> $ret:ty)? $body:block) => {
+    ($linker:ident, $name:literal, |$caller:ident $(, $arg:ident : $ty:ty)*| -> $ret:ty $body:block) => {
         $linker
-            .func_wrap(MODULE, $name, |mut $caller: Caller<'_, KState> $(, $arg: $ty)*| $(-> $ret)? {
-                with_active(&mut $caller, || $body)
+            .func_wrap(MODULE, $name, |mut $caller: Caller<'_, KState> $(, $arg: $ty)*| -> Imported<$ret> {
+                kernel(&mut $caller, || $body)
             })
             .unwrap_or_else(|e| panic!("define {}: {e}", $name));
+    };
+    ($linker:ident, $name:literal, |$caller:ident $(, $arg:ident : $ty:ty)*| $body:block) => {
+        import!($linker, $name, |$caller $(, $arg: $ty)*| -> () $body);
     };
 }
 
@@ -356,15 +413,16 @@ pub fn define_imports(linker: &mut Linker<KState>) {
     import!(linker, "world_flush", |c, w: u32| { H::world_flush(w) });
     import!(linker, "world_is_flushing", |c, w: u32| -> u32 { H::world_is_flushing(w) as u32 });
     linker
-        .func_wrap(MODULE, "world_provide", |mut c: Caller<'_, KState>, w: u32, key: i64, ctx: i64| {
+        .func_wrap(MODULE, "world_provide", |mut c: Caller<'_, KState>, w: u32, key: i64, ctx: i64| -> Imported<()> {
             let b = c.data().bundle;
-            with_active(&mut c, || H::world_provide(w, ns(b, key), ns(b, ctx)))
+            let (key, ctx) = (ns_checked(b, key)?, ns_checked(b, ctx)?);
+            kernel(&mut c, || H::world_provide(w, key, ctx))
         })
         .expect("define world_provide");
     linker
-        .func_wrap(MODULE, "world_inject", |mut c: Caller<'_, KState>, w: u32, key: i64| -> i64 {
-            let b = c.data().bundle;
-            with_active(&mut c, || opt(H::world_inject(w, ns(b, key))))
+        .func_wrap(MODULE, "world_inject", |mut c: Caller<'_, KState>, w: u32, key: i64| -> Imported<i64> {
+            let key = ns_checked(c.data().bundle, key)?;
+            kernel(&mut c, || opt(H::world_inject(w, key)))
         })
         .expect("define world_inject");
     import!(linker, "enter_push", |c, w: u32| { H::enter_push(w) });
@@ -375,13 +433,13 @@ pub fn define_imports(linker: &mut Linker<KState>) {
     import!(linker, "in_effect", |c| -> u32 { H::in_effect() as u32 });
     import!(linker, "effect_depth", |c| -> u32 { H::effect_depth() });
     linker
-        .func_wrap(MODULE, "current_effect", |mut c: Caller<'_, KState>, out: u32| -> u32 {
-            match with_active(&mut c, H::current_effect) {
+        .func_wrap(MODULE, "current_effect", |mut c: Caller<'_, KState>, out: u32| -> Imported<u32> {
+            match kernel(&mut c, H::current_effect)? {
                 Some((w, s, g)) => {
-                    write_u32s(&mut c, out, &[w, s, g]);
-                    1
+                    write_u32s(&mut c, out, &[w, s, g])?;
+                    Ok(1)
                 }
-                None => 0,
+                None => Ok(0),
             }
         })
         .expect("define current_effect");
@@ -391,31 +449,25 @@ pub fn define_imports(linker: &mut Linker<KState>) {
     // see runtime_vocabulary::remote::handles). The reply goes into the
     // bundle's argument buffer, like a sync host function's.
     linker
-        .func_wrap("idealyst_ui", "handle_call", |mut c: Caller<'_, KState>, id: u32, ptr: u32, len: u32| -> Result<i64, wasmi::Error> {
-            let memory = c.data().memory.expect("kernel bridge: bundle exports no memory");
-            let mut args = vec![0u8; len as usize];
-            memory
-                .read(&c, ptr as usize, &mut args)
-                .map_err(|_| wasmi::Error::new(format!("handle_call: bundle pointer {ptr}+{len} is out of bounds")))?;
-            let reply = with_active(&mut c, || runtime_vocabulary::remote::handles::handle_call(id, &args));
+        .func_wrap("idealyst_ui", "handle_call", |mut c: Caller<'_, KState>, id: u32, ptr: u32, len: u32| -> Imported<i64> {
+            let args = read_bytes(&c, ptr, len)?;
+            let reply = kernel(&mut c, || runtime_vocabulary::remote::handles::handle_call(id, &args))?.map_err(refused)?;
             let alloc = c
                 .get_export("idealyst_ui_alloc")
                 .and_then(|e| e.into_func())
-                .ok_or_else(|| wasmi::Error::new("handle_call: the bundle exports no idealyst_ui_alloc"))?
+                .ok_or_else(|| refused("handle_call: the bundle exports no idealyst_ui_alloc"))?
                 .typed::<u32, u32>(&c)?;
             let out = alloc.call(&mut c, reply.len() as u32)?;
-            memory
-                .write(&mut c, out as usize, &reply)
-                .map_err(|_| wasmi::Error::new("handle_call: reply buffer out of bounds"))?;
+            write_bytes(&mut c, out, &reply)?;
             Ok(reply.len() as i64)
         })
         .expect("define handle_call");
 
     linker
-        .func_wrap(MODULE, "signal_create", |mut c: Caller<'_, KState>, world: i64, value: i64, out: u32| {
-            let b = c.data().bundle;
-            let ((w, s, g), collected) = with_active(&mut c, || H::signal_create(opt_world(world), ns(b, value)));
-            write_u32s(&mut c, out, &[w, s, g, collected as u32]);
+        .func_wrap(MODULE, "signal_create", |mut c: Caller<'_, KState>, world: i64, value: i64, out: u32| -> Imported<()> {
+            let value = ns_checked(c.data().bundle, value)?;
+            let ((w, s, g), collected) = kernel(&mut c, || H::signal_create(opt_world(world), value))?;
+            write_u32s(&mut c, out, &[w, s, g, collected as u32])
         })
         .expect("define signal_create");
     import!(linker, "signal_check", |c, w: u32, s: u32, g: u32| -> u32 { H::signal_check((w, s, g)) as u32 });
@@ -433,18 +485,18 @@ pub fn define_imports(linker: &mut Linker<KState>) {
     });
 
     linker
-        .func_wrap(MODULE, "effect_create", |mut c: Caller<'_, KState>, world: i64, class: u32, effect: i64, out: u32| {
-            let b = c.data().bundle;
+        .func_wrap(MODULE, "effect_create", |mut c: Caller<'_, KState>, world: i64, class: u32, effect: i64, out: u32| -> Imported<()> {
+            let effect = ns_checked(c.data().bundle, effect)?;
             let class = if class == 0 { EffectClass::Derivation } else { EffectClass::Reaction };
-            let (w, s, g): Handle = with_active(&mut c, || H::effect_create(opt_world(world), class, ns(b, effect)));
-            write_u32s(&mut c, out, &[w, s, g]);
+            let (w, s, g): Handle = kernel(&mut c, || H::effect_create(opt_world(world), class, effect))?;
+            write_u32s(&mut c, out, &[w, s, g])
         })
         .expect("define effect_create");
     import!(linker, "effect_is_alive", |c, w: u32, s: u32, g: u32| -> u32 { H::effect_is_alive((w, s, g)) as u32 });
     linker
-        .func_wrap(MODULE, "on_cleanup", |mut c: Caller<'_, KState>, cleanup: i64| {
-            let b = c.data().bundle;
-            with_active(&mut c, || H::on_cleanup(ns(b, cleanup)))
+        .func_wrap(MODULE, "on_cleanup", |mut c: Caller<'_, KState>, cleanup: i64| -> Imported<()> {
+            let cleanup = ns_checked(c.data().bundle, cleanup)?;
+            kernel(&mut c, || H::on_cleanup(cleanup))
         })
         .expect("define on_cleanup");
 
@@ -463,15 +515,16 @@ pub fn define_imports(linker: &mut Linker<KState>) {
     import!(linker, "scope_drop", |c, scope: u32| { H::scope_drop(scope) });
 
     linker
-        .func_wrap(MODULE, "ctx_provide", |mut c: Caller<'_, KState>, key: i64, ctx: i64| {
+        .func_wrap(MODULE, "ctx_provide", |mut c: Caller<'_, KState>, key: i64, ctx: i64| -> Imported<()> {
             let b = c.data().bundle;
-            with_active(&mut c, || H::ctx_provide(ns(b, key), ns(b, ctx)))
+            let (key, ctx) = (ns_checked(b, key)?, ns_checked(b, ctx)?);
+            kernel(&mut c, || H::ctx_provide(key, ctx))
         })
         .expect("define ctx_provide");
     linker
-        .func_wrap(MODULE, "ctx_inject", |mut c: Caller<'_, KState>, key: i64| -> i64 {
-            let b = c.data().bundle;
-            with_active(&mut c, || opt(H::ctx_inject(ns(b, key))))
+        .func_wrap(MODULE, "ctx_inject", |mut c: Caller<'_, KState>, key: i64| -> Imported<i64> {
+            let key = ns_checked(c.data().bundle, key)?;
+            kernel(&mut c, || opt(H::ctx_inject(key)))
         })
         .expect("define ctx_inject");
 
@@ -482,15 +535,15 @@ pub fn define_imports(linker: &mut Linker<KState>) {
         .func_wrap(
             MODULE,
             "value_fetch",
-            |mut c: Caller<'_, KState>, w: u32, s: u32, g: u32, staged: u32, out: u32, cap: u32| -> i64 {
+            |mut c: Caller<'_, KState>, w: u32, s: u32, g: u32, staged: u32, out: u32, cap: u32| -> Imported<i64> {
                 let mut buf = Vec::new();
-                if !with_active(&mut c, || H::value_fetch((w, s, g), staged != 0, &mut buf)) {
-                    return -1;
+                if !kernel(&mut c, || H::value_fetch((w, s, g), staged != 0, &mut buf))? {
+                    return Ok(-1);
                 }
                 if buf.len() <= cap as usize {
-                    write_bytes(&mut c, out, &buf);
+                    write_bytes(&mut c, out, &buf)?;
                 }
-                buf.len() as i64
+                Ok(buf.len() as i64)
             },
         )
         .expect("define value_fetch");
@@ -498,14 +551,14 @@ pub fn define_imports(linker: &mut Linker<KState>) {
         .func_wrap(
             MODULE,
             "value_stage",
-            |mut c: Caller<'_, KState>, w: u32, s: u32, g: u32, ptr: u32, len: u32, mode: u32| {
-                let bytes = read_bytes(&c, ptr, len);
+            |mut c: Caller<'_, KState>, w: u32, s: u32, g: u32, ptr: u32, len: u32, mode: u32| -> Imported<()> {
+                let bytes = read_bytes(&c, ptr, len)?;
                 let mode = match mode {
                     0 => StageMode::Set,
                     1 => StageMode::SetAlways,
                     _ => StageMode::Untracked,
                 };
-                with_active(&mut c, || H::value_stage((w, s, g), &bytes, mode))
+                kernel(&mut c, || H::value_stage((w, s, g), &bytes, mode))
             },
         )
         .expect("define value_stage");
@@ -513,36 +566,20 @@ pub fn define_imports(linker: &mut Linker<KState>) {
         .func_wrap(
             MODULE,
             "ctx_fetch",
-            |mut c: Caller<'_, KState>, name: u32, name_len: u32, out: u32, cap: u32| -> i64 {
-                let name = String::from_utf8(read_bytes(&c, name, name_len))
-                    .unwrap_or_else(|_| panic!("kernel bridge: context name is not UTF-8"));
+            |mut c: Caller<'_, KState>, name: u32, name_len: u32, out: u32, cap: u32| -> Imported<i64> {
+                let name = String::from_utf8(read_bytes(&c, name, name_len)?)
+                    .map_err(|_| refused("kernel bridge: a bundle's context name is not UTF-8"))?;
                 let mut buf = Vec::new();
-                if !with_active(&mut c, || H::ctx_fetch(&name, &mut buf)) {
-                    return -1;
+                if !kernel(&mut c, || H::ctx_fetch(&name, &mut buf))? {
+                    return Ok(-1);
                 }
                 if buf.len() <= cap as usize {
-                    write_bytes(&mut c, out, &buf);
+                    write_bytes(&mut c, out, &buf)?;
                 }
-                buf.len() as i64
+                Ok(buf.len() as i64)
             },
         )
         .expect("define ctx_fetch");
-}
-
-fn read_bytes(caller: &Caller<'_, KState>, ptr: u32, len: u32) -> Vec<u8> {
-    let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
-    let mut buf = vec![0u8; len as usize];
-    memory
-        .read(caller, ptr as usize, &mut buf)
-        .unwrap_or_else(|_| panic!("kernel bridge: buffer {ptr}+{len} out of bounds"));
-    buf
-}
-
-fn write_bytes(caller: &mut Caller<'_, KState>, ptr: u32, bytes: &[u8]) {
-    let memory = caller.data().memory.expect("kernel bridge: bundle exports no memory");
-    memory
-        .write(&mut *caller, ptr as usize, bytes)
-        .unwrap_or_else(|_| panic!("kernel bridge: out-buffer {ptr} out of bounds"));
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +606,9 @@ impl KernelBundle {
     /// signature changed since the app was built with
     /// [`LoadError::IncompatibleHostFunctions`].
     pub fn load_with(engine: &Engine, wasm: &[u8], host_fns: &[HostFnDef]) -> Result<KernelBundle, LoadError> {
+        // From here on a bundle's invalid kernel request stops that bundle
+        // instead of panicking the app (`kernel`).
+        runtime_world::remote::trap_faults();
         let module = Module::new(engine, wasm)?;
         let bundle = NEXT_BUNDLE.with(|n| {
             let id = n.get().checked_add(1).expect("kernel bridge: bundle ids exhausted");
@@ -580,7 +620,12 @@ impl KernelBundle {
         define_imports(&mut linker);
         link_host_fns(&module, host_fns, &mut linker)?;
         let instance = linker.instantiate_and_start(&mut store, &module)?;
-        store.data_mut().memory = instance.get_memory(&store, "memory");
+        // Required here, so every later `memory.expect` is an invariant,
+        // not a bundle-controlled panic.
+        let memory = instance
+            .get_memory(&store, "memory")
+            .ok_or_else(|| LoadError::Wasm(wasmi::Error::new("the bundle exports no memory")))?;
+        store.data_mut().memory = Some(memory);
         let hooks = Hooks {
             commit: instance.get_typed_func(&store, "idealyst_kernel_commit")?,
             drop_value: instance.get_typed_func(&store, "idealyst_kernel_drop_value")?,
@@ -750,6 +795,17 @@ impl Link for UiLink {
         let bundle = self.bundle;
         route(bundle, |c, h| c.ui_release(ui_hooks(bundle, h), cb));
     }
+    fn fail(&self, msg: String) {
+        stop(self.bundle, msg);
+    }
+}
+
+/// Stop bundle `bundle` for sending the app something it can't use: the
+/// same end as a panic in it ([`poison`]).
+fn stop(bundle: u32, msg: String) {
+    if let Some(inner) = BUNDLES.try_with(|b| b.borrow().get(&bundle).and_then(Weak::upgrade)).ok().flatten() {
+        poison(&inner, msg);
+    }
 }
 
 /// Why a remote component did not mount.
@@ -782,7 +838,7 @@ impl std::error::Error for MountError {}
 fn panic_message(ctx: &mut impl AsContextMut<Data = KState>, ui: UiHooks) -> Option<String> {
     let memory = ctx.as_context().data().memory?;
     let packed = ui.panic_message?.call(&mut *ctx, ()).ok()?;
-    let msg = String::from_utf8(read_packed(&*ctx, memory, packed)).ok()?;
+    let msg = String::from_utf8(read_packed(&*ctx, memory, packed).ok()?).ok()?;
     (!msg.is_empty()).then_some(msg)
 }
 
@@ -832,11 +888,14 @@ impl KernelBundle {
             });
             let memory = store.data().memory.expect("kernel bridge: bundle exports no memory");
             let called = ui.alloc.call(&mut *store, args.len() as u32).and_then(|ptr| {
-                memory.write(&mut *store, ptr as usize, args).expect("argument buffer in bounds");
-                mount.call(&mut *store, (ptr, args.len() as u32))
+                memory
+                    .write(&mut *store, ptr as usize, args)
+                    .map_err(|_| wasmi::Error::new(format!("remote component: argument buffer {ptr} out of bounds")))?;
+                let packed = mount.call(&mut *store, (ptr, args.len() as u32))?;
+                read_packed(&*store, memory, packed)
             });
             match called {
-                Ok(packed) => read_packed(&*store, memory, packed),
+                Ok(bytes) => bytes,
                 Err(e) => {
                     let msg = panic_message(&mut *store, ui).unwrap_or_else(|| e.to_string());
                     drop(store);
@@ -900,7 +959,7 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
                 let args = read_args(&caller, params)?;
                 // App code: it may touch the graph, which may call back into
                 // this bundle — through this import's `Caller`.
-                let reply = with_active(&mut caller, || f(&args));
+                let reply = with_active(&mut caller, || f(&args)).map_err(wasmi::Error::new)?;
                 let alloc = caller
                     .get_export("idealyst_ui_alloc")
                     .and_then(|e| e.into_func())
@@ -918,7 +977,7 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
                 let args = read_args(&caller, params)?;
                 let then = params[2].i32().unwrap_or(0) as u32;
                 let bundle = caller.data().bundle;
-                let future = f(args);
+                let future = f(args).map_err(wasmi::Error::new)?;
                 // An executor may finish the future inside `spawn_async`
                 // (pollster, or an already-ready future); the completion
                 // then re-enters this bundle through this import's `Caller`.
@@ -951,4 +1010,23 @@ fn read_args(caller: &Caller<'_, KState>, params: &[Val]) -> Result<Vec<u8>, was
         .read(caller, ptr as usize, &mut buf)
         .map_err(|_| wasmi::Error::new(format!("bundle pointer {ptr}+{len} is out of bounds")))?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_promotion;
+
+    /// Regression: a malformed promotion reply indexed out of bounds and
+    /// panicked the app; now it parses to `None` (and the bundle is
+    /// stopped).
+    #[test]
+    fn regression_a_malformed_promotion_reply_is_refused_not_a_panic() {
+        let mut ok = vec![1u8];
+        ok.extend_from_slice(&2u32.to_le_bytes());
+        ok.extend_from_slice(&[7, 8, 9]);
+        assert_eq!(parse_promotion(&ok), Some((1, &[7u8, 8][..], &[9u8][..])));
+        for bad in [&[][..], &[1][..], &[1, 0, 0][..], &[1, 9, 0, 0, 0, 1][..]] {
+            assert_eq!(parse_promotion(bad), None, "{bad:?}");
+        }
+    }
 }

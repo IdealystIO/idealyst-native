@@ -215,6 +215,48 @@ fn a_missing_app_component_fails_to_decode_by_name() {
     assert_eq!(err, Some(DecodeError::MissingImport("NotExported".into())));
 }
 
+// ---- a bundle's replies are untrusted ----
+
+/// A link whose replies turn to garbage once `garble` is set, and which
+/// records `fail` (a real transport stops the bundle) instead of panicking.
+#[derive(Default)]
+struct Garbled {
+    garble: std::cell::Cell<bool>,
+    fails: std::cell::RefCell<Vec<String>>,
+}
+
+impl Link for Garbled {
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>> {
+        let reply = bundle::invoke(cb, args);
+        Some(if self.garble.get() { vec![0xff; 3] } else { reply })
+    }
+    fn release(&self, cb: Cb) {
+        bundle::release(cb)
+    }
+    fn fail(&self, msg: String) {
+        self.fails.borrow_mut().push(msg);
+    }
+}
+
+/// Regression: a reply that did not decode panicked the app (`CbRef::get`
+/// `panic!`ed). It now stops the bundle (`Link::fail`) and the binding
+/// answers its fallback.
+#[test]
+fn regression_a_reply_that_does_not_decode_stops_the_bundle_not_the_app() {
+    let h = Harness::new();
+    let n = h.world.enter(|| signal(1u32));
+    let tree = h.world.enter(|| text().content(move || format!("n={}", n.get())).build());
+    let link = Rc::new(Garbled::default());
+    let realized = h.mount(decode(link.clone(), &to_bytes(&bundle::tree(tree))).expect("decodes"));
+    h.flush();
+    link.garble.set(true);
+    n.set(2);
+    h.flush();
+    let fails = link.fails.borrow().clone();
+    assert!(fails.iter().any(|m| m.contains("does not decode")), "{fails:?}");
+    drop(realized);
+}
+
 // ---- a tree that fails to decode releases what crossed with it ----
 
 /// Regression: a decode that failed part-way (an app component the app

@@ -37,6 +37,14 @@ pub trait Link: 'static {
     fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>>;
     /// The host dropped one copy of `cb`.
     fn release(&self, cb: Cb);
+    /// The bundle sent the app something it can't use (a reply that does
+    /// not decode, arguments for the wrong method): it and the app
+    /// disagree, so a real transport STOPS it, as for a panic — the app
+    /// must not crash on code it did not compile. The caller then answers
+    /// its fallback. In one process there is no bundle to stop: a panic.
+    fn fail(&self, msg: String) {
+        panic!("{msg}")
+    }
 }
 
 /// Why a remote tree did not decode.
@@ -117,9 +125,14 @@ impl CbRef {
     /// A reply that does not decode is the two sides disagreeing about the
     /// protocol: a bug, so it panics.
     fn get<T: DeserializeOwned>(&self, args: &[u8]) -> Option<T> {
-        self.get_bytes(args).map(|b| {
-            from_bytes(&b).unwrap_or_else(|e| panic!("remote codec: callback {}'s reply does not decode: {e}", self.id))
-        })
+        let bytes = self.get_bytes(args)?;
+        match from_bytes(&bytes) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.conn.link.fail(format!("remote codec: callback {}'s reply does not decode: {e}", self.id));
+                None
+            }
+        }
     }
 
     /// [`get`](Self::get), undecoded: for replies their reader decodes
@@ -852,11 +865,7 @@ fn handler<A: Serialize + 'static, R: DeserializeOwned + 'static>(
     fallback: fn() -> R,
 ) -> impl Fn(&A) -> R {
     let r = cb(conn, id);
-    move |event: &A| {
-        r.call(&to_bytes(event)).map_or_else(fallback, |bytes| {
-            from_bytes(&bytes).unwrap_or_else(|e| panic!("remote codec: a handler's reply does not decode: {e}"))
-        })
-    }
+    move |event: &A| r.get::<R>(&to_bytes(event)).unwrap_or_else(fallback)
 }
 
 fn wire_file_drop(e: &runtime_shared::file_drop::FileDropEvent) -> WireFileDrop {
@@ -917,11 +926,14 @@ fn asset_source(s: WireAssetSource) -> runtime_shared::assets::AssetSource {
 }
 
 fn action(conn: &Rc<Conn>, a: WireAction) -> Action {
+    let initial = runtime_shared::__serde_json::from_str(&a.initial).unwrap_or_else(|e| {
+        conn.link.fail(format!("remote codec: action `{}`'s initial values: {e}", a.method));
+        Default::default()
+    });
     Action {
         method: intern(&a.method),
         inputs: a.inputs,
-        initial: runtime_shared::__serde_json::from_str(&a.initial)
-            .unwrap_or_else(|e| panic!("remote codec: action `{}`'s initial values: {e}", a.method)),
+        initial,
         output: a.output,
         fire: fire(conn, a.fire),
     }
@@ -1185,6 +1197,10 @@ impl ImportCx {
     pub(crate) fn subtree(&self, bytes: &[u8]) -> Element {
         subtree(&self.0, bytes)
     }
+    /// See [`Link::fail`].
+    pub(crate) fn fail(&self, msg: String) {
+        self.0.link.fail(msg)
+    }
     pub(crate) fn callback(&self, id: Cb) -> CallbackRef {
         CallbackRef(cb(&self.0, id))
     }
@@ -1313,7 +1329,7 @@ fn export_handle<T: PartialEq + 'static>(
     h
 }
 
-fn export_call(f: Rc<dyn Fn(&[u8]) -> Vec<u8>>, keep: &mut Vec<Box<dyn std::any::Any>>) -> u32 {
+fn export_call(f: Rc<dyn Fn(&[u8]) -> Result<Vec<u8>, String>>, keep: &mut Vec<Box<dyn std::any::Any>>) -> u32 {
     let (id, guard) = super::handles::hold_scoped(Held::Call(f));
     keep.push(Box::new(guard));
     id
@@ -1331,7 +1347,7 @@ fn export_stack_nav(n: &StackNav, keep: &mut Vec<Box<dyn std::any::Any>>) -> Wir
         pop: export_call(
             Rc::new(move |_: &[u8]| {
                 pop();
-                Vec::new()
+                Ok(Vec::new())
             }),
             keep,
         ),
@@ -1347,9 +1363,9 @@ fn export_swap_nav(n: &SwapNav, keep: &mut Vec<Box<dyn std::any::Any>>) -> WireS
         on_select: export_call(
             Rc::new(move |args: &[u8]| {
                 let route: String =
-                    from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a route name does not decode: {e}"));
+                    from_bytes(args).map_err(|e| format!("remote codec: a route name does not decode: {e}"))?;
                 select(intern(&route));
-                Vec::new()
+                Ok(Vec::new())
             }),
             keep,
         ),

@@ -19,12 +19,14 @@ use std::pin::Pin;
 pub const HOST_FN_MODULE: &str = "idealyst_host_fn";
 
 /// An async host function's body: encoded args in, encoded result out.
-pub type AsyncCall = fn(Vec<u8>) -> Pin<Box<dyn Future<Output = Vec<u8>>>>;
+/// `Err` when the arguments don't decode (the bundle is stopped).
+pub type AsyncCall = fn(Vec<u8>) -> Result<Pin<Box<dyn Future<Output = Vec<u8>>>>, String>;
 
 #[derive(Clone, Copy)]
 pub enum HostFnKind {
     /// Import `(args_ptr, args_len) -> reply_len`.
-    Sync(fn(&[u8]) -> Vec<u8>),
+    /// `Err` when the arguments don't decode (the bundle is stopped).
+    Sync(fn(&[u8]) -> Result<Vec<u8>, String>),
     /// Import `(args_ptr, args_len, then_callback)`: returns at once; the
     /// app runs the future and calls `then_callback` with the result.
     Async(AsyncCall),

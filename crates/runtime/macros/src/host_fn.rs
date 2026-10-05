@@ -51,31 +51,32 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         ReturnType::Type(_, ty) => quote!(#ty),
     };
 
-    // The type spellings, hashed with `DefaultHasher`'s fixed seed: stable
-    // across compilations, so app and bundle agree.
+    // The type spellings, hashed with FNV-1a: app and bundle may be built
+    // by different toolchains, and std's `DefaultHasher` promises no
+    // stability across Rust releases. Each part is length-prefixed so
+    // `(ab, c)` and `(a, bc)` differ.
     let schema: u64 = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        for ty in &arg_types {
-            quote!(#ty).to_string().hash(&mut h);
-        }
-        ret.to_string().hash(&mut h);
-        is_async.hash(&mut h);
-        h.finish()
+        let mut parts: Vec<String> = arg_types.iter().map(|ty| quote!(#ty).to_string()).collect();
+        parts.push(ret.to_string());
+        parts.push(if is_async { "async" } else { "sync" }.to_string());
+        fnv1a(&parts)
     };
     let schema_hex = format!("{schema:016x}");
     let v = quote!(::runtime_vocabulary::remote);
 
     let call_ident = format_ident!("__host_fn_call_{}", name);
     let export_ident = format_ident!("__host_fn_export_{}", name);
+    // A bundle's arguments are untrusted: one that does not decode is an
+    // `Err`, which stops that bundle (never a panic in the app).
     let decode_args = quote! {
         let mut __input: &[u8] = &__args;
         #(
-            let #arg_names: #arg_types = <#arg_types as #v::RemoteValue>::decode(&mut __input)
-                .unwrap_or_else(|e| panic!(
-                    "host_fn `{}`: argument `{}` does not decode ({}) — the load-time schema check should have refused this bundle",
-                    stringify!(#name), stringify!(#arg_names), e
-                ));
+            let #arg_names: #arg_types = <#arg_types as #v::RemoteValue>::decode(&mut __input).map_err(|e| {
+                ::std::format!(
+                    "host_fn `{}`: argument `{}` does not decode ({})",
+                    ::core::stringify!(#name), ::core::stringify!(#arg_names), e
+                )
+            })?;
         )*
     };
     let encode_reply = |value: TokenStream2| {
@@ -90,11 +91,12 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         let reply = encode_reply(quote!(#name(#(#arg_names),*).await));
         (
             quote! {
-                fn #call_ident(__args: ::std::vec::Vec<u8>)
-                    -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::std::vec::Vec<u8>>>>
-                {
+                fn #call_ident(__args: ::std::vec::Vec<u8>) -> ::core::result::Result<
+                    ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::std::vec::Vec<u8>>>>,
+                    ::std::string::String,
+                > {
                     #decode_args
-                    ::std::boxed::Box::pin(async move { #reply })
+                    ::core::result::Result::Ok(::std::boxed::Box::pin(async move { #reply }))
                 }
             },
             quote!(#v::host_fn::HostFnKind::Async(#call_ident)),
@@ -103,9 +105,9 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         let reply = encode_reply(quote!(#name(#(#arg_names),*)));
         (
             quote! {
-                fn #call_ident(__args: &[u8]) -> ::std::vec::Vec<u8> {
+                fn #call_ident(__args: &[u8]) -> ::core::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
                     #decode_args
-                    #reply
+                    ::core::result::Result::Ok(#reply)
                 }
             },
             quote!(#v::host_fn::HostFnKind::Sync(#call_ident)),
@@ -125,7 +127,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
             #(#attrs)*
             #vis fn #name(#inputs) -> #v::bundle::HostFuture<#ret> {
                 #[link(wasm_import_module = "idealyst_host_fn")]
-                extern "C" {
+                unsafe extern "C" {
                     #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
                     fn __import(args_ptr: *const u8, args_len: u32, then: u32);
                 }
@@ -145,7 +147,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
             #(#attrs)*
             #vis fn #name(#inputs) -> #ret {
                 #[link(wasm_import_module = "idealyst_host_fn")]
-                extern "C" {
+                unsafe extern "C" {
                     #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
                     fn __import(args_ptr: *const u8, args_len: u32) -> i64;
                 }
@@ -200,9 +202,33 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     })
 }
 
+/// 64-bit FNV-1a over `parts`, each prefixed with its length.
+fn fnv1a(parts: &[String]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for p in parts {
+        eat(&(p.len() as u64).to_le_bytes());
+        eat(p.as_bytes());
+    }
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The schema is a wire contract between separately built binaries:
+    /// pinned, so a change to how it is computed is a deliberate one.
+    #[test]
+    fn the_schema_hash_is_pinned() {
+        assert_eq!(fnv1a(&["u32".into(), "bool".into(), "sync".into()]), 0x4668_ca41_4944_a897);
+        assert_ne!(fnv1a(&["ab".into(), "c".into()]), fnv1a(&["a".into(), "bc".into()]));
+    }
 
     #[test]
     fn a_host_fn_splits_by_build_through_the_vocabulary() {

@@ -81,6 +81,67 @@ pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
     }
 }
 
+/// A remote component that sends the app INVALID requests on purpose, one
+/// per button: creating a signal outside any world, ending a frame it never
+/// began, writing a host slot it was never given, and a handle call that
+/// does not decode. Each must stop this bundle — never panic the app (a
+/// panic in an app built with `panic = "abort"` ends the app). The raw
+/// imports stand in for a buggy or hostile bundle.
+#[component(remote)]
+pub fn Rogue() -> Element {
+    ui! {
+        view() {
+            button(label = "signal outside a world", on_click = move || {
+                let _ = runtime_world::signal(0u8);
+            })
+            button(label = "unbalanced pop", on_click = move || rogue::enter_pop())
+            button(label = "stage foreign", on_click = move || rogue::stage_foreign())
+            button(label = "garbled handle call", on_click = move || rogue::garbled_handle_call())
+        }
+    }
+}
+
+#[cfg(idealyst_stream_guest)]
+mod rogue {
+    #[link(wasm_import_module = "idealyst_kernel")]
+    unsafe extern "C" {
+        #[link_name = "enter_pop"]
+        fn enter_pop_raw();
+        #[link_name = "value_stage"]
+        fn value_stage_raw(world: u32, slot: u32, gen: u32, bytes: *const u8, len: u32, mode: u32);
+    }
+    #[link(wasm_import_module = "idealyst_ui")]
+    unsafe extern "C" {
+        #[link_name = "handle_call"]
+        fn handle_call_raw(id: u32, args: *const u8, len: u32) -> i64;
+    }
+    pub fn enter_pop() {
+        // SAFETY: a plain import; the app validates it.
+        unsafe { enter_pop_raw() }
+    }
+    pub fn stage_foreign() {
+        let bytes = [1u8, 2, 3, 4];
+        // SAFETY: `bytes` is live for the call.
+        unsafe { value_stage_raw(999, 999, 999, bytes.as_ptr(), bytes.len() as u32, 0) }
+    }
+    pub fn garbled_handle_call() {
+        let bytes = [0xffu8; 3];
+        // SAFETY: as above.
+        unsafe {
+            handle_call_raw(1, bytes.as_ptr(), bytes.len() as u32);
+        }
+    }
+}
+
+// The app build never runs `Rogue`'s body (it mounts from the bundle);
+// these keep it compiling there.
+#[cfg(not(idealyst_stream_guest))]
+mod rogue {
+    pub fn enter_pop() {}
+    pub fn stage_foreign() {}
+    pub fn garbled_handle_call() {}
+}
+
 /// A remote component calling native code: the camera SDK's `#[host_fn]`s.
 /// `battery_level` is sync (answered inline), `take_photo` async (the app
 /// runs the real future; `spawn_then` applies the result) — written exactly

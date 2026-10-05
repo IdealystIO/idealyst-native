@@ -278,6 +278,56 @@ fn regression_a_trap_mid_scope_leaves_the_apps_kernel_frames_closed() {
     assert!(text(&a, &realized).contains("app count 3"));
 }
 
+/// Regression: a bundle's INVALID kernel requests panicked the APP (in an
+/// app built with `panic = "abort"`, that ends it): a signal created
+/// outside any world, a frame ended that was never begun, a write to a
+/// slot never exported to it, a handle call that does not decode. Each now
+/// stops the bundle that made it, as a panic in it would, and the app
+/// carries on.
+#[test]
+fn regression_a_bundles_invalid_requests_stop_it_not_the_app() {
+    for (label, expected) in [
+        ("signal outside a world", "outside World::enter"),
+        ("unbalanced pop", "never began"),
+        ("stage foreign", "was not exported to it"),
+        ("garbled handle call", "a handle call does not decode"),
+    ] {
+        let a = app();
+        let count = a.count;
+        let realized = a.h.mount(a.h.world.enter(|| {
+            ui! {
+                view() {
+                    text { "app count {count}" }
+                    spike_remoteattr::Rogue()
+                }
+            }
+        }));
+        a.h.flush();
+        a.h.press_labelled(label);
+        a.h.flush();
+        let t = text(&a, &realized);
+        assert!(t.contains("remote component `Rogue`") && t.contains(expected), "{label}: {t}");
+        a.count.set(5);
+        a.h.flush();
+        assert!(text(&a, &realized).contains("app count 5"), "{label}: the app carries on");
+    }
+}
+
+/// Regression: host-function arguments that did not decode panicked the
+/// app (the generated call `panic!`ed); they are an `Err` now, which traps
+/// — and stops — the bundle that sent them.
+#[test]
+fn regression_undecodable_host_fn_arguments_are_an_error_not_a_panic() {
+    use runtime_vocabulary::remote::host_fn::HostFnKind;
+    match spike_camera::take_photo::export().kind {
+        HostFnKind::Async(call) => {
+            let err = call(vec![0xff; 2]).err().expect("refused");
+            assert!(err.contains("take_photo") && err.contains("does not decode"), "{err}");
+        }
+        HostFnKind::Sync(_) => panic!("take_photo is async"),
+    }
+}
+
 /// The same for a panic inside a bundle EFFECT, which runs in the app's
 /// flush: the flush completes, the bundle is stopped.
 #[test]
