@@ -1,24 +1,17 @@
-//! A fake camera, shaped like a real camera SDK would be for streamed
-//! components:
-//!
-//! - the preview is a NATIVE view the bundle mounts by name (the app
-//!   exports `CameraPreview`; frames never enter wasm);
-//! - actions are `#[host_fn]`s: [`battery_level`] (sync) and
-//!   [`take_photo`] (async — resolves after a shutter delay).
-//!
-//! The `Wire` impls below are hand-written; a `#[derive(Wire)]` is the
-//! production answer once props and results carry real structs.
+//! A fake camera, shaped like a real camera SDK would be for remote
+//! components: its actions are `#[host_fn]`s — [`battery_level`] (sync) and
+//! [`take_photo`] (async — resolves after a shutter delay). Its value types
+//! derive `Remote`, so they cross as arguments and results.
 
-use stream_abi::Wire;
-use stream_macros::host_fn;
+use runtime_core::host_fn;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, runtime_core::Remote)]
 pub struct PhotoOptions {
     /// `"back"` or `"front"`. Anything else fails with `NoSuchCamera`.
     pub camera: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, runtime_core::Remote)]
 pub struct Photo {
     pub sequence: u32,
     pub width: u32,
@@ -26,61 +19,9 @@ pub struct Photo {
     pub camera: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, runtime_core::Remote)]
 pub enum CameraError {
     NoSuchCamera(String),
-}
-
-impl Wire for PhotoOptions {
-    fn type_tag() -> String {
-        "PhotoOptions".into()
-    }
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.camera.encode(out);
-    }
-    fn decode(input: &mut &[u8]) -> Option<Self> {
-        Some(PhotoOptions { camera: String::decode(input)? })
-    }
-}
-
-impl Wire for Photo {
-    fn type_tag() -> String {
-        "Photo".into()
-    }
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.sequence.encode(out);
-        self.width.encode(out);
-        self.height.encode(out);
-        self.camera.encode(out);
-    }
-    fn decode(input: &mut &[u8]) -> Option<Self> {
-        Some(Photo {
-            sequence: u32::decode(input)?,
-            width: u32::decode(input)?,
-            height: u32::decode(input)?,
-            camera: String::decode(input)?,
-        })
-    }
-}
-
-impl Wire for CameraError {
-    fn type_tag() -> String {
-        "CameraError".into()
-    }
-    fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            CameraError::NoSuchCamera(name) => {
-                out.push(0);
-                name.encode(out);
-            }
-        }
-    }
-    fn decode(input: &mut &[u8]) -> Option<Self> {
-        match u8::decode(input)? {
-            0 => Some(CameraError::NoSuchCamera(String::decode(input)?)),
-            _ => None,
-        }
-    }
 }
 
 /// Battery charge, 0.0–1.0. Sync: the bundle gets the value back inline.
@@ -90,10 +31,9 @@ pub fn battery_level() -> f64 {
     imp::drain_battery()
 }
 
-/// Take a photo. Async: in a bridged bundle this returns a future
-/// (`HostFuture`) for the framework's `spawn_then`, in a model A bundle a
-/// `HostCall` for `stream_guest::spawn_then`; in the app it is an ordinary
-/// future.
+/// Take a photo. Async: in a bundle this returns a future
+/// (`runtime_vocabulary::remote::bundle::HostFuture`) for the framework's
+/// `spawn_then`; in the app it is an ordinary future.
 #[host_fn]
 pub async fn take_photo(opts: PhotoOptions) -> Result<Photo, CameraError> {
     if opts.camera != "back" && opts.camera != "front" {

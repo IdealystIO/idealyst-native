@@ -1,6 +1,6 @@
-# stream-host — loads a streamed bundle into wasmi and binds it to the
-# app's reactive graph and scene. The guest's signals live HERE, in the
-# host's runtime-world; the guest only ever holds handles.
+# stream-host — loads a remote bundle into wasmi and binds it to the app:
+# the bundle's bridged kernel runs on the app's reactive graph, and its
+# trees are realized by the app's own registry and backend.
 
 [package]
 name = "stream-host"
@@ -10,12 +10,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# `Wire`: the codec `kernel::export_signal` & co. encode host values with.
 stream-abi = { path = "../abi" }
 # `bridge`: the host side of the kernel bridge (`kernel.rs`).
 runtime-world = { workspace = true, features = ["bridge"] }
 runtime-scene = { workspace = true }
 # `driver::spawn_async`: an async `#[host_fn]` a bundle calls runs on the
-# app's own executor.
+# app's own executor (`kernel.rs`).
 runtime-shared = { workspace = true, features = ["async-driver"] }
 # `async-driver` for `spawn_then`, which async host functions run under so
 # they get the framework's scope guarantee rather than a second one.

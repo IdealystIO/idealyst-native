@@ -1,5 +1,6 @@
-# stream-abi — the byte-level contract between a streamed bundle (a wasm
-# guest) and the app that loads it. Zero dependencies on purpose: the guest
+# stream-abi — `Wire`, the byte codec the bridged loader's hand-written
+# kernel exports (`stream_host::kernel::export_signal` & co.) and the
+# hand-written test bundles share. Zero dependencies on purpose: a bundle
 # links it, and every byte it pulls in ships inside every bundle.
 
 [package]

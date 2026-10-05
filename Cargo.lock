@@ -9781,9 +9781,7 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "stream-abi",
  "stream-host",
- "stream-macros",
 ]
 
 [[package]]
@@ -9795,8 +9793,6 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "stream-abi",
- "stream-macros",
 ]
 
 [[package]]
@@ -9806,6 +9802,7 @@ dependencies = [
  "host-appkit",
  "host-mock",
  "idea-ui",
+ "libc",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
@@ -11248,11 +11245,9 @@ dependencies = [
 name = "spike-camera"
 version = "0.1.0"
 dependencies = [
+ "runtime-core",
  "runtime-shared",
  "runtime-vocabulary",
- "stream-abi",
- "stream-guest",
- "stream-macros",
 ]
 
 [[package]]
@@ -11262,14 +11257,6 @@ dependencies = [
  "runtime-core",
  "runtime-vocabulary",
  "runtime-world",
-]
-
-[[package]]
-name = "spike-guest"
-version = "0.1.0"
-dependencies = [
- "spike-camera",
- "stream-guest",
 ]
 
 [[package]]
@@ -11572,13 +11559,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stream-guest"
-version = "0.1.0"
-dependencies = [
- "stream-abi",
-]
-
-[[package]]
 name = "stream-host"
 version = "0.1.0"
 dependencies = [
@@ -11589,15 +11569,6 @@ dependencies = [
  "rustc-hash 2.1.2",
  "stream-abi",
  "wasmi",
-]
-
-[[package]]
-name = "stream-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -11617,7 +11588,6 @@ dependencies = [
  "stack-navigator",
  "stream-abi",
  "stream-host",
- "wasmi",
 ]
 
 [[package]]

@@ -25,4 +25,4 @@ spike-camera = { path = "../camera" }
 stack-navigator = { path = "../../../sdk/client/navigators/stack" }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

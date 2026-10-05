@@ -7,9 +7,10 @@
 //! its list of host functions, and the app refuses a bundle at load that
 //! calls one it doesn't export, or exports with a different signature.
 //!
-//! The same records as `stream-abi`'s (model A's ABI crate): the vocabulary
-//! is published and that crate isn't, so a library's `#[host_fn]` (idea-ui)
-//! can't name it.
+//! These are the records the bridged loader (`stream_host::kernel`) checks a
+//! bundle's host-function imports against. They live in the vocabulary so a
+//! library's `#[host_fn]` (idea-ui) can emit them: the vocabulary is
+//! published, the loader crate isn't.
 
 use std::future::Future;
 use std::pin::Pin;

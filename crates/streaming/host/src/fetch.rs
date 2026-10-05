@@ -9,9 +9,6 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// Where the demo looks for the bundle server by default.
-pub const DEFAULT_URL: &str = "http://127.0.0.1:7878/bundle.wasm";
-
 /// Where the demo looks for the bridged RemoteCounter bundle by default.
 pub const DEFAULT_REMOTE_URL: &str = "http://127.0.0.1:7878/remote.wasm";
 

@@ -1,5 +1,5 @@
-//! Build `spike-guest` for wasm32 and embed it — the app's built-in copy of
-//! the bundle, used when no bundle server is reachable.
+//! Build the spike's bundles for wasm32 and embed them, for the tests and as
+//! the demo's built-in copy when no bundle server is reachable.
 
 use std::path::PathBuf;
 
@@ -11,7 +11,7 @@ fn main() {
     let target_dir = out.join("guest-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
-    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
+    for package in ["spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
         let status = guest_build_command(&cargo, &manifest, &target_dir, package)
             .status()
             .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));
@@ -22,12 +22,12 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed=src/guest_build.rs");
-    for dir in GUEST_SOURCES.iter().chain(BRIDGED_SOURCES) {
+    for dir in BRIDGED_SOURCES {
         println!("cargo:rerun-if-changed={}", manifest.join(dir).display());
     }
     // And every source each bundle compiled (cargo's dep-info): a library
     // one of them uses that the list above doesn't name still reruns it.
-    for package in ["spike-guest", "spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
+    for package in ["spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
         for source in bundle_sources(&target_dir, package) {
             println!("cargo:rerun-if-changed={}", source.display());
         }

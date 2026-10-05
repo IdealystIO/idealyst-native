@@ -5,7 +5,6 @@
 //! cargo run --release -p stream-spike --bin stream-serve   # port 7878
 //! ```
 //!
-//! - `GET /bundle.wasm` — `spike-guest` (model A), from `GUEST_SOURCES`.
 //! - `GET /remote.wasm` — `spike-remoteguest`, the bridged RemoteCounter,
 //!   from `REMOTE_GUEST_SOURCES` (edit `spike/components/src/lib.rs`).
 //! - `GET /showcase.wasm` — the showcase's bundle
@@ -31,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use stream_spike::guest_build::{
-    bundle_sources, guest_build_command, guest_wasm_path, EXAMPLE_SOURCES, GUEST_SOURCES, REMOTE_GUEST_SOURCES, SHOWCASE_SOURCES,
+    bundle_sources, guest_build_command, guest_wasm_path, EXAMPLE_SOURCES, REMOTE_GUEST_SOURCES, SHOWCASE_SOURCES,
 };
 
 /// One served bundle.
@@ -161,7 +160,6 @@ fn main() {
     let target_dir = crate_dir.join("../../../target/stream-serve");
     let served: Arc<Vec<(&str, Arc<Mutex<State>>)>> = Arc::new(
         [
-            ("/bundle.wasm", "spike-guest", "spike_guest", GUEST_SOURCES),
             ("/remote.wasm", "spike-remoteguest", "spike_remoteguest", REMOTE_GUEST_SOURCES),
             ("/example.wasm", "remote-example-bundle", "remote_example", EXAMPLE_SOURCES),
             ("/showcase.wasm", "remote-showcase-bundle", "remote_showcase", SHOWCASE_SOURCES),
@@ -197,8 +195,8 @@ fn main() {
 
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
     eprintln!(
-        "[stream-serve] serving http://127.0.0.1:{port}/bundle.wasm (edit spike/guest/src) and \
-         /remote.wasm (edit spike/components/src) — refresh the demo to load"
+        "[stream-serve] serving http://127.0.0.1:{port}/remote.wasm (edit spike/components/src), \
+         /example.wasm (edit example/app/src) and /showcase.wasm (edit showcase/app/src) — reload in the app to load"
     );
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };

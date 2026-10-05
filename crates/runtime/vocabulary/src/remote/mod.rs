@@ -779,6 +779,22 @@ impl<T: RemoteValue> RemoteValue for Option<T> {
     }
 }
 
+/// What a fallible `#[host_fn]` returns (`async fn take_photo(..) ->
+/// Result<Photo, CameraError>`): a `bool` tag (`true` = `Ok`), then the
+/// value — the same framing as `Option`.
+impl<T: RemoteValue, E: RemoteValue> RemoteValue for Result<T, E> {
+    fn encode(&self, out: &mut Vec<u8>) {
+        __send_value(&self.is_ok(), out);
+        match self {
+            Ok(v) => v.encode(out),
+            Err(e) => e.encode(out),
+        }
+    }
+    fn decode(input: &mut &[u8]) -> Result<Self, String> {
+        Ok(if __try_receive_value::<bool>(input)? { Ok(T::decode(input)?) } else { Err(E::decode(input)?) })
+    }
+}
+
 impl<T: RemoteValue> RemoteValue for Vec<T> {
     fn encode(&self, out: &mut Vec<u8>) {
         __send_value(&(self.len() as u64), out);

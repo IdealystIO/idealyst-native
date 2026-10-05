@@ -835,8 +835,8 @@ impl KernelBundle {
 
 /// Check every host-function import of `module` against the app's
 /// allowlist, and define the ones that pass. Runs before instantiation, so
-/// a refused bundle never executes. Same import shapes and schema check as
-/// model A (`crate::Bundle`), over this loader's transport:
+/// a refused bundle never executes. The import shapes, as the framework's
+/// `#[host_fn]` stubs declare them (`runtime_core::host_fn`):
 ///
 /// - sync `(args_ptr, args_len) -> reply_len`: the reply goes into the
 ///   bundle's argument buffer (`idealyst_ui_alloc`), where its stub reads it;
@@ -930,18 +930,4 @@ fn read_args(caller: &Caller<'_, KState>, params: &[Val]) -> Result<Vec<u8>, was
         .read(caller, ptr as usize, &mut buf)
         .map_err(|_| wasmi::Error::new(format!("bundle pointer {ptr}+{len} is out of bounds")))?;
     Ok(buf)
-}
-
-/// A host function declared with `stream-macros`' `#[host_fn]` (whose
-/// records are `stream-abi`'s, shared with model A), as the bridged loader
-/// takes it. The framework's `runtime_core::host_fn` gives these directly.
-pub fn bridged(def: stream_abi::host_fn::HostFnDef) -> HostFnDef {
-    HostFnDef {
-        path: def.path,
-        schema: def.schema,
-        kind: match def.kind {
-            stream_abi::host_fn::HostFnKind::Sync(f) => HostFnKind::Sync(f),
-            stream_abi::host_fn::HostFnKind::Async(f) => HostFnKind::Async(f),
-        },
-    }
 }

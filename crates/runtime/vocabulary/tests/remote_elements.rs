@@ -799,3 +799,26 @@ fn regression_a_node_stays_small_enough_for_a_bundles_stack() {
 // (crates/streaming/spike/tests/remote_attr.rs): in-process, the "app"
 // navigator's own signals would be created through the bridged engine too,
 // which never happens in an app (the app side runs the native engine).
+
+/// A fallible `#[host_fn]` (`async fn take_photo(..) -> Result<Photo,
+/// CameraError>`) sends its result as a `RemoteValue`: both arms round
+/// trip, and a reply cut short is an error rather than a misread value.
+#[test]
+fn a_result_crosses_as_a_value_both_arms() {
+    use runtime_vocabulary::remote::RemoteValue;
+    fn round_trip(v: &Result<Vec<u32>, String>) -> Result<Vec<u32>, String> {
+        let mut out = Vec::new();
+        v.encode(&mut out);
+        let mut input: &[u8] = &out;
+        let back = <Result<Vec<u32>, String>>::decode(&mut input).expect("decodes");
+        assert!(input.is_empty(), "the whole value is consumed");
+        back
+    }
+    assert_eq!(round_trip(&Ok(vec![4032, 3024])), Ok(vec![4032, 3024]));
+    assert_eq!(round_trip(&Err("NoSuchCamera".into())), Err("NoSuchCamera".to_string()));
+
+    let mut out = Vec::new();
+    Result::<String, String>::Err("front".into()).encode(&mut out);
+    let mut truncated: &[u8] = &out[..out.len() - 1];
+    assert!(<Result<String, String>>::decode(&mut truncated).is_err());
+}

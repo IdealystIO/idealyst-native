@@ -4,92 +4,29 @@ A remote component (working name in code: "streamed"; the attribute will be `#[c
 
 This directory is a spike. It proves the boundary works end to end and measures what it costs. Nothing here is published or depended on by the framework.
 
-The spike holds **two designs** of what runs inside a bundle:
+What runs inside a bundle is **the bridged design**: the bundle runs the same real framework code, but its reactive kernel is *bridged*: its signals, effects and scopes live in the app's own graph, and the tree it builds crosses to the app as data, to be realized by the app's own registry and backend. One graph, one backend; the bundle carries only its own code (147 KB for `RemoteCounter`). See [The bridged design](#the-bridged-design).
 
-- **Model A, a host-owned graph** (`abi`, `guest`, `host`, `spike/guest`). The bundle holds handles into the app's reactive graph and returns small node descriptions. Bundles are small, around 37 KB. But `ui!` can't run inside one: it expands to the framework's full author API, about 220 items, so model A would need a second implementation of that API.
-- **The bridged design** (`spike/kernelguest`, `spike/remoteguest`, `spike/remoteattr`, `example`). The bundle runs the same real framework code, but its reactive kernel is *bridged*: its signals, effects and scopes live in the app's own graph, and the tree it builds crosses to the app as data, to be realized by the app's own registry and backend. One graph, one backend; the bundle carries only its own code (147 KB for `RemoteCounter`). **This is the chosen direction.** See [The bridged design](#the-bridged-design).
-
-A third design, model B, ran a private copy of the framework inside each bundle; it was removed once the bridged design replaced it — see [History](#history-model-b).
-
-What can carry over from model A to the bridged design: the manifest and import checks, prop contracts, `#[host_fn]`, and native host components.
+Two earlier designs were built and deleted; what they established is under [History: model A](#history-model-a) (a host-owned graph with hand-written node descriptions) and [History: model B](#history-model-b) (a private copy of the framework in each bundle).
 
 | Crate | Role |
 |---|---|
-| `abi` (`stream-abi`) | The byte contract both sides link: import/export names, the `Wire` codec, `Node` descriptions, the `Manifest`. Zero dependencies, because it ships inside every bundle. |
-| `guest` (`stream-guest`) | What a bundle links: handle-backed `signal` / `effect`, node builders, the `bundle!` export macro. |
-| `host` (`stream-host`) | Loads a bundle into wasmi, checks its manifest, binds it to the app's reactive graph, and turns node descriptions into `runtime_scene::Element`s. |
-| `macros` (`stream-macros`) | `#[host_fn]`. |
-| `spike` (`stream-spike`) | Builds the spike's bundles to wasm32 in its build script. Holds the end-to-end tests, model A's `measure` example and `stream-serve`. |
+| `abi` (`stream-abi`) | `Wire`, the byte codec the hand-written kernel-bridge code shares with the loader (`stream_host::kernel::export_signal` & co., `spike/kernelguest`, `spike/remoteguest`). Zero dependencies, because it ships inside every bundle that uses it. `#[component(remote)]` code doesn't use it: its values cross as the framework's `RemoteValue`. |
+| `host` (`stream-host`) | Loads a bundle into wasmi and runs its bridged kernel on the app's graph (`kernel`), the loader `#[component(remote)]` mounts from (`remote::install` / `install_with`), and a minimal bundle fetch (`fetch`). |
+| `spike` (`stream-spike`) | Builds the spike's bundles to wasm32 in its build script. Holds the end-to-end tests and `stream-serve`. |
 | `spike/components` | `RemoteCounter`: a plain crate of `#[component]`s the app also links natively (the parity baseline). |
 | `spike/kernelguest` | Test bundle for the kernel bridge: plain `runtime-world` code whose graph is the app's. |
 | `spike/remoteguest` | `spike/components`' `RemoteCounter` as a bridged remote component, with a hand-written mount export. |
 | `spike/remoteattr` | `#[component(remote)]` end to end: a remote component using an app component. |
+| `spike/camera` | A fake camera SDK: two `#[host_fn]`s (`battery_level`, async `take_photo`) the remote `Snapshot` calls. |
+| `spike/ideaui` | Remote components using every idea-ui component. |
+| `spike/demo` (`stream-demo`) | An AppKit window: `RemoteCounter` from a served bundle next to the same component compiled in. |
 | `example/app`, `example/bundle` | An app and its remote components in one file. |
-
-## The boundary
-
-**The host owns the only reactive graph.** A guest `signal()` creates a real `runtime_world` signal in the host's world; the guest holds a `u32` handle. A guest `effect()` is a real host effect whose body calls back into the guest. Because there is one graph, flushed once, a guest can never see host state a frame late, and each bundle doesn't carry its own copy of the kernel. The cost is a host call per signal access (measured below).
-
-**Closures stay in the guest.** They cross as callback ids. When the owning scope tears down, the host releases each id (`stream_drop`).
-
-**Props are a named, typed contract.** Each component declares its props in `bundle!`, and the declarations go into the manifest as a schema: name, type tag, and whether the prop is required or has a default. The app passes props by name with `HostProps`. Host signals can be passed in read-only (`read_signal`) or two-way (`signal`). A read-only handle has no setter on the guest side, and the host also refuses writes to it.
-
-**Prop drift is checked before mount.** It works like a server function's `IncompatibleVersion`, except the check compares individual props instead of a whole-function hash. A hash would also reject harmless changes, such as adding an optional prop. `Bundle::check(name, &props)` and `Bundle::try_mount` return a `MountError` that names every problem, and nothing runs in the guest. The rules match what would compile at a native call site:
-
-| Bundle change | Result |
-|---|---|
-| A prop's type changed | Incompatible: `TypeChanged` |
-| New required prop | Incompatible: `MissingRequired` |
-| New prop with a default | Compatible; the guest uses its default |
-| Prop removed | Compatible; the app's value is dropped |
-| `Signal<T>` → `ReadSignal<T>` | Compatible; the guest gets the read-only view |
-| `ReadSignal<T>` → `Signal<T>` | Incompatible, because it would give the guest write access the app never granted |
-
-The app decides what to do with a `MountError`. The demo checks a fetched bundle against the exact props it is about to mount with, `stream_spike::demo_props`. If the check fails, it keeps running the previous bundle and shows the mismatch. To run the same check from a terminal against the running server:
-
-```sh
-cargo run -p stream-spike --example check_served
-```
-
-**App functions are `#[host_fn]`s** (`stream-macros`). This is the `#[server]` shape pointed the other way. You define the function once, in a crate both the app and the bundle depend on (`spike/camera` is the example):
-
-```rust
-#[host_fn] pub fn battery_level() -> f64 { … }
-#[host_fn] pub async fn take_photo(opts: PhotoOptions) -> Result<Photo, CameraError> { … }
-```
-
-What it compiles to:
-
-- **In the app:** the real function, plus `take_photo::export()`. The app lists what bundles may call: `HostExports::new().host_fn(take_photo::export())`. That list is an allowlist, so an OTA bundle can't start using a capability the app never offered it.
-- **In a bundle:** a stub that calls one wasm import, named `<module path>::<fn>#<signature hash>`. The bundle's import section therefore lists exactly the host functions it calls. The linker writes that list, and drops unused stubs. At load, the host reads it and refuses the bundle with `MissingHostFunctions` or `IncompatibleHostFunctions`, before any guest code runs.
-
-Sync calls return their value inline. An async `#[host_fn]` becomes a `HostCall<T>` in the bundle, run with `stream_guest::spawn_then(call, then)`, which has the same shape as the native `spawn_then(future, then)`. The host runs it under that same native `spawn_then`, so the guarantee is the same:
-
-- The IO always completes.
-- `then` runs only if the scope that started the call is still mounted. That scope is the component being built, or the component whose event handler started the call.
-
-The bundle has no async executor of its own. Composing several async steps belongs inside one host function.
-
-A bundle build is marked by `--cfg idealyst_stream_guest`, which the bundle build passes; it is deliberately not a cargo feature. Features unify, so one `cargo build` covering both the app and a guest crate would hand the app guest stubs in place of its own functions. A `--cfg` belongs to a single build, and a bundle is always its own build.
-
-Native views stay native. The camera preview is a host component (`CameraPreview`) that the bundle places by name; frames never enter wasm.
-
-**Host components are imported by stable name**, never by `TypeId`, since a `TypeId` only means something inside one compiled binary. A bundle declares its imports in its manifest. `Bundle::load` refuses a bundle whose imports the app doesn't export (`LoadError::MissingHostComponents`) before any component body runs. This is how an old app binary rejects a newer bundle.
-
-**One wasm instance per bundle**, shared by every mount of every component in it.
-
-### Invariants worth knowing
-
-- **Guest effects are created right after the guest call that asked for them, not during it.** A kernel effect runs its body immediately, and that body is a guest call, which would borrow the wasmi `Store` twice. Nothing can observe the difference, because the component body's own writes are staged until flush anyway.
-- **`Signal::update` re-enters the guest through the wasmi `Caller`.** It has to apply the guest's closure to the *staged* value, so two updates in one batch compose (0 → 1 → 2). A `set(get() + 1)` would lose one. The test `guest_updates_compose_within_one_batch_and_guest_effects_rerun` fails against that naive version.
-- **A host flush inside a guest call would break the above.** It panics with a diagnostic rather than deadlocking.
-- **Signal handles are never reused**, so a stale guest handle can't point at a later signal.
+| `showcase/app`, `showcase/bundle` | A fuller app whose screens come from a bundle. |
 
 ## Running it
 
 ```sh
 cargo test -p stream-abi -p stream-spike
-cargo run --release -p stream-spike --example measure        # model A; host MUST be --release
 cargo test -p stream-spike --test kernel_bridge               # the bridged kernel over wasm
 cargo test -p stream-spike --test remote_counter              # a ui! component, bridged, vs native
 cargo test -p runtime-world --features loopback-engine       # every kernel test, through the bridge
@@ -99,14 +36,14 @@ cargo test -p runtime-vocabulary --features remote-loopback --test remote_elemen
 ### See it live
 
 ```sh
-cargo run --release -p stream-spike --bin stream-serve   # serves the bundle, rebuilds on save
+cargo run --release -p stream-spike --bin stream-serve   # serves the bundles, rebuilds on save
 cargo run --release -p stream-demo                        # AppKit window
 ```
 
-The window shows the **bridged** RemoteCounter (green, from `/remote.wasm`) next to the same component compiled into the app (grey), and model A's components below.
+The window shows RemoteCounter from the bundle (green, from `/remote.wasm`) next to the same component compiled into the app (grey).
 
-1. Edit `spike/components/src/lib.rs` (the bridged component) or `spike/guest/src/lib.rs` (model A).
-2. Press **Refresh bundle**. The tinted sections remount from the new builds; the app is not rebuilt or restarted. The grey native copy keeps the old code, which is the point of comparison.
+1. Edit `spike/components/src/lib.rs`.
+2. Press **Refresh bundle**. The green section remounts from the new build; the app is not rebuilt or restarted. The grey native copy keeps the old code, which is the point of comparison.
 3. The host buttons drive host state the bridged component reads: `external ± 1` is a prop, **switch user** is context.
 
 Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic at any other time (a press handler, an effect) does the same; see [Panics](#panics-in-a-bundle).
@@ -117,7 +54,7 @@ How it behaves:
 - **A failed build** shows the compiler error, and the app keeps running the previous bundle.
 - **With no server running**, the app uses the bundle compiled into it.
 
-The test `swapping_bundles_releases_the_old_instance_and_keeps_host_state` pins down the swap: the old instance's closures and handles are all released, and host state carries over.
+`tests/remote_attr.rs` pins down the swap: `regression_a_reload_frees_the_replaced_bundles_code` checks a reload frees the old bundle, and the reload tests check app state carries over.
 
 ## `#[component(remote)]`: an app and its remote components in one file
 
@@ -269,7 +206,7 @@ The app lists what bundles may call: `stream_host::remote::install_with(wasm, ve
 
 Plain functions are always compiled into the bundle; only `#[host_fn]` crosses to the app. `tests/remote_attr.rs` covers sync, async, the load-time refusals and a result for a stopped bundle.
 
-`stream-macros` keeps its own `#[host_fn]` for model A (whose bundles use `stream-abi`'s codec and build with an extra `--cfg idealyst_stream_model_a`); a bridged app takes its records through `stream_host::kernel::bridged`.
+`spike/camera` is a host-function SDK in miniature: its value types (`PhotoOptions`, `Photo`, `CameraError`) derive `Remote`, and `take_photo` returns a `Result`, which crosses as a value like `Option`.
 
 ## Panics in a bundle
 
@@ -344,9 +281,19 @@ Model B compiled the real `runtime-world`, `runtime-scene` and `runtime-vocabula
 1. **wasmi's default tail-call dispatch can overflow the native stack.** It keeps the stack flat only if LLVM turns every handler call into a sibling call, which depends on how wasmi and its dependencies are compiled: with wasmi at opt-level 3, a large bundle overflowed a 2 MB thread. iOS's main thread has 1 MB. The host uses **`portable-dispatch`**, a loop that never grows the stack, at a measured cost of 1.7–1.9× on UI work and 4.8× on pure compute. `regression_bundle_runs_on_a_2mb_thread` (`tests/remote_attr.rs`) pins it, and was checked to overflow with tail-call dispatch at opt-level 3.
 2. **A bundle crate must be `cdylib` only.** Built as both `cdylib` and `rlib`, a bundle lost link-time optimization (668 KB instead of 545 KB). Components live in an ordinary crate with a thin `cdylib` wrapper — or, as in `example`, a bundle package whose `lib` points at the app's source.
 
-## Model A measurements
 
-Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (release, opt-level z, no wasm-opt). "Native" is the same component compiled into the binary. These numbers were taken with wasmi's tail-call dispatch, before the switch to portable dispatch; see the dispatch table above for that cost.
+## History: model A
+
+Model A was the spike's first design: a **host-owned graph with hand-written node descriptions** (crates `stream-guest`, `stream-macros`, `spike/guest`, `spike/demo`'s second half, and most of `stream-abi` / `stream-host`). A bundle linked a small guest runtime of its own: a guest `signal()` was a `u32` handle into a per-bundle table of real signals in the app's world, a guest `effect()` a real app effect whose body called back into the guest, and a component returned a `Node` description (`view` / `text` / `button` / host component by name) that the app turned into `runtime_scene::Element`s. Components declared their props in a `bundle!` macro, which went into a manifest the app checked before mount (prop types, required props, `Signal` → `ReadSignal` narrowing allowed, the reverse refused). Bundles were small, around 37 KB. But `ui!` couldn't run inside one — it expands to the framework's full author API, about 220 items — so model A would have needed a second implementation of that API. The bridged design replaced it, carrying over `#[host_fn]` (now `runtime_core::host_fn`) with its load-time import check, and native host components imported by stable name rather than `TypeId`. Model A was deleted; its code is in git history (`3bf2ae0d`). What it established still holds:
+
+- **One graph, owned by the app.** A guest that never owns reactive state can't see app state a frame late. The bridged kernel keeps that property with the real kernel API instead of handles.
+- **Bundle builds are marked by `--cfg idealyst_stream_guest`, not a cargo feature.** Features unify, so one `cargo build` covering both the app and a bundle crate would hand the app bundle stubs in place of its own functions.
+- **Anything the app imports by name, never by `TypeId`**, since a `TypeId` only means something inside one compiled binary.
+- **Re-entering the bundle mid-call goes through the wasmi `Caller`.** An effect created during a bundle call runs its body (a bundle call) at once; borrowing the `Store` again would panic. The bridged loader publishes each import's `Caller` for the same reason (`kernel.rs`, "Re-entrancy").
+
+### Model A measurements
+
+Apple M3 Max, host-mock scene, medians. The guest was the 28 KB `spike/guest` (release, opt-level z, no wasm-opt). "Native" is the same component compiled into the binary. These numbers were taken with wasmi's tail-call dispatch, before the switch to portable dispatch; see model B's finding 1 above for that cost.
 
 | | Streamed | Native |
 |---|---|---|
@@ -360,12 +307,12 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 | One signal read, raw crossing with no decoding | 57 ns | — |
 | Pure compute (20 M xorshift steps) | 3.9× slower | 1× |
 
-### What the measurements changed
+### What the measurements found (still true)
 
 1. **wasmi must be built at `opt-level = 3`.** The workspace release profile is size-optimized (`"z"`). Built that way, wasmi was about 2.5× slower in every phase. The root `Cargo.toml` now overrides opt-level for the wasmi crates and `wasmparser`. Cargo only reads profiles from the root workspace, so **an app that streams components needs the same lines in its own `Cargo.toml`.**
-2. **The guest's wasm stack should be small.** rustc defaults the wasm32 stack to 1 MB, so the module's initial memory was 17 pages, and the interpreter zeroes all of it on instantiate. The spike's build script links the guest with `-zstack-size=65536`, which brings initial memory down to 2 pages.
+2. **The guest's wasm stack should be small.** rustc defaults the wasm32 stack to 1 MB, so the module's initial memory was 17 pages, and the interpreter zeroes all of it on instantiate. The spike's bundle builds (`guest_build_command`) still link every bundle with `-zstack-size=65536`, which brings initial memory down to 2 pages.
 3. **Formatting code is a big part of bundle size.** One `format!("{:.0}", f64)` pulled in float formatting and took the bundle from 29 KB to 66 KB. Integer math brought it back to 37 KB. Avoid float and `{:?}` formatting in bundles, or move them to the host.
-4. **The guest's read helper cost more than the crossing.** A thread-local `RefCell<Vec>` buffer added about 300 ns per read in the interpreter. Reading into a 64-byte stack buffer removed most of that. What remains of the typed read beyond the raw crossing is `Wire` decoding run by the interpreter.
+4. **Bundle-side helpers can cost more than the crossing.** Model A's guest read helper, with a thread-local `RefCell<Vec>` buffer, added about 300 ns per read in the interpreter; reading into a 64-byte stack buffer removed most of that. Code that runs in the interpreter is ~20× native, so small bundle-side overheads show up.
 
 ## Not covered yet
 
@@ -376,5 +323,4 @@ Apple M3 Max, host-mock scene, medians. The guest is the 28 KB `spike/guest` (re
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **A poisoned bundle can keep running in one case.** If a host→bundle call made *from inside* a bundle call traps (a bundle calling `flush`, whose effects then panic), the outer bundle frame is still on the stack and resumes. Its later imports still reach the app's graph. Imports could refuse a poisoned bundle, at the cost of every import returning a `Result`.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.
-- **Host component imports are still hand-listed** in `bundle!`. They could use the same import-section trick as `#[host_fn]`.
 - **Bundle signing, and caching compiled modules by content hash.**

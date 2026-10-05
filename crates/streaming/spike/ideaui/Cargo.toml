@@ -23,4 +23,4 @@ idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

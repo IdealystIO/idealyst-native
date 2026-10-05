@@ -109,11 +109,8 @@ members = [
     # Streamed components (spike): a wasm guest bound to the host's
     # reactive graph through wasmi. See crates/streaming/README.md.
     "crates/streaming/abi",
-    "crates/streaming/guest",
     "crates/streaming/host",
-    "crates/streaming/macros",
     "crates/streaming/spike",
-    "crates/streaming/spike/guest",
     "crates/streaming/spike/camera",
     "crates/streaming/spike/components",
     "crates/streaming/spike/kernelguest",
@@ -749,8 +746,9 @@ strip = "symbols"        # Strip symbol info from the final binary.
 
 # The wasm interpreter behind streamed components (crates/streaming) is
 # CPU-bound in a way UI code is not. Built at "z" it measured ~2.5x slower
-# on every phase of crates/streaming/spike's `measure` (module compile,
-# first call, steady-state execution). Speed-optimize just the interpreter.
+# on every phase (module compile, first call, steady-state execution; see
+# "History: model A" in crates/streaming/README.md). Speed-optimize just
+# the interpreter.
 # Profiles only apply from the ROOT workspace, so an app that streams
 # components must carry these lines in its own Cargo.toml.
 [profile.release.package.wasmi]
