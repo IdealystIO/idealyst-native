@@ -40,7 +40,7 @@
 pub(crate) mod guest;
 // In a bundle build the host side is compiled (the parity check names it)
 // but not used — the host is the app, on the far side of the wasm boundary.
-#[cfg_attr(all(idealyst_stream_guest, not(all(feature = "bridge", any(not(target_arch = "wasm32"), idealyst_stream_guest)))), allow(dead_code))]
+#[cfg_attr(all(idealyst_stream_guest, not(feature = "bridge")), allow(dead_code))]
 pub(crate) mod host;
 /// The bundle side over wasm: what a remote bundle's kernel runs on.
 #[cfg(idealyst_stream_guest)]

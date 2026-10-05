@@ -1211,9 +1211,6 @@ impl Effect {
 // needs `T`: the downcast, the staged-read check, the value writes.
 // ============================================================================
 
-/// Run `f` against a signal's typed storage. Panics on a stale handle or a
-/// re-entrant access (the engine's diagnostics); `None` means the world is
-/// dead, and the caller decides what that means.
 /// The typed view of a signal's erased storage.
 #[inline]
 fn typed<T: PartialEq + 'static>(d: &mut dyn AnySignal) -> &mut SignalData<T> {
@@ -1222,6 +1219,9 @@ fn typed<T: PartialEq + 'static>(d: &mut dyn AnySignal) -> &mut SignalData<T> {
         .expect("runtime-world: signal type mismatch despite matching generation — kernel bug")
 }
 
+/// Run `f` against a signal's typed storage. Panics on a stale handle or a
+/// re-entrant access (the engine's diagnostics); `None` means the world is
+/// dead, and the caller decides what that means.
 #[inline]
 fn with_data<T: PartialEq + 'static, R>(
     world: WorldId,
@@ -1285,7 +1285,7 @@ fn read_signal<T: PartialEq + 'static, R>(
         // the final answer, and that is exactly the 0.5 → 1.0 hazard.
         //
         // Deliberately placed on the READ path only: `stage_update` reaches
-        // the same storage through `with_signal_data` directly and never
+        // the same storage through `Engine::signal_write` directly and never
         // passes here, so `update` — the API the migration guide tells
         // people to switch to — is silent by construction.
         //

@@ -1,10 +1,14 @@
 //! The native engine: the in-process arena every app runs. See
 //! [`crate::engine`] for the seam this implements and why it exists.
 //!
-//! Everything here was the body of `lib.rs` before the engine seam; the
-//! code is unchanged except that values arrive and leave type-erased
-//! (`Box<dyn AnySignal>`) and creation returns raw `(slot, gen)` pairs that
-//! the typed layer wraps into handles.
+//! Everything here was the body of `lib.rs` before the engine seam. What
+//! changed with it: values arrive and leave type-erased (`Box<dyn
+//! AnySignal>`), and creation returns raw `(slot, gen)` pairs that the typed
+//! layer wraps into handles; a one-entry world cache sits in front of the
+//! registry (see `Tls::cached_arena`); `world_drop` is keyed by id (a
+//! `World` no longer holds its arena), running cleanups before the world
+//! unregisters; and the thread-local's own `Drop` runs the cleanups of
+//! worlds still registered when the thread ends.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};

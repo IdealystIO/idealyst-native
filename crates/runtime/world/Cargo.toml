@@ -38,6 +38,8 @@ loopback-engine = ["bridge"]
 # Compile the bridged engine (`src/bridge`): what a remote-component host
 # (the app side) and a remote bundle link. Off for every other app — see the
 # note on `mod bridge` in `src/lib.rs` for why it is not always compiled.
+# On a web build (wasm32, not a bundle) it does nothing: remote components
+# are a native mechanism.
 bridge = []
 
 [dependencies]

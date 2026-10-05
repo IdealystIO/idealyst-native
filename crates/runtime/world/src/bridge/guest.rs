@@ -9,7 +9,7 @@
 //! - effect bodies;
 //! - cleanups;
 //! - context values, plus the interning of this side's `TypeId`s into the
-//!   `u32` context keys the host stores (a `TypeId` means nothing outside
+//!   `Id` context keys the host stores (a `TypeId` means nothing outside
 //!   the binary that minted it).
 //!
 //! Re-entrancy follows the native engine's discipline: a value or body is
@@ -82,7 +82,9 @@ struct LocalState {
     by_handle: FxHashMap<Handle, Id>,
     effects: FxHashMap<Id, Body>,
     cleanups: FxHashMap<Id, Box<dyn FnOnce()>>,
-    ctx: FxHashMap<Id, Box<dyn Any>>,
+    /// `Rc` so [`read_ctx`] can run user code (a `Clone`) with no table
+    /// borrow held.
+    ctx: FxHashMap<Id, Rc<dyn Any>>,
     ctx_keys: FxHashMap<TypeId, Id>,
     /// Host context types this bundle may inject, by type: the name the
     /// host declared them under, and how to decode one.
@@ -387,16 +389,18 @@ impl GuestHooks for Local {
 fn store_ctx(value: Box<dyn Any>) -> Id {
     with_local(|l| {
         let id = l.next_id();
-        l.ctx.insert(id, value);
+        l.ctx.insert(id, Rc::from(value));
         id
     })
 }
 
-/// `f` sees bundle-side context value `ctx`. Held under the table borrow,
-/// as the native engine holds its context borrow across the same `f` (a
-/// downcast and a `Clone`).
+/// `f` sees bundle-side context value `ctx`, with NO table borrow held: `f`
+/// is a downcast and the type's `Clone`, which is user code and may touch
+/// the kernel (read a signal it holds). Natively only the arena's context
+/// map is borrowed across it, and the kernel doesn't need that one.
 fn read_ctx<R>(ctx: Id, f: impl FnOnce(&dyn Any) -> R) -> Option<R> {
-    LOCAL.with(|l| l.borrow().ctx.get(&ctx).map(|v| f(&**v)))
+    let value = LOCAL.with(|l| l.borrow().ctx.get(&ctx).cloned())?;
+    Some(f(&*value))
 }
 
 impl<H: HostOps> Engine for Bridged<H> {

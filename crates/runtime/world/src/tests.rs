@@ -3018,8 +3018,30 @@ fn regression_world_dropped_during_thread_teardown_is_quiet() {
     assert_eq!(cleaned.load(Ordering::SeqCst), 1, "the effect's cleanup ran, once");
 }
 
+/// Regression: on the bridged engine a context type's `Clone` ran under the
+/// bundle-side table borrow, so a `Clone` that reads a signal it holds
+/// panicked "already borrowed" — on the bridge only; natively it works.
+#[test]
+fn regression_a_context_clone_that_reads_a_signal_works() {
+    struct Probe(Signal<u32>, u32);
+    impl Clone for Probe {
+        fn clone(&self) -> Self {
+            Probe(self.0, self.0.peek())
+        }
+    }
+    let w = World::new();
+    w.enter(|| {
+        let s = signal(3u32);
+        let (_, _owned) = collect_owned(|| {
+            provide(Probe(s, 0));
+            let probe = inject::<Probe>().expect("provided");
+            assert_eq!(probe.1, 3, "the clone read the signal");
+        });
+    });
+}
+
 // ---------------------------------------------------------------------------
-// Host-owned values crossing into a bundle (bridge phase 3b), in-process.
+// Host-owned values crossing into a bundle, in-process.
 // Only meaningful where the bridged engine is the active one: `Active` plays
 // the bundle, and the host side is native slots created directly on the
 // native engine — exactly what a remote-component host hands a bundle.
