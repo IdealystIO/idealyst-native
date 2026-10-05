@@ -3869,6 +3869,85 @@ mod layout_tests {
             }
         }
 
+        // --- 13b. `max_lines` must cap the label AND its Taffy measure.
+        //
+        // `StyleRules::max_lines` (one line: ellipsize without wrap; n lines:
+        // wrap + `GtkLabel:lines` + ellipsize) is only half done if the label
+        // draws n lines inside a box Taffy sized for the full wrapped text — the
+        // row would keep the full height with blank space under the "…". The
+        // measure fn reads the label live, so this drives the real path:
+        // `apply_style` → `text::apply` → `text::measure` at a narrow width.
+        // Relations, not pixels, so host fonts don't matter.
+        {
+            let long = "a long name that certainly wraps onto several lines \
+                        when it is laid out in a narrow table cell";
+            let narrow = runtime_layout::Size {
+                width: runtime_layout::AvailableSpace::Definite(120.0),
+                height: runtime_layout::AvailableSpace::MaxContent,
+            };
+            let unknown = runtime_layout::Size { width: None, height: None };
+            let node = rc.borrow_mut().create_text(long, &a11y);
+            let label = node
+                .widget
+                .downcast_ref::<gtk4::Label>()
+                .expect("text leaf is a GtkLabel")
+                .clone();
+            let style_with = |max_lines: Option<u32>| {
+                std::rc::Rc::new(StyleRules {
+                    font_size: Some(runtime_shared::Tokenized::Literal(
+                        runtime_shared::Length::Px(14.0),
+                    )),
+                    max_lines,
+                    ..StyleRules::default()
+                })
+            };
+
+            // One unwrapped line of the same font, as the yardstick.
+            let probe = rc.borrow_mut().create_text("probe", &a11y);
+            rc.borrow_mut().apply_style(&probe, &style_with(None));
+            let probe_label = probe.widget.downcast_ref::<gtk4::Label>().unwrap().clone();
+            let one_line = crate::text::measure(&probe_label, unknown, narrow).height;
+
+            rc.borrow_mut().apply_style(&node, &style_with(None));
+            let unlimited = crate::text::measure(&label, unknown, narrow).height;
+            assert!(
+                unlimited > one_line * 2.5,
+                "precondition: the long text wraps to 3+ lines at 120px \
+                 (got {unlimited} vs one line {one_line})",
+            );
+
+            rc.borrow_mut().apply_style(&node, &style_with(Some(1)));
+            assert!(!label.wraps(), "max_lines 1 must not wrap");
+            assert_eq!(label.ellipsize(), gtk4::pango::EllipsizeMode::End);
+            let capped1 = crate::text::measure(&label, unknown, narrow);
+            assert_eq!(
+                capped1.height, one_line,
+                "max_lines 1 must measure ONE line tall at a narrow width",
+            );
+            assert!(capped1.width <= 120.0, "and take no more than the room offered");
+
+            rc.borrow_mut().apply_style(&node, &style_with(Some(2)));
+            assert!(label.wraps(), "max_lines 2 wraps (GtkLabel:lines needs wrap)");
+            assert_eq!(label.lines(), 2);
+            let capped2 = crate::text::measure(&label, unknown, narrow).height;
+            assert!(
+                capped2 > one_line && capped2 < unlimited && capped2 <= one_line * 2.0 + 1.0,
+                "max_lines 2 must measure two lines (one line {one_line}, got \
+                 {capped2}, unlimited {unlimited})",
+            );
+
+            // Dropping the limit must restore today's defaults exactly.
+            rc.borrow_mut().apply_style(&node, &style_with(None));
+            assert!(label.wraps(), "dropping max_lines must re-enable wrapping");
+            assert_eq!(label.lines(), -1);
+            assert_eq!(label.ellipsize(), gtk4::pango::EllipsizeMode::None);
+            assert_eq!(
+                crate::text::measure(&label, unknown, narrow).height,
+                unlimited,
+                "dropping max_lines must give the full wrapped height back",
+            );
+        }
+
         // --- 14. The app canvas must follow the app's THEME.
         //
         // `AppEnvOps::set_app_background` was never implemented here, so the

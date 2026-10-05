@@ -40,6 +40,12 @@ pub struct TextPaint {
     pub line_height_px: Option<f32>,
     pub color: [f32; 4],
     pub align: TextAlign,
+    /// Author `max_lines`, normalised: `None` = no limit (`Some(0)` folds to
+    /// `None` in [`resolve`], so `apply` only ever sees a real limit). Lives on
+    /// the paint, not just the style, because `apply` re-runs on every
+    /// animated-colour frame and on every inherited-font refresh — the limit
+    /// has to be re-asserted from the same cached value each time.
+    pub max_lines: Option<u32>,
 }
 
 impl Default for TextPaint {
@@ -53,6 +59,7 @@ impl Default for TextPaint {
             line_height_px: None,
             color: [0.0, 0.0, 0.0, 1.0],
             align: TextAlign::Left,
+            max_lines: None,
         }
     }
 }
@@ -182,7 +189,62 @@ pub fn resolve(style: &StyleRules, prev: &TextPaint, inherited: &Inherited) -> T
         None => inherited.color,
     };
     tp.align = style.text_align.unwrap_or(TextAlign::Left);
+    // Independent like the rest: absent (or 0, the documented "no limit")
+    // means unlimited, never "keep the previous limit".
+    tp.max_lines = style.max_lines.filter(|n| *n > 0);
     tp
+}
+
+/// How a `GtkLabel` is configured to honour a paint's `max_lines`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineLimit {
+    /// `GtkLabel:wrap`.
+    pub wrap: bool,
+    /// `GtkLabel:lines` (`-1` = unlimited).
+    pub lines: i32,
+    /// `GtkLabel:ellipsize`.
+    pub ellipsize: pango::EllipsizeMode,
+}
+
+/// The label configuration for a line limit.
+///
+/// - **No limit** is exactly what `create_text` sets up: wrapping, unlimited
+///   lines, no ellipsis. A restyle that drops `max_lines` must land back here,
+///   or the limit would be one-way (the same bug class as the sticky
+///   `font_weight` above).
+/// - **One line** is ellipsize-End WITHOUT wrap. `GtkLabel:lines` (which
+///   becomes `pango_layout_set_height(-n)`) only does anything for a wrapping
+///   label, and a non-wrapping one never breaks a paragraph, so plain
+///   ellipsize is the whole of it — the CSS `white-space: nowrap` +
+///   `text-overflow: ellipsis` shape. It also makes GtkLabel's request mode
+///   constant-size, so the height measured at any width is one line.
+/// - **n > 1 lines** is wrap + `lines = n` + ellipsize-End: Pango wraps, stops
+///   after the n-th line and ellipsizes it at the tail.
+///
+/// Known divergence: Pango's negative layout height is a limit *per
+/// paragraph*, so a text containing hard `\n` breaks can show more than n
+/// lines in total (each paragraph gets up to n). `GtkLabel` exposes no
+/// whole-layout line cap (only `lines`), so this cannot be matched without
+/// dropping the native label. Single-paragraph text — the case `max_lines`
+/// exists for (names in table cells, previews) — matches web exactly.
+pub fn line_limit(max_lines: Option<u32>) -> LineLimit {
+    match max_lines.filter(|n| *n > 0) {
+        None => LineLimit {
+            wrap: true,
+            lines: -1,
+            ellipsize: pango::EllipsizeMode::None,
+        },
+        Some(1) => LineLimit {
+            wrap: false,
+            lines: -1,
+            ellipsize: pango::EllipsizeMode::End,
+        },
+        Some(n) => LineLimit {
+            wrap: true,
+            lines: i32::try_from(n).unwrap_or(i32::MAX),
+            ellipsize: pango::EllipsizeMode::End,
+        },
+    }
 }
 
 fn build_attrs(tp: &TextPaint) -> pango::AttrList {
@@ -364,6 +426,19 @@ pub fn apply(label: &gtk4::Label, tp: &TextPaint) {
     };
     label.set_xalign(xalign);
     label.set_justify(justify);
+
+    // Line limit. All three setters early-return when the value is unchanged,
+    // so re-asserting them on every animated-colour frame costs nothing and
+    // does not invalidate the layout. The Taffy measure fn (`measure`) reads
+    // the label live through `gtk_widget_measure`, whose measuring layout is a
+    // copy of the label's own (ellipsize + `lines` → `pango_layout_set_height`
+    // included), so the measured height is capped at the same n lines the
+    // label draws and the ellipsized label's minimum width drops to the
+    // ellipsis — no separate measurement path to keep in sync.
+    let limit = line_limit(tp.max_lines);
+    label.set_wrap(limit.wrap);
+    label.set_lines(limit.lines);
+    label.set_ellipsize(limit.ellipsize);
 }
 
 #[cfg(test)]
@@ -479,6 +554,61 @@ mod tests {
         assert_eq!(out.size_px, 18.0);
         assert!(matches!(out.weight, FontWeight::SemiBold));
         assert!((out.letter_spacing_px - 0.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn resolve_reads_max_lines_and_folds_zero_to_unlimited() {
+        let mut style = StyleRules::default();
+        style.max_lines = Some(2);
+        let out = resolve(&style, &TextPaint::default(), &Inherited::default());
+        assert_eq!(out.max_lines, Some(2));
+        style.max_lines = Some(0);
+        let out = resolve(&style, &TextPaint::default(), &Inherited::default());
+        assert_eq!(out.max_lines, None, "0 is documented as no limit");
+    }
+
+    /// A restyle that drops `max_lines` (e.g. a row that expands on press)
+    /// must lift the limit, not keep the previous paint's one.
+    #[test]
+    fn regression_unsetting_max_lines_lifts_the_limit() {
+        let limited = TextPaint {
+            max_lines: Some(1),
+            ..Default::default()
+        };
+        let out = resolve(&StyleRules::default(), &limited, &Inherited::default());
+        assert_eq!(out.max_lines, None, "dropping max_lines must unlimit");
+        assert_eq!(
+            line_limit(out.max_lines),
+            line_limit(TextPaint::default().max_lines),
+            "an unlimited label is configured exactly like a fresh one",
+        );
+    }
+
+    #[test]
+    fn line_limit_unlimited_is_the_create_text_default() {
+        let l = line_limit(None);
+        assert!(l.wrap, "create_text labels wrap");
+        assert_eq!(l.lines, -1);
+        assert_eq!(l.ellipsize, pango::EllipsizeMode::None);
+        assert_eq!(line_limit(Some(0)), l, "Some(0) is no limit");
+    }
+
+    /// One line must not wrap: `GtkLabel:lines` is ignored without wrap, and
+    /// a wrapping label would still break and grow taller than one line.
+    #[test]
+    fn line_limit_one_line_ellipsizes_without_wrapping() {
+        let l = line_limit(Some(1));
+        assert!(!l.wrap);
+        assert_eq!(l.ellipsize, pango::EllipsizeMode::End);
+    }
+
+    #[test]
+    fn line_limit_many_lines_wraps_and_caps() {
+        let l = line_limit(Some(3));
+        assert!(l.wrap, "lines only applies to a wrapping label");
+        assert_eq!(l.lines, 3);
+        assert_eq!(l.ellipsize, pango::EllipsizeMode::End);
+        assert_eq!(line_limit(Some(u32::MAX)).lines, i32::MAX, "no overflow");
     }
 
     #[test]
