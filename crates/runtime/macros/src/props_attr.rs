@@ -64,15 +64,24 @@ pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
         return syn::Error::new_spanned(&input.ident, "#[props] only applies to structs")
             .to_compile_error();
     };
-    let Fields::Named(fields) = &mut data.fields else {
-        return syn::Error::new_spanned(
-            &input.ident,
-            "#[props] requires a struct with named fields",
-        )
-        .to_compile_error();
+    // A unit struct is props with no fields (`pub struct SpacerProps;`):
+    // everything below only ever names fields, and `SpacerProps {}` is valid
+    // syntax for a unit struct, so it needs no other handling. Accepting it
+    // keeps a configuration-free component's props a unit struct — turning
+    // one into `{}` to satisfy this macro broke `SpacerProps` as a value.
+    let named = match &mut data.fields {
+        Fields::Named(fields) => Some(fields),
+        Fields::Unit => None,
+        Fields::Unnamed(_) => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "#[props] requires a struct with named fields (or no fields)",
+            )
+            .to_compile_error();
+        }
     };
 
-    for field in fields.named.iter_mut() {
+    for field in named.into_iter().flat_map(|f| f.named.iter_mut()) {
         // Read + strip the `#[prop(static|reactive)]` override.
         let mut forced: Option<bool> = None;
         field.attrs.retain(|a| {
@@ -640,6 +649,15 @@ mod tests {
 
     fn rendered(input: TokenStream2) -> String {
         emit(input).to_string().chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    #[test]
+    fn regression_a_unit_struct_is_props_with_no_fields() {
+        let out = emit(quote! { #[derive(Default)] pub struct SpacerProps; }).to_string();
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("pub struct SpacerProps ;"), "stays a unit struct: {out}");
+        let tuple = emit(quote! { pub struct P(u32); }).to_string();
+        assert!(tuple.contains("compile_error"), "{tuple}");
     }
 
     #[test]

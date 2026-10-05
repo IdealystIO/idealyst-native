@@ -22,7 +22,7 @@ use crate::stylesheets::Spacer as SpacerStyle;
 /// `Spacer` (an empty props crossing).
 #[runtime_core::props]
 #[derive(Default, IdealystSchema)]
-pub struct SpacerProps {}
+pub struct SpacerProps;
 
 /// An empty `flex-grow: 1` item. Drop it between siblings in a row/
 /// column `Stack` to push them to opposite ends without computing
