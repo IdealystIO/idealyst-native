@@ -472,6 +472,12 @@ mod host_side {
 
     struct Entry {
         held: Held,
+        /// Which bundle may use it: the one whose tree holds it (`Some`),
+        /// or any (`None`) — a handle the app handed to its remote
+        /// components as a prop. Ids are sequential, so without this any
+        /// bundle could drive or release another's refs, or release the
+        /// app's own prop handles (its navigators, its `pop`).
+        owner: Option<u64>,
         /// The decoded tree's connection: the entry dies with it. `None`
         /// for a handle the app handed to a bundle (a prop): that entry
         /// lives as long as its [`HoldGuard`].
@@ -485,24 +491,24 @@ mod host_side {
         static NEXT: Cell<u32> = const { Cell::new(0) };
     }
 
-    /// Hold `held` for the bundle whose decoded tree is `tree`; its id.
-    pub(crate) fn hold(held: Held, tree: Weak<dyn std::any::Any>) -> u32 {
-        insert(held, Some(tree))
+    /// Hold `held` for bundle `bundle`, whose decoded tree is `tree`; its id.
+    pub(crate) fn hold(held: Held, tree: Weak<dyn std::any::Any>, bundle: u64) -> u32 {
+        insert(held, Some(tree), Some(bundle))
     }
 
-    fn insert(held: Held, tree: Option<Weak<dyn std::any::Any>>) -> u32 {
+    fn insert(held: Held, tree: Option<Weak<dyn std::any::Any>>, owner: Option<u64>) -> u32 {
         let id = NEXT.with(|n| {
             n.set(n.get().checked_add(1).expect("remote codec: handle ids exhausted"));
             n.get()
         });
-        HANDLES.with(|h| h.borrow_mut().insert(id, Entry { held, tree, subs: HashMap::new() }));
+        HANDLES.with(|h| h.borrow_mut().insert(id, Entry { held, owner, tree, subs: HashMap::new() }));
         id
     }
 
     /// Hold `held` for a bundle until the guard drops — a handle the app
     /// passes as a prop (the mount keeps the guard).
     pub fn hold_scoped(held: Held) -> (u32, HoldGuard) {
-        let id = insert(held, None);
+        let id = insert(held, None, None);
         (id, HoldGuard(id))
     }
 
@@ -573,11 +579,12 @@ mod host_side {
         HANDLES.with(|h| h.borrow().len())
     }
 
-    /// A bundle's handle call, in one process. `None` during thread
-    /// teardown; a malformed call panics (there is no bundle to stop).
+    /// A bundle's handle call, in one process (the in-process link's
+    /// bundle, `0`). `None` during thread teardown; a malformed call panics
+    /// (there is no bundle to stop).
     pub fn try_handle_call(id: u32, args: &[u8]) -> Option<Vec<u8>> {
         HANDLES.try_with(|_| ()).ok()?;
-        Some(handle_call(id, args).unwrap_or_else(|e| panic!("{e}")))
+        Some(handle_call(0, id, args).unwrap_or_else(|e| panic!("{e}")))
     }
 
     /// Run a bundle's handle call against the real handle `id`; the encoded
@@ -585,11 +592,26 @@ mod host_side {
     /// down) is a no-op answering the method's default. `Err` for a call
     /// that does not decode, or a method the handle doesn't have: the
     /// bundle and the app disagree, and the bundle is stopped.
-    pub fn handle_call(id: u32, args: &[u8]) -> Result<Vec<u8>, String> {
+    ///
+    /// `caller` is the calling bundle ([`Link::bundle`](crate::remote::host::Link::bundle)):
+    /// a handle another bundle's tree holds is not its to use (`Err`), and an
+    /// app prop handle is any bundle's to call but none's to release.
+    pub fn handle_call(caller: u64, id: u32, args: &[u8]) -> Result<Vec<u8>, String> {
         let call: HandleCall =
             from_bytes(args).map_err(|e| format!("remote codec: a handle call does not decode: {e}"))?;
+        let owner = HANDLES.with(|h| h.borrow().get(&id).map(|e| e.owner));
+        if let Some(Some(owner)) = owner {
+            if owner != caller {
+                return Err(format!("remote codec: bundle {caller} used handle {id}, which belongs to bundle {owner}"));
+            }
+        }
         match call {
             HandleCall::Release => {
+                // An app prop handle ends with its guard, never at a
+                // bundle's say-so.
+                if owner == Some(None) {
+                    return Ok(Vec::new());
+                }
                 let gone = HANDLES.with(|h| h.borrow_mut().remove(&id));
                 drop(gone);
                 return Ok(Vec::new());
@@ -720,5 +742,52 @@ mod host_side {
             HandleCall::ScrollOffset => to_bytes(&(0.0f32, 0.0f32)),
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(all(test, not(idealyst_stream_guest)))]
+mod ownership_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    fn call(caller: u64, id: u32, c: HandleCall) -> Result<Vec<u8>, String> {
+        handle_call(caller, id, &crate::remote::to_bytes(&c))
+    }
+
+    /// Regression: the handle table was one global map with sequential
+    /// ids, so any bundle could drive or release ANOTHER bundle's refs, or
+    /// release the app's own prop handles (its navigators, its `pop`). A
+    /// tree's handles are now its bundle's alone, and an app prop handle is
+    /// any bundle's to call but ends only with its guard.
+    #[test]
+    fn regression_a_bundle_cannot_use_or_release_another_bundles_handles() {
+        let calls = Rc::new(Cell::new(0));
+        let held = |calls: &Rc<Cell<u32>>| {
+            let c = calls.clone();
+            Held::Call(Rc::new(move |_: &[u8]| {
+                c.set(c.get() + 1);
+                Ok(Vec::new())
+            }))
+        };
+
+        let (prop, guard) = hold_scoped(held(&calls));
+        call(3, prop, HandleCall::Invoke(Vec::new())).expect("any bundle may call a prop handle");
+        assert_eq!(calls.get(), 1);
+        call(3, prop, HandleCall::Release).expect("refused quietly");
+        assert_eq!(held_handles(), 1, "a bundle can't release the app's prop handle");
+        drop(guard);
+        assert_eq!(held_handles(), 0, "its guard ends it");
+
+        let tree: Rc<dyn std::any::Any> = Rc::new(());
+        let owned = hold(held(&calls), Rc::downgrade(&tree), 7);
+        let err = call(8, owned, HandleCall::Invoke(Vec::new())).err().expect("not bundle 8's");
+        assert!(err.contains("belongs to bundle 7"), "{err}");
+        assert!(call(8, owned, HandleCall::Release).is_err());
+        assert_eq!((held_handles(), calls.get()), (1, 1), "untouched");
+        call(7, owned, HandleCall::Invoke(Vec::new())).expect("its own bundle's");
+        assert_eq!(calls.get(), 2);
+        call(7, owned, HandleCall::Release).expect("its own bundle releases it");
+        assert_eq!(held_handles(), 0);
     }
 }

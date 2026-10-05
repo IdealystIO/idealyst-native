@@ -451,7 +451,9 @@ pub fn define_imports(linker: &mut Linker<KState>) {
     linker
         .func_wrap("idealyst_ui", "handle_call", |mut c: Caller<'_, KState>, id: u32, ptr: u32, len: u32| -> Imported<i64> {
             let args = read_bytes(&c, ptr, len)?;
-            let reply = kernel(&mut c, || runtime_vocabulary::remote::handles::handle_call(id, &args))?.map_err(refused)?;
+            let caller = c.data().bundle as u64;
+            let reply =
+                kernel(&mut c, || runtime_vocabulary::remote::handles::handle_call(caller, id, &args))?.map_err(refused)?;
             let alloc = c
                 .get_export("idealyst_ui_alloc")
                 .and_then(|e| e.into_func())
@@ -797,6 +799,9 @@ impl Link for UiLink {
     }
     fn fail(&self, msg: String) {
         stop(self.bundle, msg);
+    }
+    fn bundle(&self) -> u64 {
+        self.bundle as u64
     }
 }
 

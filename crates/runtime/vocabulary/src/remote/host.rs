@@ -45,6 +45,11 @@ pub trait Link: 'static {
     fn fail(&self, msg: String) {
         panic!("{msg}")
     }
+    /// Which bundle this link reaches, for telling bundles' handles apart
+    /// (`handles::handle_call`'s `caller`). `0` for an in-process link.
+    fn bundle(&self) -> u64 {
+        0
+    }
 }
 
 /// Why a remote tree did not decode.
@@ -967,10 +972,10 @@ fn fill_handle<H: 'static>(
     fill: Option<Cb>,
     wrap: fn(H) -> super::handles::Held,
 ) -> Option<Box<dyn FnOnce(H)>> {
-    let (c, r) = (Rc::downgrade(conn), cb(conn, fill?));
+    let (c, r, bundle) = (Rc::downgrade(conn), cb(conn, fill?), conn.link.bundle());
     Some(Box::new(move |h: H| {
         let tree: std::rc::Weak<dyn std::any::Any> = c;
-        let id = super::handles::hold(wrap(h), tree);
+        let id = super::handles::hold(wrap(h), tree, bundle);
         r.call(&to_bytes(&id));
     }))
 }
@@ -1225,7 +1230,7 @@ impl ImportCx {
     /// Hold `held` for this bundle's tree (it dies with the tree); its id.
     pub(crate) fn hold(&self, held: super::handles::Held) -> u32 {
         let tree: std::rc::Weak<dyn std::any::Any> = Rc::downgrade(&self.0) as std::rc::Weak<Conn>;
-        super::handles::hold(held, tree)
+        super::handles::hold(held, tree, self.0.link.bundle())
     }
 }
 
