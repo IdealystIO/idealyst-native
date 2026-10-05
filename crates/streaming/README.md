@@ -2,7 +2,7 @@
 
 A remote component (`#[component(remote)]`) is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
 
-The crates in this directory (the loader `remote-host`, the showcase, the example, the spike's fixtures and tests) are unpublished. The mechanism itself ships in the framework's own crates, all behind features an app opts into: runtime-world's `bridge`, runtime-vocabulary's `remote` (and `remote-inline`), runtime-shared's `remote-serde`, and the macros (`#[component(remote)]`, `#[derive(Remote)]`, `#[host_fn]`). An app that doesn't enable them gets none of it, and web builds never compile it.
+Three crates in this directory are published: the loader `remote-host`, the release format `remote-bundle`, and `remote-abi`. The showcase, the example and the spike's fixtures and tests are not. The mechanism itself ships in the framework's own crates, all behind features an app opts into: runtime-world's `bridge`, runtime-vocabulary's `remote` (and `remote-inline`), runtime-shared's `remote-serde`, and the macros (`#[component(remote)]`, `#[derive(Remote)]`, `#[host_fn]`). An app that doesn't enable them gets none of it, and web builds never compile it.
 
 What runs inside a bundle is **the bridged design**: the bundle runs the same real framework code, but its reactive kernel is *bridged*: its signals, effects and scopes live in the app's own graph, and the tree it builds crosses to the app as data, to be realized by the app's own registry and backend. One graph, one backend; the bundle carries only its own code (147 KB for `RemoteCounter`). See [The bridged design](#the-bridged-design).
 
@@ -11,7 +11,8 @@ Two earlier designs were built and deleted; what they established is under [Hist
 | Crate | Role |
 |---|---|
 | `abi` (`remote-abi`) | `Wire`, the byte codec the hand-written kernel-bridge code shares with the loader (`remote_host::kernel::export_signal` & co., `spike/kernelguest`, `spike/remoteguest`). Zero dependencies, because it ships inside every bundle that uses it. `#[component(remote)]` code doesn't use it: its values cross as the framework's `RemoteValue`. |
-| `host` (`remote-host`) | Loads a bundle into wasmi and runs its bridged kernel on the app's graph (`kernel`), the loader `#[component(remote)]` mounts from (`remote::install` / `install_with`), and a minimal bundle fetch (`fetch`). |
+| `host` (`remote-host`) | Loads a bundle into wasmi and runs its bridged kernel on the app's graph (`kernel`), the loader `#[component(remote)]` mounts from (`remote::install` / `install_with` / `install_with_options`, which checks signatures), and a minimal bundle fetch (`fetch`). |
+| `bundle-format` (`remote-bundle`) | The release format: a bundle's metadata and Ed25519 signature as wasm custom sections, signing keys, and the `Trust` an app checks at load. Shared by the CLI and the loader. See [Shipping bundles](#shipping-bundles-release-builds-and-signatures). |
 | `spike` (`stream-spike`) | Builds the spike's bundles to wasm32 in its build script. Holds the end-to-end tests and `stream-serve`. |
 | `spike/components` | `RemoteCounter`: a plain crate of `#[component]`s the app also links natively (the parity baseline). |
 | `spike/kernelguest` | Test bundle for the kernel bridge: plain `runtime-world` code whose graph is the app's. |
@@ -21,7 +22,7 @@ Two earlier designs were built and deleted; what they established is under [Hist
 | `spike/ideaui` | Remote components using every idea-ui component. |
 | `spike/demo` (`stream-demo`) | An AppKit window: `RemoteCounter` from a served bundle next to the same component compiled in. |
 | `example/app`, `example/bundle` | An app and its remote components in one file. |
-| `showcase/app`, `showcase/bundle` | A fuller app whose screens come from a bundle. |
+| `showcase/app` | A fuller app whose screens come from a bundle: its own library, built as the bundle. |
 
 ## Running it
 
@@ -83,7 +84,7 @@ Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the
 
 ### The showcase: a fuller app
 
-`showcase/app` is a shopping-style app whose screens come from a bundle (`src/lib.rs` is both the app and, via `showcase/bundle`, the bundle):
+`showcase/app` is a shopping-style app whose screens come from a bundle. `src/lib.rs` is both the app and the bundle: the bundle is the crate's own library compiled as one, by its build script for the embedded copy and by `idealyst build --remote` for a release:
 
 | Piece | Where | Shows |
 |---|---|---|
@@ -139,6 +140,67 @@ A prop type with no `ImportArg` doesn't stop anything compiling: it fails by nam
 **Promotion.** A bundle-created signal keeps its value in the bundle until the bundle hands it to native code. Then the app's prop decoder (which knows `T`) takes the value over: the slot keeps its subscribers and the bundle keeps its handle, but the value is now a real `SignalData<T>` in the app's arena, and the bundle reads and writes it the way it does any app signal. Native code reads it at native speed; a memo's output promotes too, and its derivation keeps writing the native value. It is two-phase (`GuestHooks::promote` / `promote_finish`), so a value the app can't decode leaves the bundle untouched. The native slot holds a `Promoted<T>` whose `as_any_mut` returns the inner `SignalData<T>`, so every native read, write and commit runs unchanged code — measured on the shipped profiles: no regression with `bridge` on or off.
 
 **Web never compiles any of this.** `remote` is a no-op on web, and the bridge, the codec and the registrations are compiled only for native targets or a bundle build, whatever features an app enables.
+
+## Shipping bundles: release builds and signatures
+
+An app declares its bundles in its `Cargo.toml`. Each is a library crate in the app's workspace, the app's own library included:
+
+```toml
+[package.metadata.idealyst.remote]
+bundles = [
+  { name = "shop", package = "shop-screens" },
+  { name = "settings", package = "my-app" },
+]
+```
+
+```sh
+idealyst remote keygen --out release.key           # once: prints the public key
+idealyst build --remote --sign-key release.key      # every bundle, signed
+idealyst build --remote --bundle shop               # just one, unsigned
+idealyst remote inspect target/idealyst/remote/shop.wasm
+idealyst remote verify target/idealyst/remote/shop.wasm --public-key <hex>
+idealyst remote sign some.wasm --key release.key    # a bundle built elsewhere
+```
+
+`idealyst build --remote` (`crates/tools/build/remote`) does this for each bundle:
+- **Compiles it** to `wasm32-unknown-unknown` with `--cfg idealyst_stream_guest`, under its own crate name, as a cdylib (`cargo rustc --crate-type cdylib`). The crate doesn't declare a crate type, and nothing is renamed: the `#[component(remote)]`s it exports are named `module_path::Name`, which the app's stubs (the same crate compiled natively) ask for. Native-only dependencies go under `[target.'cfg(not(idealyst_stream_guest))'.dependencies]`, as the showcase does for `remote-host`.
+- **Checks its imports.** It refuses a bundle importing anything the loader doesn't provide, naming the imports. wasm-bindgen's imports mean a crate uses web bindings; `env` means C or a platform API, which belongs behind a `#[host_fn]`.
+- **Reads its codec version** from the `idealyst.codec` section the vocabulary stamps into every bundle. A crate without it isn't a remote-component bundle, and the build says so.
+- **Stamps its metadata**: name, crate, version and codec.
+- **Signs it**, with `--sign-key FILE` or the hex key in `IDEALYST_REMOTE_SIGNING_KEY` (for CI).
+- **Writes** `target/idealyst/remote/<name>.wasm` and `<name>.json` (or `--remote-out`). The JSON holds the size, the SHA-256 and the signing key's id; `idealyst remote sign` keeps it current.
+
+The dev builds (the showcase's and the spike's build scripts, `stream-serve`) compile bundles with the same command, so a dev bundle and a release bundle differ only in the stamp and the signature.
+
+**The format.** A bundle stays one `.wasm` file: the release adds two custom sections, which wasm engines ignore (`remote-bundle`). `idealyst.bundle` holds the metadata as JSON. `idealyst.signature` must be the last section, and holds an Ed25519 signature over every byte before it, the metadata included, plus the id of the signing key (the first 8 bytes of the SHA-256 of the public key). So the signature covers exactly what the app will run and what the bundle claims to be, and nothing can be appended after it unnoticed. Keys are 32 bytes, written as hex, the same convention as the `auto-update` SDK's release signatures.
+
+**In the app**, signatures are opt-in:
+
+```rust
+use remote_host::remote::{install_with_options, Options, PublicKey, Trust};
+
+let remote = install_with_options(&bundle_bytes, Options {
+    host_fns: vec![device_name::export(), /* … */],
+    trust: Trust::default()
+        .key(PublicKey::from_hex(RELEASE_KEY)?)   // more `.key(..)` while rotating keys
+        .require_signature(),
+})?;
+```
+
+The check runs before the module is parsed, at install and at every `reload`, and a refused reload keeps the current bundle running.
+
+| Policy | Unsigned | Unknown key | Trusted key, matching | Trusted key, changed after signing |
+|---|---|---|---|---|
+| `require_signature()` | refused | refused | loads | refused |
+| keys only | loads | loads | loads | refused |
+| default (nothing) | loads | loads | loads | loads |
+
+A refusal is `LoadError::Untrusted`, and its message names the cause: not signed, the untrusted key's id, or "changed after signing".
+
+Tests:
+- `remote-bundle`'s units check every byte before the signature: each is flipped in turn and refused. They also cover forged metadata under an old signature, rotation, re-signing, and a section after the signature.
+- `spike/tests/signed_bundles.rs` loads a signed real bundle under a strict policy, and refuses unsigned, foreign-key and tampered ones, at install and at reload.
+- `build-remote`'s `tests/showcase_release.rs` builds the showcase as a signed release bundle through the same code `idealyst build --remote` runs.
 
 ## Refs: handles to nodes the app mounted
 
@@ -394,6 +456,6 @@ Apple M3 Max, host-mock scene, medians. The guest was the 28 KB `spike/guest` (r
 - **Every builtin primitive crosses except `graphics`** (and `lazy`, which has no meaning in a bundle). `crossing` records each decision. `graphics` never will: it hands the author's code a native GPU surface, which interpreted wasm can't drive — draw in an app component and use that from the remote component.
 - **Nested bundles**, where one bundle mounts another bundle's component by name.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.
-- **Bundle signing, and caching compiled modules by content hash.**
+- **Caching compiled modules by content hash**, and serving bundles: `idealyst build --remote` writes the files and each one's SHA-256, and the app fetches them however it likes.
 - **Interned values are never freed.** What crosses as owned data but is `'static` where it's used (an icon's paths, a route name, a `test_id`, embedded asset bytes) is interned once per distinct value, for the life of the process, within a budget (`INTERN_BUDGET_BYTES`, 64 MB). A bundle that would pass it is stopped. Freeing them would mean owned (`Rc`) data in the prims.
 - **Bundle-only helpers are plain functions.** In a bundle build every `#[component]` that isn't remote is an import of the app's copy, so a helper that exists only in the bundle (the showcase's `product_list`) can't be a `#[component]` — it's a plain fn with positional arguments. A `#[component(bundle)]`-style marker (compiled into the bundle, not imported) would let it be one.

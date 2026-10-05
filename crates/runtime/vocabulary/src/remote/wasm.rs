@@ -29,6 +29,14 @@ pub extern "C" fn idealyst_ui_codec_version() -> u32 {
     super::CODEC_VERSION
 }
 
+/// The codec version again, as a custom section (`idealyst.codec`, 4 bytes,
+/// little-endian): readable from the file without running it. The release
+/// build (`idealyst build --remote`) reads it into the bundle's metadata,
+/// and its absence tells the build a crate isn't a remote-component bundle.
+#[used]
+#[unsafe(link_section = "idealyst.codec")]
+static CODEC_SECTION: [u8; 4] = super::CODEC_VERSION.to_le_bytes();
+
 /// Room for `len` bytes of arguments; where to write them.
 ///
 /// The buffer only grows: a call reads back just the `len` bytes the host

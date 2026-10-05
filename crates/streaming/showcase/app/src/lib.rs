@@ -1,7 +1,8 @@
 //! A shopping-style app whose screens come from a remote bundle.
 //!
 //! This file compiles twice: as the app (`remote-showcase`), and as the
-//! bundle the app downloads (`remote-showcase-bundle`, wasm32). What runs
+//! bundle the app downloads (the same crate's library, built for wasm32 by
+//! `build.rs`, or for release by `idealyst build --remote`). What runs
 //! where:
 //!
 //! | Piece | Where | Shows |

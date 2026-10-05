@@ -9,8 +9,8 @@
 pub const REMOTE_GUEST_SOURCES: &[&str] =
     &["components/src", "components/Cargo.toml", "remoteguest/src", "remoteguest/Cargo.toml"];
 
-/// Sources of the showcase's bundle (`remote-showcase-bundle`).
-pub const SHOWCASE_SOURCES: &[&str] = &["../showcase/app/src", "../showcase/bundle/Cargo.toml"];
+/// Sources of the showcase's bundle (`remote-showcase`'s own library).
+pub const SHOWCASE_SOURCES: &[&str] = &["../showcase/app/src", "../showcase/app/Cargo.toml"];
 
 /// Sources of the single-file example's bundle (`remote-example-bundle`).
 pub const EXAMPLE_SOURCES: &[&str] = &["../example/app/src", "../example/bundle/Cargo.toml"];
@@ -70,7 +70,12 @@ pub fn skip_bundles(out: &std::path::Path, files: &[&str], libdir: Option<&std::
     }
 }
 
-/// A `cargo build` of bundle crate `package` for wasm32 into `target_dir`.
+/// Compile `package`'s LIBRARY for wasm32 into `target_dir`, as a cdylib
+/// bundle — the compile `idealyst build --remote` runs
+/// (`build_remote::bundle_command`), so a dev bundle is built exactly like
+/// a release one. `cargo rustc --crate-type cdylib` asks for the cdylib, so
+/// a crate that is also the app (the showcase) needn't declare one, and its
+/// bundle compiles under its own crate name.
 ///
 /// Uses its own target dir: sharing an outer build's would deadlock on
 /// cargo's build-directory lock. Flags the outer build exports for the HOST
@@ -83,7 +88,7 @@ pub fn guest_build_command(
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new(cargo);
     cmd.current_dir(crate_dir)
-        .args(["build", "--release", "--target", "wasm32-unknown-unknown", "-p", package])
+        .args(["rustc", "-p", package, "--lib", "--release", "--target", "wasm32-unknown-unknown", "--crate-type", "cdylib"])
         .arg("--target-dir")
         .arg(target_dir)
         .env_remove("RUSTFLAGS")

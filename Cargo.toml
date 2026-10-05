@@ -121,7 +121,6 @@ members = [
     "crates/streaming/example/app",
     "crates/streaming/example/bundle",
     "crates/streaming/showcase/app",
-    "crates/streaming/showcase/bundle",
     "crates/streaming/spike/demo",
     # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
     "crates/dev/parity-goldens",
@@ -318,6 +317,7 @@ members = [
     "crates/tools/build/web",
     "crates/tools/build/macos",
     "crates/tools/build/ssr",
+    "crates/tools/build/remote",
     "crates/tools/build/serverless-lambda",
     "crates/tools/build/terminal",
     "crates/tools/build/linux",
@@ -471,6 +471,10 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 css = { path = "crates/css", version = "1.8.0", registry = "idealyst" }
+# Remote components' loader and release format (crates/streaming).
+remote-abi = { path = "crates/streaming/abi", version = "1.0.0", registry = "idealyst" }
+remote-bundle = { path = "crates/streaming/bundle-format", version = "1.0.0", registry = "idealyst" }
+remote-host = { path = "crates/streaming/host", version = "1.0.0", registry = "idealyst" }
 premint-dump = { path = "crates/tools/premint-dump" }
 # Link-time distributed slices — the premint style-dump registry
 # (`runtime_core::premint`, `style-dump` feature). Link-section
@@ -518,6 +522,7 @@ build-sim = { path = "crates/tools/build/sim" }
 build-web = { path = "crates/tools/build/web" }
 build-macos = { path = "crates/tools/build/macos" }
 build-ssr = { path = "crates/tools/build/ssr" }
+build-remote = { path = "crates/tools/build/remote" }
 build-serverless-lambda = { path = "crates/tools/build/serverless-lambda" }
 run-macos = { path = "crates/tools/run/macos" }
 build-terminal = { path = "crates/tools/build/terminal" }

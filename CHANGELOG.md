@@ -135,6 +135,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Release builds and signatures for remote-component bundles**
+  (`remote-host`, `remote-bundle`, `remote-abi`, `runtime-vocabulary`,
+  CLI). `idealyst build --remote` builds every bundle an app declares
+  under `[package.metadata.idealyst.remote]`, each a library crate in its
+  workspace, the app's own included:
+  - checks it imports only what the loader provides (web bindings or
+    native code are named);
+  - stamps its name, crate, version and codec version;
+  - signs it with `--sign-key`;
+  - writes `<name>.wasm` and `<name>.json` (size, SHA-256, signing key).
+
+  `idealyst remote keygen|sign|verify|inspect` handle the keys and
+  bundles built elsewhere. A signature is an Ed25519 custom section
+  covering every other byte. An app opts in with
+  `remote_host::remote::install_with_options(.., Options { trust, .. })`:
+  `Trust::default().key(..).require_signature()` refuses unsigned,
+  foreign-key and tampered bundles at install and at every reload. The
+  loader is now published, renamed `remote-host` (it was `stream-host`),
+  with `remote-bundle` and `remote-abi`. See "Shipping bundles" in
+  `crates/streaming/README.md`.
+
 - **Generic host functions** (`runtime-vocabulary`, `runtime-macros`,
   `runtime-core`). A `#[host_fn]` can now be generic, and a remote
   bundle can call it with types the app has never compiled. A parameter

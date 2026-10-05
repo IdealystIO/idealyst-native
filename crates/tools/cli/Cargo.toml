@@ -74,6 +74,10 @@ run-android = { workspace = true }
 build-roku = { workspace = true }
 run-roku = { workspace = true }
 build-sim = { workspace = true }
+# `idealyst build --remote` / `idealyst remote`: release bundles of remote
+# components, and their signing keys.
+build-remote = { workspace = true }
+remote-bundle = { path = "../../streaming/bundle-format" }
 build-web = { workspace = true }
 build-macos = { workspace = true }
 build-ssr = { workspace = true }

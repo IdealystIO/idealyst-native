@@ -12,7 +12,7 @@
 //! — there's no point parallelizing cargo invocations against the
 //! same target dir.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use build_ios::{Target, parse_manifest};
@@ -100,6 +100,31 @@ pub struct Args {
     /// not part of the client `targets` set.
     #[arg(long)]
     pub serverless_lambda: bool,
+
+    /// Build the app's remote-component bundles for release: every bundle
+    /// declared under `[package.metadata.idealyst.remote]` (a workspace
+    /// crate's library each), compiled to wasm, checked to import only
+    /// what the loader provides, stamped with its metadata, and signed
+    /// with `--sign-key`. Writes `<name>.wasm` + `<name>.json` to
+    /// `target/idealyst/remote/` (or `--remote-out`). On its own it builds
+    /// no app targets.
+    #[arg(long)]
+    pub remote: bool,
+
+    /// `--remote` only: build just this bundle (repeatable).
+    #[arg(long = "bundle", value_name = "NAME")]
+    pub bundles: Vec<String>,
+
+    /// `--remote` only: sign every bundle with the key in this file
+    /// (`idealyst remote keygen`). Without it, the key in
+    /// `IDEALYST_REMOTE_SIGNING_KEY` is used if set; otherwise bundles are
+    /// unsigned.
+    #[arg(long, value_name = "FILE")]
+    pub sign_key: Option<PathBuf>,
+
+    /// `--remote` only: where the bundles go.
+    #[arg(long, value_name = "PATH")]
+    pub remote_out: Option<PathBuf>,
 
     /// serverless-lambda only: target CPU architecture (`arm64` default,
     /// or `x86_64`). No effect on other targets.
@@ -357,7 +382,7 @@ pub fn run(args: Args) -> Result<()> {
         || args.terminal
         || args.linux
         || args.windows;
-    let mut targets = if args.serverless_lambda && !explicit_client {
+    let mut targets = if (args.serverless_lambda || args.remote) && !explicit_client {
         Vec::new()
     } else {
         collect_targets(&args, &manifest.app.targets)
@@ -367,6 +392,7 @@ pub fn run(args: Args) -> Result<()> {
         && !args.ssr
         && !args.ssg
         && !args.serverless_lambda
+        && !args.remote
     {
         anyhow::bail!(
             "no targets to build: pass `--web` / `--ios` / `--android` / `--roku` / `--aas` / \
@@ -391,6 +417,14 @@ pub fn run(args: Args) -> Result<()> {
     if args.serverless_lambda {
         extras.push("serverless-lambda");
     }
+    if args.remote {
+        extras.push("remote bundles");
+    }
+    // `--remote` alone builds no app target (bundles are always release
+    // builds, whatever `--release` says).
+    if targets.is_empty() && extras == ["remote bundles"] {
+        eprintln!("[build] remote bundles (release)");
+    } else {
     eprintln!(
         "[build] {} targets: {}{}",
         if args.release { "release" } else { "debug" },
@@ -405,6 +439,7 @@ pub fn run(args: Args) -> Result<()> {
             format!(" (+ {})", extras.join(", "))
         },
     );
+    }
 
     // The web target's staged bundle is content-hashed; its entry shim
     // name (`<lib>.<hash>.js`) flows into the SSG export so emitted
@@ -439,6 +474,35 @@ pub fn run(args: Args) -> Result<()> {
         build_serverless_lambda_target(&dir, &args)?;
     }
 
+    if args.remote {
+        build_remote_bundles(&dir, &args)?;
+    }
+
+    Ok(())
+}
+
+/// `--remote`: the app's remote-component bundles (`build_remote`).
+fn build_remote_bundles(dir: &Path, args: &Args) -> Result<()> {
+    let sign = build_remote::signing_key(args.sign_key.as_deref())?;
+    match (&sign, &args.sign_key) {
+        (Some(k), Some(f)) => eprintln!("[build] remote: signing with key {} ({})", k.public().id(), f.display()),
+        (Some(k), None) => eprintln!("[build] remote: signing with key {} (${})", k.public().id(), build_remote::SIGNING_KEY_ENV),
+        (None, _) => eprintln!("[build] remote: bundles are unsigned (pass --sign-key to sign them)"),
+    }
+    let options = build_remote::Options { out_dir: args.remote_out.clone(), sign, only: args.bundles.clone() };
+    for b in build_remote::build(dir, &options)? {
+        let m = &b.manifest;
+        eprintln!(
+            "[build] remote: {} ({} {}) → {} — {:.1} KB, sha256 {}, {}",
+            m.name,
+            m.package,
+            m.version,
+            b.wasm.display(),
+            m.size as f64 / 1024.0,
+            &m.sha256[..16],
+            m.signed_by.as_ref().map_or("unsigned".to_string(), |k| format!("signed by {k}")),
+        );
+    }
     Ok(())
 }
 

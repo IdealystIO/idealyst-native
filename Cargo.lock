@@ -1921,6 +1921,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-remote"
+version = "1.5.2"
+dependencies = [
+ "anyhow",
+ "remote-bundle",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.8.23",
+ "wasmparser 0.224.1",
+]
+
+[[package]]
 name = "build-roku"
 version = "1.5.2"
 dependencies = [
@@ -6229,6 +6242,7 @@ dependencies = [
  "build-ios",
  "build-linux",
  "build-macos",
+ "build-remote",
  "build-roku",
  "build-runtime-server",
  "build-serverless-lambda",
@@ -6256,6 +6270,7 @@ dependencies = [
  "mcp-server",
  "pathdiff",
  "quote",
+ "remote-bundle",
  "rmcp",
  "robot-relay",
  "robot-test",
@@ -9775,11 +9790,11 @@ dependencies = [
 
 [[package]]
 name = "remote-abi"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "remote-bundle"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
@@ -9814,7 +9829,7 @@ dependencies = [
 
 [[package]]
 name = "remote-host"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "remote-abi",
  "remote-bundle",
@@ -9835,18 +9850,6 @@ dependencies = [
  "idea-ui",
  "libc",
  "remote-host",
- "runtime-core",
- "runtime-scene",
- "runtime-shared",
- "runtime-vocabulary",
- "runtime-world",
-]
-
-[[package]]
-name = "remote-showcase-bundle"
-version = "0.1.0"
-dependencies = [
- "idea-ui",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",

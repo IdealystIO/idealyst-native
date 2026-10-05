@@ -18,6 +18,7 @@ pub mod lint;
 pub mod mcp;
 pub mod new;
 pub mod publish;
+pub mod remote;
 pub mod run;
 pub mod run_linked;
 pub mod rustc_capture;

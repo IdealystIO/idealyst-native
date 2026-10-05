@@ -162,7 +162,7 @@ fn main() {
         [
             ("/remote.wasm", "spike-remoteguest", "spike_remoteguest", REMOTE_GUEST_SOURCES),
             ("/example.wasm", "remote-example-bundle", "remote_example", EXAMPLE_SOURCES),
-            ("/showcase.wasm", "remote-showcase-bundle", "remote_showcase", SHOWCASE_SOURCES),
+            ("/showcase.wasm", "remote-showcase", "remote_showcase", SHOWCASE_SOURCES),
         ]
             .into_iter()
             .map(|(path, package, artifact, sources)| {

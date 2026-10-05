@@ -1,6 +1,7 @@
-//! Build this package's own source as the remote bundle (`remote-showcase-bundle`,
-//! the same `src/lib.rs` with `--cfg idealyst_stream_guest`) and embed it:
-//! the app's built-in copy, used until it reloads a newer one.
+//! Build this package's own library as the remote bundle (the same
+//! `src/lib.rs`, with `--cfg idealyst_stream_guest`) and embed it: the
+//! app's built-in copy, used until it reloads a newer one. A release build
+//! of the same bundle is `idealyst build --remote`.
 
 use std::path::PathBuf;
 
@@ -21,32 +22,18 @@ fn main() {
     }
     let target_dir = out.join("bundle-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let package = "remote-showcase-bundle";
-    // The bundle must compile under THIS crate's name, or its imports of the
-    // app's components name a crate the app doesn't have (see the bundle's
-    // Cargo.toml). Checked here so a rename breaks the build, not the app.
-    // A build script has no CARGO_CRATE_NAME; the app's binary crate is
-    // named after its package.
-    let app_crate = std::env::var("CARGO_PKG_NAME").unwrap().replace('-', "_");
-    let bundle_manifest = std::fs::read_to_string(manifest.join("../bundle/Cargo.toml")).expect("read bundle manifest");
-    let lib_name = bundle_manifest
-        .split("[lib]")
-        .nth(1)
-        .and_then(|lib| lib.lines().find_map(|l| l.trim().strip_prefix("name = ")))
-        .map(|n| n.trim_matches('"').to_string());
-    assert_eq!(
-        lib_name.as_deref(),
-        Some(app_crate.as_str()),
-        "{package}'s [lib] name must be this app's crate name, so its app-component imports match \
-         what the app registers"
-    );
-    let status = guest_build_command(&cargo, &manifest, &target_dir, package)
+    // The bundle is this crate's own library, compiled as a bundle under
+    // its own name — what `idealyst build --remote` builds for a release
+    // (`[package.metadata.idealyst.remote]` in Cargo.toml).
+    let package = std::env::var("CARGO_PKG_NAME").unwrap();
+    let app_crate = package.replace('-', "_");
+    let status = guest_build_command(&cargo, &manifest, &target_dir, &package)
         .status()
         .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));
     assert!(status.success(), "building {package} for wasm32-unknown-unknown failed");
     std::fs::copy(guest_wasm_path(&target_dir, &app_crate), out.join("bundle.wasm")).expect("copy bundle.wasm");
     println!("cargo:rerun-if-changed=src");
-    println!("cargo:rerun-if-changed=../bundle/Cargo.toml");
+    println!("cargo:rerun-if-changed=Cargo.toml");
     // And every source the bundle compiled — the framework, idea-ui, … —
     // so editing a library it uses rebuilds the embedded copy.
     for source in bundle_sources(&target_dir, &app_crate) {

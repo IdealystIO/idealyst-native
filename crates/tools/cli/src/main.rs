@@ -106,6 +106,10 @@ enum Command {
     Scaffold(cmd::scaffold::Args),
     /// Roku: transpile `#[method]`-tagged functions to BrightScript.
     Brs(cmd::brs::Args),
+    /// Remote-component bundles: signing keys (`keygen`), and signing,
+    /// verifying or inspecting a bundle. Release builds are
+    /// `idealyst build --remote`.
+    Remote(cmd::remote::Args),
     /// Launch the framework MCP catalog server (stdio). Use as the
     /// `command` for an MCP client (Claude Desktop, claude.ai/code).
     /// Robot tools are on by default — pass `--no-robot` to omit them.
@@ -181,6 +185,7 @@ fn main() -> anyhow::Result<()> {
         Command::Icon(args) => cmd::icon::run(args),
         Command::Scaffold(args) => cmd::scaffold::run(args),
         Command::Brs(args) => cmd::brs::run(args),
+        Command::Remote(args) => cmd::remote::run(args),
         Command::Mcp(args) => cmd::mcp::run(args),
         Command::RustcCapture(args) => cmd::rustc_capture::run(args),
         Command::RunLinked(args) => cmd::run_linked::run(args),

@@ -1,0 +1,21 @@
+[package]
+name = "build-remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Release builds of remote-component bundles (`idealyst build --remote`): each bundle crate the app declares, compiled to wasm, checked, stamped with its metadata and optionally signed."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[dependencies]
+anyhow = "1"
+remote-bundle = { path = "../../../streaming/bundle-format" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+wasmparser = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = { workspace = true }
