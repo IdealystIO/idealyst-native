@@ -1540,7 +1540,13 @@ pub struct StyleRules {
     /// `text-overflow: ellipsis`; more is `-webkit-line-clamp`. Native:
     /// the platform's own line limit with tail truncation (UIKit
     /// `numberOfLines`, AppKit `maximumNumberOfLines`, Android `maxLines` +
-    /// `ellipsize`, GTK `lines` + `ellipsize`).
+    /// `ellipsize`, GTK `lines` + `ellipsize`). Windows and the terminal cut
+    /// inside their own line breaking. The CPU renderer draws one line only,
+    /// so any limit truncates that line. Roku doesn't support it.
+    ///
+    /// Text with hard line breaks differs slightly: one line joins them
+    /// with a space on web, Windows and the terminal; AppKit shows the
+    /// first line; GTK limits each paragraph separately.
     pub max_lines: Option<u32>,
 
     // --- Visual ---
