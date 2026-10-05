@@ -97,6 +97,7 @@ pub fn Scoreboard(player: String, score: ReadSignal<i64>, cheers: Signal<i64>) -
             button(label = "Tap", on_click = move || taps.update(|t| t + 1))
             button(label = "Cheer (writes the app's signal)", on_click = move || cheers.update(|c| c + 1))
             button(label = "Rap (writes the raps signal)", on_click = move || raps.update(|c| c + 1))
+            button(label = "Crash", on_click = move || panic!("oops"))
         }
     }
 }
