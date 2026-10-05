@@ -52,7 +52,11 @@ pub use runtime_macros::{
     component, doc_scope, host_fn, idealyst_tool, jsx, lazy_component, props, recipe, stylesheet, ui,
     Remote,
     IdealystSchema,
+    Key,
 };
+
+// Generic `#[host_fn]` bounds (`Key` above is its derive, this the trait).
+pub use runtime_vocabulary::host_types::{Key, KeyBytes, Numeric, Opaque, OpaqueBytes};
 
 // `lazy!` is deprecated (use `#[component(lazy)]`); re-exported for
 // compatibility while call sites migrate. The `allow` silences the

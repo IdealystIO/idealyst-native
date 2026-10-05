@@ -189,6 +189,10 @@ pub mod glue;
 #[doc(hidden)]
 pub mod glue_lazy;
 pub mod handlers;
+/// The bounds generic `#[host_fn]`s are written against (`Key`, `Opaque`,
+/// `Numeric`). In every build: such a function compiles with or without
+/// remote components.
+pub mod host_types;
 pub mod prims;
 #[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
 pub mod remote;

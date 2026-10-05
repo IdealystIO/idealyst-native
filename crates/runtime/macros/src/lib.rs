@@ -83,6 +83,7 @@ mod reactivity;
 mod remote_component;
 mod remote_derive;
 mod host_fn;
+mod key_derive;
 mod stylesheet;
 mod ui;
 mod ui_overlay;
@@ -117,6 +118,21 @@ fn finish2(out: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
 pub fn derive_remote(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as syn::DeriveInput);
     match remote_derive::derive(parsed) {
+        Ok(out) => out.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `#[derive(Key)]` — a struct or enum a generic `#[host_fn]` can compare,
+/// hash and clone without knowing its type
+/// (`runtime_vocabulary::host_types::Key`). Also emits `PartialEq`, `Eq`,
+/// `PartialOrd`, `Ord` and `Hash` (fields in order, an enum's variant
+/// first), so its order and its key bytes can't disagree; derive `Clone`
+/// yourself. See `key_derive`.
+#[proc_macro_derive(Key)]
+pub fn derive_key(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as syn::DeriveInput);
+    match key_derive::derive(parsed) {
         Ok(out) => out.into(),
         Err(e) => e.to_compile_error().into(),
     }
