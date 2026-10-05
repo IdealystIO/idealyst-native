@@ -736,6 +736,28 @@ fn a_remote_component_injects_marked_app_context() {
     assert_eq!(accent.subscriber_count(), 0, "the export ended with the component");
 }
 
+/// Regression: app context asked for from no scope (code in the world but
+/// in no component — an async continuation) registered its signals'
+/// exports AGAIN on every ask, each anchored for the world's life. One set
+/// per distinct value now.
+#[test]
+fn regression_unscoped_context_reads_export_once() {
+    use runtime_world::remote::{Host, HostOps};
+    use spike_remoteattr::Theme;
+    type H = Host<stream_host::kernel::WasmGuest>;
+    let a = app();
+    let accent = a.h.world.enter(|| runtime_world::signal("blue".to_string()));
+    a.h.world.enter(|| {
+        runtime_world::provide(Theme { accent: accent.read_only(), compact: false });
+        let before = runtime_world::remote::__export_registrations();
+        for _ in 0..3 {
+            let mut out = Vec::new();
+            assert!(H::ctx_fetch("spike_remoteattr::Theme", &mut out));
+        }
+        assert_eq!(runtime_world::remote::__export_registrations(), before + 1, "one export for the one value");
+    });
+}
+
 /// Without the app providing it, `inject` finds nothing, as natively.
 #[test]
 fn an_unprovided_remote_context_injects_nothing() {

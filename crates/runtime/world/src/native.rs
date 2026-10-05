@@ -1188,6 +1188,11 @@ pub(crate) fn untrack_push() {
 }
 
 #[cfg(test)]
+pub(crate) fn live_effects(world: WorldId) -> usize {
+    arena_of(world).map_or(0, |a| a.effects.borrow().iter().filter(|e| e.data.is_some()).count())
+}
+
+#[cfg(test)]
 pub(crate) fn untrack_depth() -> u32 {
     with_tls(|t| t.untrack_depth)
 }

@@ -3236,6 +3236,22 @@ mod host_owned_values {
         assert!(checked.get(), "the effect ran");
     }
 
+    /// Regression: an import made from no scope (in the world, but in no
+    /// component or effect — an async continuation reading context)
+    /// anchored a keepalive effect at the world root on EVERY call, one per
+    /// read for the world's life. Such an import now registers no release;
+    /// the slot's one shared entry lives on.
+    #[test]
+    fn regression_an_unscoped_import_anchors_nothing_per_call() {
+        let w = World::new();
+        let host = host_signal(&w, 4);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let before = crate::native::live_effects(w.id());
+        let reads: Vec<u32> = w.enter(|| (0..3).map(|_| import_read_signal(h, U32).get()).collect());
+        assert_eq!(reads, [4, 4, 4]);
+        assert_eq!(crate::native::live_effects(w.id()), before, "no keepalive per import");
+    }
+
     #[derive(Clone)]
     struct Theme(u32);
     #[derive(Clone)]

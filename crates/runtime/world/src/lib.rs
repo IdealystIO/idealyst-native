@@ -410,6 +410,13 @@ pub mod remote {
         crate::bridge::host::pending_scopes()
     }
 
+    /// Live export registrations, across every slot (tests: an export must
+    /// not be registered again for each repeat of the same request).
+    #[doc(hidden)]
+    pub fn __export_registrations() -> usize {
+        crate::bridge::host::export_registrations()
+    }
+
     /// Stop panicking on a bundle's invalid kernel requests on this thread:
     /// record each as a fault for [`take_fault`] instead, so the host can
     /// trap the bundle that made it. A wasm host calls this before loading
@@ -487,7 +494,14 @@ pub mod remote_guest {
         let value = (codec.decode)(&bytes).expect("kernel bridge: host value does not decode");
         let mirror: Box<dyn AnySignal> = Box::new(SignalData { value, next: None });
         let id = Active::import(h, mirror, Rc::new(TypedSync(codec)), site);
-        on_scope_drop(move || Active::release_import(id));
+        // Released with the importing scope (or effect run). Imported from
+        // no scope, nothing would ever release it — and `on_scope_drop`
+        // would anchor a keepalive effect at the world root on every call
+        // (a context read in an async continuation, say). The slot's one
+        // shared entry ([`Active::import`]) then simply lives on.
+        if in_effect() || in_collector() {
+            on_scope_drop(move || Active::release_import(id));
+        }
         Signal { world: h.0, slot: h.1, gen: h.2, _marker: PhantomData }
     }
 

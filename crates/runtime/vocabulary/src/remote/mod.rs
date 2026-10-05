@@ -2138,15 +2138,29 @@ impl<T> ViaNoContext for &Arg<T> {
 pub fn __export_context<T: RemoteContext + Clone>() -> Box<dyn std::any::Any> {
     #[cfg(not(idealyst_stream_guest))]
     {
-        Box::new(runtime_world::remote::export_context(T::NAME, |out| {
+        // Exports a value needed when it was asked for OUTSIDE any scope,
+        // one set per distinct encoding (see below).
+        let unscoped: std::cell::RefCell<std::collections::HashMap<Vec<u8>, host::Keep>> = Default::default();
+        Box::new(runtime_world::remote::export_context(T::NAME, move |out| {
             // The app's value where the bundle asked: the ambient context
             // of the remote component (whose scopes are the app's).
             let Some(value) = runtime_world::inject::<T>() else { return false };
             let mut keep = host::Keep::new();
+            let start = out.len();
             value.send(out, &mut keep);
-            // The exports its signals needed live as long as the scope that
-            // asked (the remote component).
-            runtime_world::on_scope_drop(move || drop(keep));
+            if runtime_world::in_effect() || runtime_world::in_collector() {
+                // The exports its signals needed live as long as the scope
+                // (or effect run) that asked — the remote component's.
+                runtime_world::on_scope_drop(move || drop(keep));
+            } else {
+                // Asked from no scope (code running in the world but in no
+                // component — an async continuation): `on_scope_drop` would
+                // anchor a keepalive at the world root on EVERY ask. Keep one
+                // set per distinct value instead, for as long as the app
+                // declares the context; a repeat's own guards drop here, and
+                // the cached ones (exports are refcounted) stand.
+                unscoped.borrow_mut().entry(out[start..].to_vec()).or_insert(keep);
+            }
             true
         }))
     }

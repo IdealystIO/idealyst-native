@@ -126,6 +126,10 @@ pub(crate) fn fault(msg: String) {
     }
 }
 
+pub(crate) fn export_registrations() -> usize {
+    try_host(|h| h.exports.values().map(Vec::len).sum()).unwrap_or(0)
+}
+
 /// Report faults from now on rather than panicking (see [`fault`]).
 pub(crate) fn trap_faults() {
     with_host(|h| h.trap_faults = true);
