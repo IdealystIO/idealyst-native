@@ -535,6 +535,52 @@ mod tests {
         );
     }
 
+    /// A lazy boundary whose body assembles a sheet registered as
+    /// `identity` (color `#marker`), so `dump_all_css()` shows whether the
+    /// body has run. `ready` picks the loader: finished on its first poll
+    /// (every native `#[component(lazy)]`: off wasm the chunk body is a
+    /// plain fn), or pending once first (a loader that is genuinely async).
+    fn lazy_with_body_sheet(identity: &'static str, marker: &'static str, ready: bool) -> runtime_core::Element {
+        use runtime_core::primitives::lazy::{lazy_split, LazyBodyThunk, LazyFuture};
+        use runtime_core::IntoElement as _;
+        use runtime_core::{StyleRules, StyleSheet, Tokenized, VariantSet};
+
+        /// Pending on its first poll, ready on the second.
+        struct YieldOnce(bool);
+        impl std::future::Future for YieldOnce {
+            type Output = ();
+            fn poll(mut self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+                if self.0 {
+                    std::task::Poll::Ready(())
+                } else {
+                    self.0 = true;
+                    std::task::Poll::Pending
+                }
+            }
+        }
+
+        lazy_split(move || -> LazyFuture {
+            Box::pin(async move {
+                YieldOnce(ready).await;
+                Ok(Box::new(move || {
+                    // Runtime-assembled sheet constructed AT BODY RUN —
+                    // the shape idea-theme's component sheets take.
+                    // `premint_as` registers into the assembled-sheet
+                    // registry here, so the registration is observable
+                    // iff the body executed.
+                    let _sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+                        color: Some(Tokenized::Literal(runtime_core::Color(format!("#{marker}").into()))),
+                        ..Default::default()
+                    })
+                    .premint_as(identity);
+                    runtime_vocabulary::builders::text().content("lazy body").build()
+                }) as LazyBodyThunk)
+            })
+        })
+        .placeholder(|| runtime_vocabulary::builders::text().content("loading").build())
+        .into_element()
+    }
+
     /// MECHANISM half of the lazy-premint regression pair. (The WIRING
     /// half — the generated dump wrapper enabling `async-driver`,
     /// installing the queue executor, and running the per-route pump
@@ -543,22 +589,25 @@ mod tests {
     /// fails independently for the other's regression.)
     ///
     /// A `#[component(lazy)]` screen's runtime-assembled sheets only
-    /// exist after its body runs, and the body only runs when the
-    /// spawned load future resolves AND the swap effect consumes the
-    /// staged tick at a flush. Before the dump learned to pump
-    /// (2026-08), mount + flush alone left every lazy body unexecuted:
-    /// idea-ui-docs' 50 lazily-split pages shipped a premint.css with no
-    /// rules for their pages' sheets, and `--premint-only` panicked at
-    /// style_attach's uncrawled-sheet diagnostic on first navigation.
-    /// This mounts a lazy boundary over host-mock exactly as the dump
-    /// wrapper does and asserts the body's sheet is invisible to
+    /// exist after its body runs. Before the dump learned to pump
+    /// (2026-08), a lazy body whose load was still pending after mount
+    /// never ran: idea-ui-docs' 50 lazily-split pages shipped a
+    /// premint.css with no rules for their pages' sheets, and
+    /// `--premint-only` panicked at style_attach's uncrawled-sheet
+    /// diagnostic on first navigation. This mounts a boundary whose
+    /// loader is pending at mount, over host-mock exactly as the dump
+    /// wrapper does, and asserts the body's sheet is invisible to
     /// `dump_all_css()` until one pump+flush round runs.
+    ///
+    /// Its loader yields once on purpose. Off wasm a lazy boundary polls
+    /// its loader at mount and, if it's already done, realizes the body
+    /// right there (`handlers/lazy.rs`, the off-web fast path, 2026-08-05).
+    /// This test used a ready loader until then and has failed since:
+    /// the body ran at mount, before the pump it was written to check.
+    /// [`lazy_body_styles_mint_at_mount_when_ready`] covers that path.
     #[test]
     fn lazy_body_styles_mint_after_pump() {
         use host_mock::pump::{install_executor, pump_tasks};
-        use runtime_core::primitives::lazy::{lazy_split, LazyBodyThunk, LazyFuture};
-        use runtime_core::IntoElement as _;
-        use runtime_core::{StyleRules, StyleSheet, Tokenized, VariantSet};
 
         install_executor();
         let h = host_mock::Harness::new();
@@ -569,29 +618,7 @@ mod tests {
         const IDENTITY: &str = "dumptest.lazy.bodysheet";
         const MARKER_HEX: &str = "0b1355";
 
-        let el = lazy_split(|| -> LazyFuture {
-            Box::pin(async {
-                Ok(Box::new(|| {
-                    // Runtime-assembled sheet constructed AT BODY RUN —
-                    // the shape idea-theme's component sheets take.
-                    // `premint_as` registers into the assembled-sheet
-                    // registry here, so the registration is observable
-                    // iff the body executed.
-                    let _sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
-                        color: Some(Tokenized::Literal(runtime_core::Color(
-                            format!("#{MARKER_HEX}").into(),
-                        ))),
-                        ..Default::default()
-                    })
-                    .premint_as(IDENTITY);
-                    runtime_vocabulary::builders::text().content("lazy body").build()
-                }) as LazyBodyThunk)
-            })
-        })
-        .placeholder(|| runtime_vocabulary::builders::text().content("loading").build())
-        .into_element();
-
-        let realized = h.mount(el);
+        let realized = h.mount(lazy_with_body_sheet(IDENTITY, MARKER_HEX, false));
         // The dump wrapper's pre-loop step: commit anything mount staged.
         h.world.flush();
 
@@ -599,16 +626,14 @@ mod tests {
         let css = dump_all_css();
         assert!(
             !css.contains(&*class) && !css.contains(MARKER_HEX),
-            "the lazy body must not have run yet — mount+flush alone \
+            "a pending load must not have run the body yet — mount+flush \
              realizes only the placeholder (this failing would mean the \
-             pump below is no longer what executes the body, and the \
-             wiring test's premise is stale)"
+             pump below is no longer what executes it)"
         );
 
-        // One round of the dump wrapper's per-route quiescence loop:
-        // native lazy futures are Ready on their first poll, so a single
-        // pump resolves the load and the flush runs the swap effect that
-        // executes the body.
+        // One round of the dump wrapper's per-route quiescence loop: the
+        // pump polls the load to completion, and the flush runs the swap
+        // effect that executes the body.
         pump_tasks();
         h.world.flush();
 
@@ -622,6 +647,33 @@ mod tests {
             css.contains(MARKER_HEX),
             "the body sheet's rules must be emitted, not just its class:\n{css}"
         );
+        drop(realized);
+    }
+
+    /// The other path: a loader that's done on its first poll — every
+    /// native `#[component(lazy)]`, so every lazy page the dump crawls —
+    /// realizes its body at mount, and the body's sheet is in the dump
+    /// before any pump. If the fast path went away these pages would still
+    /// mint (through [`lazy_body_styles_mint_after_pump`]'s path), so this
+    /// pins the fast path itself.
+    #[test]
+    fn lazy_body_styles_mint_at_mount_when_ready() {
+        host_mock::pump::install_executor();
+        let h = host_mock::Harness::new();
+        const IDENTITY: &str = "dumptest.lazy.readybody";
+        const MARKER_HEX: &str = "0b1356";
+
+        let realized = h.mount(lazy_with_body_sheet(IDENTITY, MARKER_HEX, true));
+        h.world.flush();
+
+        let class = runtime_core::premint_class_name(IDENTITY);
+        let css = dump_all_css();
+        assert!(
+            css.contains(&*class) && css.contains(MARKER_HEX),
+            "a ready loader's body runs at mount, so its sheet is minted with no pump; \
+             class {class:?} missing from:\n{css}"
+        );
+        assert_eq!(host_mock::pump::pending_tasks(), 0, "nothing was spawned for a ready load");
         drop(realized);
     }
 
