@@ -783,8 +783,9 @@ pub fn segmented_control() -> Element {
         Section(title = "With icons".to_string()) {
             P(content = "A row of mutually-exclusive options — the iOS segmented-picker \
                 pattern. Controlled by value: the host owns a `Signal<String>` holding the \
-                selected segment's `id`, and the segment whose `id` equals the value paints \
-                selected. Build segments with `SegmentOption::new(id, label)`.".to_string())
+                selected segment's `id`, and the segment whose `id` equals the value is \
+                filled in inside a bordered track (distinct from the underlined Tabs \
+                strip, so a value choice never reads as navigation). Build segments with `SegmentOption::new(id, label)`.".to_string())
             DemoSurface {
                 Stack(gap = StackGap::Md) {
                     SegmentedControl(

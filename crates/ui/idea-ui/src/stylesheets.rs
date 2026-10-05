@@ -2106,6 +2106,90 @@ stylesheet! {
 }
 
 // =============================================================================
+// SegmentedControl — a bordered group of mutually-exclusive options.
+// =============================================================================
+//
+// Deliberately NOT the Tabs look. A tab strip is navigation (underlined
+// labels on the page's divider); a segmented control picks a VALUE, so it
+// reads as one control: a bordered, tinted track with the selected segment
+// filled in like a raised key. It used to reuse `TabBar`/`TabButton`, and a
+// three-way setting rendered as a second tab strip on the page.
+
+stylesheet! {
+    // The track. Hugs its segments on both axes, so a control inside a
+    // stretching column stays the width of its options.
+    pub SegmentedGroup<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Stretch,
+            align_self: runtime_core::AlignSelf::FlexStart,
+            flex_shrink: 0.0,
+            padding: t.spacing.xs(),
+            gap: t.spacing.xs(),
+            background: t.color.surface_alt(),
+            border_width: 1.0,
+            border_color: t.color.border(),
+            border_radius: t.radius.md(),
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    pub SegmentButton<IdeaThemeRef> {
+        base(t) {
+            // Hold the label's natural width: segments never squash.
+            flex_shrink: 0.0,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            padding_vertical: t.spacing.xs(),
+            padding_horizontal: t.spacing.md(),
+            // The track's radius minus its padding, so the selected fill
+            // nests concentrically inside the track's corners.
+            border_radius: t.radius.sm(),
+            // A transparent 1px border at rest, so the selected segment's
+            // border and the focus ring change color without changing size.
+            border_width: 1.0,
+            border_color: Color("transparent".into()),
+            background: Color("transparent".into()),
+            color: t.color.text_muted(),
+            font_weight: FontWeight::Medium,
+            font_size: t.typography.body_size(),
+            cursor: Cursor::Pointer,
+        }
+        variant selected {
+            #[default]
+            off(_t) {}
+            on(t) {
+                background: t.color.surface(),
+                border_color: t.color.border(),
+                color: t.color.text(),
+            }
+        }
+        // `state` rules win over the variant, so none of them repaint the
+        // background: a hover wash would hide which segment is selected.
+        state hovered(t) {
+            color: t.color.text(),
+        }
+        state pressed(t) {
+            color: t.color.text(),
+        }
+        state focused(t) {
+            color: t.color.text(),
+            border_color: t.color.focus_ring(),
+        }
+        transitions {
+            color: 150ms EaseOut,
+            background: 120ms EaseOut,
+            border_color: 120ms EaseOut,
+        }
+    }
+}
+
+// =============================================================================
 // Modal / Popover — overlay content surfaces.
 // =============================================================================
 //

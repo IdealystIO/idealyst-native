@@ -319,6 +319,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **`idea-ui`: `SegmentedControl` has its own look** (`idea-ui`). It
+  used to reuse the `Tabs` stylesheets, so a three-way setting rendered
+  as a second tab strip on the page. It is now a bordered, tinted track
+  (`SegmentedGroup`) with the selected segment filled in
+  (`SegmentButton`): tabs navigate, and a segmented control picks a
+  value. Same props.
+
 - **Style layers stack the same way on every backend, and each one only
   adds the properties it sets** (`runtime-shared`, `runtime-vocabulary`,
   `css`, `backend-web`, `backend-ssr`, `premint-dump`). The order is

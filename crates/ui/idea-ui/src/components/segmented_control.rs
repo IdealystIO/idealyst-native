@@ -30,10 +30,11 @@
 //! because exactly one `id` can equal `value`.
 //!
 //! ## Appearance
-//! Reuses the [`Tabs`](super::tabs::Tabs) stylesheets — the segmented row
-//! is a `TabBar` container and each segment a `TabButton` whose `active`
-//! axis flips between `on` (selected) and `off`. That keeps the selected
-//! highlight reactive and theme-driven without a bespoke sheet.
+//! A bordered, tinted track (`SegmentedGroup`) holding one `SegmentButton`
+//! per option; the selected segment is filled in (the `selected` axis flips
+//! between `on` and `off`). It is deliberately unlike [`Tabs`](super::tabs::Tabs):
+//! tabs navigate, a segmented control picks a value, and the two must not
+//! read the same when they share a page.
 
 use std::rc::Rc;
 
@@ -41,7 +42,7 @@ use runtime_core::{
     component, pressable, recipe, resolve_style, text, ui, Element, IdealystSchema, Reactive, StyleApplication, StyleRules, StyleSheet,
 };
 
-use crate::stylesheets::{TabBar, TabButton};
+use crate::stylesheets::{SegmentButton, SegmentedGroup};
 
 thread_local! {
     static SEG_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
@@ -51,7 +52,7 @@ thread_local! {
 /// A single shared, empty base sheet for segment labels. The per-state color
 /// rides a `with_computed` layer keyed on the selected state, so the resolution
 /// cache key (sheet Rc pointer + computed key) stays stable across renders —
-/// mirrors `Tabs::tab_label_base_sheet`.
+/// the same shape as `Tabs::tab_label_base_sheet`.
 fn seg_label_base_sheet() -> Rc<StyleSheet> {
     SEG_LABEL_BASE_SHEET.with(|s| {
         if s.borrow().is_none() {
@@ -122,76 +123,75 @@ impl Default for SegmentedControlProps {
 #[component]
 pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
     let options = props.options;
-    let value = props.value; // Reactive<String> — cloned into each segment's style closure
+    let value = props.value;
     let on_change = props.on_change;
 
-    let container_style = TabBar();
-
-    // `Pressable` isn't a ui!-level tag (the framework macro omits it so
-    // idea-ui owns the styled wrapper), so each segment is built via the
-    // builder fns and collected — the same shape `Tabs` uses for its
-    // per-tab buttons.
-    let mut segments: Vec<Element> = Vec::with_capacity(options.len());
-    for option in options {
-        let id = option.id;
-        let label = option.label;
-
-        // Each segment captures its own `id` + `on_change` so the press
-        // commits the right value regardless of how many segments exist.
-        let on_change_for_seg = on_change.clone();
-        let id_for_press = id.clone();
-        let press = move || on_change_for_seg(id_for_press.clone());
-
-        // Reactive style: re-runs whenever `value` fires, flipping the
-        // `active` axis between `on` (this segment is selected) and `off`.
-        let id_for_style = id.clone();
-        let value_style = value.clone();
-        let seg_style = move || {
-            let active = if value_style.get() == id_for_style { "on" } else { "off" };
-            StyleApplication::new(TabButton::sheet()).with("active", active.to_string())
-        };
-
-        // The TabButton sheet's on/off foreground (the selected segment's accent
-        // vs muted label, and the live theme color) lives on the pressable, but
-        // native TextView/UILabel/NSTextField don't inherit text color from their
-        // parent — only web's CSS cascade does. So resolve that color and stamp it
-        // on the label NODE itself, reactively (re-runs on `value` + theme). Without
-        // this the segment label renders in the widget-default color on native: it
-        // never flips on selection AND never follows a light/dark swap. Mirrors
-        // `Tabs`.
-        let id_for_label = id.clone();
-        let value_label = value.clone();
-        let label_style = move || {
-            let on = value_label.get() == id_for_label;
-            let variant = if on { "on" } else { "off" };
-            let app = StyleApplication::new(TabButton::sheet()).with("active", variant.to_string());
-            let base = StyleApplication::new(seg_label_base_sheet());
-            if app.attaches_preminted() {
-                // Premint web build: the segment pressable's preminted class
-                // carries the on/off foreground and the label inherits it via
-                // the CSS cascade — the resolve-read below exists ONLY because
-                // native text doesn't inherit, and under `--premint-only` it
-                // would panic (sheets carry no rule closures). Mirrors `Tabs`.
-                return base;
+    ui! {
+        view(style = SegmentedGroup()) {
+            for option in options {
+                segment(option, value.clone(), on_change.clone())
             }
-            let color = resolve_style(&app).color.clone();
-            let key = if on { "seg_label_on" } else { "seg_label_off" };
-            // ENGINE-PATH ONLY: the `attaches_preminted()` early return
-            // above guarantees this layer never runs on a premint build,
-            // so the computed-layer disqualifier can't fire.
-            // idealyst-lint-disable-next-line premint-computed-layer
-            base.with_computed(key, move || StyleRules {
-                color: color.clone(),
-                ..Default::default()
-            })
-        };
-
-        let label_el: Element = text(label).with_style(label_style).into();
-        let seg: Element = pressable(vec![label_el], press).with_style(seg_style).into();
-        segments.push(seg);
+        }
     }
+}
 
-    ui! { view(style = container_style) { segments } }
+/// Build one segment pressable: the `value`-matched selected style and its
+/// label.
+///
+/// `Pressable` isn't a ui!-level tag (the framework macro omits it so
+/// idea-ui owns the styled wrapper), so the segment is built with the
+/// builder fns — the same shape `Tabs::tab_button` uses.
+fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(String)>) -> Element {
+    let id = option.id;
+
+    // The press commits this segment's own `id`.
+    let id_for_press = id.clone();
+    let press = move || on_change(id_for_press.clone());
+
+    // Reactive style: re-runs whenever `value` fires, flipping the
+    // `selected` axis between `on` and `off`.
+    let id_for_style = id.clone();
+    let value_style = value.clone();
+    let seg_style = move || StyleApplication::new(SegmentButton::sheet()).with("selected", selected_variant(&value_style, &id_for_style));
+
+    // The SegmentButton sheet's on/off foreground lives on the pressable, but
+    // native TextView/UILabel/NSTextField don't inherit text color from their
+    // parent — only web's CSS cascade does. So resolve that color and stamp it
+    // on the label NODE itself, reactively (re-runs on `value` + theme).
+    // Without this the segment label renders in the widget-default color on
+    // native: it never flips on selection AND never follows a light/dark swap.
+    // Same as `Tabs`.
+    let label_style = move || {
+        let variant = selected_variant(&value, &id);
+        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", variant.clone());
+        let base = StyleApplication::new(seg_label_base_sheet());
+        if app.attaches_preminted() {
+            // Premint web build: the segment pressable's preminted class
+            // carries the on/off foreground and the label inherits it via
+            // the CSS cascade — the resolve-read below exists ONLY because
+            // native text doesn't inherit, and under `--premint-only` it
+            // would panic (sheets carry no rule closures). Same as `Tabs`.
+            return base;
+        }
+        let color = resolve_style(&app).color.clone();
+        let key = if variant == "on" { "seg_label_on" } else { "seg_label_off" };
+        // ENGINE-PATH ONLY: the `attaches_preminted()` early return
+        // above guarantees this layer never runs on a premint build,
+        // so the computed-layer disqualifier can't fire.
+        // idealyst-lint-disable-next-line premint-computed-layer
+        base.with_computed(key, move || StyleRules {
+            color: color.clone(),
+            ..Default::default()
+        })
+    };
+
+    let label_el: Element = text(option.label).with_style(label_style).into();
+    pressable(vec![label_el], press).with_style(seg_style).into()
+}
+
+/// `"on"` for the segment whose `id` is the current value, else `"off"`.
+fn selected_variant(value: &Reactive<String>, id: &str) -> String {
+    if value.get() == id { "on" } else { "off" }.to_string()
 }
 
 recipe!(
@@ -243,18 +243,18 @@ mod tests {
         }
     }
 
-    /// The color the TabButton sheet resolves for a given active state.
-    fn tabbutton_color(active: &str) -> runtime_core::Color {
-        let app = StyleApplication::new(TabButton::sheet()).with("active", active.to_string());
+    /// The color the SegmentButton sheet resolves for a given selected state.
+    fn segment_color(selected: &str) -> runtime_core::Color {
+        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", selected.to_string());
         resolve_style(&app)
             .color
             .clone()
-            .expect("TabButton resolves a foreground")
+            .expect("SegmentButton resolves a foreground")
             .resolve()
     }
 
     // The `--premint-only` read-back: same shape as `Tabs` — the segment
-    // label resolved the TabButton color into a `with_computed` layer, which
+    // label resolved the SegmentButton color into a `with_computed` layer, which
     // disqualifies preminting and panics under `--premint-only`. On a premint
     // build the label application must premint BARE (the segment pressable's
     // preminted class carries the foreground; web inherits it); live/native
@@ -294,7 +294,7 @@ mod tests {
                 );
                 assert!(
                     resolve_style(&app).color.is_some(),
-                    "and it resolves the TabButton foreground for the label node"
+                    "and it resolves the SegmentButton foreground for the label node"
                 );
             }
         });
@@ -322,8 +322,8 @@ mod tests {
             let first = children.remove(0);
             let on = seg_label_color(first).expect("selected label carries a color");
             let off = seg_label_color(second).expect("unselected label carries a color");
-            assert_eq!(on, tabbutton_color("on"), "selected segment label = TabButton `on`");
-            assert_eq!(off, tabbutton_color("off"), "unselected segment label = TabButton `off`");
+            assert_eq!(on, segment_color("on"), "selected segment label = SegmentButton `on`");
+            assert_eq!(off, segment_color("off"), "unselected segment label = SegmentButton `off`");
             assert_ne!(on, off, "selection must change the label color");
     });
     }
@@ -335,6 +335,46 @@ mod tests {
             assert!(p.options.is_empty());
             assert_eq!(p.value.get(), String::new());
     });
+    }
+
+    /// Regression (CrewForge want_2ed95ee5): SegmentedControl drew with the
+    /// Tabs sheets (`TabBar` + `TabButton`), so a value choice rendered as an
+    /// underlined tab strip, identical to the page's `Tabs`. It must be a
+    /// bordered group whose selected segment is filled in, and must not
+    /// carry the tab underline.
+    #[test]
+    fn regression_segmented_control_is_a_bordered_group_not_a_tab_strip() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = SegmentedControl(SegmentedControlProps {
+                options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
+                value: runtime_core::signal("a".to_string()).into(),
+                ..Default::default()
+            });
+            let (group, mut children) = match classify(el) {
+                P::View { style, children, .. } => (style.expect("the group is styled").resolve(), children),
+                _ => panic!("SegmentedControl renders a row View"),
+            };
+            let width = |w: &Option<runtime_core::Tokenized<f32>>| w.as_ref().map_or(0.0, |w| w.resolve());
+            assert!(width(&group.border_left_width) > 0.0, "the group draws a border around all segments");
+            assert!(group.background.is_some(), "the group is a tinted track");
+
+            let seg_style = |seg: Element| match classify(seg) {
+                P::Pressable { style, .. } => style.expect("a segment is styled").resolve(),
+                _ => panic!("a segment is a Pressable"),
+            };
+            let off = seg_style(children.remove(1));
+            let on = seg_style(children.remove(0));
+            let bg = |s: &StyleRules| s.background.as_ref().map(|c| c.resolve());
+            assert_ne!(bg(&on), bg(&off), "the selected segment is filled in");
+            for seg in [&on, &off] {
+                assert_eq!(
+                    width(&seg.border_bottom_width),
+                    width(&seg.border_left_width),
+                    "no tab underline: a segment's border is the same on every side"
+                );
+            }
+        });
     }
 
     /// One pressable segment per option, wrapped in a single row view.

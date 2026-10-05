@@ -223,6 +223,8 @@ fn manifest_json() -> String {
         ("TabButtonDot", idea_ui::stylesheets::tab_button_dot_style()),
         ("TabDot", idea_ui::stylesheets::tab_dot_style()),
         ("TabPanel", idea_ui::stylesheets::tab_panel_style()),
+        ("SegmentedGroup", idea_ui::stylesheets::segmented_group_style()),
+        ("SegmentButton", idea_ui::stylesheets::segment_button_style()),
         ("Modal", idea_ui::stylesheets::modal_style()),
         ("Popover", idea_ui::stylesheets::popover_style()),
         ("Table", idea_ui::stylesheets::table_style()),
