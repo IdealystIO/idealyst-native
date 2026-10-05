@@ -112,12 +112,18 @@ fn pop_frame(kind: Frame) -> Option<Frame> {
 /// bundle that made the request, which stops that bundle and nothing else;
 /// the request itself is not carried out. In one process (the loopback
 /// tests) there is no bundle to stop, so it panics, as natively.
+/// Whether [`HostState::fault`] holds one: checked on EVERY kernel import
+/// ([`take_fault`]), so the common case — none — is one load, not a
+/// thread-local borrow.
+static FAULT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub(crate) fn fault(msg: String) {
     let trapped = try_host(|h| {
         if !h.trap_faults {
             return false;
         }
         h.fault.get_or_insert(msg.clone());
+        FAULT_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
         true
     })
     .unwrap_or(false);
@@ -137,6 +143,9 @@ pub(crate) fn trap_faults() {
 
 /// The fault the last bundle request raised, if any (see [`fault`]).
 pub(crate) fn take_fault() -> Option<String> {
+    if !FAULT_PENDING.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
     try_host(|h| h.fault.take()).flatten()
 }
 

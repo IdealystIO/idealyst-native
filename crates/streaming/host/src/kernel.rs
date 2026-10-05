@@ -46,6 +46,9 @@ const MODULE: &str = "idealyst_kernel";
 pub struct KState {
     bundle: u32,
     memory: Option<Memory>,
+    /// Set when the bundle is poisoned — the same flag `Inner` holds, so
+    /// every import checks it with one read (see `kernel`).
+    stopped: Rc<std::cell::Cell<bool>>,
 }
 
 /// The element codec's exports (`runtime_vocabulary::remote::wasm`); only a
@@ -82,6 +85,8 @@ struct Inner {
     /// Set by the bundle's first trap, with its panic message: the bundle is
     /// POISONED and never called again (see [`poison`]).
     poisoned: RefCell<Option<String>>,
+    /// Mirrors `poisoned.is_some()` for the imports' hot check.
+    stopped: Rc<std::cell::Cell<bool>>,
     /// Told once, when the bundle is poisoned (`KernelBundle::on_poison`).
     on_poison: RefCell<Vec<Rc<dyn Fn(&str)>>>,
 }
@@ -106,6 +111,7 @@ fn poison(inner: &Inner, msg: String) {
     }
     eprintln!("[remote] bundle {} panicked and was stopped: {msg}", inner.id);
     *inner.poisoned.borrow_mut() = Some(msg.clone());
+    inner.stopped.set(true);
     // Listeners run outside the borrow: they may register more.
     let listeners = inner.on_poison.borrow().clone();
     for f in listeners {
@@ -398,15 +404,6 @@ fn ns_checked(bundle: u32, local: i64) -> Imported<Id> {
     Ok(ns(bundle, local))
 }
 
-/// Whether bundle `bundle` was stopped ([`poison`]).
-fn stopped(bundle: u32) -> bool {
-    BUNDLES
-        .try_with(|b| b.borrow().get(&bundle).and_then(Weak::upgrade))
-        .ok()
-        .flatten()
-        .is_some_and(|inner| inner.poisoned.borrow().is_some())
-}
-
 /// The trap for an import made by, or ending in, a stopped bundle.
 fn stopped_trap(bundle: u32) -> wasmi::Error {
     refused(format!("kernel bridge: bundle {bundle} was stopped"))
@@ -421,15 +418,15 @@ fn stopped_trap(bundle: u32) -> wasmi::Error {
 /// traps on return: the bundle's outer frame would otherwise resume and keep
 /// driving the app's graph after its panic.
 fn kernel<R>(caller: &mut Caller<'_, KState>, f: impl FnOnce() -> R) -> Imported<R> {
-    let bundle = caller.data().bundle;
-    if stopped(bundle) {
+    let (bundle, stopped) = (caller.data().bundle, caller.data().stopped.clone());
+    if stopped.get() {
         return Err(stopped_trap(bundle));
     }
     let r = with_active(caller, f);
     if let Some(msg) = runtime_world::remote::take_fault() {
         return Err(refused(msg));
     }
-    if stopped(bundle) {
+    if stopped.get() {
         return Err(stopped_trap(bundle));
     }
     Ok(r)
@@ -659,7 +656,8 @@ impl KernelBundle {
             n.set(id);
             id
         });
-        let mut store = Store::new(engine, KState { bundle, memory: None });
+        let stopped = Rc::new(std::cell::Cell::new(false));
+        let mut store = Store::new(engine, KState { bundle, memory: None, stopped: stopped.clone() });
         let mut linker = Linker::new(engine);
         define_imports(&mut linker);
         link_host_fns(&module, host_fns, &mut linker)?;
@@ -723,6 +721,7 @@ impl KernelBundle {
             instance,
             hooks,
             poisoned: RefCell::new(None),
+            stopped,
             on_poison: RefCell::new(Vec::new()),
         });
         BUNDLES.with(|b| b.borrow_mut().insert(bundle, Rc::downgrade(&inner)));
@@ -1026,7 +1025,7 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
             }),
             HostFnKind::Async(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, _| {
                 let args = read_args(&caller, params)?;
-                if stopped(caller.data().bundle) {
+                if caller.data().stopped.get() {
                     return Err(stopped_trap(caller.data().bundle));
                 }
                 let then = params[2].i32().unwrap_or(0) as u32;
