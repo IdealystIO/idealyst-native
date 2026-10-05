@@ -167,7 +167,7 @@ fn with_value<H: HostOps, R>(handle: Handle, op: Op, f: impl FnOnce(&mut dyn Any
             None => Taken::Missing,
         },
     });
-    let (id, mut data, sync) = match taken {
+    let (id, data, sync) = match taken {
         Taken::Got(id, data, sync) => (id, data, sync),
         Taken::Reentrant => native::reentrant_signal_panic(handle.0, handle.1),
         Taken::Missing => panic!(
@@ -177,6 +177,12 @@ fn with_value<H: HostOps, R>(handle: Handle, op: Op, f: impl FnOnce(&mut dyn Any
             handle.0, handle.1
         ),
     };
+    // From here the value is out of its table. It goes back when this
+    // guard drops — on return, AND if anything below panics (an export
+    // gone, a refused write, a panic in `f`): left out, every later access
+    // would report a misleading re-entrancy error instead.
+    let mut taken = PutBack { id, data: Some(data) };
+    let data: &mut dyn AnySignal = &mut **taken.data.as_mut().expect("just set");
     // An imported value: refresh the mirror from the host first.
     let mut pulled = Vec::new();
     if let Some(sync) = &sync {
@@ -209,22 +215,37 @@ fn with_value<H: HostOps, R>(handle: Handle, op: Op, f: impl FnOnce(&mut dyn Any
             }
         }
     }
-    // Put back, unless the host freed the slot during `f`; then the value
-    // drops here, outside the borrow.
-    let leftover = with_local(|l| match l.values.get_mut(&id) {
-        Some(e) if !e.freed => {
-            e.data = Some(data);
-            None
-        }
-        Some(_) => {
-            let e = l.values.remove(&id).expect("present");
-            unmap(l, e.handle, id);
-            Some(data)
-        }
-        None => Some(data),
-    });
-    drop(leftover);
+    drop(taken);
     result
+}
+
+/// Puts a value [`with_value`] took out back into its entry when dropped,
+/// unless the host freed the slot meanwhile; then the value drops here,
+/// outside the borrow.
+struct PutBack {
+    id: Id,
+    data: Option<Box<dyn AnySignal>>,
+}
+
+impl Drop for PutBack {
+    fn drop(&mut self) {
+        let Some(data) = self.data.take() else { return };
+        let id = self.id;
+        let leftover = try_local(|l| match l.values.get_mut(&id) {
+            Some(e) if !e.freed => {
+                e.data = Some(data);
+                None
+            }
+            Some(_) => {
+                let e = l.values.remove(&id).expect("present");
+                unmap(l, e.handle, id);
+                Some(data)
+            }
+            None => Some(data),
+        })
+        .flatten();
+        drop(leftover);
+    }
 }
 
 impl GuestHooks for Local {

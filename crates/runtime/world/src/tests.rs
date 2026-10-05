@@ -3252,6 +3252,40 @@ mod host_owned_values {
         assert_eq!(crate::native::live_effects(w.id()), before, "no keepalive per import");
     }
 
+    /// Regression: a panic mid-operation (a write the host refused, an
+    /// export gone) left the bundle's value OUT of its table, so every later
+    /// access reported a misleading re-entrancy panic. It goes back on
+    /// unwind now.
+    #[test]
+    fn regression_a_refused_write_leaves_the_value_in_place() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let forged = w.enter(|| import_signal(h, U32));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forged.set(2)));
+        assert!(refused.is_err(), "a read-only export refuses the write");
+        assert_eq!(forged.get(), 1, "the value is back in place, and still the host's");
+    }
+
+    /// Regression: merging into a scope id the bundle no longer holds
+    /// (claimed, dropped, never its own) REVIVED it in the scope table with
+    /// the merged items — pending forever, never claimed. The items are
+    /// freed and the request refused.
+    #[test]
+    fn regression_merging_into_an_unheld_scope_frees_the_items() {
+        use crate::bridge::HostOps;
+        type H = crate::bridge::host::Host<crate::bridge::guest::Local>;
+        let w = World::new();
+        H::collect_begin();
+        let orphan = host_signal(&w, 1);
+        let other = H::collect_end();
+        assert_ne!(other, 0);
+        let refused = std::panic::catch_unwind(|| H::scope_merge(987_654, other));
+        assert!(refused.is_err(), "refused (a fault: in one process, a panic)");
+        assert!(!orphan.is_alive(), "the merged items were freed");
+        assert_eq!(crate::remote::pending_scopes(), 0, "nothing parked under the unknown id");
+    }
+
     #[derive(Clone)]
     struct Theme(u32);
     #[derive(Clone)]
@@ -3472,6 +3506,24 @@ mod host_owned_values {
         s.set(5);
         w.flush();
         assert_eq!(host_get(native), 5);
+    }
+
+    /// Regression: a promoted slot freed while a guard's re-export of it
+    /// was still registered — a bundle fetch through that export hit the
+    /// app's stale-handle PANIC (an export doesn't keep its slot alive). A
+    /// dead slot now answers "not exported".
+    #[test]
+    fn regression_a_freed_slot_behind_a_live_export_fetches_nothing() {
+        let w = World::new();
+        let (s, owned) = w.enter(|| collect_owned(|| signal(4u32)));
+        let h = offer_signal(s, U32);
+        let native = receive_signal(h, U32).unwrap();
+        let (_, guard) = export_read_signal(native.read_only(), U32);
+        drop(owned);
+        assert!(!s.is_alive());
+        let mut buf = Vec::new();
+        assert!(!Active::fetch(h, &mut buf), "a dead slot fetches nothing");
+        drop(guard);
     }
 
     #[test]

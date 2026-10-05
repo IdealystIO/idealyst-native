@@ -213,6 +213,13 @@ mod bridge_typed {
     impl<T: PartialEq + 'static> crate::bridge::host::Exported for Exporter<T> {
         fn fetch(&self, staged: bool, out: &mut Vec<u8>) -> bool {
             let (w, s, g) = self.handle;
+            // An export does not keep its slot alive (the guard can outlive
+            // it — a re-export of a promoted slot whose scope dropped): a
+            // dead slot answers "not exported", never a stale-handle panic
+            // in the app on a bundle's say-so.
+            if !Native::signal_is_alive(w, s, g) {
+                return false;
+            }
             match Native::signal_access(w, s, g, |d| {
                 let d = typed::<T>(d);
                 match (staged, &d.next) {
@@ -238,6 +245,12 @@ mod bridge_typed {
             if !self.writable {
                 return Err(format!(
                     "kernel bridge: a bundle wrote a host signal it received read-only (world {}, slot {})",
+                    self.handle.0, self.handle.1
+                ));
+            }
+            if !Native::signal_is_alive(self.handle.0, self.handle.1, self.handle.2) {
+                return Err(format!(
+                    "kernel bridge: a bundle wrote host signal (world {}, slot {}), which no longer exists",
                     self.handle.0, self.handle.1
                 ));
             }

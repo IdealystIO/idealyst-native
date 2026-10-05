@@ -597,10 +597,23 @@ impl<G: GuestHooks> HostOps for Host<G> {
         native::drop_items(native::collect_end().unwrap_or_default());
     }
     fn scope_merge(into: u32, other: u32) {
-        with_host(|h| {
-            let mut moved = h.scopes.remove(&other).unwrap_or_default();
-            h.scopes.entry(into).or_default().append(&mut moved);
-        })
+        let orphaned = with_host(|h| {
+            let mut moved = h.scopes.remove(&other)?;
+            match h.scopes.get_mut(&into) {
+                Some(scope) => {
+                    scope.append(&mut moved);
+                    None
+                }
+                // A scope the bundle no longer holds (claimed, dropped, or
+                // never its own): parking the items under it would leave
+                // them pending for good. They are freed instead.
+                None => Some(moved),
+            }
+        });
+        if let Some(items) = orphaned {
+            native::drop_items(items);
+            fault(format!("kernel bridge: a bundle merged into scope {into}, which it does not hold"));
+        }
     }
     fn scope_len(scope: u32) -> u32 {
         with_host(|h| h.scopes.get(&scope).map_or(0, |s| s.len() as u32))
