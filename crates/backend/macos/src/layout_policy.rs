@@ -71,7 +71,7 @@ pub(crate) fn insert_needs_layout_pass(parent_attached_to_window: bool) -> bool 
 
 /// Hash a label's text-measure inputs — the style fields that drive its
 /// intrinsic size (font family/size/weight, line-height, letter-spacing,
-/// padding, text-transform). Paint props (color, background, border, radius,
+/// padding, text-transform, max-lines). Paint props (color, background, border, radius,
 /// shadow) are deliberately excluded, so a paint-only restyle — e.g. a
 /// `:hover` color swap that arrives on every mouse-enter as content scrolls
 /// under the cursor — yields an UNCHANGED signature. The macOS `apply_style`
@@ -98,6 +98,10 @@ pub(crate) fn text_measure_signature(style: &runtime_shared::StyleRules) -> u64 
             &style.padding_right,
             &style.padding_bottom,
             &style.padding_left,
+            // A line limit caps the measured height (`cellSizeForBounds:`
+            // honours `maximumNumberOfLines`), so adding/removing one must
+            // re-measure — otherwise the node keeps its stale full height.
+            &style.max_lines,
         )
     )
     .hash(&mut hasher);
@@ -562,5 +566,26 @@ mod tests {
         let mut bigger = base.clone();
         bigger.font_size = Some(Tokenized::Literal(Length::Px(20.0)));
         assert_ne!(text_measure_signature(&bigger), sig);
+    }
+
+    // Regression guard for `max_lines` on macOS: the limit changes a label's
+    // measured height, but lives outside the Taffy `Style`. If the signature
+    // ignored it, a reactive `max_lines` toggle would never re-measure and
+    // the label would keep its previous (full or truncated) height.
+    #[test]
+    fn text_measure_signature_tracks_max_lines() {
+        use runtime_shared::StyleRules;
+        let base = StyleRules::default();
+        let sig = text_measure_signature(&base);
+        let mut limited = base.clone();
+        limited.max_lines = Some(1);
+        assert_ne!(text_measure_signature(&limited), sig, "adding max_lines must re-measure");
+        let mut two = base.clone();
+        two.max_lines = Some(2);
+        assert_ne!(
+            text_measure_signature(&two),
+            text_measure_signature(&limited),
+            "changing the limit must re-measure",
+        );
     }
 }

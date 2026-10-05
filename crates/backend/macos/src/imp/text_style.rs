@@ -94,7 +94,93 @@ pub(crate) fn apply_text_style(
 
     apply_text_shadow(view, style);
 
-    let _ = is_label;
+    // `max_lines` is a `text()` property: only the display label truncates.
+    // The NSTextView path (`text_area`) is an editor, sized by its own
+    // `min_rows`/`max_rows`, and must never hide typed text behind an ellipsis.
+    if is_label {
+        apply_label_line_limit(view, style.max_lines);
+    }
+}
+
+/// How a display label's cell is configured for a `max_lines` value.
+/// `max_lines` is the `NSTextField.maximumNumberOfLines` to write (0 = no
+/// limit, AppKit's own convention); `truncates_last_visible_line` is the
+/// cell's `truncatesLastVisibleLine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LabelLineLimit {
+    pub(crate) max_lines: isize,
+    pub(crate) truncates_last_visible_line: bool,
+}
+
+/// The default a label gets at create time (`create_text_impl`): wrap freely,
+/// never truncate. `None`/`Some(0)` restore exactly this.
+pub(crate) const LABEL_NO_LINE_LIMIT: LabelLineLimit =
+    LabelLineLimit { max_lines: 0, truncates_last_visible_line: false };
+
+/// Map `StyleRules::max_lines` to the label configuration. `None` and
+/// `Some(0)` both mean "no limit" (the style field's contract).
+pub(crate) fn label_line_limit(max_lines: Option<u32>) -> LabelLineLimit {
+    match max_lines {
+        Some(n) if n > 0 => LabelLineLimit {
+            max_lines: n.min(isize::MAX as u32) as isize,
+            truncates_last_visible_line: true,
+        },
+        _ => LABEL_NO_LINE_LIMIT,
+    }
+}
+
+/// Apply (or clear) the `max_lines` limit on a display label.
+///
+/// ONE recipe for every `n`, including 1: keep the cell WORD-WRAPPING
+/// (`wraps = true`, the create-time default), cap it with
+/// `maximumNumberOfLines = n`, and set `truncatesLastVisibleLine` so the last
+/// kept line ends in "…". Verified on macOS 26 (`cellSizeForBounds:` and a
+/// rendered bitmap): this measures exactly `n` lines and draws a tail
+/// ellipsis, for plain AND attributed (styled-run) strings.
+///
+/// Why NOT `lineBreakMode = NSLineBreakByTruncatingTail` (the obvious
+/// mapping): on an `NSCell`, `lineBreakMode` and `wraps` are one property —
+/// a truncating mode sets `wraps = false`. The cell then lays out a single
+/// line (so `n > 1` collapses to one), ignores `maximumNumberOfLines` for an
+/// embedded `\n` (two lines measured for `max_lines: 1`), and an attributed
+/// string with no paragraph style measures fully wrapped anyway (7 lines for
+/// `max_lines: 1`) — the Taffy measure would then disagree with the drawing.
+///
+/// The measure needs no change of its own: `create_text_impl`'s measure_fn
+/// asks the same cell for `cellSizeForBounds:`, which honours
+/// `maximumNumberOfLines` in this configuration (height ≤ `n` lines; with
+/// `n = 1` the text never wraps). `text_measure_signature` includes
+/// `max_lines`, so a limit change re-measures.
+///
+/// Writes only on change: `apply_style` re-runs on every hover restyle, and
+/// the setters invalidate the cell's display.
+pub(crate) fn apply_label_line_limit(label: &NSView, max_lines: Option<u32>) {
+    let want = label_line_limit(max_lines);
+    let responds: bool =
+        unsafe { msg_send![label, respondsToSelector: objc2::sel!(setMaximumNumberOfLines:)] };
+    if !responds {
+        return;
+    }
+    let cell: *mut NSObject = unsafe { msg_send![label, cell] };
+    if cell.is_null() {
+        return;
+    }
+    let current: isize = unsafe { msg_send![label, maximumNumberOfLines] };
+    if current != want.max_lines {
+        let _: () = unsafe { msg_send![label, setMaximumNumberOfLines: want.max_lines] };
+    }
+    let truncates: bool = unsafe { msg_send![cell, truncatesLastVisibleLine] };
+    if truncates != want.truncates_last_visible_line {
+        let _: () = unsafe {
+            msg_send![cell, setTruncatesLastVisibleLine: want.truncates_last_visible_line]
+        };
+    }
+    // The recipe depends on word-wrapping; nothing else in the backend clears
+    // it, but assert the invariant rather than trust it.
+    let wraps: bool = unsafe { msg_send![cell, wraps] };
+    if !wraps {
+        let _: () = unsafe { msg_send![cell, setWraps: true] };
+    }
 }
 
 /// Apply (or clear) the text primitive's GLYPH shadow — the
@@ -310,5 +396,161 @@ mod tests {
             "SemiBold must map to a heavier NSFontWeight than Normal"
         );
     }
-}
 
+    // ---- max_lines ------------------------------------------------------
+
+    use crate::imp::MacosBackend;
+    use objc2_foundation::{CGPoint, CGRect, MainThreadMarker};
+    use std::rc::Rc;
+
+    const LONG: &str = "The quick brown fox jumps over the lazy dog again and again \
+                        and again until the end of time";
+
+    #[test]
+    fn label_line_limit_maps_none_and_zero_to_no_limit() {
+        assert_eq!(label_line_limit(None), LABEL_NO_LINE_LIMIT);
+        assert_eq!(label_line_limit(Some(0)), LABEL_NO_LINE_LIMIT);
+        assert_eq!(
+            label_line_limit(Some(1)),
+            LabelLineLimit { max_lines: 1, truncates_last_visible_line: true }
+        );
+        assert_eq!(
+            label_line_limit(Some(3)),
+            LabelLineLimit { max_lines: 3, truncates_last_visible_line: true }
+        );
+    }
+
+    fn cell_of(label: &NSView) -> Retained<NSObject> {
+        unsafe { msg_send_id![label, cell] }
+    }
+
+    fn fitted_height(label: &NSView, width: f64) -> f64 {
+        let cell = cell_of(label);
+        let bounds = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize { width, height: 10_000.0 },
+        };
+        let size: CGSize = unsafe { msg_send![&cell, cellSizeForBounds: bounds] };
+        size.height
+    }
+
+    fn line_config(label: &NSView) -> (isize, bool, bool) {
+        let cell = cell_of(label);
+        let max: isize = unsafe { msg_send![label, maximumNumberOfLines] };
+        let trunc: bool = unsafe { msg_send![&cell, truncatesLastVisibleLine] };
+        let wraps: bool = unsafe { msg_send![&cell, wraps] };
+        (max, trunc, wraps)
+    }
+
+    /// A text node built by the real `create_text_impl`, plus its height when
+    /// it holds a single short line (the one-line yardstick).
+    fn text_node(backend: &mut MacosBackend, content: &str) -> crate::imp::MacosNode {
+        backend.create_text_impl(content, &Default::default())
+    }
+
+    fn one_line_height(backend: &mut MacosBackend) -> f64 {
+        let probe = text_node(backend, "Ag");
+        fitted_height(probe.as_view(), 10_000.0)
+    }
+
+    fn style_with(max_lines: Option<u32>) -> Rc<StyleRules> {
+        let mut s = StyleRules::default();
+        s.max_lines = max_lines;
+        Rc::new(s)
+    }
+
+    // The widget half: `apply_style` on a text node configures the label so
+    // AppKit itself caps + ellipsizes it, and a restyle that drops the limit
+    // restores the create-time defaults (wrap freely, no truncation).
+    #[test]
+    fn max_lines_configures_the_label_and_resets_when_removed() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = MacosBackend::new(mtm);
+        let node = text_node(&mut backend, LONG);
+        let view = node.as_view();
+        assert_eq!(line_config(view), (0, false, true), "create-time default");
+
+        backend.apply_style_impl(&node, &style_with(Some(1)));
+        assert_eq!(line_config(view), (1, true, true));
+
+        backend.apply_style_impl(&node, &style_with(Some(3)));
+        assert_eq!(line_config(view), (3, true, true));
+
+        backend.apply_style_impl(&node, &style_with(None));
+        assert_eq!(line_config(view), (0, false, true), "None restores the default");
+
+        backend.apply_style_impl(&node, &style_with(Some(2)));
+        backend.apply_style_impl(&node, &style_with(Some(0)));
+        assert_eq!(line_config(view), (0, false, true), "Some(0) means no limit");
+    }
+
+    // The measure half, end to end: the label's Taffy measure_fn (installed by
+    // `create_text_impl`) must report at most `n` lines, through a real layout
+    // pass. 100px is narrow enough that LONG wraps to many lines unlimited.
+    #[test]
+    fn max_lines_caps_the_measured_height_through_layout() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = MacosBackend::new(mtm);
+        let line = one_line_height(&mut backend);
+        let node = text_node(&mut backend, LONG);
+        let label = backend.layout_of(node.as_view()).expect("text has a layout node");
+        let root = backend.layout.new_node();
+        backend.layout.add_child(root, label);
+
+        let height_for = |backend: &mut MacosBackend, limit: Option<u32>| {
+            backend.apply_style_impl(&node, &style_with(limit));
+            backend.layout.compute(root, 100.0, 2_000.0);
+            backend.layout.frame_of(label).height as f64
+        };
+
+        let unlimited = height_for(&mut backend, None);
+        assert!(unlimited > line * 3.0, "LONG must wrap to several lines at 100px, got {unlimited}");
+        let one = height_for(&mut backend, Some(1));
+        assert!((one - line).abs() < 0.5, "max_lines 1 must measure one line ({line}), got {one}");
+        let two = height_for(&mut backend, Some(2));
+        assert!((two - 2.0 * line).abs() < 0.5, "max_lines 2 must measure two lines, got {two}");
+        // Dropping the limit must re-measure back to the full height (the
+        // measure signature includes `max_lines`, so the node is re-dirtied).
+        let again = height_for(&mut backend, None);
+        assert!((again - unlimited).abs() < 0.5, "removing the limit restores {unlimited}, got {again}");
+    }
+
+    // Styled-run labels carry an attributed string (no paragraph style); the
+    // cell's line limit must govern it the same way. Guards against the
+    // `lineBreakMode = TruncatingTail` mapping, under which an attributed
+    // string measured fully wrapped (7 lines for `max_lines: 1`).
+    #[test]
+    fn max_lines_caps_a_styled_text_label() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = MacosBackend::new(mtm);
+        let line = one_line_height(&mut backend);
+        let runs = vec![
+            runtime_shared::TextRun::plain("The quick brown fox "),
+            runtime_shared::TextRun::plain(LONG),
+        ];
+        let node = backend.create_styled_text_impl(&runs, &Default::default());
+        backend.apply_style_impl(&node, &style_with(Some(1)));
+        let h = fitted_height(node.as_view(), 100.0);
+        assert!((h - line).abs() < 0.5, "styled max_lines 1 must measure one line ({line}), got {h}");
+        backend.apply_style_impl(&node, &style_with(Some(2)));
+        let h = fitted_height(node.as_view(), 100.0);
+        assert!((h - 2.0 * line).abs() < 0.5, "styled max_lines 2 must measure two lines, got {h}");
+    }
+
+    // One line never wraps: an embedded newline must not add a second line
+    // (with a truncating `lineBreakMode` it did — two lines for `max_lines: 1`),
+    // and the max-content width is the natural single-line width, so Taffy's
+    // `overflow: hidden` shrink is what narrows it.
+    #[test]
+    fn max_lines_one_never_wraps() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = MacosBackend::new(mtm);
+        let line = one_line_height(&mut backend);
+        let node = text_node(&mut backend, "First line long enough to truncate\nsecond line");
+        backend.apply_style_impl(&node, &style_with(Some(1)));
+        let narrow = fitted_height(node.as_view(), 100.0);
+        let wide = fitted_height(node.as_view(), 10_000.0);
+        assert!((narrow - line).abs() < 0.5, "got {narrow}, want one line {line}");
+        assert!((wide - line).abs() < 0.5, "got {wide}, want one line {line}");
+    }
+}
