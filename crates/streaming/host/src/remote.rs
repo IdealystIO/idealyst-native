@@ -12,7 +12,7 @@
 //! bundle (`runtime_vocabulary::remote::host::__mount_remote`).
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use runtime_scene::Element;
 use runtime_vocabulary::remote::host::{install_loader, Loader};
@@ -102,11 +102,21 @@ pub fn install_with(wasm: &[u8], host_fns: Vec<runtime_vocabulary::remote::HostF
 /// poisoned bundle refuses the mounts, so each shows the panic message in
 /// its place (`__mount_remote`'s error text), and its old tree — whose
 /// callbacks can no longer reach the bundle — is torn down.
+///
+/// Only while it is still the CURRENT bundle: one a reload replaced can
+/// still panic late (a tree of it still tearing down, a handler something
+/// kept), and remounting the current bundle's components for that would
+/// throw away their state for nothing. Weak, so the listener doesn't keep
+/// its own bundle alive.
 fn watch(loader: &Rc<BundleLoader>) {
     let weak = Rc::downgrade(loader);
     let bundle = loader.current.borrow().clone();
+    let me = Rc::downgrade(&bundle);
     bundle.on_poison(move |_| {
         if let Some(loader) = weak.upgrade() {
+            if !Weak::ptr_eq(&me, &Rc::downgrade(&loader.current.borrow())) {
+                return;
+            }
             if let Some(g) = loader.generation.get() {
                 g.update(|n| n + 1);
             }
@@ -126,6 +136,13 @@ impl RemoteApp {
     #[doc(hidden)]
     pub fn __engine(&self) -> wasmi::EngineWeak {
         self.loader.current.borrow().__engine()
+    }
+
+    /// How many times the loader has asked its components to remount (a
+    /// reload, the current bundle stopping); read untracked. Tests.
+    #[doc(hidden)]
+    pub fn __generation(&self) -> u64 {
+        self.loader.generation.get().map_or(0, |g| runtime_world::untrack(|| g.get()))
     }
 
     /// Replace the bundle; every mounted remote component remounts from it.

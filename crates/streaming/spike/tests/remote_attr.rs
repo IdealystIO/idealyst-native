@@ -425,6 +425,29 @@ fn regression_a_panicking_effect_stops_the_bundle_not_the_app() {
     assert!(text(&a, &realized).contains("app count 7"));
 }
 
+/// Regression: a bundle a reload REPLACED could still panic late (here a
+/// handler from its old tree, which the mock backend keeps), and its
+/// poison listener still bumped the shared generation — remounting every
+/// component of the CURRENT bundle, throwing away their state. Only the
+/// current bundle's panic remounts now.
+#[test]
+fn regression_a_replaced_bundles_late_panic_leaves_the_current_one_alone() {
+    let a = app();
+    let trigger = a.h.world.enter(|| runtime_world::signal(0i64));
+    let realized = a.h.mount(fragile_tree(&a, trigger));
+    a.h.flush();
+    let old_boom = a.h.shared.button_presses.borrow().last().expect("Fragile's boom").clone();
+    let before = a.remote.__generation();
+    a.remote.reload(REMOTE_ATTR_WASM).expect("reloads");
+    // Before the remount flush the old tree — and its bundle — are still
+    // live: the window a late panic of the replaced bundle falls in.
+    old_boom();
+    a.h.flush();
+    assert_eq!(a.remote.__generation(), before + 1, "the reload's remount only, not another for the old bundle");
+    let t = text(&a, &realized);
+    assert!(t.contains("hello ada") && !t.contains("boom pressed"), "{t}");
+}
+
 /// A fresh bundle brings a poisoned app back: reloading remounts every
 /// remote component from it.
 #[test]
