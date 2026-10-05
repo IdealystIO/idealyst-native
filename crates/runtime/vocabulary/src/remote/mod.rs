@@ -84,9 +84,12 @@ pub struct Crossed {
     /// (one for the encode, one per imported component's props, which
     /// were sent when the bundle built the element): each crossed once.
     pub fresh: Vec<(Cb, Cb)>,
-    /// Existing ids that crossed again (a shared stylesheet), once per
+    /// Existing ids that crossed again (a shared stylesheet), with how many
+    /// times. Counted rather than listed: a screen re-crosses a few sheets
+    /// once per styled node, and this record is built (in interpreted
+    /// code) and sent with every tree.
     /// crossing.
-    pub again: Vec<Cb>,
+    pub again: Vec<(Cb, u32)>,
     /// Scopes released into the tree ([`Node::Owned`]).
     pub scopes: Vec<u32>,
 }

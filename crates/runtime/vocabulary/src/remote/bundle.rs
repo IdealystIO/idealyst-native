@@ -70,7 +70,10 @@ thread_local! {
     /// app component's props being sent ([`__props_begin`]) — innermost
     /// last, each with the first id it will register: everything
     /// registered from then until it closes is its own fresh range.
-    static CROSSING: RefCell<Vec<(Cb, Crossed)>> = const { RefCell::new(Vec::new()) };
+    /// The record itself is created on the first event that needs it: most
+    /// crossings (an import whose props are plain values) record nothing
+    /// beyond their id range, and this runs for every imported component.
+    static CROSSING: RefCell<Vec<(Cb, Option<Box<Crossed>>)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Note a crossing that isn't a fresh registration, in the innermost
@@ -79,7 +82,7 @@ thread_local! {
 fn crossed(f: impl FnOnce(&mut Crossed)) {
     CROSSING.with(|c| {
         if let Some((_, top)) = c.borrow_mut().last_mut() {
-            f(top);
+            f(top.get_or_insert_with(Box::default));
         }
     });
 }
@@ -98,7 +101,7 @@ pub fn tree(element: Element) -> Tree {
 /// Start recording a crossing: returns the first id it will register.
 fn open_crossing() -> Cb {
     let first = TABLE.with(|t| t.borrow().next) + 1;
-    CROSSING.with(|c| c.borrow_mut().push((first, Crossed::default())));
+    CROSSING.with(|c| c.borrow_mut().push((first, None)));
     first
 }
 
@@ -109,7 +112,16 @@ fn open_crossing() -> Cb {
 fn close_crossing(first: Cb) -> ((Cb, Cb), Crossed) {
     let (opened, crossed) = CROSSING.with(|c| c.borrow_mut().pop()).expect("an open crossing");
     debug_assert_eq!(opened, first, "crossings close innermost first");
-    ((first, TABLE.with(|t| t.borrow().next)), crossed)
+    ((first, TABLE.with(|t| t.borrow().next)), crossed.map(|c| *c).unwrap_or_default())
+}
+
+/// Count `n` more re-crossings of `id`. Few distinct ids (a screen's
+/// shared sheets), so a linear scan.
+fn count_again(again: &mut Vec<(Cb, u32)>, id: Cb, n: u32) {
+    match again.iter_mut().find(|(a, _)| *a == id) {
+        Some((_, count)) => *count += n,
+        None => again.push((id, n)),
+    }
 }
 
 /// Add id range `r` to `ranges`: nothing when empty, merged into the last
@@ -131,10 +143,13 @@ fn add_range(ranges: &mut Vec<(Cb, Cb)>, r: (Cb, Cb)) {
 fn join_crossing(props: PropsCrossing) {
     CROSSING.with(|c| {
         if let Some((first, top)) = c.borrow_mut().last_mut() {
+            let top = top.get_or_insert_with(Box::default);
             if props.range.1 < *first {
                 add_range(&mut top.fresh, props.range);
             }
-            top.again.extend(props.rest.again);
+            for (id, n) in props.rest.again {
+                count_again(&mut top.again, id, n);
+            }
             top.scopes.extend(props.rest.scopes);
         }
     });
@@ -170,7 +185,7 @@ fn register_sheet(sheet: &Rc<StyleSheet>) -> Cb {
         Some(id)
     });
     if let Some(id) = existing {
-        crossed(|c| c.again.push(id));
+        crossed(|c| count_again(&mut c.again, id, 1));
     }
     existing.unwrap_or_else(|| {
         let id = register(Entry::Sheet(sheet.clone()));
@@ -334,7 +349,8 @@ impl Drop for ImportPrim {
     /// props' callbacks never crossed, so nothing will release them.
     fn drop(&mut self) {
         if let Some(PropsCrossing { range: (first, last), rest }) = self.crossed.take() {
-            for id in (first..=last).chain(rest.again) {
+            let again = rest.again.into_iter().flat_map(|(id, n)| std::iter::repeat_n(id, n as usize));
+            for id in (first..=last).chain(again) {
                 release(id);
             }
         }
@@ -912,8 +928,10 @@ pub fn __props_begin() -> Cb {
 #[doc(hidden)]
 pub fn import_component(name: &'static str, props: Vec<u8>, crossing: Cb) -> Element {
     let (range, rest) = close_crossing(crossing);
-    let crossed = PropsCrossing { range, rest };
-    runtime_scene::item(ImportPrim { name: name.to_owned(), props, crossed: Some(crossed) }, Vec::new())
+    // Plain-value props register nothing: nothing to carry.
+    let empty = range.0 > range.1 && rest.again.is_empty() && rest.scopes.is_empty();
+    let crossed = (!empty).then_some(PropsCrossing { range, rest });
+    runtime_scene::item(ImportPrim { name: name.to_owned(), props, crossed }, Vec::new())
 }
 
 /// A getter the app can call (a live `Reactive` prop).

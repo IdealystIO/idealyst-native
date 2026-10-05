@@ -270,8 +270,11 @@ fn build_tree(conn: &Rc<Conn>, tree: Tree) -> Result<Element, DecodeError> {
 fn abandon(conn: &Rc<Conn>, crossed: Crossed, claims: Claims) {
     let mut unclaimed: HashMap<Cb, i64> = HashMap::new();
     let fresh = crossed.fresh.into_iter().flat_map(|(first, last)| first..=last);
-    for id in fresh.chain(crossed.again) {
+    for id in fresh {
         *unclaimed.entry(id).or_default() += 1;
+    }
+    for (id, n) in crossed.again {
+        *unclaimed.entry(id).or_default() += i64::from(n);
     }
     for id in claims.ids {
         *unclaimed.entry(id).or_default() -= 1;
