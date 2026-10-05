@@ -74,6 +74,13 @@ pub struct TypographyProps {
     /// `*Align` field as a VariantEnum by convention.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub align: TextAlign,
+    /// Show at most this many lines, ending the last with "…" where it is
+    /// cut (`Some(1)`: one line, truncated). The text can then shrink in a
+    /// row so a neighbour keeps its room — a name next to a number in a
+    /// table cell. `None` (default): no limit. See the framework's
+    /// `StyleRules::max_lines`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub lines: Option<u32>,
     /// Accessibility role override. Default `None` = AUTO: a heading `kind`
     /// (`display`, `h1`…`h6`, or a custom kind whose `is_heading()` is true)
     /// gets `Role::Header` so screen readers, locators, and platform a11y
@@ -96,6 +103,7 @@ impl Default for TypographyProps {
             font: Reactive::Static(None),
             weight: Reactive::Static(None),
             align: Reactive::Static(TextAlign::Left),
+            lines: Reactive::Static(None),
             a11y_role: Reactive::Static(None),
         }
     }
@@ -128,7 +136,8 @@ pub fn Typography(props: &TypographyProps) -> Element {
         || !props.muted.is_static()
         || !props.font.is_static()
         || !props.weight.is_static()
-        || !props.align.is_static();
+        || !props.align.is_static()
+        || !props.lines.is_static();
 
     let make_style = {
         let kind = props.kind.clone();
@@ -137,6 +146,7 @@ pub fn Typography(props: &TypographyProps) -> Element {
         let font = props.font.clone();
         let weight = props.weight.clone();
         let align = props.align.clone();
+        let lines = props.lines.clone();
         move || -> StyleApplication {
             let kind_key = kind.get().key().to_string();
             // Color precedence: tone wins, then muted, then default.
@@ -170,15 +180,19 @@ pub fn Typography(props: &TypographyProps) -> Element {
                 .with("weight", weight_key.to_string())
                 .with("align", align_key);
 
-            // Per-instance font override, layered over the sheet base. Rides
-            // the INLINE layer: a typeface is an app-supplied asset, not a
-            // closed set the sheet could enumerate as an axis — and unlike
-            // the old `with_computed` spelling, inline does not disqualify
-            // the application from preminting (a `--premint-only` app
-            // panicked on any Typography with a `font` override).
-            if let Some(font) = font.get() {
+            // Per-instance font override and line limit, layered over the
+            // sheet base. They ride the INLINE layer: a typeface is an
+            // app-supplied asset, not a closed set the sheet could enumerate
+            // as an axis — and unlike the old `with_computed` spelling,
+            // inline does not disqualify the application from preminting (a
+            // `--premint-only` app panicked on any Typography with a `font`
+            // override). ONE inline layer: `with_inline` replaces, so both
+            // go in the same rules.
+            let (font, lines) = (font.get(), lines.get());
+            if font.is_some() || lines.is_some() {
                 style = style.with_inline(StyleRules {
-                    font_family: Some(font),
+                    font_family: font,
+                    max_lines: lines,
                     ..Default::default()
                 });
             }
@@ -391,6 +405,28 @@ mod tests {
     /// font layer, so a Typography with both set rendered the theme font at
     /// the requested weight. `weight` is now a sheet axis and `font` rides
     /// the inline layer, so nothing shares a slot.
+    #[test]
+    fn lines_truncates_and_keeps_a_font_override() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let r = resolve(Typography(&TypographyProps {
+                content: Reactive::Static("Alexandra Bartholomew-Smith".into()),
+                lines: Reactive::Static(Some(1)),
+                ..Default::default()
+            }));
+            assert_eq!(r.max_lines, Some(1));
+            let both = resolve(Typography(&TypographyProps {
+                lines: Reactive::Static(Some(2)),
+                font: Reactive::Static(Some(FontFamily::System("Courier New, monospace".into()))),
+                ..Default::default()
+            }));
+            assert_eq!(both.max_lines, Some(2), "one inline layer carries both");
+            assert!(both.font_family.is_some());
+            let none = resolve(Typography(&TypographyProps::default()));
+            assert_eq!(none.max_lines, None);
+        });
+    }
+
     #[test]
     fn regression_font_and_weight_overrides_both_apply() {
         with_test_world(|| {

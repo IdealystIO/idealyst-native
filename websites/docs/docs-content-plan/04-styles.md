@@ -428,7 +428,9 @@ additions. The categories:
 
 - **Color + text**: `background`, `color`, `font_size`, `font_family`,
   `font_weight`, `font_style`, `line_height`, `letter_spacing`,
-  `text_align`, `underline`, `strikethrough`, `text_transform`.
+  `text_align`, `underline`, `strikethrough`, `text_transform`,
+  `max_lines` (truncate with "…" after that many lines; the text can
+  then shrink in a row).
 - **Flex container**: `flex_direction`, `flex_wrap`,
   `justify_content`, `align_items`, `align_content`, `gap`,
   `row_gap`, `column_gap`.

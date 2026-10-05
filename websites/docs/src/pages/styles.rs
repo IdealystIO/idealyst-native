@@ -385,7 +385,9 @@ docs! {
               code("font_size"), ", ", code("font_family"), ", ", code("font_weight"),
               ", ", code("font_style"), ", ", code("line_height"), ", ",
               code("letter_spacing"), ", ", code("text_align"), ", ", code("underline"),
-              ", ", code("strikethrough"), ", ", code("text_transform"), "."],
+              ", ", code("strikethrough"), ", ", code("text_transform"), ", ",
+              code("max_lines"), " (truncate with \"…\" after that many lines; the text \
+              can then shrink in a row)."],
             ["Flex container: ", code("flex_direction"), ", ", code("flex_wrap"),
               ", ", code("justify_content"), ", ", code("align_items"), ", ",
               code("align_content"), ", ", code("gap"), ", ", code("row_gap"),
