@@ -107,7 +107,7 @@ mod app {
     use super::*;
     use std::cell::RefCell;
 
-    use stream_host::remote::RemoteApp;
+    use remote_host::remote::RemoteApp;
 
     /// The bundle built from this file at compile time — used until a
     /// reload brings a newer one.
@@ -119,7 +119,7 @@ mod app {
     }
 
     fn reload(status: Signal<String>) {
-        let result = stream_host::fetch::fetch(SERVED).and_then(|fetched| {
+        let result = remote_host::fetch::fetch(SERVED).and_then(|fetched| {
             REMOTE.with(|r| r.borrow().as_ref().expect("installed").reload(&fetched.wasm))?;
             Ok(format!("loaded v{} ({} KB) from {SERVED}", fetched.version, fetched.wasm.len() / 1024))
         });
@@ -149,7 +149,7 @@ mod app {
     }
 
     pub fn install() {
-        let remote = stream_host::remote::install_with(BUILT_IN, vec![os_name::export()]).unwrap_or_else(|e| panic!("built-in bundle: {e}"));
+        let remote = remote_host::remote::install_with(BUILT_IN, vec![os_name::export()]).unwrap_or_else(|e| panic!("built-in bundle: {e}"));
         REMOTE.with(|r| *r.borrow_mut() = Some(remote));
     }
 }

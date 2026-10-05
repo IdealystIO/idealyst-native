@@ -13,11 +13,11 @@ struct App {
     h: Harness,
     count: Signal<i64>,
     likes: Signal<i64>,
-    remote: stream_host::remote::RemoteApp,
+    remote: remote_host::remote::RemoteApp,
 }
 
 fn app() -> App {
-    let remote = stream_host::remote::install_with(REMOTE_ATTR_WASM, camera()).expect("bundle loads");
+    let remote = remote_host::remote::install_with(REMOTE_ATTR_WASM, camera()).expect("bundle loads");
     let h = Harness::new();
     let (count, likes) = h.world.enter(|| (signal(1i64), signal(0i64)));
     App { h, count, likes, remote }
@@ -176,9 +176,9 @@ fn regression_an_unsupported_prop_fails_only_its_component() {
 fn regression_a_mount_while_the_bundle_is_mid_call_works() {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use stream_host::kernel::KernelBundle;
+    use remote_host::kernel::KernelBundle;
     let fns = camera();
-    let bundle = Rc::new(KernelBundle::load_with(&stream_host::remote::engine(), REMOTE_ATTR_WASM, &fns).expect("loads"));
+    let bundle = Rc::new(KernelBundle::load_with(&remote_host::remote::engine(), REMOTE_ATTR_WASM, &fns).expect("loads"));
     let h = Harness::new();
     let nested: Rc<RefCell<Option<Result<String, String>>>> = Rc::default();
     let (b, out) = (bundle.clone(), nested.clone());
@@ -222,8 +222,8 @@ fn nester_args(
 #[test]
 fn regression_a_bundle_stopped_mid_call_makes_no_more_requests() {
     use std::rc::Rc;
-    use stream_host::kernel::KernelBundle;
-    let bundle = Rc::new(KernelBundle::load_with(&stream_host::remote::engine(), REMOTE_ATTR_WASM, &camera()).expect("loads"));
+    use remote_host::kernel::KernelBundle;
+    let bundle = Rc::new(KernelBundle::load_with(&remote_host::remote::engine(), REMOTE_ATTR_WASM, &camera()).expect("loads"));
     let h = Harness::new();
     let b = bundle.clone();
     spike_remoteattr::ON_NESTED.with(|f| {
@@ -293,7 +293,7 @@ fn app_components_are_registered_for_import() {
 /// if LLVM turns every handler call into a sibling call, which depends on
 /// how wasmi and its dependencies are compiled — with wasmi at opt-level 3
 /// it grew the stack per interpreted instruction, and a large bundle
-/// overflowed a 2 MB thread mid-mount. `stream-host` uses portable (loop)
+/// overflowed a 2 MB thread mid-mount. `remote-host` uses portable (loop)
 /// dispatch, which never grows the stack. The thread is sized explicitly so
 /// the test does not depend on RUST_MIN_STACK or the harness default.
 ///
@@ -556,7 +556,7 @@ fn a_remote_component_calls_sync_and_async_host_functions() {
 /// load, naming it — before any of its code runs.
 #[test]
 fn a_bundle_calling_an_unlisted_host_function_is_refused_at_load() {
-    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export()])
+    let err = remote_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export()])
         .err()
         .expect("refused");
     assert!(err.contains("spike_camera::take_photo") && !err.contains("battery_level"), "{err}");
@@ -568,7 +568,7 @@ fn a_bundle_calling_an_unlisted_host_function_is_refused_at_load() {
 fn a_host_function_with_a_changed_signature_is_refused_at_load() {
     let mut drifted = spike_camera::take_photo::export();
     drifted.schema ^= 1;
-    let err = stream_host::remote::install_with(
+    let err = remote_host::remote::install_with(
         REMOTE_ATTR_WASM,
         vec![spike_camera::battery_level::export(), drifted, spike_remoteattr::mount_nested::export()],
     )
@@ -587,7 +587,7 @@ fn a_bundle_without_a_codec_version_is_refused_at_load() {
     let mut wasm = REMOTE_ATTR_WASM.to_vec();
     let at = wasm.windows(name.len()).position(|w| w == name).expect("the bundle exports its codec version");
     wasm[at + name.len() - 1] = b'X';
-    let err = stream_host::remote::install_with(&wasm, camera()).err().expect("refused");
+    let err = remote_host::remote::install_with(&wasm, camera()).err().expect("refused");
     assert!(err.contains("codec version 1 (unreported)") && err.contains("rebuild the bundle"), "{err}");
 }
 
@@ -824,7 +824,7 @@ fn a_remote_component_injects_marked_app_context() {
 fn regression_unscoped_context_reads_export_once() {
     use runtime_world::remote::{Host, HostOps};
     use spike_remoteattr::Theme;
-    type H = Host<stream_host::kernel::WasmGuest>;
+    type H = Host<remote_host::kernel::WasmGuest>;
     let a = app();
     let accent = a.h.world.enter(|| runtime_world::signal("blue".to_string()));
     a.h.world.enter(|| {

@@ -1,10 +1,10 @@
-# stream-abi — `Wire`, the byte codec the bridged loader's hand-written
-# kernel exports (`stream_host::kernel::export_signal` & co.) and the
+# remote-abi — `Wire`, the byte codec the bridged loader's hand-written
+# kernel exports (`remote_host::kernel::export_signal` & co.) and the
 # hand-written test bundles share. Zero dependencies on purpose: a bundle
 # links it, and every byte it pulls in ships inside every bundle.
 
 [package]
-name = "stream-abi"
+name = "remote-abi"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true

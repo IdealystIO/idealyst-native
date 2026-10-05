@@ -1,7 +1,7 @@
 //! `Wire`: the little-endian, length-prefixed codec the hand-written kernel
 //! bridge code uses for host-owned values.
 //!
-//! The bridged loader (`stream_host::kernel`) exports app signals and
+//! The bridged loader (`remote_host::kernel`) exports app signals and
 //! context to a bundle as raw bytes; `export_signal` / `export_read_signal`
 //! encode their values with [`Wire`], and the hand-written test bundles
 //! (`spike/kernelguest`, `spike/remoteguest`) decode them with the same

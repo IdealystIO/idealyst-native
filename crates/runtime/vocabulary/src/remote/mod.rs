@@ -2194,7 +2194,7 @@ pub(crate) fn intern_static(s: &str) -> &'static str {
 // The registry is per build: a native build (the app, and in-process
 // tests) uses a link-time slice; `linkme` has no wasm32 support, so in a
 // bundle each marked type exports `__idealyst_ctx_<path>` instead, and the
-// loader calls every such export at load (stream-host) — the module's own
+// loader calls every such export at load (remote-host) — the module's own
 // export table is the registry.
 
 /// A context type that crosses to remote components: every

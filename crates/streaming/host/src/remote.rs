@@ -2,7 +2,7 @@
 //! from.
 //!
 //! ```ignore
-//! let remote = stream_host::remote::install(include_bytes!("bundle.wasm"))?;
+//! let remote = remote_host::remote::install(include_bytes!("bundle.wasm"))?;
 //! // … later, a new build of the bundle:
 //! remote.reload(&new_bytes)?;   // every mounted remote component remounts
 //! ```

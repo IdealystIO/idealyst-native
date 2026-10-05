@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 [dependencies]
 runtime-world = { workspace = true }
 # Codecs for host-owned values (props, context).
-stream-abi = { path = "../../abi" }
+remote-abi = { path = "../../abi" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

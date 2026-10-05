@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 
 use runtime_world::remote_guest::{import_read_signal, import_signal, register_remote_context, Codec};
 use runtime_world::{collect_owned, effect, inject, memo, on_cleanup, provide, signal, Memo, Owned, ReadSignal, Signal};
-use stream_abi::Wire;
+use remote_abi::Wire;
 
 #[derive(Clone)]
 struct Theme(i64);

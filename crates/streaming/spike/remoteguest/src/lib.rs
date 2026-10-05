@@ -3,7 +3,7 @@
 //! source the app links natively, which is what the parity test compares
 //! against.
 //!
-//! Mount args (`stream_abi::Wire`): `title: String`, then the `external`
+//! Mount args (`remote_abi::Wire`): `title: String`, then the `external`
 //! prop's handle (three `u32`s, from the host's `export_read_signal`).
 //! `CurrentUser` arrives as host context declared under that name: the
 //! handle of the host's user signal.
@@ -12,7 +12,7 @@
 mod exports {
     use runtime_vocabulary::remote::{bundle, to_bytes, wasm};
     use runtime_world::remote_guest::{import_read_signal, register_remote_context, Codec};
-    use stream_abi::Wire;
+    use remote_abi::Wire;
 
     use spike_components::{remote_counter_view, CurrentUser};
 

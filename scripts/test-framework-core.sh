@@ -55,7 +55,7 @@ matrix)
     # Remote components over real wasm (builds bundles for
     # wasm32-unknown-unknown; without that target the build scripts embed
     # placeholders and these fail at load).
-    run cargo test -p stream-host
+    run cargo test -p remote-host
     run cargo test -p stream-spike
     run cargo test -p remote-showcase
     run cargo test -p remote-showcase --features inline

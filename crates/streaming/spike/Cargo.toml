@@ -1,5 +1,5 @@
 # stream-spike — tests the remote-component boundary end to end: builds the
-# spike's bundles to wasm32 (build.rs), loads them through stream-host into
+# spike's bundles to wasm32 (build.rs), loads them through remote-host into
 # a host-mock scene, and compares against the same trees built natively.
 # Also `stream-serve`, which rebuilds and serves bundles live. A spike: not
 # published, not depended on.
@@ -12,10 +12,10 @@ license.workspace = true
 publish = false
 
 [dependencies]
-stream-host = { path = "../host" }
+remote-host = { path = "../host" }
 
 [dev-dependencies]
-stream-abi = { path = "../abi" }
+remote-abi = { path = "../abi" }
 spike-camera = { path = "camera" }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }

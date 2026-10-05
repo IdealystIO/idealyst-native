@@ -145,7 +145,7 @@ fn main() {
         report_bytes("bundle.raw", "size (raw wasm)", wasm.len());
         let fns = remote_showcase::host_fns();
         // A fresh engine per load, as the loader does (`remote::engine`).
-        let load = || stream_host::kernel::KernelBundle::load_with(&stream_host::remote::engine(), wasm, &fns).unwrap();
+        let load = || remote_host::kernel::KernelBundle::load_with(&remote_host::remote::engine(), wasm, &fns).unwrap();
         let mut unloads = Vec::new();
         let first = {
             let t = Instant::now();
@@ -175,7 +175,7 @@ fn main() {
     // --- Compute: the same Rust as wasm (interpreted) vs native -------------
     println!("\ncompute (median of 5; the same source, checksums compared):");
     let bundle = REMOTE.then(|| {
-        stream_host::kernel::KernelBundle::load_with(&stream_host::remote::engine(), wasm, &remote_showcase::host_fns()).unwrap()
+        remote_host::kernel::KernelBundle::load_with(&remote_host::remote::engine(), wasm, &remote_showcase::host_fns()).unwrap()
     });
     for (name, f, n, what) in remote_showcase::bench::WORKLOADS {
         let expected = f(*n);

@@ -9,7 +9,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-stream-host = { path = "../../host" }
+remote-host = { path = "../../host" }
 stream-spike = { path = ".." }
 runtime-shared = { workspace = true }
 runtime-world = { workspace = true }
@@ -20,7 +20,7 @@ runtime-vocabulary = { workspace = true }
 # props and context.
 spike-components = { path = "../components" }
 runtime-core = { workspace = true }
-stream-abi = { path = "../../abi" }
+remote-abi = { path = "../../abi" }
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

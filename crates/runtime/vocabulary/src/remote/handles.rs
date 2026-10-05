@@ -16,7 +16,7 @@
 //! `Ref` slot that outlives the tree; neither may keep native nodes alive.
 //!
 //! Transport: a bundle→app call. Over wasm it is the `idealyst_ui.handle_call`
-//! import (`stream-host` defines it); in-process (`remote-loopback`) a direct
+//! import (`remote-host` defines it); in-process (`remote-loopback`) a direct
 //! call.
 
 use serde::{Deserialize, Serialize};

@@ -10,7 +10,7 @@
 //! The ABI is plain wasm values. Ids cross as `i64` (the host namespaces
 //! them per bundle — see `bridge::Id`); "none" is `-1`; a slot handle or a
 //! `(handle, flag)` result is written to a small out-buffer in this module's
-//! memory. The host implements the imports in `stream-host`.
+//! memory. The host implements the imports in `remote-host`.
 
 use super::guest::Local;
 use super::{GuestHooks, Handle, HostOps, Id, StageMode};

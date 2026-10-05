@@ -283,7 +283,7 @@ pub use stylesheets::TabPanel;
 
 // The host functions remote code calling idea-ui's global functions needs:
 // an app hosting remote components adds them to its allowlist
-// (`stream_host::remote::install_with(wasm, idea_ui::host_fns())`). A bundle
+// (`remote_host::remote::install_with(wasm, idea_ui::host_fns())`). A bundle
 // that calls one the app doesn't list is refused at load, naming it.
 runtime_vocabulary::__remote_guest_split! {
     bundle: {}

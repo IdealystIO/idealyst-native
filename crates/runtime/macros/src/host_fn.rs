@@ -5,7 +5,7 @@
 //!
 //! - **App build:** the function, unchanged. When the app hosts remote
 //!   components, also `<name>::export()`, the `HostFnDef` the app lists in
-//!   its allowlist (`stream_host::remote::install_with`).
+//!   its allowlist (`remote_host::remote::install_with`).
 //! - **Bundle build:** a stub. A sync fn keeps its signature; its body
 //!   becomes one wasm import call. An `async fn` returns a
 //!   `runtime_vocabulary::remote::bundle::HostFuture<Output>`, which the

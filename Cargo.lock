@@ -9774,16 +9774,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-abi"
+version = "0.1.0"
+
+[[package]]
 name = "remote-example"
 version = "0.1.0"
 dependencies = [
  "host-appkit",
+ "remote-host",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "stream-host",
 ]
 
 [[package]]
@@ -9798,6 +9802,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-host"
+version = "0.1.0"
+dependencies = [
+ "remote-abi",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+ "rustc-hash 2.1.2",
+ "wasmi",
+]
+
+[[package]]
 name = "remote-showcase"
 version = "0.1.0"
 dependencies = [
@@ -9805,12 +9822,12 @@ dependencies = [
  "host-mock",
  "idea-ui",
  "libc",
+ "remote-host",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "stream-host",
 ]
 
 [[package]]
@@ -11278,8 +11295,8 @@ dependencies = [
 name = "spike-kernelguest"
 version = "0.1.0"
 dependencies = [
+ "remote-abi",
  "runtime-world",
- "stream-abi",
 ]
 
 [[package]]
@@ -11299,12 +11316,12 @@ dependencies = [
 name = "spike-remoteguest"
 version = "0.1.0"
 dependencies = [
+ "remote-abi",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
  "runtime-world",
  "spike-components",
- "stream-abi",
 ]
 
 [[package]]
@@ -11540,36 +11557,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "stream-abi"
-version = "0.1.0"
-
-[[package]]
 name = "stream-demo"
 version = "0.1.0"
 dependencies = [
  "host-appkit",
+ "remote-abi",
+ "remote-host",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
  "spike-components",
- "stream-abi",
- "stream-host",
  "stream-spike",
- "wasmi",
-]
-
-[[package]]
-name = "stream-host"
-version = "0.1.0"
-dependencies = [
- "runtime-scene",
- "runtime-shared",
- "runtime-vocabulary",
- "runtime-world",
- "rustc-hash 2.1.2",
- "stream-abi",
  "wasmi",
 ]
 
@@ -11579,6 +11579,8 @@ version = "0.1.0"
 dependencies = [
  "host-mock",
  "idea-ui",
+ "remote-abi",
+ "remote-host",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -11588,8 +11590,6 @@ dependencies = [
  "spike-ideaui",
  "spike-remoteattr",
  "stack-navigator",
- "stream-abi",
- "stream-host",
  "wasmi",
 ]
 

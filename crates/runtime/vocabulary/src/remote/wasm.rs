@@ -1,5 +1,5 @@
 //! The bundle half over wasm: the callback table as wasm exports, for
-//! `stream-host`'s `Link`. Compiled only into a remote bundle
+//! `remote-host`'s `Link`. Compiled only into a remote bundle
 //! (`--cfg idealyst_stream_guest`).
 //!
 //! Bytes cross through two buffers in this module's memory. The host asks

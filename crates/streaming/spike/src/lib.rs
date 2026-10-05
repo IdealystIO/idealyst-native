@@ -1,9 +1,9 @@
 //! The spike's built bundles, release-built for wasm32 by this crate's build
 //! script and embedded for the tests.
 
-/// Fetching a bundle over HTTP (moved to `stream-host`; re-exported for the
+/// Fetching a bundle over HTTP (moved to `remote-host`; re-exported for the
 /// spike's callers).
-pub use stream_host::fetch;
+pub use remote_host::fetch;
 pub mod guest_build;
 
 /// `spike-kernelguest` (the kernel bridge test bundle): plain runtime-world

@@ -1,13 +1,13 @@
 //! `#[host_fn]`'s records: an app function a bundle calls by name.
 //!
 //! In the app a `#[host_fn]` is the real function plus a [`HostFnDef`] the
-//! app lists in its allowlist (`stream_host::remote::install_with`). In a
+//! app lists in its allowlist (`remote_host::remote::install_with`). In a
 //! bundle it's a stub calling ONE wasm import, under [`HOST_FN_MODULE`],
 //! named [`import_name`]`(path, schema)` — so the bundle's import section is
 //! its list of host functions, and the app refuses a bundle at load that
 //! calls one it doesn't export, or exports with a different signature.
 //!
-//! These are the records the bridged loader (`stream_host::kernel`) checks a
+//! These are the records the bridged loader (`remote_host::kernel`) checks a
 //! bundle's host-function imports against. They live in the vocabulary so a
 //! library's `#[host_fn]` (idea-ui) can emit them: the vocabulary is
 //! published, the loader crate isn't.

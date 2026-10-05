@@ -35,8 +35,8 @@ use runtime_vocabulary::{button, text, view};
 use runtime_core::{provide, ui};
 use runtime_world::{signal, Signal};
 use spike_components::{CurrentUser, RemoteCounter};
-use stream_abi::Wire;
-use stream_host::kernel::{export_context, export_read_signal, ExportGuard, KernelBundle};
+use remote_abi::Wire;
+use remote_host::kernel::{export_context, export_read_signal, ExportGuard, KernelBundle};
 use stream_spike::{fetch, REMOTE_GUEST_WASM};
 
 fn px(v: f32) -> Option<Tokenized<Length>> {
@@ -105,7 +105,7 @@ fn bridged(external: Signal<i64>, user: Signal<String>) -> Element {
     });
     let guards: Rc<Vec<ExportGuard>> = Rc::new(vec![g1, g2, g3]);
 
-    let engine = stream_host::remote::engine();
+    let engine = remote_host::remote::engine();
     let (initial, initial_status) = match fetch_remote(&engine) {
         Ok(ok) => ok,
         Err(e) => (

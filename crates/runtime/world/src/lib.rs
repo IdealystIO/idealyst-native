@@ -155,7 +155,7 @@ mod bridge_typed {
     /// How a value of type `T` crosses the boundary. Plain function
     /// pointers, so runtime-world stays codec-free: the remote-component
     /// crates supply them (the vocabulary's `RemoteValue`, or
-    /// `stream_abi::Wire` in the hand-written kernel-bridge code).
+    /// `remote_abi::Wire` in the hand-written kernel-bridge code).
     pub struct Codec<T> {
         pub encode: fn(&T, &mut Vec<u8>),
         pub decode: fn(&[u8]) -> Option<T>,

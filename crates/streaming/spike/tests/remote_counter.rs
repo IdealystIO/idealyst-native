@@ -12,8 +12,8 @@ use host_mock::Harness;
 use runtime_core::{provide, ui, Element};
 use runtime_world::Signal;
 use spike_components::{CurrentUser, RemoteCounter};
-use stream_abi::Wire;
-use stream_host::kernel::{export_context, export_read_signal, ExportGuard, KernelBundle};
+use remote_abi::Wire;
+use remote_host::kernel::{export_context, export_read_signal, ExportGuard, KernelBundle};
 use stream_spike::REMOTE_GUEST_WASM;
 
 const TITLE: &str = "Hello from wasm";
@@ -43,7 +43,7 @@ struct Remote {
 /// What the app does to mount the same component from the bundle: export
 /// the prop and the context, call the mount export, decode.
 fn remote_tree(h: &Harness, i: &Inputs) -> (Element, Remote) {
-    let engine = stream_host::remote::engine();
+    let engine = remote_host::remote::engine();
     let bundle = KernelBundle::load(&engine, REMOTE_GUEST_WASM).expect("remote bundle loads");
     let (external, user) = (i.external, i.user);
     let (eh, g1) = export_read_signal(external.read_only());
@@ -159,12 +159,12 @@ fn unmounting_the_remote_tree_leaves_nothing_subscribed() {
 #[test]
 fn a_panicking_mount_is_an_error_carrying_the_bundles_message() {
     let h = Harness::new();
-    let engine = stream_host::remote::engine();
+    let engine = remote_host::remote::engine();
     let bundle = KernelBundle::load(&engine, REMOTE_GUEST_WASM).expect("remote bundle loads");
     // No args: the mount export fails decoding its title.
     let err = h.world.enter(|| bundle.mount_remote("rc_mount", &[])).err().expect("the mount fails");
     match err {
-        stream_host::kernel::MountError::Panicked(msg) => assert!(msg.contains("rc_mount: title"), "{msg}"),
+        remote_host::kernel::MountError::Panicked(msg) => assert!(msg.contains("rc_mount: title"), "{msg}"),
         other => panic!("expected a panic, got {other}"),
     }
 }
@@ -176,7 +176,7 @@ fn a_panicking_mount_is_an_error_carrying_the_bundles_message() {
 #[test]
 fn regression_a_trap_through_call_stops_the_bundle() {
     let h = Harness::new();
-    let bundle = KernelBundle::load(&stream_host::remote::engine(), REMOTE_GUEST_WASM).expect("loads");
+    let bundle = KernelBundle::load(&remote_host::remote::engine(), REMOTE_GUEST_WASM).expect("loads");
     // No props: the mount export fails decoding its title, and traps.
     let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         h.world.enter(|| bundle.call::<(u32, u32), i64>("rc_mount", (0, 0)))

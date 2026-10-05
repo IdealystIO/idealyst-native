@@ -775,7 +775,7 @@ impl KernelBundle {
 // ---------------------------------------------------------------------------
 
 pub use runtime_world::remote::ExportGuard;
-use stream_abi::Wire;
+use remote_abi::Wire;
 
 fn wire_encode<T: Wire>(v: &T, out: &mut Vec<u8>) {
     v.encode(out)

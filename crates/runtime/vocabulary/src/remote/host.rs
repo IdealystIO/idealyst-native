@@ -26,7 +26,7 @@ use crate::prims::*;
 use crate::style_attach::StyleProp;
 
 /// How the host reaches one bundle's callback table. In-process for the
-/// codec's tests; over wasm in `stream-host`.
+/// codec's tests; over wasm in `remote-host`.
 pub trait Link: 'static {
     /// Run callback `cb` with `args`; its encoded reply. `None` when the
     /// bundle can no longer be called — it panicked (trapped) and was
@@ -1109,7 +1109,7 @@ pub fn encode_value<T: Serialize + ?Sized>(v: &T) -> Vec<u8> {
 pub type Keep = Vec<Box<dyn std::any::Any>>;
 
 /// Where `#[component(remote)]` components come from: the app installs one
-/// (`stream_host::remote::install`) before mounting any.
+/// (`remote_host::remote::install`) before mounting any.
 pub trait Loader: 'static {
     /// A number that changes when the bundle is replaced. Read TRACKED by
     /// every mounted remote component, so a reload remounts them.
@@ -1162,7 +1162,7 @@ pub fn __mount_remote(
     let loader = LOADER.with(|l| l.borrow().clone()).unwrap_or_else(|| {
         panic!(
             "remote component `{component}` mounted, but this app installed no remote loader \
-             (`stream_host::remote::install`)"
+             (`remote_host::remote::install`)"
         )
     });
     let select = loader.clone();

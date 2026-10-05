@@ -33,7 +33,7 @@ runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-shared = { workspace = true }
-stream-host = { path = "../../host" }
+remote-host = { path = "../../host" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true }

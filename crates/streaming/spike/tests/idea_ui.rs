@@ -76,7 +76,7 @@ fn run(tree: impl FnOnce() -> Element, press: Option<&str>) -> Run {
 fn same_as_native(remote: impl FnOnce() -> Element, native: impl FnOnce() -> Element, shows: &str, press: Option<&str>) {
     pump::install_executor();
     pump::install_scheduler();
-    let _remote = stream_host::remote::install(IDEA_UI_WASM).expect("the bundle loads");
+    let _remote = remote_host::remote::install(IDEA_UI_WASM).expect("the bundle loads");
     let from_bundle = run(remote, press);
     let in_process = run(native, press);
     let failed: Vec<&String> = from_bundle.mounted.iter().filter(|l| l.contains('⚠')).collect();
@@ -166,7 +166,7 @@ fn themed(tree: impl FnOnce() -> Element) -> (Vec<String>, Vec<String>) {
 fn a_bundles_own_stylesheet_uses_the_apps_theme_tokens() {
     pump::install_executor();
     pump::install_scheduler();
-    let _remote = stream_host::remote::install(IDEA_UI_WASM).expect("the bundle loads");
+    let _remote = remote_host::remote::install(IDEA_UI_WASM).expect("the bundle loads");
     let (light, dark) = themed(|| ui! { spike_ideaui::ThemedArea() });
     let (native_light, native_dark) = themed(spike_ideaui::themed_demo);
     assert!(!light.is_empty(), "the bundle's sheets styled nothing");

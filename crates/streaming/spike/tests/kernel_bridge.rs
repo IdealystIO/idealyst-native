@@ -4,11 +4,11 @@
 //! host side: the host's world, the host's flush, the host's scopes.
 
 use runtime_world::World;
-use stream_host::kernel::KernelBundle;
+use remote_host::kernel::KernelBundle;
 use stream_spike::KERNEL_GUEST_WASM;
 
 fn load() -> KernelBundle {
-    let engine = stream_host::remote::engine();
+    let engine = remote_host::remote::engine();
     KernelBundle::load(&engine, KERNEL_GUEST_WASM).expect("kernel bundle loads")
 }
 
@@ -118,8 +118,8 @@ fn dropping_the_host_world_tears_the_bundle_state_down() {
 // ---------------------------------------------------------------------------
 
 use runtime_world::{provide, ReadSignal, Signal};
-use stream_abi::Wire;
-use stream_host::kernel::{export_context, export_read_signal, export_signal, ExportGuard};
+use remote_abi::Wire;
+use remote_host::kernel::{export_context, export_read_signal, export_signal, ExportGuard};
 
 /// The host's context type. A shared crate would define it once for both
 /// sides; here the host declares its encoding (the handle of the user

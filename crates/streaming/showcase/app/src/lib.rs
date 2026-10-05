@@ -402,7 +402,7 @@ mod app {
     use runtime_vocabulary::builders::{button, navigator_outlet, swap_navigator, text, view};
     use idea_ui::{ToastHost, ToastPlacement};
     use runtime_vocabulary::prims::SwapNav;
-    use stream_host::remote::RemoteApp;
+    use remote_host::remote::RemoteApp;
 
     /// The bundle built from this file at compile time — used until a
     /// reload brings a newer one.
@@ -434,7 +434,7 @@ mod app {
     /// Install `wasm` instead of the built-in bundle (a served build, or
     /// another build of it to measure).
     pub fn install_from(wasm: &[u8]) -> Result<(), String> {
-        let remote = stream_host::remote::install_with(wasm, host_fns())?;
+        let remote = remote_host::remote::install_with(wasm, host_fns())?;
         REMOTE.with(|r| *r.borrow_mut() = Some(remote));
         Ok(())
     }
@@ -463,7 +463,7 @@ mod app {
     }
 
     fn reload(status: Signal<String>) {
-        let result = stream_host::fetch::fetch(SERVED).and_then(|fetched| {
+        let result = remote_host::fetch::fetch(SERVED).and_then(|fetched| {
             REMOTE.with(|r| r.borrow().as_ref().expect("installed").reload(&fetched.wasm))?;
             Ok(format!("bundle v{} ({} KB)", fetched.version, fetched.wasm.len() / 1024))
         });

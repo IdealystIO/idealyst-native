@@ -22,7 +22,7 @@ runtime-vocabulary = { workspace = true, features = ["remote"] }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 # Codecs for host-owned values (props, context).
-stream-abi = { path = "../../abi" }
+remote-abi = { path = "../../abi" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }
