@@ -304,6 +304,33 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **Style layers stack the same way on every backend, and each one only
+  adds the properties it sets** (`runtime-shared`, `runtime-vocabulary`,
+  `css`, `backend-web`, `backend-ssr`, `premint-dump`). The order is
+  base < breakpoints < containers < variants < states < compounds
+  (`docs/styling.md#layer-order`). Three bugs came from layers that
+  re-stated the base:
+  - On web and SSR, a sheet with `base { min_height: 44 }`,
+    `breakpoint sm { min_height: 0 }` and a `state hovered` block measured
+    0 at 1440px until the element was hovered or pressed, then snapped
+    back to 44: the `:hover` rule repeated the base's values at a higher
+    CSS specificity than the `@media` rule.
+  - On every backend, a wider breakpoint reset the narrower ones'
+    properties to the base: with `sm { min_height: 0 }` and
+    `md { padding: 8 }`, min-height went back to 44 from 768px up. A
+    container block did the same to an active breakpoint on web.
+  - On premint builds only, a variant beat a state that set the same
+    property (`state pressed { background }` under a variant's
+    background), because the dump emitted states before variants.
+
+  The overlays a CSS backend receives through
+  `StyleOps::apply_styled_variants` now hold only their own block's
+  properties (same signature). New public API: `StyleSheet::layer_mask`,
+  `StyleRules::restrict_to`, and the `css` helpers `layer_css`,
+  `state_layer_css`, `layer_needs_column_pin`, `display_locked` and
+  `COLUMN_PIN`. Live web and SSR classes for sheets with breakpoint,
+  container or state blocks get new hashes.
+
 - **The `on_cleanup called outside an effect` panic points at
   `on_scope_drop(f)`** and explains that component bodies, mount handlers
   and the initial realize are not effect bodies. The leading sentence is

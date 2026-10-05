@@ -21,14 +21,12 @@
 //! (which contributes nothing), and `@media`/`@container` preludes
 //! never affect specificity. Equal-specificity rules cascade by source
 //! order, per property — exactly `StyleRules::merge`'s later-wins.
-//! The emission order mirrors the resolver's merge order, which is
-//! `BTreeMap`-alphabetical over axis names: the `__bp_*` < `__cq_*` <
-//! `__state_*` prefixes sort before every lowercase author axis, so
-//! the order is base → breakpoints → containers → states → author
-//! axes. This also reproduces the live WEB backend's cross-rule
-//! outcomes (variant beats state, state beats breakpoint — the
-//! specificity quirks of the per-combo model resolve pairwise to the
-//! same winners; verified by the A/B computed-style harness).
+//! The emission order mirrors the resolver's merge order
+//! (`StyleSheet::resolve`): base → breakpoints (rank ascending) →
+//! containers (threshold ascending) → author axes (alphabetical) →
+//! states → compounds. That is the layering contract every backend
+//! follows — a variant beats a breakpoint, a state beats a variant —
+//! and each layer's rule holds only what its own block sets.
 //!
 //! # Compound variants
 //!
@@ -199,17 +197,10 @@ fn dump_sheet_parts(
     // base's `grid` from later source order) plus a column pin the live
     // engine never mints (it decides on the merged rules). See
     // `css::rules_to_css_delta_unpromoted`.
-    let display_locked = matches!(
-        base.display,
-        Some(d) if d != runtime_core::DisplayKind::Flex
-    );
-    let lower_delta = |r: &runtime_core::StyleRules| {
-        if display_locked {
-            css::rules_to_css_delta_unpromoted(r)
-        } else {
-            css::rules_to_css_delta(r)
-        }
-    };
+    let display_locked = css::display_locked(&base);
+    // The live engine lowers its overlay layers through the same helper
+    // (`css::class_rule_group`), so a layer lowers identically on both.
+    let lower_delta = |r: &runtime_core::StyleRules| css::layer_css(r, display_locked);
 
     // 1. Base — full lowering (the base rule pins the framework's
     //    `flex-direction: column` default itself when it promotes — at
@@ -233,17 +224,18 @@ fn dump_sheet_parts(
             {
                 push_rule(out, rule);
             }
-            // The live engine pins `flex-direction: column` inside any
-            // MERGED rule set it promotes to flex. A delta can't make
-            // that merged-set decision (a promoting delta would stomp a
+            // A full (merged) rule set pins `flex-direction: column`
+            // itself when it promotes to flex, as the base rule does. A
+            // delta can't make that merged-set decision (a promoting delta would stomp a
             // sibling layer's explicit `row` from later source order —
             // the "Stack rows collapse to columns" bug), so the pin
             // rides a specificity-(0,0,0) `:where()` companion SCOPED to
             // the promoting layer's own condition: it applies exactly
             // when the layer does, and loses to every explicit
             // direction from any layer. Same pattern for containers,
-            // states, and axis arms below.
-            if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+            // states, and axis arms below, and the live engine's overlay
+            // layers (`css::class_rule_group`) do the same.
+            if css::layer_needs_column_pin(&delta, display_locked) {
                 if let Some(pin) = css::breakpoint_media_rule(
                     &format!(":where(.{base_class})"),
                     *bp,
@@ -267,7 +259,7 @@ fn dump_sheet_parts(
                 out,
                 css::container_query_rule(base_class, *threshold, &lower_delta(&delta)),
             );
-            if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+            if css::layer_needs_column_pin(&delta, display_locked) {
                 let pin =
                     css::container_query_rule(base_class, *threshold, "flex-direction: column");
                 push_rule(out, pin.replace(&format!(".{base_class} {{"), &format!(":where(.{base_class}) {{")));
@@ -275,34 +267,7 @@ fn dump_sheet_parts(
         }
     }
 
-    // 4. State deltas, declaration order. `:where()` cancels the
-    //    pseudo-class's specificity so author-axis rules (emitted after,
-    //    matching the resolver merging state axes before author axes)
-    //    still win conflicting properties by source order.
-    for (bit, axis) in sheet.premint_state_axes() {
-        let Some(pseudo) = css::state_pseudo(*bit) else { continue };
-        let Some(delta) = sheet.premint_delta(axis, "on") else { continue };
-        fonts.collect(&delta);
-        let mut body = lower_delta(&delta);
-        // Same UA-ring suppression as the live engine's focus overlay
-        // rule (see `class_rule_group_with`): a sheet that declares its
-        // own focus indicator owns it.
-        if *bit == runtime_core::StateBits::FOCUSED {
-            body = format!("outline:none;{body}");
-        }
-        push_rule(
-            out,
-            css::class_rule(&format!("{base_class}:where({pseudo})"), &body),
-        );
-        if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
-            push_rule(
-                out,
-                format!(":where(.{base_class}{pseudo}) {{ flex-direction: column }}"),
-            );
-        }
-    }
-
-    // 5. Author-axis deltas, alphabetical by axis name (the BTreeMap
+    // 4. Author-axis deltas, alphabetical by axis name (the BTreeMap
     //    order `resolve` merges them in). Arms with empty bodies still
     //    emit — every class the runtime can stamp has a rule, which
     //    keeps DevTools honest about where a class comes from.
@@ -319,12 +284,39 @@ fn dump_sheet_parts(
                     &lower_delta(&delta),
                 ),
             );
-            if !display_locked && css::flex_promoted(&delta) && delta.flex_direction.is_none() {
+            if css::layer_needs_column_pin(&delta, display_locked) {
                 push_rule(
                     out,
                     format!(":where(.{base_class}-{axis}-{value}) {{ flex-direction: column }}"),
                 );
             }
+        }
+    }
+
+    // 5. State deltas, declaration order, AFTER the author axes: the
+    //    resolver merges states last (`StyleSheet::resolve`'s state pass),
+    //    so a state beats a variant on a property both set. `:where()`
+    //    sheds the pseudo-class's specificity so this is decided by source
+    //    order alone, and compounds (step 6, (0,2,0)) still beat it.
+    //    This used to come before the axes, which pinned the pre-ce33c0a6
+    //    resolver order: a `state pressed { background }` lost to a
+    //    `form` axis's background on every premint build.
+    for (bit, axis) in sheet.premint_state_axes() {
+        let Some(pseudo) = css::state_pseudo(*bit) else { continue };
+        let Some(delta) = sheet.premint_delta(axis, "on") else { continue };
+        fonts.collect(&delta);
+        // Same body as the live engine's state rule, focus-ring
+        // suppression included.
+        let body = css::state_layer_css(*bit, &delta, display_locked);
+        push_rule(
+            out,
+            css::class_rule(&format!("{base_class}:where({pseudo})"), &body),
+        );
+        if css::layer_needs_column_pin(&delta, display_locked) {
+            push_rule(
+                out,
+                format!(":where(.{base_class}{pseudo}) {{ flex-direction: column }}"),
+            );
         }
     }
 
@@ -336,15 +328,16 @@ fn dump_sheet_parts(
     //    those classes — no extra stamped class is needed, the selector does
     //    the matching. A leg naming a `__state_*` axis becomes that state's
     //    pseudo-class/attribute instead, because states are never stamped as
-    //    classes (see step 4).
+    //    classes (see step 5).
     //
     //    Specificity falls out right: two class legs are (0,2,0) and a
     //    class+pseudo leg is (0,2,0), both above the (0,1,0) single-axis arms
-    //    emitted in step 5 — which is exactly `resolve`'s ordering
+    //    emitted in step 4 — which is exactly `resolve`'s ordering
     //    (base → axes → compounds). Note this does NOT use `:where()`: the
-    //    state deltas in step 4 wrap their pseudo to *shed* specificity so
-    //    later author-axis rules still win, but a compound is supposed to
-    //    beat those arms, so its specificity has to stand.
+    //    state deltas in step 5 wrap their pseudo to *shed* specificity so
+    //    source order alone ranks them over the axis arms, but a compound
+    //    is supposed to beat every arm and state, so its specificity has to
+    //    stand.
     for (when, rules) in sheet.premint_compounds() {
         fonts.collect(&rules);
         // Class legs first, then pseudo legs — a CSS compound selector must
@@ -760,18 +753,20 @@ mod tests {
         );
     }
 
-    /// Source order is load-bearing: state deltas must precede author
-    /// axis deltas (the resolver merges `__state_*` axes first —
-    /// alphabetically before lowercase names — so axis arms win
-    /// conflicting props by later source order).
+    /// Regression: state deltas were emitted BEFORE the author-axis deltas,
+    /// the resolver's order before ce33c0a6 made states merge last. With
+    /// every selector at (0,1,0), the later axis rule then won any property
+    /// both set, so on a premint build a `state pressed { background }` lost
+    /// to a variant's background while the live engine and native showed
+    /// the pressed color. States must follow the axes.
     #[test]
-    fn regression_state_rules_precede_axis_rules() {
+    fn regression_state_rules_follow_axis_rules() {
         let out = dump_all_css();
         let state_pos = out.find(".iy-test:where(:hover)").expect("state rule present");
         let axis_pos = out.find(".iy-test-tone-danger").expect("axis rule present");
         assert!(
-            state_pos < axis_pos,
-            "state delta must be emitted before axis deltas; got:\n{out}"
+            axis_pos < state_pos,
+            "state delta must be emitted after the axis deltas; got:\n{out}"
         );
     }
 

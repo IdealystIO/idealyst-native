@@ -1426,14 +1426,10 @@ fn attach_sheet_dynamic<H: StyleServices>(
             for axis in bits.active_axes() {
                 app = app.with(axis, "on");
             }
-            let base = resolve_style(&app);
-            let bp_overlays = resolve_breakpoint_overlays(&app);
-            let resolved = merge_active_breakpoints(base, &bp_overlays);
-            // Container width 0: no container-signal source on the new
-            // core yet (module docs) — overlays stay inert, matching an
-            // old-core node with no container ancestor.
-            let cq_overlays = resolve_container_overlays(&app);
-            let resolved = merge_active_containers(resolved, &cq_overlays, 0.0);
+            // Turn the active breakpoint/container layers on and resolve
+            // once (see `with_active_responsive`). Container width 0: no
+            // container-signal source on the new core yet (module docs).
+            let resolved = resolve_style(&with_active_responsive(app, 0.0));
             // No default-font fill — old-core `attach_style_reactive`
             // parity (see the natively-handled branch above).
             backend_for_effect
@@ -1495,24 +1491,16 @@ pub(crate) fn apply_sheet<H: StyleServices>(
             &cq_overlays,
         );
     } else {
-        let base = resolve_style(app);
-        let bp_overlays = resolve_breakpoint_overlays(app);
-        let cq_overlays = resolve_container_overlays(app);
         let default_font = ctx.default_text_font();
-
-        let resolve_now = move |base: Rc<StyleRules>,
-                                bps: &[(Breakpoint, Rc<StyleRules>)],
-                                cqs: &[(f32, Rc<StyleRules>)],
-                                font: Option<runtime_shared::FontFamily>| {
-            let resolved = merge_active_breakpoints(base, bps);
-            let resolved = merge_active_containers(resolved, cqs, 0.0);
-            fill_default_text_font(resolved, font)
+        let resolve_now = |app: &StyleApplication, font: Option<runtime_shared::FontFamily>| {
+            // Container width 0 — see `with_active_responsive`.
+            fill_default_text_font(resolve_style(&with_active_responsive(app.clone(), 0.0)), font)
         };
 
-        if bp_overlays.is_empty() {
+        if app.sheet.breakpoint_axes().is_empty() {
             // No breakpoint blocks — resolve once and subscribe to nothing,
             // keeping the common node off the reactive graph entirely.
-            let resolved = resolve_now(base, &bp_overlays, &cq_overlays, default_font);
+            let resolved = resolve_now(app, default_font);
             backend.borrow_mut().apply_style(node, &resolved);
         } else {
             // RESPONSIVE. Backends that handle variants natively (web) never
@@ -1530,15 +1518,11 @@ pub(crate) fn apply_sheet<H: StyleServices>(
             // the ctx via their `forward_viewport` seam.
             let backend = backend.clone();
             let node = node.clone();
+            let app = app.clone();
             effect(move || {
-                // Subscribe: re-runs whenever the bucket changes.
-                let _bucket = crate::viewport::viewport_ctx().breakpoint().get();
-                let resolved = resolve_now(
-                    base.clone(),
-                    &bp_overlays,
-                    &cq_overlays,
-                    default_font.clone(),
-                );
+                // Subscribes: `with_active_responsive` reads the bucket, so
+                // this re-runs whenever it changes.
+                let resolved = resolve_now(&app, default_font.clone());
                 backend.borrow_mut().apply_style(&node, &resolved);
             });
         }
@@ -1569,120 +1553,101 @@ fn sheet_state_axes(sheet: &Rc<StyleSheet>) -> Vec<(StateBits, String)> {
         .collect()
 }
 
-/// Resolve each declared state overlay against the application's
-/// variants + theme: `(bits, fully resolved rules)` pairs a
-/// natively-handling backend emits as pseudo-class CSS. Reads the
-/// sheet's cached axis slice — allocation-free when no `state` blocks
-/// are declared.
+/// One overlay layer's share of the cascade: what `resolve(app + axis)`
+/// gives the properties that layer's own block sets
+/// ([`StyleSheet::layer_mask`] + [`StyleRules::restrict_to`]).
+///
+/// CSS backends (web, SSR) layer these as `@media` / `@container` /
+/// pseudo-class rules over the base class. They used to receive the FULL
+/// `resolve(app + axis)`, which re-states every base property: a
+/// `.cls:hover` rule (specificity (0,2,0)) put the base `min_height` back
+/// over an active `breakpoint sm` arm (CrewForge chips grew from 31px to
+/// 44px on hover), and an `md` rule put it back over `sm`. With only its
+/// own properties a layer can't do either, and the values still come
+/// from the full merge, so a variant or an override above the layer keeps
+/// winning. The precedence is `StyleSheet::resolve`'s:
+/// base < breakpoints < containers < author axes < states < compounds.
+fn layer_share(app: &StyleApplication, axis: &str) -> Rc<StyleRules> {
+    let full = resolve_style(&app.clone().with(axis.to_string(), "on"));
+    Rc::new(full.restrict_to(&app.sheet.layer_mask(&app.variants, axis)))
+}
+
+/// Each declared state overlay's share ([`layer_share`]): `(bits, rules)`
+/// pairs a natively-handling backend emits as pseudo-class CSS. Reads the
+/// sheet's cached axis slice — allocation-free when no `state` blocks are
+/// declared.
 pub(crate) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
     let axes = app.sheet.state_axes();
     if axes.is_empty() {
         return Vec::new();
     }
-    axes.to_vec()
-        .into_iter()
-        .map(|(bit, axis)| {
-            let state_app = app.clone().with(axis, "on");
-            (bit, resolve_style(&state_app))
-        })
-        .collect()
+    axes.iter().map(|(bit, axis)| (*bit, layer_share(app, axis))).collect()
 }
 
-/// Breakpoint analog — `(bucket, fully resolved rules)`; the cached
-/// axis slice is already in declaration order and the walker sorted by
-/// rank, preserved here.
+/// Breakpoint analog — `(bucket, share)`, ascending by rank (the order the
+/// CSS backends stack the `@media` rules in).
 fn resolve_breakpoint_overlays(app: &StyleApplication) -> Vec<(Breakpoint, Rc<StyleRules>)> {
     let axes = app.sheet.breakpoint_axes();
     if axes.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<(Breakpoint, Rc<StyleRules>)> = axes
-        .to_vec()
-        .into_iter()
-        .map(|(bp, axis)| {
-            let bp_app = app.clone().with(axis, "on");
-            (bp, resolve_style(&bp_app))
-        })
-        .collect();
+    let mut out: Vec<(Breakpoint, Rc<StyleRules>)> =
+        axes.iter().map(|(bp, axis)| (*bp, layer_share(app, axis))).collect();
     out.sort_by_key(|(bp, _)| bp.rank());
     out
 }
 
-/// Container-query analog — `(min-width threshold px, fully resolved
-/// rules)` sorted ascending by threshold.
+/// Container-query analog — `(min-width threshold px, share)` sorted
+/// ascending by threshold.
 fn resolve_container_overlays(app: &StyleApplication) -> Vec<(f32, Rc<StyleRules>)> {
     let axes = app.sheet.container_axes();
     if axes.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<(f32, Rc<StyleRules>)> = axes
-        .to_vec()
-        .into_iter()
-        .map(|(threshold, axis)| {
-            let cq_app = app.clone().with(axis, "on");
-            (threshold, resolve_style(&cq_app))
-        })
-        .collect();
+    let mut out: Vec<(f32, Rc<StyleRules>)> =
+        axes.iter().map(|(threshold, axis)| (*threshold, layer_share(app, axis))).collect();
     out.sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
-/// Fold the overlays whose bucket is active at the current viewport
-/// width onto `base`, lowest first so higher breakpoints win (walker
-/// `merge_active_breakpoints`). Reads the old-core breakpoint signal's
-/// VALUE only — see the module docs' native-re-fire deferral.
-fn merge_active_breakpoints(
-    base: Rc<StyleRules>,
-    overlays: &[(Breakpoint, Rc<StyleRules>)],
-) -> Rc<StyleRules> {
-    if overlays.is_empty() {
-        return base;
-    }
-    // The PER-WORLD ctx, not `runtime_shared::current_breakpoint()`. The
-    // legacy thread-local memo cannot be subscribed to from a world effect
-    // (that is the whole reason `ViewportCtx` exists), so resolving against
-    // it made the responsive re-apply above depend on one value while
-    // resolving with another — the node re-ran and recomputed the same
-    // answer. The ctx seeds from the shared old-core value at creation, so
-    // seams that write `set_viewport_size` before the first build (SSR seed,
-    // hydrate attribute, native samples) still classify correctly.
-    let current = crate::viewport::viewport_ctx().breakpoint().get();
-    let mut merged: Option<StyleRules> = None;
-    for (bp, overlay) in overlays {
-        if bp.rank() <= current.rank() {
-            let acc = merged.take().unwrap_or_else(|| (*base).clone());
-            merged = Some(acc.merge(overlay));
-        }
-    }
-    match merged {
-        Some(rules) => Rc::new(rules),
-        None => base,
-    }
-}
-
-/// Fold the overlays whose threshold is `<=` the container width onto
-/// `base` (walker `merge_active_containers`). Width is 0 on the new
-/// core until the container-signal port (module docs) — no overlay
+/// `app` with every responsive layer active right now turned on: the
+/// breakpoints at or below the current viewport bucket, and the container
+/// overlays whose threshold is `<=` `container_width`. Resolving the
+/// result ONCE is how event-driven (native) backends fold responsive
+/// styles: `StyleSheet::resolve` stacks the active layers mobile-first,
+/// each adding only what its own block sets.
+///
+/// This replaced merging each layer's FULL resolution over the last
+/// (`merge_active_breakpoints` / `merge_active_containers`). A full
+/// resolution re-states every base property, so an `md` block that set
+/// only `padding` put the base `min_height` back over an active `sm`
+/// arm's — on every native backend, and on web through the same full
+/// `@media` rules.
+///
+/// Reads the PER-WORLD viewport ctx, not `runtime_shared::current_breakpoint()`.
+/// The legacy thread-local memo cannot be subscribed to from a world effect
+/// (that is the whole reason `ViewportCtx` exists), so resolving against it
+/// made the responsive re-apply depend on one value while resolving with
+/// another. The ctx seeds from the shared old-core value at creation, so
+/// seams that write `set_viewport_size` before the first build (SSR seed,
+/// hydrate attribute, native samples) still classify correctly. The read
+/// only happens when the sheet declares a breakpoint block, so a plain
+/// node stays off the viewport graph. Container width is 0 on the new core
+/// until the container-signal port (module docs): no container overlay
 /// activates, matching a node with no container ancestor.
-fn merge_active_containers(
-    base: Rc<StyleRules>,
-    overlays: &[(f32, Rc<StyleRules>)],
-    container_width: f32,
-) -> Rc<StyleRules> {
-    if overlays.is_empty() {
-        return base;
+fn with_active_responsive(app: StyleApplication, container_width: f32) -> StyleApplication {
+    let bps = app.sheet.breakpoint_axes();
+    let cqs = app.sheet.container_axes();
+    if bps.is_empty() && cqs.is_empty() {
+        return app;
     }
-    let mut merged: Option<StyleRules> = None;
-    for (threshold, overlay) in overlays {
-        if *threshold <= container_width {
-            let acc = merged.take().unwrap_or_else(|| (*base).clone());
-            merged = Some(acc.merge(overlay));
-        }
+    let mut on: Vec<String> = Vec::new();
+    if !bps.is_empty() {
+        let current = crate::viewport::viewport_ctx().breakpoint().get();
+        on.extend(bps.iter().filter(|(bp, _)| bp.rank() <= current.rank()).map(|(_, axis)| axis.to_string()));
     }
-    match merged {
-        Some(rules) => Rc::new(rules),
-        None => base,
-    }
+    on.extend(cqs.iter().filter(|(t, _)| *t <= container_width).map(|(_, axis)| axis.to_string()));
+    on.into_iter().fold(app, |app, axis| app.with(axis, "on"))
 }
 
 /// Fill an absent `font_family` with the PER-WORLD theme default (old
@@ -1707,23 +1672,25 @@ fn fill_default_text_font(
 // ===========================================================================
 // Tests — breakpoint + container overlay folding.
 //
-// Ports of the old walker's inline `walker/style.rs::{breakpoint_tests,
-// container_tests}` (8). `runtime-shared` tests the style-engine
-// PRIMITIVES (sheet resolution, variant axes, `StyleRules::merge`); what
-// dies with the walker is the *fold policy* built on top of them —
-// sort-by-rank-not-declaration-order, mobile-first cumulative layering,
-// the same-`Rc` fast path when nothing is active, zero-width ⇒ base, and
-// the convergence property the native container-query feedback loop
-// depends on. Nothing else covers those: the scene-parity goldens record
-// only the FINAL applied rules for the widths their fixtures happen to
-// run at.
+// The fold policy built on the style-engine primitives (`runtime-shared`
+// tests `StyleSheet::resolve`'s layer order itself): which layers are
+// active at a width, sort-by-rank-not-declaration-order, mobile-first
+// cumulative layering, the same-`Rc` fast path when nothing is active,
+// zero-width => base, the convergence property the native
+// container-query feedback loop depends on, and the per-layer shares the
+// CSS backends receive. Nothing else covers those: the scene-parity
+// goldens record only the FINAL applied rules for the widths their
+// fixtures happen to run at.
 // ===========================================================================
 
 #[cfg(test)]
 mod overlay_merge_tests {
     use super::*;
+    use runtime_shared::accessibility::AccessibilityProps;
+    use runtime_scene::Host;
     use runtime_shared::container_query::container_axis_name;
-    use runtime_shared::{set_viewport_size, Breakpoint, Length, StyleSheet, Tokenized, ViewportSize};
+    use runtime_shared::{Breakpoint, Length, StyleSheet, Tokenized, ViewportSize};
+    use runtime_world::{collect_owned, World};
 
     fn px(p: f32) -> Option<Tokenized<Length>> {
         Some(Tokenized::Literal(Length::Px(p)))
@@ -1737,13 +1704,14 @@ mod overlay_merge_tests {
             .value()
     }
 
-    /// Base `width: 100`, `breakpoint md { width: 500 }`,
+    /// Base `width: 100, height: 10`, `breakpoint md { width: 500 }`,
     /// `breakpoint lg { width: 900 }` — `lg` declared FIRST on purpose,
     /// so a resolver that merely preserved declaration order would fail.
     fn responsive_app() -> StyleApplication {
         let sheet = Rc::new(
             StyleSheet::new(|_vs| StyleRules {
                 width: px(100.0),
+                height: px(10.0),
                 ..Default::default()
             })
             .variant("__bp_lg", "on", |_vs| StyleRules {
@@ -1758,17 +1726,23 @@ mod overlay_merge_tests {
         StyleApplication::new(sheet)
     }
 
+    fn at_width(world: &World, w: f32) {
+        world.enter(|| crate::viewport::viewport_ctx().set(ViewportSize::new(w, 800.0)));
+        world.flush();
+    }
+
     #[test]
-    fn resolve_breakpoint_overlays_sorts_ascending_and_resolves_each() {
+    fn resolve_breakpoint_overlays_sorts_ascending_and_holds_each_layers_share() {
         let app = responsive_app();
         let overlays = resolve_breakpoint_overlays(&app);
         assert_eq!(overlays.len(), 2, "two breakpoint overlays declared");
         assert_eq!(overlays[0].0, Breakpoint::Md, "sorted by rank, not declaration");
         assert_eq!(overlays[1].0, Breakpoint::Lg);
-        // Each entry is the FULLY resolved rules for that bucket (base
-        // merged with the overlay), so consumers can stack them.
         assert_eq!(width_of(&overlays[0].1), Length::Px(500.0));
         assert_eq!(width_of(&overlays[1].1), Length::Px(900.0));
+        // Only what the layer's own block sets: re-stating the base
+        // `height` is what let one layer erase another in CSS.
+        assert!(overlays[0].1.height.is_none() && overlays[1].1.height.is_none());
     }
 
     #[test]
@@ -1782,43 +1756,27 @@ mod overlay_merge_tests {
     }
 
     #[test]
-    fn merge_active_breakpoints_layers_mobile_first_by_viewport_width() {
+    fn with_active_responsive_layers_mobile_first_by_viewport_width() {
         let app = responsive_app();
         let base = resolve_style(&app);
-        let overlays = resolve_breakpoint_overlays(&app);
-
-        // Drives the PER-WORLD ctx, which is what `merge_active_breakpoints`
-        // classifies against. It used to drive `set_viewport_size` (the
-        // legacy thread-local); that value now only SEEDS the ctx at
-        // creation, so writing it after the ctx exists moves nothing.
-        let world = runtime_world::World::new();
-        let bump = |w: f32| {
-            world.enter(|| {
-                crate::viewport::viewport_ctx().set(ViewportSize::new(w, 800.0))
-            });
-            world.flush();
+        let world = World::new();
+        let resolve_at = |w: f32| {
+            at_width(&world, w);
+            world.enter(|| resolve_style(&with_active_responsive(app.clone(), 0.0)))
         };
 
         // Below sm: nothing active → base width, and the SAME Rc back
-        // (no allocation on the common mobile path).
-        bump(390.0);
-        let merged = world.enter(|| merge_active_breakpoints(base.clone(), &overlays));
-        assert_eq!(width_of(&merged), Length::Px(100.0));
-        assert!(
-            Rc::ptr_eq(&merged, &base),
-            "no active overlay must reuse the base Rc"
-        );
+        // (the application is untouched, so the resolution cache hits).
+        let r = resolve_at(390.0);
+        assert_eq!(width_of(&r), Length::Px(100.0));
+        assert!(Rc::ptr_eq(&r, &base), "no active overlay must reuse the base Rc");
 
         // Md bucket: only md is active (lg is above).
-        bump(800.0);
-        let merged = world.enter(|| merge_active_breakpoints(base.clone(), &overlays));
-        assert_eq!(width_of(&merged), Length::Px(500.0));
+        assert_eq!(width_of(&resolve_at(800.0)), Length::Px(500.0));
 
         // Lg bucket: md AND lg both active (min-width is cumulative);
         // lg wins the conflicting `width`.
-        bump(1100.0);
-        let merged = world.enter(|| merge_active_breakpoints(base.clone(), &overlays));
-        assert_eq!(width_of(&merged), Length::Px(900.0));
+        assert_eq!(width_of(&resolve_at(1100.0)), Length::Px(900.0));
     }
 
     /// Base `width: 100`, `container (min_width: 600) { width: 900 }`,
@@ -1864,27 +1822,18 @@ mod overlay_merge_tests {
     }
 
     #[test]
-    fn merge_active_containers_layers_mobile_first_by_container_width() {
+    fn with_active_responsive_layers_mobile_first_by_container_width() {
         let app = container_app();
         let base = resolve_style(&app);
-        let overlays = resolve_container_overlays(&app);
+        let at = |w: f32| resolve_style(&with_active_responsive(app.clone(), w));
 
-        let merged = merge_active_containers(base.clone(), &overlays, 200.0);
-        assert_eq!(width_of(&merged), Length::Px(100.0));
-        assert!(
-            Rc::ptr_eq(&merged, &base),
-            "no active overlay must reuse the base Rc"
-        );
-
-        let merged = merge_active_containers(base.clone(), &overlays, 450.0);
-        assert_eq!(width_of(&merged), Length::Px(500.0));
-
-        let merged = merge_active_containers(base.clone(), &overlays, 700.0);
-        assert_eq!(width_of(&merged), Length::Px(900.0));
-
+        let r = at(200.0);
+        assert_eq!(width_of(&r), Length::Px(100.0));
+        assert!(Rc::ptr_eq(&r, &base), "no active overlay must reuse the base Rc");
+        assert_eq!(width_of(&at(450.0)), Length::Px(500.0));
+        assert_eq!(width_of(&at(700.0)), Length::Px(900.0));
         // Exactly at a threshold is inclusive (min-width semantics).
-        let merged = merge_active_containers(base.clone(), &overlays, 300.0);
-        assert_eq!(width_of(&merged), Length::Px(500.0));
+        assert_eq!(width_of(&at(300.0)), Length::Px(500.0));
     }
 
     /// Container width 0 — which is what every non-web backend reports on
@@ -1893,28 +1842,114 @@ mod overlay_merge_tests {
     /// This is the assertion that makes the documented deferral SAFE
     /// rather than merely stated.
     #[test]
-    fn merge_active_containers_zero_width_is_base() {
+    fn with_active_responsive_zero_container_width_is_base() {
         let app = container_app();
         let base = resolve_style(&app);
-        let overlays = resolve_container_overlays(&app);
-        let merged = merge_active_containers(base.clone(), &overlays, 0.0);
-        assert!(Rc::ptr_eq(&merged, &base));
+        assert!(Rc::ptr_eq(&resolve_style(&with_active_responsive(app, 0.0)), &base));
     }
 
-    /// Convergence: merging at the SAME width twice yields identical
+    /// Convergence: resolving at the SAME width twice yields identical
     /// rules. The native container-query feedback loop depends on it —
     /// after a restyle the container's width is unchanged (inline-size
     /// containment), so re-resolving must produce the same result and the
     /// change-guarded signal must not re-fire. Without this the loop
     /// oscillates forever.
     #[test]
-    fn merge_active_containers_is_idempotent_at_fixed_width() {
+    fn with_active_responsive_is_idempotent_at_fixed_container_width() {
         let app = container_app();
-        let base = resolve_style(&app);
-        let overlays = resolve_container_overlays(&app);
-        let a = merge_active_containers(base.clone(), &overlays, 700.0);
-        let b = merge_active_containers(base.clone(), &overlays, 700.0);
+        let a = resolve_style(&with_active_responsive(app.clone(), 700.0));
+        let b = resolve_style(&with_active_responsive(app, 700.0));
         assert_eq!(width_of(&a), width_of(&b));
+    }
+
+    /// Records what an EVENT-DRIVEN (native) backend is handed.
+    #[derive(Default)]
+    struct NativeHost {
+        applied: Vec<Rc<StyleRules>>,
+    }
+    impl Host for NativeHost {
+        type Node = u32;
+        fn insert(&mut self, _p: &mut u32, _c: u32) {}
+        fn insert_at(&mut self, _p: &mut u32, _c: u32, _i: usize) {}
+        fn remove_child(&mut self, _p: &u32, _c: &u32) {}
+        fn clear_children(&mut self, _n: &u32) {}
+        fn create_anchor(&mut self) -> u32 {
+            0
+        }
+        fn supports_splice(&self) -> bool {
+            true
+        }
+    }
+    impl crate::caps::ViewOps for NativeHost {
+        fn create_view(&mut self, _a11y: &AccessibilityProps) -> u32 {
+            0
+        }
+    }
+    impl crate::caps::DocumentOps for NativeHost {}
+    impl crate::caps::AssetOps for NativeHost {}
+    impl crate::caps::AppEnvOps for NativeHost {}
+    impl crate::caps::StyleOps for NativeHost {
+        fn apply_style(&mut self, _node: &u32, style: &Rc<StyleRules>) {
+            self.applied.push(style.clone());
+        }
+    }
+
+    /// `base { min_height: 44, padding_top: 4 }`, `sm { min_height: 0 }`,
+    /// `md { padding_top: 8 }`, and a `state hovered { background }`.
+    fn chip_sheet() -> Rc<StyleSheet> {
+        Rc::new(
+            StyleSheet::new(|_vs| StyleRules {
+                min_height: px(44.0),
+                padding_top: px(4.0),
+                ..Default::default()
+            })
+            .variant("__bp_sm", "on", |_vs| StyleRules { min_height: px(0.0), ..Default::default() })
+            .variant("__bp_md", "on", |_vs| StyleRules { padding_top: px(8.0), ..Default::default() })
+            .variant("__state_hovered", "on", |_vs| StyleRules {
+                background: Some(Tokenized::Literal(runtime_shared::Color("#333333".into()))),
+                ..Default::default()
+            }),
+        )
+    }
+
+    /// Regression (found while fixing CrewForge want_c5b3c05a): at >= 768px
+    /// an `md` block that sets only `padding_top` reset the `sm` block's
+    /// `min_height: 0` back to the base 44 on every native backend. Each
+    /// active breakpoint was resolved in full (`resolve(app + md)` carries
+    /// the base `min_height`) and merged over the last. Drives the real
+    /// static-sheet path (`attach_style` → `apply_sheet`).
+    #[test]
+    fn regression_md_breakpoint_erases_sm_arm() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(NativeHost::default()));
+        let sheet = chip_sheet();
+        at_width(&world, 800.0);
+        let ((), _owned) = world.enter(|| {
+            collect_owned(|| {
+                let _s = attach_style(&backend, &1u32, StyleProp::Sheet(Box::new(StyleApplication::new(sheet.clone()))));
+            })
+        });
+        world.flush();
+        let applied = backend.borrow().applied.last().cloned().expect("a style was applied");
+        assert_eq!(applied.padding_top, px(8.0), "md's own property applies");
+        assert_eq!(applied.min_height, px(0.0), "sm's min_height survives md");
+    }
+
+    /// CrewForge want_c5b3c05a, the half the CSS backends see: the state
+    /// overlay they turn into `.cls:hover` (specificity (0,2,0)) carried
+    /// the FULL resolution, base `min_height: 44` included, so a hovered
+    /// chip lost its active `breakpoint sm { min_height: 0 }`. Each overlay
+    /// must carry only what its own block sets.
+    #[test]
+    fn regression_state_overlay_erases_breakpoint_arm() {
+        let app = StyleApplication::new(chip_sheet());
+        let states = resolve_state_overlays(&app);
+        let hover = &states.iter().find(|(b, _)| *b == StateBits::HOVERED).expect("hover overlay").1;
+        assert!(hover.background.is_some(), "the state's own property is there");
+        assert_eq!(hover.min_height, None, "the state must not re-state the base min_height");
+        let bps = resolve_breakpoint_overlays(&app);
+        assert_eq!(bps[0].1.min_height, px(0.0));
+        assert_eq!(bps[1].1.min_height, None, "md must not re-state the base min_height over sm");
     }
 }
 

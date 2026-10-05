@@ -543,15 +543,13 @@ The equivalence rests on two facts, both load-bearing:
   specificity), and `@media`/`@container` preludes (which never do).
   Equal-specificity rules cascade by source order per property, which
   is exactly `StyleRules::merge`'s later-wins.
-- **Source order mirrors the resolver's merge order**, which iterates
-  variant axes alphabetically (`BTreeMap`): the `__bp_*` < `__cq_*` <
-  `__state_*` overlay prefixes sort before every lowercase author
-  axis, so emission is base → breakpoints (rank ascending) →
-  containers (threshold ascending) → states → author axes. This also
-  reproduces the live web backend's cross-rule outcomes (a variant arm
-  beats a state overlay on conflicting properties; a state overlay
-  beats a breakpoint overlay) — verified by the A/B computed-style
-  harness against the live engine on the full website.
+- **Source order mirrors the resolver's merge order** — the
+  [layer order](#layer-order) every backend follows: base →
+  breakpoints (rank ascending) → containers (threshold ascending) →
+  author axes (alphabetical) → states. States used to be emitted
+  before the author axes, the resolver's order before states were
+  made to merge last, so on a premint build a variant beat a state
+  that set the same property.
 
 A sheet whose base declares a non-flex `display` (a `display: grid`
 container) is **display-locked**: its arm/overlay deltas lower with the
@@ -887,11 +885,30 @@ There are two ways a backend can wire state activation:
 
 ### Native (`handles_states_natively() == true`)
 
-The backend receives `apply_styled_states(base, overlays)` and emits
-its own state-tracking mechanism. The web backend, for example,
-mints CSS pseudo-class rules — `:hover`, `:active`, `:focus`,
-`[disabled]` — so the browser handles state activation natively.
-No Rust↔JS round trip per event.
+The backend receives `apply_styled_states(base, overlays)` (or
+`apply_styled_variants`, which adds the breakpoint and container
+overlays) and emits its own state-tracking mechanism. The web backend,
+for example, mints CSS pseudo-class rules — `:hover`, `:active`,
+`:focus`, `[disabled]` — so the browser handles state activation
+natively. No Rust↔JS round trip per event.
+
+Each overlay the backend receives holds **only the properties its own
+block sets** (with the values the full merge gives them, so a variant or
+override above the block still wins). The rules therefore never repeat
+the base:
+
+```css
+.ui-x { min-height: 44px }
+@media (min-width: 640px) { .ui-x { min-height: 0px } }
+.ui-x:hover { background: … }
+```
+
+A hovered element at 640px and wider keeps `min-height: 0`: the
+`:hover` rule outranks the `@media` rule only on `background`, the one
+property the state sets. Overlays used to be full resolutions, so the
+`:hover` rule (specificity (0,2,0)) re-declared `min-height: 44px` and
+the hovered element lost the breakpoint's value. See
+[Layer order](#layer-order).
 
 ### Event-driven (`handles_states_natively() == false`)
 
@@ -996,11 +1013,12 @@ activates at exactly the same width everywhere:
 
 - **Web** emits `@media (min-width: 768px) { .ui-… { … } }`. A static /
   SSR first paint is already responsive — no JS needed to pick the
-  bucket.
-- **Native** merges the active bucket's overlay reactively. The
-  framework reads `current_breakpoint()` (a memo over `viewport_size()`
-  that re-fires only when the *bucket* changes), and the apply-style
-  effect re-resolves with the new overlay merged in.
+  bucket. Each `@media` rule holds only what its block sets, so stacked
+  rules cascade exactly like the native merge.
+- **Native** turns every active breakpoint on and resolves once. The
+  framework reads the viewport bucket (re-firing only when the *bucket*
+  changes), and the apply-style effect re-resolves with the active
+  blocks layered in.
 
 For imperative layout switches that don't fit the overlay model, read
 the bucket directly:
@@ -1016,6 +1034,23 @@ Prefer declarative `breakpoint` blocks where you can — they keep web
 and native in lockstep and survive SSR. The signal is the escape hatch.
 See [`breakpoint.rs`](../crates/runtime/shared/src/breakpoint.rs) for the
 bucket definitions and thresholds.
+
+### Layer order
+
+Every backend and the premint asset follow one precedence, defined by
+`StyleSheet::resolve`:
+
+**base < breakpoints (`sm` → `xl`) < containers (narrow → wide) <
+variants < states < compounds**
+
+Each layer contributes only the properties its own block sets, so a
+higher layer overrides a lower one on the properties they share and
+leaves the rest alone. With `sm { min_height: 0 }` and
+`md { padding: 8 }`, an element at 768px gets both. A variant beats a
+breakpoint, so a `size` variant's `padding` wins over a `breakpoint md`
+padding at every width. A state beats a variant, so
+`state pressed { background }` shows on top of any variant's
+background.
 
 ---
 

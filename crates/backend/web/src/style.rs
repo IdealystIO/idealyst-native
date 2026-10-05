@@ -1009,10 +1009,11 @@ impl WebBackend {
                 let _t = PhaseTimer::start("hash_class_name");
                 hash_class_name(&key)
             };
-            // The whole cohort's rule strings — base first, then state /
-            // breakpoint / container overlays — assembled by the shared
-            // `css::class_rule_group` (single source with SSR and the
-            // premint style-dump) and inserted as ONE ordered group. The
+            // The whole cohort's rule strings — base first, then the
+            // breakpoint / container / state layers — assembled by the shared
+            // `css::class_rule_group` (SSR and the premint style-dump lower
+            // each layer through the same `css::layer_css` helpers) and
+            // inserted as ONE ordered group. The
             // group insert (`insert_rule_group`) guarantees the base's
             // physical index is below every overlay's, which the
             // equal-specificity mobile-first cascade depends on; per-rule

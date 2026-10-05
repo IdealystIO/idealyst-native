@@ -1043,24 +1043,28 @@ impl caps::StyleOps for SsrBackend {
         self.style_rules
             .entry(class.clone())
             .or_insert_with(|| css::rules_to_css(base));
+        // Each overlay is a LAYER SHARE (only what its own block sets) and
+        // lowers exactly as the web backend's `css::class_rule_group` does:
+        // `css::layer_css` / `css::state_layer_css`, plus a `:where()`
+        // column-pin companion for a layer that flex-promotes. Pins carry
+        // no specificity, so their position in `<head>` is free; they ride
+        // `media_rules` because that map holds whole rule strings.
+        let locked = css::display_locked(base);
         for (state, overlay) in overlays {
             if let Some(pseudo) = css::state_pseudo(*state) {
                 // Key carries the pseudo so head_css emits
                 // `.ui-<hash>:hover{ … }` (the node still wears `ui-<hash>`).
+                // The (0,2,0) pseudo-class rule wins over the (0,1,0)
+                // `@media`/`@container` rules wherever it lands, and only
+                // for the properties the state sets.
                 self.style_rules
                     .entry(format!("{class}{pseudo}"))
-                    .or_insert_with(|| {
-                        let body = css::rules_to_css(overlay);
-                        // Component-owned focus overlay suppresses the UA
-                        // ring, matching the web backend's minted rule —
-                        // without this the SSR first paint double-draws the
-                        // native outline under the themed ring.
-                        if *state == runtime_shared::StateBits::FOCUSED {
-                            format!("outline:none;{body}")
-                        } else {
-                            body
-                        }
-                    });
+                    .or_insert_with(|| css::state_layer_css(*state, overlay, locked));
+                if css::layer_needs_column_pin(overlay, locked) {
+                    self.media_rules
+                        .entry(format!("{class}{pseudo}~pin"))
+                        .or_insert_with(|| format!(":where(.{class}{pseudo}) {{ {} }}", css::COLUMN_PIN));
+                }
             }
         }
         // Breakpoint overlays → `@media (min-width: …) { .ui-<hash> { … } }`.
@@ -1068,11 +1072,14 @@ impl caps::StyleOps for SsrBackend {
         // them ascending by rank (mobile-first cascade). `None` only for Xs,
         // which the walker never sends as an overlay.
         for (bp, overlay) in breakpoint_overlays {
-            let body = css::rules_to_css(overlay);
-            if let Some(rule) = css::breakpoint_media_rule(&class, *bp, &body) {
+            let Some(query) = css::breakpoint_media_query(*bp) else { continue };
+            self.media_rules
+                .entry(format!("{class}@{}", bp.rank()))
+                .or_insert_with(|| format!("{query} {{ .{class} {{ {} }} }}", css::layer_css(overlay, locked)));
+            if css::layer_needs_column_pin(overlay, locked) {
                 self.media_rules
-                    .entry(format!("{class}@{}", bp.rank()))
-                    .or_insert(rule);
+                    .entry(format!("{class}@{}~pin", bp.rank()))
+                    .or_insert_with(|| format!("{query} {{ :where(.{class}) {{ {} }} }}", css::COLUMN_PIN));
             }
         }
         // Container overlays → `@container (min-width: …) { .ui-<hash> { … } }`.
@@ -1081,11 +1088,15 @@ impl caps::StyleOps for SsrBackend {
         // `container-type` ancestor (set by `mark_container`). Stacking by
         // source order reproduces the mobile-first cascade.
         for (threshold, overlay) in container_overlays {
-            let body = css::rules_to_css(overlay);
-            let rule = css::container_query_rule(&class, *threshold, &body);
+            let query = css::container_query_prelude(*threshold);
             self.media_rules
                 .entry(format!("{class}@cq{:08x}", threshold.to_bits()))
-                .or_insert(rule);
+                .or_insert_with(|| format!("{query} {{ .{class} {{ {} }} }}", css::layer_css(overlay, locked)));
+            if css::layer_needs_column_pin(overlay, locked) {
+                self.media_rules
+                    .entry(format!("{class}@cq{:08x}~pin", threshold.to_bits()))
+                    .or_insert_with(|| format!("{query} {{ :where(.{class}) {{ {} }} }}", css::COLUMN_PIN));
+            }
         }
         let change = set_styled_class(node, &class);
         self.book_styled_class(&class, change);

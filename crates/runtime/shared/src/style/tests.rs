@@ -2457,3 +2457,110 @@ fn a_patched_sheet_fn_with_its_own_key_static_gets_its_new_rules() {
     let again = cached_stylesheet(&BASE_KEY as *const u8 as usize, || sheet(99.0));
     assert!(Rc::ptr_eq(&before, &again));
 }
+
+// --- Layered overlays: breakpoints / containers / states ------------------
+//
+// The contract `StyleSheet::resolve` defines for every backend:
+//   base < breakpoints < containers < author axes < states < compounds
+// with each layer contributing only what its own block sets.
+
+fn px(v: f32) -> Option<Tokenized<Length>> {
+    Some(Tokenized::Literal(Length::Px(v)))
+}
+
+fn layered_sheet() -> StyleSheet {
+    StyleSheet::new(|_| StyleRules { min_height: px(44.0), padding_top: px(4.0), ..Default::default() })
+        .variant("__bp_sm", "on", |_| StyleRules { min_height: px(0.0), ..Default::default() })
+        .variant("__bp_md", "on", |_| StyleRules { padding_top: px(8.0), ..Default::default() })
+        .variant("__bp_lg", "on", |_| StyleRules { padding_top: px(16.0), ..Default::default() })
+        .variant("size", "big", |_| StyleRules { padding_top: px(99.0), ..Default::default() })
+        .variant("__state_hovered", "on", |_| StyleRules { min_height: px(50.0), ..Default::default() })
+}
+
+fn resolve_with(sheet: &StyleSheet, on: &[(&str, &str)]) -> StyleRules {
+    let mut vs = VariantSet::default();
+    for (a, v) in on {
+        vs.0.insert((*a).into(), (*v).into());
+    }
+    sheet.resolve(&vs)
+}
+
+// With every active breakpoint on in ONE resolve (how the native path
+// folds them now), each arm keeps its own properties. The regression this
+// replaces lived in the vocabulary's old full-overlay merge — see
+// `regression_md_breakpoint_erases_sm_arm` there.
+#[test]
+fn one_resolve_keeps_every_active_breakpoints_properties() {
+    let sheet = layered_sheet();
+    let r = resolve_with(&sheet, &[("__bp_sm", "on"), ("__bp_md", "on")]);
+    assert_eq!(r.min_height, px(0.0), "sm's min_height survives md");
+    assert_eq!(r.padding_top, px(8.0), "md's padding applies");
+}
+
+// Breakpoints stack by RANK, not by axis name: alphabetically `__bp_lg` <
+// `__bp_md`, which would let md beat lg with both on.
+#[test]
+fn breakpoints_stack_mobile_first_not_alphabetically() {
+    let sheet = layered_sheet();
+    let r = resolve_with(&sheet, &[("__bp_sm", "on"), ("__bp_md", "on"), ("__bp_lg", "on")]);
+    assert_eq!(r.padding_top, px(16.0), "the widest active breakpoint wins");
+}
+
+// The rest of the contract: author axes beat breakpoints, states beat both.
+#[test]
+fn author_axes_beat_breakpoints_and_states_beat_both() {
+    let sheet = layered_sheet();
+    let r = resolve_with(&sheet, &[("__bp_lg", "on"), ("size", "big")]);
+    assert_eq!(r.padding_top, px(99.0), "the variant beats the breakpoint");
+    let r = resolve_with(&sheet, &[("__bp_sm", "on"), ("__state_hovered", "on")]);
+    assert_eq!(r.min_height, px(50.0), "the state beats the breakpoint");
+}
+
+// `layer_mask` + `restrict_to`: a layer's share of the cascade is the
+// properties its own block sets, with the values the full merge gives
+// them — so a variant that overrides the layer still wins.
+#[test]
+fn restricted_overlay_holds_only_the_layers_own_properties() {
+    let sheet = layered_sheet();
+    let vs = VariantSet::default();
+    let mask = sheet.layer_mask(&vs, "__bp_md");
+    let full = resolve_with(&sheet, &[("__bp_md", "on")]);
+    let layer = full.restrict_to(&mask);
+    assert_eq!(layer.padding_top, px(8.0));
+    assert_eq!(layer.min_height, None, "md never set min_height, so its layer must not re-state it");
+
+    let mut big = VariantSet::default();
+    big.0.insert("size".into(), "big".into());
+    let mask = sheet.layer_mask(&big, "__bp_md");
+    let full = resolve_with(&sheet, &[("__bp_md", "on"), ("size", "big")]);
+    assert_eq!(full.restrict_to(&mask).padding_top, px(99.0), "the variant's value, not md's");
+}
+
+// A compound naming the layer's axis is part of that layer.
+#[test]
+fn layer_mask_includes_matching_compounds() {
+    let sheet = layered_sheet().compound(vec![("__state_hovered", "on"), ("size", "big")], |_| StyleRules {
+        opacity: Some(Tokenized::Literal(0.5)),
+        ..Default::default()
+    });
+    let mut big = VariantSet::default();
+    big.0.insert("size".into(), "big".into());
+    assert!(sheet.layer_mask(&big, "__state_hovered").opacity.is_some());
+    assert!(sheet.layer_mask(&VariantSet::default(), "__state_hovered").opacity.is_none(), "the compound only applies with size=big");
+}
+
+// A CSS backend lowers every `*_transition` into ONE `transition`
+// declaration, so a layer that sets one transition must carry the whole
+// merged set, or it would drop the base's transitions while it applies.
+#[test]
+fn restrict_to_keeps_the_transition_set_whole() {
+    let t = |ms: u32| Some(Transition::new(ms, Easing::Linear));
+    let full = StyleRules { background_transition: t(100), opacity_transition: t(200), min_height: px(4.0), ..Default::default() };
+    let mask = StyleRules { opacity_transition: t(1), ..Default::default() };
+    let layer = full.restrict_to(&mask);
+    assert_eq!(layer.opacity_transition, t(200));
+    assert_eq!(layer.background_transition, t(100), "the base's transition rides along");
+    assert_eq!(layer.min_height, None);
+    let no_transitions = full.restrict_to(&StyleRules { min_height: px(0.0), ..Default::default() });
+    assert_eq!(no_transitions.background_transition, None, "untouched transitions stay with the base");
+}

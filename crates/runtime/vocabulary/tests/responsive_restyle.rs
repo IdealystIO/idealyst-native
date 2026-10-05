@@ -9,7 +9,7 @@
 //! `__bp_*` overlays are static styling. Web receives every overlay and
 //! lets `@media` switch between them, so resizing re-pins for free. Every
 //! other backend — GTK, Win32, terminal, CPU, the GPU hosts — resolves via
-//! `merge_active_breakpoints`, which reads `current_breakpoint()` and BAKES
+//! `with_active_responsive`, which reads `current_breakpoint()` and BAKES
 //! the winner into the node's rules at apply time. Re-applying therefore
 //! requires the node to be subscribed to the viewport.
 //!

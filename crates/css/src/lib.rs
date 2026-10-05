@@ -286,21 +286,36 @@ pub fn class_rule(class_name: &str, body: &str) -> String {
     rule
 }
 
-/// Assemble the ordered rule group for one minted class: the base rule
-/// first, then each state overlay as a pseudo-class/`[disabled]` rule,
-/// then breakpoint overlays as `@media (min-width: …)` rules (callers
-/// pass them ascending by rank), then container overlays as
-/// `@container (min-width: …)` rules (ascending by threshold).
+/// Assemble the ordered rule group for one minted class (the live engine:
+/// the web backend's stylesheet insert and SSR's `<head>`): the base rule,
+/// then breakpoint overlays as `@media (min-width: …)` rules (callers pass
+/// them ascending by rank), then container overlays as
+/// `@container (min-width: …)` rules (ascending by threshold), then each
+/// state overlay as a pseudo-class/`[disabled]` rule.
+///
+/// Every overlay is a LAYER SHARE — only the properties its own block sets
+/// (`runtime-vocabulary`'s `layer_share`) — and lowers through
+/// [`layer_css`]. That is what makes the cascade reproduce
+/// `StyleSheet::resolve`'s precedence (base < breakpoints < containers <
+/// author axes < states): the `@media`/`@container` rules are (0,1,0) and
+/// stack by source order, and the state rules are (0,2,0), so a state wins
+/// exactly the properties it sets. Author axes need no rules here; they
+/// are folded into the base and into each share's values. When the
+/// overlays were FULL resolutions every rule re-stated the base: a hovered
+/// chip lost its `breakpoint sm { min_height: 0 }` (the (0,2,0) `:hover`
+/// rule put back the base 44px — CrewForge want_c5b3c05a) and an `md` rule
+/// reset an `sm` rule's properties.
+///
+/// A layer that turns the element into a flex container (a `gap`-only
+/// breakpoint) gets the framework's `flex-direction: column` default from a
+/// specificity-(0,0,0) `:where()` companion scoped to the same condition,
+/// as in the premint dump: inside the layer's own rule it would stomp an
+/// explicit `row` from another layer.
 ///
 /// ORDER IS LOAD-BEARING: the base's physical index must sit below every
 /// overlay's and the responsive overlays must stack ascending, because
 /// the equal-specificity mobile-first cascade resolves conflicts by sheet
 /// order. Callers must insert the returned rules contiguously, in order.
-///
-/// Single source shared by the web backend (live stylesheet insert), SSR
-/// (`<head>` emit), and the premint style-dump (`.css` asset), so the
-/// same `(base, overlays)` mints semantically identical CSS everywhere —
-/// which is the whole hydration/premint contract.
 pub fn class_rule_group(
     class_name: &str,
     base: &StyleRules,
@@ -308,37 +323,79 @@ pub fn class_rule_group(
     breakpoint_overlays: &[(runtime_shared::Breakpoint, std::rc::Rc<StyleRules>)],
     container_overlays: &[(f32, std::rc::Rc<StyleRules>)],
 ) -> Vec<String> {
+    let locked = display_locked(base);
     let mut group_rules: Vec<String> = Vec::with_capacity(
-        1 + state_overlays.len() + breakpoint_overlays.len() + container_overlays.len(),
+        1 + 2 * (state_overlays.len() + breakpoint_overlays.len() + container_overlays.len()),
     );
     group_rules.push(class_rule(class_name, &rules_to_css(base)));
-    for (bit, overlay) in state_overlays {
-        let Some(pseudo) = state_pseudo(*bit) else { continue };
-        let selector = format!("{class_name}{pseudo}");
-        let body = rules_to_css(overlay);
-        // A component that declares its own `__state_focused` overlay
-        // owns the focus indicator, so suppress the browser's default
-        // `outline` on that `:focus` rule — otherwise the native ring
-        // double-draws with the themed one. Only emitted where a focus
-        // overlay exists; elements without one keep the default ring.
-        let body = if *bit == runtime_shared::StateBits::FOCUSED {
-            format!("outline:none;{body}")
-        } else {
-            body
-        };
-        group_rules.push(class_rule(&selector, &body));
-    }
     for (bp, overlay) in breakpoint_overlays {
         // `None` only for `Breakpoint::Xs` (the base, no media query) —
         // which the walker never emits as an overlay.
-        if let Some(rule) = breakpoint_media_rule(class_name, *bp, &rules_to_css(overlay)) {
-            group_rules.push(rule);
+        let Some(query) = breakpoint_media_query(*bp) else { continue };
+        group_rules.push(format!("{query} {{ .{class_name} {{ {} }} }}", layer_css(overlay, locked)));
+        if layer_needs_column_pin(overlay, locked) {
+            group_rules.push(format!("{query} {{ :where(.{class_name}) {{ {COLUMN_PIN} }} }}"));
         }
     }
     for (threshold, overlay) in container_overlays {
-        group_rules.push(container_query_rule(class_name, *threshold, &rules_to_css(overlay)));
+        let query = container_query_prelude(*threshold);
+        group_rules.push(format!("{query} {{ .{class_name} {{ {} }} }}", layer_css(overlay, locked)));
+        if layer_needs_column_pin(overlay, locked) {
+            group_rules.push(format!("{query} {{ :where(.{class_name}) {{ {COLUMN_PIN} }} }}"));
+        }
+    }
+    for (bit, overlay) in state_overlays {
+        let Some(pseudo) = state_pseudo(*bit) else { continue };
+        group_rules.push(class_rule(&format!("{class_name}{pseudo}"), &state_layer_css(*bit, overlay, locked)));
+        if layer_needs_column_pin(overlay, locked) {
+            group_rules.push(format!(":where(.{class_name}{pseudo}) {{ {COLUMN_PIN} }}"));
+        }
     }
     group_rules
+}
+
+/// The framework's default flex direction, as the body of the `:where()`
+/// companion a flex-promoting overlay layer gets (see [`class_rule_group`]).
+pub const COLUMN_PIN: &str = "flex-direction: column";
+
+/// Whether `base` declares a non-flex `display` (a `display: grid`
+/// container, say). Its overlay layers then lower with the `display: flex`
+/// auto-promotion suppressed and get no column pin: the merged set's
+/// explicit display wins, so a `gap`-only layer must not turn the grid
+/// back into a flex box. Shared by the live engine and the premint dump.
+pub fn display_locked(base: &StyleRules) -> bool {
+    matches!(base.display, Some(d) if d != runtime_shared::DisplayKind::Flex)
+}
+
+/// One overlay LAYER's rule body — only what the layer sets, lowered
+/// without the flex-direction pin (that rides [`layer_needs_column_pin`]'s
+/// companion rule instead). Shared by the live engine and the premint dump
+/// so the two lower a layer identically.
+pub fn layer_css(layer: &StyleRules, display_locked: bool) -> String {
+    if display_locked {
+        rules_to_css_delta_unpromoted(layer)
+    } else {
+        rules_to_css_delta(layer)
+    }
+}
+
+/// A STATE layer's body: [`layer_css`], plus `outline:none` on a focus
+/// layer. A component that declares its own `__state_focused` overlay owns
+/// the focus indicator; without this the browser's ring double-draws with
+/// the themed one. Elements without a focus layer keep the default ring.
+pub fn state_layer_css(bit: runtime_shared::StateBits, layer: &StyleRules, display_locked: bool) -> String {
+    let body = layer_css(layer, display_locked);
+    if bit == runtime_shared::StateBits::FOCUSED {
+        format!("outline:none;{body}")
+    } else {
+        body
+    }
+}
+
+/// Whether an overlay layer needs the `:where()` [`COLUMN_PIN`] companion:
+/// it makes the element a flex container and names no direction.
+pub fn layer_needs_column_pin(layer: &StyleRules, display_locked: bool) -> bool {
+    !display_locked && flex_promoted(layer) && layer.flex_direction.is_none()
 }
 
 /// The `@media (min-width: …)` prelude for a breakpoint overlay, using
@@ -2341,6 +2398,194 @@ mod tests {
         assert_eq!(rule, "@media (min-width: 768px) { .ui-abc123 { width: 500px } }");
         // Xs has no media query → no rule.
         assert_eq!(breakpoint_media_rule("ui-abc123", Breakpoint::Xs, "width: 100px"), None);
+    }
+
+    /// Minimal CSS cascade oracle for the rule strings this crate emits
+    /// (`class_rule` / `breakpoint_media_rule` / `container_query_rule`):
+    /// the winning value of `prop` for an element wearing the class at the
+    /// given viewport / container width with the given pseudo-classes
+    /// active. Winner = highest specificity, then latest in sheet order —
+    /// the two cascade inputs that decide between same-origin author
+    /// rules. Specificity is one class plus one per pseudo-class /
+    /// attribute selector, which covers every selector the group emits.
+    fn cascade_value(
+        group: &[String],
+        prop: &str,
+        viewport_w: f32,
+        container_w: f32,
+        active: &[&str],
+    ) -> Option<String> {
+        let mut best: Option<(u8, String)> = None;
+        for rule in group {
+            let (inner, applies) = if let Some(rest) = rule.strip_prefix("@media (min-width: ") {
+                let (n, rest) = rest.split_once("px) { ").expect("media prelude");
+                (rest.strip_suffix(" }").expect("media close"), viewport_w >= n.parse::<f32>().unwrap())
+            } else if let Some(rest) = rule.strip_prefix("@container (min-width: ") {
+                let (n, rest) = rest.split_once("px) { ").expect("container prelude");
+                (rest.strip_suffix(" }").expect("container close"), container_w >= n.parse::<f32>().unwrap())
+            } else {
+                (rule.as_str(), true)
+            };
+            if !applies {
+                continue;
+            }
+            let (selector, body) = inner.split_once(" { ").expect("selector");
+            let body = body.strip_suffix(" }").expect("rule close");
+            let pseudo = selector
+                .find(|c| c == ':' || c == '[')
+                .map(|i| &selector[i..])
+                .unwrap_or("");
+            if !pseudo.is_empty() && !active.contains(&pseudo) {
+                continue;
+            }
+            let specificity = 1 + u8::from(!pseudo.is_empty());
+            if let Some(v) = body_value(body, prop) {
+                if best.as_ref().map_or(true, |(s, _)| specificity >= *s) {
+                    best = Some((specificity, v));
+                }
+            }
+        }
+        best.map(|(_, v)| v)
+    }
+
+    /// The value of `prop` in one `rules_to_css` body.
+    fn body_value(body: &str, prop: &str) -> Option<String> {
+        body.split(';')
+            .filter_map(|d| d.split_once(':'))
+            .find(|(p, _)| p.trim() == prop)
+            .map(|(_, v)| v.trim().to_string())
+    }
+
+    /// The live engine's rule group must cascade to exactly what
+    /// `StyleSheet::resolve` gives a native backend with the same layers
+    /// active — the layering contract (base < breakpoints < containers <
+    /// author axes < states) for every variant × state × viewport ×
+    /// container combination.
+    ///
+    /// Regression (CrewForge want_c5b3c05a): with `base { min_height: 44 }`,
+    /// `breakpoint sm { min_height: 0 }`, a `selected` variant and a
+    /// `state hovered`, a hovered chip at 1440px snapped back to 44px. Every
+    /// overlay was a FULL resolution, so `.cls:hover` (specificity (0,2,0))
+    /// re-declared the base `min-height` over the (0,1,0) `@media` rule, and
+    /// an `md` rule re-declared it over `sm`'s. The overlays here are layer
+    /// shares, as `runtime-vocabulary` builds them.
+    #[test]
+    fn regression_state_overlay_erases_breakpoint_arm() {
+        use runtime_shared::{
+            resolve_style, Breakpoint, StateBits, StyleApplication, StyleSheet, Tokenized,
+        };
+        use std::rc::Rc;
+
+        let len = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+        let color = |c: &str| Some(Tokenized::Literal(Color(c.into())));
+        let cq_px = 400.0_f32;
+        let cq_axis = runtime_shared::container_axis_name(cq_px);
+        let sheet = Rc::new(
+            StyleSheet::new(move |_| StyleRules {
+                min_height: len(44.0),
+                padding_top: len(4.0),
+                padding_bottom: len(4.0),
+                background: color("#111111"),
+                ..Default::default()
+            })
+            .variant("selected", "on", move |_| StyleRules {
+                background: color("#222222"),
+                padding_bottom: len(20.0),
+                ..Default::default()
+            })
+            .variant("__state_hovered", "on", move |_| StyleRules {
+                background: color("#333333"),
+                ..Default::default()
+            })
+            .variant("__bp_sm", "on", move |_| StyleRules {
+                min_height: len(0.0),
+                ..Default::default()
+            })
+            .variant("__bp_md", "on", move |_| StyleRules {
+                padding_top: len(8.0),
+                padding_bottom: len(8.0),
+                ..Default::default()
+            })
+            .variant(cq_axis.clone(), "on", move |_| StyleRules {
+                padding_top: len(12.0),
+                ..Default::default()
+            }),
+        );
+        let threshold = |bp| runtime_shared::breakpoints().min_width(bp).expect("threshold");
+        let (sm_px, md_px) = (threshold(Breakpoint::Sm), threshold(Breakpoint::Md));
+
+        for selected in [false, true] {
+            let mut app = StyleApplication::new(sheet.clone());
+            if selected {
+                app = app.with("selected", "on");
+            }
+            let share = |axis: &str| {
+                Rc::new(
+                    resolve_style(&app.clone().with(axis.to_string(), "on"))
+                        .restrict_to(&app.sheet.layer_mask(&app.variants, axis)),
+                )
+            };
+            let group = class_rule_group(
+                "ui-chip",
+                &resolve_style(&app),
+                &[(StateBits::HOVERED, share("__state_hovered"))],
+                &[(Breakpoint::Sm, share("__bp_sm")), (Breakpoint::Md, share("__bp_md"))],
+                &[(cq_px, share(&cq_axis))],
+            );
+
+            for hovered in [false, true] {
+                for width in [320.0_f32, 700.0, 1440.0] {
+                    for container_w in [0.0_f32, 1000.0] {
+                        // Native: every active layer on, resolved once.
+                        let mut on = app.clone();
+                        if hovered {
+                            on = on.with("__state_hovered", "on");
+                        }
+                        if width >= sm_px {
+                            on = on.with("__bp_sm", "on");
+                        }
+                        if width >= md_px {
+                            on = on.with("__bp_md", "on");
+                        }
+                        if container_w >= cq_px {
+                            on = on.with(cq_axis.clone(), "on");
+                        }
+                        let native_css = rules_to_css(&resolve_style(&on));
+                        let active: &[&str] = if hovered { &[":hover"] } else { &[] };
+                        for prop in ["min-height", "background", "padding-top", "padding-bottom"] {
+                            assert_eq!(
+                                cascade_value(&group, prop, width, container_w, active),
+                                body_value(&native_css, prop),
+                                "{prop} diverges from native resolution \
+                                 (selected={selected}, hovered={hovered}, width={width}, \
+                                 container={container_w}); group: {group:#?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A layer that flex-promotes gets the column default from a `:where()`
+    /// companion inside its own condition, never from its own rule (where it
+    /// would stomp an explicit `row` from another layer).
+    #[test]
+    fn flex_promoting_layer_pins_column_through_a_where_companion() {
+        use runtime_shared::{Breakpoint, StateBits, Tokenized};
+        use std::rc::Rc;
+        let gap = Rc::new(StyleRules { gap: Some(Tokenized::Literal(Length::Px(4.0))), ..Default::default() });
+        let group = class_rule_group(
+            "ui-x",
+            &StyleRules::default(),
+            &[(StateBits::HOVERED, gap.clone())],
+            &[(Breakpoint::Md, gap.clone())],
+            &[],
+        );
+        let md = breakpoint_media_query(Breakpoint::Md).unwrap();
+        assert!(group.contains(&format!("{md} {{ :where(.ui-x) {{ flex-direction: column }} }}")), "{group:#?}");
+        assert!(group.contains(&":where(.ui-x:hover) { flex-direction: column }".to_string()), "{group:#?}");
+        assert!(group.iter().filter(|r| !r.contains(":where(")).all(|r| !r.contains("flex-direction")), "{group:#?}");
     }
 
     #[test]

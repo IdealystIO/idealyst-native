@@ -1773,58 +1773,124 @@ impl Clone for StyleRules {
     }
 }
 
+/// Every [`StyleRules`] field — ONE list, in two groups: the properties,
+/// then the per-property `*_transition` fields. Each field-wise operation
+/// ([`StyleRules::merge`], [`StyleRules::restrict_to`]) expands it through
+/// a callback macro taking `[props…] [transitions…]`, so a field added to
+/// the struct and to this list is handled by all of them at once.
+macro_rules! with_style_rule_fields {
+    ($m:ident) => {
+        $m!(
+            [
+                background, color, caret_color, font_size,
+                display, grid_template_columns, grid_row, grid_column,
+                flex_direction, flex_wrap, justify_content, align_items, align_content,
+                gap, row_gap, column_gap,
+                flex_grow, flex_shrink, flex_basis, align_self,
+                width, height, min_width, min_height, max_width, max_height, aspect_ratio,
+                padding_top, padding_right, padding_bottom, padding_left,
+                margin_top, margin_right, margin_bottom, margin_left,
+                border_top_left_radius, border_top_right_radius,
+                border_bottom_left_radius, border_bottom_right_radius,
+                border_top_width, border_right_width, border_bottom_width, border_left_width,
+                border_top_color, border_right_color, border_bottom_color, border_left_color,
+                border_style,
+                position, top, right, bottom, left,
+                font_family, font_weight, font_style, line_height, letter_spacing,
+                text_align, underline, strikethrough, text_transform, max_lines,
+                opacity, overflow, overscroll_behavior, scrollbar, object_fit, shadow, text_shadow,
+                background_gradient,
+                transform, transform_origin,
+                cursor, user_select, pointer_events,
+            ]
+            [
+                background_transition, color_transition, caret_color_transition,
+                opacity_transition,
+                transform_transition, width_transition, height_transition,
+                max_width_transition, max_height_transition,
+                min_width_transition, min_height_transition,
+                top_transition, right_transition, bottom_transition, left_transition,
+                padding_top_transition, padding_right_transition,
+                padding_bottom_transition, padding_left_transition,
+                margin_top_transition, margin_right_transition,
+                margin_bottom_transition, margin_left_transition,
+                border_top_left_radius_transition, border_top_right_radius_transition,
+                border_bottom_left_radius_transition, border_bottom_right_radius_transition,
+                border_top_width_transition, border_right_width_transition,
+                border_bottom_width_transition, border_left_width_transition,
+                border_top_color_transition, border_right_color_transition,
+                border_bottom_color_transition, border_left_color_transition,
+            ]
+        );
+    };
+}
+
+// Compile-time proof that the list above names EVERY field: the pattern
+// has no `..`, so a field missing from the list is a build error rather
+// than a property `merge` and `restrict_to` silently drop.
+macro_rules! assert_every_style_rule_field_listed {
+    ([$($p:ident),* $(,)?] [$($t:ident),* $(,)?]) => {
+        #[allow(dead_code)]
+        fn every_style_rule_field_is_listed(r: &StyleRules) {
+            let StyleRules { $($p: _,)* $($t: _,)* } = r;
+        }
+    };
+}
+with_style_rule_fields!(assert_every_style_rule_field_listed);
+
 impl StyleRules {
     /// Layer `other` on top of `self`: properties set in `other` override
     /// the corresponding fields in `self`.
     pub fn merge(mut self, other: &StyleRules) -> Self {
         macro_rules! overlay {
-            ($($f:ident),* $(,)?) => {
+            ([$($p:ident),* $(,)?] [$($t:ident),* $(,)?]) => {
                 $(
-                    if other.$f.is_some() {
-                        self.$f = other.$f.clone();
+                    if other.$p.is_some() {
+                        self.$p = other.$p.clone();
+                    }
+                )*
+                $(
+                    if other.$t.is_some() {
+                        self.$t = other.$t.clone();
                     }
                 )*
             };
         }
-        overlay!(
-            background, color, caret_color, font_size,
-            display, grid_template_columns, grid_row, grid_column,
-            flex_direction, flex_wrap, justify_content, align_items, align_content,
-            gap, row_gap, column_gap,
-            flex_grow, flex_shrink, flex_basis, align_self,
-            width, height, min_width, min_height, max_width, max_height, aspect_ratio,
-            padding_top, padding_right, padding_bottom, padding_left,
-            margin_top, margin_right, margin_bottom, margin_left,
-            border_top_left_radius, border_top_right_radius,
-            border_bottom_left_radius, border_bottom_right_radius,
-            border_top_width, border_right_width, border_bottom_width, border_left_width,
-            border_top_color, border_right_color, border_bottom_color, border_left_color,
-            border_style,
-            position, top, right, bottom, left,
-            font_family, font_weight, font_style, line_height, letter_spacing,
-            text_align, underline, strikethrough, text_transform, max_lines,
-            opacity, overflow, overscroll_behavior, scrollbar, object_fit, shadow, text_shadow,
-            background_gradient,
-            transform, transform_origin,
-            cursor, user_select, pointer_events,
-            background_transition, color_transition, caret_color_transition,
-            opacity_transition,
-            transform_transition, width_transition, height_transition,
-            max_width_transition, max_height_transition,
-            min_width_transition, min_height_transition,
-            top_transition, right_transition, bottom_transition, left_transition,
-            padding_top_transition, padding_right_transition,
-            padding_bottom_transition, padding_left_transition,
-            margin_top_transition, margin_right_transition,
-            margin_bottom_transition, margin_left_transition,
-            border_top_left_radius_transition, border_top_right_radius_transition,
-            border_bottom_left_radius_transition, border_bottom_right_radius_transition,
-            border_top_width_transition, border_right_width_transition,
-            border_bottom_width_transition, border_left_width_transition,
-            border_top_color_transition, border_right_color_transition,
-            border_bottom_color_transition, border_left_color_transition,
-        );
+        with_style_rule_fields!(overlay);
         self
+    }
+
+    /// Keep only the properties `mask` sets, with `self`'s values.
+    ///
+    /// The layered overlay model uses it to turn a fully resolved overlay
+    /// (`resolve(app + layer)`) into the part that layer is responsible
+    /// for: `mask` is what the layer's own block sets
+    /// ([`StyleSheet::layer_mask`]), `self` supplies the values. That
+    /// way the values come from the full merge, so anything ranked above the
+    /// layer (a variant over a breakpoint) still wins, and the layer can't
+    /// re-state a base property it never set.
+    ///
+    /// Transitions are kept as a SET: if `mask` sets any `*_transition`,
+    /// every transition `self` has comes along. A CSS backend lowers them
+    /// all into one `transition` declaration, so a layer carrying only its
+    /// own entry would replace the element's whole list while it applies
+    /// and drop the base's transitions.
+    pub fn restrict_to(&self, mask: &StyleRules) -> StyleRules {
+        let mut out = StyleRules::default();
+        macro_rules! keep {
+            ([$($p:ident),* $(,)?] [$($t:ident),* $(,)?]) => {
+                $(
+                    if mask.$p.is_some() {
+                        out.$p = self.$p.clone();
+                    }
+                )*
+                if false $(|| mask.$t.is_some())* {
+                    $( out.$t = self.$t.clone(); )*
+                }
+            };
+        }
+        with_style_rule_fields!(keep);
+        out
     }
 
     /// Stable content key suitable for backend caches that should be
@@ -3148,8 +3214,9 @@ impl StyleSheet {
         let effective_variants = self.effective_variants(variants);
         let mut effective = (self.base)(&effective_variants);
 
-        // Per-axis variants, in two passes: ordinary axes in
-        // alphabetical order (the documented rule), then STATE axes.
+        // Per-axis variants, in three passes: responsive overlays (see
+        // below), ordinary axes in alphabetical order (the documented
+        // rule), then STATE axes.
         //
         // States are overlays, not peer axes. `hovered`/`pressed`/
         // `focused`/`disabled` reach `resolve` as reserved
@@ -3177,14 +3244,44 @@ impl StyleSheet {
         // contract. Splitting the walk says what is meant — an overlay
         // applies over what it overlays.
         //
-        // This deliberately does NOT move `__bp_*` / `__cq_*`.
-        // Breakpoint and container overlays already merge after the
-        // base on the native path (`merge_active_breakpoints` /
-        // `merge_active_containers` fold them in after `resolve`
-        // returns), so they are not subject to this at all; states were
-        // the one overlay kind routed through the variant set.
+        // Responsive overlays (`__bp_*` / `__cq_*`) get their own pass,
+        // FIRST, in mobile-first order: breakpoints by rank, then
+        // containers by threshold. They used to ride the alphabetical pass
+        // with the author axes, which put them below every author axis
+        // (right) but stacked them alphabetically among themselves
+        // (`__bp_md` < `__bp_sm`, so `sm` would beat `md` with both on).
+        // That never showed while the native path resolved one overlay at
+        // a time and merged the FULL results (the old `merge_active_breakpoints`),
+        // but that merge re-stated base values: an `md` block that set only
+        // `padding` reset an `sm` block's `min_height` to the base. The
+        // native path now turns every active layer on and resolves once,
+        // which needs this order.
+        //
+        // The precedence this function defines is THE layering contract
+        // for every backend and the premint dump:
+        //   base < breakpoints < containers < author axes < states < compounds
+        // and each layer contributes only the properties its own block sets.
+        let mut responsive: Vec<(u8, f32, &VariantAxis)> = Vec::new();
+        for (bp, axis) in &self.breakpoint_axes {
+            responsive.push((0, bp.rank() as f32, axis));
+        }
+        for (threshold, axis) in &self.container_axes {
+            responsive.push((1, *threshold, axis));
+        }
+        if !responsive.is_empty() {
+            responsive.sort_by(|a, b| {
+                a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            for (_, _, axis) in responsive {
+                if let (Some(value), Some(def)) = (effective_variants.0.get(axis), self.variants.get(axis)) {
+                    if let Some(f) = def.values.get(value) {
+                        effective = effective.merge(&f(&effective_variants));
+                    }
+                }
+            }
+        }
         for (axis, def) in &self.variants {
-            if is_state_axis(axis) {
+            if is_state_axis(axis) || is_responsive_axis(axis) {
                 continue;
             }
             if let Some(value) = effective_variants.0.get(axis) {
@@ -3216,6 +3313,39 @@ impl StyleSheet {
         }
 
         effective
+    }
+
+    /// The properties overlay `axis` (a `__bp_*`, `__cq_*` or `__state_*`
+    /// axis, turned `on`) is responsible for under `variants`: its own
+    /// block's output, plus every compound that names `axis = on` and
+    /// matches. Only which fields are `Some` matters; pair it with
+    /// [`StyleRules::restrict_to`] on `resolve(app + axis)` to get the
+    /// layer's share of the cascade with the right values.
+    ///
+    /// CSS backends emit overlays as `@media` / `@container` /
+    /// pseudo-class rules layered over the base class. A rule that
+    /// re-stated every base property (the fully resolved overlay) would
+    /// put the base back over any lower layer it never touched: an `md`
+    /// rule reset an `sm` rule's `min_height`, and a `:hover` rule reset
+    /// a breakpoint's.
+    pub fn layer_mask(&self, variants: &VariantSet, axis: &str) -> StyleRules {
+        let mut on = variants.clone();
+        on.0.insert(axis.into(), "on".into());
+        let effective_variants = self.effective_variants(&on);
+        let mut mask = self
+            .variants
+            .get(axis)
+            .and_then(|def| def.values.get("on"))
+            .map(|f| f(&effective_variants))
+            .unwrap_or_default();
+        for c in &self.compounds {
+            let names_axis = c.when.get(axis).is_some_and(|v| v.as_str() == "on");
+            let matches = c.when.iter().all(|(a, v)| effective_variants.0.get(a) == Some(v));
+            if names_axis && matches {
+                mask = mask.merge(&(c.rules)(&effective_variants));
+            }
+        }
+        mask
     }
 
     // -----------------------------------------------------------------
@@ -3397,6 +3527,13 @@ fn state_axis_bit(axis: &str) -> Option<crate::StateBits> {
 /// after the ordinary axes — see the two-pass note there.
 fn is_state_axis(axis: &str) -> bool {
     state_axis_bit(axis).is_some()
+}
+
+/// Whether `axis` is a reserved RESPONSIVE-overlay axis (`__bp_*` or
+/// `__cq_*`), which [`StyleSheet::resolve`] merges in its own
+/// mobile-first pass ahead of the author axes.
+fn is_responsive_axis(axis: &str) -> bool {
+    crate::Breakpoint::from_axis_name(axis).is_some() || crate::container_axis_threshold(axis).is_some()
 }
 
 // ----------------------------------------------------------------------------

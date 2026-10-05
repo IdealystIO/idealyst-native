@@ -410,6 +410,51 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
     );
 }
 
+/// CrewForge want_c5b3c05a, in the browser: each overlay rule holds only
+/// what its own layer sets. A hovered chip at 1440px lost its
+/// `breakpoint sm { min_height: 0 }` because the `.cls:hover` rule
+/// (specificity (0,2,0)) re-declared the base `min-height: 44px`. The
+/// cascade is proven by `css`'s `regression_state_overlay_erases_breakpoint_arm`
+/// (a headless browser can't be put into `:hover`); this pins what the LIVE
+/// stylesheet actually holds, including the `:where()` column-pin companion
+/// a flex-promoting `@media` layer gets — CSSOM drops a rule it can't
+/// parse, so the companion must survive `insertRule`.
+#[wasm_bindgen_test]
+fn regression_state_overlay_erases_breakpoint_arm_live_sheet() {
+    use runtime_shared::{Breakpoint, Length, StateBits, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let element = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element).unwrap();
+    let node: web_glue::dom::Node = element.unchecked_into();
+
+    let base = Rc::new(StyleRules { min_height: Some(Tokenized::Literal(Length::Px(44.0))), ..Default::default() });
+    // Layer shares, as the vocabulary builds them.
+    let hovered = Rc::new(StyleRules { opacity: Some(Tokenized::Literal(0.5)), ..Default::default() });
+    let sm = Rc::new(StyleRules {
+        min_height: Some(Tokenized::Literal(Length::Px(0.0))),
+        gap: Some(Tokenized::Literal(Length::Px(4.0))),
+        ..Default::default()
+    });
+    backend.apply_styled_variants_impl(&node, &base, &[(StateBits::HOVERED, hovered)], &[(Breakpoint::Sm, sm)], &[]);
+    let id = backend.node_id(&node);
+    let class = backend.dynamic.get(&id).expect("node holds a dynamic slot").shared.class_name.clone();
+
+    let rules = backend.sheet().css_rules().expect("css_rules");
+    let texts: Vec<String> = (0..rules.length()).filter_map(|i| rules.get(i)).map(|r| r.css_text()).collect();
+    let hover = texts.iter().find(|t| t.contains(&format!(".{class}:hover"))).expect("hover rule");
+    assert!(hover.contains("opacity"), "{hover}");
+    assert!(!hover.contains("min-height"), "the hover rule must not re-declare the base min-height: {hover}");
+    assert!(
+        texts.iter().any(|t| t.starts_with("@media") && t.contains(&format!(":where(.{class})")) && t.contains("flex-direction: column")),
+        "the flex-promoting sm layer's column pin must be in the live sheet: {texts:#?}"
+    );
+}
+
 /// `apply_styled_variants` emits an `@container (min-width: …)` rule per
 /// container overlay, and `mark_container` sets `container-type: inline-size`
 /// on the containment node — the web realization of `container (min_width: N)`.
@@ -3874,4 +3919,95 @@ async fn regression_graphics_window_handle_names_the_canvas_by_its_raw_handle_id
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 3, "page-unique across canvases and backends: {ids:?}");
+}
+
+// ---- virtual_grid: fit-to-content height includes the scrollbar -------------
+
+/// PARITY PIN for the CrewForge report "a grid cannot fit its content"
+/// (the regression tests for the native half live in runtime-layout and
+/// backend-macos; web already behaved this way and this keeps it so).
+///
+/// A grid that must be exactly as tall as its rows and scrolls
+/// sideways: the app pinned a parent to `rows × row_height`, and on a
+/// classic-scrollbar browser the horizontal bar took its thickness out
+/// of the last row, so the grid scrolled vertically too. The framework
+/// answer is to let the grid FIT (`flex_grow: 0` + `flex_basis: auto`,
+/// which is also the browser's default for the grid's box): its height
+/// is then rows + the horizontal bar, so nothing scrolls vertically —
+/// the same size the native backends report through
+/// `GridMetrics::intrinsic_size`. This pins that the web grid's box
+/// really does reserve the bar (a change to the shim's container — a
+/// fixed height, `overflow: scroll` on one axis — would break it).
+///
+/// The bar is forced to a real 15px with `::-webkit-scrollbar` so the
+/// test means the same thing on overlay-scrollbar hosts (macOS), where
+/// a default bar would be 0 thick and the test would prove nothing.
+#[wasm_bindgen_test]
+async fn virtual_grid_fit_content_height_reserves_the_horizontal_scrollbar() {
+    use std::rc::Rc;
+    use runtime_shared::primitives::virtual_grid::GridCallbacks;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let sheet = doc.create_element("style").unwrap();
+    sheet.set_text_content(Some(
+        "[data-fit-grid]::-webkit-scrollbar{width:15px;height:15px;background:#ccc}",
+    ));
+    doc.body().unwrap().append_child(&sheet).unwrap();
+
+    let num = |el: &web_glue::dom::Element, prop: &str| -> f64 {
+        web_glue::js::Reflect::get(el, &web_glue::JsValue::from_str(prop))
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    };
+
+    // `height` pins the parent (the reporter's shape, minus the
+    // allowance); `None` leaves it to size from the grid.
+    for parent_height in [None, Some(725)] {
+        let parent = doc.create_element("div").unwrap();
+        let mut css = String::from("display:flex;flex-direction:column;width:390px;");
+        if let Some(h) = parent_height {
+            css.push_str(&format!("height:{h}px;"));
+        }
+        parent.set_attribute("style", &css).unwrap();
+        doc.get_element_by_id("app").unwrap().append_child(&parent).unwrap();
+
+        let cell_doc = doc.clone();
+        let callbacks = GridCallbacks::<web_glue::dom::Node> {
+            // 30 × 120 = 3600 wide (scrolls sideways), 3 × 40 = 120 tall.
+            col_count: Rc::new(|| 30),
+            row_count: Rc::new(|| 3),
+            col_width: Rc::new(|_| 120.0),
+            row_height: Rc::new(|_| 40.0),
+            cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+            mount_cell: Rc::new(move |_, _| {
+                let cell = cell_doc.create_element("div").unwrap();
+                (web_glue::JsCast::unchecked_into(cell), 0)
+            }),
+            release_cell: Rc::new(|_| {}),
+            on_scroll: None,
+        };
+        let node = crate::primitives::virtual_grid::create(&mut backend, callbacks, 1.0);
+        let grid: web_glue::dom::Element = node.clone().dyn_into().unwrap();
+        grid.set_attribute("data-fit-grid", "").unwrap();
+        // The fit recipe, spelled out (both are also the CSS defaults).
+        grid.set_attribute("style", &format!("{}flex-grow:0;flex-basis:auto;", grid.get_attribute("style").unwrap_or_default())).unwrap();
+        parent.append_child(&node).unwrap();
+        // The shim sizes its spacer in a microtask-deferred refresh.
+        sleep_ms(30).await;
+
+        let (offset_h, client_h) = (num(&grid, "offsetHeight"), num(&grid, "clientHeight"));
+        assert_eq!(num(&grid, "scrollWidth"), 3600.0, "content extent applied ({parent_height:?})");
+        assert_eq!(client_h, 120.0, "every row visible ({parent_height:?})");
+        assert_eq!(offset_h, 135.0, "rows + the 15px horizontal bar ({parent_height:?})");
+        assert_eq!(num(&grid, "scrollHeight"), client_h, "nothing to scroll vertically ({parent_height:?})");
+
+        crate::primitives::virtual_grid::release(&mut backend, &node);
+        sleep_ms(0).await;
+        parent.remove();
+    }
+    sheet.remove();
 }

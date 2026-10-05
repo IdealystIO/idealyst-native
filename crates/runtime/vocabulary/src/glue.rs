@@ -257,7 +257,7 @@ pub use runtime_shared::premint;
 //      same on both cores (sanctioned transitional dep, crate docs).
 //   2. Old free fns whose machinery is core-agnostic (`resolve_style`,
 //      scheduling entries, `current_breakpoint` value reads — the same
-//      value-read the vocabulary's own `merge_active_breakpoints`
+//      value-read the vocabulary's own `with_active_responsive`
 //      performs, with the same documented "bucket flip does not
 //      re-fire" limitation).
 //   3. New-core REIMPLEMENTATIONS where the old fn touched old-core

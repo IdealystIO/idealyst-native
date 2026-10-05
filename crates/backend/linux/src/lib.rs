@@ -995,8 +995,8 @@ impl LinuxBackend {
             self.published_viewport = (width, height);
             gtk4::glib::source::idle_add_local_once(move || {
                 let size = runtime_shared::ViewportSize { width, height };
-                // Legacy thread-local signal (old-core readers + the style
-                // engine's `merge_active_breakpoints` read this one)...
+                // Legacy thread-local signal (old-core readers read this
+                // one; it also seeds a new world's viewport ctx)...
                 runtime_shared::set_viewport_size(size);
                 // ...AND the mounted world's viewport ctx, which is what v2
                 // author reactivity actually subscribes to. Writing only the
