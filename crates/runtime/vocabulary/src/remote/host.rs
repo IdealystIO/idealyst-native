@@ -1096,8 +1096,9 @@ pub trait Loader: 'static {
     /// A number that changes when the bundle is replaced. Read TRACKED by
     /// every mounted remote component, so a reload remounts them.
     fn generation(&self) -> u64;
-    /// Mount component `component` (its `#[component(remote)]` fn name) with
-    /// its encoded props. An `Err` is shown in the component's place.
+    /// Mount component `component` (its `#[component(remote)]` fn, as
+    /// `module_path::Name`) with its encoded props. An `Err` is shown in the
+    /// component's place.
     fn mount(&self, component: &str, args: &[u8]) -> Result<Element, String>;
 }
 
@@ -1130,7 +1131,11 @@ pub fn export_contexts() {
 /// send the props, then mount the component from the installed loader —
 /// again whenever the loader's bundle is replaced.
 #[doc(hidden)]
-pub fn __mount_remote(component: &'static str, send: impl FnOnce(&mut Vec<u8>, &mut Keep)) -> Element {
+pub fn __mount_remote(
+    component: &'static str,
+    path: &'static str,
+    send: impl FnOnce(&mut Vec<u8>, &mut Keep),
+) -> Element {
     let mut args = Vec::new();
     let mut keep = Keep::new();
     send(&mut args, &mut keep);
@@ -1145,7 +1150,7 @@ pub fn __mount_remote(component: &'static str, send: impl FnOnce(&mut Vec<u8>, &
     let select = loader.clone();
     runtime_scene::dyn_keyed(
         move || select.generation(),
-        move |_| match loader.mount(component, &args) {
+        move |_| match loader.mount(path, &args) {
             Ok(element) => element,
             Err(msg) => crate::builders::text().content(format!("⚠ remote component `{component}`: {msg}")).build(),
         },

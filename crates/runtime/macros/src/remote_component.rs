@@ -102,6 +102,7 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
                     mount: {
                         ::runtime_vocabulary::remote::host::__mount_remote(
                             #name_str,
+                            ::core::concat!(::core::module_path!(), "::", #name_str),
                             move |__out: &mut ::std::vec::Vec<u8>, __keep: &mut ::runtime_vocabulary::remote::host::Keep| {
                                 #(::runtime_vocabulary::remote::RemoteProp::send(&#names, __out, __keep);)*
                             },
@@ -132,8 +133,12 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
 
         ::runtime_vocabulary::__remote_guest_split! {
             bundle: {
-                /// The bundle's mount export for this remote component.
-                #[unsafe(no_mangle)]
+                /// The bundle's mount export for this remote component, keyed
+                /// by its path (`__idealyst_remote_<module_path>::<Name>`):
+                /// two remote components may share a name in different
+                /// modules. The bundle compiles the app's source under the
+                /// app's crate name, so both sides spell the same path.
+                #[unsafe(export_name = ::core::concat!("__idealyst_remote_", ::core::module_path!(), "::", #name_str))]
                 #[allow(non_snake_case)]
                 pub extern "C" fn #export_fn(_ptr: u32, len: u32) -> i64 {
                     ::runtime_vocabulary::remote::bundle::__mount(len, |__in: &mut &[u8]| {

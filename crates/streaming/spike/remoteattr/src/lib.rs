@@ -81,6 +81,17 @@ pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
     }
 }
 
+/// A second remote component named `Greeting`, in another module: its
+/// mount export is keyed by path, so the two coexist in one bundle.
+pub mod elsewhere {
+    use runtime_core::{component, ui, Element};
+
+    #[component(remote)]
+    pub fn Greeting(name: String) -> Element {
+        ui! { text { "elsewhere: {name}" } }
+    }
+}
+
 /// A remote component that sends the app INVALID requests on purpose, one
 /// per button: creating a signal outside any world, ending a frame it never
 /// began, writing a host slot it was never given, and a handle call that

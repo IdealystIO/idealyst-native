@@ -118,7 +118,29 @@ fn a_bundle_without_the_component_shows_an_error() {
     let realized = a.h.mount(tree(&a));
     a.h.flush();
     let t = text(&a, &realized);
-    assert!(t.contains("remote component `Greeting`") && t.contains("__idealyst_remote_Greeting"), "{t}");
+    assert!(t.contains("remote component `Greeting`") && t.contains("__idealyst_remote_spike_remoteattr::Greeting"), "{t}");
+}
+
+/// Regression: a remote component's mount export was named after the
+/// component alone (`__idealyst_remote_Greeting`), so two remote components
+/// sharing a name in different modules collided in the bundle (a duplicate
+/// symbol). Exports are keyed by path now, and each mounts its own body.
+#[test]
+fn regression_same_named_remote_components_in_different_modules_coexist() {
+    use spike_remoteattr::elsewhere::Greeting as ElsewhereGreeting;
+    let a = app();
+    let (count, likes) = (a.count, a.likes);
+    let realized = a.h.mount(a.h.world.enter(|| {
+        ui! {
+            view() {
+                Greeting(name = "ada".to_string(), count = count.read_only(), likes = likes)
+                ElsewhereGreeting(name = "bo".to_string())
+            }
+        }
+    }));
+    a.h.flush();
+    let t = text(&a, &realized);
+    assert!(t.contains("hello ada") && t.contains("elsewhere: bo"), "{t}");
 }
 
 /// The remote component renders an APP component (`Panel`, not `remote`):

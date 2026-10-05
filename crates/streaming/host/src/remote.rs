@@ -8,7 +8,7 @@
 //! ```
 //!
 //! A remote component's fn, in the app build, sends its props and asks the
-//! installed loader to mount `__idealyst_remote_<Name>` from the current
+//! installed loader to mount `__idealyst_remote_<module_path>::<Name>` from the current
 //! bundle (`runtime_vocabulary::remote::host::__mount_remote`).
 
 use std::cell::{Cell, RefCell};
