@@ -250,17 +250,17 @@ The screens use idea-ui, which renders natively either way: only the screen's ow
 
 | | Remote | Same code in-process |
 |---|---|---|
-| Bundle | 375 KB raw, 106 KB brotli | — |
-| Load (validate, instantiate) | 1.8 ms (first: 2.1 ms) | — |
-| `FeedScreen` mount (3 idea-ui cards with buttons, context, a host fn) | 922 µs (first: 3.4 ms) | 73 µs (first: 0.8 ms) |
-| `ShopNavigator` mount (a stack navigator defined in the bundle) | 740 µs | 43 µs |
-| Push / pop a product screen | 511 / 70 µs | 43 / 6.8 µs |
-| A press handled by the bundle (♥: an idea-ui `Button`, bundle state, its label) | 8.8 µs | 0.4 µs |
-| The app sets a signal the bundle reads (cart in the header) | 12 µs | 0.5 µs |
-| The app toggles context that adds and removes 3 bodies | 134 µs | 7.7 µs |
-| An idea-ui `Slider` drag (its handler is bundle code) | 21 µs | 2.4 µs |
+| Bundle | 378 KB raw, 108 KB brotli | — |
+| Load (validate, instantiate) | 1.8 ms (first: 2.2 ms) | — |
+| `FeedScreen` mount (3 idea-ui cards with buttons, context, a host fn) | 979 µs (first: 3.5 ms) | 73 µs (first: 0.8 ms) |
+| `ShopNavigator` mount (a stack navigator defined in the bundle) | 783 µs | 42 µs |
+| Push / pop a product screen | 536 / 71 µs | 41 / 6.5 µs |
+| A press handled by the bundle (♥: an idea-ui `Button`, bundle state, its label) | 8.6 µs | 0.4 µs |
+| The app sets a signal the bundle reads (cart in the header) | 11.5 µs | 0.5 µs |
+| The app toggles context that adds and removes 3 bodies | 141 µs | 7.6 µs |
+| An idea-ui `Slider` drag (its handler is bundle code) | 21 µs | 2.5 µs |
 | A theme swap (the screen's token sheets restyle) | 49 µs | 50 µs |
-| Memory per mounted `FeedScreen` | 146 KB | 127 KB |
+| Memory per mounted `FeedScreen` | 147 KB | 126 KB |
 | Bundle linear memory, idle / with 200 feeds mounted | 320 / 576 KB | — |
 
 **Compute** (`showcase/app/src/bench.rs`: the same functions as wasm in the interpreter and as native code, checksums compared; median of 5):
@@ -273,7 +273,7 @@ The screens use idea-ui, which renders natively either way: only the screen's ow
 | Sort 200k u32s: memory, branches | 177.7 ms (87×) | 79.9 ms (39×) | 2.04 ms |
 | 96×96 f64 matrix multiply (native vectorizes) | 45.8 ms (339×) | 32.4 ms (240×) | 0.13 ms |
 
-UI work costs 9–27× in-process and stays well under a frame; heavy computation costs 16–340× and belongs in the app (a `#[host_fn]`) when it matters.
+Tree-building paths (mounts, push, the context toggle) cost about 5% more than before the review fixes, measured against the pre-fix build side by side: the record of what crossed with each tree, which lets a failed decode release everything it received. Presses and updates are unchanged. UI work costs 8–25× in-process and stays well under a frame; heavy computation costs 16–340× and belongs in the app (a `#[host_fn]`) when it matters.
 
 **Where the time goes** (measured on the earlier, hand-rolled showcase). In a `sample` profile of repeated `FeedScreen` mounts, 87% of the time is wasmi executing bundle code. Decoding the tree, the bridge's imports and the app's graph each take under 1%. So the cost is the framework code that runs in the bundle (building the tree, the bridged kernel's tables, encoding), interpreted at roughly 20× native. It is not the crossing. Every mount and update above still takes well under a 16 ms frame.
 
