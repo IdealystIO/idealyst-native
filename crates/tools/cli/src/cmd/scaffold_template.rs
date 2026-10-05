@@ -834,6 +834,15 @@ const DEV_TOML: &str = r#"# Per-project dev-mode configuration. Read by `idealys
 # normal Claude workflows use the discovery file. CLI flag
 # `--bridge-port <PORT>` overrides this setting per-run.
 # bridge_port = 9718
+
+# Pin the `--local` dev session's Robot relay (the bridge the MCP server
+# and the Inspector connect to) to a port. Default: random, on loopback.
+# Pin it to drive an app in a devcontainer from an MCP server on the
+# host: the session binds it on every interface in a container, writes
+# `.idealyst/robot.json` for the host's MCP server to find, and
+# `idealyst configure devcontainer` forwards it. `--robot-port <PORT>`
+# overrides this setting per-run.
+# robot_port = 4778
 "#;
 
 fn default_bundle_id(name: &str) -> String {

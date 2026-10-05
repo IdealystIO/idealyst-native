@@ -1,0 +1,30 @@
+idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · robot :4778 (pinned) · hot patch armed
+
+  web             ⠙ rebuilding · cargo 212/480 ━━━━━━━━──────────── idea-ui · 12.3s                  │ robot · bridge :4778 (pinned)
+                                                                                                     │ 00:12  ○ web · Chrome 154
+  saves                                                                                              │ 00:42  ● web · Safari 18 · active
+  00:50  app.rs                    rebuild            …                                              │
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+r rebuild · l log · e error · c clear · q quit

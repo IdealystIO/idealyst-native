@@ -75,6 +75,14 @@ impl Validator {
                         }
                     }
                 }
+                // A `u16` (a port) is bounded above as well.
+                "maximum" => {
+                    if let (Some(n), Some(max)) = (v.as_f64(), s.as_f64()) {
+                        if n > max {
+                            out.push(format!("{path}: {n} > {max}"));
+                        }
+                    }
+                }
                 "required" => {
                     if let Some(o) = v.as_object() {
                         for name in s.as_array().unwrap().iter().filter_map(Value::as_str) {

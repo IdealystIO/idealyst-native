@@ -7,10 +7,15 @@
 //! history gives way to an expanded error, and the log pane takes what
 //! is left. The components in `crate::panel` render a [`Screen`] and do
 //! no arithmetic of their own.
+//!
+//! A session with a Robot relay splits the build block in two: the rows
+//! and the saves on the left, the apps connected to the relay on the
+//! right ([`Screen::robot`], [`Screen::beside`]). A terminal too narrow
+//! for both stacks the robot block under the saves instead.
 
 use dev_events::HotTier;
 
-use crate::model::{Model, Save, State, Target};
+use crate::model::{Model, Robot, RobotAppRow, Save, State, Target};
 
 /// How a line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -126,6 +131,12 @@ pub struct Screen {
     pub header: Line,
     pub rows: Vec<Row>,
     pub history: Vec<Line>,
+    /// The Robot block: its title, then one line per connected app. Empty
+    /// in a session with no relay.
+    pub robot: Vec<Line>,
+    /// Whether the robot block sits beside the rows and saves (a wide
+    /// terminal) or below them.
+    pub beside: bool,
     pub error: Vec<Line>,
     pub log: Vec<Line>,
     pub footer: Line,
@@ -151,12 +162,24 @@ const BAR: usize = 20;
 const HISTORY_MAX: usize = 8;
 /// History lines kept when the log or an expanded error wants room.
 const HISTORY_MIN: usize = 3;
+/// Width of the robot column, its rule and gaps included.
+pub const ROBOT_COL: usize = 40;
+/// The narrowest terminal that fits the robot column beside the rows: the
+/// rows keep the ~88 cells a building row's status takes (its stage, the
+/// cargo bar, the crate, the elapsed time) next to a server's long name.
+const BESIDE_MIN: usize = 128;
+/// The robot column's rule, ahead of each of its lines: a cell of gap
+/// from the rows, the rule, a cell of gap from the text.
+const RULE: &str = " │ ";
 
 /// Lay the model out for a `width` x `height` terminal at session time
 /// `now_ms`, with spinner frame `frame`.
 pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: usize, height: usize) -> Screen {
     let fit = |s: String| truncate(&s, width);
     let header = Line::new(fit(header(model)), Tone::Normal);
+    let beside = model.robot.is_some() && width >= BESIDE_MIN;
+    // The rows and saves take what the robot column leaves.
+    let left = if beside { width - ROBOT_COL } else { width };
     // Wide enough for the longest title (a server's own name,
     // `crewforge-server`) with a space after it, never narrower than the
     // column every single-target session has always had.
@@ -173,14 +196,18 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
         .map(|t| {
             let (status, tone) = status(t, now_ms, frame);
             let name = pad(&truncate(&t.title, name_col - 1), name_col);
-            let status = truncate(&status, width.saturating_sub(name_col + 2));
+            let status = truncate(&status, left.saturating_sub(name_col + 2));
             let key = format!("{}\u{1f}{tone:?}\u{1f}{status}", t.name);
             Row { name, status, tone, key }
         })
         .collect();
+    let robot_width = if beside { ROBOT_COL - RULE.chars().count() } else { width };
+    let mut robot = model.robot.as_ref().map(|r| robot_lines(r, robot_width)).unwrap_or_default();
 
-    // Fixed: header, blank, rows, blank, the saves title, blank, footer.
-    let fixed = 1 + 1 + rows.len() + 1 + 1 + 1 + 1;
+    // Fixed: header, blank, rows, blank, the saves title, blank, footer —
+    // and, stacked under the saves, a blank and the robot block.
+    let stacked = if beside || robot.is_empty() { 0 } else { 1 + robot.len() };
+    let fixed = 1 + 1 + rows.len() + 1 + 1 + 1 + 1 + stacked;
     let mut budget = height.saturating_sub(fixed);
 
     let mut error = Vec::new();
@@ -219,12 +246,35 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
         .history
         .iter()
         .take(history_room.min(budget))
-        .map(|s| save_line(s, title_of(&s.target).as_deref(), width))
+        .map(|s| save_line(s, title_of(&s.target).as_deref(), left))
         .collect();
     if history.is_empty() && budget > 0 {
         history.push(Line::new("  no saves yet", Tone::Muted));
     }
     budget = budget.saturating_sub(history.len());
+
+    if beside {
+        // The column runs the height of the block beside it: the rows, the
+        // blank, the saves title and the saves.
+        let block = rows.len() + 2 + history.len();
+        if robot.len() > block {
+            // More apps than room: keep the title and the newest.
+            let skip = robot.len() - block;
+            let title = robot.remove(0);
+            robot.drain(..skip);
+            robot.insert(0, title);
+        }
+        robot.resize(block, Line::default());
+        for l in robot.iter_mut() {
+            l.text = format!("{RULE}{}", l.text);
+        }
+    } else if !robot.is_empty() {
+        // Indented like the saves it sits under.
+        for l in robot.iter_mut() {
+            l.text = format!("  {}", l.text);
+        }
+        robot.insert(0, Line::default());
+    }
 
     let mut log = Vec::new();
     if toggles.log.is_open() && budget > 2 {
@@ -251,6 +301,8 @@ pub fn screen(model: &Model, toggles: Toggles, now_ms: u64, frame: u64, width: u
         header,
         rows,
         history: keyed(history),
+        robot: keyed(robot),
+        beside,
         error: keyed(error),
         log: keyed(log),
         footer: Line::new(fit_tail(&footer, width), Tone::Muted),
@@ -303,6 +355,12 @@ fn header(m: &Model) -> String {
         parts.push(m.mode.clone());
     }
     parts.extend(m.urls.iter().cloned());
+    match m.robot.as_ref().map(|r| (&r.relay, r.pinned)) {
+        Some((Ok(port), true)) => parts.push(format!("robot :{port} (pinned)")),
+        Some((Ok(port), false)) => parts.push(format!("robot :{port}")),
+        Some((Err(_), _)) => parts.push("robot unavailable".into()),
+        None => {}
+    }
     match &m.hot_tier {
         Some(HotTier::Armed) => parts.push("hot patch armed".into()),
         Some(HotTier::Off { reason }) => parts.push(format!("hot patch off ({reason})")),
@@ -353,6 +411,7 @@ fn status(t: &Target, now_ms: u64, frame: u64) -> (String, Tone) {
         State::Reloaded { ms } => (format!("✓ rebuilt · {} · reloaded", secs(*ms)), Tone::Ok),
         State::Unchanged { ms } => (format!("✓ rebuilt, nothing changed · {}", secs(*ms)), Tone::Ok),
         State::Failed { summary } => (format!("✗ build failed · {summary}"), Tone::Error),
+        State::Down { summary } => (format!("✗ {summary}"), Tone::Error),
         State::Note { line } => (format!("● {line}"), Tone::Muted),
         State::Queued => ("○ queued".into(), Tone::Muted),
         State::Launching { label, .. } => (format!("{spin} {label} · {elapsed}"), Tone::Busy),
@@ -365,6 +424,49 @@ fn status(t: &Target, now_ms: u64, frame: u64) -> (String, Tone) {
             }
         }
     }
+}
+
+/// The robot block, `width` wide: its title, then each connected app —
+/// or why there is no relay.
+fn robot_lines(r: &Robot, width: usize) -> Vec<Line> {
+    let fit = |s: String| truncate(&s, width);
+    let title = match (&r.relay, r.pinned) {
+        (Ok(port), true) => format!("robot · bridge :{port} (pinned)"),
+        (Ok(port), false) => format!("robot · bridge :{port}"),
+        (Err(_), _) => "robot".into(),
+    };
+    let mut out = vec![Line::new(fit(title), Tone::Muted)];
+    match &r.relay {
+        Err(error) => out.push(Line::new(fit(format!("✗ relay unavailable: {error}")), Tone::Error)),
+        Ok(_) if r.apps.is_empty() => out.push(Line::new("○ none connected", Tone::Muted)),
+        Ok(_) => {
+            let several = r.apps.len() > 1;
+            for app in &r.apps {
+                out.push(app_line(app, several, width));
+            }
+        }
+    }
+    out
+}
+
+/// `00:42  ● web · Chrome 131`: the session time it connected (as the
+/// saves start with theirs), then the app. With several apps, the one
+/// Robot requests go to says `active` and is the one in colour.
+fn app_line(app: &RobotAppRow, several: bool, width: usize) -> Line {
+    let mut text = format!(
+        "{}  {} {}",
+        clock(app.since_ms),
+        if app.active { "●" } else { "○" },
+        app.platform.as_deref().unwrap_or("connecting…")
+    );
+    if let Some(label) = &app.label {
+        text.push_str(&format!(" · {label}"));
+    }
+    if several && app.active {
+        text.push_str(" · active");
+    }
+    let tone = if app.active { Tone::Ok } else { Tone::Normal };
+    Line::new(truncate(&text, width), tone)
 }
 
 /// Width of a save's target column, when there is one.

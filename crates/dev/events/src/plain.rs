@@ -13,8 +13,9 @@
 //! text.
 
 use crate::{
-    BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Envelope, PageAck, ServerKind,
-    SidecarUpdate, StreamRoute, Timing, SERVER_OUTPUT_SOURCE, SERVER_TARGET,
+    BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Envelope, PageAck, RelayState,
+    RobotApp, ServerDown, ServerKind, SidecarUpdate, StreamRoute, Timing, SERVER_OUTPUT_SOURCE,
+    SERVER_TARGET,
 };
 
 /// The target whose lines carry the watcher's bare `[dev-reload]` prefix.
@@ -154,6 +155,35 @@ pub fn render(event: &DevEvent) -> Option<String> {
                 reason.as_deref().unwrap_or("rebuild")
             ),
         },
+        // Was a `dlog!` line; same words.
+        DevEvent::RobotRelay { state } => match state {
+            RelayState::Listening { ws_url, tcp_port, .. } => format!(
+                "[dev] robot relay {ws_url} (tcp bridge :{tcp_port}) — apps dial it; MCP discovers via ~/.idealyst/apps (--no-robot to disable)"
+            ),
+            RelayState::Unavailable { error } => {
+                format!("[dev] robot relay unavailable ({error}); native apps self-host instead")
+            }
+        },
+        // New: who is connected was not printed before.
+        DevEvent::RobotApps { apps } => format!("[dev] robot apps: {}", robot_app_list(apps)),
+        DevEvent::ServerDown { target, down, log_file } => {
+            let tail = match log_file {
+                Some(log) => format!(" (its output is in {log})"),
+                None => String::new(),
+            };
+            match down {
+                ServerDown::PortInUse { port, holder } => {
+                    let by = holder.as_deref().map(|h| format!(" by {h}")).unwrap_or_default();
+                    format!("[{target}] not started: port {port} is already in use{by}")
+                }
+                ServerDown::Exited { status, cause: Some(cause) } => {
+                    format!("[{target}] exited with {status}: {cause}{tail}")
+                }
+                ServerDown::Exited { status, cause: None } => {
+                    format!("[{target}] exited with {status}{tail}")
+                }
+            }
+        }
         DevEvent::Warning { source, message }
         | DevEvent::Error { source, message }
         | DevEvent::Log { source, line: message } => format!("[{source}] {message}"),
@@ -234,6 +264,29 @@ pub fn describe_ack(ack: &PageAck) -> String {
         }
         PageAck::Failed { what, error } => format!("{what} failed: {error}"),
     }
+}
+
+/// `web · Chrome 131 (active), macos`, or `none connected`. An app that
+/// has not said `hello` yet is `connecting…`, as the panel says.
+pub fn robot_app_list(apps: &[RobotApp]) -> String {
+    if apps.is_empty() {
+        return "none connected".into();
+    }
+    apps.iter()
+        .map(|a| {
+            // Listed from its connect, before its `hello` names it.
+            let mut s = a.platform.clone().unwrap_or_else(|| "connecting…".into());
+            if let Some(label) = &a.label {
+                s.push_str(" · ");
+                s.push_str(label);
+            }
+            if a.active && apps.len() > 1 {
+                s.push_str(" (active)");
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `1.23s` — two decimals, as the bundler always printed its timings.

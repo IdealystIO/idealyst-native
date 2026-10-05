@@ -15,6 +15,20 @@
 //! that fails with ESRCH when the process is gone) to filter ghost
 //! entries that a crash left behind without RAII running. Stale files
 //! are deleted at scan time.
+//!
+//! ## Project-local registrations (devcontainers)
+//!
+//! `idealyst dev` with a pinned relay port (`--robot-port` / `robot_port`
+//! in `dev.toml`) also writes `<project>/.idealyst/robot.json`. A dev
+//! session inside a devcontainer registers in the CONTAINER's
+//! `~/.idealyst/apps`, which an MCP server on the host never sees — but
+//! the project directory is shared, and the pinned port is forwarded to
+//! the same port on the host. So each scan also reads `robot.json` in the
+//! working directory and its ancestors. Its `pid` is the container's and
+//! means nothing here: liveness is a TCP connect to its port instead, and
+//! the file is never deleted (the relay removes it; a stale one is just
+//! not live). An entry whose port an `~/.idealyst/apps` entry already
+//! names is the same relay seen from inside, and is skipped.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -104,19 +118,59 @@ pub fn start() -> DiscoveryTable {
 const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 
 fn run_scanner(table: DiscoveryTable) {
+    // Fixed at start, like the process's own working directory.
+    let cwd = std::env::current_dir().ok();
     loop {
-        if let Some(dir) = apps_dir() {
-            rescan_into(&dir, &table);
+        let mut found = apps_dir().map(|dir| scan_apps_dir(&dir)).unwrap_or_default();
+        if let Some(cwd) = &cwd {
+            add_project_registration(cwd, &mut found, relay_is_live);
+        }
+        if let Ok(mut guard) = table.inner.lock() {
+            *guard = found;
         }
         std::thread::sleep(SCAN_INTERVAL);
     }
 }
 
-fn rescan_into(dir: &Path, table: &DiscoveryTable) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+/// The project-local registration's path, inside `.idealyst/`.
+pub const PROJECT_REGISTRATION: &str = "robot.json";
+
+/// Add the nearest `<dir>/.idealyst/robot.json` at or above `cwd` — see
+/// the module docs — when `live` says its port answers and no entry in
+/// `found` already names that port.
+fn add_project_registration(
+    cwd: &Path,
+    found: &mut HashMap<String, DiscoveredApp>,
+    live: impl Fn(&str) -> bool,
+) {
+    let Some(path) = cwd
+        .ancestors()
+        .map(|d| d.join(".idealyst").join(PROJECT_REGISTRATION))
+        .find(|p| p.is_file())
+    else {
         return;
     };
+    let Some(app) = parse_registration_file(&path) else {
+        return;
+    };
+    if found.values().any(|a| a.bridge_addr == app.bridge_addr) || !live(&app.bridge_addr) {
+        return;
+    }
+    found.insert(format!("{}@{}", app.name, app.bridge_addr), app);
+}
+
+/// Whether something accepts connections at `addr`.
+fn relay_is_live(addr: &str) -> bool {
+    addr.parse::<std::net::SocketAddr>().is_ok_and(|a| {
+        std::net::TcpStream::connect_timeout(&a, Duration::from_millis(200)).is_ok()
+    })
+}
+
+fn scan_apps_dir(dir: &Path) -> HashMap<String, DiscoveredApp> {
     let mut found: HashMap<String, DiscoveredApp> = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
@@ -138,9 +192,7 @@ fn rescan_into(dir: &Path, table: &DiscoveryTable) {
         // clobbering the other. Parity work needs to see both.
         found.insert(format!("{}#{}", app.name, app.pid), app);
     }
-    if let Ok(mut guard) = table.inner.lock() {
-        *guard = found;
-    }
+    found
 }
 
 fn parse_registration_file(path: &Path) -> Option<DiscoveredApp> {
@@ -204,4 +256,68 @@ fn apps_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)?;
     Some(home.join(".idealyst").join("apps"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_registration(dir: &Path, port: u16) {
+        std::fs::create_dir_all(dir.join(".idealyst")).unwrap();
+        std::fs::write(
+            dir.join(".idealyst").join(PROJECT_REGISTRATION),
+            format!(r#"{{"port":{port},"pid":12,"name":"todo","bundle_id":null,"project_root":"/workspaces/todo","proto":1}}"#),
+        )
+        .unwrap();
+    }
+
+    /// An MCP server on a devcontainer's host finds the container's dev
+    /// relay through the project directory — from the project or any
+    /// directory under it — when its (forwarded) port answers; the
+    /// container's pid is not checked.
+    #[test]
+    fn a_project_registration_is_found_from_below_when_its_port_answers() {
+        let root = std::env::temp_dir().join(format!("mcp-project-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write_registration(&root, 4778);
+        let below = root.join("crates").join("app");
+        std::fs::create_dir_all(&below).unwrap();
+
+        let mut found = HashMap::new();
+        add_project_registration(&below, &mut found, |addr| addr == "127.0.0.1:4778");
+        let app = found.values().next().expect("found");
+        assert_eq!(app.name, "todo");
+        assert_eq!(app.bridge_addr, "127.0.0.1:4778");
+
+        let mut dead = HashMap::new();
+        add_project_registration(&below, &mut dead, |_| false);
+        assert!(dead.is_empty(), "a port that does not answer is not live");
+        assert!(root.join(".idealyst").join(PROJECT_REGISTRATION).is_file(), "and the file is left alone");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Inside the container the same relay is also in `~/.idealyst/apps`:
+    /// listed once.
+    #[test]
+    fn a_project_registration_already_in_the_apps_dir_is_listed_once() {
+        let root = std::env::temp_dir().join(format!("mcp-project-reg-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        write_registration(&root, 4779);
+        let mut found = HashMap::new();
+        found.insert(
+            "todo#12".to_string(),
+            DiscoveredApp {
+                name: "todo".into(),
+                bundle_id: None,
+                project_root: None,
+                catalog_bin: None,
+                pid: 12,
+                bridge_addr: "127.0.0.1:4779".into(),
+                platform: Some("web".into()),
+            },
+        );
+        add_project_registration(&root, &mut found, |_| true);
+        assert_eq!(found.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

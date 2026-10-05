@@ -338,6 +338,11 @@ const RELOAD_SCRIPT: &str = r#"<script>
   window.__idealyst_dev_ack = ack;
 __STATUS_OVERLAY__
   var status = idealystStatusOverlay(document);
+  // The app's robot client reports its connection here
+  // (`backend_web::robot_transport::ROBOT_STATUS_HOOK`), and leaves the
+  // latest in `__idealyst_dev_robot` for an overlay that starts after it.
+  window.__idealyst_dev_robot_status = status.robot;
+  if (window.__idealyst_dev_robot) status.robot(window.__idealyst_dev_robot);
   function wire(es) {
   es.onmessage = function (e) {
     if (!sameSession(e)) return;

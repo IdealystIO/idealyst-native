@@ -438,6 +438,91 @@ fn the_error_lines() {
     );
 }
 
+/// The relay's line was a `dlog!` before it was an event: same words, so
+/// a script waiting for `robot relay ws://` still finds it. Who is
+/// connected is new.
+#[test]
+fn the_robot_relay_lines() {
+    use dev_events::{RelayState, RobotApp};
+    assert_eq!(
+        line(DevEvent::RobotRelay {
+            state: RelayState::Listening { ws_url: "ws://127.0.0.1:5555".into(), tcp_port: 5556, pinned: false },
+        })
+        .as_deref(),
+        Some("[dev] robot relay ws://127.0.0.1:5555 (tcp bridge :5556) — apps dial it; MCP discovers via ~/.idealyst/apps (--no-robot to disable)")
+    );
+    assert_eq!(
+        line(DevEvent::RobotRelay { state: RelayState::Unavailable { error: "Address already in use (os error 48)".into() } })
+            .as_deref(),
+        Some("[dev] robot relay unavailable (Address already in use (os error 48)); native apps self-host instead")
+    );
+    let app = |id, platform: &str, label: Option<&str>, active| RobotApp {
+        id,
+        platform: Some(platform.into()),
+        label: label.map(Into::into),
+        active,
+    };
+    assert_eq!(
+        line(DevEvent::RobotApps { apps: vec![app(1, "web", Some("Chrome 131"), true)] }).as_deref(),
+        Some("[dev] robot apps: web · Chrome 131"),
+        "one app is the active one; saying so is noise"
+    );
+    assert_eq!(
+        line(DevEvent::RobotApps {
+            apps: vec![app(1, "web", Some("Chrome 131"), false), app(2, "macos", None, true)],
+        })
+        .as_deref(),
+        Some("[dev] robot apps: web · Chrome 131, macos (active)")
+    );
+    assert_eq!(
+        line(DevEvent::RobotApps { apps: vec![] }).as_deref(),
+        Some("[dev] robot apps: none connected")
+    );
+    assert_eq!(
+        line(DevEvent::RobotApps {
+            apps: vec![RobotApp { id: 3, platform: None, label: None, active: true }],
+        })
+        .as_deref(),
+        Some("[dev] robot apps: connecting…"),
+        "listed from its connect, before its hello"
+    );
+}
+
+/// A server that stopped says why on its own line — the cause from its
+/// output, not just where that output went.
+#[test]
+fn the_server_down_lines() {
+    use dev_events::ServerDown;
+    let down = |down, log_file: Option<&str>| DevEvent::ServerDown {
+        target: dev_events::SERVER_TARGET.into(),
+        down,
+        log_file: log_file.map(Into::into),
+    };
+    assert_eq!(
+        line(down(
+            ServerDown::PortInUse { port: 8080, holder: Some("pid 4821 (crewforge-server)".into()) },
+            Some("/cf/server.log"),
+        ))
+        .as_deref(),
+        Some("[server] not started: port 8080 is already in use by pid 4821 (crewforge-server)")
+    );
+    assert_eq!(
+        line(down(
+            ServerDown::Exited {
+                status: "exit status: 1".into(),
+                cause: Some("Error: Address already in use (os error 48)".into()),
+            },
+            Some("/cf/server.log"),
+        ))
+        .as_deref(),
+        Some("[server] exited with exit status: 1: Error: Address already in use (os error 48) (its output is in /cf/server.log)")
+    );
+    assert_eq!(
+        line(down(ServerDown::Exited { status: "signal: 9".into(), cause: None }, None)).as_deref(),
+        Some("[server] exited with signal: 9")
+    );
+}
+
 /// The full-stack server PROCESS's own output (request logs, tracing,
 /// panics, `cargo run`'s lines) used to reach the terminal straight from
 /// an inherited pipe. It is captured now, and a plain terminal still sees

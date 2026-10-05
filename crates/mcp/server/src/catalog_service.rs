@@ -1447,7 +1447,7 @@ impl CatalogService {
         )]))
     }
 
-    #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone).")]
+    #[tool(description = "List every running idealyst app — discovered via per-process registration files at `~/.idealyst/apps/<name>-<pid>.json` that the running app's Robot bridge writes on bind. Each entry includes name, bundle_id, project_root, bridge_addr, and pid. Entries are removed automatically when the app exits (RAII cleanup on graceful shutdown; stale ones get pruned at scan time when `kill(pid, 0)` reports the process is gone). Also lists a dev session's pinned Robot relay from `<project>/.idealyst/robot.json` in this server's working directory or above (a devcontainer's app, seen from the host through its forwarded port) while that port answers.")]
     async fn list_apps(&self) -> Result<CallToolResult, McpError> {
         let live = self.live_apps();
         // `selector` is the exact string to pass as the `app` arg — `name`

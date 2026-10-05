@@ -379,6 +379,65 @@ pub enum PageAck {
     Failed { what: String, error: String },
 }
 
+/// Whether the session's Robot relay is up, as [`DevEvent::RobotRelay`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RelayState {
+    /// Apps dial `ws_url`; the MCP server and the Inspector connect to
+    /// the TCP bridge on `tcp_port`. `pinned` when that port was asked
+    /// for (`--robot-port` / `robot_port`) rather than picked by the OS.
+    Listening { ws_url: String, tcp_port: u16, pinned: bool },
+    /// The relay could not start; nothing in the session can be driven
+    /// over the Robot bridge through it.
+    Unavailable { error: String },
+}
+
+/// One app connected to the session's Robot relay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RobotApp {
+    /// The relay's id for this connection. Stable while it stays
+    /// connected, never reused within a session — a redial is a new id.
+    pub id: u64,
+    /// The platform the app said it runs on (`web`, `macos`, `ios`, …).
+    /// Absent until the app has said `hello`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// What tells two apps of one platform apart, when the app says
+    /// (a browser's name and version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Whether Robot requests go to this app. The relay drives one app at
+    /// a time — the one that connected last.
+    pub active: bool,
+}
+
+/// Why a full-stack server is not running, as [`DevEvent::ServerDown`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum ServerDown {
+    /// Its port was taken before it was started, so it was not started.
+    /// `holder` describes the process listening there, when it could be
+    /// found (`pid 4821 (crewforge-server)`).
+    PortInUse {
+        port: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holder: Option<String>,
+    },
+    /// The process exited. `status` is how (`exit status: 1`); `cause`
+    /// is the line of its own output that says why, when one does (`Error:
+    /// Address already in use (os error 48)`).
+    Exited {
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cause: Option<String>,
+    },
+}
+
 /// The `target` a full-stack project's server files its events under:
 /// its build (`build_started`, `stage_*`, `cargo_progress`,
 /// `diagnostic`, `build_finished`) and each save its watcher sees
@@ -552,6 +611,26 @@ pub enum DevEvent {
         /// Why a respawn was needed (`rebuild`, `force_respawn`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+    },
+    /// The session's Robot relay started, or could not. Emitted once, by a
+    /// `--local` session that hosts one.
+    RobotRelay {
+        #[serde(flatten)]
+        state: RelayState,
+    },
+    /// The apps connected to the Robot relay changed. Carries the whole
+    /// list, so the latest one is the present: empty when none is
+    /// connected.
+    RobotApps { apps: Vec<RobotApp> },
+    /// A full-stack server stopped, or could not be started. The reason
+    /// is inlined: `"reason": "port_in_use", "port": 8080`. `log_file` is
+    /// where its full output is.
+    ServerDown {
+        target: String,
+        #[serde(flatten)]
+        down: ServerDown,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log_file: Option<String>,
     },
     /// Something went wrong that the loop survives.
     Warning { source: String, message: String },

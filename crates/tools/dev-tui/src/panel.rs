@@ -42,6 +42,29 @@ stylesheet! {
     }
 }
 
+// The rows and saves, beside the robot column: they take what it leaves.
+stylesheet! {
+    pub BuildColumn<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+        }
+    }
+}
+
+// The robot column: a fixed width at the right edge, so its rule stays put
+// as apps come and go.
+stylesheet! {
+    pub RobotColumn<()> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_shrink: 0.0,
+            width: Length::Px(crate::view::ROBOT_COL as f32),
+        }
+    }
+}
+
 // A target's name. Its column's width is the view's padding, carried as
 // the status's leading gap (see `TargetRow`), so a full-stack session's
 // long server name widens every row's column alike.
@@ -121,11 +144,16 @@ pub fn words(line: &str) -> Vec<(usize, String)> {
 /// the line says, so a line that changes is rebuilt and one that does not
 /// stays put; `on_frame`, when given, runs every frame (the live panel
 /// drains the session's events there — tests drive it by hand instead).
+///
+/// With a Robot relay, the robot block sits `beside` the rows and saves on
+/// a wide terminal and under them on a narrow one.
 #[component]
 pub fn Panel(
     header: ReadSignal<Line>,
     rows: ReadSignal<Vec<Row>>,
     history: ReadSignal<Vec<Line>>,
+    robot: ReadSignal<Vec<Line>>,
+    beside: ReadSignal<bool>,
     error: ReadSignal<Vec<Line>>,
     log: ReadSignal<Vec<Line>>,
     footer: ReadSignal<Line>,
@@ -134,28 +162,52 @@ pub fn Panel(
     if let Some(frame) = on_frame {
         raf_loop_scoped(move || frame());
     }
-    let saves = Line { text: "  saves".into(), tone: Tone::Muted, key: String::new() };
     ui! {
         view(style = Frame()) {
             // Single-spaced text: nothing for the terminal to collapse.
             text { move || header.get().text }
             text { " " }
-            for row in rows, key = row.key.clone() {
-                TargetRow(row = row.clone())
+            if beside.get() {
+                view(style = RowLayout()) {
+                    view(style = BuildColumn()) {
+                        BuildBlock(rows = rows, history = history)
+                    }
+                    view(style = RobotColumn()) {
+                        Lines(lines = robot)
+                    }
+                }
+            } else {
+                BuildBlock(rows = rows, history = history)
+                Lines(lines = robot)
             }
-            text { " " }
-            Words(line = saves)
-            for line in history, key = line.key.clone() {
-                Words(line = line.clone())
-            }
-            for line in error, key = line.key.clone() {
-                Words(line = line.clone())
-            }
-            for line in log, key = line.key.clone() {
-                Words(line = line.clone())
-            }
+            Lines(lines = error)
+            Lines(lines = log)
             view(style = Fill()) {}
             text(style = Ink().tone(InkTone::Muted)) { move || footer.get().text }
+        }
+    }
+}
+
+/// The targets' rows, then the saves.
+#[component]
+pub fn BuildBlock(rows: ReadSignal<Vec<Row>>, history: ReadSignal<Vec<Line>>) -> Element {
+    let saves = Line { text: "  saves".into(), tone: Tone::Muted, key: String::new() };
+    ui! {
+        for row in rows, key = row.key.clone() {
+            TargetRow(row = row.clone())
+        }
+        text { " " }
+        Words(line = saves)
+        Lines(lines = history)
+    }
+}
+
+/// A block of lines, each kept while it says the same thing.
+#[component]
+pub fn Lines(lines: ReadSignal<Vec<Line>>) -> Element {
+    ui! {
+        for line in lines, key = line.key.clone() {
+            Words(line = line.clone())
         }
     }
 }

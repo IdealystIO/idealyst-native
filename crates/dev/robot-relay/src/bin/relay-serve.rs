@@ -39,6 +39,7 @@ fn main() {
         register: false,
         identity: None,
         screenshot_dir: None,
+        ..Default::default()
     })
     .expect("relay starts");
     let ws_url = format!("ws://127.0.0.1:{}", relay.ws_addr.port());

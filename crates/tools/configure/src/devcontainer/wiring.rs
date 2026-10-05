@@ -297,12 +297,30 @@ pub fn sync_tooling(
 /// session's page stream — and as ours to update or remove.
 pub const STREAM_PORT_LABEL: &str = "idealyst dev stream";
 
+/// The `portsAttributes` label marking the forwarded port as the dev
+/// session's Robot relay (`dev.toml` `robot_port`): the TCP bridge an MCP
+/// server on the host drives the app through.
+pub const ROBOT_PORT_LABEL: &str = "idealyst robot bridge";
+
 /// Forward `port` (the dev session's page stream, `dev.toml`
 /// `stream_port`) with a label, replacing a stream port forwarded
 /// before; with `None`, remove the one we forwarded. Ports the user
 /// forwarded themselves are never touched: ours carry
 /// [`STREAM_PORT_LABEL`]. Returns files written.
 pub fn sync_stream_port(dir: &Path, config: Option<&str>, port: Option<u16>) -> Result<Vec<PathBuf>> {
+    sync_labelled_port(dir, config, port, STREAM_PORT_LABEL)
+}
+
+/// [`sync_stream_port`] for the Robot relay's pinned port (`dev.toml`
+/// `robot_port`), labelled [`ROBOT_PORT_LABEL`].
+pub fn sync_robot_port(dir: &Path, config: Option<&str>, port: Option<u16>) -> Result<Vec<PathBuf>> {
+    sync_labelled_port(dir, config, port, ROBOT_PORT_LABEL)
+}
+
+/// Forward `port` labelled `label`, replacing the port forwarded under
+/// that label before; with `None`, remove it. Ports under any other
+/// label, or none, are never touched.
+fn sync_labelled_port(dir: &Path, config: Option<&str>, port: Option<u16>, label: &str) -> Result<Vec<PathBuf>> {
     let Some(mut value) = read_json(dir, config)? else {
         return Ok(Vec::new());
     };
@@ -318,7 +336,7 @@ pub fn sync_stream_port(dir: &Path, config: Option<&str>, port: Option<u16>) -> 
         .map(|attrs| {
             attrs
                 .iter()
-                .filter(|(_, a)| a.get("label").and_then(Value::as_str) == Some(STREAM_PORT_LABEL))
+                .filter(|(_, a)| a.get("label").and_then(Value::as_str) == Some(label))
                 .map(|(k, _)| k.clone())
                 .collect()
         })
@@ -358,9 +376,9 @@ pub fn sync_stream_port(dir: &Path, config: Option<&str>, port: Option<u16>) -> 
         let attrs = obj.entry("portsAttributes").or_insert_with(|| json!({}));
         let attrs =
             attrs.as_object_mut().context("devcontainer.json `portsAttributes` is not an object")?;
-        // Silent: the page opens it, not the author, so a "port forwarded"
-        // notification would be noise.
-        attrs.insert(p.to_string(), json!({ "label": STREAM_PORT_LABEL, "onAutoForward": "silent" }));
+        // Silent: the page or the MCP server opens it, not the author, so
+        // a "port forwarded" notification would be noise.
+        attrs.insert(p.to_string(), json!({ "label": label, "onAutoForward": "silent" }));
     }
 
     if value != original {

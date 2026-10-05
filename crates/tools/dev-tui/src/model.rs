@@ -33,7 +33,17 @@
 //!                                      └─ failed ─► error (old server still up)
 //! ```
 //!
-//! A save only the web bundle sees leaves it as it was.
+//! A save only the web bundle sees leaves it as it was. A server that
+//! stops — its port taken before it started, or its process exiting — is
+//! `down` with the reason, until it answers again.
+//!
+//! Any other `error` lands on the row it names (`source` is the target, or
+//! a `dev <target>` launcher) and in the error pane: no failure is only a
+//! log line.
+//!
+//! A `--local` session's Robot relay is its own block: whether it listens
+//! and on which port, and each app connected to it (`robot_apps`), with
+//! the session time it connected.
 //!
 //! Every save is also a line in the history ring: the files, the tier it
 //! took, how long it took, what it did, and whether the page acked it.
@@ -42,7 +52,7 @@ use std::collections::VecDeque;
 
 use dev_events::{
     BuildCause, BuildOutcome, Decision, DevEvent, Diagnostic, Envelope, HotTier, PageAck,
-    ServerKind, SidecarUpdate,
+    RelayState, ServerDown, ServerKind, SidecarUpdate,
 };
 
 /// Saves kept in the history ring.
@@ -84,6 +94,9 @@ pub enum State {
     Unchanged { ms: u64 },
     /// A build failed.
     Failed { summary: String },
+    /// Something other than a build failed: a server that stopped or
+    /// could not start, a launcher that failed. `summary` says what.
+    Down { summary: String },
     /// A target with no typed events yet (a native launcher): its latest
     /// `[dev <target>]` line.
     Note { line: String },
@@ -182,6 +195,29 @@ impl LogLine {
 /// Server lines the error pane quotes when the server crashed.
 const CRASH_TAIL: usize = 20;
 
+/// The session's Robot relay, as the panel shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Robot {
+    /// The TCP bridge's port (MCP, Inspector), or why there is no relay.
+    pub relay: Result<u16, String>,
+    /// Whether that port was asked for (`--robot-port`).
+    pub pinned: bool,
+    /// The apps connected now, oldest first.
+    pub apps: Vec<RobotAppRow>,
+}
+
+/// One app connected to the relay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RobotAppRow {
+    pub id: u64,
+    pub platform: Option<String>,
+    pub label: Option<String>,
+    /// Whether Robot requests go to it.
+    pub active: bool,
+    /// Session time it connected.
+    pub since_ms: u64,
+}
+
 /// See the module docs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
@@ -207,6 +243,8 @@ pub struct Model {
     server_url: Option<String>,
     /// Where the server process's output is written (`server.log`).
     pub server_log: Option<String>,
+    /// The session's Robot relay, once it reported (a `--local` session).
+    pub robot: Option<Robot>,
 }
 
 impl Model {
@@ -540,38 +578,77 @@ impl Model {
                     }
                 }
             }
-            // The server process crashed or panicked (the CLI reads its
-            // output): its row says so, and the error pane quotes the end
-            // of its output — the rest is in server.log.
+            // The server process panicked (the CLI reads its output): its
+            // row says so, and the error pane quotes the end of its output
+            // — the rest is in server.log.
             DevEvent::Error { source, message } if self.is_server(source) => {
                 let target = source.clone();
-                let tail: Vec<String> = self
-                    .log
-                    .iter()
-                    .filter(|l| l.server)
-                    .rev()
-                    .take(CRASH_TAIL)
-                    .map(|l| l.text.clone())
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let mut rendered = message.clone();
-                if !tail.is_empty() {
-                    rendered.push_str("\n\n");
-                    rendered.push_str(&tail.join("\n"));
+                let rendered = self.with_server_tail(message.clone());
+                self.down(&target, message.clone(), rendered);
+            }
+            // Any other failure: on the row it names, if it names one, and
+            // in the error pane either way.
+            DevEvent::Error { source, message } => {
+                let row = source.strip_prefix("dev ").unwrap_or(source).to_string();
+                if self.targets.iter().any(|t| t.name == row) {
+                    self.down(&row, message.clone(), message.clone());
+                } else {
+                    self.error = Some(ErrorInfo {
+                        target: source.clone(),
+                        location: None,
+                        message: format!("{source}: {message}"),
+                        rendered: message.clone(),
+                        count: 0,
+                    });
                 }
-                self.set(&target, State::Failed { summary: message.clone() });
-                self.error = Some(ErrorInfo {
-                    target,
-                    location: None,
-                    message: message.clone(),
-                    rendered,
-                    count: 0,
+            }
+            DevEvent::ServerDown { target, down, log_file } => {
+                let summary = match down {
+                    ServerDown::PortInUse { port, holder } => match holder {
+                        Some(h) => format!("not started · port {port} is in use by {h}"),
+                        None => format!("not started · port {port} is in use"),
+                    },
+                    ServerDown::Exited { status, cause: Some(cause) } => {
+                        format!("exited ({status}) · {cause}")
+                    }
+                    ServerDown::Exited { status, cause: None } => format!("exited ({status})"),
+                };
+                let mut rendered = self.with_server_tail(summary.clone());
+                if let Some(log) = log_file {
+                    rendered.push_str(&format!("\n\nits full output is in {log}"));
+                }
+                self.down(target, summary, rendered);
+            }
+            DevEvent::RobotRelay { state } => {
+                let apps = self.robot.take().map(|r| r.apps).unwrap_or_default();
+                self.robot = Some(match state {
+                    RelayState::Listening { tcp_port, pinned, .. } => {
+                        Robot { relay: Ok(*tcp_port), pinned: *pinned, apps }
+                    }
+                    RelayState::Unavailable { error } => {
+                        Robot { relay: Err(error.clone()), pinned: false, apps }
+                    }
                 });
             }
-            DevEvent::Error { .. }
-            | DevEvent::StreamRoute { .. }
+            DevEvent::RobotApps { apps } => {
+                let now = self.now_ms;
+                let robot = self
+                    .robot
+                    .get_or_insert_with(|| Robot { relay: Ok(0), pinned: false, apps: Vec::new() });
+                let before = std::mem::take(&mut robot.apps);
+                robot.apps = apps
+                    .iter()
+                    .map(|a| RobotAppRow {
+                        id: a.id,
+                        platform: a.platform.clone(),
+                        label: a.label.clone(),
+                        active: a.active,
+                        // Its connect time is when it was first listed.
+                        since_ms: before.iter().find(|b| b.id == a.id).map_or(now, |b| b.since_ms),
+                    })
+                    .collect();
+            }
+            DevEvent::StreamRoute { .. }
             | DevEvent::Output { .. }
             | DevEvent::StageFinished { .. }
             | DevEvent::BuildTimed { .. } => {}
@@ -605,6 +682,38 @@ impl Model {
         self.set(target, State::Failed { summary });
         self.finish_save(target, "rebuild", "build failed".into(), true);
         self.error = Some(info);
+    }
+
+    /// `target` stopped or failed outside a build: its row says `summary`,
+    /// the error pane shows `rendered`.
+    fn down(&mut self, target: &str, summary: String, rendered: String) {
+        self.set(target, State::Down { summary: summary.clone() });
+        self.error = Some(ErrorInfo {
+            target: target.to_string(),
+            location: None,
+            message: summary,
+            rendered,
+            count: 0,
+        });
+    }
+
+    /// `message`, then the end of the server's own output.
+    fn with_server_tail(&self, message: String) -> String {
+        let tail: Vec<String> = self
+            .log
+            .iter()
+            .filter(|l| l.server)
+            .rev()
+            .take(CRASH_TAIL)
+            .map(|l| l.text.clone())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if tail.is_empty() {
+            return message;
+        }
+        format!("{message}\n\n{}", tail.join("\n"))
     }
 
     fn is_server(&self, target: &str) -> bool {
@@ -1136,10 +1245,15 @@ mod tests {
     }
 
     /// The server process's own output is marked, so the log pane can
-    /// leave it out; a crash is an error on the server's row, and the
-    /// error pane quotes the end of its output.
+    /// leave it out; a crash is the server's row going down with the
+    /// cause, and the error pane quotes the end of its output.
+    ///
+    /// Regression: the row said `✗ build failed · exited with exit status:
+    /// 1 — its output is in …/server.log` for a server that had BUILT and
+    /// then died on `Address already in use` — the cause one keypress and
+    /// a race away, in the error pane's tail.
     #[test]
-    fn server_output_is_marked_and_a_crash_lands_on_its_row() {
+    fn regression_a_server_that_exits_says_why_on_its_row() {
         let mut m = running();
         let out = |line: &str| DevEvent::Output {
             source: dev_events::SERVER_OUTPUT_SOURCE.into(),
@@ -1151,11 +1265,14 @@ mod tests {
             vec![
                 (20, out("GET / 200")),
                 (21, DevEvent::Output { source: "cargo".into(), line: "   Compiling app".into(), target: Some(web()) }),
-                (22, out("thread 'main' panicked at src/main.rs:9:5:")),
-                (23, out("boom")),
-                (24, DevEvent::Error {
-                    source: server(),
-                    message: "exited with exit status: 101 — its output is in /cf/server.log".into(),
+                (22, out("Error: Address already in use (os error 48)")),
+                (24, DevEvent::ServerDown {
+                    target: server(),
+                    down: ServerDown::Exited {
+                        status: "exit status: 1".into(),
+                        cause: Some("Error: Address already in use (os error 48)".into()),
+                    },
+                    log_file: Some("/cf/server.log".into()),
                 }),
             ],
         );
@@ -1163,16 +1280,20 @@ mod tests {
             m.log.iter().filter(|l| l.server).map(|l| l.text.as_str()).collect();
         assert_eq!(
             server_lines,
-            vec!["[server] GET / 200", "[server] thread 'main' panicked at src/main.rs:9:5:", "[server] boom"]
+            vec!["[server] GET / 200", "[server] Error: Address already in use (os error 48)"]
         );
         assert!(m.log.iter().any(|l| !l.server && l.text == "   Compiling app"));
         assert_eq!(
             row(&m, "server").state,
-            State::Failed { summary: "exited with exit status: 101 — its output is in /cf/server.log".into() }
+            State::Down { summary: "exited (exit status: 1) · Error: Address already in use (os error 48)".into() }
         );
         let err = m.error.as_ref().unwrap();
         assert_eq!(err.target, "server");
-        assert!(err.rendered.ends_with("[server] thread 'main' panicked at src/main.rs:9:5:\n[server] boom"), "{}", err.rendered);
+        assert!(
+            err.rendered.ends_with("[server] Error: Address already in use (os error 48)\n\nits full output is in /cf/server.log"),
+            "{}",
+            err.rendered
+        );
         // A restart clears the row.
         run(&mut m, vec![(30, DevEvent::ServerReady {
             target: web(),
@@ -1180,6 +1301,105 @@ mod tests {
             url: "http://127.0.0.1:3100".into(),
         })]);
         assert!(matches!(row(&m, "server").state, State::Running { .. }));
+        assert!(m.error.is_none());
+    }
+
+    /// A panic the server survives is still an error on its row, with the
+    /// end of its output.
+    #[test]
+    fn a_server_panic_lands_on_its_row() {
+        let mut m = running();
+        run(
+            &mut m,
+            vec![
+                (22, DevEvent::Output {
+                    source: dev_events::SERVER_OUTPUT_SOURCE.into(),
+                    line: "thread 'main' panicked at src/main.rs:9:5:".into(),
+                    target: Some(server()),
+                }),
+                (24, DevEvent::Error {
+                    source: server(),
+                    message: "thread 'main' panicked at src/main.rs:9:5: — its output is in /cf/server.log".into(),
+                }),
+            ],
+        );
+        assert!(matches!(&row(&m, "server").state, State::Down { summary } if summary.starts_with("thread 'main' panicked")));
+        assert!(m.error.as_ref().unwrap().rendered.ends_with("[server] thread 'main' panicked at src/main.rs:9:5:"));
+    }
+
+    /// Regression: a server whose port another process held was started
+    /// anyway; the stale process answered the readiness probe, the row
+    /// went to "running", then flipped to a bare "exited". The CLI checks
+    /// the port first now, and the row names the holder.
+    #[test]
+    fn regression_a_server_whose_port_is_taken_says_so_on_its_row() {
+        let mut m = running();
+        run(
+            &mut m,
+            vec![(20, DevEvent::ServerDown {
+                target: server(),
+                down: ServerDown::PortInUse { port: 3100, holder: Some("pid 4821 (crewforge-server)".into()) },
+                log_file: None,
+            })],
+        );
+        assert_eq!(
+            row(&m, "server").state,
+            State::Down { summary: "not started · port 3100 is in use by pid 4821 (crewforge-server)".into() }
+        );
+        assert_eq!(m.error.as_ref().unwrap().message, "not started · port 3100 is in use by pid 4821 (crewforge-server)");
+    }
+
+    /// Regression: an `error` from anything but the server was dropped by
+    /// the panel — only a log line, behind `l`. It lands on the row it
+    /// names, or in the error pane.
+    #[test]
+    fn regression_every_error_reaches_a_row_or_the_error_pane() {
+        let mut m = started();
+        run(
+            &mut m,
+            vec![(20, DevEvent::Error {
+                source: "dev-reload".into(),
+                message: "could not start file watcher: too many open files".into(),
+            })],
+        );
+        let err = m.error.as_ref().expect("in the error pane");
+        assert_eq!(err.message, "dev-reload: could not start file watcher: too many open files");
+        run(
+            &mut m,
+            vec![(21, DevEvent::Error { source: "dev web".into(), message: "launch failed: no index.html".into() })],
+        );
+        assert_eq!(row(&m, "web").state, State::Down { summary: "launch failed: no index.html".into() });
+        assert_eq!(m.error.as_ref().unwrap().target, "web");
+    }
+
+    /// The robot block: the relay's port, each app with the session time it
+    /// first connected — kept across later lists — and which is driven.
+    #[test]
+    fn the_robot_block_lists_each_app_with_when_it_connected() {
+        let app = |id, platform: &str, active| dev_events::RobotApp {
+            id,
+            platform: Some(platform.into()),
+            label: None,
+            active,
+        };
+        let mut m = started();
+        run(
+            &mut m,
+            vec![
+                (10, DevEvent::RobotRelay {
+                    state: RelayState::Listening { ws_url: "ws://127.0.0.1:1".into(), tcp_port: 4778, pinned: true },
+                }),
+                (20, DevEvent::RobotApps { apps: vec![app(1, "web", true)] }),
+                (30, DevEvent::RobotApps { apps: vec![app(1, "web", false), app(2, "macos", true)] }),
+            ],
+        );
+        let robot = m.robot.as_ref().unwrap();
+        assert_eq!(robot.relay, Ok(4778));
+        assert!(robot.pinned);
+        let apps: Vec<(u64, bool, u64)> = robot.apps.iter().map(|a| (a.id, a.active, a.since_ms)).collect();
+        assert_eq!(apps, vec![(1, false, 20), (2, true, 30)]);
+        run(&mut m, vec![(40, DevEvent::RobotApps { apps: vec![] })]);
+        assert!(m.robot.as_ref().unwrap().apps.is_empty());
     }
 
     #[test]

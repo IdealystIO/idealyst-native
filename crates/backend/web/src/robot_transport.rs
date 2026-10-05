@@ -10,7 +10,7 @@
 //!
 //! Protocol (text frames):
 //! ```text
-//! app → relay   {"hello":{"name":…,"platform":"web"}}     once, on open
+//! app → relay   {"hello":{"platform":"web","label":"Chrome 131"}}   once, on open
 //! relay → app   {"id":N,"cmd":"find_element","args":{…}}  a forwarded request
 //! app → relay   {"id":N,"ok":<value>} | {"id":N,"err":…}  the dispatched result
 //! app → relay   {"event":"changed","rev":R}               a push, while subscribed
@@ -125,6 +125,93 @@ pub(crate) fn relay_candidates(page_protocol: &str, page_host: &str, injected: &
     out
 }
 
+/// What the page knows about its own Robot connection, published for the
+/// dev overlay's badge ([`publish_status`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RelayStatus {
+    /// Dialing `url`, with no failure to report yet.
+    Connecting { url: String },
+    /// The relay accepted the connection.
+    Connected { url: String },
+    /// Every candidate failed this round; the next round starts in
+    /// `retry_ms`. `error` says what each attempt got.
+    Retrying { error: String, retry_ms: i32 },
+    /// A connected session closed; it is redialed.
+    Dropped { url: String, error: String },
+    /// There is nothing to dial; the client does not run.
+    Failed { error: String },
+}
+
+impl RelayStatus {
+    fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            RelayStatus::Connecting { url } => json!({ "state": "connecting", "url": url }),
+            RelayStatus::Connected { url } => json!({ "state": "connected", "url": url }),
+            RelayStatus::Retrying { error, retry_ms } => {
+                json!({ "state": "retrying", "error": error, "retry_ms": retry_ms })
+            }
+            RelayStatus::Dropped { url, error } => {
+                json!({ "state": "dropped", "url": url, "error": error })
+            }
+            RelayStatus::Failed { error } => json!({ "state": "failed", "error": error }),
+        }
+    }
+}
+
+/// The global holding the latest status (a JSON string), for an overlay
+/// that mounts after the client started. `dev-http`'s reload script reads
+/// both names; its `status_overlay` test holds them to these.
+pub const ROBOT_STATUS_GLOBAL: &str = "__idealyst_dev_robot";
+/// The function the dev overlay defines to be told each change.
+pub const ROBOT_STATUS_HOOK: &str = "__idealyst_dev_robot_status";
+
+/// Tell the page's dev overlay (`dev-http`'s `status_overlay.js`) how the
+/// Robot connection is doing. Without it the only sign of a page that could
+/// not reach the relay was the MCP's "no app connected to the relay" —
+/// nothing on the page, nothing in the console. A page with no overlay
+/// (a production-like serve) just carries the global.
+fn publish_status(status: &RelayStatus) {
+    let json = JsValue::from_str(&status.to_json().to_string());
+    let global = JsValue::global();
+    let _ = global.set(ROBOT_STATUS_GLOBAL, &json);
+    if let Ok(hook) = global.get(ROBOT_STATUS_HOOK) {
+        if hook.is_function() {
+            let _ = hook.call(&global, &[&json]);
+        }
+    }
+}
+
+/// `Chrome 131`, `Firefox 133`, `Safari 18`, `Edge 131` from a user agent —
+/// what tells two tabs apart in the dev panel's robot column. `None` for a
+/// browser it doesn't recognise. Order matters: Edge's agent also names
+/// Chrome and Safari, Chrome's also names Safari.
+pub(crate) fn browser_label(user_agent: &str) -> Option<String> {
+    let version = |marker: &str| -> Option<String> {
+        let rest = &user_agent[user_agent.find(marker)? + marker.len()..];
+        let major: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        (!major.is_empty()).then_some(major)
+    };
+    for (marker, name) in [("Edg/", "Edge"), ("Firefox/", "Firefox"), ("Chrome/", "Chrome")] {
+        if let Some(v) = version(marker) {
+            return Some(format!("{name} {v}"));
+        }
+    }
+    if user_agent.contains("Safari/") {
+        return version("Version/").map(|v| format!("Safari {v}"));
+    }
+    None
+}
+
+fn user_agent() -> String {
+    JsValue::global()
+        .get("navigator")
+        .and_then(|n| n.get("userAgent"))
+        .ok()
+        .and_then(|ua| ua.as_string())
+        .unwrap_or_default()
+}
+
 /// The connection state: which candidate is being tried, the live socket
 /// and its listeners, and the pending redial timer.
 struct Dialer {
@@ -137,6 +224,12 @@ struct Dialer {
     backoff_ms: i32,
     /// Whether the relay asked this connection to push change events.
     subscribed: Rc<Cell<bool>>,
+    /// What each candidate got this round (`url (close 1006)`), reported
+    /// once the round has failed.
+    failures: Vec<String>,
+    /// Whether a failure is on show: a retry round then keeps showing it
+    /// rather than flickering back to "connecting".
+    failing: bool,
 }
 
 /// Kept alive for the page lifetime so the dialer (socket + closures) and
@@ -169,7 +262,9 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
         .unwrap_or_default();
     let candidates = relay_candidates(&protocol, &host, url);
     if candidates.is_empty() {
-        return Err(JsValue::from_str("no robot relay URL to dial"));
+        let error = "no robot relay URL to dial";
+        publish_status(&RelayStatus::Failed { error: error.into() });
+        return Err(JsValue::from_str(error));
     }
 
     let subscribed = Rc::new(Cell::new(false));
@@ -180,6 +275,8 @@ pub fn install_robot_relay_client(url: &str) -> Result<(), JsValue> {
         timer: None,
         backoff_ms: REDIAL_MS,
         subscribed: subscribed.clone(),
+        failures: Vec::new(),
+        failing: false,
     }));
     dial(&dialer, 0);
 
@@ -225,16 +322,38 @@ fn schedule(dialer: &Rc<RefCell<Dialer>>, idx: usize, ms: i32) {
 /// The candidate after `idx` failed to connect: the next one now, or —
 /// when every candidate failed this round — the first again after a
 /// backoff that doubles up to [`RETRY_MAX_MS`].
-fn after_failure(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
+fn after_failure(dialer: &Rc<RefCell<Dialer>>, idx: usize, why: String) {
     let (count, backoff) = {
-        let d = dialer.borrow();
+        let mut d = dialer.borrow_mut();
+        let url = d.candidates[idx].clone();
+        d.failures.push(format!("{url} ({why})"));
         (d.candidates.len(), d.backoff_ms)
     };
     if idx + 1 < count {
         schedule(dialer, idx + 1, 0);
     } else {
-        dialer.borrow_mut().backoff_ms = (backoff * 2).min(RETRY_MAX_MS);
+        let error = {
+            let mut d = dialer.borrow_mut();
+            d.backoff_ms = (backoff * 2).min(RETRY_MAX_MS);
+            d.failing = true;
+            format!("can't reach the robot relay: {}", std::mem::take(&mut d.failures).join(", "))
+        };
+        publish_status(&RelayStatus::Retrying { error, retry_ms: backoff });
         schedule(dialer, 0, backoff);
+    }
+}
+
+/// `close 1006`, plus the reason when the close carried one. A browser
+/// says nothing more about a failed WebSocket (no HTTP status, no network
+/// error) — deliberately, so a page can't port-scan — so the code and the
+/// URL are what there is to show.
+fn close_description(evt: &JsValue) -> String {
+    let code = evt.get("code").ok().and_then(|c| c.as_f64()).map(|c| c as u32);
+    let reason = evt.get("reason").ok().and_then(|r| r.as_string()).filter(|r| !r.is_empty());
+    match (code, reason) {
+        (Some(code), Some(reason)) => format!("close {code}: {reason}"),
+        (Some(code), None) => format!("close {code}"),
+        (None, _) => "closed".into(),
     }
 }
 
@@ -247,12 +366,18 @@ fn dial(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
             let _ = old.close();
         }
         d.subscribed.set(false);
+        if idx == 0 {
+            d.failures.clear();
+        }
         (d.candidates[idx].clone(), d.subscribed.clone())
     };
+    if !dialer.borrow().failing {
+        publish_status(&RelayStatus::Connecting { url: url.clone() });
+    }
     // A malformed URL throws synchronously; treat it as a failed attempt.
     let socket = match WebSocket::new(&url) {
         Ok(s) => s,
-        Err(_) => return after_failure(dialer, idx),
+        Err(_) => return after_failure(dialer, idx, "not a valid WebSocket URL".into()),
     };
     let opened = Rc::new(Cell::new(false));
 
@@ -260,27 +385,40 @@ fn dial(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
     let socket_for_open = socket.clone();
     let opened_for_open = opened.clone();
     let weak = Rc::downgrade(dialer);
+    let url_for_open = url.clone();
     let on_open = crate::glue_dom::listen(&socket, "open", Default::default(), move |_evt| {
         opened_for_open.set(true);
         if let Some(d) = weak.upgrade() {
-            d.borrow_mut().backoff_ms = REDIAL_MS;
+            let mut d = d.borrow_mut();
+            d.backoff_ms = REDIAL_MS;
+            d.failing = false;
+            d.failures.clear();
         }
-        let hello = serde_json::json!({
-            "hello": { "name": env!("CARGO_PKG_NAME"), "platform": "web" }
-        });
+        // No `name`: this crate would say `backend-web` (it once sent
+        // `env!("CARGO_PKG_NAME")`); the relay knows the app's name from
+        // the dev session. `label` tells this tab from another.
+        let mut hello = serde_json::json!({ "hello": { "platform": "web" } });
+        if let Some(label) = browser_label(&user_agent()) {
+            hello["hello"]["label"] = label.into();
+        }
         let _ = socket_for_open.send_with_str(&hello.to_string());
+        publish_status(&RelayStatus::Connected { url: url_for_open.clone() });
     });
 
     // --- on_close: redial ---------------------------------------------------
     // A handshake that fails (the origin has no relay route: a 404, a
     // catch-all's index.html) also ends here, with `open` never fired.
     let weak = Rc::downgrade(dialer);
-    let on_close = crate::glue_dom::listen(&socket, "close", Default::default(), move |_evt| {
+    let url_for_close = url.clone();
+    let on_close = crate::glue_dom::listen(&socket, "close", Default::default(), move |evt| {
         let Some(d) = weak.upgrade() else { return };
+        let why = close_description(evt.as_ref());
         if opened.get() {
+            d.borrow_mut().failing = true;
+            publish_status(&RelayStatus::Dropped { url: url_for_close.clone(), error: why });
             schedule(&d, 0, REDIAL_MS);
         } else {
-            after_failure(&d, idx);
+            after_failure(&d, idx, why);
         }
     });
 
@@ -382,6 +520,41 @@ mod candidate_tests {
         assert_eq!(relay_candidates("http:", "", "ws://127.0.0.1:1"), vec!["ws://127.0.0.1:1".to_string()]);
     }
 
+    /// The dev panel's robot column tells two tabs apart by this label.
+    /// Edge's agent names Chrome and Safari too, Chrome's names Safari:
+    /// the most specific browser wins.
+    #[wasm_bindgen_test]
+    fn the_browser_label_names_the_browser_and_its_major_version() {
+        let chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+        let edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.2903.70";
+        let safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
+        let firefox = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0";
+        assert_eq!(browser_label(chrome).as_deref(), Some("Chrome 131"));
+        assert_eq!(browser_label(edge).as_deref(), Some("Edge 131"));
+        assert_eq!(browser_label(safari).as_deref(), Some("Safari 18"));
+        assert_eq!(browser_label(firefox).as_deref(), Some("Firefox 133"));
+        assert_eq!(browser_label("curl/8.4.0"), None);
+    }
+
+    /// What the overlay reads: a `state` it switches on, and the URL or
+    /// error it shows.
+    #[wasm_bindgen_test]
+    fn the_status_the_overlay_reads() {
+        assert_eq!(
+            RelayStatus::Retrying { error: "can't reach the robot relay: ws://h/__idealyst/relay (close 1006)".into(), retry_ms: 1000 }
+                .to_json(),
+            serde_json::json!({
+                "state": "retrying",
+                "error": "can't reach the robot relay: ws://h/__idealyst/relay (close 1006)",
+                "retry_ms": 1000,
+            })
+        );
+        assert_eq!(
+            RelayStatus::Connected { url: "ws://h/__idealyst/relay".into() }.to_json(),
+            serde_json::json!({ "state": "connected", "url": "ws://h/__idealyst/relay" })
+        );
+    }
+
     #[wasm_bindgen_test]
     fn an_injected_url_equal_to_the_origin_route_is_not_dialed_twice() {
         assert_eq!(
@@ -415,6 +588,64 @@ mod tests {
         el.set_id("app");
         document.body().unwrap().append_child(&el).unwrap();
         el
+    }
+
+    /// Await a real macrotask boundary (`setTimeout(ms)`).
+    async fn sleep_ms(ms: i32) {
+        let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+            web_glue::dom::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .unwrap();
+        });
+        let _ = web_glue::JsFuture::new(&promise).await;
+    }
+
+    /// Regression: a page that could not reach the Robot relay said so
+    /// nowhere — no console line, nothing on the page — so the only sign
+    /// was the MCP answering "no app connected to the relay". The client
+    /// now publishes each state, and the dev overlay's hook hears it. The
+    /// test page's origin has no relay route and port 1 has no relay, so
+    /// both candidates fail and the round's error names them.
+    #[wasm_bindgen_test]
+    async fn regression_an_unreachable_relay_is_reported_to_the_page() {
+        let heard: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = heard.clone();
+        let hook = web_glue::Closure::new(move |status: JsValue| {
+            sink.borrow_mut().push(status.as_string().unwrap_or_default());
+        });
+        JsValue::global().set(ROBOT_STATUS_HOOK, hook.as_js()).unwrap();
+
+        install_robot_relay_client("ws://127.0.0.1:1").unwrap();
+        let mut retrying = None;
+        for _ in 0..100 {
+            retrying = heard
+                .borrow()
+                .iter()
+                .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+                .find(|v| v["state"] == "retrying");
+            if retrying.is_some() {
+                break;
+            }
+            sleep_ms(50).await;
+        }
+        let retrying = retrying.expect("a failed round is reported");
+        let error = retrying["error"].as_str().unwrap();
+        assert!(error.contains("/__idealyst/relay ("), "the origin route is named: {error}");
+        assert!(error.contains("ws://127.0.0.1:1 ("), "the injected URL is named: {error}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&heard.borrow()[0]).unwrap()["state"],
+            "connecting",
+            "the first dial says it is connecting"
+        );
+        let latest = JsValue::global().get(ROBOT_STATUS_GLOBAL).unwrap().as_string().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&latest).unwrap()["state"],
+            "retrying",
+            "an overlay that mounts later reads the latest from the global"
+        );
+        let _ = JsValue::global().set(ROBOT_STATUS_HOOK, &JsValue::UNDEFINED);
+        drop(hook);
     }
 
     /// Regression (conformance-wave transport adapter): the relay verb

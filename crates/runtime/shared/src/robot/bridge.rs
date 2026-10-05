@@ -595,7 +595,10 @@ pub fn start_relay_client(url: String) {
             return;
         }
         let (tx, rx) = mpsc::channel::<BridgeCommand>();
-        std::thread::spawn(move || run_relay_client(url, tx));
+        // Read HERE: `platform()` is thread-local, seeded on the app's
+        // thread by its backend — the dial thread would see the default.
+        let hello = relay_hello(&current_identity(), platform_label());
+        std::thread::spawn(move || run_relay_client(url, hello, tx));
         // No `~/.idealyst/apps` registration here — the relay writes it on the
         // app's behalf (a browser app can't, and uniformity beats per-platform
         // special-casing).
@@ -604,9 +607,26 @@ pub fn start_relay_client(url: String) {
     schedule_periodic_poll();
 }
 
+/// The `hello` frame a native app announces itself with. `platform` is the
+/// real one (`macos`, `ios`, …): the relay lists the app under it (the dev
+/// panel's robot column) and patches it into the `~/.idealyst/apps`
+/// registration, where the MCP server's `name:platform` parity selector
+/// reads it. It used to say `"native"` for every one of them.
+#[cfg(not(target_arch = "wasm32"))]
+fn relay_hello(identity: &AppIdentity, platform: &str) -> String {
+    serde_json::json!({
+        "hello": {
+            "name": identity.name,
+            "project_root": identity.project_root,
+            "platform": platform,
+        }
+    })
+    .to_string()
+}
+
 /// Reconnecting dial loop. Runs on a background thread for the process lifetime.
 #[cfg(not(target_arch = "wasm32"))]
-fn run_relay_client(url: String, tx: mpsc::Sender<BridgeCommand>) {
+fn run_relay_client(url: String, hello: String, tx: mpsc::Sender<BridgeCommand>) {
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::Message;
 
@@ -614,18 +634,7 @@ fn run_relay_client(url: String, tx: mpsc::Sender<BridgeCommand>) {
         match tungstenite::connect(url.as_str()) {
             Ok((mut ws, _resp)) => {
                 eprintln!("[robot-bridge] dialed relay {url}");
-                // Announce identity (informational; the relay does registration).
-                let identity = current_identity();
-                let hello = format!(
-                    "{{\"hello\":{{\"name\":{},\"project_root\":{},\"platform\":\"native\"}}}}",
-                    serde_json::to_string(&identity.name).unwrap_or_else(|_| "\"app\"".into()),
-                    identity
-                        .project_root
-                        .as_deref()
-                        .and_then(|s| serde_json::to_string(s).ok())
-                        .unwrap_or_else(|| "null".into()),
-                );
-                let _ = ws.send(Message::Text(hello.into()));
+                let _ = ws.send(Message::Text(hello.clone().into()));
                 let _ = ws.flush();
                 // Bound read blocking so the push check runs even when idle.
                 if let MaybeTlsStream::Plain(s) = ws.get_ref() {
@@ -1482,6 +1491,26 @@ mod tests {
     //! `bridge_registration_json` produces.
 
     use super::*;
+
+    /// Regression: every native app announced itself to the dev relay as
+    /// `"platform":"native"`, so the relay patched `native` into its
+    /// registration (the MCP's `name:platform` selector never matched
+    /// `docs:macos`) and the dev panel could not say which app connected.
+    /// The hello now carries the platform the app's backend installed.
+    #[test]
+    fn regression_native_relay_hello_names_the_real_platform() {
+        crate::host::install_current_platform(crate::Platform::MacOs);
+        let identity = AppIdentity {
+            name: "todo".into(),
+            bundle_id: None,
+            project_root: Some("/p".into()),
+        };
+        let hello: serde_json::Value =
+            serde_json::from_str(&relay_hello(&identity, platform_label())).unwrap();
+        assert_eq!(hello["hello"]["platform"], "macos");
+        assert_eq!(hello["hello"]["name"], "todo");
+        assert_eq!(hello["hello"]["project_root"], "/p");
+    }
 
     /// End-to-end live-update push: a `subscribe`d connection receives a
     /// `{"event":"changed"}` when the robot revision advances. Exercises the

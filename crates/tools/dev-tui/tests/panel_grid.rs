@@ -73,6 +73,8 @@ mod test_scheduler {
 
 /// A mounted panel and the session feeding it.
 struct Harness {
+    cols: u16,
+    rows: u16,
     backend: Rc<RefCell<TerminalBackend>>,
     app: Option<backend_terminal::newcore::NewCoreApp>,
     controller: Rc<Controller>,
@@ -82,10 +84,15 @@ struct Harness {
 
 impl Harness {
     fn new(rebuilds: Arc<AtomicUsize>) -> Self {
+        Self::sized(rebuilds, COLS, ROWS)
+    }
+
+    /// A panel on a `cols` x `rows` terminal.
+    fn sized(rebuilds: Arc<AtomicUsize>, cols: u16, rows: u16) -> Self {
         test_scheduler::ensure_installed();
         let backend = Rc::new(RefCell::new(TerminalBackend::new()));
         backend_terminal::install_global_self(Rc::downgrade(&backend));
-        backend.borrow_mut().set_viewport(COLS, ROWS);
+        backend.borrow_mut().set_viewport(cols, rows);
         let events = Queue::new();
         let slot: Rc<RefCell<Option<Rc<Controller>>>> = Rc::new(RefCell::new(None));
         let (for_build, queue) = (slot.clone(), events.clone());
@@ -104,7 +111,7 @@ impl Harness {
             controller.element(false)
         });
         let controller = slot.borrow().clone().expect("mounted");
-        Harness { backend, app: Some(app), controller, events, seq: 0 }
+        Harness { cols, rows, backend, app: Some(app), controller, events, seq: 0 }
     }
 
     /// Emit `event` at session time `at_ms`.
@@ -128,7 +135,7 @@ impl Harness {
     /// One frame at `now_ms`, then the grid itself (for colours).
     fn grid(&self, now_ms: u64) -> Grid {
         let app = self.app.as_ref().unwrap();
-        app.world().enter(|| self.controller.pump_at(now_ms, COLS as usize, ROWS as usize));
+        app.world().enter(|| self.controller.pump_at(now_ms, self.cols as usize, self.rows as usize));
         backend_terminal::newcore::flush_sync();
         test_scheduler::drain();
         self.backend.borrow_mut().render_to_grid()
@@ -451,4 +458,102 @@ fn a_full_stack_session_shows_the_server_as_its_own_row() {
     assert!(h.press('l'));
     let closed = h.frame(128_700);
     assert!(!closed.iter().any(|r| r.contains("  log")), "{closed:#?}");
+}
+
+fn robot_app(id: u64, platform: &str, label: Option<&str>, active: bool) -> dev_events::RobotApp {
+    dev_events::RobotApp { id, platform: Some(platform.into()), label: label.map(Into::into), active }
+}
+
+/// A `--local` session with a Robot relay: the build rows and saves on the
+/// left, the apps connected to the relay on the right, the bridge port in
+/// the header. A terminal too narrow for both stacks them.
+#[test]
+fn a_robot_session_shows_its_apps_beside_the_build() {
+    let script = |h: &mut Harness| {
+        h.at(0, DevEvent::SessionStarted {
+            app: "Hotreload Lab".into(),
+            targets: vec![web()],
+            mode: Mode::Local,
+            hot_tier: HotTier::Armed,
+            log_file: None,
+            server: None,
+        })
+        .at(5, DevEvent::RobotRelay {
+            state: dev_events::RelayState::Listening {
+                ws_url: "ws://127.0.0.1:52811".into(),
+                tcp_port: 4778,
+                pinned: true,
+            },
+        })
+        .at(10, DevEvent::ServerReady { target: web(), kind: ServerKind::Livereload, url: "http://0.0.0.0:8080".into() })
+        .at(20, DevEvent::BuildStarted { target: web(), cause: BuildCause::Initial })
+        .at(9_000, DevEvent::BuildFinished { target: web(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 8_980 })
+        .at(9_050, DevEvent::Watching { target: web(), roots: vec!["/lab/src".into()], rewatch: false });
+    };
+
+    // A wide terminal: side by side.
+    let mut h = Harness::sized(Arc::new(AtomicUsize::new(0)), 140, ROWS);
+    script(&mut h);
+    let before = h.frame(9_100);
+    assert!(before[0].ends_with("· robot :4778 (pinned) · hot patch armed"), "{before:#?}");
+    assert!(before.iter().any(|r| r.contains("│ ○ none connected")), "{before:#?}");
+
+    h.at(12_000, DevEvent::RobotApps { apps: vec![robot_app(1, "web", Some("Chrome 154"), true)] })
+        .at(42_000, DevEvent::RobotApps {
+            apps: vec![
+                robot_app(1, "web", Some("Chrome 154"), false),
+                robot_app(2, "web", Some("Safari 18"), true),
+            ],
+        })
+        // A rebuild in flight: its full status still fits beside the column.
+        .at(50_000, DevEvent::ChangeDetected { target: web(), paths: vec!["/lab/src/app.rs".into()], crates: vec![], folded: 0 })
+        .at(50_010, DevEvent::Decided { target: web(), decision: Decision::Rebuild { reason: None } })
+        .at(50_020, DevEvent::BuildStarted { target: web(), cause: BuildCause::Save { folded: 0 } })
+        .at(50_030, DevEvent::StageStarted { target: web(), stage: "cargo".into() })
+        .at(61_000, DevEvent::CargoProgress { target: web(), compiled: 212, total: Some(480), current: Some("idea-ui".into()) });
+    let beside = h.frame(62_300);
+    assert!(beside.iter().any(|r| r.contains("idea-ui · 12.3s") && r.contains('│')), "{beside:#?}");
+    golden("panel_robot_beside.txt", &beside);
+
+    // The default 100 columns: too narrow for both, stacked.
+    let mut narrow = Harness::new(Arc::new(AtomicUsize::new(0)));
+    script(&mut narrow);
+    narrow.at(12_000, DevEvent::RobotApps { apps: vec![robot_app(1, "web", Some("Chrome 154"), true)] });
+    let stacked = narrow.frame(12_100);
+    assert!(!stacked.iter().any(|r| r.contains('│')), "no column rule when stacked: {stacked:#?}");
+    golden("panel_robot_stacked.txt", &stacked);
+}
+
+/// Regression: a full-stack server whose port was taken read
+/// `✗ build failed · exited with 1 … — its output is in …/server.log`
+/// (a build that had succeeded); the cause sat in server.log. The row
+/// says what happened, the error pane the rest.
+#[test]
+fn regression_a_server_whose_port_is_taken_says_so_in_the_panel() {
+    let mut h = Harness::new(Arc::new(AtomicUsize::new(0)));
+    h.at(0, DevEvent::SessionStarted {
+        app: "CrewForge".into(),
+        targets: vec![web()],
+        mode: Mode::Local,
+        hot_tier: HotTier::Armed,
+        log_file: None,
+        server: Some(
+            dev_events::SessionServer::named("crewforge-server")
+                .with_log_file("/cf/target/idealyst/crewforge-main/server.log"),
+        ),
+    })
+    .at(20, DevEvent::BuildStarted { target: server(), cause: BuildCause::Initial })
+    .at(61_000, DevEvent::BuildFinished { target: server(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 60_975 })
+    .at(61_010, DevEvent::ServerDown {
+        target: server(),
+        down: dev_events::ServerDown::PortInUse { port: 3100, holder: Some("pid 4821 (crewforge-server)".into()) },
+        log_file: Some("/cf/target/idealyst/crewforge-main/server.log".into()),
+    });
+    let grid = h.frame(61_100);
+    assert!(
+        grid.iter().any(|r| r.contains("✗ not started · port 3100 is in use by pid 4821 (crewforge-server)")),
+        "{grid:#?}"
+    );
+    assert!(!grid.iter().any(|r| r.contains("build failed")), "{grid:#?}");
+    golden("panel_full_stack_server_port_in_use.txt", &grid);
 }

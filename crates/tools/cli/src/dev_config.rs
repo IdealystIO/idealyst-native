@@ -41,6 +41,25 @@ pub struct DevConfig {
     #[serde(default)]
     pub stream_port: Option<u16>,
 
+    /// A fixed port for the dev session's Robot relay — the TCP bridge the
+    /// MCP server and the Inspector connect to — bound on every interface
+    /// inside a container. Overridden by `idealyst dev --robot-port`.
+    /// Not `bridge_port`, which pins the bridge a NATIVE app hosts itself
+    /// when no relay runs.
+    ///
+    /// Without it the relay's port is random and on loopback: fine when
+    /// the MCP server runs where `idealyst dev` does, out of reach from a
+    /// devcontainer's host. With it, the session also writes
+    /// `<project>/.idealyst/robot.json`, which an MCP server on the host
+    /// finds through the shared project directory, and `idealyst configure
+    /// devcontainer` forwards the port, labelled.
+    ///
+    /// ```toml
+    /// robot_port = 4778
+    /// ```
+    #[serde(default)]
+    pub robot_port: Option<u16>,
+
     /// Local job-queue backend for `idealyst dev` / `idealyst worker`. Absent
     /// means the in-process `memory` backend: `dev` runs workers inside the
     /// server process (no separate worker process is spawned, since two
@@ -237,5 +256,18 @@ mod tests {
         assert_eq!(cache.url.as_deref(), Some("redis://127.0.0.1:6379"));
         // Same profile, same URL as pubsub — the shared-connection contract.
         assert_eq!(cfg.pubsub.unwrap().url.as_deref(), cache.url.as_deref());
+    }
+
+    /// `robot_port` in `dev.toml` pins the dev relay's bridge (the flag
+    /// overrides it); it is not `bridge_port`, a native app's own.
+    #[test]
+    fn robot_port_is_read_from_dev_toml() {
+        let dir = std::env::temp_dir().join("idealyst-devconfig-test-robot-port");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dev.toml"), "robot_port = 4778\n").unwrap();
+        let cfg = DevConfig::load(&dir).unwrap();
+        assert_eq!(cfg.robot_port, Some(4778));
+        assert_eq!(cfg.bridge_port, None);
     }
 }

@@ -12,6 +12,7 @@ fn main() {
         register: false,
         identity: None,
         screenshot_dir: None,
+        ..Default::default()
     })
     .expect("relay starts");
     println!("WS_PORT={}", relay.ws_addr.port());

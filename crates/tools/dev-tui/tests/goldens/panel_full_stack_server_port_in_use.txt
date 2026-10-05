@@ -1,0 +1,30 @@
+idealyst dev · CrewForge · local · hot patch armed
+
+  web               ○ starting
+  crewforge-server  ✗ not started · port 3100 is in use by pid 4821 (crewforge-server)
+
+  saves
+  no saves yet
+  ✗ not started · port 3100 is in use by pid 4821 (crewforge-server)  e: expand
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+r rebuild · l log: dev → server → all · e error · c clear · q quit · …lyst/crewforge-main/server.log

@@ -189,6 +189,36 @@ extra port to forward. A full-stack server that is not built on the
 framework's router cannot proxy the relay, so in a container its page
 has no robot bridge.
 
+The page shows whether this worked: the dev overlay's badge gets a robot
+line, `● robot connected`, or the URLs it tried and when it retries.
+The `--interactive` panel lists every app connected to the relay.
+
+### Driving the app from an MCP server on the host
+
+The relay's other side is a TCP bridge that the MCP server connects to.
+By default it is on a random loopback port, which is fine when the MCP
+server runs in the container too. To drive the app from an MCP server on
+the host, pin the bridge's port in `dev.toml`:
+
+```toml
+robot_port = 4778
+```
+
+(or `idealyst dev --robot-port 4778`). With it set:
+
+- inside a container, the bridge listens on every interface;
+- `idealyst configure devcontainer` adds the port to `forwardPorts`,
+  labelled `idealyst robot bridge`;
+- the session writes `<project>/.idealyst/robot.json`. The project
+  directory is shared with the host, so an `idealyst mcp` started in the
+  project there finds the app through this file and connects to the
+  forwarded port. You can also pass it directly with `idealyst mcp
+  --robot-port 4778`.
+
+If the port is already taken, the session warns and falls back to a
+random loopback port. The panel's header and its robot block show
+the port in use, and a pinned port is marked `(pinned)`.
+
 ## Interactive mode (default)
 
 Running with no flags (and a real terminal) opens a wizard:

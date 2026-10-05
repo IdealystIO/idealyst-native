@@ -56,13 +56,16 @@ fn every_variant_validates() {
             DevEvent::BuildFinished { .. } => "build_finished",
             DevEvent::PageAck { .. } => "page_ack",
             DevEvent::SidecarApplied { .. } => "sidecar_applied",
+            DevEvent::RobotRelay { .. } => "robot_relay",
+            DevEvent::RobotApps { .. } => "robot_apps",
+            DevEvent::ServerDown { .. } => "server_down",
             DevEvent::Warning { .. } => "warning",
             DevEvent::Error { .. } => "error",
             DevEvent::Log { .. } => "log",
             DevEvent::Output { .. } => "output",
         });
     }
-    assert_eq!(seen.len(), 23, "`common::every_event` is missing a variant: has {seen:?}");
+    assert_eq!(seen.len(), 26, "`common::every_event` is missing a variant: has {seen:?}");
     for (i, event) in every.into_iter().enumerate() {
         let envelope = Envelope { v: SCHEMA_VERSION, seq: i as u64 + 1, at_ms: 5, event };
         check(&v, &serde_json::to_value(&envelope).unwrap());

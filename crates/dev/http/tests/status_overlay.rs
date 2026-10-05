@@ -51,6 +51,11 @@ const o = idealystStatusOverlay(document);
 const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
 const out = [];
 for (const line of lines) {
+  if (line.startsWith("!robot ")) {
+    // What the app's robot client publishes: a JSON string.
+    o.robot(line.slice("!robot ".length));
+    continue;
+  }
   if (line.startsWith("#")) {
     const cmd = line.slice(1).trim();
     if (cmd === "esc") document.fire("keydown", { key: "Escape" });
@@ -61,6 +66,8 @@ for (const line of lines) {
       panel: panel.style.display !== "none",
       panelText: panel.textContent,
       diagnostics: host.findAll("diagnostic").length,
+      robot: host.find("robot").style.display === "none" ? null : host.find("robot").textContent,
+      robotColor: host.find("robot").style.color || null,
     });
     continue;
   }
@@ -154,6 +161,11 @@ fn the_overlay_is_part_of_the_served_reload_script() {
     assert!(script.contains("function idealystStatusOverlay(doc)"));
     assert!(script.contains(r#"es.addEventListener("dev-state""#));
     assert!(!script.contains("__STATUS_OVERLAY__"));
+    // The names `backend_web::robot_transport` publishes under
+    // (`ROBOT_STATUS_HOOK`, `ROBOT_STATUS_GLOBAL`): dev-http cannot depend
+    // on backend-web, so the pair is held together here.
+    assert!(script.contains("window.__idealyst_dev_robot_status = status.robot;"));
+    assert!(script.contains("if (window.__idealyst_dev_robot) status.robot(window.__idealyst_dev_robot);"));
 }
 
 /// Undoing the edit that broke the build returns the source to what is
@@ -213,4 +225,61 @@ fn a_server_build_failure_shows_the_panel() {
     assert!(text.contains("Build failed (server)"), "{text}");
     assert!(text.contains("crates/api-server/src/routes.rs:4:5"), "{text}");
     assert_eq!(frames[0]["badge"], "✗ server build failed");
+}
+
+/// Regression: a page that could not reach the Robot relay showed nothing —
+/// the badge never mentioned the robot, so "is this tab connected?" had no
+/// answer short of an MCP call failing. The robot client's reports now get
+/// their own line: absent until the client reports, then connecting,
+/// connected, or the failure with when it retries.
+#[test]
+fn regression_the_robot_connection_is_shown_on_the_page() {
+    let Some(out) = run(&[
+        BUILD,
+        "#",
+        r#"!robot {"state":"connecting","url":"ws://localhost:3100/__idealyst/relay"}"#,
+        "#",
+        r#"!robot {"state":"retrying","error":"can't reach the robot relay: ws://localhost:3100/__idealyst/relay (close 1006), ws://127.0.0.1:35109 (close 1006)","retry_ms":2000}"#,
+        "#",
+        r#"!robot {"state":"connected","url":"ws://localhost:3100/__idealyst/relay"}"#,
+        "#",
+        r#"!robot {"state":"dropped","url":"ws://localhost:3100/__idealyst/relay","error":"close 1006"}"#,
+        "#",
+    ]) else {
+        return skip();
+    };
+    assert_eq!(out[0]["robot"], serde_json::Value::Null, "nothing until the client reports");
+    assert_eq!(out[1]["robot"], "◌ robot connecting…");
+    assert_eq!(
+        out[2]["robot"],
+        "✗ can't reach the robot relay: ws://localhost:3100/__idealyst/relay (close 1006), ws://127.0.0.1:35109 (close 1006) · retrying in 2.0 s"
+    );
+    assert_eq!(out[2]["robotColor"], "#ff8b8b");
+    assert_eq!(out[3]["robot"], "● robot connected");
+    assert_eq!(out[3]["robotColor"], "#8be28b");
+    assert_eq!(out[4]["robot"], "◌ robot disconnected (close 1006), reconnecting…");
+    // The build badge is untouched by any of it.
+    assert!(out.iter().all(|s| s["badge"] == "⚙ rebuilding" && s["panel"] == false), "{out:?}");
+}
+
+/// Regression: a full-stack server whose port was taken said only that
+/// it "exited" on the page, if anything. The server going down is an
+/// error panel with the cause, on the badge and over the page.
+#[test]
+fn regression_a_stopped_server_says_why_on_the_page() {
+    let session = r#"{"v":1,"seq":1,"at_ms":0,"type":"session_started","app":"cf","targets":["web"],"mode":"local","hot_tier":{"state":"armed"},"server":{"target":"server","name":"crewforge-server"}}"#;
+    let in_use = r#"{"v":1,"seq":2,"at_ms":1,"type":"server_down","target":"server","reason":"port_in_use","port":8080,"holder":"pid 4821 (crewforge-server)"}"#;
+    let exited = r#"{"v":1,"seq":3,"at_ms":2,"type":"server_down","target":"server","reason":"exited","status":"exit status: 1","cause":"Error: Address already in use (os error 48)","log_file":"/cf/server.log"}"#;
+    let Some(out) = run(&[session, in_use, "#", exited, "#"]) else {
+        return skip();
+    };
+    assert_eq!(
+        out[0]["badge"],
+        "✗ server not started: port 8080 is already in use by pid 4821 (crewforge-server)"
+    );
+    assert_eq!(out[0]["panel"], true);
+    assert!(out[0]["panelText"].as_str().unwrap().starts_with("Server not started (server)"), "{}", out[0]["panelText"]);
+    assert_eq!(out[1]["badge"], "✗ server stopped: exited with exit status: 1: Error: Address already in use (os error 48)");
+    let text = out[1]["panelText"].as_str().unwrap();
+    assert!(text.contains("Its output is in /cf/server.log"), "{text}");
 }

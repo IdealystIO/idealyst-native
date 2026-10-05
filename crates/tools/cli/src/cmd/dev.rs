@@ -95,9 +95,9 @@
 //!
 //! Delivery reaches the page on the shape `dev-http` serves. A
 //! FULL-STACK project's own server hands out `index.html` and never runs
-//! `dev-http`, so it gets the decision and the log but no in-page
-//! delivery yet — the SSE endpoint the injected script talks to is not
-//! on that server.
+//! `dev-http`: its page reaches the stream through that server when it is
+//! built on `server::router()` (which proxies `/__idealyst/*`), else on
+//! the stream's own port (`start_page_stream`, `--stream-port`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -523,6 +523,16 @@ pub struct Args {
     #[arg(long, value_name = "PORT")]
     pub bridge_port: Option<u16>,
 
+    /// Pin the dev session's Robot relay — the TCP bridge the MCP server
+    /// and the Inspector connect to — to this port. Overrides
+    /// `robot_port` in `dev.toml`; default random. Bound on every
+    /// interface inside a container (forward it to drive the app from the
+    /// host), loopback outside one. Also writes
+    /// `<project>/.idealyst/robot.json` so an MCP server on the host finds
+    /// it. Falls back to a random port, with a warning, when taken.
+    #[arg(long, value_name = "PORT")]
+    pub robot_port: Option<u16>,
+
     /// Web only: skip the initial build and just start the static
     /// server. Use when `pkg/` is already up to date.
     #[arg(long)]
@@ -730,41 +740,13 @@ pub fn run(args: Args) -> Result<()> {
     // ~/.idealyst/apps, so discovery is unchanged. Held for the whole session;
     // if it can't start, native apps fall back to self-hosting a TCP bridge.
     let robot_relay = if !args.no_robot && wants_robot_relay(&args, &active_targets) {
-        match robot_relay::start(robot_relay::RelayConfig {
-            ws_port: 0,
-            tcp_port: 0,
-            register: true,
-            identity: Some(robot_relay::Identity {
-                name: manifest.app.name.clone(),
-                bundle_id: None,
-                project_root: Some(dir.to_string_lossy().to_string()),
-            }),
-            // Save `screenshot` PNGs into the project by default (discoverable,
-            // gitignorable), overridable with `--screenshot-dir`.
-            screenshot_dir: Some(
-                args.screenshot_dir
-                    .clone()
-                    .unwrap_or_else(|| dir.join(".idealyst").join("screenshots")),
-            ),
-        }) {
-            Ok(relay) => {
-                let url = format!("ws://127.0.0.1:{}", relay.ws_addr.port());
-                std::env::set_var("IDEALYST_ROBOT_RELAY_URL", &url);
-                crate::dlog!(
-                    "dev",
-                    "robot relay {url} (tcp bridge :{}) — apps dial it; MCP discovers via ~/.idealyst/apps (--no-robot to disable)",
-                    relay.tcp_addr.port()
-                );
-                Some(relay)
-            }
-            Err(e) => {
-                crate::dlog!("dev", "robot relay unavailable ({e}); native apps self-host instead");
-                None
-            }
-        }
+        start_robot_relay(&dir, &args, &manifest.app.name)
     } else {
         None
     };
+    if let Some(relay) = &robot_relay {
+        remove_on_exit(relay.registration_files());
+    }
 
     // `--inspect`: held for the session, like the relay it points at.
     let _inspector = if args.inspect { start_inspector(robot_relay.as_ref())? } else { None };
@@ -913,15 +895,16 @@ pub fn run(args: Args) -> Result<()> {
             None,
             &server_log,
         ) {
-            Ok(child) => {
-                let pid = child.id();
+            Ok(server) => {
+                let pid = server.child.id();
                 crate::dlog!(
                     "dev backend", "server running (pid {pid}) on port {backend_port} for native clients",
                 );
-                children.lock().unwrap().push(child);
+                // Its output pumps run detached for the process's life.
+                children.lock().unwrap().push(server.child);
                 backend_pid = Some(pid);
             }
-            Err(e) => crate::dlog!("dev backend", "failed to start server: {e:#}"),
+            Err(e) => dev_events::global().error("dev backend", format!("failed to start server: {e:#}")),
         }
     }
 
@@ -981,7 +964,7 @@ pub fn run(args: Args) -> Result<()> {
             let macos_pid_for_worker = macos_app_pid.clone();
             std::thread::spawn(move || {
                 if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, macos_pid_for_worker, runtime_server_port) {
-                    crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
+                    dev_events::global().error(format!("dev {target}"), format!("launch failed: {e:#}"));
                 }
             });
         }
@@ -991,7 +974,7 @@ pub fn run(args: Args) -> Result<()> {
         // exits, control returns here and we drop into the children-
         // kill loop below.
         if let Err(e) = launch_target(Target::Terminal, &dir, &args, children.clone(), macos_app_pid.clone(), runtime_server_port) {
-            crate::dlog!("dev terminal", "launch failed: {e:#}");
+            dev_events::global().error("dev terminal", format!("launch failed: {e:#}"));
         }
         // Clean up sibling targets.
         if let Ok(mut guard) = children.lock() {
@@ -1012,7 +995,7 @@ pub fn run(args: Args) -> Result<()> {
         let macos_pid_for_worker = macos_app_pid.clone();
         let worker = std::thread::spawn(move || {
             if let Err(e) = launch_target(target, &dir, &args_clone, children_for_worker, macos_pid_for_worker, runtime_server_port) {
-                crate::dlog!(&format!("dev {}", target), "launch failed: {e:#}");
+                dev_events::global().error(format!("dev {target}"), format!("launch failed: {e:#}"));
             }
         });
         workers.push(worker);
@@ -1030,7 +1013,7 @@ pub fn run(args: Args) -> Result<()> {
         let children_for_worker = children.clone();
         let worker = std::thread::spawn(move || {
             if let Err(e) = launch_ssr(&dir, &args_clone, false, children_for_worker) {
-                crate::dlog!("dev ssr", "launch failed: {e:#}");
+                dev_events::global().error("dev ssr", format!("launch failed: {e:#}"));
             }
         });
         workers.push(worker);
@@ -1041,7 +1024,7 @@ pub fn run(args: Args) -> Result<()> {
         let children_for_worker = children.clone();
         let worker = std::thread::spawn(move || {
             if let Err(e) = launch_ssr(&dir, &args_clone, true, children_for_worker) {
-                crate::dlog!("dev static", "launch failed: {e:#}");
+                dev_events::global().error("dev static", format!("launch failed: {e:#}"));
             }
         });
         workers.push(worker);
@@ -2695,9 +2678,9 @@ fn launch_web_with_backend(
         dev_stream: dev_stream_env.as_deref(),
         log: &server_log,
     };
-    let mut child: Option<Child> = None;
+    let mut child: Option<ServerProc> = None;
     let mut route_reported = false;
-    let start_server = |child: &mut Option<Child>, route_reported: &mut bool| -> Result<()> {
+    let start_server = |child: &mut Option<ServerProc>, route_reported: &mut bool| -> Result<()> {
         *child = launch.start(&shared)?;
         if child.is_some() && !*route_reported {
             if let Some(stream) = &stream {
@@ -2803,9 +2786,9 @@ fn launch_web_with_backend(
         if built {
             start_server(&mut child, &mut route_reported)?;
         } else {
-            crate::dlog!(
-                "dev web",
-                "full-stack: the server's first build failed, so it is not running — \
+            dev_events::global().error(
+                dev_events::SERVER_TARGET,
+                "the server's first build failed, so it is not running — \
                  fix it and save: the next good build starts it",
             );
         }
@@ -2855,32 +2838,27 @@ fn launch_web_with_backend(
 
         // Did the server exit on its own (a panic, the port in use, …)?
         let exited = match child.as_mut() {
-            Some(c) => c.try_wait().ok().flatten().map(|status| (c.id(), status)),
+            Some(c) => c.child.try_wait().ok().flatten(),
             None => None,
         };
-        if let Some((pid, status)) = exited {
-            crate::memory_limit::unwatch_pid(pid);
-            child = None;
-            let status = status.code().map(|c| c.to_string()).unwrap_or_else(|| "a signal".into());
+        if let Some(status) = exited {
+            let server = child.take().expect("checked above");
+            crate::memory_limit::unwatch_pid(server.child.id());
             if !watched {
                 // Nothing here can rebuild it: end the session, as a
                 // crash always did before the server had a watcher.
+                let cause = server.output.cause();
                 anyhow::bail!(
-                    "server exited with {status} — fix the issue and re-run `idealyst dev --web` \
+                    "server exited with {status}{} — fix the issue and re-run `idealyst dev --web` \
                      (its output is in {})",
+                    cause.map(|c| format!(": {c}")).unwrap_or_default(),
                     server_log.display()
                 );
             }
             // Kept alive: the session can rebuild and restart it, and the
             // row (and the page's badge) say what happened.
             shared.down.store(true, std::sync::atomic::Ordering::SeqCst);
-            reporter.error(
-                dev_events::SERVER_TARGET,
-                format!(
-                    "exited with {status} — its output is in {}; save a server source to rebuild and restart it",
-                    server_log.display()
-                ),
-            );
+            server.report_exit(Some(status), &server_log);
         }
     }
 }
@@ -2943,6 +2921,112 @@ fn start_page_stream(
         }
     });
     Some(PageStream { port, declared })
+}
+
+/// Start the session's Robot relay and say so: `robot_relay` with the
+/// apps' URL and the bridge port (the panel's header), then `robot_apps`
+/// each time an app connects or leaves (the panel's robot column).
+///
+/// The bridge port is the declared one (`--robot-port`, else `robot_port`
+/// in `dev.toml`), on every interface inside a container — where the MCP
+/// server reaches it through a forwarded port — or loopback outside one;
+/// a declared port that cannot be bound falls back to a random loopback
+/// one with a warning, like the page stream's. A pinned relay also writes
+/// `<project>/.idealyst/robot.json` for an MCP server on the host.
+fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_relay::RelayHandle> {
+    use std::net::{IpAddr, Ipv4Addr};
+    let declared = args
+        .robot_port
+        .or_else(|| crate::dev_config::DevConfig::load(dir).ok().and_then(|c| c.robot_port));
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let on_apps = robot_relay::OnApps(Arc::new(|apps: &[robot_relay::AppInfo]| {
+        dev_events::global().emit(dev_events::DevEvent::RobotApps {
+            apps: apps
+                .iter()
+                .map(|a| dev_events::RobotApp {
+                    id: a.id,
+                    platform: a.platform.clone(),
+                    label: a.label.clone(),
+                    active: a.active,
+                })
+                .collect(),
+        });
+    }));
+    let config = |tcp_port: u16, tcp_host: IpAddr| robot_relay::RelayConfig {
+        ws_port: 0,
+        tcp_port,
+        tcp_host,
+        register: true,
+        identity: Some(robot_relay::Identity {
+            name: app_name.to_string(),
+            bundle_id: None,
+            project_root: Some(dir.to_string_lossy().to_string()),
+        }),
+        // Save `screenshot` PNGs into the project by default (discoverable,
+        // gitignorable), overridable with `--screenshot-dir`.
+        screenshot_dir: Some(
+            args.screenshot_dir.clone().unwrap_or_else(|| dir.join(".idealyst").join("screenshots")),
+        ),
+        // Only a pinned port is worth advertising outside this machine:
+        // a random one is not forwarded.
+        project_registration: (tcp_port != 0).then(|| robot_registration_path(dir)),
+        on_apps: Some(on_apps.clone()),
+    };
+    let started = match declared {
+        Some(port) => {
+            let host = robot_bind_host(in_container());
+            match robot_relay::start(config(port, host)) {
+                Ok(relay) => Ok((relay, true)),
+                Err(e) => {
+                    dev_events::global().warn(
+                        "dev",
+                        format!("cannot bind the robot relay on {host}:{port} ({e}); using a random loopback port"),
+                    );
+                    robot_relay::start(config(0, loopback)).map(|r| (r, false))
+                }
+            }
+        }
+        None => robot_relay::start(config(0, loopback)).map(|r| (r, false)),
+    };
+    match started {
+        Ok((relay, pinned)) => {
+            let url = format!("ws://127.0.0.1:{}", relay.ws_addr.port());
+            std::env::set_var("IDEALYST_ROBOT_RELAY_URL", &url);
+            dev_events::global().emit(dev_events::DevEvent::RobotRelay {
+                state: dev_events::RelayState::Listening {
+                    ws_url: url,
+                    tcp_port: relay.tcp_addr.port(),
+                    pinned,
+                },
+            });
+            Some(relay)
+        }
+        Err(e) => {
+            dev_events::global().emit(dev_events::DevEvent::RobotRelay {
+                state: dev_events::RelayState::Unavailable { error: format!("{e:#}") },
+            });
+            None
+        }
+    }
+}
+
+/// The interface a PINNED relay's TCP bridge binds: every one in a
+/// container, where the MCP server on the host arrives through a forwarded
+/// port on the container's own address; loopback outside one, where
+/// nothing else has a reason to reach it. (A random port always stays on
+/// loopback: nothing forwards it.)
+fn robot_bind_host(in_container: bool) -> std::net::IpAddr {
+    if in_container {
+        std::net::Ipv4Addr::UNSPECIFIED.into()
+    } else {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    }
+}
+
+/// Where a pinned relay advertises itself inside the project — the
+/// directory a devcontainer shares with its host.
+fn robot_registration_path(dir: &Path) -> PathBuf {
+    dir.join(".idealyst").join("robot.json")
 }
 
 /// Whether this process runs inside a container (a devcontainer, a
@@ -3062,10 +3146,24 @@ struct ServerLaunch<'a> {
 impl ServerLaunch<'_> {
     /// Spawn the server and wait until its port accepts connections, then
     /// announce it (`server_ready{full_stack}`) and let the page reload if
-    /// a build was holding it. `None` when it exited before answering —
-    /// reported as an error on its row.
-    fn start(&self, shared: &ServerBuildShared) -> Result<Option<Child>> {
-        let mut child = match spawn_backend(
+    /// a build was holding it. `None` when it did not come up — its port
+    /// was taken, or it exited before answering — reported as
+    /// `server_down` on its row, with the reason.
+    fn start(&self, shared: &ServerBuildShared) -> Result<Option<ServerProc>> {
+        // Something else on the port would answer `wait_listening` in our
+        // server's place: the row went to "running" on a stale server's
+        // word, then flipped to a bare "exited" when ours lost the bind.
+        if !wait_port_free(self.port, PORT_FREE_GRACE) {
+            dev_events::global().emit(dev_events::DevEvent::ServerDown {
+                target: dev_events::SERVER_TARGET.into(),
+                down: dev_events::ServerDown::PortInUse { port: self.port, holder: port_holder(self.port) },
+                log_file: Some(self.log.display().to_string()),
+            });
+            shared.down.store(true, std::sync::atomic::Ordering::SeqCst);
+            shared.restart_hold.lock().unwrap().take();
+            return Ok(None);
+        }
+        let mut server = match spawn_backend(
             self.dir,
             self.manifest,
             Some(self.dist_web),
@@ -3076,7 +3174,7 @@ impl ServerLaunch<'_> {
         ) {
             Ok(c) => c,
             Err(e) => {
-                crate::dlog!("dev web", "server respawn failed: {e:#}");
+                dev_events::global().error(dev_events::SERVER_TARGET, format!("server respawn failed: {e:#}"));
                 // Try again on the next good build rather than tearing
                 // down the whole dev session — and do not keep the page
                 // waiting on a server that is not coming.
@@ -3089,27 +3187,14 @@ impl ServerLaunch<'_> {
         // with the loop. Register the pid so the memory cap and the
         // session's teardown take it (and the server under `cargo run`)
         // down rather than orphaning it.
-        crate::memory_limit::watch_pid(child.id());
-        let ready = wait_listening(self.port, &mut child);
+        crate::memory_limit::watch_pid(server.child.id());
+        let ready = wait_listening(self.port, &mut server.child);
         // Whatever happened, the page is not kept waiting past this.
         let hold = shared.restart_hold.lock().unwrap().take();
         if !ready {
-            crate::memory_limit::unwatch_pid(child.id());
-            let status = child
-                .try_wait()
-                .ok()
-                .flatten()
-                .and_then(|s| s.code())
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "a signal".into());
-            dev_events::global().error(
-                dev_events::SERVER_TARGET,
-                format!(
-                    "exited with {status} before accepting connections on port {} — its output is in {}",
-                    self.port,
-                    self.log.display()
-                ),
-            );
+            crate::memory_limit::unwatch_pid(server.child.id());
+            let status = server.child.try_wait().ok().flatten();
+            server.report_exit(status, self.log);
             shared.down.store(true, std::sync::atomic::Ordering::SeqCst);
             drop(hold);
             return Ok(None);
@@ -3118,7 +3203,7 @@ impl ServerLaunch<'_> {
         crate::dlog!(
             "dev web",
             "full-stack: server running (pid {}) on port {}",
-            child.id(),
+            server.child.id(),
             self.port,
         );
         crate::dev_log::emit(dev_events::DevEvent::ServerReady {
@@ -3128,8 +3213,164 @@ impl ServerLaunch<'_> {
         });
         // After `server_ready`: a page reloading now reaches the new server.
         drop(hold);
-        Ok(Some(child))
+        Ok(Some(server))
     }
+}
+
+/// How long a port has to come free before the server is started on it.
+/// A restart kills the old server's process tree, and the server under
+/// `cargo run` can take a moment to die and close its listener.
+const PORT_FREE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether nothing listens on `port` (loopback) — waiting up to `grace`
+/// for a listener that is going away.
+fn wait_port_free(port: u16, grace: std::time::Duration) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)).is_err() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Who listens on `port`: `pid 4821 (crewforge-server)`, from `lsof`.
+/// `None` when it can't say (no `lsof` — a slim container — or no
+/// listener it can see).
+fn port_holder(port: u16) -> Option<String> {
+    let out = std::process::Command::new("lsof")
+        .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    lsof_holder(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The first process in `lsof -F pc` output (`p<pid>` then `c<command>`).
+fn lsof_holder(out: &str) -> Option<String> {
+    let mut pid = None;
+    for line in out.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            if pid.is_some() {
+                break;
+            }
+            pid = Some(p.to_string());
+        } else if let (Some(c), Some(p)) = (line.strip_prefix('c'), pid.as_ref()) {
+            return Some(format!("pid {p} ({c})"));
+        }
+    }
+    pid.map(|p| format!("pid {p}"))
+}
+
+/// A running server: the process, and its output as read so far.
+struct ServerProc {
+    child: Child,
+    output: ServerOutput,
+}
+
+impl ServerProc {
+    /// The server exited with `status`: say why, from its own output.
+    fn report_exit(self, status: Option<std::process::ExitStatus>, log: &Path) {
+        let status = match status {
+            Some(s) => match s.code() {
+                Some(code) => format!("exit status: {code}"),
+                None => "a signal".into(),
+            },
+            None => "an unknown status".into(),
+        };
+        dev_events::global().emit(dev_events::DevEvent::ServerDown {
+            target: dev_events::SERVER_TARGET.into(),
+            down: dev_events::ServerDown::Exited { status, cause: self.output.cause() },
+            log_file: Some(log.display().to_string()),
+        });
+    }
+}
+
+/// Server output lines kept for finding why it exited.
+const OUTPUT_TAIL: usize = 40;
+/// How long an exited server's output pumps get to read its last lines.
+const OUTPUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The threads reading the server's stdout and stderr, and the last
+/// [`OUTPUT_TAIL`] lines they read.
+struct ServerOutput {
+    pumps: Vec<std::thread::JoinHandle<()>>,
+    tail: Arc<Mutex<std::collections::VecDeque<String>>>,
+}
+
+impl ServerOutput {
+    /// Once the process has exited: the line of its output that says why.
+    ///
+    /// Waits (up to [`OUTPUT_DRAIN`]) for the pumps to reach the end of
+    /// the pipes first. They run on their own threads, and the exit is
+    /// noticed on another: without the wait the error raced the server's
+    /// last lines — the very ones that name the cause (`Address already in
+    /// use`) — and the panel's error pane quoted the output BEFORE them.
+    /// The wait also puts the last `output` events ahead of the
+    /// `server_down` in the stream.
+    fn cause(self) -> Option<String> {
+        let deadline = std::time::Instant::now() + OUTPUT_DRAIN;
+        for pump in &self.pumps {
+            while !pump.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        let tail = self.tail.lock().unwrap();
+        exit_cause(tail.iter().map(String::as_str))
+    }
+}
+
+/// Longest cause shown; the rest is in server.log.
+const CAUSE_MAX: usize = 240;
+
+/// Why a server exited, from the end of its output: its panic (with the
+/// panic's message), else its last line that reads as an error, else its
+/// last line. `cargo run`'s own lines are skipped — its closing `error:
+/// process didn't exit successfully` is the most error-like line there
+/// and says nothing.
+fn exit_cause<'a>(lines: impl Iterator<Item = &'a str>) -> Option<String> {
+    let lines: Vec<String> = lines
+        .map(|l| dev_events::plain::strip_ansi(l).trim().to_string())
+        .filter(|l| !l.is_empty() && !is_cargo_run_line(l))
+        .collect();
+    let cause = if let Some(at) = lines.iter().rposition(|l| l.contains(" panicked at ")) {
+        let head = lines[at].trim_end_matches(':');
+        match lines.get(at + 1).filter(|l| !l.starts_with("note:")) {
+            Some(message) => format!("{head}: {message}"),
+            None => head.to_string(),
+        }
+    } else {
+        lines.iter().rev().find(|l| reads_as_error(l)).or(lines.last())?.clone()
+    };
+    Some(view_truncate(&cause, CAUSE_MAX))
+}
+
+fn is_cargo_run_line(l: &str) -> bool {
+    l.starts_with("error: process didn't exit successfully")
+        || l.starts_with("Finished ")
+        || l.starts_with("Running `")
+        || l.starts_with("Compiling ")
+        || l.starts_with("Blocking waiting for file lock")
+        || l.starts_with("note: run with `RUST_BACKTRACE")
+}
+
+fn reads_as_error(l: &str) -> bool {
+    let lower = l.to_ascii_lowercase();
+    lower.starts_with("error") || lower.contains("error:") || lower.contains("fatal")
+}
+
+/// At most `w` characters, the last an ellipsis when cut.
+fn view_truncate(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(w - 1).collect();
+    out.push('…');
+    out
 }
 
 /// Block until something accepts connections on `port` (`true`), or the
@@ -3162,7 +3403,8 @@ fn wait_listening(port: u16, child: &mut Child) -> bool {
 /// `cargo run`, and the server is ITS child. Killing only cargo leaves the
 /// server holding the port the restart is about to rebind, re-parented to
 /// init.
-fn stop_server(mut child: Child) {
+fn stop_server(server: ServerProc) {
+    let mut child = server.child;
     crate::memory_limit::unwatch_pid(child.id());
     crate::memory_limit::kill_tree(child.id());
     let _ = child.kill();
@@ -3572,7 +3814,7 @@ fn spawn_backend(
     port: u16,
     dev_stream: Option<&str>,
     log: &Path,
-) -> Result<std::process::Child> {
+) -> Result<ServerProc> {
     let app = &manifest.app;
     let mut cmd = cargo_run_command();
     cmd.arg("--target-dir").arg(target_dir);
@@ -3636,20 +3878,29 @@ fn spawn_backend(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().context("spawn server (`cargo run`)")?;
-    forward_server_output(&mut child, log);
-    Ok(child)
+    let output = forward_server_output(&mut child, log);
+    Ok(ServerProc { child, output })
 }
 
 /// Read the server's stdout and stderr on their own threads, each line an
 /// `output{source: server, target: server}` event. A panic line is also an
 /// `error` from the server, naming the log with the rest of its output.
-fn forward_server_output(child: &mut Child, log: &Path) {
+/// The last lines are kept, for [`ServerOutput::cause`].
+fn forward_server_output(child: &mut Child, log: &Path) -> ServerOutput {
     use std::io::{BufRead, BufReader, Read};
-    fn pump(pipe: Option<impl Read + Send + 'static>, log: String) {
-        let Some(pipe) = pipe else { return };
-        std::thread::spawn(move || {
+    type Tail = Arc<Mutex<std::collections::VecDeque<String>>>;
+    fn pump(pipe: Option<impl Read + Send + 'static>, log: String, tail: Tail) -> Option<std::thread::JoinHandle<()>> {
+        let pipe = pipe?;
+        Some(std::thread::spawn(move || {
             let reporter = dev_events::global();
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                {
+                    let mut tail = tail.lock().unwrap();
+                    tail.push_back(line.clone());
+                    if tail.len() > OUTPUT_TAIL {
+                        tail.pop_front();
+                    }
+                }
                 reporter.target_output(
                     dev_events::SERVER_TARGET,
                     dev_events::SERVER_OUTPUT_SOURCE,
@@ -3659,11 +3910,15 @@ fn forward_server_output(child: &mut Child, log: &Path) {
                     reporter.error(dev_events::SERVER_TARGET, message);
                 }
             }
-        });
+        }))
     }
     let log = log.display().to_string();
-    pump(child.stdout.take(), log.clone());
-    pump(child.stderr.take(), log);
+    let tail: Tail = Arc::default();
+    let pumps = [
+        pump(child.stdout.take(), log.clone(), tail.clone()),
+        pump(child.stderr.take(), log, tail.clone()),
+    ];
+    ServerOutput { pumps: pumps.into_iter().flatten().collect(), tail }
 }
 
 /// The error a server output line reports, if it is a panic's first line
@@ -4164,6 +4419,27 @@ fn read_host_port_file(path: &Path, timeout: std::time::Duration) -> Option<u16>
 /// list and kills each child before exiting. Per-process app
 /// registrations clean themselves up via RAII on the bridge side; no
 /// extra teardown pass needed here.
+/// Files the session removes when Ctrl-C ends it. The handler leaves
+/// through `process::exit`, which runs no destructor, so what a `Drop`
+/// would have cleaned up — the relay's registrations — is listed here:
+/// a `robot.json` left behind names a dead port in the project, and a
+/// stale `~/.idealyst/apps` entry waits for the MCP server's pid check.
+static REMOVE_ON_EXIT: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn remove_on_exit(paths: Vec<PathBuf>) {
+    if let Ok(mut list) = REMOVE_ON_EXIT.lock() {
+        list.extend(paths);
+    }
+}
+
+fn remove_exit_files() {
+    if let Ok(list) = REMOVE_ON_EXIT.lock() {
+        for path in list.iter() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
     ctrlc::set_handler(move || {
         // The empty line ends the terminal's `^C` echo, as it always did.
@@ -4176,6 +4452,7 @@ fn install_ctrlc_handler(children: Arc<Mutex<Vec<Child>>>) -> Result<()> {
                 let _ = child.wait();
             }
         }
+        remove_exit_files();
         std::process::exit(0);
     })
     .context("install Ctrl-C handler")?;
@@ -4228,6 +4505,7 @@ impl Args {
             host: self.host.clone(),
             no_build: self.no_build,
             bridge_port: self.bridge_port,
+            robot_port: self.robot_port,
             interactive: self.interactive,
             events: self.events.clone(),
             events_file: self.events_file.clone(),
@@ -4821,6 +5099,95 @@ mod tests {
         );
         assert_eq!(server_panic("GET /docs/why-it-panicked at-scale 200", "/l"), None);
         assert_eq!(server_panic("listening on http://127.0.0.1:3100", "/l"), None);
+    }
+
+    /// `--robot-port` pins the relay's bridge; a pinned port binds every
+    /// interface in a container (the host reaches it through the forward)
+    /// and only loopback outside one.
+    #[test]
+    fn the_robot_port_flag_parses_and_binds_by_where_the_session_runs() {
+        assert_eq!(parse_dev(&["idealyst", "dev", "--web", "--robot-port", "4778"]).robot_port, Some(4778));
+        assert_eq!(parse_dev(&["idealyst", "dev", "--web"]).robot_port, None);
+        assert!(robot_bind_host(true).is_unspecified());
+        assert!(robot_bind_host(false).is_loopback());
+        assert_eq!(robot_registration_path(Path::new("/p")), Path::new("/p/.idealyst/robot.json"));
+    }
+
+    /// Regression: a full-stack server that died on `Address already in
+    /// use` was reported as "exited with 1 — its output is in …" — the
+    /// cause one log file away. The cause is read from the end of its
+    /// output, past `cargo run`'s own closing line, which is the most
+    /// error-looking line there and says nothing.
+    #[test]
+    fn regression_the_servers_exit_cause_is_read_from_its_output() {
+        let addr_in_use = [
+            "   Compiling crewforge-server v0.1.0",
+            "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.20s",
+            "     Running `target/debug/crewforge-server`",
+            "crewforge-server starting on 0.0.0.0:3100",
+            "Error: Os { code: 48, kind: AddrInUse, message: \"Address already in use\" }",
+            "error: process didn't exit successfully: `target/debug/crewforge-server` (exit status: 1)",
+        ];
+        assert_eq!(
+            exit_cause(addr_in_use.into_iter()).as_deref(),
+            Some("Error: Os { code: 48, kind: AddrInUse, message: \"Address already in use\" }")
+        );
+        // A panic: its line and its message, not the backtrace note.
+        let panic = [
+            "thread 'main' panicked at src/main.rs:9:5:",
+            "called `Result::unwrap()` on an `Err` value: Os { code: 48, kind: AddrInUse }",
+            "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+            "error: process didn't exit successfully: `target/debug/app` (exit status: 101)",
+        ];
+        assert_eq!(
+            exit_cause(panic.into_iter()).as_deref(),
+            Some("thread 'main' panicked at src/main.rs:9:5: called `Result::unwrap()` on an `Err` value: Os { code: 48, kind: AddrInUse }")
+        );
+        // Nothing error-like: its last words.
+        assert_eq!(exit_cause(["listening", "shutting down"].into_iter()).as_deref(), Some("shutting down"));
+        assert_eq!(exit_cause(std::iter::empty()), None);
+    }
+
+    /// Regression: Ctrl-C ends the session through `process::exit`, so the
+    /// relay's `Drop` never ran and its `<project>/.idealyst/robot.json`
+    /// outlived the session. The handler removes the listed files.
+    #[test]
+    fn regression_files_listed_for_exit_are_removed() {
+        let dir = std::env::temp_dir().join(format!("dev-exit-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("robot.json");
+        std::fs::write(&file, "{}").unwrap();
+        remove_on_exit(vec![file.clone()]);
+        remove_exit_files();
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The process `lsof` names as holding a port.
+    #[test]
+    fn the_port_holder_is_read_from_lsof() {
+        assert_eq!(lsof_holder("p4821\ncnode\nf23\n").as_deref(), Some("pid 4821 (node)"));
+        assert_eq!(lsof_holder("p4821\n").as_deref(), Some("pid 4821"));
+        assert_eq!(lsof_holder("p1\ncfirst\np2\ncsecond\n").as_deref(), Some("pid 1 (first)"));
+        assert_eq!(lsof_holder(""), None);
+    }
+
+    /// Regression: a stale process on the server's port answered the
+    /// readiness probe in our server's place — the row said "running" —
+    /// and ours died on the bind. The port is checked before the server
+    /// is started; a listener that goes away within the grace (a restart's
+    /// old server) does not count.
+    #[test]
+    fn regression_a_taken_server_port_is_seen_before_the_server_starts() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        assert!(!wait_port_free(port, std::time::Duration::from_millis(300)), "a held port is taken");
+        let releasing = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(held);
+        });
+        assert!(wait_port_free(port, std::time::Duration::from_secs(3)), "one that frees within the grace is not");
+        releasing.join().unwrap();
     }
 
     /// The server starts before the bundle is done only with a bundle to

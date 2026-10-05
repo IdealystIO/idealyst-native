@@ -156,6 +156,36 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   with `remote-bundle` and `remote-abi`. See "Shipping bundles" in
   `crates/streaming/README.md`.
 
+- **The dev session shows who is connected to the Robot relay** (`idealyst
+  dev`, `robot-relay`, `dev-events`, `dev-tui`). The relay now tracks
+  every app connected to it, not only the one it drives. When the active
+  app disconnects, requests go to the newest app still connected; before,
+  a second tab that stayed open was left unreachable. Three new events,
+  all additive to schema v1: `robot_relay` (the bridge port, or why the
+  relay could not start), `robot_apps` (the apps connected now, each with
+  its platform and browser) and `server_down`. In the `--interactive`
+  panel, the header shows the bridge port, and on a terminal at least 128
+  columns wide the apps sit in a second column to the right of the build
+  rows; on a narrower one they go under the saves. Native apps now report
+  their real platform (`macos`, `ios`, …) to the relay instead of
+  `native`. Web apps report their browser instead of the crate name
+  `backend-web`.
+- **`--robot-port` / `robot_port` pins the Robot relay's bridge**
+  (`idealyst dev`, `configure`, `mcp-server`). For devcontainers: inside
+  a container the pinned bridge listens on every interface, and
+  `idealyst configure devcontainer` forwards the port (labelled `idealyst
+  robot bridge`). The session also writes `<project>/.idealyst/robot.json`,
+  and `idealyst mcp` reads it from its working directory or any directory
+  above. The MCP server on the host can then find the app in the
+  container, checking that the port answers rather than the container's
+  pid. If the port is taken, the session warns and falls back to a random
+  port. See `docs/devcontainer.md`.
+- **The page shows its Robot connection** (`backend-web`, `dev-http`).
+  The dev overlay gets a line above its badge: connected, connecting, or
+  the URLs the page tried with their close codes and when it retries.
+  Before, a page that could not reach the relay showed nothing, and the
+  only sign was the MCP server's "no app connected to the relay".
+
 - **Generic host functions** (`runtime-vocabulary`, `runtime-macros`,
   `runtime-core`). A `#[host_fn]` can now be generic, and a remote
   bundle can call it with types the app has never compiled. A parameter
@@ -351,6 +381,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   first. `None` (the default) is unchanged behaviour.
 
 ### Changed
+
+- **Dev errors are shown, not only logged** (`idealyst dev`, `dev-tui`).
+  - A full-stack server that exits is reported with the cause read from
+    its output (`exited (exit status: 1) · Error: Address already in
+    use`). The panel shows it on the server's row, the page shows it in
+    the error panel, and the plain terminal prints it on one line. Before,
+    the server's row read `build failed · … — its output is in server.log`
+    for a build that had succeeded.
+  - The session checks the server's port before starting it. If another
+    process holds the port, the server is not started, and the row names
+    that process. Before, the old process answered in the new server's
+    place.
+  - An `error` from any source now reaches the panel's row or error pane.
+    `launch failed`, a failed server respawn and a server whose first
+    build failed are now `error` events; before, they were log lines the
+    panel hid.
 
 - **`idea-ui`: `SegmentedControl` has its own look** (`idea-ui`). It
   used to reuse the `Tabs` stylesheets, so a three-way setting rendered

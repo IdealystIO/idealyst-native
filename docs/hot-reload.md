@@ -1370,9 +1370,19 @@ page, the session log and any tool are consumers of that one stream.
   `<project>/target/idealyst/<package>/server.log` (truncated when the
   session starts; the panel's footer names it). Its BUILD is the dev
   loop's: cargo's lines and rustc's diagnostics stay with the session's. A
-  panic line, or the process exiting, is an `error` event on the server's
-  row naming `server.log`; the session keeps running, and the next good
-  build of its sources starts it again.
+  panic line is an `error` event on the server's row naming `server.log`.
+  The process exiting is a `server_down` event with the cause read from
+  the end of its output (`exited (exit status: 1) · Error: Address
+  already in use (os error 48)`). The session waits for the server's
+  last lines before it reports, so the cause and the panel's quote of the
+  output are not cut short. Before starting the server, the session
+  checks its port. If something else holds it (a server left over from
+  another session), the server is not started, and `server_down` says
+  `port 3100 is in use by pid 4821 (crewforge-server)`. Before, the old
+  process answered the readiness check in place of the new server: the
+  row read "running" and then flipped to a bare "exited". Either way the
+  session keeps running, and the next good build of the server's sources
+  starts it again.
 - **The page** shows the build state over the running app: a small badge
   in the corner (what the loop is doing, with cargo's progress and the
   current stage, or what it last did: the tier and the time), and, when a
@@ -1388,7 +1398,16 @@ page, the session log and any tool are consumers of that one stream.
   gets the same overlay for the sidecar's saves. In a full-stack session
   the badge follows the project's server too: `building server… 301/512`
   while it builds, `restarting server` until it answers again, then
-  `server restarted`.
+  `server restarted`. A server that stopped shows the error panel with
+  the reason. Above the badge, a line shows the page's own Robot
+  connection once the app's robot client reports it:
+  `● robot connected`, `◌ robot connecting…`, or `✗ can't reach the
+  robot relay: <each URL tried> (close 1006) · retrying in 2.0 s`. The
+  client reports this itself (`backend_web::robot_transport`, through
+  `window.__idealyst_dev_robot_status`), because the relay cannot tell a
+  page that never reached it from no page at all. A browser does not
+  explain a failed WebSocket, so the URL and the close code are all
+  there is to show.
 
 **How the page reaches the stream.** The reload stream
 (`/__idealyst/reload`, with `/__idealyst/ack` for the page's reports and
@@ -1542,14 +1561,39 @@ file) keeps it. Measured on CrewForge, nothing changed, launch → page
 connected: 10.1–17.9 s before, 2.9–7.1 s after; the server answers
 0.7–1.6 s after its build instead of 7–13 s.
 
-- The header: the app, the mode, where it is served, and whether the hot
-  tier is armed (and if not, why).
+A `--local` session hosts a Robot relay, and on a terminal at least 128
+columns wide the panel splits into two columns. The rows and saves stay on
+the left. On the right are the apps connected to the relay, each with the
+session time it connected; with several, the one Robot requests go to is
+marked `active`. The header and the block's title give the relay's bridge
+port (the one the MCP server and the Inspector connect to), marked
+`(pinned)` when `--robot-port` or `robot_port` set it:
+
+```text
+idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · robot :4778 (pinned) · hot patch armed
+
+  web             ⠙ rebuilding · cargo 212/480 ━━━━━━━━──────────── idea-ui · 12.3s    │ robot · bridge :4778 (pinned)
+                                                                                         │ 00:12  ○ web · Chrome 154
+  saves                                                                                  │ 00:42  ● web · Safari 18 · active
+  00:50  app.rs                    rebuild            …                                  │
+```
+
+On a narrower terminal the robot block goes under the saves. When the relay
+could not start, the block says why.
+
+- The header: the app, the mode, where it is served, the Robot relay's
+  bridge port, and whether the hot tier is armed (and if not, why).
 - A row per target, with its state: watching, a change being decided,
   applying an overlay patch, building a hot patch, building (with the
   stage, cargo's packages compiled of the total, the crate in flight, and
   the elapsed time), then what happened — applied, hot patched (functions
   redirected), rebuilt and reloaded — each with its time, or the first
-  rustc error of a failed build.
+  rustc error of a failed build. A failure that is not a build shows on
+  the row it names, with what happened: a server that stopped
+  (`✗ exited (exit status: 1) · Error: Address already in use`) or never
+  started (`✗ not started · port 3100 is in use by pid 4821 (…)`), or a
+  target whose launch failed. An `error` that names no row still goes to
+  the error pane. No failure appears only in the log.
 - The last saves: when (session time), the files, the tier, how long it
   took, what it did, and `✓ page` once the page acked it.
 - `e` expands the last build error to rustc's full rendering, `l` opens
@@ -1653,6 +1697,9 @@ The event types, by what they say:
 | `diagnostic` | a rustc diagnostic: level, message, code, primary `file:line:column`, rendered text |
 | `page_ack` | the page (or, in runtime-server mode, the sidecar) applied something: `connected`, `reloading`, `overlay` (updated / waiting), `hot_patch` (redirected / carried), `failed` |
 | `sidecar_applied` | runtime-server mode: the host hot-patched or respawned the sidecar |
+| `server_down` | a full-stack server stopped: `port_in_use` (with the process holding the port, when it can be found; the server was not started) or `exited` (with its status and the line of its output that says why), and where its full output is |
+| `robot_relay` | a `--local` session's Robot relay is `listening` (the URL apps dial, the bridge's TCP port, whether it was `pinned`) or `unavailable` (why) |
+| `robot_apps` | the apps connected to the relay, as a whole list on each change (each with an `id`, its `platform`, a `label` such as the browser, and whether it is the `active` one requests go to); empty when none is connected |
 | `warning` / `error` | something went wrong, with its source |
 | `log` / `output` | a CLI line not typed yet, and a subprocess line verbatim — so nothing is lost |
 

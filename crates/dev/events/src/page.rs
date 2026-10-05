@@ -29,6 +29,7 @@ pub fn wants(event: &DevEvent) -> bool {
         | DevEvent::CargoProgress { .. }
         | DevEvent::BuildFinished { .. }
         | DevEvent::SidecarApplied { .. }
+        | DevEvent::ServerDown { .. }
         | DevEvent::Error { .. } => true,
         // Errors only: a page shows what stopped the build, and a crate's
         // warnings would bury it.
@@ -45,5 +46,8 @@ pub fn wants(event: &DevEvent) -> bool {
         | DevEvent::Warning { .. }
         | DevEvent::Log { .. }
         | DevEvent::Output { .. } => false,
+        // The page knows its own Robot connection better than the relay
+        // does — it reports it itself (`status_overlay.js`'s `robot`).
+        DevEvent::RobotRelay { .. } | DevEvent::RobotApps { .. } => false,
     }
 }

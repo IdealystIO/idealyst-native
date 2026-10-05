@@ -561,3 +561,33 @@ fn the_dev_stream_port_is_forwarded_with_a_label() {
     assert_eq!(json["forwardPorts"], serde_json::json!([3100]));
     assert!(json.get("portsAttributes").is_none());
 }
+
+/// `robot_port` in `dev.toml` pins the dev session's Robot relay bridge,
+/// so an MCP server on the host can drive the app in the container:
+/// configure forwards it under its own label, beside the stream port,
+/// and each setting moves or removes only its own forward.
+#[test]
+fn the_robot_bridge_port_is_forwarded_beside_the_stream_port() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+
+    std::fs::write(dir.join("dev.toml"), "stream_port = 4777\nrobot_port = 4778\n").unwrap();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    let json = devcontainer_json(dir);
+    assert_eq!(json["forwardPorts"], serde_json::json!([4777, 4778]));
+    assert_eq!(json["portsAttributes"]["4777"]["label"], "idealyst dev stream");
+    assert_eq!(json["portsAttributes"]["4778"]["label"], "idealyst robot bridge");
+    let report = devcontainer::apply(dir, &req(vec![])).unwrap();
+    assert!(report.wrote.is_empty(), "idempotent: {:?}", report.wrote);
+
+    // Dropping the robot port removes its forward and leaves the stream's.
+    std::fs::write(dir.join("dev.toml"), "stream_port = 4777\n").unwrap();
+    devcontainer::apply(dir, &req(vec![])).unwrap();
+    let json = devcontainer_json(dir);
+    assert_eq!(json["forwardPorts"], serde_json::json!([4777]));
+    assert!(json["portsAttributes"].get("4778").is_none());
+
+    std::fs::write(dir.join("dev.toml"), "robot_port = \"high\"\n").unwrap();
+    assert!(devcontainer::apply(dir, &req(vec![])).is_err(), "a robot_port that is not a number is an error");
+}

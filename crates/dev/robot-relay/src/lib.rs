@@ -19,11 +19,23 @@
 //!
 //! App side (WebSocket, text frames):
 //! ```text
-//! app → relay   {"hello":{"name":"todo","platform":"web","project_root":"…"}}   (once, on connect)
+//! app → relay   {"hello":{"platform":"web","label":"Chrome 131"}}               (once, on connect)
 //! relay → app   {"id":7,"cmd":"find_element","args":{…}}                          (a forwarded request)
 //! app → relay   {"id":7,"ok":{…}}  |  {"id":7,"err":"…"}                          (its response)
 //! app → relay   {"event":"changed","rev":42}                                      (a push, when subscribed)
 //! ```
+//!
+//! `hello` fields are all optional: `platform` (`web`, `macos`, `ios`, …),
+//! `label` (what tells two apps of one platform apart — a browser's name and
+//! version), and the older `name` / `project_root`, which the relay ignores
+//! (its [`Identity`] comes from the dev session).
+//!
+//! ## Several apps
+//!
+//! Every open connection is tracked ([`RelayHandle::apps`],
+//! [`RelayConfig::on_apps`]), but requests go to ONE app: the newest, until
+//! it disconnects, then the newest still connected. Two tabs of one page
+//! are both listed; the one opened last is driven.
 //!
 //! MCP side (TCP, newline-delimited JSON): the existing protocol, unchanged.
 //! The relay multiplexes: it rewrites each forwarded request's `id` to a private
@@ -33,7 +45,7 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -58,12 +70,48 @@ pub struct Identity {
     pub project_root: Option<String>,
 }
 
+/// One app connected to the relay, as [`RelayHandle::apps`] and the
+/// [`RelayConfig::on_apps`] observer see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppInfo {
+    /// The connection's id: unique for the relay's lifetime, so an app
+    /// that redials is a new id.
+    pub id: u64,
+    /// From the app's `hello`; `None` until it has said one.
+    pub platform: Option<String>,
+    /// From the app's `hello` (`label`), when it sends one: what tells two
+    /// apps of one platform apart, like a browser's name and version.
+    pub label: Option<String>,
+    /// Whether requests are routed to it — the app that connected last.
+    pub active: bool,
+}
+
+/// Called with every connected app each time the set changes (an app
+/// connects, says `hello`, or disconnects). Calls are serialized and in
+/// order, so the latest call is the present; the observer must not call
+/// back into the relay.
+#[derive(Clone)]
+pub struct OnApps(pub Arc<dyn Fn(&[AppInfo]) + Send + Sync>);
+
+impl std::fmt::Debug for OnApps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OnApps(..)")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RelayConfig {
     /// WebSocket port the app dials. 0 = ephemeral.
     pub ws_port: u16,
     /// TCP port the MCP server connects to. 0 = ephemeral.
     pub tcp_port: u16,
+    /// The interface the TCP bridge listens on. Loopback by default; a
+    /// dev session in a container whose bridge port is forwarded to the
+    /// host binds every interface, since the forward arrives on the
+    /// container's own address, not its loopback. The WebSocket side
+    /// always stays on loopback: a page reaches it through its own
+    /// origin (`/__idealyst/relay`), never directly.
+    pub tcp_host: IpAddr,
     /// Write a `~/.idealyst/apps/<name>-<pid>.json` registration so existing
     /// discovery finds the relayed app with no MCP-side changes.
     pub register: bool,
@@ -71,6 +119,14 @@ pub struct RelayConfig {
     /// Where `screenshot` PNGs are saved (the host can write; the app can't).
     /// `None` → `~/.idealyst/screenshots`. The CLI passes a project-local dir.
     pub screenshot_dir: Option<PathBuf>,
+    /// Also write the registration here (`<project>/.idealyst/robot.json`),
+    /// removed with the relay. `~/.idealyst/apps` is invisible from outside
+    /// a container, but the project directory is shared with the host, so
+    /// an MCP server running on the host finds a container's relay through
+    /// this file — once its port is pinned and forwarded.
+    pub project_registration: Option<PathBuf>,
+    /// Told whenever the connected apps change.
+    pub on_apps: Option<OnApps>,
 }
 
 impl Default for RelayConfig {
@@ -78,9 +134,12 @@ impl Default for RelayConfig {
         Self {
             ws_port: 0,
             tcp_port: 0,
+            tcp_host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             register: true,
             identity: None,
             screenshot_dir: None,
+            project_registration: None,
+            on_apps: None,
         }
     }
 }
@@ -112,14 +171,42 @@ struct Inner {
     /// platform; on the `hello` frame we patch this file with the reported
     /// platform so the MCP server can tell e.g. web from macОS for parity work.
     reg_path: Mutex<Option<PathBuf>>,
+    /// Every open app connection, oldest first, with the channel that
+    /// reaches it. Requests go to one of them (`app_session`): the newest,
+    /// until it disconnects — then the newest that is left. An older one
+    /// stays listed until its socket closes, because it IS still connected:
+    /// a second browser tab, or a tab whose replacement dialed before it
+    /// noticed its own socket die.
+    apps: Mutex<Vec<(AppInfo, Sender<String>)>>,
+    on_apps: Option<OnApps>,
 }
 
 impl Inner {
+    /// Change the app list under its lock and tell the observer while
+    /// still holding it, so two connections changing at once reach the
+    /// observer in the order they happened.
+    fn update_apps(&self, change: impl FnOnce(&mut Vec<(AppInfo, Sender<String>)>)) {
+        let mut apps = self.apps.lock().unwrap();
+        change(&mut apps);
+        let active = self.app_session.load(Ordering::SeqCst);
+        for (app, _) in apps.iter_mut() {
+            app.active = app.id == active;
+        }
+        if let Some(OnApps(f)) = &self.on_apps {
+            let list: Vec<AppInfo> = apps.iter().map(|(a, _)| a.clone()).collect();
+            f(&list);
+        }
+    }
+
     /// Install `tx` as the connected app's channel, for a new session.
     fn set_app(&self, session: u64, tx: Sender<String>) {
+        // Lock order: `app_outbound`, then `apps` (inside `update_apps`).
         let mut out = self.app_outbound.lock().unwrap();
         self.app_session.store(session, Ordering::SeqCst);
-        *out = Some(tx);
+        *out = Some(tx.clone());
+        self.update_apps(|apps| {
+            apps.push((AppInfo { id: session, platform: None, label: None, active: true }, tx))
+        });
         drop(out);
         // Requests forwarded to the previous app will not be answered by
         // this one: fail them now rather than at their timeout.
@@ -128,17 +215,31 @@ impl Inner {
         self.app_subscribed.store(false, Ordering::SeqCst);
     }
 
-    /// Forget the app — if `session` is still the connected one.
-    fn clear_app(&self, session: u64) {
+    /// Forget a closed session. When it was the one requests went to, they
+    /// go to the newest app still connected, if any — returns whether that
+    /// happened, so the caller re-subscribes it for existing subscribers.
+    fn clear_app(&self, session: u64) -> bool {
         let mut out = self.app_outbound.lock().unwrap();
-        if self.app_session.load(Ordering::SeqCst) != session {
-            return;
+        let was_routed = self.app_session.load(Ordering::SeqCst) == session;
+        let mut next = None;
+        self.update_apps(|apps| {
+            apps.retain(|(a, _)| a.id != session);
+            if was_routed {
+                next = apps.last().map(|(a, tx)| (a.id, tx.clone()));
+                // Before `update_apps` recomputes `active` from it.
+                self.app_session.store(next.as_ref().map_or(0, |(id, _)| *id), Ordering::SeqCst);
+            }
+        });
+        if !was_routed {
+            return false;
         }
-        *out = None;
+        let rerouted = next.is_some();
+        *out = next.map(|(_, tx)| tx);
         drop(out);
         self.app_subscribed.store(false, Ordering::SeqCst);
         // Fail any in-flight requests so their TCP sessions don't hang.
         self.pending.lock().unwrap().clear();
+        rerouted
     }
 }
 
@@ -146,10 +247,24 @@ pub struct RelayHandle {
     pub ws_addr: SocketAddr,
     pub tcp_addr: SocketAddr,
     reg_path: Option<PathBuf>,
-    _inner: Arc<Inner>,
+    project_reg_path: Option<PathBuf>,
+    inner: Arc<Inner>,
 }
 
 impl RelayHandle {
+    /// The registration files this relay wrote (`~/.idealyst/apps/…`,
+    /// the project's `robot.json`). They are removed when the handle
+    /// drops; a process that exits without dropping it (a signal handler
+    /// calling `process::exit`) removes them itself.
+    pub fn registration_files(&self) -> Vec<PathBuf> {
+        self.reg_path.iter().chain(&self.project_reg_path).cloned().collect()
+    }
+
+    /// The apps connected right now, oldest first.
+    pub fn apps(&self) -> Vec<AppInfo> {
+        self.inner.apps.lock().unwrap().iter().map(|(a, _)| a.clone()).collect()
+    }
+
     /// The app's id in discovery: its registration's file stem
     /// (`<name>-<pid>`), which the Inspector attaches by. `None` when the
     /// relay didn't register.
@@ -160,7 +275,7 @@ impl RelayHandle {
 
 impl Drop for RelayHandle {
     fn drop(&mut self) {
-        if let Some(p) = &self.reg_path {
+        for p in self.reg_path.iter().chain(&self.project_reg_path) {
             let _ = std::fs::remove_file(p);
         }
     }
@@ -170,7 +285,7 @@ impl Drop for RelayHandle {
 /// known on return) and spawns the accept loops in the background.
 pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
     let ws_listener = TcpListener::bind(("127.0.0.1", config.ws_port))?;
-    let tcp_listener = TcpListener::bind(("127.0.0.1", config.tcp_port))?;
+    let tcp_listener = TcpListener::bind((config.tcp_host, config.tcp_port))?;
     let ws_addr = ws_listener.local_addr()?;
     let tcp_addr = tcp_listener.local_addr()?;
 
@@ -192,6 +307,8 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         // CLI-provided dir wins; otherwise the global default.
         screenshot_dir: config.screenshot_dir.clone().or_else(default_screenshots_dir),
         reg_path: Mutex::new(None),
+        apps: Mutex::new(Vec::new()),
+        on_apps: config.on_apps.clone(),
     });
 
     // App side: accept WS dial-ins.
@@ -232,11 +349,17 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
     // it dials (we wrote the file before knowing which platform connects).
     *inner.reg_path.lock().unwrap() = reg_path.clone();
 
+    let project_reg_path = match (&config.project_registration, &config.identity) {
+        (Some(path), Some(id)) => write_project_registration(path, tcp_addr.port(), id).ok(),
+        _ => None,
+    };
+
     Ok(RelayHandle {
         ws_addr,
         tcp_addr,
         reg_path,
-        _inner: inner,
+        project_reg_path,
+        inner,
     })
 }
 
@@ -259,7 +382,7 @@ fn app_session(mut ws: tungstenite::WebSocket<TcpStream>, inner: &Arc<Inner>) {
         let mut wrote = false;
         while let Ok(frame) = out_rx.try_recv() {
             if ws.send(Message::Text(frame.into())).is_err() {
-                inner.clear_app(session);
+                close_session(inner, session);
                 return;
             }
             wrote = true;
@@ -269,10 +392,10 @@ fn app_session(mut ws: tungstenite::WebSocket<TcpStream>, inner: &Arc<Inner>) {
         }
 
         match ws.read() {
-            Ok(Message::Text(t)) => route_from_app(t.as_str(), inner),
+            Ok(Message::Text(t)) => route_from_app(t.as_str(), inner, session),
             Ok(Message::Binary(b)) => {
                 if let Ok(s) = std::str::from_utf8(&b) {
-                    route_from_app(s, inner);
+                    route_from_app(s, inner, session);
                 }
             }
             Ok(Message::Close(_)) => break,
@@ -285,16 +408,34 @@ fn app_session(mut ws: tungstenite::WebSocket<TcpStream>, inner: &Arc<Inner>) {
             Err(_) => break,
         }
     }
-    inner.clear_app(session);
+    close_session(inner, session);
+}
+
+/// An app's socket closed. If requests now go to an older connection,
+/// that one has never been told to push: tell it, when anyone listens.
+fn close_session(inner: &Arc<Inner>, session: u64) {
+    if inner.clear_app(session) && !inner.subscribers.lock().unwrap().is_empty() {
+        ensure_app_subscribed(inner);
+    }
 }
 
 /// Route a frame the app sent us: a response to a forwarded request, a push, or
 /// the one-time `hello`.
-fn route_from_app(text: &str, inner: &Arc<Inner>) {
+fn route_from_app(text: &str, inner: &Arc<Inner>, session: u64) {
     let Ok(v) = serde_json::from_str::<Value>(text) else {
         return;
     };
     if let Some(hello) = v.get("hello") {
+        let field = |k: &str| {
+            hello.get(k).and_then(|p| p.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+        };
+        let (platform, label) = (field("platform"), field("label"));
+        inner.update_apps(|apps| {
+            if let Some((app, _)) = apps.iter_mut().find(|(a, _)| a.id == session) {
+                app.platform = platform;
+                app.label = label;
+            }
+        });
         // Patch the platform the app just reported into our registration file,
         // so the MCP server can target e.g. web vs macOS distinctly for parity
         // work. We wrote the file before the app dialed, so it had no platform.
@@ -481,6 +622,26 @@ fn write_registration(tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// Write the project-local registration: the same body as
+/// [`write_registration`]'s (`pid` included — it is the dev process's, and
+/// meaningless outside its container, so a reader checks liveness by
+/// connecting to `port` instead).
+fn write_project_registration(path: &Path, tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let body = json!({
+        "port": tcp_port,
+        "pid": std::process::id(),
+        "name": id.name,
+        "bundle_id": id.bundle_id,
+        "project_root": id.project_root,
+        "proto": 1,
+    });
+    std::fs::write(path, body.to_string())?;
+    Ok(path.to_path_buf())
+}
+
 /// Patch `"platform"` into the registration file we wrote at start, using the
 /// value the app reported in its `hello`. Best-effort — a failed read/parse/
 /// write just leaves the file platform-less (the MCP server treats absent
@@ -514,7 +675,8 @@ mod tests {
             ws_addr: "127.0.0.1:1".parse().unwrap(),
             tcp_addr: "127.0.0.1:2".parse().unwrap(),
             reg_path,
-            _inner: Arc::new(Inner {
+            project_reg_path: None,
+            inner: Arc::new(Inner {
                 app_outbound: Mutex::new(None),
                 app_session: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
@@ -524,6 +686,8 @@ mod tests {
                 app_label: "app".into(),
                 screenshot_dir: None,
                 reg_path: Mutex::new(None),
+                apps: Mutex::new(Vec::new()),
+                on_apps: None,
             }),
         };
         // Paths that don't exist: Drop's remove_file is a no-op.

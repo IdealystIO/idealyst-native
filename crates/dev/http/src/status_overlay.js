@@ -19,7 +19,15 @@
 //   answers again — this page is served by it, and a reload waits for it;
 // - a panel over the page when a build fails: each rustc error with its
 //   file:line and rendered message. Esc or a click outside the message
-//   dismisses it; the next successful build or patch clears it.
+//   dismisses it; the next successful build or patch clears it. A
+//   full-stack server that stopped (its port taken, or it exited) shows
+//   the same panel with what it said;
+// - above the badge, this page's own Robot connection, once the app's
+//   robot client reports one (`robot(status)`, called through
+//   `window.__idealyst_dev_robot_status` by `backend-web`'s
+//   `robot_transport`): connecting, connected, or what failed and when it
+//   retries. The page reports it itself because the relay cannot: a page
+//   that never reaches the relay is invisible to it.
 //
 // DOM use is deliberately narrow (createElement, appendChild, textContent,
 // style.cssText, setAttribute, addEventListener, attachShadow) so the
@@ -28,7 +36,10 @@
 // app's CSS out of the overlay and the overlay's out of the app.
 function idealystStatusOverlay(doc) {
   var FONT = "font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;";
-  var host = null, badge = null, panel = null, list = null, title = null;
+  var host = null, badge = null, robotBadge = null, panel = null, list = null, title = null;
+  // This page's Robot connection, as the app's robot client last reported
+  // it ({state, url, error, retry_ms}); null until it reports.
+  var robot = null;
   var st = {
     phase: "idle",      // idle | change | patching | building | done | error
     text: "",
@@ -63,6 +74,9 @@ function idealystStatusOverlay(doc) {
         break;
       case "diagnostic":
         if (ev.diagnostic && srv.pending.length < 64) srv.pending.push(ev.diagnostic);
+        break;
+      case "server_down":
+        failServer(ev);
         break;
       case "build_finished":
         if (ev.outcome === "failed") {
@@ -122,6 +136,11 @@ function idealystStatusOverlay(doc) {
       "padding:3px 8px;border-radius:4px;background:#111c;color:#eee;" +
       "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;" + FONT);
     badge.setAttribute("data-part", "badge");
+    robotBadge = el("div",
+      "position:fixed;right:8px;bottom:32px;z-index:2147483647;max-width:60vw;" +
+      "padding:3px 8px;border-radius:4px;background:#111c;color:#eee;" +
+      "white-space:normal;overflow-wrap:anywhere;pointer-events:none;" + FONT);
+    robotBadge.setAttribute("data-part", "robot");
     panel = el("div",
       "position:fixed;inset:0;z-index:2147483647;background:#000b;display:none;" +
       "overflow:auto;padding:5vh 5vw;box-sizing:border-box;" + FONT);
@@ -139,6 +158,7 @@ function idealystStatusOverlay(doc) {
     card.appendChild(hint);
     panel.appendChild(card);
     root.appendChild(badge);
+    root.appendChild(robotBadge);
     root.appendChild(panel);
     (doc.body || doc.documentElement).appendChild(host);
     panel.addEventListener("click", function (e) {
@@ -268,8 +288,62 @@ function idealystStatusOverlay(doc) {
         st.phase = "error";
         st.text = ev.source + ": " + ev.message;
         break;
+      // Normally filed under the server's target (handled above); a
+      // stopped server is an error whatever it is filed under.
+      case "server_down":
+        failServer(ev);
+        break;
     }
     render();
+  }
+
+  function serverDownText(ev) {
+    if (ev.reason === "port_in_use") {
+      return "port " + ev.port + " is already in use" + (ev.holder ? " by " + ev.holder : "");
+    }
+    return "exited with " + ev.status + (ev.cause ? ": " + ev.cause : "");
+  }
+
+  function failServer(ev) {
+    srv.phase = "idle";
+    var what = serverDownText(ev);
+    st.phase = "error";
+    st.text = "server " + (ev.reason === "port_in_use" ? "not started" : "stopped") + ": " + what;
+    st.stage = null;
+    st.progress = null;
+    st.failure = {
+      target: ev.target,
+      title: ev.reason === "port_in_use" ? "Server not started" : "Server stopped",
+      error: what + (ev.log_file ? "\n\nIts output is in " + ev.log_file : ""),
+      diagnostics: []
+    };
+    st.dismissed = false;
+  }
+
+  // The robot client's report. Accepts the JSON string the client
+  // publishes, or an object.
+  function setRobot(status) {
+    try {
+      robot = typeof status === "string" ? JSON.parse(status) : status;
+    } catch (_) {
+      return;
+    }
+    render();
+  }
+
+  function robotText() {
+    switch (robot.state) {
+      case "connected": return { text: "● robot connected", color: "#8be28b" };
+      case "connecting": return { text: "◌ robot connecting…", color: "#999" };
+      case "dropped":
+        return { text: "◌ robot disconnected (" + robot.error + "), reconnecting…", color: "#e5b443" };
+      case "retrying":
+        return {
+          text: "✗ " + robot.error + " · retrying in " + ms(robot.retry_ms || 0),
+          color: "#ff8b8b"
+        };
+      default: return { text: "✗ robot: " + (robot.error || robot.state), color: "#ff8b8b" };
+    }
   }
 
   var ICON = { idle: "○", change: "…", patching: "↻", building: "⚙", done: "✓", error: "✗" };
@@ -292,12 +366,18 @@ function idealystStatusOverlay(doc) {
     badge.textContent = t;
     badge.style.color = serverBusy() ? "#eee"
       : st.phase === "error" ? "#ff8b8b" : st.phase === "done" ? "#8be28b" : "#eee";
+    robotBadge.style.display = robot ? "block" : "none";
+    if (robot) {
+      var r = robotText();
+      robotBadge.textContent = r.text;
+      robotBadge.style.color = r.color;
+    }
 
     var show = !!st.failure && !st.dismissed;
     panel.style.display = show ? "block" : "none";
     if (!show) return;
     var f = st.failure;
-    title.textContent = "Build failed" + (f.target ? " (" + f.target + ")" : "");
+    title.textContent = (f.title || "Build failed") + (f.target ? " (" + f.target + ")" : "");
     while (list.firstChild) list.removeChild(list.firstChild);
     var diags = f.diagnostics || [];
     if (!diags.length) {
@@ -320,5 +400,5 @@ function idealystStatusOverlay(doc) {
     }
   }
 
-  return { apply: apply, dismiss: dismiss, state: st };
+  return { apply: apply, dismiss: dismiss, robot: setRobot, state: st };
 }

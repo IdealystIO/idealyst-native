@@ -18,9 +18,10 @@
 //!
 //! - [`model`]: a pure fold of the session's [`dev_events`] stream — one
 //!   state machine per target, a ring of recent saves, the log, the last
-//!   build error;
+//!   error, and the apps connected to the session's Robot relay;
 //! - [`view`]: the model laid out as lines for a given size, time and
-//!   spinner frame;
+//!   spinner frame — on a wide terminal, the robot block as a second
+//!   column beside the rows;
 //! - [`panel`]: `#[component]`s rendering those lines with `ui!` and
 //!   `stylesheet!`.
 //!
@@ -101,6 +102,8 @@ struct Signals {
     header: Signal<Line>,
     rows: Signal<Vec<Row>>,
     history: Signal<Vec<Line>>,
+    robot: Signal<Vec<Line>>,
+    beside: Signal<bool>,
     error: Signal<Vec<Line>>,
     log: Signal<Vec<Line>>,
     footer: Signal<Line>,
@@ -135,6 +138,8 @@ impl Controller {
                 header: signal(Line::default()),
                 rows: signal(Vec::new()),
                 history: signal(Vec::new()),
+                robot: signal(Vec::new()),
+                beside: signal(false),
                 error: signal(Vec::new()),
                 log: signal(Vec::new()),
                 footer: signal(Line::default()),
@@ -214,6 +219,8 @@ impl Controller {
         s.header.set(screen.header);
         s.rows.set(screen.rows);
         s.history.set(screen.history);
+        s.robot.set(screen.robot);
+        s.beside.set(screen.beside);
         s.error.set(screen.error);
         s.log.set(screen.log);
         s.footer.set(screen.footer);
@@ -232,6 +239,8 @@ impl Controller {
                 header = s.header.read_only(),
                 rows = s.rows.read_only(),
                 history = s.history.read_only(),
+                robot = s.robot.read_only(),
+                beside = s.beside.read_only(),
                 error = s.error.read_only(),
                 log = s.log.read_only(),
                 footer = s.footer.read_only(),

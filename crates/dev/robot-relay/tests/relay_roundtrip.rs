@@ -120,6 +120,7 @@ fn start_relay() -> robot_relay::RelayHandle {
         register: false, // don't touch ~/.idealyst/apps in tests
         identity: None,
         screenshot_dir: None,
+        ..Default::default()
     })
     .expect("relay starts")
 }
@@ -188,6 +189,7 @@ fn screenshot_response_is_saved_to_the_configured_dir() {
             project_root: None,
         }),
         screenshot_dir: Some(dir.clone()),
+        ..Default::default()
     })
     .expect("relay starts");
     spawn_fake_app(relay.ws_addr);
@@ -262,4 +264,146 @@ fn a_redialed_app_is_resubscribed_for_existing_subscribers() {
     let push = bridge.read_frame();
     assert_eq!(push["event"], "changed", "{push}");
     assert_eq!(push["rev"], 42);
+}
+
+/// Poll `cond` until it holds or a few seconds pass; relay threads notice
+/// connects and closes on their own poll slices.
+fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !cond() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// An app that only says hello (and never answers a verb).
+fn dial_with_hello(relay: &robot_relay::RelayHandle, hello: Value) -> tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>> {
+    let (mut ws, _) = tungstenite::connect(format!("ws://{}/", relay.ws_addr)).unwrap();
+    ws.send(Message::Text(json!({ "hello": hello }).to_string().into())).unwrap();
+    ws.flush().unwrap();
+    ws
+}
+
+/// The dev panel's robot column is built from these: every open
+/// connection is listed with what its `hello` said, the newest is the
+/// active one, and the observer's latest call always equals the present.
+#[test]
+fn every_connected_app_is_listed_and_the_observer_sees_each_change() {
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<Vec<robot_relay::AppInfo>>>> = Arc::default();
+    let sink = seen.clone();
+    let relay = robot_relay::start(robot_relay::RelayConfig {
+        register: false,
+        on_apps: Some(robot_relay::OnApps(Arc::new(move |apps| sink.lock().unwrap().push(apps.to_vec())))),
+        ..Default::default()
+    })
+    .unwrap();
+    let platforms = |relay: &robot_relay::RelayHandle| {
+        relay
+            .apps()
+            .into_iter()
+            .map(|a| (a.platform, a.label, a.active))
+            .collect::<Vec<_>>()
+    };
+
+    let tab = dial_with_hello(&relay, json!({ "platform": "web", "label": "Chrome 131" }));
+    eventually("the tab's hello", || relay.apps().first().is_some_and(|a| a.platform.is_some()));
+    let mut desktop = dial_with_hello(&relay, json!({ "platform": "macos" }));
+    eventually("both apps", || relay.apps().iter().filter(|a| a.platform.is_some()).count() == 2);
+    assert_eq!(
+        platforms(&relay),
+        vec![
+            (Some("web".into()), Some("Chrome 131".into()), false),
+            (Some("macos".into()), None, true),
+        ],
+        "both are listed; the newest is the one driven"
+    );
+
+    desktop.close(None).unwrap();
+    let _ = desktop.flush();
+    eventually("the desktop app's close", || relay.apps().len() == 1);
+    assert_eq!(
+        platforms(&relay),
+        vec![(Some("web".into()), Some("Chrome 131".into()), true)],
+        "the tab that is left becomes the active one"
+    );
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last, relay.apps(), "the observer's latest call is the present");
+    drop(tab);
+}
+
+/// Regression: with two apps connected (two browser tabs), the newer one
+/// closing left the relay routing to nothing — every verb failed "no app
+/// connected to the relay" while the older tab sat connected. Requests
+/// now fall back to the newest app still connected.
+#[test]
+fn regression_requests_fall_back_to_an_older_app_when_the_active_one_leaves() {
+    let relay = start_relay();
+    spawn_fake_app(relay.ws_addr);
+    eventually("the serving app", || relay.apps().len() == 1);
+    // A newer app that takes over, then leaves without answering anything.
+    let mut newer = dial_with_hello(&relay, json!({ "platform": "web" }));
+    eventually("the newer app", || relay.apps().len() == 2);
+    newer.close(None).unwrap();
+    let _ = newer.flush();
+    eventually("the newer app's close", || relay.apps().len() == 1);
+
+    let mut bridge = TcpBridge::connect(relay.tcp_addr);
+    let pong = bridge.call("ping", json!({}));
+    assert_eq!(pong["ok"], "pong", "the older app serves verbs again: {pong}");
+}
+
+/// `--robot-port`: the TCP bridge binds the asked-for port, on the asked-for
+/// interface (every interface, in a container whose port is forwarded).
+#[test]
+fn a_pinned_tcp_port_is_bound_on_the_asked_for_interface() {
+    let free = std::net::TcpListener::bind("0.0.0.0:0").unwrap().local_addr().unwrap().port();
+    let relay = robot_relay::start(robot_relay::RelayConfig {
+        tcp_port: free,
+        tcp_host: std::net::Ipv4Addr::UNSPECIFIED.into(),
+        register: false,
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(relay.tcp_addr.port(), free);
+    assert!(relay.tcp_addr.ip().is_unspecified(), "{}", relay.tcp_addr);
+    assert!(relay.ws_addr.ip().is_loopback(), "the WebSocket side stays on loopback");
+    // And it is taken: a second relay asking for it fails loudly rather
+    // than quietly landing somewhere else.
+    let again = robot_relay::start(robot_relay::RelayConfig {
+        tcp_port: free,
+        tcp_host: std::net::Ipv4Addr::UNSPECIFIED.into(),
+        register: false,
+        ..Default::default()
+    });
+    assert!(again.is_err());
+}
+
+/// The project-local registration an MCP server on the host finds a
+/// container's relay by: it names the bridge port, and it goes away
+/// with the relay.
+#[test]
+fn the_project_registration_names_the_bridge_port_and_goes_with_the_relay() {
+    let dir = std::env::temp_dir().join(format!("relay_project_reg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join(".idealyst").join("robot.json");
+    let relay = robot_relay::start(robot_relay::RelayConfig {
+        register: false,
+        identity: Some(robot_relay::Identity {
+            name: "todo".into(),
+            bundle_id: None,
+            project_root: Some(dir.display().to_string()),
+        }),
+        project_registration: Some(path.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let body: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(body["port"], relay.tcp_addr.port());
+    assert_eq!(body["name"], "todo");
+    assert_eq!(body["proto"], 1);
+    assert_eq!(relay.registration_files(), vec![path.clone()], "for a session that exits without dropping it");
+    drop(relay);
+    assert!(!path.exists(), "removed with the relay");
+    let _ = std::fs::remove_dir_all(&dir);
 }

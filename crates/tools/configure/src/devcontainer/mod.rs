@@ -162,6 +162,9 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
     // reaches it on that port, which a container only exposes if it is
     // forwarded.
     report.wrote.extend(wiring::sync_stream_port(dir, config, read_stream_port(dir)?)?);
+    // The Robot relay's bridge, when `dev.toml` pins it: an MCP server on
+    // the host drives the app in the container through it.
+    report.wrote.extend(wiring::sync_robot_port(dir, config, read_robot_port(dir)?)?);
 
     if after.is_empty() {
         // Tear down: drop the managed file + its reference, keep the base.
@@ -190,6 +193,17 @@ pub fn apply(dir: &Path, req: &ConfigureRequest) -> Result<ConfigureReport> {
 /// --stream-port`) instead of a random loopback port, so that a
 /// devcontainer can forward it.
 pub fn read_stream_port(dir: &Path) -> Result<Option<u16>> {
+    read_dev_port(dir, "stream_port")
+}
+
+/// `robot_port` from the project's `dev.toml`, if it sets one: the dev
+/// session's Robot relay bridge (see `idealyst dev --robot-port`).
+pub fn read_robot_port(dir: &Path) -> Result<Option<u16>> {
+    read_dev_port(dir, "robot_port")
+}
+
+/// A port number `key` in the project's `dev.toml`, if it sets one.
+fn read_dev_port(dir: &Path, key: &str) -> Result<Option<u16>> {
     let path = dir.join("dev.toml");
     if !path.is_file() {
         return Ok(None);
@@ -197,12 +211,12 @@ pub fn read_stream_port(dir: &Path) -> Result<Option<u16>> {
     let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let value: toml::Value =
         toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-    match value.get("stream_port") {
+    match value.get(key) {
         None => Ok(None),
         Some(toml::Value::Integer(n)) => u16::try_from(*n)
             .map(Some)
-            .with_context(|| format!("{}: stream_port {n} is not a port", path.display())),
-        Some(other) => anyhow::bail!("{}: stream_port must be a port number, not {other}", path.display()),
+            .with_context(|| format!("{}: {key} {n} is not a port", path.display())),
+        Some(other) => anyhow::bail!("{}: {key} must be a port number, not {other}", path.display()),
     }
 }
 

@@ -2,7 +2,8 @@
 
 use dev_events::{
     BuildCause, BuildOutcome, CrateTiming, Decision, DevEvent, Diagnostic, HotTier, Mode, PageAck,
-    ServerKind, SessionServer, SidecarUpdate, StreamRoute, SupersededWork, Timing, SERVER_TARGET,
+    RelayState, RobotApp, ServerDown, ServerKind, SessionServer, SidecarUpdate, StreamRoute,
+    SupersededWork, Timing, SERVER_TARGET,
 };
 
 /// One of every variant, so a variant added without serde support (or
@@ -103,6 +104,30 @@ pub fn every_event() -> Vec<DevEvent> {
             how: SidecarUpdate::Respawn,
             ms: 900,
             reason: Some("rebuild".into()),
+        },
+        DevEvent::RobotRelay {
+            state: RelayState::Listening { ws_url: "ws://127.0.0.1:41233".into(), tcp_port: 41234, pinned: true },
+        },
+        DevEvent::RobotRelay { state: RelayState::Unavailable { error: "Address already in use".into() } },
+        DevEvent::RobotApps {
+            apps: vec![
+                RobotApp { id: 1, platform: Some("web".into()), label: Some("Chrome 131".into()), active: false },
+                RobotApp { id: 2, platform: None, label: None, active: true },
+            ],
+        },
+        DevEvent::RobotApps { apps: vec![] },
+        DevEvent::ServerDown {
+            target: SERVER_TARGET.into(),
+            down: ServerDown::PortInUse { port: 8080, holder: Some("pid 4821 (crewforge-server)".into()) },
+            log_file: None,
+        },
+        DevEvent::ServerDown {
+            target: SERVER_TARGET.into(),
+            down: ServerDown::Exited {
+                status: "exit status: 1".into(),
+                cause: Some("Error: Address already in use (os error 48)".into()),
+            },
+            log_file: Some("/cf/server.log".into()),
         },
         DevEvent::Warning { source: "s".into(), message: "m".into() },
         DevEvent::Error { source: "s".into(), message: "m".into() },

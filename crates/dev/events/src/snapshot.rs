@@ -12,7 +12,8 @@
 //!   build) that started it through its outcome and the page's acks —
 //!   with cargo progress collapsed to the latest count, and at most
 //!   [`MAX_DIAGNOSTICS`] diagnostics;
-//! - the last few [`DevEvent::Error`]s.
+//! - the Robot relay's state and the latest list of apps connected to it;
+//! - the last few [`DevEvent::Error`]s and [`DevEvent::ServerDown`]s.
 //!
 //! A snapshot is a prefix-free replay: its events keep their original
 //! envelopes (sequence numbers, timestamps), in sequence order, so a
@@ -127,7 +128,14 @@ impl SessionState {
             | DevEvent::PageAck { target, .. } => {
                 self.targets.entry(target.clone()).or_default().events.push(e);
             }
-            DevEvent::Error { .. } => {
+            // State, like a server's address: the latest says it all.
+            DevEvent::RobotRelay { .. } => {
+                self.servers.insert(("robot".into(), "relay".into()), e);
+            }
+            DevEvent::RobotApps { .. } => {
+                self.servers.insert(("robot".into(), "apps".into()), e);
+            }
+            DevEvent::Error { .. } | DevEvent::ServerDown { .. } => {
                 self.errors.push(e);
                 if self.errors.len() > MAX_ERRORS {
                     self.errors.remove(0);
@@ -229,6 +237,23 @@ mod tests {
         s.apply(&env(5, DevEvent::BuildStarted { target: web(), cause: BuildCause::Save { folded: 1 } }));
         assert_eq!(types(&s.snapshot()), vec!["change_detected", "build_started"]);
         assert_eq!(s.snapshot()[0].seq, 4);
+    }
+
+    /// A panel or page that attaches after an app connected must still
+    /// see it: the relay and the latest app list are state, and only the
+    /// latest list describes the present.
+    #[test]
+    fn a_late_consumer_sees_the_robot_relay_and_the_latest_app_list() {
+        let app = |id, active| crate::RobotApp { id, platform: Some("web".into()), label: None, active };
+        let mut s = SessionState::new();
+        s.apply(&env(1, DevEvent::RobotRelay {
+            state: crate::RelayState::Listening { ws_url: "ws://127.0.0.1:1".into(), tcp_port: 2, pinned: false },
+        }));
+        s.apply(&env(2, DevEvent::RobotApps { apps: vec![app(1, true)] }));
+        s.apply(&env(3, DevEvent::RobotApps { apps: vec![app(1, false), app(2, true)] }));
+        let snap = s.snapshot();
+        assert_eq!(types(&snap), vec!["robot_relay", "robot_apps"]);
+        assert_eq!(snap[1].seq, 3, "only the latest list is the present");
     }
 
     #[test]

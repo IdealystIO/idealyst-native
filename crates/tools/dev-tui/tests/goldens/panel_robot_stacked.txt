@@ -1,0 +1,30 @@
+idealyst dev · Hotreload Lab · local · http://0.0.0.0:8080 · robot :4778 (pinned) · hot patch armed
+
+  web             ● ready · built in 9.0s
+
+  saves
+  no saves yet
+
+  robot · bridge :4778 (pinned)
+  00:12  ● web · Chrome 154
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+r rebuild · l log · e error · c clear · q quit
