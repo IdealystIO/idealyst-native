@@ -291,6 +291,15 @@ pub(crate) fn drain_pending() {
 
 /// Counts or sizes changed: rebuild metrics, drop the cached window so
 /// the next `sync` re-diffs from scratch, and re-sync now.
+/// The grid's live metrics cell — the one [`data_changed`] rebuilds —
+/// for the intrinsic-size measure_fn `create_virtual_grid_impl`
+/// installs (`runtime_layout::grid_intrinsic_measure`).
+pub(crate) fn live_metrics(registry: &GridRegistry, view: &UIView) -> Option<Rc<RefCell<GridMetrics>>> {
+    registry
+        .get(&(view as *const UIView as usize))
+        .map(|inst| inst.metrics.clone())
+}
+
 pub(crate) fn data_changed(backend: &mut crate::imp::IosBackend, node: &IosNode) {
     let key = node.as_view() as *const UIView as usize;
     {
@@ -303,6 +312,12 @@ pub(crate) fn data_changed(backend: &mut crate::imp::IosBackend, node: &IosNode)
         *inst.metrics.borrow_mut() = cb;
         *inst.last_window.borrow_mut() = None;
     }
+    // New counts/sizes are a new intrinsic size: flag the node so the
+    // pass armed below re-runs its measure_fn. Without it Taffy keeps
+    // the cached size and a fit-to-content grid stays at its old
+    // (often empty → 0) height after an async load.
+    let layout = backend.layout_for_view(node.as_view());
+    backend.layout.mark_dirty(layout);
     sync(backend, key);
     // The one queueing path with no layout pass already behind it, so
     // it arms the drain itself. Safe where `queue_sync` is not: this

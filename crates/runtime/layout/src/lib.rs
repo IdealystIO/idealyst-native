@@ -77,6 +77,39 @@ use runtime_shared::{
 pub type MeasureFn =
     Rc<dyn Fn(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>>;
 
+/// The measure_fn every native `virtual_grid` installs on its scroller
+/// node: the grid's intrinsic size
+/// ([`GridMetrics::intrinsic_size`](runtime_shared::primitives::virtual_grid::GridMetrics::intrinsic_size))
+/// with Taffy's known / available space mapped onto it.
+///
+/// One function rather than a copy per backend so every native grid
+/// reports the same size by construction. `metrics` is the backend's
+/// LIVE metrics cell — the one it rebuilds on a data change — so a
+/// `mark_dirty` after the rebuild is all a re-measure needs. `gutter`
+/// is the thickness one of the backend's scrollbars takes from the
+/// box (`0.0` for overlay scrollers).
+///
+/// Only an axis the layout leaves free (`flex_basis: auto` on the main
+/// axis, a non-stretched cross axis) uses the result; the default
+/// viewport seeding (`set_overflow_scroll`) still makes the grid fill.
+pub fn grid_intrinsic_measure(
+    metrics: Rc<std::cell::RefCell<runtime_shared::primitives::virtual_grid::GridMetrics>>,
+    gutter: f32,
+) -> MeasureFn {
+    Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
+        let definite = |a: AvailableSpace| match a {
+            AvailableSpace::Definite(v) => Some(v),
+            AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+        };
+        let (width, height) = metrics.borrow().intrinsic_size(
+            (known.width, known.height),
+            (definite(avail.width), definite(avail.height)),
+            gutter,
+        );
+        Size { width, height }
+    })
+}
+
 // =============================================================================
 // Public types
 // =============================================================================
@@ -2091,6 +2124,121 @@ mod tests {
             t.set_overflow_scroll(n, true);
         });
         assert_eq!((f.width, f.height), (390.0, 665.0));
+    }
+
+    /// The measure_fn a native backend installs on a `virtual_grid` —
+    /// literally the same [`grid_intrinsic_measure`] the backends call.
+    fn grid_measure(
+        metrics: runtime_shared::primitives::virtual_grid::GridMetrics,
+        gutter: f32,
+    ) -> MeasureFn {
+        grid_intrinsic_measure(Rc::new(std::cell::RefCell::new(metrics)), gutter)
+    }
+
+    /// 30 columns × 120 = 3600 wide, 3 rows × 40 = 120 tall: the
+    /// CrewForge shape — a few rows, far more columns than fit.
+    fn wide_grid_metrics() -> runtime_shared::primitives::virtual_grid::GridMetrics {
+        runtime_shared::primitives::virtual_grid::GridMetrics::build(30, 3, &|_| 120.0, &|_| 40.0)
+    }
+
+    /// Regression (CrewForge: "a grid cannot fit its content"). A
+    /// seeded grid with no measure_fn could not size to its rows on
+    /// native at all — `flex_grow: 0` collapsed it to 0 and the only way
+    /// out was pinning a parent to `rows × row_height` (which a classic
+    /// scrollbar then ate into on web). With the grid's intrinsic size
+    /// reported, the author's `flex_grow: 0` + `flex_basis: auto` makes
+    /// it exactly as tall as its rows (+ the scrollbar a classic-scroller
+    /// backend reserves) inside a bounded column with siblings.
+    #[test]
+    fn regression_seeded_grid_fits_its_rows_with_flex_basis_auto() {
+        let fit = |measure: Option<MeasureFn>| {
+            viewport_in_bounded_column(measure, |t, n| {
+                t.set_overflow_scroll(n, false);
+                t.set_overflow_scroll(n, true);
+                let mut s = StyleRules::default();
+                s.flex_grow = Some(0.0f32.into());
+                s.flex_basis = Some(runtime_shared::Length::Auto.into());
+                t.set_style(n, &s);
+            })
+        };
+        assert_eq!(fit(None).height, 0.0, "without a measure_fn there is nothing to fit");
+        let overlay = fit(Some(grid_measure(wide_grid_metrics(), 0.0)));
+        assert_eq!((overlay.width, overlay.height), (390.0, 120.0));
+        let classic = fit(Some(grid_measure(wide_grid_metrics(), 15.0)));
+        assert_eq!(classic.height, 135.0, "rows + the horizontal scrollbar, so nothing scrolls vertically");
+    }
+
+    /// The same fit recipe in a parent with no height of its own (the
+    /// grid's parent sizes to ITS content): the grid takes its rows'
+    /// height. Without the intrinsic size there was no content to take,
+    /// and the grid collapsed to 0 — while web, whose `overflow: auto`
+    /// box always reports its content, hugged.
+    #[test]
+    fn regression_fit_content_grid_in_an_auto_height_parent_hugs_instead_of_collapsing() {
+        let run = |measure: Option<MeasureFn>| {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rs = StyleRules::default();
+            rs.width = Some(runtime_shared::Length::Px(390.0).into());
+            rs.height = Some(runtime_shared::Length::Px(725.0).into());
+            rs.align_items = Some(runtime_shared::AlignItems::FlexStart);
+            t.set_style(root, &rs);
+            // `mid` has no height: its height comes from its content.
+            let mid = t.new_node();
+            let mut ms = StyleRules::default();
+            ms.width = Some(runtime_shared::Length::Px(390.0).into());
+            t.set_style(mid, &ms);
+            let grid = t.new_node();
+            if let Some(m) = measure {
+                t.set_measure_fn(grid, m);
+            }
+            t.set_overflow_scroll(grid, false);
+            t.set_overflow_scroll(grid, true);
+            let mut gs = StyleRules::default();
+            gs.flex_grow = Some(0.0f32.into());
+            gs.flex_basis = Some(runtime_shared::Length::Auto.into());
+            t.set_style(grid, &gs);
+            t.add_child(mid, grid);
+            t.add_child(root, mid);
+            t.compute(root, 390.0, 725.0);
+            t.frame_of(grid)
+        };
+        assert_eq!(run(None).height, 0.0, "the collapse this fixes");
+        assert_eq!(run(Some(grid_measure(wide_grid_metrics(), 0.0))).height, 120.0);
+        assert_eq!(run(Some(grid_measure(wide_grid_metrics(), 15.0))).height, 135.0);
+    }
+
+    /// Reporting an intrinsic size does not change the seeded default:
+    /// an unstyled grid still FILLS a bounded parent.
+    #[test]
+    fn measured_grid_still_fills_a_bounded_parent_by_default() {
+        let f = viewport_in_bounded_column(Some(grid_measure(wide_grid_metrics(), 0.0)), |t, n| {
+            t.set_overflow_scroll(n, false);
+            t.set_overflow_scroll(n, true);
+        });
+        assert_eq!((f.width, f.height), (390.0, 665.0));
+    }
+
+    /// A grid whose rows outgrow the bounded parent still shrinks to it
+    /// under `flex_basis: auto` (a scroll container's automatic minimum
+    /// is 0), so it scrolls instead of overflowing the page. Its bottom
+    /// edge lands on the parent's. (The un-floored 60pt header shrinks
+    /// too, in proportion to its base size — the same flex-shrink
+    /// distribution CSS gives the web grid's `flex-basis: auto` box,
+    /// whose base size is likewise its full content height.)
+    #[test]
+    fn fit_content_grid_taller_than_its_parent_shrinks_and_scrolls() {
+        let tall = runtime_shared::primitives::virtual_grid::GridMetrics::build(30, 100, &|_| 120.0, &|_| 40.0);
+        let f = viewport_in_bounded_column(Some(grid_measure(tall, 0.0)), |t, n| {
+            t.set_overflow_scroll(n, false);
+            t.set_overflow_scroll(n, true);
+            let mut s = StyleRules::default();
+            s.flex_grow = Some(0.0f32.into());
+            s.flex_basis = Some(runtime_shared::Length::Auto.into());
+            t.set_style(n, &s);
+        });
+        assert!(f.height < 725.0, "shrunk below its 4000pt content: {}", f.height);
+        assert_eq!(f.y + f.height, 725.0, "bounded by the parent, not overflowing it");
     }
 
     /// An author's own size still wins over the seed: `set_style` is a

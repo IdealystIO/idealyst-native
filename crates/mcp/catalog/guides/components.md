@@ -189,6 +189,13 @@ Two mechanisms render a list of items; pick by size and volatility:
   .on_scroll(move |x, _y| header_offset.set(x))
   ```
 
+  The grid fills its parent by default. To make it fit its content (for
+  example exactly as tall as its rows, scrolling sideways), style it
+  `flex_grow: 0` + `flex_basis: auto`. Its height then includes the
+  horizontal scrollbar wherever scrollbars take space, so don't pin a
+  parent to `rows × row_height` with a scrollbar allowance. Cap it with
+  `max_height`.
+
   Sizes are per-column and per-row (a cell's box is their intersection), and
   author-supplied — there is no measure-on-mount mode, because a measured cell
   height would have to agree with its whole row. Pair with

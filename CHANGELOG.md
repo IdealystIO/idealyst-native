@@ -153,6 +153,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `crates/streaming/README.md`; the showcase's Tools tab calls one of
   each kind.
 
+- **A `virtual_grid` can fit its content** (`runtime-shared`,
+  `runtime-layout`, `backend-ios-mobile`, `backend-macos`,
+  `backend-android-mobile`). On iOS, macOS and Android the grid now
+  reports its content size to layout, the way the browser already did
+  for the web grid. Styled `flex_grow: 0` and `flex_basis: auto`, the grid
+  is exactly as tall as its rows on every backend. A browser with
+  classic scrollbars adds the horizontal scrollbar to that height, so the
+  last row is never covered and the grid does not scroll vertically. You
+  no longer pin a parent to `rows × row_height` with a scrollbar
+  allowance. Before this change a native grid had no content size, so
+  `flex_grow: 0` made it 0 tall. Unstyled grids still fill their parent.
+  The shared helper is `GridMetrics::intrinsic_size`; native backends
+  install it with `runtime_layout::grid_intrinsic_measure` and measure
+  again when the data changes.
+
 - **`runtime_core` re-exports `GridPlacement` and `OverscrollBehavior`**,
   so `StyleRules::grid_row` / `grid_column` / `overscroll_behavior` can be
   filled without a direct `runtime-shared` dependency. A compile test

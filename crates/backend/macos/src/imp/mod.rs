@@ -5396,6 +5396,15 @@ impl MacosBackend {
         // axes or it is 0pt in a flex column. See `create_virtualizer_impl`.
         self.layout.set_overflow_scroll(taffy, false);
         self.layout.set_overflow_scroll(taffy, true);
+        // Report the grid's content size so an author can FIT it
+        // (`flex_grow: 0` + `flex_basis: auto`) instead of pinning a
+        // parent to `rows × row_height`. Gutter 0: `virtual_grid::create`
+        // sets `NSScrollerStyleOverlay`, which reserves no space. The
+        // seeding above still makes an unstyled grid fill.
+        if let Some(metrics) = virtual_grid::live_metrics(&self.virtual_grid_registry, &view) {
+            self.layout
+                .set_measure_fn(taffy, runtime_layout::grid_intrinsic_measure(metrics, 0.0));
+        }
         let node = MacosNode::View(view);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node

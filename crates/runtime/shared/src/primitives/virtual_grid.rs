@@ -46,6 +46,19 @@
 //!   layout. Sizes are author-supplied. If you need content-derived
 //!   sizes, measure your data once and feed the result to
 //!   `col_width` / `row_height`.
+//!
+//! ## The grid's own size
+//!
+//! The grid fills its parent by default, and it can fit its content
+//! instead (`flex_grow: 0` + `flex_basis: auto`). The fitted size is
+//! [`GridMetrics::intrinsic_size`]: the content plus any scrollbar the
+//! other axis needs. Native backends report it to layout through
+//! `runtime_layout::grid_intrinsic_measure`. The web grid's
+//! `overflow: auto` box gets the same size from the browser. Neither the
+//! handle nor `on_layout` exposes the viewport or scrollbar size: the
+//! backend already knows them when it lays the grid out, and a size the
+//! app reads back and feeds into a parent's height is a layout feedback
+//! loop.
 
 use std::any::Any;
 use std::rc::Rc;
@@ -201,6 +214,60 @@ impl GridMetrics {
         (
             self.col_offsets.len().saturating_sub(1),
             self.row_offsets.len().saturating_sub(1),
+        )
+    }
+
+    /// The grid's **intrinsic size** — the outer box `(width, height)`
+    /// that shows all of its content on every axis that is free to
+    /// hug, including the scrollbar the OTHER axis needs.
+    ///
+    /// This is what lets a grid fit its content ("exactly as tall as
+    /// its rows, scrolling sideways") with plain layout styles instead
+    /// of an author-side scrollbar allowance: a native backend reports
+    /// it to the layout engine as the grid's measured content size,
+    /// and the browser computes the same thing for the web grid's
+    /// `overflow: auto` box (a horizontal scrollbar adds its thickness
+    /// to an auto height). Native backends whose scrollers overlay the
+    /// content (UIKit, Android, AppKit's overlay style) pass a `gutter`
+    /// of `0.0`.
+    ///
+    /// - `known` — the dimensions the layout engine has already fixed
+    ///   (a stretched cross axis, an author `width`/`height`). They
+    ///   are returned unchanged.
+    /// - `available` — the definite space the grid is laid out in, per
+    ///   axis; `None` when that axis is unbounded (max-/min-content).
+    ///   An axis scrolls when its content exceeds this box.
+    /// - `gutter` — thickness one scrollbar takes from the box.
+    ///
+    /// A scrollbar on one axis takes `gutter` from the other axis's
+    /// box, which can push THAT axis into scrolling too — content that
+    /// fit by less than a scrollbar's thickness. The two checks below
+    /// settle that cascade; it can't flip back, since a scrollbar only
+    /// ever removes space.
+    pub fn intrinsic_size(
+        &self,
+        known: (Option<f32>, Option<f32>),
+        available: (Option<f32>, Option<f32>),
+        gutter: f32,
+    ) -> (f32, f32) {
+        let (cw, ch) = self.content_size();
+        let g = if gutter.is_finite() { gutter.max(0.0) } else { 0.0 };
+        let box_w = known.0.or(available.0);
+        let box_h = known.1.or(available.1);
+        let overflows = |content: f32, extent: Option<f32>, taken: f32| {
+            extent.is_some_and(|e| content > e - taken)
+        };
+        let mut scroll_x = overflows(cw, box_w, 0.0);
+        let mut scroll_y = overflows(ch, box_h, 0.0);
+        // Cascade: each axis re-checked against the space the other's
+        // scrollbar leaves it. Two rounds reach the fixed point.
+        for _ in 0..2 {
+            scroll_x = scroll_x || (scroll_y && overflows(cw, box_w, g));
+            scroll_y = scroll_y || (scroll_x && overflows(ch, box_h, g));
+        }
+        (
+            known.0.unwrap_or(cw + if scroll_y { g } else { 0.0 }),
+            known.1.unwrap_or(ch + if scroll_x { g } else { 0.0 }),
         )
     }
 }
@@ -504,5 +571,69 @@ mod tests {
         assert!(w.contains(2, 6));
         assert!(!w.contains(0, 6));
         assert!(!GridWindow::EMPTY.contains(0, 0));
+    }
+
+    // -----------------------------------------------------------------
+    // intrinsic_size — what a fit-to-content grid reports to layout.
+    // The CrewForge report: a grid exactly as tall as its rows that
+    // scrolls sideways lost its last row to a classic horizontal
+    // scrollbar, and the app had to guess a SCROLLBAR_ALLOWANCE.
+    // -----------------------------------------------------------------
+
+    /// 10 columns × 120 = 1200 wide, 3 rows × 40 = 120 tall.
+    fn wide_grid() -> GridMetrics {
+        GridMetrics::build(10, 3, &|_| 120.0, &|_| 40.0)
+    }
+
+    /// Regression (CrewForge, "a grid cannot fit its content"): a grid
+    /// wider than its 390-wide box hugs its rows PLUS the horizontal
+    /// scrollbar, so the rows never lose space to it and no vertical
+    /// scroll appears.
+    #[test]
+    fn regression_fit_height_includes_the_horizontal_scrollbar() {
+        let (w, h) = wide_grid().intrinsic_size((Some(390.0), None), (Some(390.0), None), 15.0);
+        assert_eq!((w, h), (390.0, 135.0));
+    }
+
+    /// Overlay scrollers (every native backend) take no space: the hug
+    /// height is exactly the rows — no allowance to subtract on a Mac.
+    #[test]
+    fn overlay_scrollbars_add_nothing() {
+        let (_, h) = wide_grid().intrinsic_size((Some(390.0), None), (Some(390.0), None), 0.0);
+        assert_eq!(h, 120.0);
+    }
+
+    /// Content that fits on both axes reserves no gutter at all.
+    #[test]
+    fn content_that_fits_reserves_no_gutter() {
+        let size = wide_grid().intrinsic_size((None, None), (Some(2000.0), Some(800.0)), 15.0);
+        assert_eq!(size, (1200.0, 120.0));
+    }
+
+    /// An unbounded axis never scrolls, so it hugs its content.
+    #[test]
+    fn unbounded_axes_hug_content() {
+        assert_eq!(wide_grid().intrinsic_size((None, None), (None, None), 15.0), (1200.0, 120.0));
+    }
+
+    /// The cascade: rows that fit the 130 box by less than a scrollbar
+    /// (120 + 15 > 130) are pushed into scrolling by the horizontal bar,
+    /// which then puts a vertical bar on the hugging WIDTH axis.
+    #[test]
+    fn a_scrollbar_that_steals_the_last_pixels_cascades_to_the_other_axis() {
+        let m = GridMetrics::build(10, 3, &|_| 120.0, &|_| 40.0);
+        let (w, h) = m.intrinsic_size((None, Some(130.0)), (Some(390.0), None), 15.0);
+        assert_eq!(h, 130.0, "known height is returned unchanged");
+        // Width box 390 < 1200 → horizontal bar → 120 > 130 - 15 → vertical bar.
+        assert_eq!(w, 1215.0, "hugging width adds the vertical bar the cascade created");
+    }
+
+    /// A known dimension always wins, and a nonsense gutter is ignored.
+    #[test]
+    fn known_dimensions_win_and_bad_gutters_are_ignored() {
+        let m = wide_grid();
+        assert_eq!(m.intrinsic_size((Some(50.0), Some(60.0)), (None, None), 15.0), (50.0, 60.0));
+        assert_eq!(m.intrinsic_size((Some(390.0), None), (None, None), f32::NAN).1, 120.0);
+        assert_eq!(m.intrinsic_size((Some(390.0), None), (None, None), -4.0).1, 120.0);
     }
 }

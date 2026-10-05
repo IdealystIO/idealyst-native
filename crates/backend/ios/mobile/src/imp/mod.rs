@@ -4368,6 +4368,15 @@ impl IosBackend {
         // in runtime-layout.
         self.layout.set_overflow_scroll(layout, false);
         self.layout.set_overflow_scroll(layout, true);
+        // Report the grid's content size so an author can FIT it
+        // (`flex_grow: 0` + `flex_basis: auto`) instead of pinning a
+        // parent to `rows × row_height`. Gutter 0: UIScrollView's
+        // indicators overlay the content and reserve no space. The
+        // seeding above still makes an unstyled grid fill.
+        if let Some(metrics) = virtual_grid::live_metrics(&self.virtual_grid_registry, &view) {
+            self.layout
+                .set_measure_fn(layout, runtime_layout::grid_intrinsic_measure(metrics, 0.0));
+        }
         let node = IosNode::View(view);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node

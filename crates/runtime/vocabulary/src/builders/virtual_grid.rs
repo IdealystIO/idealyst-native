@@ -31,6 +31,20 @@ use crate::style_attach::IntoStyleProp;
 /// .on_scroll(move |x, y| header_offset.set(x))
 /// ```
 ///
+/// # Sizing
+///
+/// By default the grid **fills** its parent, like every scroll viewport,
+/// and scrolls whatever does not fit. To make it **fit its content**,
+/// for example exactly as tall as its rows while it scrolls sideways,
+/// style it `flex_grow: 0` + `flex_basis: auto`. The grid then
+/// reports its content size, plus the scrollbar the other axis needs
+/// where scrollbars take space (a browser with classic scrollbars). The
+/// last row is never covered by the horizontal bar, and the grid does
+/// not scroll vertically. Native scrollers overlay their content, so
+/// there the fit is exactly the rows. Add `max_height` to cap the fit.
+/// Don't pin a parent to `rows × row_height`: that leaves no room for
+/// the scrollbar.
+///
 /// Reach for [`virtualizer`](super::virtualizer) instead when only one
 /// axis scrolls: its lanes wrap items across a fixed viewport, which
 /// is a different (and cheaper) model than scrollable columns.

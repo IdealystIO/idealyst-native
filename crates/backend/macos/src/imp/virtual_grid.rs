@@ -149,8 +149,24 @@ fn build_metrics(cb: &GridCallbacks<MacosNode>) -> GridMetrics {
     )
 }
 
+/// The grid's live metrics cell — the one [`data_changed`] rebuilds —
+/// for the intrinsic-size measure_fn `create_virtual_grid_impl`
+/// installs (`runtime_layout::grid_intrinsic_measure`).
+pub(crate) fn live_metrics(registry: &GridRegistry, view: &NSView) -> Option<Rc<RefCell<GridMetrics>>> {
+    registry
+        .get(&(view as *const NSView as usize))
+        .map(|inst| inst.metrics.clone())
+}
+
 pub(crate) fn data_changed(backend: &mut crate::imp::MacosBackend, node: &MacosNode) {
     data_changed_in(&mut backend.virtual_grid_registry, node);
+    // New counts/sizes are a new intrinsic size: flag the node so the
+    // pass armed below re-runs its measure_fn, or a fit-to-content grid
+    // keeps its old (often empty → 0) height after an async load.
+    if let MacosNode::View(view) = node {
+        let layout = backend.layout_for_view(view);
+        backend.layout.mark_dirty(layout);
+    }
     // The one queueing path with no layout pass already behind it, so
     // it arms the drain itself. Safe where `queue_sync` is not: this
     // fires on a real data change, not once per pass.
@@ -759,5 +775,65 @@ mod pending_tests {
         data_changed_in(&mut f.registry, &f.node);
         drain_pending();
         assert_eq!((f.mounts.get(), f.releases.get()), (4, 0));
+    }
+}
+
+#[cfg(test)]
+mod intrinsic_size_tests {
+    //! The grid's intrinsic size through a REAL `MacosBackend`: the
+    //! measure_fn `create_virtual_grid_impl` installs, and the
+    //! re-measure `data_changed` triggers.
+    use super::*;
+    use std::cell::Cell;
+
+    /// Regression (CrewForge: "a grid cannot fit its content"). A grid
+    /// styled to fit (`flex_grow: 0` + `flex_basis: auto`) inside a
+    /// 390×725 column must be exactly as tall as its rows — and follow
+    /// them when the row count changes, which only happens if
+    /// `data_changed` dirties the node (Taffy caches the old measure).
+    #[test]
+    fn regression_fit_content_grid_is_as_tall_as_its_rows_and_follows_them() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = crate::imp::MacosBackend::new(mtm);
+        let rows = Rc::new(Cell::new(3usize));
+        let r = rows.clone();
+        let callbacks = GridCallbacks::<MacosNode> {
+            // 30 × 120 = 3600 wide: far wider than the 390 column.
+            col_count: Rc::new(|| 30),
+            row_count: Rc::new(move || r.get()),
+            col_width: Rc::new(|_| 120.0),
+            row_height: Rc::new(|_| 40.0),
+            cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+            mount_cell: Rc::new(move |_, _| {
+                let view: Retained<NSView> =
+                    Retained::into_super(crate::imp::view::FlippedView::new(mtm));
+                (MacosNode::View(view), 0)
+            }),
+            release_cell: Rc::new(|_| {}),
+            on_scroll: None,
+        };
+        let node = backend.create_virtual_grid_impl(callbacks, 1.0, &Default::default());
+        let grid = backend.layout_of(node.as_view()).expect("grid has a layout node");
+        let mut fit = runtime_shared::StyleRules::default();
+        fit.flex_grow = Some(0.0f32.into());
+        fit.flex_basis = Some(runtime_shared::Length::Auto.into());
+        backend.layout.set_style(grid, &fit);
+        let root = backend.layout.new_node();
+        let mut rs = runtime_shared::StyleRules::default();
+        rs.width = Some(runtime_shared::Length::Px(390.0).into());
+        rs.height = Some(runtime_shared::Length::Px(725.0).into());
+        backend.layout.set_style(root, &rs);
+        backend.layout.add_child(root, grid);
+
+        backend.layout.compute(root, 390.0, 725.0);
+        assert_eq!(backend.layout.frame_of(grid).height, 120.0, "3 rows × 40, no gutter (overlay scrollers)");
+
+        rows.set(5);
+        backend.virtual_grid_data_changed_impl(&node);
+        backend.layout.compute(root, 390.0, 725.0);
+        assert_eq!(backend.layout.frame_of(grid).height, 200.0, "re-measured to 5 rows");
+
+        backend.release_virtual_grid_impl(&node);
+        drain_pending();
     }
 }

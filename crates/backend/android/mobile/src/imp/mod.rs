@@ -3193,6 +3193,17 @@ impl AndroidBackend {
         let taffy = self.layout_for_view(&node);
         self.layout.set_overflow_scroll(taffy, false);
         self.layout.set_overflow_scroll(taffy, true);
+        // Report the grid's content size so an author can FIT it
+        // (`flex_grow: 0` + `flex_basis: auto`) instead of pinning a
+        // parent to `rows × row_height`. Gutter 0: Android scrollbars
+        // draw inside-overlay and reserve no space. The seeding above
+        // still makes an unstyled grid fill.
+        let key = node.as_obj().as_raw() as usize;
+        if let Some(state) = self.virtual_grid_registry.get(&key) {
+            let metrics = state.metrics.clone();
+            self.layout
+                .set_measure_fn(taffy, runtime_layout::grid_intrinsic_measure(metrics, 0.0));
+        }
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));
         node
     }

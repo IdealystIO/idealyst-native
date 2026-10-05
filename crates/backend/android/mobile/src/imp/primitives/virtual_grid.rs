@@ -36,7 +36,10 @@ struct MountedCell {
 pub(crate) struct GridState {
     pub(crate) grid_view: GlobalRef,
     pub(crate) callbacks: RefCell<Option<GridCallbacks<GlobalRef>>>,
-    pub(crate) metrics: RefCell<GridMetrics>,
+    /// `Rc` so the intrinsic-size measure_fn
+    /// (`runtime_layout::grid_intrinsic_measure`) reads the same live
+    /// cell [`data_changed`] rebuilds.
+    pub(crate) metrics: Rc<RefCell<GridMetrics>>,
     mounted: RefCell<HashMap<(usize, usize), MountedCell>>,
     last_window: RefCell<Option<GridWindow>>,
     /// Viewport in dp, reported by Kotlin's `onLayout`. Zero until the
@@ -88,7 +91,7 @@ pub(crate) fn create(
             env.new_global_ref(obj).expect("global ref for grid view")
         }),
         callbacks: RefCell::new(Some(callbacks)),
-        metrics: RefCell::new(metrics),
+        metrics: Rc::new(RefCell::new(metrics)),
         mounted: RefCell::new(HashMap::new()),
         last_window: RefCell::new(None),
         viewport: RefCell::new((0.0, 0.0)),
@@ -178,6 +181,11 @@ pub(crate) fn data_changed(backend: &mut AndroidBackend, node: &GlobalRef) {
     *state.metrics.borrow_mut() = m;
     *state.last_window.borrow_mut() = None;
     with_env(|env| apply_content_size(env, &state));
+    // New counts/sizes are a new intrinsic size: flag the node so the
+    // pass armed below re-runs its measure_fn, or a fit-to-content grid
+    // keeps its old (often empty → 0) height after an async load.
+    let layout = backend.layout_for_view(node);
+    backend.layout.mark_dirty(layout);
     sync(backend, key);
     // The one queueing path with no drain already behind it —
     // `viewport_changed` and `on_scroll` are both drained by their JNI
