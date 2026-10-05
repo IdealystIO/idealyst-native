@@ -1,5 +1,7 @@
 # Remote components (spike)
 
+> To use remote components in an app, read [docs/remote-components.md](../../docs/remote-components.md); how they work inside is [docs/remote-components-internals.md](../../docs/remote-components-internals.md). This README is the development record: the crates, the tests, the measurements and the designs tried along the way.
+
 A remote component (`#[component(remote)]`) is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
 
 Three crates in this directory are published: the loader `remote-host`, the release format `remote-bundle`, and `remote-abi`. The showcase, the example and the spike's fixtures and tests are not. The mechanism itself ships in the framework's own crates, all behind features an app opts into: runtime-world's `bridge`, runtime-vocabulary's `remote` (and `remote-inline`), runtime-shared's `remote-serde`, and the macros (`#[component(remote)]`, `#[derive(Remote)]`, `#[host_fn]`). An app that doesn't enable them gets none of it, and web builds never compile it.
