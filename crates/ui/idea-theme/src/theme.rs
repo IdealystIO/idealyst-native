@@ -1176,12 +1176,13 @@ pub fn idea_theme_palette<T: IdeaTheme>(
 ///
 /// The one-call form of the common case. It gives a statically rendered
 /// site a correct first paint for light and dark readers alike with no
-/// script at all. Apps that also want a manual toggle should drive the
-/// live theme themselves — `install_idea_theme_reactive` on their own
-/// signal — and call
+/// script at all. Its active choice is a one-shot read of the platform
+/// preference rather than a subscription; for a manual toggle between the
+/// pair, call [`set_idea_color_scheme`] (remote code can too: it is a
+/// `#[host_fn]`). An app whose toggle drives more than the theme can
+/// instead run `install_idea_theme_reactive` on its own signal and call
 /// [`install_theme_palettes`](runtime_core::install_theme_palettes)
-/// directly, since this function's active choice is a one-shot read of
-/// the platform preference rather than a subscription.
+/// directly.
 ///
 /// To let a stored choice survive the first paint, stamp
 /// `data-theme="light"|"dark"` on the document element from a small
@@ -1384,6 +1385,31 @@ mod tests {
             // Free the effect's arena slot before thread teardown (see the
             // INSTALL_THEMES_KEEPALIVE test for why).
             super::REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = None);
+        });
+    }
+
+    /// `set_idea_color_scheme` (the host function remote code toggles the
+    /// app's theme with): idea's built-in pair when the app installed none,
+    /// the app's own pair once installed. The pair is installed SWAPPED
+    /// here, so passing proves the installed one is used.
+    #[test]
+    fn set_idea_color_scheme_switches_the_installed_pair() {
+        crate::testing::with_test_world(|| {
+            let light_bg = theme_background(light_theme());
+            let dark_bg = theme_background(dark_theme());
+            install_idea_theme(light_theme());
+
+            set_idea_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, dark_bg.0, "built-in dark with no pair installed");
+            set_idea_color_scheme(runtime_core::ColorScheme::Light);
+            assert_eq!(active_background().0, light_bg.0, "built-in light");
+
+            install_idea_theme_schemes(dark_theme(), light_theme());
+            set_idea_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, light_bg.0, "the installed pair's dark slot");
+            set_idea_color_scheme(runtime_core::ColorScheme::Light);
+            assert_eq!(active_background().0, dark_bg.0, "the installed pair's light slot");
+            SCHEMES.with(|s| *s.borrow_mut() = None);
         });
     }
 
