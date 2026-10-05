@@ -362,6 +362,15 @@ impl<H: Host> Registry<H> {
         self.deferred.contains(&type_id)
     }
 
+    /// Every payload kind with a boot handler, single- or multi-node, in
+    /// no particular order. What a check over "every primitive this
+    /// registry can mount" iterates — e.g. the remote-component codec's
+    /// completeness test, which fails when a builtin lands with no decision
+    /// about whether it can cross from a bundle.
+    pub fn kinds(&self) -> Vec<TypeId> {
+        self.handlers.keys().chain(self.many_handlers.keys()).copied().collect()
+    }
+
     /// How many single-node handlers the BOOT seam installed.
     ///
     /// Boot registration takes `&mut self` and is therefore only reachable

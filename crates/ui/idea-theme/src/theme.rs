@@ -35,6 +35,10 @@ thread_local! {
     /// the caller. Single-slot, so repeated installs supersede rather than
     /// leak — same posture as `theme_runtime::INSTALL_THEMES_KEEPALIVE`.
     static REACTIVE_THEME_KEEPALIVE: RefCell<Option<Subscription>> = const { RefCell::new(None) };
+
+    /// The light/dark pair [`install_idea_theme_schemes`] installed, for
+    /// [`set_idea_color_scheme`] to switch between.
+    static SCHEMES: RefCell<Option<(Rc<dyn IdeaTheme>, Rc<dyn IdeaTheme>)>> = const { RefCell::new(None) };
 }
 
 /// The default body font for every idea-ui text surface.
@@ -1103,6 +1107,30 @@ pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     set_theme(theme);
 }
 
+/// Switch the app between its light and dark themes — the pair
+/// [`install_idea_theme_schemes`] installed, or idea's built-in
+/// [`light_theme`] / [`dark_theme`] if the app installed none. `Auto`
+/// follows the platform's preference.
+///
+/// A `#[host_fn]`: remote code calling it switches the APP's theme (a theme
+/// is the app's state; the bundle has none of its own), which every screen
+/// follows, remote ones through their token stylesheets.
+#[runtime_core::host_fn]
+pub fn set_idea_color_scheme(scheme: runtime_core::ColorScheme) {
+    let dark = match scheme {
+        runtime_core::ColorScheme::Dark => true,
+        runtime_core::ColorScheme::Light => false,
+        runtime_core::ColorScheme::Auto => matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark),
+    };
+    let installed = SCHEMES.with(|s| s.borrow().as_ref().map(|(l, d)| if dark { d.clone() } else { l.clone() }));
+    let theme = match installed {
+        Some(theme) => IdeaThemeRef::from_rc(theme),
+        None => IdeaThemeRef::new(if dark { dark_theme() } else { light_theme() }),
+    };
+    sync_default_text_font(&theme);
+    set_theme(theme);
+}
+
 /// Describe one switchable palette to the framework WITHOUT installing
 /// it — its token set plus the name and system preference it answers to.
 ///
@@ -1148,18 +1176,20 @@ pub fn idea_theme_palette<T: IdeaTheme>(
 ///
 /// The one-call form of the common case. It gives a statically rendered
 /// site a correct first paint for light and dark readers alike with no
-/// script at all. Apps that also want a manual toggle should drive the
-/// live theme themselves — `install_idea_theme_reactive` on their own
-/// signal — and call
+/// script at all. Its active choice is a one-shot read of the platform
+/// preference rather than a subscription; for a manual toggle between the
+/// pair, call [`set_idea_color_scheme`] (remote code can too: it is a
+/// `#[host_fn]`). An app whose toggle drives more than the theme can
+/// instead run `install_idea_theme_reactive` on its own signal and call
 /// [`install_theme_palettes`](runtime_core::install_theme_palettes)
-/// directly, since this function's active choice is a one-shot read of
-/// the platform preference rather than a subscription.
+/// directly.
 ///
 /// To let a stored choice survive the first paint, stamp
 /// `data-theme="light"|"dark"` on the document element from a small
 /// inline `<head>` script; the emitted CSS already answers to it. Keeping
 /// that attribute in sync with later toggles is the app's job.
 pub fn install_idea_theme_schemes<T: IdeaTheme + Clone>(light: T, dark: T) {
+    SCHEMES.with(|s| *s.borrow_mut() = Some((Rc::new(light.clone()), Rc::new(dark.clone()))));
     let prefers_dark = matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
     let active = if prefers_dark { dark.clone() } else { light.clone() };
     install_idea_theme(active);
@@ -1355,6 +1385,31 @@ mod tests {
             // Free the effect's arena slot before thread teardown (see the
             // INSTALL_THEMES_KEEPALIVE test for why).
             super::REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = None);
+        });
+    }
+
+    /// `set_idea_color_scheme` (the host function remote code toggles the
+    /// app's theme with): idea's built-in pair when the app installed none,
+    /// the app's own pair once installed. The pair is installed SWAPPED
+    /// here, so passing proves the installed one is used.
+    #[test]
+    fn set_idea_color_scheme_switches_the_installed_pair() {
+        crate::testing::with_test_world(|| {
+            let light_bg = theme_background(light_theme());
+            let dark_bg = theme_background(dark_theme());
+            install_idea_theme(light_theme());
+
+            set_idea_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, dark_bg.0, "built-in dark with no pair installed");
+            set_idea_color_scheme(runtime_core::ColorScheme::Light);
+            assert_eq!(active_background().0, light_bg.0, "built-in light");
+
+            install_idea_theme_schemes(dark_theme(), light_theme());
+            set_idea_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, light_bg.0, "the installed pair's dark slot");
+            set_idea_color_scheme(runtime_core::ColorScheme::Light);
+            assert_eq!(active_background().0, dark_bg.0, "the installed pair's light slot");
+            SCHEMES.with(|s| *s.borrow_mut() = None);
         });
     }
 

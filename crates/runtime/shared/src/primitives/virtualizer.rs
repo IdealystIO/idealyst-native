@@ -142,6 +142,7 @@ impl ItemSize {
 /// perpendicular to it. In a list the cross axis holds a single item
 /// (it fills the container); in a grid it's subdivided into `Lanes`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Axis {
     /// Scrolls vertically; grid-rows stack top-to-bottom, lanes run
     /// left-to-right. The default.
@@ -167,6 +168,7 @@ impl Axis {
 /// grid-row `i / N`. `AutoFit` derives `N` from the container's
 /// cross-axis extent at layout time.
 #[derive(Clone, Copy, PartialEq, Debug)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Lanes {
     /// A fixed lane count. `Fixed(1)` (the default) is a plain list;
     /// `Fixed(3)` is a three-column grid.
@@ -222,6 +224,7 @@ impl Lanes {
 /// goes through builder methods, never a struct literal at author
 /// sites, so adding a field stays non-breaking for callers.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VirtualLayout {
     /// Scroll direction. Items flow + recycle along this axis.
     pub axis: Axis,

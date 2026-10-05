@@ -1869,9 +1869,15 @@ fn emit_user(
             ..<#props_ty as ::runtime_core::BuildElement>::defaults()
         }
     };
+    // The fields this call site set, by name: a remote bundle's import of
+    // an app component sends only these (`BuildElement::build_set`).
+    let mut set: Vec<String> = props.iter().map(|p| p.name.to_string()).collect();
+    if children.is_some() {
+        set.push("children".to_string());
+    }
     // Under `ui-overlay`, brackets the whole BUILD with this node's
     // address, which the generated `build` reads. A no-op otherwise.
-    crate::ui_overlay::component_props(built, name, node)
+    crate::ui_overlay::component_props(built, name, node, &set)
 }
 
 /// An empty, **layout-neutral** `View`, coerced to `Element` — used as

@@ -55,6 +55,7 @@
 /// units. Documented here so handlers that index into UTF-8 Rust
 /// strings know to convert.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeyEvent {
     /// Spec-compliant key name. See module docs for the vocabulary.
     pub key: String,
@@ -72,6 +73,7 @@ pub struct KeyEvent {
 
 /// What the backend should do after the handler returns.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum KeyOutcome {
     /// Let the platform's default behaviour run (typing the character,
     /// moving focus on Tab, submitting on Enter, …).

@@ -1,0 +1,25 @@
+# spike-camera — a fake camera SDK exposing `#[host_fn]`s
+# (`runtime_core::host_fn`). One definition, compiled into the app (the real
+# functions, plus their allowlist records) and into a bundle (stubs that ask
+# the app to run them). Which build is decided by the vocabulary
+# (`__remote_guest_split!`), so this crate declares no cfg for it.
+
+[package]
+name = "spike-camera"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+runtime-core = { workspace = true }
+# `#[host_fn]` and `#[derive(Remote)]` expand to `::runtime_vocabulary`
+# paths; `remote` is what makes them expand to anything.
+runtime-vocabulary = { workspace = true, features = ["remote"] }
+
+# The fake's shutter timer: app-side machinery, not compiled into bundles.
+[target.'cfg(not(idealyst_stream_guest))'.dependencies]
+runtime-shared = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

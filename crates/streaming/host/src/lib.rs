@@ -1,0 +1,74 @@
+//! Load remote components' bundles into the app.
+//!
+//! A remote bundle is the app's own Rust — `#[component(remote)]`
+//! components, built for wasm32 with `--cfg idealyst_stream_guest` — run
+//! under wasmi. Its reactive kernel is runtime-world's BRIDGED engine, so
+//! every signal, effect, scope and context value it creates lives in the
+//! app's ONE graph, and its trees cross through runtime-vocabulary's
+//! element codec to be realized by the app's own registry and backend.
+//!
+//! - [`kernel`]: the host side of the kernel bridge over wasm
+//!   ([`kernel::KernelBundle`]) — instantiation, the `idealyst_kernel`
+//!   imports, `#[host_fn]` linking, mounting a remote component.
+//! - [`remote`]: the loader `#[component(remote)]` mounts from
+//!   ([`remote::install`], [`remote::install_with`], [`remote::RemoteApp`]).
+//! - [`fetch`]: a minimal HTTP GET for pulling a bundle from `stream-serve`.
+//!
+//! See `crates/streaming/README.md` for the design and its measurements.
+
+pub mod fetch;
+/// The kernel bridge over wasm (host side): a bundle's reactive kernel on
+/// this app's graph.
+pub mod kernel;
+pub mod remote;
+
+/// Why a bundle was refused at load. Every check runs before any bundle
+/// code does.
+#[derive(Debug)]
+pub enum LoadError {
+    /// Not valid wasm, or instantiation failed (e.g. it imports a kernel
+    /// function this app does not define, or lacks a required export).
+    Wasm(wasmi::Error),
+    /// The bundle calls host functions this app does not export (or does
+    /// not allow bundles to call).
+    MissingHostFunctions(Vec<String>),
+    /// Both sides have the host function, with different signatures.
+    IncompatibleHostFunctions(Vec<HostFnMismatch>),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Wasm(e) => write!(f, "bundle failed to load: {e}"),
+            LoadError::MissingHostFunctions(names) => {
+                write!(f, "bundle calls host functions this app does not export: {}", names.join(", "))
+            }
+            LoadError::IncompatibleHostFunctions(list) => {
+                write!(f, "bundle calls host functions whose signature changed: ")?;
+                for (i, m) in list.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} (app {:016x}, bundle {:016x})", m.path, m.app_schema, m.bundle_schema)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+impl From<wasmi::Error> for LoadError {
+    fn from(e: wasmi::Error) -> Self {
+        LoadError::Wasm(e)
+    }
+}
+
+/// A host function both sides have, with different signature fingerprints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostFnMismatch {
+    pub path: String,
+    pub app_schema: u64,
+    pub bundle_schema: u64,
+}

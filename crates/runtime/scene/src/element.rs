@@ -410,7 +410,7 @@ pub type RetireHook = Box<dyn FnMut(Box<dyn Any>)>;
 /// construction runs in the new scope, exactly like the old walker's
 /// `with_scope(|| ...builder()...)`, so effects a builder creates (probe
 /// cleanups, component effects) die with the subtree they belong to.
-pub(crate) enum DynKind {
+pub enum DynKind {
     /// Rebuild on EVERY fire; the closure runs TRACKED (inside the fresh
     /// scope) — its eager signal reads are the rebuild dependencies
     /// (`dynamic.rs` semantics).
@@ -507,6 +507,28 @@ where
         },
         retire: None,
     })
+}
+
+/// A guarded structural hole from its two halves, as [`DynKind::Guarded`]
+/// describes them: `changed` runs tracked and says whether the guard moved,
+/// `build` runs untracked after a `true`. [`dyn_keyed`] is the typed way to
+/// write one; this is for a hole whose halves were taken apart with
+/// [`DynSpec::into_parts`] — a remote component's hole, rebuilt on the host
+/// with each half calling back into the bundle that owns the guard state.
+pub fn dyn_guarded(changed: impl Fn() -> bool + 'static, build: impl Fn() -> Element + 'static) -> Element {
+    Element::Dyn(DynSpec {
+        kind: DynKind::Guarded { changed: Box::new(changed), build: Box::new(build) },
+        retire: None,
+    })
+}
+
+impl DynSpec {
+    /// The hole's closures and retire hook, taken apart — so a remote
+    /// component can send each across the boundary as a callback.
+    /// [`dyn_element`] / [`dyn_guarded`] put them back together.
+    pub fn into_parts(self) -> (DynKind, Option<RetireHook>) {
+        (self.kind, self.retire)
+    }
 }
 
 impl Element {

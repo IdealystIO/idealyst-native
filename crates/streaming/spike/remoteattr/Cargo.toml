@@ -1,0 +1,28 @@
+# `#[component(remote)]` end to end: one source, linked natively by the
+# tests (where the component is a stub that mounts from the bundle) and
+# built for wasm32 by stream-spike's build script (where it is the real
+# component plus its mount export).
+
+[package]
+name = "spike-remoteattr"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["remote"] }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+# A host-function SDK: the remote `Snapshot` calls its `#[host_fn]`s.
+spike-camera = { path = "../camera" }
+# The stack navigator SDK: its `StackHandle` as a remote prop.
+stack-navigator = { path = "../../../sdk/client/navigators/stack" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

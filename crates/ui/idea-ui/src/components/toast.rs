@@ -78,7 +78,7 @@ pub const TOAST_EDGE_GAP: f32 = 16.0;
 
 /// One queued toast. Constructed by the `push_toast*` family / the
 /// [`Toast`] builder; consumed by [`ToastHost`]'s reactive list.
-#[derive(Clone)]
+#[derive(Clone, runtime_core::Remote)]
 pub struct ToastEntry {
     /// Process-unique id. Pass to [`dismiss_toast`] to close early.
     pub id: u64,
@@ -320,8 +320,11 @@ impl Toast {
 
 /// Push a standard toast (default variant, close × on). Returns the
 /// toast's id (pass to [`dismiss_toast`] to close it early).
+///
+/// From remote code it pushes onto the APP's queue (see
+/// [`push_standard_toast`]), where the app's `ToastHost` shows it.
 pub fn push_toast(message: impl Into<String>, tone: impl Into<ToneRef>) -> u64 {
-    Toast::new(message).tone(tone).push()
+    push_standard_toast(message.into(), tone.into(), VariantRef::default())
 }
 
 /// Push a standard toast with an explicit variant.
@@ -330,6 +333,16 @@ pub fn push_toast_with(
     tone: impl Into<ToneRef>,
     variant: impl Into<VariantRef>,
 ) -> u64 {
+    push_standard_toast(message.into(), tone.into(), variant.into())
+}
+
+/// What [`push_toast`] / [`push_toast_with`] do, with a concrete signature:
+/// a `#[host_fn]`, so remote code's toast lands on the app's queue (the
+/// queue is the app's; a bundle's own copy has no `ToastHost`). The tone and
+/// variant cross by key. Toasts built from closures — a [`Toast`] with an
+/// `action`, [`push_toast_node`] — stay in whichever side builds them.
+#[runtime_core::host_fn]
+pub fn push_standard_toast(message: String, tone: ToneRef, variant: VariantRef) -> u64 {
     Toast::new(message).tone(tone).variant(variant).push()
 }
 
@@ -372,7 +385,9 @@ fn enqueue(build: impl FnOnce(u64) -> ToastEntry) -> u64 {
 }
 
 /// Begin dismissing a toast immediately (e.g. on a close click). The
-/// card animates out, then removes itself.
+/// card animates out, then removes itself. A `#[host_fn]`: from remote
+/// code it dismisses the app's toast.
+#[runtime_core::host_fn]
 pub fn dismiss_toast(id: u64) {
     let Some(q) = queue_for_push() else { return };
     if q.with_untracked(|v| v.iter().any(|e| e.id == id)) {
@@ -493,7 +508,7 @@ runtime_core::stylesheet! {
 /// Where the toast stack anchors on the viewport — any of the nine
 /// regions of a 3×3 grid (the three vertical bands × the three
 /// horizontal bands). Default [`BottomLeft`](ToastPlacement::BottomLeft).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum ToastPlacement {
     /// Top edge, hugging the leading (left) side.
     TopLeft,

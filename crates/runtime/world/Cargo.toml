@@ -28,6 +28,19 @@ license.workspace = true
 # together: a patch with no re-run changes nothing on screen, and a
 # re-run with no carried state resets the app on every save.
 hot-reload = []
+# Run the crate through the bridged engine (remote components, `src/bridge`)
+# wired to a native host in-process, instead of the native engine directly.
+# A TEST configuration: `cargo test -p runtime-world --features
+# loopback-engine` runs the whole kernel suite through the bridge, which is
+# what keeps it in behavioural lockstep with the native engine. Not for apps,
+# and not combined with `hot-reload` (the state carrier reads native slots).
+loopback-engine = ["bridge"]
+# Compile the bridged engine (`src/bridge`): what a remote-component host
+# (the app side) and a remote bundle link. Off for every other app — see the
+# note on `mod bridge` in `src/lib.rs` for why it is not always compiled.
+# On a web build (wasm32, not a bundle) it does nothing: remote components
+# are a native mechanism.
+bridge = []
 
 [dependencies]
 # Fast FxHash for the kernel's maps (world registry, per-world context).
@@ -35,3 +48,8 @@ hot-reload = []
 # default SipHash's cryptographic resistance is wasted cost on the hottest
 # path (same rationale as runtime-core's reactive collections).
 rustc-hash = { workspace = true }
+
+[lints.rust]
+# `idealyst_stream_guest`: set (as a rustc `--cfg`) only by a remote bundle's
+# build; selects the bridged engine over wasm imports. See `src/bridge/wasm.rs`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

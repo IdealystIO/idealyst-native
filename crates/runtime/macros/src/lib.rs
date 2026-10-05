@@ -80,6 +80,9 @@ use runtime_macros_parse::primitives;
 use runtime_macros_parse::recovery;
 mod props_attr;
 mod reactivity;
+mod remote_component;
+mod remote_derive;
+mod host_fn;
 mod stylesheet;
 mod ui;
 mod ui_overlay;
@@ -102,6 +105,21 @@ fn finish(out: proc_macro2::TokenStream) -> TokenStream {
 /// cannot be constructed outside a real macro invocation).
 fn finish2(out: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     new_core::retarget(out)
+}
+
+/// `#[derive(Remote)]` — let a value type cross between an app and its
+/// remote bundles (an app component's prop set by remote code, a remote
+/// component's prop, context), field by field. A field type that can't
+/// cross fails by name when a value does, never at compile time; the whole
+/// expansion is empty unless the app hosts remote components. See
+/// `remote_derive`.
+#[proc_macro_derive(Remote)]
+pub fn derive_remote(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as syn::DeriveInput);
+    match remote_derive::derive(parsed) {
+        Ok(out) => out.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
 }
 
 /// `#[derive(IdealystSchema)]` — registers a props struct's per-field
@@ -304,6 +322,42 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
     finish(stylesheet::emit(parsed, content_hash))
 }
 
+/// `#[host_fn]` — an app function remote code can call: the function in the
+/// app, a stub asking the app to run it in a remote bundle. Arguments and
+/// result cross as `RemoteValue`s. See `host_fn`.
+#[proc_macro_attribute]
+pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(proc_macro2::Span::call_site(), "#[host_fn] takes no arguments").to_compile_error().into();
+    }
+    let func = parse_macro_input!(item as syn::ItemFn);
+    match host_fn::expand(func) {
+        Ok(out) => out.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
+/// field `T` → `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!`
+/// and have it carry through live, while plain values stay zero-overhead
+/// `Static` snapshots. Handlers, children, refs, and existing reactive
+/// sources are left alone (see [`props_attr`]); per-field `#[prop(static)]`
+/// / `#[prop(reactive)]` override the heuristic. Place ABOVE the derives:
+///
+/// ```ignore
+/// #[props]
+/// #[derive(IdealystSchema)]
+/// pub struct FooProps {
+///     content: String,                 // → Reactive<String>
+///     #[prop(static)] size: FooSize,   // stays FooSize
+///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    finish(props_attr::emit(item.into()))
+}
+
 /// `#[component]` — annotates a component function. Rewrites its body for
 /// reactivity (cloning parameter-rooted paths into reactive closures) and
 /// emits the dispatch glue `ui!`/`jsx!` target: a `pub type Name =
@@ -340,27 +394,6 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 ///   form only; inline props use `#[prop(default = …)]`).
 /// - `children` — mark this component as a container (informational; the
 ///   invocation macro is unchanged).
-/// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
-/// field `T` → `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!`
-/// and have it carry through live, while plain values stay zero-overhead
-/// `Static` snapshots. Handlers, children, refs, and existing reactive
-/// sources are left alone (see [`props_attr`]); per-field `#[prop(static)]`
-/// / `#[prop(reactive)]` override the heuristic. Place ABOVE the derives:
-///
-/// ```ignore
-/// #[props]
-/// #[derive(IdealystSchema)]
-/// pub struct FooProps {
-///     content: String,                 // → Reactive<String>
-///     #[prop(static)] size: FooSize,   // stays FooSize
-///     on_change: Rc<dyn Fn(String)>,   // left alone (handler)
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    finish(props_attr::emit(item.into()))
-}
-
 #[proc_macro_attribute]
 pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr = match component_attr::parse_component_attr(attr.into()) {
@@ -406,10 +439,36 @@ pub(crate) fn emit_component_tokens(
     item: proc_macro2::TokenStream,
     hot_split: bool,
 ) -> proc_macro2::TokenStream {
-    let mut item_fn = match syn::parse2::<ItemFn>(item) {
+    let item_fn = match syn::parse2::<ItemFn>(item) {
         Ok(f) => f,
         Err(e) => return e.to_compile_error(),
     };
+    emit_component_fn(attr, item_fn, hot_split, None)
+}
+
+/// [`emit_component_tokens`], parsed. `authored` is the body as the author
+/// wrote it, for the catalog's walks (`composes`, `animations`): the remote
+/// split hands its rewritten fn back through here, and its body is then a
+/// build-kind macro the walks can't see into.
+fn emit_component_fn(
+    attr: component_attr::ComponentAttr,
+    mut item_fn: ItemFn,
+    hot_split: bool,
+    authored: Option<syn::Block>,
+) -> proc_macro2::TokenStream {
+    #[cfg_attr(not(feature = "catalog"), allow(unused_variables))]
+    let authored = authored.unwrap_or_else(|| (*item_fn.block).clone());
+    // `#[component(remote)]`: split the body off by build kind, then run the
+    // rewritten fn through this same emission as an ordinary component.
+    if attr.remote {
+        let (component, extra) = match remote_component::prepare(item_fn) {
+            Ok(r) => r,
+            Err(e) => return e.to_compile_error(),
+        };
+        let attr = component_attr::ComponentAttr { remote: false, no_import: true, ..attr };
+        let emitted = emit_component_fn(attr, component, hot_split, Some(authored));
+        return quote::quote! { #emitted #extra };
+    }
     // Unmigrated-shape rejection — loud, named, never silent (repo
     // rule: an unmigrated feature must fail with its migration status).
     //
@@ -495,7 +554,14 @@ pub(crate) fn emit_component_tokens(
     // BEFORE the body rewrites so `reactivity::rewrite` sees the final
     // parameter list, and before re-emission so rustc never sees the param
     // attrs. `None` → classic explicit-props path, unchanged.
-    let inline_glue = match inline_props::try_expand(&mut item_fn, &attr) {
+    // Whether a bundle imports this component from the app, decided once:
+    // the inline glue's `build_set` and `import_split` below must agree.
+    let import_key = remote_component::import_key(
+        &item_fn,
+        &attr,
+        bind_to_injected || methods_block::has_method_fns(&item_fn),
+    );
+    let inline_glue = match inline_props::try_expand(&mut item_fn, &attr, import_key.as_ref()) {
         Ok(g) => g,
         Err(e) => return e.to_compile_error(),
     };
@@ -532,6 +598,17 @@ pub(crate) fn emit_component_tokens(
         Err(e) => return e.to_compile_error(),
     };
     reactivity::rewrite(&mut item_fn);
+
+    // Every component not marked `remote` lives in the app binary: in a
+    // bundle build its body is replaced by an import of the app's copy, and
+    // in a native app it registers itself for bundles to import (both
+    // no-ops unless the build hosts or is a remote bundle).
+    let import = remote_component::import_split(
+        &mut item_fn,
+        &attr,
+        inline_glue.is_some(),
+        bind_to_injected || !method_infos.is_empty(),
+    );
 
     // NEW-core body semantics: a component runs ONCE, untracked, with
     // every signal/effect it creates collected into an `Owned` scope
@@ -573,9 +650,10 @@ pub(crate) fn emit_component_tokens(
 
     // Inline mode brings its own dispatch glue (struct + Default +
     // BuildElement); the legacy path derives it from the props-struct sig.
+    let import_registration = import.registration.clone();
     let invocation = match inline_glue {
         Some(glue) => glue,
-        None => invocation_macro::generate_build_impl(&item_fn, &attr),
+        None => invocation_macro::generate_build_impl(&item_fn, &attr, import.explicit_name.as_ref()),
     };
 
     // When the `catalog` feature is on, emit an inventory submission so the
@@ -583,8 +661,10 @@ pub(crate) fn emit_component_tokens(
     // submission is a sibling of the function so the linker-section
     // magic in `inventory` works as expected. When the feature is off,
     // this expands to an empty token stream — zero overhead.
+    // The walks read `authored`: `import_split` above has replaced this
+    // body with a build-kind macro they can't see into.
     #[cfg(feature = "catalog")]
-    let mcp_registration = mcp_emit::emit(&item_fn, &method_infos);
+    let mcp_registration = mcp_emit::emit(&item_fn, &authored, &method_infos);
     #[cfg(not(feature = "catalog"))]
     let mcp_registration = {
         let _ = &method_infos;
@@ -643,6 +723,7 @@ pub(crate) fn emit_component_tokens(
         #invocation
         #mcp_registration
         #external_registration
+        #import_registration
     })
 }
 

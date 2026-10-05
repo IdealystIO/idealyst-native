@@ -1,0 +1,16 @@
+# The spike's remote components: an ordinary crate of `#[component]`s,
+# linked natively by the app (the native baseline) and wrapped as a bridged
+# remote component by spike-remoteguest.
+
+[package]
+name = "spike-components"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+runtime-core = { workspace = true }
+# `ui!` expands to `::runtime_vocabulary::glue::…` paths.
+runtime-vocabulary = { workspace = true }
+runtime-world = { workspace = true }

@@ -136,6 +136,20 @@ pub struct SwapHandle {
     inner: NavHandle,
 }
 
+// Lets a `SwapHandle` (or a `Ref` to one) be a remote component's prop: the
+// handle crosses as the navigator it wraps. A no-op unless the vocabulary's
+// `remote` support is on.
+runtime_vocabulary::__remote_nav_handle!(SwapHandle);
+
+impl runtime_vocabulary::prims::NavHandleType for SwapHandle {
+    fn nav_handle(&self) -> &NavHandle {
+        &self.inner
+    }
+    fn from_nav_handle(handle: NavHandle) -> Self {
+        Self { inner: handle }
+    }
+}
+
 impl SwapHandle {
     /// Wrap the vocabulary handle (called by the `.bind` glue; authors
     /// get one from [`SwapBuilder::bind`]).

@@ -190,6 +190,123 @@ pub mod glue;
 pub mod glue_lazy;
 pub mod handlers;
 pub mod prims;
+#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+pub mod remote;
+
+/// `#[component]`'s emission for this build: a remote bundle build (the
+/// vocabulary's `idealyst_stream_guest`), where an app component's body is
+/// replaced by an import of the app's copy, or any other build. Chosen by
+/// the VOCABULARY's flag, so a crate using `#[component]` declares no cfg
+/// (an emitted `#[cfg(idealyst_stream_guest)]` warned in every such crate).
+#[cfg(idealyst_stream_guest)]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_guest_split {
+    (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($b)* };
+}
+#[cfg(not(idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_guest_split {
+    (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($a)* };
+}
+
+/// `#[component(remote)]`'s emission for this build: where the body is
+/// compiled (a remote bundle, or a web app — remote is a native mechanism)
+/// `body`, else `native` (an app that mounts the component from a bundle).
+/// The vocabulary's flags decide, so the component's crate declares no cfg.
+#[cfg(any(idealyst_stream_guest, target_arch = "wasm32"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_component {
+    (body: { $($b:tt)* } native: { $($n:tt)* }) => { $($b)* };
+}
+#[cfg(not(any(idealyst_stream_guest, target_arch = "wasm32")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_component {
+    (body: { $($b:tt)* } native: { $($n:tt)* }) => { $($n)* };
+}
+
+/// A native app mounting a remote component needs the vocabulary's
+/// `remote` feature (the real macro lives in `remote`): without it, say so.
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_native_body {
+    ($($t:tt)*) => {
+        // Braced: valid in item and expression position alike.
+        ::core::compile_error! {
+            "#[component(remote)] in a native app needs runtime-vocabulary's `remote` feature: \
+             the app mounts the component from a bundle"
+        }
+    };
+}
+
+/// `#[derive(Remote)]`'s output: kept in a build that hosts or is a remote
+/// bundle, dropped (unexpanded) everywhere else — so a library can derive
+/// it unconditionally and cost nothing in apps without remote components.
+#[cfg(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_enabled {
+    ($($t:tt)*) => { $($t)* };
+}
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_enabled {
+    ($($t:tt)*) => {};
+}
+
+// What `#[component]` / `#[props]` emit for remote components, as no-ops in
+// every build that neither hosts nor is a remote bundle (the real ones live
+// in `remote`). Each pair's cfgs are exact complements.
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_nav_handle {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_props {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_keyed {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_key {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_app_component {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest), any(idealyst_stream_guest, feature = "remote-loopback"))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_import {
+    // Only ever expanded in a remote bundle build (`__remote_guest_split!`'s
+    // bundle branch), so reaching this twin means that build lacks the
+    // vocabulary's `remote` feature: say so at compile time, rather than
+    // compile a bundle whose every app component traps.
+    ($($t:tt)*) => {
+        ::core::compile_error! {
+            "a remote bundle build needs runtime-vocabulary's `remote` feature: \
+             it imports the app's components"
+        }
+    };
+}
 #[cfg(feature = "robot")]
 pub mod robot;
 #[cfg(feature = "robot")]

@@ -331,6 +331,20 @@ pub struct StackHandle {
     inner: NavHandle,
 }
 
+// Lets a `StackHandle` (or a `Ref` to one) be a remote component's prop: the
+// handle crosses as the navigator it wraps. A no-op unless the vocabulary's
+// `remote` support is on.
+runtime_vocabulary::__remote_nav_handle!(StackHandle);
+
+impl runtime_vocabulary::prims::NavHandleType for StackHandle {
+    fn nav_handle(&self) -> &NavHandle {
+        &self.inner
+    }
+    fn from_nav_handle(handle: NavHandle) -> Self {
+        Self { inner: handle }
+    }
+}
+
 impl StackHandle {
     /// Wrap the vocabulary handle (called by the `.bind` glue).
     pub fn from_inner(inner: NavHandle) -> Self {

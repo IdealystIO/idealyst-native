@@ -1,0 +1,55 @@
+# A shopping-style app whose screens come from a remote bundle: a native
+# tab shell, a remote feed, a remote shop that defines its own navigator,
+# native settings driving context the remote screens read. The components
+# live in `src/lib.rs`, which `../bundle` compiles as the bundle; the
+# desktop window is `src/main.rs` (`cargo run --release -p
+# remote-showcase`); the CLI's iOS/Android shells mount `app()` from the lib
+# (`idealyst build --ios --release` from this directory).
+
+[package]
+name = "remote-showcase"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "remote-showcase"
+path = "src/main.rs"
+
+[features]
+# Run the remote screens in-process (the same source, compiled natively)
+# instead of from the bundle: the native baseline `examples/measure.rs`
+# compares against, and the flow test's second run.
+inline = ["runtime-vocabulary/remote-inline"]
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["remote"] }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-shared = { workspace = true }
+stream-host = { path = "../../host" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+host-appkit = { workspace = true }
+
+# The benchmark reads resident memory from the kernel (`task_info`).
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+host-mock = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Remote Showcase"
+bundle_id = "ai.truday.idealyst.remoteshowcase"
+version   = "0.0.1"
+targets   = ["ios", "android", "macos"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

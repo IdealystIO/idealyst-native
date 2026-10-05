@@ -18,8 +18,11 @@ use runtime_core::{component, ui, Element, IdealystSchema};
 use crate::stylesheets::Spacer as SpacerStyle;
 
 /// Props for [`Spacer`]. None — the component is configuration-free.
+/// `#[props]` still matters: it is what lets remote code use the app's
+/// `Spacer` (an empty props crossing).
+#[runtime_core::props]
 #[derive(Default, IdealystSchema)]
-pub struct SpacerProps;
+pub struct SpacerProps {}
 
 /// An empty `flex-grow: 1` item. Drop it between siblings in a row/
 /// column `Stack` to push them to opposite ends without computing

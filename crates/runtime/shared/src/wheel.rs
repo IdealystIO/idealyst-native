@@ -36,6 +36,7 @@ use crate::touch::{TouchPoint, TouchResponse};
 /// `match` on this must include a `_` arm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum WheelKind {
     /// A two-finger trackpad scroll or a mouse scroll-wheel notch. Carried by
     /// [`WheelEvent::delta_x`] / [`WheelEvent::delta_y`].
@@ -59,6 +60,7 @@ pub enum WheelKind {
 /// "backends diverge in mechanism, converge in observable output" rule applied
 /// to input.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WheelEvent {
     /// Whether this is a scroll or a zoom. See [`WheelKind`].
     pub kind: WheelKind,

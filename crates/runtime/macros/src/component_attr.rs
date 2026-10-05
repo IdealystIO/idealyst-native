@@ -53,6 +53,15 @@ pub(crate) struct ComponentAttr {
     /// `lazy`. Without it the loader is one-shot (props move once, no `Clone`
     /// bound) and the error UI is message-only.
     pub(crate) retryable: bool,
+    /// `#[component(remote)]` — the component ships in a remote bundle
+    /// (crates/streaming): a native app build replaces its body with a
+    /// stub that mounts it from the bundle; the bundle build
+    /// (`--cfg idealyst_stream_guest`) compiles the body plus a mount
+    /// export. A no-op on web. See `remote_component.rs`.
+    pub(crate) remote: bool,
+    /// Set on the re-emission of a `remote` component's fn: it is the
+    /// bundle's own, never an import of the app's.
+    pub(crate) no_import: bool,
 }
 
 impl ComponentAttr {
@@ -63,6 +72,8 @@ impl ComponentAttr {
             external: None,
             lazy: false,
             retryable: false,
+            remote: false,
+            no_import: false,
         }
     }
 }
@@ -96,6 +107,7 @@ impl Parse for ComponentAttr {
         let mut external = None;
         let mut lazy = false;
         let mut retryable = false;
+        let mut remote = false;
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             match ident.to_string().as_str() {
@@ -110,6 +122,9 @@ impl Parse for ComponentAttr {
                 }
                 "retryable" => {
                     retryable = true;
+                }
+                "remote" => {
+                    remote = true;
                 }
                 "default" => {
                     let content;
@@ -155,7 +170,7 @@ impl Parse for ComponentAttr {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unexpected argument `{}`; only `default(...)`, `children`, `external`, `lazy`, and `retryable` are supported",
+                            "unexpected argument `{}`; only `default(...)`, `children`, `external`, `lazy`, `remote`, and `retryable` are supported",
                             other
                         ),
                     ));
@@ -172,7 +187,15 @@ impl Parse for ComponentAttr {
                 "`retryable` only applies to a lazy component; use `#[component(lazy, retryable)]`",
             ));
         }
-        Ok(ComponentAttr { defaults, has_children, external, lazy, retryable })
+        if remote && lazy {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`remote` and `lazy` can't be combined yet: `remote` already compiles to the \
+                 plain component on web, and the lazy split of that web build is not wired \
+                 through the remote emission",
+            ));
+        }
+        Ok(ComponentAttr { defaults, has_children, external, lazy, retryable, remote, no_import: false })
     }
 }
 

@@ -154,6 +154,9 @@ pub struct Shared {
     pub press_handlers: RefCell<Vec<Rc<dyn Fn()>>>,
     /// Button actions (`Action::fire`).
     pub button_presses: RefCell<Vec<Rc<dyn Fn()>>>,
+    /// Every pressable's and button's press, by node — what
+    /// [`Harness::press_labelled`] fires.
+    pub press_by_node: RefCell<BTreeMap<Node, Rc<dyn Fn()>>>,
     /// Slider `on_change`s (raw, pre-snap).
     pub slider_changes: RefCell<Vec<Rc<dyn Fn(f32)>>>,
     /// Toggle `on_change`s.
@@ -198,6 +201,12 @@ pub struct Shared {
     pub touch_handlers: RefCell<Vec<(Node, TouchHandler)>>,
     /// Hover handlers installed via `InputOps::install_hover_handler`.
     pub hover_handlers: RefCell<Vec<(Node, HoverHandler)>>,
+    /// Every installed wheel handler, image load / error handler and text
+    /// input focus handler, in install order — so tests can fire them.
+    pub wheel_handlers: RefCell<Vec<(Node, WheelHandler)>>,
+    pub image_load_handlers: RefCell<Vec<(Node, ImageLoadHandler)>>,
+    pub image_error_handlers: RefCell<Vec<(Node, ImageErrorHandler)>>,
+    pub focus_handlers: RefCell<Vec<(Node, Rc<dyn Fn(bool)>)>>,
 
     // --- capability flags (live; flip mid-test) ---
     /// `Host::supports_splice` (anchorless reactive regions).
@@ -244,6 +253,7 @@ impl Default for Shared {
             state_setters: RefCell::new(Vec::new()),
             press_handlers: RefCell::new(Vec::new()),
             button_presses: RefCell::new(Vec::new()),
+            press_by_node: RefCell::new(BTreeMap::new()),
             slider_changes: RefCell::new(Vec::new()),
             toggle_changes: RefCell::new(Vec::new()),
             text_input_changes: RefCell::new(Vec::new()),
@@ -259,6 +269,10 @@ impl Default for Shared {
             file_drop_handlers: RefCell::new(Vec::new()),
             touch_handlers: RefCell::new(Vec::new()),
             hover_handlers: RefCell::new(Vec::new()),
+            wheel_handlers: RefCell::new(Vec::new()),
+            image_load_handlers: RefCell::new(Vec::new()),
+            image_error_handlers: RefCell::new(Vec::new()),
+            focus_handlers: RefCell::new(Vec::new()),
             splice: Cell::new(false),
             batched_repeat: Cell::new(false),
             renders_lazy_chunks: Cell::new(true),
@@ -330,6 +344,21 @@ pub fn take_animated_log() -> Vec<String> {
 }
 
 impl runtime_shared::ViewOps for RecordingViewOps {
+    fn frame(&self, node: &dyn Any) -> Option<ViewportRect> {
+        handle_rec(node, "frame".into());
+        None
+    }
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        handle_rec(node, "rect".into());
+        ViewportRect::default()
+    }
+    fn subscribe_layout(&self, node: &dyn Any, _callback: Box<dyn Fn(f32, f32)>) -> runtime_shared::handles::LayoutSubscription {
+        handle_rec(node, "subscribe_layout".into());
+        let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
+        runtime_shared::handles::LayoutSubscription::new(move || {
+            let _ = HANDLE_LOG.try_with(|l| l.borrow_mut().push(format!("unsubscribe_layout n{n}")));
+        })
+    }
     fn set_animated_f32(&self, node: &dyn Any, prop: AnimProp, value: f32) {
         let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
         ANIMATED_LOG.with(|l| {
@@ -340,6 +369,92 @@ impl runtime_shared::ViewOps for RecordingViewOps {
 }
 
 static RECORDING_VIEW_OPS: RecordingViewOps = RecordingViewOps;
+
+// ---------------------------------------------------------------------------
+// Recording handle ops (imperative refs)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static HANDLE_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain the thread-local handle-method log (`"focus n3"`, `"scroll_to n5
+/// 0 40"`, …): every imperative-ref method a test's code called on a
+/// handle this mock made. The methods answer exactly what the trait
+/// defaults do (zero rect, no frame, a subscription that never fires) —
+/// they only record.
+pub fn take_handle_log() -> Vec<String> {
+    HANDLE_LOG.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+fn handle_rec(node: &dyn Any, what: String) {
+    let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
+    HANDLE_LOG.with(|l| l.borrow_mut().push(format!("{what} n{n}")));
+}
+
+/// Every handle-ops trait the vocabulary's refs use, recording.
+struct RecordingHandleOps;
+
+static RECORDING_HANDLE_OPS: RecordingHandleOps = RecordingHandleOps;
+
+// `rect` is recorded for every anchorable handle (an overlay measuring its
+// trigger), not just views: the trait default answers a zero rect without a
+// trace, which hid whether a measurement reached the handle at all.
+impl runtime_shared::PressableOps for RecordingHandleOps {
+    fn click(&self, node: &dyn Any) {
+        handle_rec(node, "click".into())
+    }
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        handle_rec(node, "rect".into());
+        ViewportRect::default()
+    }
+}
+
+impl runtime_shared::ButtonOps for RecordingHandleOps {
+    fn click(&self, node: &dyn Any) {
+        handle_rec(node, "click".into())
+    }
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        handle_rec(node, "rect".into());
+        ViewportRect::default()
+    }
+}
+
+impl primitives::text_input::TextInputOps for RecordingHandleOps {
+    fn focus(&self, node: &dyn Any) {
+        handle_rec(node, "focus".into())
+    }
+    fn blur(&self, node: &dyn Any) {
+        handle_rec(node, "blur".into())
+    }
+    fn select_all(&self, node: &dyn Any) {
+        handle_rec(node, "select_all".into())
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        handle_rec(node, format!("insert_text {text:?}"))
+    }
+}
+
+impl primitives::text_area::TextAreaOps for RecordingHandleOps {
+    fn focus(&self, node: &dyn Any) {
+        handle_rec(node, "focus".into())
+    }
+    fn blur(&self, node: &dyn Any) {
+        handle_rec(node, "blur".into())
+    }
+    fn select_all(&self, node: &dyn Any) {
+        handle_rec(node, "select_all".into())
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        handle_rec(node, format!("insert_text {text:?}"))
+    }
+}
+
+impl primitives::scroll_view::ScrollViewOps for RecordingHandleOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        handle_rec(node, format!("scroll_to {x} {y}"))
+    }
+}
 
 // ===========================================================================
 // HostMock
@@ -542,9 +657,10 @@ impl caps::InputOps for HostMock {
         self.s.rec_v("claim_touch", format!("claim_touch n{node}"));
     }
 
-    fn install_wheel_handler(&mut self, node: &Node, _handler: WheelHandler) {
+    fn install_wheel_handler(&mut self, node: &Node, handler: WheelHandler) {
         self.s
             .rec_v("install_wheel_handler", format!("install_wheel_handler n{node}"));
+        self.s.wheel_handlers.borrow_mut().push((*node, handler));
     }
 
     fn install_hover_handler(&mut self, node: &Node, handler: HoverHandler) {
@@ -569,8 +685,14 @@ impl caps::InputOps for HostMock {
 
 impl caps::PressableOps for HostMock {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Node {
-        self.s.press_handlers.borrow_mut().push(on_click);
-        self.mint("pressable".into())
+        self.s.press_handlers.borrow_mut().push(on_click.clone());
+        let node = self.mint("pressable".into());
+        self.s.press_by_node.borrow_mut().insert(node, on_click);
+        node
+    }
+
+    fn make_pressable_handle(&self, node: &Node) -> runtime_shared::PressableHandle {
+        runtime_shared::PressableHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
     }
 }
 
@@ -605,6 +727,10 @@ impl caps::TextOps for HostMock {
 }
 
 impl caps::ButtonOps for HostMock {
+    fn make_button_handle(&self, node: &Node) -> runtime_shared::ButtonHandle {
+        runtime_shared::ButtonHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_button(
         &mut self,
         label: &str,
@@ -614,7 +740,9 @@ impl caps::ButtonOps for HostMock {
         _a11y: &AccessibilityProps,
     ) -> Node {
         self.s.button_presses.borrow_mut().push(on_click.fire.clone());
-        self.mint(format!("button {label:?}"))
+        let node = self.mint(format!("button {label:?}"));
+        self.s.press_by_node.borrow_mut().insert(node, on_click.fire.clone());
+        node
     }
 
     fn update_button_label(&mut self, node: &Node, label: &str) {
@@ -645,18 +773,20 @@ impl caps::ImageOps for HostMock {
             .rec_v("update_image_alt", format!("update_image_alt n{node} {alt:?}"));
     }
 
-    fn install_image_load_handler(&mut self, node: &Node, _handler: ImageLoadHandler) {
+    fn install_image_load_handler(&mut self, node: &Node, handler: ImageLoadHandler) {
         self.s.rec_v(
             "install_image_load_handler",
             format!("install_image_load_handler n{node}"),
         );
+        self.s.image_load_handlers.borrow_mut().push((*node, handler));
     }
 
-    fn install_image_error_handler(&mut self, node: &Node, _handler: ImageErrorHandler) {
+    fn install_image_error_handler(&mut self, node: &Node, handler: ImageErrorHandler) {
         self.s.rec_v(
             "install_image_error_handler",
             format!("install_image_error_handler n{node}"),
         );
+        self.s.image_error_handlers.borrow_mut().push((*node, handler));
     }
 }
 
@@ -726,6 +856,14 @@ impl caps::LinkOps for HostMock {
 // ---------------------------------------------------------------------------
 
 impl caps::TextInputOps for HostMock {
+    fn make_text_input_handle(&self, node: &Node) -> primitives::text_input::TextInputHandle {
+        primitives::text_input::TextInputHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
+    fn make_text_area_handle(&self, node: &Node) -> primitives::text_area::TextAreaHandle {
+        primitives::text_area::TextAreaHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_text_input(
         &mut self,
         _initial_value: &str,
@@ -756,11 +894,12 @@ impl caps::TextInputOps for HostMock {
         );
     }
 
-    fn set_text_input_focus_handler(&mut self, node: &Node, _handler: Rc<dyn Fn(bool)>) {
+    fn set_text_input_focus_handler(&mut self, node: &Node, handler: Rc<dyn Fn(bool)>) {
         self.s.rec_v(
             "set_text_input_focus_handler",
             format!("set_text_input_focus_handler n{node}"),
         );
+        self.s.focus_handlers.borrow_mut().push((*node, handler));
     }
 
     fn update_text_input_placeholder(&mut self, node: &Node, placeholder: Option<&str>) {
@@ -868,6 +1007,10 @@ impl caps::ActivityIndicatorOps for HostMock {
 // ---------------------------------------------------------------------------
 
 impl caps::ScrollOps for HostMock {
+    fn make_scroll_view_handle(&self, node: &Node) -> primitives::scroll_view::ScrollViewHandle {
+        primitives::scroll_view::ScrollViewHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_scroll_view(
         &mut self,
         _horizontal: bool,
@@ -1024,11 +1167,17 @@ impl caps::GraphicsOps for HostMock {
 impl caps::PortalOps for HostMock {
     fn create_portal(
         &mut self,
-        _target: PortalTarget,
+        target: PortalTarget,
         on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
     ) -> Node {
+        // Measure an anchor the way a real backend positions the portal —
+        // recorded in the handle log (`take_handle_log`), not the main one.
+        if let PortalTarget::Anchor { target, side, align, offset } = &target {
+            let rect = target.rect();
+            HANDLE_LOG.with(|l| l.borrow_mut().push(format!("anchor {side:?} {align:?} {offset} {rect:?}")));
+        }
         self.s.portal_dismissals.borrow_mut().push(on_dismiss);
         self.mint("portal".into())
     }
@@ -1471,6 +1620,36 @@ impl Harness {
         self.shared.state_setters.borrow()[i].clone()
     }
 
+    /// Drop every handler this mock kept so tests could fire it. A real
+    /// backend drops a node's handlers when it unmounts; the mock keeps
+    /// them, which makes them owners of whatever they capture. Leak checks
+    /// call this after unmounting.
+    pub fn forget_handlers(&self) {
+        drop(std::mem::take(&mut *self.shared.state_setters.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.press_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.button_presses.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.press_by_node.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.slider_changes.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.toggle_changes.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.text_input_changes.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.blur_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.key_down_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.link_activations.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.scroll_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.end_observers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.virtualizers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.virtual_grids.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.graphics.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.portal_dismissals.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.file_drop_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.touch_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.hover_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.wheel_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.image_load_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.image_error_handlers.borrow_mut()));
+        drop(std::mem::take(&mut *self.shared.focus_handlers.borrow_mut()));
+    }
+
     pub fn press_handler(&self, i: usize) -> Rc<dyn Fn()> {
         self.shared.press_handlers.borrow()[i].clone()
     }
@@ -1615,6 +1794,55 @@ impl Harness {
         let mut out = String::new();
         walk(self, node, 0, &mut out);
         out.trim_end().to_string()
+    }
+
+    /// Press what the screen shows as `label` — the first live text (or
+    /// button) whose content starts with it, in tree order — through the
+    /// nearest pressable or button at or above it, as a tap on it would.
+    /// Panics with the live tree when nothing shown matches. The caller
+    /// flushes.
+    pub fn press_labelled(&self, label: &str) {
+        (self.pressable_labelled(label))();
+    }
+
+    /// The press [`press_labelled`](Self::press_labelled) fires, without
+    /// firing it — for a caller that presses it many times (a benchmark).
+    pub fn pressable_labelled(&self, label: &str) -> Rc<dyn Fn()> {
+        fn walk(h: &Harness, node: Node, out: &mut Vec<Node>) {
+            out.push(node);
+            for child in h.children_of(node) {
+                walk(h, child, out);
+            }
+        }
+        let mut live = Vec::new();
+        for root in self.live_roots() {
+            walk(self, root, &mut live);
+        }
+        // A kind is `text "…"` / `button "…"` (the content `{:?}`-quoted):
+        // compare against the label quoted the same way, minus its closing
+        // quote, so it matches as a prefix.
+        let quoted = format!("{label:?}");
+        let quoted = &quoted[..quoted.len() - 1];
+        let shows = |node: Node| match self.shared.live_text.borrow().get(&node) {
+            Some(text) => text.starts_with(label),
+            None => self.kind_of(node).is_some_and(|k| {
+                k.strip_prefix("text ").or_else(|| k.strip_prefix("button ")).is_some_and(|q| q.starts_with(quoted))
+            }),
+        };
+        let press = live.iter().copied().filter(|n| shows(*n)).find_map(|mut node| loop {
+            if let Some(press) = self.shared.press_by_node.borrow().get(&node).cloned() {
+                break Some(press);
+            }
+            match self.shared.parent.borrow().get(&node).copied() {
+                Some(parent) => node = parent,
+                None => break None,
+            }
+        });
+        let Some(press) = press else {
+            let screen: Vec<String> = self.live_roots().into_iter().map(|r| self.live_tree(r)).collect();
+            panic!("nothing pressable shows {label:?}:\n{}", screen.join("\n"));
+        };
+        press
     }
 
     /// Every root of the LIVE tree: a node with no parent that has not

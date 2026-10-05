@@ -142,7 +142,7 @@ const SHEET_MAX_HEIGHT_FRACTION: f32 = 0.78;
 /// and not a second component: a sheet that drifted apart from the modal
 /// would be a second place to fix the next Android hit-testing or safe-area
 /// bug.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum ModalPresentation {
     /// A centered, width-capped card that fades and settles into place.
     /// The default, and what every existing call site gets.
@@ -266,7 +266,7 @@ pub struct ModalProps {
 /// `Rc<{closure}>` to a `Rc<dyn Fn …>` — this newtype bridges that). The
 /// closure returns one `Element` — exactly what a `ui! { … }` block yields
 /// (multi-node blocks are view-wrapped by the macro). Cloned cheaply (`Rc`).
-#[derive(Clone)]
+#[derive(Clone, runtime_core::Remote)]
 pub struct ModalContent(pub Rc<dyn Fn() -> Element>);
 
 impl<F: Fn() -> Element + 'static> From<F> for ModalContent {

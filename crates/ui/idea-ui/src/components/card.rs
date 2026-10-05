@@ -64,6 +64,9 @@ pub mod variant {
     // `variant!` macro, so they emit it here (see idea-theme's `variant!`).
     macro_rules! card_variant_reactive {
         ($($name:ident),*) => { $(
+            // A remote bundle names it by key (see `idea_theme::__remote_marker!`).
+            idea_theme::__remote_marker!(VariantRef, $name);
+
             impl ::core::convert::From<$name> for ::runtime_core::Reactive<VariantRef> {
                 fn from(marker: $name) -> Self {
                     ::runtime_core::Reactive::Static(VariantRef::from(marker))

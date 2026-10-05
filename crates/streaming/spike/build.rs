@@ -1,0 +1,41 @@
+//! Build the spike's bundles for wasm32 and embed them, for the tests and as
+//! the demo's built-in copy when no bundle server is reachable.
+
+use std::path::PathBuf;
+
+include!("src/guest_build.rs");
+
+fn main() {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let target_dir = out.join("guest-target");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let (libdir, wasm32) = wasm32_libdir(&rustc);
+    if !wasm32 {
+        let files = ["spike_kernelguest.wasm", "spike_remoteguest.wasm", "spike_remoteattr.wasm", "spike_ideaui.wasm"];
+        return skip_bundles(&out, &files, libdir.as_deref());
+    }
+
+    for package in ["spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
+        let status = guest_build_command(&cargo, &manifest, &target_dir, package)
+            .status()
+            .unwrap_or_else(|e| panic!("spawn cargo for {package}: {e}"));
+        assert!(status.success(), "building {package} for wasm32-unknown-unknown failed");
+        let file = format!("{}.wasm", package.replace('-', "_"));
+        std::fs::copy(guest_wasm_path(&target_dir, package), out.join(&file))
+            .unwrap_or_else(|e| panic!("copy {file}: {e}"));
+    }
+
+    println!("cargo:rerun-if-changed=src/guest_build.rs");
+    for dir in BRIDGED_SOURCES {
+        println!("cargo:rerun-if-changed={}", manifest.join(dir).display());
+    }
+    // And every source each bundle compiled (cargo's dep-info): a library
+    // one of them uses that the list above doesn't name still reruns it.
+    for package in ["spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
+        for source in bundle_sources(&target_dir, package) {
+            println!("cargo:rerun-if-changed={}", source.display());
+        }
+    }
+}

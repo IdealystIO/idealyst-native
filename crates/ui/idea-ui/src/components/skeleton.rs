@@ -26,7 +26,7 @@ use crate::stylesheets::Skeleton as SkeletonStyle;
 use crate::theme::IdeaThemeRef;
 
 /// Width preset. Use [`SkeletonWidth::Px`] for an exact pixel width.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, runtime_core::Remote)]
 pub enum SkeletonWidth {
     /// 100% of the parent.
     #[default]

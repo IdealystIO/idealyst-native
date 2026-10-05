@@ -68,7 +68,7 @@ const SIM_JITTER_SEED: u32 = 0x9E37_79B9;
 /// End-cap treatment for the track + fill. Square (`None`) by default —
 /// a progress bar is a measurement surface, and pill ends visually
 /// under-report the value at the extremes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum ProgressCap {
     /// Square ends (default).
     #[default]
@@ -90,7 +90,7 @@ impl ProgressCap {
 /// How the bar behaves. Selects the whole fill subtree, so a live
 /// change is structural (`switch`) — the outgoing mode's scope-owned
 /// animations and timers are freed atomically on the flip.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
 pub enum ProgressMode {
     /// Position follows the `value` prop; every change animates to the
     /// new width via the fill sheet's width transition.

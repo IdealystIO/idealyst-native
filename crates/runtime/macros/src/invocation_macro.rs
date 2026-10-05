@@ -44,7 +44,11 @@ struct PropsType {
 /// Generates `impl BuildElement for <Props>` for a component, or an empty
 /// token stream if the signature doesn't fit the expected shape (zero
 /// params, or one param typed as `&SomeProps` / `SomeProps`).
-pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> TokenStream2 {
+pub(crate) fn generate_build_impl(
+    item_fn: &ItemFn,
+    attr: &ComponentAttr,
+    import_name: Option<&TokenStream2>,
+) -> TokenStream2 {
     let fn_name = &item_fn.sig.ident;
     let vis = &item_fn.vis;
 
@@ -95,6 +99,25 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
     };
 
     let (build_mut, overlay_prologue) = crate::props_attr::overlay_build_prologue(fn_name);
+    // An app component a remote bundle may use: in the bundle build its
+    // props cross to the app instead (see `remote_component::import_split`).
+    // Here, not in the fn, because only `build(self)` holds the props BY
+    // VALUE for a `fn Foo(props: &FooProps)` component.
+    let build_set = match import_name {
+        Some(name) => crate::remote_component::build_set_override(name, &quote!(#path)),
+        None => quote!(),
+    };
+    let build_body = match import_name {
+        Some(name) => quote! {
+            ::runtime_vocabulary::__remote_guest_split! {
+                bundle: { ::runtime_vocabulary::__remote_import!(#name, #path, self) }
+                app: { ::runtime_core::IntoElement::into_element(#fn_name(#amp self)) }
+            }
+        },
+        None => quote! {
+            ::runtime_core::IntoElement::into_element(#fn_name(#amp self))
+        },
+    };
     // The EXPLICIT props form gets its `OverlayProps` impl here, because
     // this is where its `BuildElement` is. (The inline-props form gets
     // one from `props_attr`, next to its own `BuildElement`.) Exactly
@@ -122,8 +145,9 @@ pub(crate) fn generate_build_impl(item_fn: &ItemFn, attr: &ComponentAttr) -> Tok
                 // identity for `Element`, `.primitive` for `Bound`/`Bindable`
                 // (a legacy-props `#[method]` component returns `Bindable<Handle>`). The tag
                 // form drops the handle — use the fn-call form to `.bind` it.
-                ::runtime_core::IntoElement::into_element(#fn_name(#amp self))
+                #build_body
             }
+            #build_set
             #defaults_method
         }
     }

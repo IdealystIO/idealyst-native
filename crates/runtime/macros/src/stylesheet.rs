@@ -1296,6 +1296,16 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
             }
         }
     });
+    // A variant axis is a plain value, so remote code can set it on an app
+    // component (`Stack(gap = StackGap::Lg)`): the `Remote` derive's
+    // expansion, called directly (a `#[derive(::runtime_core::Remote)]`
+    // would be retargeted to the glue, which has no derives). Empty unless
+    // the app hosts remote components.
+    let remote = {
+        let unit_arms = axis.arms.iter().map(|arm| format_ident!("{}", pascal(&arm.name)));
+        let decl: syn::DeriveInput = syn::parse_quote! { enum #enum_name { #(#unit_arms),* } };
+        crate::remote_derive::derive_with(decl, false).expect("a variant axis is a plain unit enum")
+    };
     // to_variant_str: snake-case the arm name.
     let arm_arms = axis.arms.iter().map(|arm| {
         let v = format_ident!("{}", pascal(&arm.name));
@@ -1326,6 +1336,7 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
             }
         }
         #default_impl
+        #remote
     }
 }
 

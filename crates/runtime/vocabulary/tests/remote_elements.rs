@@ -1,0 +1,1016 @@
+//! The remote element codec (`src/remote`), both halves in one process.
+//!
+//! The kernel runs on the loopback engine (`remote-loopback` turns on
+//! `runtime-world/loopback-engine`), so a component's `Owned` is a bridge
+//! scope that really crosses as an id — the same path a wasm bundle takes,
+//! minus the wasm. The wasm transport is covered end to end in
+//! crates/streaming/spike/tests.
+//!
+//! The central check is PARITY: the same tree, mounted natively and mounted
+//! after an encode → decode round trip, must drive the backend through the
+//! same calls, through the same interactions, and tear down to nothing.
+//!
+//! ```sh
+//! cargo test -p runtime-vocabulary --features remote-loopback --test remote_elements
+//! ```
+
+#![cfg(feature = "remote-loopback")]
+
+use std::rc::Rc;
+
+use host_mock::Harness;
+use runtime_scene::{component_scope, dyn_keyed, keyed, Element, Registry};
+use runtime_shared::{Length, StyleApplication, StyleRules, StyleSheet, Tokenized};
+use runtime_vocabulary::builders::{button, pressable, text, view};
+use runtime_vocabulary::remote::host::{decode, register_import, DecodeError, Link};
+use runtime_vocabulary::remote::{bundle, crossing, to_bytes, Cb, Crossing};
+use runtime_world::{signal, Signal};
+
+/// The host's link to "the bundle": its callback table, in-process.
+struct InProc;
+
+impl Link for InProc {
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>> {
+        Some(bundle::invoke(cb, args))
+    }
+    fn release(&self, cb: Cb) {
+        bundle::release(cb)
+    }
+}
+
+/// Encode as a bundle would, decode as the host would.
+fn cross(element: Element) -> Element {
+    decode(Rc::new(InProc), &to_bytes(&bundle::tree(element))).expect("decodes")
+}
+
+fn card_sheet() -> Rc<StyleSheet> {
+    Rc::new(
+        StyleSheet::new(|_| StyleRules {
+            background: Some(Tokenized::token("color-surface", runtime_shared::Color("#fff".into()))),
+            ..StyleRules::default()
+        })
+        .variant("tone", "danger", |_| StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(320.0))),
+            ..StyleRules::default()
+        })
+        .variant("__state_hovered", "on", |_| StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(999.0))),
+            ..StyleRules::default()
+        }),
+    )
+}
+
+struct Inputs {
+    count: Signal<i32>,
+    items: Signal<Vec<u32>>,
+    show: Signal<bool>,
+}
+
+/// A component exercising every node kind the codec carries: a component
+/// boundary (`Owned`) with local state, a sheet with a state axis, dynamic
+/// text, a button and a pressable writing state, a guarded hole, a keyed
+/// list, and a dynamic style.
+fn app(i: &Inputs) -> Element {
+    let (count, items, show) = (i.count, i.items, i.show);
+    component_scope(move || {
+        let clicks = signal(0i32);
+        view()
+            .style(StyleApplication::new(card_sheet()).with("tone", "danger"))
+            .child(text().content(move || format!("count {} clicks {}", count.get(), clicks.get())))
+            .child(button().label(move || format!("+{}", clicks.get())).on_press(move || clicks.update(|c| c + 1)))
+            .child(pressable(move || count.update(|c| c + 10)).child(text().content("tap")))
+            .child(dyn_keyed(
+                move || show.get(),
+                |&on| if on { text().content("shown").build() } else { view().build() },
+            ))
+            .child(keyed(move || items.get(), |i| *i as u64, |i| text().content(format!("row {i}")).build()))
+            .child(
+                text()
+                    .style(move || {
+                        Rc::new(StyleRules {
+                            width: Some(Tokenized::Literal(Length::Px(count.get() as f32))),
+                            ..StyleRules::default()
+                        })
+                    })
+                    .content("sized"),
+            )
+            .build()
+    })
+}
+
+/// Mount `app`, drive it through a script, and return the backend log at
+/// each step.
+fn script(remote: bool) -> Vec<Vec<String>> {
+    let h = Harness::new();
+    let inputs = h.world.enter(|| Inputs { count: signal(1), items: signal(vec![1, 2, 3]), show: signal(false) });
+    let tree = h.world.enter(|| app(&inputs));
+    let tree = if remote { cross(tree) } else { tree };
+    let mut steps = Vec::new();
+
+    let realized = h.mount(tree);
+    h.flush();
+    steps.push(h.take_log());
+
+    // The button (bundle state) and the pressable (host prop).
+    (h.shared.button_presses.borrow()[0].clone())();
+    (h.press_handler(0))();
+    h.flush();
+    steps.push(h.take_log());
+
+    // Hover: the sheet's state axis, resolved by the host's style engine.
+    (h.state_setter(0))(runtime_shared::StateBits::HOVERED, true);
+    h.flush();
+    steps.push(h.take_log());
+
+    // Structure: the guarded hole flips, the keyed list reorders and grows.
+    inputs.show.set(true);
+    inputs.items.set(vec![3, 1, 4]);
+    h.flush();
+    steps.push(h.take_log());
+
+    drop(realized);
+    h.flush();
+    steps.push(h.take_log());
+    steps
+}
+
+#[test]
+fn a_crossed_tree_drives_the_backend_exactly_like_the_native_one() {
+    let native = script(false);
+    let remote = script(true);
+    assert!(native[0].len() > 10, "the script mounts a real tree: {:?}", native[0]);
+    for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+        assert_eq!(r, n, "step {step}: remote and native diverge");
+    }
+}
+
+#[test]
+fn every_callback_is_released_when_the_crossed_tree_unmounts() {
+    let h = Harness::new();
+    let inputs = h.world.enter(|| Inputs { count: signal(1), items: signal(vec![1, 2, 3]), show: signal(true) });
+    let tree = h.world.enter(|| cross(app(&inputs)));
+    assert!(bundle::live_callbacks() > 0);
+    let realized = h.mount(tree);
+    h.flush();
+    inputs.items.set(vec![2, 5]);
+    inputs.show.set(false);
+    h.flush();
+    drop(realized);
+    h.flush();
+    // The mock backend keeps a clone of every press handler it was given
+    // (so tests can fire them later) — it is a real owner of those two ids
+    // until it goes.
+    assert_eq!(bundle::live_callback_kinds().iter().map(|e| e.1).collect::<Vec<_>>(), ["fire", "fire"]);
+    drop(h);
+    assert_eq!(bundle::live_callback_kinds(), vec![], "a callback outlived everything that held it");
+}
+
+/// One sheet styling many nodes crosses as ONE bundle entry, and the host
+/// builds one proxy for it.
+#[test]
+fn a_shared_sheet_crosses_once() {
+    let h = Harness::new();
+    let sheet = card_sheet();
+    let tree = h.world.enter(|| {
+        view()
+            .child(view().style(StyleApplication::new(sheet.clone())))
+            .child(view().style(StyleApplication::new(sheet.clone())))
+            .child(view().style(StyleApplication::new(sheet.clone()).with("tone", "danger")))
+            .build()
+    });
+    let node = bundle::tree(tree);
+    assert_eq!(bundle::live_callbacks(), 1, "three crossings, one entry");
+    let realized = h.mount(decode(Rc::new(InProc), &to_bytes(&node)).expect("decodes"));
+    h.flush();
+    drop(realized);
+    assert_eq!(bundle::live_callbacks(), 0, "the refcount balanced");
+}
+
+#[test]
+fn an_app_component_is_imported_by_name() {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct BadgeProps {
+        label: String,
+    }
+    register_import("Badge", |p: BadgeProps, children: Vec<Element>| {
+        view().child(text().content(format!("badge: {}", p.label))).children(children).build()
+    });
+    let h = Harness::new();
+    let tree = h.world.enter(|| {
+        view()
+            .child(bundle::import("Badge", &BadgeProps { label: "new".into() }, vec![text().content("inner").build()]))
+            .build()
+    });
+    let realized = h.mount(cross(tree));
+    h.flush();
+    let root = realized.collect_nodes()[0];
+    let tree = h.tree(root);
+    assert!(tree.contains(r#"text "badge: new""#) && tree.contains(r#"text "inner""#), "{tree}");
+}
+
+#[test]
+fn a_missing_app_component_fails_to_decode_by_name() {
+    let tree = bundle::import("NotExported", &(), Vec::new());
+    let err = decode(Rc::new(InProc), &to_bytes(&bundle::tree(tree))).err();
+    assert_eq!(err, Some(DecodeError::MissingImport("NotExported".into())));
+}
+
+// ---- a bundle's replies are untrusted ----
+
+/// A link whose replies turn to garbage once `garble` is set, and which
+/// records `fail` (a real transport stops the bundle) instead of panicking.
+#[derive(Default)]
+struct Garbled {
+    garble: std::cell::Cell<bool>,
+    fails: std::cell::RefCell<Vec<String>>,
+}
+
+impl Link for Garbled {
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>> {
+        let reply = bundle::invoke(cb, args);
+        Some(if self.garble.get() { vec![0xff; 3] } else { reply })
+    }
+    fn release(&self, cb: Cb) {
+        bundle::release(cb)
+    }
+    fn fail(&self, msg: String) {
+        self.fails.borrow_mut().push(msg);
+    }
+}
+
+/// Regression: a reply that did not decode panicked the app (`CbRef::get`
+/// `panic!`ed). It now stops the bundle (`Link::fail`) and the binding
+/// answers its fallback.
+#[test]
+fn regression_a_reply_that_does_not_decode_stops_the_bundle_not_the_app() {
+    let h = Harness::new();
+    let n = h.world.enter(|| signal(1u32));
+    let tree = h.world.enter(|| text().content(move || format!("n={}", n.get())).build());
+    let link = Rc::new(Garbled::default());
+    let realized = h.mount(decode(link.clone(), &to_bytes(&bundle::tree(tree))).expect("decodes"));
+    h.flush();
+    link.garble.set(true);
+    n.set(2);
+    h.flush();
+    let fails = link.fails.borrow().clone();
+    assert!(fails.iter().any(|m| m.contains("does not decode")), "{fails:?}");
+    drop(realized);
+}
+
+// ---- a tree that fails to decode releases what crossed with it ----
+
+/// Regression: a decode that failed part-way (an app component the app
+/// doesn't have) left every callback past the failure point — siblings
+/// after it, never visited — and every scope there live in the bundle and
+/// the app for good.
+#[test]
+fn regression_a_failed_decode_releases_what_it_never_reached() {
+    let h = Harness::new();
+    let tree = h.world.enter(|| {
+        view()
+            .child(button().label("before").on_press(|| {}))
+            .child(bundle::import("NotExported", &(), Vec::new()))
+            .child(button().label("after").on_press(|| {}))
+            .child(component_scope(|| {
+                let s = signal(1u8);
+                text().content(move || format!("{}", s.get())).build()
+            }))
+            .build()
+    });
+    let bytes = to_bytes(&bundle::tree(tree));
+    assert!(bundle::live_callbacks() >= 3);
+    let err = h.world.enter(|| decode(Rc::new(InProc), &bytes).err());
+    assert_eq!(err, Some(DecodeError::MissingImport("NotExported".into())));
+    assert_eq!(bundle::live_callback_kinds(), vec![], "every callback that crossed was released");
+    assert_eq!(runtime_world::remote::pending_scopes(), 0, "the unreached component's scope was freed");
+}
+
+/// Regression: callbacks inside an app component's PROPS (sent when the
+/// bundle built the element, readable only by that component's decoder)
+/// leaked when the component couldn't be decoded.
+#[test]
+fn regression_a_failed_import_releases_the_callbacks_in_its_props() {
+    let _h = Harness::new();
+    let crossing = bundle::__props_begin();
+    let id = bundle::register_call(Rc::new(|_: &[u8]| Vec::new()));
+    let tree = bundle::import_component("NotExported", to_bytes(&id), crossing);
+    let bytes = to_bytes(&bundle::tree(tree));
+    assert!(decode(Rc::new(InProc), &bytes).is_err());
+    assert_eq!(bundle::live_callback_kinds(), vec![]);
+}
+
+/// A shared sheet that re-crossed in a failed tree is released once for
+/// that crossing only: the live tree holding it keeps working.
+#[test]
+fn a_failed_decode_releases_a_shared_sheet_once() {
+    let h = Harness::new();
+    let sheet = card_sheet();
+    let live = h.world.enter(|| view().style(StyleApplication::new(sheet.clone())).build());
+    let realized = h.mount(cross(live));
+    h.flush();
+    let failed = h.world.enter(|| {
+        view()
+            .child(bundle::import("NotExported", &(), Vec::new()))
+            .child(view().style(StyleApplication::new(sheet.clone())))
+            .build()
+    });
+    assert!(decode(Rc::new(InProc), &to_bytes(&bundle::tree(failed))).is_err());
+    assert_eq!(bundle::live_callback_kinds().iter().map(|e| (e.1, e.2)).collect::<Vec<_>>(), [("sheet", 1)]);
+    drop(realized);
+    assert_eq!(bundle::live_callbacks(), 0);
+}
+
+/// An app component element the bundle built but never sent releases the
+/// callbacks its props registered.
+#[test]
+fn an_unsent_import_releases_its_props_callbacks() {
+    let crossing = bundle::__props_begin();
+    let id = bundle::register_call(Rc::new(|_: &[u8]| Vec::new()));
+    drop(bundle::import_component("NotExported", to_bytes(&id), crossing));
+    assert_eq!(bundle::live_callbacks(), 0);
+}
+
+/// Regression: a subtree that fails to decode LATER (a `Dyn` hole's build,
+/// realized by the app) panicked the app. It now renders the error in its
+/// place, and what crossed with it is released.
+#[test]
+fn regression_a_lazy_subtree_that_fails_to_decode_shows_an_error() {
+    let h = Harness::new();
+    let tree = h.world.enter(|| {
+        view()
+            .child(runtime_scene::dyn_element(|| {
+                view()
+                    .child(bundle::import("NotExported", &(), Vec::new()))
+                    .child(button().label("after").on_press(|| {}))
+                    .build()
+            }))
+            .build()
+    });
+    let realized = h.mount(cross(tree));
+    h.flush();
+    let root = realized.collect_nodes()[0];
+    let shown = h.tree(root);
+    assert!(shown.contains("remote component") && shown.contains("NotExported"), "{shown}");
+    assert_eq!(
+        bundle::live_callback_kinds().iter().map(|e| e.1).collect::<Vec<_>>(),
+        ["build"],
+        "only the hole's own builder is live"
+    );
+    drop(realized);
+    drop(h);
+    assert_eq!(bundle::live_callbacks(), 0);
+}
+
+#[test]
+#[should_panic(expected = "primitive `graphics` can't cross")]
+fn an_unsupported_primitive_panics_at_encode_by_name() {
+    let tree = runtime_vocabulary::builders::graphics(|_| {}).build();
+    bundle::encode(tree);
+}
+
+#[test]
+#[should_panic(expected = "`dyn hole`'s `retire hook` can't cross")]
+fn an_unsupported_field_panics_at_encode_by_name() {
+    // Retire hooks hand a region's old realized content to a mount
+    // handler's code (presence's exit animation) — app-side machinery, never
+    // in an author tree.
+    let tree = runtime_scene::dyn_element(|| view().build()).with_retire(|_| {});
+    bundle::encode(tree);
+}
+
+/// Every payload `register_builtins` installs has a decision in the codec's
+/// `crossing` table. A new builtin fails here until someone decides whether
+/// it crosses — the parity rule for remote components.
+#[test]
+fn every_builtin_primitive_has_a_crossing_decision() {
+    let mut registry: Registry<host_mock::HostMock> = Registry::new();
+    runtime_vocabulary::register_builtins(&mut registry);
+    let kinds = registry.kinds();
+    let undecided: Vec<_> = kinds.iter().filter(|k| crossing(**k).is_none()).collect();
+    assert!(
+        undecided.is_empty(),
+        "{} builtin payload(s) have no entry in runtime-vocabulary src/remote `crossing`: {:?}",
+        undecided.len(),
+        undecided.iter().map(|k| runtime_scene::payload_type_name(**k)).collect::<Vec<_>>()
+    );
+    let mut supported: Vec<_> =
+        kinds.iter().filter_map(|k| match crossing(*k) { Some(Crossing::Supported(n)) => Some(n), _ => None }).collect();
+    supported.sort();
+    assert_eq!(
+        supported,
+        [
+            "activity_indicator", "button", "icon", "image", "link", "navigator outlet", "portal", "presence",
+            "pressable", "repeat (static `for` lowering)", "scroll_view", "slider", "stack navigator", "swap navigator",
+            "text", "text_area", "text_input", "toggle", "view", "virtual_grid", "virtualizer",
+        ]
+    );
+}
+
+/// A link whose bundle can be POISONED mid-life, as a trap poisons a wasm
+/// bundle: from then on every call answers `None`.
+struct Poisonable(Rc<std::cell::Cell<bool>>);
+
+impl Link for Poisonable {
+    fn call(&self, cb: Cb, args: &[u8]) -> Option<Vec<u8>> {
+        (!self.0.get()).then(|| bundle::invoke(cb, args))
+    }
+    fn release(&self, cb: Cb) {
+        bundle::release(cb)
+    }
+}
+
+/// Regression: a reply from a bundle that can no longer be called used to
+/// panic the app ("bundle is gone, but a node it built is still live") —
+/// so one panic in a bundle's handler took the whole app down with it.
+/// Every reply site now falls back: getters keep their last value, holes
+/// and keyed rows render nothing, handlers do nothing, style getters
+/// resolve to defaults. Driven here through every node kind the codec
+/// carries, after the link is cut.
+#[test]
+fn regression_a_poisoned_bundles_tree_keeps_running_without_it() {
+    let h = Harness::new();
+    let inputs = h.world.enter(|| Inputs { count: signal(1), items: signal(vec![1, 2, 3]), show: signal(false) });
+    let poisoned = Rc::new(std::cell::Cell::new(false));
+    let link = Rc::new(Poisonable(poisoned.clone()));
+    let tree = h.world.enter(|| decode(link, &to_bytes(&bundle::tree(app(&inputs)))).expect("decodes"));
+    let realized = h.mount(tree);
+    h.flush();
+    let before = h.live_tree(realized.collect_nodes()[0]);
+    assert!(before.contains("count 1 clicks 0"), "{before}");
+
+    poisoned.set(true);
+    (h.shared.button_presses.borrow()[0].clone())();
+    (h.press_handler(0))();
+    (h.state_setter(0))(runtime_shared::StateBits::HOVERED, true);
+    inputs.count.set(5);
+    inputs.show.set(true);
+    inputs.items.set(vec![9]);
+    h.flush();
+
+    let after = h.live_tree(realized.collect_nodes()[0]);
+    assert!(after.contains("count 1 clicks 0"), "a getter keeps its last value: {after}");
+    assert!(!after.contains("shown") && !after.contains("row 9"), "new subtrees render nothing: {after}");
+    drop(realized);
+    h.flush();
+}
+
+// ---- phase A: every leaf control and every event handler ----
+
+mod controls {
+    use super::*;
+    use runtime_shared::file_drop::{DroppedFile, FileDropEvent, FileDropPhase};
+    use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+    use runtime_shared::primitives::icon::{FillRule, IconData};
+    use runtime_shared::primitives::image::ImageLoadEvent;
+    use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
+    use runtime_shared::primitives::text_input::BlurOutcome;
+    use runtime_shared::styled_text::TextRun;
+    use runtime_shared::touch::{TouchEvent, TouchId, TouchPhase, TouchPoint, TouchResponse};
+    use runtime_shared::wheel::{WheelEvent, WheelKind};
+    use runtime_vocabulary::builders::{
+        activity_indicator, icon, image, link, scroll_view, slider, text_area, text_input, toggle,
+    };
+
+    const STAR: IconData = IconData { view_box: (24, 24), paths: &["M12 2l3 7h7l-6 4 2 7-6-4-6 4 2-7-6-4h7z"], fill_rule: FillRule::NonZero, filled: true };
+
+    /// Every leaf primitive phase A carries, each handler writing a signal a
+    /// text shows — so the backend log records what each event did.
+    fn app() -> Element {
+        component_scope(|| {
+            let seen = signal(String::from("-"));
+            let on = signal(false);
+            let level = signal(0.25f32);
+            let typed = signal(String::from("start"));
+            let note = move |s: String| seen.set(s);
+            view()
+                .on_touch(Rc::new(move |e: &TouchEvent| {
+                    note(format!("touch {:?} {}", e.phase, e.position.x));
+                    TouchResponse::CONSUMED
+                }))
+                .on_wheel(Rc::new(move |e: &WheelEvent| {
+                    note(format!("wheel {}", e.delta_y));
+                    TouchResponse::default()
+                }))
+                .on_hover(move |h| note(format!("hover {h}")))
+                .on_file_drop(Rc::new(move |e: &FileDropEvent| {
+                    if let FileDropPhase::Dropped(files) = &e.phase {
+                        note(format!("drop {}", files[0].name));
+                    }
+                    TouchResponse::CONSUMED
+                }))
+                .child(text().content(move || seen.get()))
+                .child(text().runs(vec![TextRun::plain("plain "), TextRun::plain("run")]))
+                .child(button().label("star").leading_icon(STAR).on_press(|| {}))
+                .child(
+                    image()
+                        .src(move || if on.get() { "on.png".to_string() } else { "off.png".to_string() })
+                        .on_load(Rc::new(move |e: &ImageLoadEvent| note(format!("loaded {}", e.width))))
+                        .on_error(Rc::new(move || note("image error".into()))),
+                )
+                .child(icon().data(STAR).color(runtime_shared::Color("#f00".into())))
+                .child(link().url("https://example.com").on_activate(move || note("link".into())).child(text().content("go")))
+                .child(toggle().value(move || on.get()).on_change(move |v| on.set(v)))
+                .child(slider().value(move || level.get()).range(0.0, 1.0).on_change(move |v| level.set(v)))
+                .child(activity_indicator().size(ActivityIndicatorSize::Large))
+                .child(
+                    text_input()
+                        .value(move || typed.get())
+                        .on_change(move |v| typed.set(v))
+                        .on_key_down(move |e: &KeyEvent| {
+                            note(format!("key {}", e.key));
+                            if e.key == "Tab" { KeyOutcome::PreventDefault } else { KeyOutcome::Default }
+                        })
+                        .on_blur(move || BlurOutcome::Keep)
+                        .on_focus(move |f| note(format!("focus {f}")))
+                        .placeholder("type"),
+                )
+                .child(text_area().value(move || typed.get()).on_change(move |v| typed.set(v)).placeholder("notes"))
+                .child(
+                    scroll_view()
+                        .on_scroll(move |x, y| note(format!("scroll {x},{y}")))
+                        .on_end_reached(move || note("end".into()))
+                        .child(text().content(move || format!("on {} level {} typed {}", on.get(), level.get(), typed.get()))),
+                )
+                .build()
+        })
+    }
+
+    fn key(k: &str) -> KeyEvent {
+        KeyEvent { key: k.into(), shift: false, ctrl: false, alt: false, meta: false, selection_start: 0, selection_end: 0 }
+    }
+
+    /// Mount, fire every handler, and return the backend log per step plus
+    /// what the handlers that answer the platform replied.
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        let tree = h.world.enter(app);
+        let tree = if remote { cross(tree) } else { tree };
+        let mut steps = Vec::new();
+        let mut replies = Vec::new();
+        let realized = h.mount(tree);
+        h.flush();
+        steps.push(h.take_log());
+
+        let at = TouchPoint { x: 3.0, y: 4.0 };
+        let touch = h.shared.touch_handlers.borrow()[0].1.clone();
+        let r = touch(&TouchEvent { id: TouchId(1), phase: TouchPhase::Began, position: at, window_position: at, timestamp_ns: 0, force: None });
+        replies.push(format!("touch consumed {}", r.consumed));
+        h.flush();
+        steps.push(h.take_log());
+
+        let wheel = h.shared.wheel_handlers.borrow()[0].1.clone();
+        wheel(&WheelEvent { kind: WheelKind::Scroll, delta_x: 0.0, delta_y: 7.0, scale: 1.0, rotation: 0.0, position: at, window_position: at, timestamp_ns: 0 });
+        (h.shared.hover_handlers.borrow()[0].1.clone())(true);
+        h.flush();
+        steps.push(h.take_log());
+
+        let drop_h = h.shared.file_drop_handlers.borrow()[0].1.clone();
+        let file = DroppedFile { name: "a.txt".into(), mime: "text/plain".into(), size: Some(3), path: None, source: None };
+        let r = drop_h(&FileDropEvent { phase: FileDropPhase::Dropped(vec![file]), position: at });
+        replies.push(format!("drop consumed {}", r.consumed));
+        h.flush();
+        steps.push(h.take_log());
+
+        (h.shared.image_load_handlers.borrow()[0].1.clone())(&ImageLoadEvent { width: 64.0, height: 32.0 });
+        h.flush();
+        steps.push(h.take_log());
+        (h.shared.image_error_handlers.borrow()[0].1.clone())();
+        (h.link_activation(0))();
+        h.flush();
+        steps.push(h.take_log());
+
+        (h.toggle_change(0))(true);
+        (h.slider_change(0))(0.75);
+        (h.text_input_change(0))("typed".into());
+        h.flush();
+        steps.push(h.take_log());
+
+        let keys = h.key_down_handler(0).expect("text_input key handler");
+        replies.push(format!("tab {:?}", keys(&key("Tab"))));
+        replies.push(format!("a {:?}", keys(&key("a"))));
+        replies.push(format!("blur {:?}", h.blur_handler(0).expect("blur handler")()));
+        (h.shared.focus_handlers.borrow()[0].1.clone())(true);
+        h.flush();
+        steps.push(h.take_log());
+
+        (h.scroll_handler(0).expect("scroll handler"))(1.0, 2.0);
+        let end = h.shared.end_observers.borrow()[0].3.clone();
+        end();
+        h.flush();
+        steps.push(h.take_log());
+
+        drop(realized);
+        h.flush();
+        steps.push(h.take_log());
+        (steps, replies)
+    }
+
+    #[test]
+    fn every_leaf_control_drives_the_backend_exactly_like_the_native_one() {
+        let (native, native_replies) = script(false);
+        let (remote, remote_replies) = script(true);
+        assert!(native[0].len() > 20, "the script mounts a real tree: {:?}", native[0]);
+        for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+            assert_eq!(r, n, "step {step}: remote and native diverge");
+        }
+        assert_eq!(remote_replies, native_replies);
+        assert_eq!(native_replies, ["touch consumed true", "drop consumed true", "tab PreventDefault", "a Default", "blur Keep"]);
+    }
+}
+
+// ---- phase B: the structural primitives ----
+
+mod structural {
+    use super::*;
+    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+    use runtime_shared::primitives::presence::PresenceAnim;
+    use runtime_shared::primitives::virtualizer::{ItemDiff, ItemSize};
+    use runtime_shared::Easing;
+    use runtime_vocabulary::builders::{portal, presence, virtual_grid, virtualizer};
+
+    struct In {
+        shown: Signal<bool>,
+        /// `(key, label)`: a label can change under a surviving key.
+        items: Signal<Vec<(u64, String)>>,
+        dismissed: Signal<u32>,
+    }
+
+    fn app(i: &In) -> Element {
+        let (shown, items, dismissed) = (i.shown, i.items, i.dismissed);
+        component_scope(move || {
+            view()
+                .children(runtime_vocabulary::glue::__static_repeat(3, |i| text().content(format!("rep {i}")).build()))
+                .child(
+                    presence(|| text().content("present").build())
+                        .present(move || shown.get())
+                        .enter(PresenceAnim::fade(100, Easing::Linear))
+                        .exit(PresenceAnim::fade(50, Easing::Linear)),
+                )
+                .child(
+                    portal(PortalTarget::Viewport(ViewportPlacement::default()))
+                        .on_dismiss(move || dismissed.update(|d| d + 1))
+                        .child(text().content(move || format!("dismissed {}", dismissed.get()))),
+                )
+                .child(
+                    virtualizer(
+                        move || items.get().len(),
+                        move |i| items.get()[i].0,
+                        ItemSize::Known(Rc::new(|i| 20.0 + i as f32)),
+                        move |i| text().content(format!("item {}", items.get()[i].1)).build(),
+                    )
+                    .item_diff(ItemDiff {
+                        capture: Rc::new(move |i| items.get().get(i).map(|v| Box::new(v.1.clone()) as Box<dyn std::any::Any>)),
+                        differs: Rc::new(move |snap, i| snap.downcast_ref::<String>() != items.get().get(i).map(|v| &v.1)),
+                    }),
+                )
+                .child(virtual_grid(
+                    || 2,
+                    || 2,
+                    |c| 10.0 + c as f32,
+                    |r| 5.0 + r as f32,
+                    |r, c| (r * 2 + c) as u64,
+                    |r, c| text().content(format!("cell {r},{c}")).build(),
+                )
+                .build())
+                .build()
+        })
+    }
+
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        let i = h.world.enter(|| In {
+            shown: signal(true),
+            items: signal(vec![(1, "a".into()), (2, "b".into()), (3, "c".into())]),
+            dismissed: signal(0),
+        });
+        let tree = h.world.enter(|| app(&i));
+        let tree = if remote { cross(tree) } else { tree };
+        let mut steps = Vec::new();
+        let mut replies = Vec::new();
+        let realized = h.mount(tree);
+        h.flush();
+        steps.push(h.take_log());
+
+        // The backend drives the virtualizer and grid through their callbacks.
+        let v = h.virtualizer(0);
+        replies.push(format!("count {} key1 {} size2 {}", (v.item_count)(), (v.item_key)(1), (v.item_size)(2)));
+        let rows: Vec<(host_mock::Node, u64)> = h.world.enter(|| (0..(v.item_count)()).map(|n| (v.mount_item)(n)).collect());
+        let g = h.virtual_grid(0);
+        replies.push(format!(
+            "grid {}x{} w1 {} h1 {} key {}",
+            (g.col_count)(),
+            (g.row_count)(),
+            (g.col_width)(1),
+            (g.row_height)(1),
+            (g.cell_key)(1, 1)
+        ));
+        let _cell = h.world.enter(|| (g.mount_cell)(1, 0));
+        h.flush();
+        steps.push(h.take_log());
+
+        i.shown.set(false);
+        h.flush();
+        steps.push(h.take_log());
+
+        let dismiss = h.shared.portal_dismissals.borrow()[0].clone().expect("portal on_dismiss");
+        dismiss();
+        h.flush();
+        steps.push(h.take_log());
+
+        // A data change: key 2 keeps its row but its label changes; the
+        // diff (run in the bundle, against a snapshot held there) says so.
+        i.items.set(vec![(1, "a".into()), (2, "B".into()), (3, "c".into())]);
+        h.flush();
+        let changed = v.item_changed.clone().expect("item_diff crosses");
+        replies.push(format!("changed {} {} {}", changed(0), changed(1), changed(2)));
+        h.world.enter(|| {
+            for (_, id) in rows {
+                (v.release_item)(id);
+            }
+        });
+        h.flush();
+        steps.push(h.take_log());
+
+        drop(realized);
+        h.flush();
+        steps.push(h.take_log());
+        (steps, replies)
+    }
+
+    #[test]
+    fn every_structural_primitive_drives_the_backend_exactly_like_the_native_one() {
+        let (native, native_replies) = script(false);
+        let (remote, remote_replies) = script(true);
+        assert!(native[0].len() > 10, "{:?}", native[0]);
+        for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+            assert_eq!(r, n, "step {step}: remote and native diverge");
+        }
+        assert_eq!(remote_replies, native_replies);
+        assert_eq!(native_replies[2], "changed false true false", "{native_replies:?}");
+    }
+}
+
+// ---- phase C: refs (imperative handles) ----
+
+mod refs {
+    use std::cell::RefCell;
+
+    use super::*;
+    use runtime_shared::handles::{PressableHandle, ViewHandle};
+    use runtime_shared::primitives::portal::AnchorableHandle;
+    use runtime_shared::primitives::scroll_view::ScrollViewHandle;
+    use runtime_shared::primitives::text_input::TextInputHandle;
+    use runtime_vocabulary::builders::{scroll_view, text_input};
+
+    #[derive(Default)]
+    struct Held {
+        view: Option<ViewHandle>,
+        input: Option<TextInputHandle>,
+        scroll: Option<ScrollViewHandle>,
+        press: Option<PressableHandle>,
+        layout: Option<runtime_shared::handles::LayoutSubscription>,
+    }
+
+    /// A component that takes refs and, from its button, drives them — the
+    /// handles' methods run the bundle's code against nodes the app mounted.
+    fn app(log: Rc<RefCell<Vec<String>>>) -> Element {
+        component_scope(move || {
+            let held = Rc::new(RefCell::new(Held::default()));
+            let (h1, h2, h3, h4, h5) = (held.clone(), held.clone(), held.clone(), held.clone(), held.clone());
+            let l = log.clone();
+            view()
+                .on_handle(move |h| h1.borrow_mut().view = Some(h))
+                .child(text_input().value("x").on_change(|_| {}).on_handle(move |h| h2.borrow_mut().input = Some(h)))
+                .child(scroll_view().on_handle(move |h| h3.borrow_mut().scroll = Some(h)).child(text().content("body")))
+                .child(pressable(|| {}).on_handle(move |h| h4.borrow_mut().press = Some(h)).child(text().content("p")))
+                .child(button().label("drive").on_press(move || {
+                    let held = h5.borrow();
+                    let view = held.view.clone().expect("view ref filled");
+                    l.borrow_mut().push(format!("frame {:?} rect {:?}", view.frame(), view.rect()));
+                    let input = held.input.clone().expect("input ref filled");
+                    input.focus();
+                    input.insert_text("hi");
+                    input.select_all();
+                    input.blur();
+                    held.scroll.clone().expect("scroll ref filled").scroll_to(0.0, 40.0);
+                    held.press.clone().expect("press ref filled").click();
+                    drop(held);
+                    let l2 = l.clone();
+                    let sub = view.on_layout(move |w, h| l2.borrow_mut().push(format!("layout {w}x{h}")));
+                    h5.borrow_mut().layout = Some(sub);
+                }))
+                .build()
+        })
+    }
+
+    /// The backend log and host-mock's handle-method log per step, and what
+    /// the component's own code observed.
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let tree = h.world.enter(|| app(log.clone()));
+        let tree = if remote { cross(tree) } else { tree };
+        let mut steps = Vec::new();
+        host_mock::take_handle_log();
+        let realized = h.mount(tree);
+        h.flush();
+        steps.push(h.take_log());
+        steps.push(host_mock::take_handle_log());
+        (h.shared.button_presses.borrow()[0].clone())();
+        h.flush();
+        steps.push(h.take_log());
+        steps.push(host_mock::take_handle_log());
+        drop(realized);
+        h.flush();
+        h.forget_handlers();
+        steps.push(h.take_log());
+        steps.push(host_mock::take_handle_log());
+        let out = log.borrow().clone();
+        (steps, out)
+    }
+
+    #[test]
+    fn handles_drive_the_backend_exactly_like_native_ones() {
+        let (native, native_log) = script(false);
+        let (remote, remote_log) = script(true);
+        for (step, (n, r)) in native.iter().zip(&remote).enumerate() {
+            assert_eq!(r, n, "step {step}: remote and native diverge");
+        }
+        assert_eq!(remote_log, native_log);
+        // Every method reached the backend's handle (step 3: the press).
+        let methods: Vec<&str> = native[3].iter().map(|l| l.split(' ').next().unwrap_or("")).collect();
+        assert_eq!(
+            methods,
+            ["frame", "rect", "focus", "insert_text", "select_all", "blur", "scroll_to", "click", "subscribe_layout"],
+            "{:?}",
+            native[3]
+        );
+        assert_eq!(native[5], ["unsubscribe_layout n0"], "the subscription ends with the component");
+    }
+
+    /// A portal anchored to a node the bundle holds a ref to: the app's
+    /// portal asks the bundle for the anchor's rect, and the bundle asks
+    /// the app's real handle — the same calls reach the backend as natively.
+    #[test]
+    fn an_anchored_portal_measures_through_the_bundles_ref() {
+        use runtime_shared::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, PortalTarget};
+        use runtime_shared::Ref;
+        use runtime_vocabulary::builders::portal;
+        fn anchored() -> Element {
+            component_scope(|| {
+                let anchor = Ref::<ViewHandle>::new();
+                view()
+                    .child(view().on_handle(move |h| anchor.fill(h)).child(text().content("anchor")))
+                    .child(
+                        portal(PortalTarget::Anchor {
+                            target: AnchorTarget::from(anchor),
+                            side: ElementSide::Below,
+                            align: ElementAlign::Start,
+                            offset: 4.0,
+                        })
+                        .child(text().content("popover")),
+                    )
+                    .build()
+            })
+        }
+        let run = |remote: bool| {
+            let h = Harness::new();
+            host_mock::take_handle_log();
+            let tree = h.world.enter(anchored);
+            let tree = if remote { cross(tree) } else { tree };
+            let realized = h.mount(tree);
+            h.flush();
+            let out = (h.take_log(), host_mock::take_handle_log());
+            drop(realized);
+            h.flush();
+            out
+        };
+        let (native, remote) = (run(false), run(true));
+        assert_eq!(remote, native);
+        assert!(native.0.iter().any(|l| l.contains("portal")), "{:?}", native.0);
+        // The portal measured its anchor through the view's handle.
+        assert_eq!(native.1.len(), 2, "{:?}", native.1);
+        assert!(native.1[0].starts_with("rect n") && native.1[1].starts_with("anchor Below Start 4 Some("), "{:?}", native.1);
+    }
+
+    /// The app releases every handle it held for a bundle: when the bundle
+    /// drops its copy, and — for a bundle that never does (it was stopped)
+    /// — when the tree that made it is gone.
+    /// Regression: the bundle kept every navigator handle it received in
+    /// `NAV_IDS` (by address) forever — and a later handle allocated at a
+    /// freed one's address would have passed for it, driving the wrong app
+    /// navigator. The entry goes with the handle's last copy.
+    #[test]
+    fn regression_a_dropped_navigator_handle_is_forgotten() {
+        use runtime_vocabulary::remote::handles::{live_nav_ids, nav_id, nav_proxy};
+        let nav = nav_proxy(42);
+        let copy = nav.clone();
+        assert_eq!(nav_id(&copy), Some(42));
+        drop(nav);
+        assert_eq!(live_nav_ids(), 1, "a copy still holds it");
+        drop(copy);
+        assert_eq!(live_nav_ids(), 0);
+    }
+
+    /// Regression: a layout subscription the app didn't take (the handle
+    /// gone, an unfilled ref) left the bundle's callback registered for
+    /// good — nothing on either side would release it.
+    #[test]
+    fn regression_an_untaken_layout_subscription_releases_its_callback() {
+        use runtime_shared::handles::ViewOps;
+        use runtime_vocabulary::remote::handles::{RemoteNode, REMOTE_OPS};
+        let _h = Harness::new();
+        let node = RemoteNode(999_999);
+        let sub = REMOTE_OPS.subscribe_layout(&node, Box::new(|_, _| {}));
+        assert_eq!(bundle::live_callbacks(), 0, "the refused callback was released");
+        drop(sub);
+    }
+
+    #[test]
+    fn held_handles_are_released() {
+        let h = Harness::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let tree = h.world.enter(|| cross(app(log.clone())));
+        let realized = h.mount(tree);
+        h.flush();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 4);
+        drop(realized);
+        h.flush();
+        // The mock keeps every handler so tests can fire it — real owners
+        // of what they capture, unlike a backend's, which unmount drops.
+        h.forget_handlers();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0, "the bundle dropped its handles with its scope");
+
+        // A bundle that keeps its handle beyond its tree (here: in a
+        // global; in practice a `Ref` slot, or a bundle stopped before it
+        // could release) never releases it; the app's entry goes with the
+        // tree anyway.
+        thread_local! { static KEPT: RefCell<Vec<ViewHandle>> = const { RefCell::new(Vec::new()) }; }
+        let tree = h.world.enter(|| cross(view().on_handle(|v| KEPT.with(|k| k.borrow_mut().push(v))).build()));
+        let realized = h.mount(tree);
+        h.flush();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 1);
+        drop(realized);
+        h.flush();
+        h.forget_handlers();
+        assert_eq!(runtime_vocabulary::remote::handles::held_handles(), 0, "the tree's handle went with the tree");
+        assert_eq!(KEPT.with(|k| k.borrow().len()), 1, "the bundle still holds its (now inert) handle");
+        KEPT.with(|k| k.borrow_mut().clear());
+    }
+}
+
+/// Regression: a bundle runs on a 64 KB wasm stack (see stream-spike's
+/// `guest_build`), and the encoder recurses once per tree level holding a
+/// few `Node`s. With a `StyleRules` inline (2.2 KB, twice in a sheet
+/// application) a `Node` was ~5 KB and a modest tree overflowed the stack —
+/// which in wasm is an "out of bounds memory access" trap mid-mount, not a
+/// stack-overflow message. Styles are boxed; this pins the size.
+#[test]
+fn regression_a_node_stays_small_enough_for_a_bundles_stack() {
+    let size = std::mem::size_of::<runtime_vocabulary::remote::Node>();
+    assert!(size <= 512, "Node is {size} bytes — box the large field you added");
+}
+
+// A navigator DEFINED in a remote tree is tested over real wasm
+// (crates/streaming/spike/tests/remote_attr.rs): in-process, the "app"
+// navigator's own signals would be created through the bridged engine too,
+// which never happens in an app (the app side runs the native engine).
+
+/// A fallible `#[host_fn]` (`async fn take_photo(..) -> Result<Photo,
+/// CameraError>`) sends its result as a `RemoteValue`: both arms round
+/// trip, and a reply cut short is an error rather than a misread value.
+#[test]
+fn a_result_crosses_as_a_value_both_arms() {
+    use runtime_vocabulary::remote::RemoteValue;
+    fn round_trip(v: &Result<Vec<u32>, String>) -> Result<Vec<u32>, String> {
+        let mut out = Vec::new();
+        v.encode(&mut out);
+        let mut input: &[u8] = &out;
+        let back = <Result<Vec<u32>, String>>::decode(&mut input).expect("decodes");
+        assert!(input.is_empty(), "the whole value is consumed");
+        back
+    }
+    assert_eq!(round_trip(&Ok(vec![4032, 3024])), Ok(vec![4032, 3024]));
+    assert_eq!(round_trip(&Err("NoSuchCamera".into())), Err("NoSuchCamera".to_string()));
+
+    let mut out = Vec::new();
+    Result::<String, String>::Err("front".into()).encode(&mut out);
+    let mut truncated: &[u8] = &out[..out.len() - 1];
+    assert!(<Result<String, String>>::decode(&mut truncated).is_err());
+}
+
+/// Regression: a crossed list's count was trusted — a huge count of a
+/// zero-sized type looped (decoding nothing) on the other side's say-so,
+/// hanging it. A count past the bytes left is malformed now.
+#[test]
+fn regression_a_list_count_past_its_bytes_is_refused() {
+    use runtime_vocabulary::remote::RemoteValue;
+    let mut out = Vec::new();
+    u64::MAX.encode(&mut out);
+    let mut input: &[u8] = &out;
+    let err = <Vec<()>>::decode(&mut input).expect_err("refused, at once");
+    assert!(err.contains("claims"), "{err}");
+    let mut ok = Vec::new();
+    vec![1u8, 2, 3].encode(&mut ok);
+    assert_eq!(<Vec<u8>>::decode(&mut &ok[..]), Ok(vec![1, 2, 3]));
+}

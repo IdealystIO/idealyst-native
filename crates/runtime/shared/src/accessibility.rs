@@ -35,6 +35,7 @@ use std::rc::Rc;
 /// [`docs/accessibility-design.md`](../../../docs/accessibility-design.md).
 /// `#[non_exhaustive]` so adding a variant later isn't a breaking
 /// change.
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Role {
@@ -148,6 +149,7 @@ bitflags::bitflags! {
 /// and to per-platform announcement notification priority keys.
 ///
 /// [`Backend::announce_for_accessibility`]: crate::Backend::announce_for_accessibility
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LiveRegionPriority {
     /// Queue the announcement behind any in-flight screen-reader

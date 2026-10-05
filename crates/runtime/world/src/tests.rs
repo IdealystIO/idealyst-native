@@ -807,7 +807,7 @@ fn regression_stale_handle_panic_releases_the_arena_borrow_before_panicking() {
     // target (wasm, `panic = "abort"`) never does, so an after-the-fact
     // assertion passes against the buggy code and proves nothing.
     let w = World::new();
-    let arena = Rc::clone(&w.core.arena);
+    let arena = arena_of(w.id()).expect("live world");
     let (dead, owned) = w.enter(|| collect_owned(|| signal(1u32)));
     let live = w.enter(|| signal(100u32));
     drop(owned);
@@ -2488,10 +2488,11 @@ mod staged_read_diagnostic {
     /// not reachable from a test body.
     #[test]
     fn a_memos_cache_signal_reports_the_authors_creation_site() {
+        // Through the engine rather than the native arena, so the test
+        // holds for every engine (the bridge keeps the author's site on
+        // the bundle side).
         fn created_at_of<T>(m: &Memo<T>) -> SiteLoc {
-            let arena = arena_of(m.value.world).expect("live world");
-            let site = arena.signals.borrow()[m.value.slot as usize].created_at;
-            site
+            Active::signal_created_at(m.value.world, m.value.slot).expect("live signal")
         }
 
         let world = World::new();
@@ -2922,4 +2923,652 @@ fn owned_attachments_drop_after_the_scope_tears_down() {
         drop(owned);
         assert!(saw_freed.get(), "attachment dropped after the scope's items were freed");
     });
+}
+
+// ---------------------------------------------------------------------------
+// The native engine's one-entry world cache (`Tls::cached_id`). It sits in
+// front of the world registry on every signal operation, so a cache that
+// outlived its world would make a dead world look alive: reads would return
+// values from freed storage instead of panicking, writes would stage into a
+// queue nothing will ever flush.
+// ---------------------------------------------------------------------------
+
+/// Regression guard for the cache invariant: the world a handle was resolved
+/// through LAST — i.e. the one sitting in the cache — must read as dead the
+/// moment it drops.
+#[test]
+#[should_panic(expected = "idealyst[dead-world-read]")]
+fn regression_world_cache_never_reports_a_dropped_world_alive() {
+    let w = World::new();
+    let s = w.signal(5u32);
+    assert_eq!(s.get(), 5); // `w` is now the cached world
+    drop(w);
+    assert!(!s.is_alive(), "a cached world must not outlive its drop");
+    s.set(6); // a dead world's writes are silent no-ops
+    let _ = s.get(); // ...and its reads panic, cache or not
+}
+
+/// Interleaving worlds swaps the cache back and forth; every handle must
+/// still route to its OWN world (the cache is keyed by id, never "the
+/// current world").
+#[test]
+fn world_cache_routes_interleaved_worlds_to_their_own_arenas() {
+    let a = World::new();
+    let b = World::new();
+    let sa = a.signal(1u32);
+    let sb = b.signal(2u32);
+    for i in 0..10u32 {
+        sa.set(i);
+        sb.set(i * 100);
+        a.flush();
+        b.flush();
+        assert_eq!((sa.get(), sb.get()), (i, i * 100));
+    }
+    // A world created after another dropped gets a fresh id, so a stale
+    // cache entry can never alias it.
+    drop(a);
+    let c = World::new();
+    let sc = c.signal(3u32);
+    assert_eq!((sb.get(), sc.get()), (900, 3));
+    assert!(!sa.is_alive());
+}
+
+/// Regression: a `World` (with live signals and effects) dropped during
+/// THREAD-LOCAL TEARDOWN — held in a thread-local of its own, destroyed after
+/// the kernel's own thread-locals are gone — must tear down quietly. The
+/// native engine has always guarded its teardown paths with `try_with`; the
+/// bridged engine's release hooks used plain `with` and aborted with
+/// "cannot access a Thread Local Storage value during or after destruction"
+/// (found by runtime-vocabulary's robot-highlight suite under
+/// `loopback-engine`).
+///
+/// The holder's thread-local is touched FIRST so its destructor is
+/// registered first; destructors run in reverse registration order, so the
+/// world is dropped after the kernel's state is destroyed.
+///
+/// It must also still run the world's effect cleanups (regression: since
+/// `World` became an id, a drop after the kernel's thread-local found no
+/// arena and skipped them — an effect's `on_cleanup` releasing a resource
+/// silently never ran).
+#[test]
+fn regression_world_dropped_during_thread_teardown_is_quiet() {
+    let cleaned = std::sync::Arc::new(AtomicU32::new(0));
+    let c2 = cleaned.clone();
+    let joined = std::thread::spawn(move || {
+        thread_local! {
+            static HOLD: RefCell<Option<(World, Signal<u32>)>> = const { RefCell::new(None) };
+        }
+        HOLD.with(|_| {}); // register the holder's destructor before the kernel's
+        let w = World::new();
+        let s = w.signal(1u32);
+        w.enter(|| {
+            effect(move || {
+                let _ = s.get();
+                let c3 = c2.clone();
+                on_cleanup(move || {
+                    c3.fetch_add(1, Ordering::SeqCst);
+                });
+            });
+            provide(7u64);
+        });
+        HOLD.with(|h| *h.borrow_mut() = Some((w, s)));
+    })
+    .join();
+    assert!(joined.is_ok(), "tearing a world down during TLS destruction must not panic");
+    assert_eq!(cleaned.load(Ordering::SeqCst), 1, "the effect's cleanup ran, once");
+}
+
+/// Regression: on the bridged engine a context type's `Clone` ran under the
+/// bundle-side table borrow, so a `Clone` that reads a signal it holds
+/// panicked "already borrowed" — on the bridge only; natively it works.
+#[test]
+fn regression_a_context_clone_that_reads_a_signal_works() {
+    struct Probe(Signal<u32>, u32);
+    impl Clone for Probe {
+        fn clone(&self) -> Self {
+            Probe(self.0, self.0.peek())
+        }
+    }
+    let w = World::new();
+    w.enter(|| {
+        let s = signal(3u32);
+        let (_, _owned) = collect_owned(|| {
+            provide(Probe(s, 0));
+            let probe = inject::<Probe>().expect("provided");
+            assert_eq!(probe.1, 3, "the clone read the signal");
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Host-owned values crossing into a bundle, in-process.
+// Only meaningful where the bridged engine is the active one: `Active` plays
+// the bundle, and the host side is native slots created directly on the
+// native engine — exactly what a remote-component host hands a bundle.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "loopback-engine")]
+mod host_owned_values {
+    use super::*;
+    use crate::engine::Engine;
+    use crate::native::Native;
+    use crate::remote::{export_context, export_read_signal, export_signal, Codec};
+    use crate::remote_guest::{import_read_signal, import_signal, register_remote_context};
+
+    fn enc(v: &u32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    fn dec(b: &[u8]) -> Option<u32> {
+        Some(u32::from_le_bytes(b.try_into().ok()?))
+    }
+    const U32: Codec<u32> = Codec { encode: enc, decode: dec };
+
+    /// A HOST-owned signal: a native slot holding the real value, created on
+    /// the native engine directly (the bridged `Active` would make a
+    /// bundle-owned one).
+    fn host_signal(world: &World, v: u32) -> Signal<u32> {
+        let (w, slot, gen, _) =
+            Native::signal_create(Some(world.id()), Box::new(SignalData { value: v, next: None }), caller_site());
+        Signal { world: w, slot, gen, _marker: PhantomData }
+    }
+
+    /// The host reading its own signal, natively.
+    fn host_get(s: Signal<u32>) -> u32 {
+        match Native::signal_access(s.world, s.slot, s.gen, |d| typed::<u32>(d).value) {
+            Access::Done(v) => v,
+            Access::DeadWorld => panic!("dead"),
+        }
+    }
+
+    /// The host writing its own signal, natively (staged, like `set`).
+    fn host_set(s: Signal<u32>, v: u32) {
+        let _ = Native::signal_write(s.world, s.slot, s.gen, false, |d| typed::<u32>(d).next = Some(v));
+    }
+
+    #[test]
+    fn an_imported_signal_reads_the_hosts_committed_value() {
+        let w = World::new();
+        let host = host_signal(&w, 5);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let imported = w.enter(|| import_read_signal(h, U32));
+        assert_eq!(imported.get(), 5);
+        host_set(host, 6);
+        assert_eq!(imported.get(), 5, "staged on the host: not visible yet");
+        w.flush();
+        assert_eq!(imported.get(), 6);
+    }
+
+    /// The bundle's effect subscribes on the HOST's graph: a host write +
+    /// host flush re-runs it.
+    #[test]
+    fn a_bundle_effect_tracks_an_imported_signal() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let seen = Rc::new(Cell::new(0u32));
+        let s2 = seen.clone();
+        w.enter(|| {
+            let imported = import_read_signal(h, U32);
+            effect(move || s2.set(imported.get()));
+        });
+        assert_eq!(seen.get(), 1);
+        host_set(host, 42);
+        w.flush();
+        assert_eq!(seen.get(), 42);
+    }
+
+    /// Bundle writes stage into the host's signal; two `update`s in one batch
+    /// compose on the host's STAGED value, like native.
+    #[test]
+    fn bundle_writes_stage_into_the_host_signal_and_updates_compose() {
+        let w = World::new();
+        let host = host_signal(&w, 10);
+        let (h, _guard) = export_signal(host, U32);
+        let imported = w.enter(|| import_signal(h, U32));
+        imported.update(|v| v + 1);
+        imported.update(|v| v + 1);
+        assert_eq!(host_get(host), 10, "staged, not committed");
+        w.flush();
+        assert_eq!(host_get(host), 12);
+        imported.set_untracked(99);
+        assert_eq!(host_get(host), 99, "set_untracked commits directly");
+    }
+
+    #[test]
+    #[should_panic(expected = "received read-only")]
+    fn a_bundle_cannot_write_a_signal_exported_read_only() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        // A bundle forging a two-way import of a read-only export.
+        let forged = w.enter(|| import_signal(h, U32));
+        forged.set(2);
+    }
+
+    /// Regression: two remote components sharing one app signal export it
+    /// twice; the first to unmount withdrew it from BOTH (exports were keyed
+    /// by slot alone), so the survivor's reads went dead. Either drop order.
+    #[test]
+    fn regression_one_unmount_withdraws_a_signal_another_mount_shares() {
+        for first_drops_first in [true, false] {
+            let w = World::new();
+            let host = host_signal(&w, 3);
+            let (h1, g1) = export_signal(host, U32);
+            let (h2, g2) = export_read_signal(host.read_only(), U32);
+            assert_eq!(h1, h2, "the same slot");
+            let (gone, kept) = if first_drops_first { (g1, g2) } else { (g2, g1) };
+            drop(gone);
+            let mut buf = Vec::new();
+            assert!(Active::fetch(h1, &mut buf), "still exported for the other mount (order {first_drops_first})");
+            let imported = w.enter(|| import_read_signal(h1, U32));
+            assert_eq!(imported.get(), 3);
+            drop(kept);
+            assert!(!Active::fetch(h1, &mut buf), "withdrawn once every mount let go");
+        }
+    }
+
+    /// Regression: a read-only re-export of a signal must not take away a
+    /// bundle's right to write it while a writable export is still live.
+    #[test]
+    fn regression_a_read_only_reexport_does_not_downgrade_a_writable_one() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _rw) = export_signal(host, U32);
+        let (_, ro) = export_read_signal(host.read_only(), U32);
+        let imported = w.enter(|| import_signal(h, U32));
+        imported.set(5);
+        w.flush();
+        assert_eq!(host_get(host), 5);
+        drop(ro);
+        imported.set(6);
+        w.flush();
+        assert_eq!(host_get(host), 6, "the writable export outlives the read-only one");
+    }
+
+    /// Regression: two imports of one app signal (two props bound to it, a
+    /// remount overlapping the old tree) each mapped the slot; releasing
+    /// the later one unmapped it under the earlier, whose next read
+    /// panicked "has no value on this side". Either release order.
+    #[test]
+    fn regression_releasing_one_import_unmaps_a_slot_another_import_uses() {
+        for later_goes_first in [true, false] {
+            let w = World::new();
+            let host = host_signal(&w, 2);
+            let (h, _guard) = export_signal(host, U32);
+            let (a, owned_a) = w.enter(|| collect_owned(|| import_signal(h, U32)));
+            let (b, owned_b) = w.enter(|| collect_owned(|| import_signal(h, U32)));
+            let (gone, kept, survivor) = if later_goes_first { (owned_b, owned_a, a) } else { (owned_a, owned_b, b) };
+            drop(gone);
+            assert_eq!(survivor.get(), 2, "the other import still reads (order {later_goes_first})");
+            survivor.set(3);
+            w.flush();
+            assert_eq!(host_get(host), 3, "and writes");
+            drop(kept);
+        }
+    }
+
+    /// Regression: a bundle that traps mid-call never makes its end calls
+    /// (a wasm panic runs no destructors), so the frames it opened on the
+    /// app's kernel stacks stayed open: the world stayed entered, tracking
+    /// stayed off, the app's next creations were collected into a scope
+    /// nobody owns, and an effect's suspended frames were lost. The app now
+    /// unwinds them from a mark taken before the call.
+    #[test]
+    fn regression_a_trapped_bundle_call_leaves_the_kernel_stacks_as_it_found_them() {
+        use crate::bridge::HostOps;
+        type H = crate::bridge::host::Host<crate::bridge::guest::Local>;
+        let w = World::new();
+        let arena = crate::native::arena_of(w.id()).unwrap();
+        let checked = Rc::new(Cell::new(false));
+        let c2 = checked.clone();
+        let w_id = w.id();
+        let w2 = w.clone();
+        // Inside an app effect, so `unanchored` has frames to suspend.
+        let _ = crate::native::create_effect(
+            &arena,
+            EffectClass::Reaction,
+            Box::new(move || {
+                if c2.get() {
+                    return;
+                }
+                let before = (Native::is_entered(), Native::in_collector(), Native::in_effect());
+                let mark = crate::remote::bundle_frames_mark();
+                // What a bundle's `enter(|| untrack(|| collect_owned(||
+                // unanchored(|| unscoped(|| collect_owned(..))))))` opens,
+                // abandoned by a trap at the innermost point.
+                H::enter_push(w_id);
+                H::untrack_push();
+                H::collect_begin();
+                let leaked = host_signal(&w2, 1);
+                H::unanchored_begin();
+                H::unscoped_begin();
+                H::collect_begin();
+                assert!(!Native::in_effect(), "suspended by unanchored");
+                crate::remote::unwind_bundle_frames(mark);
+                assert_eq!(
+                    (Native::is_entered(), Native::in_collector(), Native::in_effect()),
+                    before,
+                    "entered / collecting / effect frames restored"
+                );
+                assert_eq!(crate::native::untrack_depth(), 0, "tracking back on");
+                assert!(!leaked.is_alive(), "what the abandoned scope collected is freed");
+                c2.set(true);
+            }),
+        );
+        assert!(checked.get(), "the effect ran");
+    }
+
+    /// Regression: an import made from no scope (in the world, but in no
+    /// component or effect — an async continuation reading context)
+    /// anchored a keepalive effect at the world root on EVERY call, one per
+    /// read for the world's life. Such an import now registers no release;
+    /// the slot's one shared entry lives on.
+    #[test]
+    fn regression_an_unscoped_import_anchors_nothing_per_call() {
+        let w = World::new();
+        let host = host_signal(&w, 4);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let before = crate::native::live_effects(w.id());
+        let reads: Vec<u32> = w.enter(|| (0..3).map(|_| import_read_signal(h, U32).get()).collect());
+        assert_eq!(reads, [4, 4, 4]);
+        assert_eq!(crate::native::live_effects(w.id()), before, "no keepalive per import");
+    }
+
+    /// Regression: a panic mid-operation (a write the host refused, an
+    /// export gone) left the bundle's value OUT of its table, so every later
+    /// access reported a misleading re-entrancy panic. It goes back on
+    /// unwind now.
+    #[test]
+    fn regression_a_refused_write_leaves_the_value_in_place() {
+        let w = World::new();
+        let host = host_signal(&w, 1);
+        let (h, _guard) = export_read_signal(host.read_only(), U32);
+        let forged = w.enter(|| import_signal(h, U32));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| forged.set(2)));
+        assert!(refused.is_err(), "a read-only export refuses the write");
+        assert_eq!(forged.get(), 1, "the value is back in place, and still the host's");
+    }
+
+    /// Regression: merging into a scope id the bundle no longer holds
+    /// (claimed, dropped, never its own) REVIVED it in the scope table with
+    /// the merged items — pending forever, never claimed. The items are
+    /// freed and the request refused.
+    #[test]
+    fn regression_merging_into_an_unheld_scope_frees_the_items() {
+        use crate::bridge::HostOps;
+        type H = crate::bridge::host::Host<crate::bridge::guest::Local>;
+        let w = World::new();
+        H::collect_begin();
+        let orphan = host_signal(&w, 1);
+        let other = H::collect_end();
+        assert_ne!(other, 0);
+        let refused = std::panic::catch_unwind(|| H::scope_merge(987_654, other));
+        assert!(refused.is_err(), "refused (a fault: in one process, a panic)");
+        assert!(!orphan.is_alive(), "the merged items were freed");
+        assert_eq!(crate::remote::pending_scopes(), 0, "nothing parked under the unknown id");
+    }
+
+    #[derive(Clone)]
+    struct Theme(u32);
+    #[derive(Clone)]
+    struct Live(ReadSignal<u32>);
+
+    /// Declared host context reaches the bundle's plain `inject`, and the
+    /// bundle's own provision of the type shadows the host's.
+    #[test]
+    fn declared_host_context_reaches_inject_and_bundle_provisions_shadow_it() {
+        let w = World::new();
+        let _guard = export_context("Theme", |out| {
+            enc(&7, out);
+            true
+        });
+        register_remote_context::<Theme>("Theme", |b| dec(b).map(Theme));
+        w.enter(|| {
+            assert_eq!(inject::<Theme>().map(|t| t.0), Some(7), "host context, by declared name");
+            let (_, _owned) = collect_owned(|| {
+                provide(Theme(1));
+                assert_eq!(inject::<Theme>().map(|t| t.0), Some(1), "the bundle's own provision wins");
+            });
+        });
+        // Undeclared: invisible.
+        w.enter(|| assert!(inject::<Live>().is_none()));
+    }
+
+    /// A context value that HOLDS a host signal arrives as an imported
+    /// handle, so it stays reactive in the bundle.
+    #[test]
+    fn host_context_holding_a_signal_stays_reactive_in_the_bundle() {
+        let w = World::new();
+        let host = host_signal(&w, 3);
+        let (h, _sig_guard) = export_read_signal(host.read_only(), U32);
+        let _ctx_guard = export_context("Live", move |out| {
+            for v in [h.0, h.1, h.2] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            true
+        });
+        register_remote_context::<Live>("Live", |b| {
+            let n = |i: usize| u32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
+            Some(Live(import_read_signal((n(0), n(1), n(2)), U32)))
+        });
+        let seen = Rc::new(Cell::new(0u32));
+        let s2 = seen.clone();
+        w.enter(|| {
+            let live = inject::<Live>().expect("declared").0;
+            effect(move || s2.set(live.get()));
+        });
+        assert_eq!(seen.get(), 3);
+        host_set(host, 8);
+        w.flush();
+        assert_eq!(seen.get(), 8);
+    }
+
+    /// A remote component's `Owned` crosses as a scope id and the host's
+    /// claimed copy is the owner: nothing is freed at release, everything
+    /// is freed (cleanups run, signals die) when the CLAIMED scope drops.
+    #[test]
+    fn released_scope_is_owned_by_whoever_claims_it() {
+        use crate::remote::claim_scope;
+        use crate::remote_guest::release_scope;
+        let w = World::new();
+        let cleaned = Rc::new(Cell::new(0));
+        let c2 = cleaned.clone();
+        let (sig, owned) = w.enter(|| {
+            collect_owned(|| {
+                let s = signal(1u32);
+                effect(move || {
+                    let _ = s.get();
+                    let c = c2.clone();
+                    on_cleanup(move || c.set(c.get() + 1));
+                });
+                s
+            })
+        });
+        assert_eq!(owned.len(), 2);
+        let id = release_scope(owned);
+        assert_ne!(id, 0);
+        assert!(sig.is_alive(), "release hands the slots over; it frees nothing");
+        assert_eq!(cleaned.get(), 0);
+
+        let claimed = claim_scope(id);
+        assert_eq!(claimed.len(), 2);
+        sig.set(2);
+        w.flush();
+        assert_eq!(cleaned.get(), 1, "the effect is still live under the claimed scope");
+        drop(claimed);
+        assert_eq!(cleaned.get(), 2, "dropping the claimed scope ran the cleanup");
+        assert!(!sig.is_alive(), "and freed the signal");
+    }
+
+    #[test]
+    fn an_empty_scope_crosses_as_zero() {
+        let owned = collect_owned(|| ()).1;
+        assert_eq!(crate::remote_guest::release_scope(owned), 0);
+        assert!(crate::remote::claim_scope(0).is_empty());
+    }
+
+    // ---- promotion: a bundle-created signal handed to native code ----
+
+    use crate::remote::receive_signal;
+    use crate::remote_guest::{offer_read_signal, offer_signal};
+
+    /// The bundle creates a signal, offers it, and native code takes it
+    /// over: the value now lives in the native slot (a native typed read
+    /// finds a `SignalData<u32>`), and the bundle reads the same value.
+    #[test]
+    fn a_promoted_signal_is_native_and_still_the_bundles() {
+        let w = World::new();
+        let s = w.enter(|| signal(5u32));
+        let h = offer_signal(s, U32);
+        let native = receive_signal(h, U32).expect("promotes");
+        assert_eq!(host_get(native), 5, "a plain native read of the slot");
+        assert_eq!(s.get(), 5, "the bundle's handle reads the same value");
+        assert_eq!((native.world, native.slot, native.gen), (s.world, s.slot, s.gen), "same slot");
+    }
+
+    /// Subscriptions survive promotion: a bundle effect subscribed BEFORE it
+    /// re-runs on a native write after it, and bundle writes land natively.
+    #[test]
+    fn promotion_keeps_subscribers_and_routes_writes_both_ways() {
+        let w = World::new();
+        let seen = Rc::new(Cell::new(0u32));
+        let s2 = seen.clone();
+        let s = w.enter(|| {
+            let s = signal(1u32);
+            effect(move || s2.set(s.get()));
+            s
+        });
+        let native = receive_signal(offer_signal(s, U32), U32).unwrap();
+        host_set(native, 9);
+        w.flush();
+        assert_eq!(seen.get(), 9, "the bundle effect saw the native write");
+        s.update(|v| v + 1);
+        assert_eq!(host_get(native), 9, "staged");
+        w.flush();
+        assert_eq!(host_get(native), 10, "the bundle write landed in the native value");
+        assert_eq!(seen.get(), 10);
+    }
+
+    /// A write staged before promotion is carried over and commits.
+    #[test]
+    fn a_write_staged_before_promotion_survives_it() {
+        let w = World::new();
+        let s = w.enter(|| signal(1u32));
+        s.set(7);
+        let native = receive_signal(offer_signal(s, U32), U32).unwrap();
+        assert_eq!(host_get(native), 1, "still staged");
+        w.flush();
+        assert_eq!(host_get(native), 7);
+        assert_eq!(s.get(), 7);
+    }
+
+    /// A memo's output promotes too, and its derivation (bundle code) keeps
+    /// writing the now-native value.
+    #[test]
+    fn a_promoted_memo_keeps_deriving() {
+        let w = World::new();
+        let (src, m) = w.enter(|| {
+            let src = signal(2u32);
+            (src, memo(move || src.get() * 10))
+        });
+        let native = receive_signal(offer_read_signal(m.value, U32), U32).unwrap();
+        assert_eq!(host_get(native), 20);
+        src.set(3);
+        w.flush();
+        assert_eq!(host_get(native), 30);
+    }
+
+    /// Dropping the owning scope frees the promoted slot, withdraws the
+    /// bundle's export of it, and releases the bundle's entry.
+    #[test]
+    fn dropping_a_promoted_signals_scope_releases_both_sides() {
+        let w = World::new();
+        let (s, owned) = w.enter(|| collect_owned(|| signal(4u32)));
+        let h = offer_signal(s, U32);
+        receive_signal(h, U32).unwrap();
+        let mut buf = Vec::new();
+        assert!(Active::fetch(h, &mut buf), "exported while alive");
+        drop(owned);
+        assert!(!s.is_alive());
+        assert!(!Active::fetch(h, &mut buf), "export withdrawn");
+    }
+
+    /// Regression: a promoted signal handed on as a prop is re-exported;
+    /// that guard dropping (the prop's mount going away) withdrew the
+    /// promoted slot's OWN export, so its bundle could no longer reach it.
+    #[test]
+    fn regression_a_reexported_promoted_signal_keeps_its_own_export() {
+        let w = World::new();
+        let s = w.enter(|| signal(4u32));
+        let h = offer_signal(s, U32);
+        let native = receive_signal(h, U32).unwrap();
+        let (h2, guard) = export_read_signal(native.read_only(), U32);
+        assert_eq!(h, h2);
+        drop(guard);
+        let mut buf = Vec::new();
+        assert!(Active::fetch(h, &mut buf), "the promoted slot's own export survives");
+        s.set(8);
+        w.flush();
+        assert_eq!(host_get(native), 8, "and its bundle still writes through it");
+    }
+
+    /// Regression: a promoted signal handed back to its own bundle as a
+    /// prop is imported; releasing that import removed the bundle's OWN
+    /// entry for the slot, so the bundle's original handle panicked.
+    #[test]
+    fn regression_releasing_a_reimport_keeps_the_bundles_own_promoted_signal() {
+        let w = World::new();
+        let s = w.enter(|| signal(4u32));
+        let native = receive_signal(offer_signal(s, U32), U32).unwrap();
+        let (h, _guard) = export_signal(native, U32);
+        let (prop, owned) = w.enter(|| collect_owned(|| import_signal(h, U32)));
+        assert_eq!(prop.get(), 4);
+        drop(owned);
+        assert_eq!(s.get(), 4, "the bundle's own handle still reads");
+        s.set(5);
+        w.flush();
+        assert_eq!(host_get(native), 5);
+    }
+
+    /// Regression: a promoted slot freed while a guard's re-export of it
+    /// was still registered — a bundle fetch through that export hit the
+    /// app's stale-handle PANIC (an export doesn't keep its slot alive). A
+    /// dead slot now answers "not exported".
+    #[test]
+    fn regression_a_freed_slot_behind_a_live_export_fetches_nothing() {
+        let w = World::new();
+        let (s, owned) = w.enter(|| collect_owned(|| signal(4u32)));
+        let h = offer_signal(s, U32);
+        let native = receive_signal(h, U32).unwrap();
+        let (_, guard) = export_read_signal(native.read_only(), U32);
+        drop(owned);
+        assert!(!s.is_alive());
+        let mut buf = Vec::new();
+        assert!(!Active::fetch(h, &mut buf), "a dead slot fetches nothing");
+        drop(guard);
+    }
+
+    #[test]
+    fn promotion_needs_an_offer_and_a_matching_type() {
+        let w = World::new();
+        let s = w.enter(|| signal(4u32));
+        let h = (s.world, s.slot, s.gen);
+        assert!(receive_signal(h, U32).unwrap_err().contains("did not offer"));
+        fn dec_str(b: &[u8]) -> Option<String> {
+            (b.len() > 8).then(|| String::from_utf8_lossy(b).into_owned())
+        }
+        fn enc_str(v: &String, out: &mut Vec<u8>) {
+            out.extend_from_slice(v.as_bytes())
+        }
+        offer_signal(s, U32);
+        let err = receive_signal(h, Codec { encode: enc_str, decode: dec_str }).unwrap_err();
+        assert!(err.contains("does not decode"), "{err}");
+        // A failed promotion changes nothing: the bundle still owns the
+        // value, and a correct promotion still works.
+        s.set(6);
+        w.flush();
+        assert_eq!(s.get(), 6);
+        let native = receive_signal(h, U32).unwrap();
+        assert_eq!(host_get(native), 6);
+    }
 }

@@ -1,0 +1,39 @@
+# stream-host — loads a remote bundle into wasmi and binds it to the app:
+# the bundle's bridged kernel runs on the app's reactive graph, and its
+# trees are realized by the app's own registry and backend.
+
+[package]
+name = "stream-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `Wire`: the codec `kernel::export_signal` & co. encode host values with.
+stream-abi = { path = "../abi" }
+# `bridge`: the host side of the kernel bridge (`kernel.rs`).
+runtime-world = { workspace = true, features = ["bridge"] }
+runtime-scene = { workspace = true }
+# `driver::spawn_async`: an async `#[host_fn]` a bundle calls runs on the
+# app's own executor (`kernel.rs`).
+runtime-shared = { workspace = true, features = ["async-driver"] }
+# `async-driver` for `spawn_then`, which async host functions run under so
+# they get the framework's scope guarantee rather than a second one.
+# `remote`: the element codec's host half (`kernel.rs`'s `mount_remote`).
+runtime-vocabulary = { workspace = true, features = ["async-driver", "remote"] }
+rustc-hash = { workspace = true }
+# Pure-Rust interpreter: no JIT, so it runs where executable memory is
+# forbidden (iOS). `wat` is off — bundles arrive as binary wasm.
+#
+# `portable-dispatch`, NOT wasmi's default tail-call dispatch: tail-call
+# dispatch keeps the native stack flat only if LLVM turns every handler
+# call into a sibling call, and that depends on how wasmi AND its deps are
+# compiled — measured: the full-framework bundle overflowed a 2 MB thread
+# with wasmi at opt-level 3 in the dev profile, and passed at "z"; wasmi
+# picks tail calls from opt-level alone. An app's own profile settings
+# could therefore turn a big bundle into a stack-overflow crash. The loop
+# dispatch never grows the stack, for ~1.7-1.9x slower interpretation
+# (crates/streaming/README.md). Pinned by
+# `regression_bundle_runs_on_a_2mb_thread` (spike `tests/remote_attr.rs`).
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }

@@ -80,7 +80,7 @@ const CHEVRON_SPIN_MS: u64 = 130;
 
 /// One selectable row in a [`Select`]. `id` is the value committed to
 /// the bound signal when chosen; `label` is what the user sees.
-#[derive(Clone, IdealystSchema)]
+#[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct SelectOption {
     /// Stable value committed to the `Select`'s `value` signal when this
     /// row is chosen. Compared against the current value to mark the

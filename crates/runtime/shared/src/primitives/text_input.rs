@@ -32,6 +32,7 @@ use std::rc::Rc;
 /// - **web**: `blur` is not preventable by spec, so `Keep` re-`focus()`es the
 ///   input (one frame of flicker; focus is retained).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlurOutcome {
     /// Let the blur proceed (default when there is no handler).
     Allow,

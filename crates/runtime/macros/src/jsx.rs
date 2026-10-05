@@ -717,13 +717,21 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
         }
     });
 
+    // The fields this call site set (see `ui!`'s `emit_user`): a remote
+    // bundle's import of an app component sends only these.
+    let mut set: Vec<String> = props.iter().map(|p| p.name.to_string()).collect();
+    if children.is_some() {
+        set.push("children".to_string());
+    }
+
     quote! {
-        ::runtime_core::BuildElement::build(
+        ::runtime_core::BuildElement::build_set(
             #props_ty {
                 #(#field_assignments)*
                 #children_field
                 ..<#props_ty as ::runtime_core::BuildElement>::defaults()
-            }
+            },
+            &[#(#set),*],
         )
     }
 }

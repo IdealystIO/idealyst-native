@@ -36,6 +36,7 @@ use crate::style::{Color, FontFamily, FontStyle, FontWeight, Length, Tokenized};
 /// delta. `style: None` renders with the node's own (paragraph)
 /// style, exactly as if the run were part of a plain text node.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextRun {
     pub text: String,
     pub style: Option<TextRunStyle>,
@@ -58,6 +59,7 @@ impl TextRun {
 /// text node's own resolved style. This is the *entire* per-run
 /// vocabulary — see the module docs for why it stays narrow.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TextRunStyle {
     pub font_family: Option<FontFamily>,
     pub font_weight: Option<FontWeight>,
@@ -91,6 +93,7 @@ impl TextRunStyle {
 /// the palette (web emits `var(--token)`; native re-realizes through
 /// the theme cohort).
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RunUnderline {
     pub style: UnderlineStyle,
     pub color: Option<Tokenized<Color>>,
@@ -125,6 +128,7 @@ impl RunUnderline {
 /// that means something different per platform is exactly what
 /// CLAUDE.md §7 forbids.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnderlineStyle {
     #[default]
     Solid,

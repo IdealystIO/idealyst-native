@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
-# Run framework-core tests across the feature matrix.
+# Run the framework-core tests across the feature matrix.
 #
-# Each invocation here is one row in the coverage matrix. A regression
-# in any of them is a real bug — feature gating is a real production
-# path, not a development convenience.
+# Framework core is the runtime crates CLAUDE.md names (runtime-world,
+# runtime-scene, runtime-vocabulary, runtime-shared, runtime-layout), the
+# macros that emit against them, and the remote-component bridge. Each
+# invocation here is one row of the coverage matrix. A regression in any
+# row is a real bug: feature gating is a production path, and several
+# suites ONLY run under a feature (the bridged kernel's behaviour under
+# `loopback-engine`, the element codec under `remote-loopback`), so a plain
+# `cargo test -p <crate>` never sees them.
 #
 # Usage:
-#   scripts/test-framework-core.sh           # full matrix
-#   scripts/test-framework-core.sh fast      # default features only
-#   scripts/test-framework-core.sh coverage  # branch coverage report (HTML)
-#   scripts/test-framework-core.sh mutants   # mutation testing (slow)
-#   scripts/test-framework-core.sh <suite>   # one suite, default features
-#                                            #  (e.g. reactive, walker, style)
+#   scripts/test-framework-core.sh            # full matrix
+#   scripts/test-framework-core.sh fast       # default features only
+#   scripts/test-framework-core.sh coverage   # branch coverage report (HTML), $CRATE
+#   scripts/test-framework-core.sh mutants    # mutation testing (slow), $CRATE
+#   scripts/test-framework-core.sh <package>  # one package, default features
+#
+# CRATE (coverage / mutants) defaults to runtime-world.
 
 set -euo pipefail
 
-CRATE="framework-core"
+CRATE="${CRATE:-runtime-world}"
 mode="${1:-matrix}"
 
 run() {
@@ -28,21 +34,38 @@ run() {
 
 case "$mode" in
 matrix)
-    # Full feature matrix. Each row is "what production paths flip on
-    # with this feature combination" — the test suite must pass under
-    # all of them, otherwise a feature-gated regression is loose.
-    run cargo test -p "$CRATE"
-    run cargo test -p "$CRATE" --features async-driver
-    run cargo test -p "$CRATE" --features robot
-    run cargo test -p "$CRATE" --features debug-stats
-    run cargo test -p "$CRATE" --features hot-reload
-    run cargo test -p "$CRATE" --all-features
+    # The reactive kernel: native engine, the whole suite again through
+    # the bridged engine (parity), the hot-reload state carry, and the
+    # bridge compiled in beside the native engine (an app hosting remote
+    # components).
+    run cargo test -p runtime-world
+    run cargo test -p runtime-world --features loopback-engine
+    run cargo test -p runtime-world --features hot-reload
+    run cargo test -p runtime-world --features bridge
+    run cargo test -p runtime-scene
+    run cargo test -p runtime-shared
+    run cargo test -p runtime-layout
+    # The vocabulary: default, the remote codec on the app side, and both
+    # halves of the codec in one process.
+    run cargo test -p runtime-vocabulary
+    run cargo test -p runtime-vocabulary --features remote
+    run cargo test -p runtime-vocabulary --features remote-loopback
+    run cargo test -p runtime-macros
+    run cargo test -p runtime-macros --features catalog
+    # Remote components over real wasm (builds bundles for
+    # wasm32-unknown-unknown; without that target the build scripts embed
+    # placeholders and these fail at load).
+    run cargo test -p stream-host
+    run cargo test -p stream-spike
+    run cargo test -p remote-showcase
+    run cargo test -p remote-showcase --features inline
     echo
     echo "✓ All matrix rows passed."
     ;;
 
 fast)
-    run cargo test -p "$CRATE"
+    run cargo test -p runtime-world
+    run cargo test -p runtime-vocabulary
     ;;
 
 coverage)
@@ -51,7 +74,7 @@ coverage)
         echo "    cargo install cargo-llvm-cov"
         exit 1
     fi
-    run cargo llvm-cov --html --branch -p "$CRATE" --all-features
+    run cargo llvm-cov --html --branch -p "$CRATE"
     echo
     echo "✓ HTML report at target/llvm-cov/html/index.html"
     ;;
@@ -62,7 +85,7 @@ coverage-summary)
         echo "    cargo install cargo-llvm-cov"
         exit 1
     fi
-    run cargo llvm-cov --branch --summary-only -p "$CRATE" --all-features
+    run cargo llvm-cov --branch --summary-only -p "$CRATE"
     ;;
 
 mutants)
@@ -74,11 +97,11 @@ mutants)
     # Mutation testing is slow (minutes to hours per crate). Run it
     # nightly, not per-commit. The report at ./mutants.out/ shows
     # which mutants survived — each survivor is a hole in the suite.
-    run cargo mutants -p "$CRATE" --all-features
+    run cargo mutants -p "$CRATE"
     ;;
 
 *)
-    # Assume it's a suite name; run just that suite under default features.
-    run cargo test -p "$CRATE" --test "$mode"
+    # A package name: its tests under default features.
+    run cargo test -p "$mode"
     ;;
 esac
