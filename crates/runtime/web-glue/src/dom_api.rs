@@ -549,6 +549,10 @@ props!(Element {
     set_scroll_top <= i32 = "scrollTop";
     scroll_left: i32 = "scrollLeft";
     set_scroll_left <= i32 = "scrollLeft";
+    // Unrounded: `scrollTop`/`scrollLeft` are fractional on high-DPR
+    // screens, and the robot screenshot replays them in CSS pixels.
+    scroll_top_f64: f64 = "scrollTop";
+    scroll_left_f64: f64 = "scrollLeft";
     scroll_width: i32 = "scrollWidth";
     scroll_height: i32 = "scrollHeight";
     client_width: i32 = "clientWidth";
