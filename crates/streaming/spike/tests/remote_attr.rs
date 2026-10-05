@@ -192,11 +192,54 @@ fn regression_a_mount_while_the_bundle_is_mid_call_works() {
             *out.borrow_mut() = Some(mounted);
         }))
     });
-    let realized = h.mount(h.world.enter(|| bundle.mount_remote("__idealyst_remote_spike_remoteattr::Nester", &[])).expect("mounts"));
+    let (args, _keep, _after) = nester_args(&h);
+    let realized = h.mount(h.world.enter(|| bundle.mount_remote(NESTER, &args)).expect("mounts"));
     h.flush();
     h.press_labelled("nest");
     assert_eq!(nested.borrow().clone(), Some(Ok("mounted".to_string())));
     assert!(bundle.poisoned().is_none());
+    spike_remoteattr::ON_NESTED.with(|f| *f.borrow_mut() = None);
+    drop(realized);
+}
+
+const NESTER: &str = "__idealyst_remote_spike_remoteattr::Nester";
+
+/// `Nester`'s props, as `__mount_remote` sends them: its `after` signal.
+fn nester_args(
+    h: &Harness,
+) -> (Vec<u8>, runtime_vocabulary::remote::host::Keep, runtime_world::Signal<i64>) {
+    let after = h.world.enter(|| runtime_world::signal(0i64));
+    let (mut args, mut keep) = (Vec::new(), runtime_vocabulary::remote::host::Keep::new());
+    runtime_vocabulary::remote::RemoteProp::send(&after, &mut args, &mut keep);
+    (args, keep, after)
+}
+
+/// Regression: a bundle stopped DURING one of its own calls (a call back
+/// into it, made from that call, trapped) kept running: the outer frame
+/// resumed when the inner call returned, and went on driving the app's
+/// graph after its panic. A stopped bundle's requests are refused now, and
+/// the call it was stopped in traps on return.
+#[test]
+fn regression_a_bundle_stopped_mid_call_makes_no_more_requests() {
+    use std::rc::Rc;
+    use stream_host::kernel::KernelBundle;
+    let bundle = Rc::new(KernelBundle::load_with(&stream_host::remote::engine(), REMOTE_ATTR_WASM, &camera()).expect("loads"));
+    let h = Harness::new();
+    let b = bundle.clone();
+    spike_remoteattr::ON_NESTED.with(|f| {
+        // A nested mount with props that don't decode: it traps, inside
+        // `Nester`'s call, and stops the bundle.
+        *f.borrow_mut() = Some(Rc::new(move || {
+            assert!(b.mount_remote("__idealyst_remote_spike_remoteattr::Greeting", &[0xff]).is_err());
+        }))
+    });
+    let (args, _keep, after) = nester_args(&h);
+    let realized = h.mount(h.world.enter(|| bundle.mount_remote(NESTER, &args)).expect("mounts"));
+    h.flush();
+    h.press_labelled("nest");
+    h.flush();
+    assert!(bundle.poisoned().is_some(), "the nested trap stopped it");
+    assert_eq!(after.peek(), 0, "the stopped bundle's handler never wrote the app's signal");
     spike_remoteattr::ON_NESTED.with(|f| *f.borrow_mut() = None);
     drop(realized);
 }

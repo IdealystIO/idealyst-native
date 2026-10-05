@@ -398,15 +398,41 @@ fn ns_checked(bundle: u32, local: i64) -> Imported<Id> {
     Ok(ns(bundle, local))
 }
 
+/// Whether bundle `bundle` was stopped ([`poison`]).
+fn stopped(bundle: u32) -> bool {
+    BUNDLES
+        .try_with(|b| b.borrow().get(&bundle).and_then(Weak::upgrade))
+        .ok()
+        .flatten()
+        .is_some_and(|inner| inner.poisoned.borrow().is_some())
+}
+
+/// The trap for an import made by, or ending in, a stopped bundle.
+fn stopped_trap(bundle: u32) -> wasmi::Error {
+    refused(format!("kernel bridge: bundle {bundle} was stopped"))
+}
+
 /// Run an import's body as [`with_active`] does; a fault it raised in the
 /// app's kernel (an invalid request) traps the bundle instead of being
 /// answered.
+///
+/// A STOPPED bundle's imports are refused, and an import during which the
+/// bundle was stopped (a call back into it, made from this import, trapped)
+/// traps on return: the bundle's outer frame would otherwise resume and keep
+/// driving the app's graph after its panic.
 fn kernel<R>(caller: &mut Caller<'_, KState>, f: impl FnOnce() -> R) -> Imported<R> {
-    let r = with_active(caller, f);
-    match runtime_world::remote::take_fault() {
-        Some(msg) => Err(refused(msg)),
-        None => Ok(r),
+    let bundle = caller.data().bundle;
+    if stopped(bundle) {
+        return Err(stopped_trap(bundle));
     }
+    let r = with_active(caller, f);
+    if let Some(msg) = runtime_world::remote::take_fault() {
+        return Err(refused(msg));
+    }
+    if stopped(bundle) {
+        return Err(stopped_trap(bundle));
+    }
+    Ok(r)
 }
 
 macro_rules! import {
@@ -981,8 +1007,10 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
             HostFnKind::Sync(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, results| {
                 let args = read_args(&caller, params)?;
                 // App code: it may touch the graph, which may call back into
-                // this bundle — through this import's `Caller`.
-                let reply = with_active(&mut caller, || f(&args)).map_err(wasmi::Error::new)?;
+                // this bundle — through this import's `Caller`. A stopped
+                // bundle doesn't get to call it, and one stopped during it
+                // traps on return (see `kernel`).
+                let reply = kernel(&mut caller, || f(&args))?.map_err(wasmi::Error::new)?;
                 let alloc = caller
                     .get_export("idealyst_ui_alloc")
                     .and_then(|e| e.into_func())
@@ -998,6 +1026,9 @@ fn link_host_fns(module: &Module, host_fns: &[HostFnDef], linker: &mut Linker<KS
             }),
             HostFnKind::Async(f) => linker.func_new(HOST_FN_MODULE, name, ty.clone(), move |mut caller, params, _| {
                 let args = read_args(&caller, params)?;
+                if stopped(caller.data().bundle) {
+                    return Err(stopped_trap(caller.data().bundle));
+                }
                 let then = params[2].i32().unwrap_or(0) as u32;
                 let bundle = caller.data().bundle;
                 let future = f(args).map_err(wasmi::Error::new)?;

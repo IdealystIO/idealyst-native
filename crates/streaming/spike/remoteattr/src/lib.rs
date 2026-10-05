@@ -96,10 +96,16 @@ pub fn mount_nested() {
     }
 }
 
-/// A remote component whose button calls [`mount_nested`].
+/// A remote component whose button calls [`mount_nested`], then writes the
+/// app's `after` — which a bundle stopped during the call must never do.
 #[component(remote)]
-pub fn Nester() -> Element {
-    ui! { button(label = "nest", on_click = move || mount_nested()) }
+pub fn Nester(after: Signal<i64>) -> Element {
+    ui! {
+        button(label = "nest", on_click = move || {
+            mount_nested();
+            after.set(1);
+        })
+    }
 }
 
 /// A prop type that can't cross to the app (no `Remote`, not plain data).
