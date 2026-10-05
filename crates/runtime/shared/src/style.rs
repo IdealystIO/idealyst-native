@@ -664,7 +664,9 @@ pub enum Position {
     ///
     /// **Per-backend coverage**:
     /// - **Web** — emits CSS `position: sticky` plus the inset
-    ///   properties; the browser owns the pinning. Full support, all
+    ///   properties and `z-index: 1` (the same raise the native
+    ///   backends apply, so the pinned box stays above positioned
+    ///   siblings too); the browser owns the pinning. Full support, all
     ///   four edges. Note the usual CSS caveat: sticky pins to the
     ///   NEAREST ancestor scroll container, so an intermediate
     ///   `overflow: hidden` silently becomes that container.

@@ -1517,6 +1517,20 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         ("right", V::Len(&rules.right)),
         ("bottom", V::Len(&rules.bottom)),
         ("left", V::Len(&rules.left)),
+        // Sticky raise. The framework's sticky contract is that a pinned
+        // element paints above the siblings scrolling beneath it — the
+        // native backends raise it to z 1 at sticky registration (see
+        // `runtime_shared::sticky`). CSS alone only gets half of that: a
+        // sticky box at `z-index: auto` beats static siblings but ties
+        // with any POSITIONED one (a `Relative` cell anchoring a resize
+        // handle, a translated drag row) and loses to it on DOM order,
+        // so a frozen table column drew under the later cells. `1`
+        // matches the native raise; an inline animated `ZIndex` still
+        // overrides this class-level value.
+        (
+            "z-index",
+            V::Kw((rules.position == Some(runtime_shared::Position::Sticky)).then_some("1")),
+        ),
         ("font-family", V::Owned(rules.font_family.as_ref().map(font_family_css_value))),
         ("font-weight", V::Kw(rules.font_weight.map(font_weight_css))),
         ("font-style", V::Kw(rules.font_style.map(font_style_css))),
@@ -2264,6 +2278,38 @@ mod tests {
 
         let unset = rules_to_css(&StyleRules::default());
         assert!(!unset.contains("pointer-events"), "got: {unset}");
+    }
+
+    // Regression (frozen table cells painted under later positioned
+    // cells, idea-ui 3.2.0): a sticky box at `z-index: auto` ties with any
+    // later positioned sibling and loses on DOM order, so a `Relative`
+    // header cell drew over the pinned one while scrolling sideways. The
+    // lowering must raise sticky to z 1 — the native sticky raise — and
+    // leave every other position at `auto` so ordinary stacking is
+    // untouched.
+    #[test]
+    fn regression_sticky_lowers_with_raise_above_positioned_siblings() {
+        use runtime_shared::{Length, Position, StyleRules, Tokenized};
+        let pinned = rules_to_css(&StyleRules {
+            position: Some(Position::Sticky),
+            left: Some(Tokenized::Literal(Length::Px(0.0))),
+            ..Default::default()
+        });
+        assert!(pinned.contains("position: sticky"), "got: {pinned}");
+        assert!(pinned.contains("z-index: 1"), "got: {pinned}");
+        // The delta path (state/variant overlays) lowers through the same
+        // table — a `pinned: left` arm is exactly such an overlay.
+        let delta = rules_to_css_delta(&StyleRules {
+            position: Some(Position::Sticky),
+            ..Default::default()
+        });
+        assert!(delta.contains("z-index: 1"), "got: {delta}");
+
+        for pos in [Position::Relative, Position::Absolute] {
+            let css = rules_to_css(&StyleRules { position: Some(pos), ..Default::default() });
+            assert!(!css.contains("z-index"), "{pos:?} must not be raised; got: {css}");
+        }
+        assert!(!rules_to_css(&StyleRules::default()).contains("z-index"));
     }
 
     // The hyphenated CSS keywords must match the spec spelling (snake_case

@@ -40,8 +40,9 @@
 //! scroller edge — a `pinned` axis on the cell stylesheets
 //! (`position: Sticky` + a zero inset + an opaque background), which
 //! the browser pins natively on web and the shared sticky registry
-//! pins on native, raising the frozen cells above the content sliding
-//! beneath them. Pin the SAME cell in every row (header included) or
+//! pins on native. Every backend raises the frozen cells above the
+//! content sliding beneath them, including cells an app positions
+//! itself (web lowers sticky with `z-index: 1`). Pin the SAME cell in every row (header included) or
 //! the column freezes only partially.
 //!
 //! # Theming the header band

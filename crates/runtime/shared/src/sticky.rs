@@ -42,9 +42,12 @@
 //! that slides beneath it. The native backends reproduce this by
 //! raising a view at sticky-registration time — `layer.zPosition` on
 //! iOS/macOS, `setTranslationZ` on Android, an implicit sibling-sort z
-//! in the wgpu walker — and restoring it on deregister. Web needs
-//! nothing (the browser owns both the pin and the paint order). This
-//! raise changes paint order only, not hit-test order; the overlap
+//! in the wgpu walker — and restoring it on deregister. Web lowers
+//! sticky with `z-index: 1` (`css::rules_to_css`): CSS on its own puts
+//! a sticky box above STATIC siblings only, and at `z-index: auto` a
+//! later positioned sibling (a `Relative` cell, a translated row) would
+//! still paint over it on DOM order. This raise changes paint order
+//! only, not hit-test order on native; the overlap
 //! region is content the pin visually covers, which is the acceptable
 //! divergence documented in each backend's sticky module.
 
