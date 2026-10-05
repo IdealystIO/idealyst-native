@@ -109,7 +109,14 @@ pub fn guest_build_command(
         // compiled out (it is imported from the app), so the imports and
         // helpers only those bodies used read as unused. The app build lints
         // the same sources with the bodies in.
-        .env("CARGO_ENCODED_RUSTFLAGS", "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused")
+        //
+        // `--export-table`: what lists a bundle's requirements calls its
+        // shape functions through (`build_remote::requires`). The same flags
+        // as `build_remote::BUNDLE_RUSTFLAGS`.
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused\x1f-Clink-arg=--export-table",
+        )
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_TARGET_DIR");
     // Profile overrides the outer build was given are for the APP: inherited,

@@ -1,0 +1,17 @@
+# ota-macros — `ota::config!()`: the app's over-the-air settings, read from
+# its own Cargo.toml at compile time.
+
+[package]
+name = "ota-macros"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Compile-time configuration for idealyst's over-the-air remote-component updates"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+toml = "0.8"

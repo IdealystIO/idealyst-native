@@ -1,0 +1,32 @@
+# ota — over-the-air remote-component bundles for an idealyst app: reads a
+# release location (a CDN in front of an S3 prefix, or a directory) that
+# `idealyst ota publish` writes, runs the newest release of each bundle the
+# app can run, caches it for the next launch, and tells the app when a
+# newer release needs an app update.
+
+[package]
+name = "ota"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Over-the-air remote-component updates for idealyst apps"
+
+[dependencies]
+ota-index = { path = "../index" }
+ota-macros = { path = "../macros" }
+remote-bundle = { workspace = true }
+remote-host = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["remote"] }
+runtime-world = { workspace = true }
+# `spawn_async` (downloads), `after_ms_detached` (applying a bundle after
+# the mount that asked for it).
+runtime-shared = { workspace = true, features = ["async-driver"] }
+# Downloads, on each platform's own HTTP stack.
+net = { workspace = true }
+# The app's private directory, for the cache.
+files = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

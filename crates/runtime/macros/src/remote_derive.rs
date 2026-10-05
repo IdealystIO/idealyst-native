@@ -64,6 +64,28 @@ fn construct(path: TokenStream2, fields: &Fields, recv: impl Fn(&syn::Type) -> T
     }
 }
 
+/// `{a:T,b:U}` / `(T,U)` / nothing, written into `__s`.
+fn fields_shape(fields: &Fields) -> TokenStream2 {
+    let (open, close, named) = match fields {
+        Fields::Named(_) => ("{", "}", true),
+        Fields::Unnamed(_) => ("(", ")", false),
+        Fields::Unit => return quote!(),
+    };
+    let parts = fields.iter().enumerate().map(|(i, f)| {
+        let sep = if i == 0 { quote!() } else { quote! { __s.push(","); } };
+        let label = match (&f.ident, named) {
+            (Some(id), true) => {
+                let l = format!("{id}:");
+                quote! { __s.push(#l); }
+            }
+            _ => quote!(),
+        };
+        let ty = &f.ty;
+        quote! { #sep #label ::runtime_vocabulary::__shape_field!(__s, #ty); }
+    });
+    quote! { __s.push(#open); #(#parts)* __s.push(#close); }
+}
+
 pub(crate) fn derive(input: DeriveInput) -> syn::Result<TokenStream2> {
     derive_with(input, true)
 }
@@ -167,11 +189,32 @@ pub(crate) fn derive_with(input: DeriveInput, context: bool) -> syn::Result<Toke
         }
     };
 
+    // Its shape (`remote::shape`): the fields in order, as they cross.
+    let shape_body = match &input.data {
+        Data::Struct(st) => fields_shape(&st.fields),
+        Data::Enum(e) => {
+            let variants = e.variants.iter().enumerate().map(|(i, variant)| {
+                let sep = if i == 0 { quote!() } else { quote! { __s.push(","); } };
+                let vn = variant.ident.to_string();
+                let body = fields_shape(&variant.fields);
+                quote! { #sep __s.push(#vn); #body }
+            });
+            quote! { __s.push("["); #(#variants)* __s.push("]"); }
+        }
+        Data::Union(_) => unreachable!("refused above"),
+    };
+    let name_str = name.to_string();
+
     let context_entry = if context { quote! { ::runtime_vocabulary::__remote_context_entry!(#name); } } else { quote!() };
 
     Ok(quote! {
         ::runtime_vocabulary::__remote_enabled! {
             #context_entry
+            impl #v::RemoteShape for #name {
+                fn shape(__s: &mut #v::shape::Shaper) {
+                    __s.named(#name_str, |__s| { #shape_body });
+                }
+            }
             impl #v::host_fn::RemoteName for #name {
                 const NAME: &'static str = ::core::concat!(::core::module_path!(), "::", ::core::stringify!(#name));
             }
@@ -243,6 +286,7 @@ mod tests {
         let e: DeriveInput = syn::parse_quote! { enum Close { None, Button(Rc<dyn Fn()>), Custom { el: Element } } };
         let out = derive(e).unwrap().to_string();
         assert!(out.contains("Self :: Button (__f0)") && out.contains("Self :: Custom { el }"), "{out}");
+        assert!(out.contains("RemoteShape for Close"), "{out}");
     }
 
     #[test]

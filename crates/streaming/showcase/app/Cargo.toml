@@ -50,6 +50,14 @@ libc = "0.2"
 
 [dev-dependencies]
 host-mock = { workspace = true }
+# `tests/requirements.rs`: list what the embedded bundle requires, as the
+# release build does, and check it against what this app provides.
+build-remote = { path = "../../../tools/build/remote" }
+remote-bundle = { workspace = true }
+# `tests/ota.rs`: the showcase updated over the air from a release directory.
+ota = { path = "../../../ota/client" }
+ota-publish = { path = "../../../ota/publish" }
+tempfile = "3"
 
 [package.metadata.idealyst.app]
 name      = "Remote Showcase"
@@ -61,6 +69,13 @@ targets   = ["ios", "android", "macos"]
 # `idealyst build --remote` into target/idealyst/remote/showcase.wasm.
 [package.metadata.idealyst.remote]
 bundles = [{ name = "showcase", package = "remote-showcase" }]
+
+# Over-the-air releases (`ota`, `idealyst ota publish`): the showcase's
+# development server, which `stream-serve` runs on this port. A release
+# app points `url` at the CDN in front of `bucket`.
+[package.metadata.idealyst.ota]
+url = "http://127.0.0.1:7878/ota"
+bucket = "../../../../target/idealyst/ota-showcase"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

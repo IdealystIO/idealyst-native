@@ -1,0 +1,17 @@
+# ota-index — the files an over-the-air release of remote-component bundles
+# is made of (`index.json` and the bundles it lists), and the choices made
+# from them: which release an app runs, what a new release starts to
+# require. Shared by the app's client (`ota`) and the publisher
+# (`ota-publish`); pure data and logic, no I/O.
+
+[package]
+name = "ota-index"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The index format and release choice of idealyst's over-the-air remote-component updates"
+
+[dependencies]
+remote-bundle = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

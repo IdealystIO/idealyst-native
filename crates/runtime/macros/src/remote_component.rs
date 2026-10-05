@@ -126,7 +126,14 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
                         #[allow(non_snake_case)]
                         #body
                     }
-                    mount: {}
+                    mount: {
+                        // What the app sends, for the release check against
+                        // what a bundle's mount export decodes.
+                        ::runtime_vocabulary::__remote_mount_entry!(
+                            ::core::concat!(::core::module_path!(), "::", #name_str),
+                            [#(#names: #types),*]
+                        );
+                    }
                 }
             }
         }
@@ -141,6 +148,10 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
                 #[unsafe(export_name = ::core::concat!("__idealyst_remote_", ::core::module_path!(), "::", #name_str))]
                 #[allow(non_snake_case)]
                 pub extern "C" fn #export_fn(_ptr: u32, len: u32) -> i64 {
+                    ::runtime_vocabulary::__remote_mount_site!(
+                        ::core::concat!(::core::module_path!(), "::", #name_str),
+                        [#(#names: #types),*]
+                    );
                     ::runtime_vocabulary::remote::bundle::__mount(len, |__in: &mut &[u8]| {
                         #(let #names = <#types as ::runtime_vocabulary::remote::RemoteProp>::receive(__in);)*
                         #name(#(#names),*)
@@ -288,6 +299,12 @@ pub(crate) fn build_set_override(key: &TokenStream2, props: &TokenStream2) -> To
             bundle: {
                 fn build_set(self, __set: &'static [&'static str]) -> ::runtime_core::Element {
                     ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(__set))
+                }
+                // A `ui!` call site: the same, leaving the record of which
+                // props of this component the bundle sets (`remote::site`).
+                fn __build_site<S: ::runtime_core::PropSet>(self) -> ::runtime_core::Element {
+                    ::runtime_vocabulary::__remote_component_site!(#key, #props, <S as ::runtime_core::PropSet>::JOINED);
+                    ::runtime_vocabulary::__remote_import!(#key, #props, self, ::core::option::Option::Some(<S as ::runtime_core::PropSet>::SET))
                 }
             }
             app: {}

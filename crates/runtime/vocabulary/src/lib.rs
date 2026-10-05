@@ -215,6 +215,33 @@ macro_rules! __remote_guest_split {
     (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($a)* };
 }
 
+/// A `ui!` call of a component: `BuildElement::build_set` with the props
+/// the call site set. In a remote bundle build, the set goes as a type
+/// (`__build_site`), so an imported app component can leave a constant
+/// record of the call site (`remote::site`) — which props of which app
+/// component the bundle uses, kept only if the call site is reachable.
+#[cfg(all(feature = "remote", idealyst_stream_guest))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_site {
+    ($props:expr, [$($s:literal),* $(,)?]) => {{
+        struct __Set;
+        impl $crate::glue::PropSet for __Set {
+            const SET: &'static [&'static str] = &[$($s),*];
+            const JOINED: &'static str = ::core::concat!($($s, "\n"),*);
+        }
+        $crate::glue::BuildElement::__build_site::<__Set>($props)
+    }};
+}
+#[cfg(not(all(feature = "remote", idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_site {
+    ($props:expr, [$($s:literal),* $(,)?]) => {
+        $crate::glue::BuildElement::build_set($props, &[$($s),*])
+    };
+}
+
 /// `#[component(remote)]`'s emission for this build: where the body is
 /// compiled (a remote bundle, or a web app — remote is a native mechanism)
 /// `body`, else `native` (an app that mounts the component from a bundle).
@@ -294,6 +321,12 @@ macro_rules! __remote_key {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_app_component {
+    ($($t:tt)*) => {};
+}
+#[cfg(not(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_mount_entry {
     ($($t:tt)*) => {};
 }
 #[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest), any(idealyst_stream_guest, feature = "remote-loopback"))))]

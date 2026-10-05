@@ -1114,6 +1114,14 @@ pub trait Loader: 'static {
     /// A number that changes when the bundle is replaced. Read TRACKED by
     /// every mounted remote component, so a reload remounts them.
     fn generation(&self) -> u64;
+    /// The generation `component`'s mount follows: a loader holding several
+    /// bundles bumps only the one a replaced bundle served, so replacing
+    /// one bundle leaves the others' components (and their state) alone.
+    /// Read TRACKED, like [`generation`](Self::generation).
+    fn generation_of(&self, component: &str) -> u64 {
+        let _ = component;
+        self.generation()
+    }
     /// Mount component `component` (its `#[component(remote)]` fn, as
     /// `module_path::Name`) with its encoded props. An `Err` is shown in the
     /// component's place.
@@ -1167,7 +1175,7 @@ pub fn __mount_remote(
     });
     let select = loader.clone();
     runtime_scene::dyn_keyed(
-        move || select.generation(),
+        move || select.generation_of(path),
         move |_| match loader.mount(path, &args) {
             Ok(element) => element,
             Err(msg) => crate::builders::text().content(format!("⚠ remote component `{component}`: {msg}")).build(),
@@ -1187,6 +1195,8 @@ pub struct AppComponent {
     pub name: &'static str,
     /// Decode the props (`ImportArg`) and build the component.
     pub build: fn(&mut &[u8], &ImportCx) -> Result<Element, String>,
+    /// Each prop's name and [shape](super::shape).
+    pub props: fn() -> Vec<(&'static str, String)>,
 }
 
 /// Filled at link time: no startup work, and nothing in apps without
@@ -1201,6 +1211,20 @@ fn app_component(name: &str) -> Option<&'static AppComponent> {
     }
     BY_NAME.with(|m| m.get(name).copied())
 }
+
+/// A remote component the app mounts from a bundle: every
+/// `#[component(remote)]` in a native app build registers one
+/// (`crate::__remote_mount_entry!`).
+pub struct RemoteMount {
+    /// `module_path::Name` — the bundle's mount export.
+    pub name: &'static str,
+    /// Each parameter's name and [shape](super::shape), in the order the
+    /// app sends them.
+    pub params: fn() -> Vec<(&'static str, String)>,
+}
+
+#[linkme::distributed_slice]
+pub static REMOTE_MOUNTS: [RemoteMount];
 
 /// The names of the app components bundles may import.
 pub fn app_component_names() -> Vec<&'static str> {

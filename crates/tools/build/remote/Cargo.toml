@@ -15,6 +15,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"
 wasmparser = { workspace = true }
+# Runs a bundle's shape functions to list what it requires (`requires.rs`):
+# the same interpreter, and features, as the loader (`remote-host`).
+# Strips the shape functions once they've been read (`strip_shapes`).
+walrus = { workspace = true }
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "portable-dispatch"] }
 
 [dev-dependencies]
 tempfile = "3"

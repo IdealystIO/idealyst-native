@@ -25,6 +25,7 @@ pub mod remote;
 /// Why a bundle was refused at load. Every check runs before any bundle
 /// code does.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LoadError {
     /// Not valid wasm, or instantiation failed (e.g. it imports a kernel
     /// function this app does not define, or lacks a required export).
@@ -42,6 +43,10 @@ pub enum LoadError {
     /// isn't signed, is signed by a key the app doesn't trust, or was
     /// changed after signing.
     Untrusted(remote_bundle::TrustError),
+    /// The bundle needs what this app doesn't have: a component, a prop, a
+    /// host function, or one that crosses differently (its requires
+    /// section, checked against [`remote::provides`]). Each problem named.
+    Incompatible(Vec<remote_bundle::Problem>),
 }
 
 impl std::fmt::Display for LoadError {
@@ -52,6 +57,10 @@ impl std::fmt::Display for LoadError {
                 write!(f, "bundle calls host functions this app does not export: {}", names.join(", "))
             }
             LoadError::Untrusted(e) => write!(f, "bundle refused: {e}"),
+            LoadError::Incompatible(problems) => {
+                let list: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
+                write!(f, "bundle needs what this app doesn't have: {}", list.join("; "))
+            }
             LoadError::IncompatibleCodec { app, bundle } => {
                 let bundle = bundle.map_or_else(|| "1 (unreported)".to_string(), |v| v.to_string());
                 write!(f, "bundle was built with codec version {bundle}, this app reads version {app}: rebuild the bundle against this app's framework version")

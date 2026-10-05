@@ -122,6 +122,12 @@ members = [
     "crates/streaming/example/bundle",
     "crates/streaming/showcase/app",
     "crates/streaming/spike/demo",
+    # Over-the-air delivery of remote-component bundles: the index format,
+    # the app's client, its config macro, and the publisher.
+    "crates/ota/index",
+    "crates/ota/client",
+    "crates/ota/macros",
+    "crates/ota/publish",
     # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
     "crates/dev/parity-goldens",
     "crates/dev/headless-screenshot",

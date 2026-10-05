@@ -3404,6 +3404,27 @@ pub trait BuildElement: Default {
         let _ = set;
         self.build()
     }
+
+    /// `build_set`, with the call site's set as a type (a remote bundle's
+    /// `ui!`, through `__remote_site!`). An imported app component
+    /// overrides it to leave a record of the call site in the bundle,
+    /// which the release build reads to list what the bundle requires of
+    /// an app (`remote::site`).
+    #[doc(hidden)]
+    #[inline(always)]
+    fn __build_site<S: PropSet>(self) -> Element {
+        self.build_set(S::SET)
+    }
+}
+
+/// The props a `ui!` call site sets, as a type: what a remote bundle's
+/// call site passes to [`BuildElement::__build_site`], so the record it
+/// leaves can be a constant.
+#[doc(hidden)]
+pub trait PropSet {
+    const SET: &'static [&'static str];
+    /// `SET`, each name followed by `\n`.
+    const JOINED: &'static str;
 }
 
 /// The struct-update base for a SIGNAL-typed prop with no declared

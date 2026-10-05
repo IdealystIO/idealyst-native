@@ -59,6 +59,9 @@ pub mod handles;
 pub mod host;
 pub mod host_fn;
 pub use host_fn::HostFnDef;
+pub mod shape;
+pub mod site;
+pub use shape::RemoteShape;
 /// The bundle half's wasm exports.
 #[cfg(idealyst_stream_guest)]
 pub mod wasm;
@@ -1241,6 +1244,11 @@ pub trait ImportProps: Sized + 'static {
     /// Overwrite `base` (the app's defaults) with the fields that arrived.
     #[cfg(not(idealyst_stream_guest))]
     fn receive_props(base: Self, input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String>;
+    /// Each field's name and [shape](shape): what the release build checks
+    /// a bundle's props against an app's.
+    fn prop_shapes() -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
 }
 
 impl ImportProps for () {
@@ -1266,6 +1274,7 @@ pub trait ViaProps<T> {
     fn send_props(&self, v: T, set: Option<&[&str]>, out: &mut Vec<u8>);
     #[cfg(not(idealyst_stream_guest))]
     fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
+    fn prop_shapes(&self) -> Vec<(&'static str, String)>;
 }
 
 impl<T: ImportProps> ViaProps<T> for Arg<T> {
@@ -1277,6 +1286,9 @@ impl<T: ImportProps> ViaProps<T> for Arg<T> {
     fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String> {
         T::receive_props(base, input, cx)
     }
+    fn prop_shapes(&self) -> Vec<(&'static str, String)> {
+        T::prop_shapes()
+    }
 }
 
 #[doc(hidden)]
@@ -1285,6 +1297,10 @@ pub trait ViaUnsupportedProps<T> {
     fn send_props(&self, v: T, set: Option<&[&str]>, out: &mut Vec<u8>);
     #[cfg(not(idealyst_stream_guest))]
     fn receive_props(&self, base: T, input: &mut &[u8], cx: &host::ImportCx) -> Result<T, String>;
+    /// None known: the props can't cross anyway.
+    fn prop_shapes(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
 }
 
 impl<T> ViaUnsupportedProps<T> for &Arg<T> {
@@ -1784,6 +1800,9 @@ macro_rules! __remote_props {
         impl $crate::remote::ImportProps for $ty {
             $crate::__remote_props_send! { $($f : $t),* }
             $crate::__remote_props_receive! { $($f : $t),* }
+            fn prop_shapes() -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+                ::std::vec![$( (::core::stringify!($f), $crate::__shape_of!($t)) ),*]
+            }
         }
     };
 }
@@ -1883,6 +1902,13 @@ macro_rules! __remote_keyed {
                 }
             }
         }
+        impl $crate::remote::RemoteShape for $ty {
+            fn shape(s: &mut $crate::remote::shape::Shaper) {
+                s.push("key<");
+                s.push(::core::stringify!($ty).rsplit("::").next().unwrap_or("").trim());
+                s.push(">");
+            }
+        }
         /// As plain data (a host function's argument): the key; only the
         /// app, which holds the registry, can decode it.
         impl $crate::remote::RemoteValue for $ty {
@@ -1963,10 +1989,15 @@ macro_rules! __remote_app_component {
                 let $p: $props = (&$crate::remote::Arg::<$props>::new()).receive_props($defaults, __in, __cx)?;
                 ::core::result::Result::Ok($call)
             }
+            fn __props() -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
+                (&$crate::remote::Arg::<$props>::new()).prop_shapes()
+            }
             #[$crate::remote::__linkme::distributed_slice($crate::remote::host::APP_COMPONENTS)]
             #[linkme(crate = $crate::remote::__linkme)]
             static __ENTRY: $crate::remote::host::AppComponent =
-                $crate::remote::host::AppComponent { name: $name, build: __build };
+                $crate::remote::host::AppComponent { name: $name, build: __build, props: __props };
         };
     };
 }
@@ -1977,9 +2008,12 @@ macro_rules! __remote_app_component {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_import {
-    ($name:expr, $props:ty, $value:expr) => {
+    // Called as a function (`Card(props)`), not through `ui!`: every prop
+    // crosses, so the record says so.
+    ($name:expr, $props:ty, $value:expr) => {{
+        $crate::__remote_component_site!($name, $props, "*\n");
         $crate::__remote_import!($name, $props, $value, ::core::option::Option::None)
-    };
+    }};
     ($name:expr, $props:ty, $value:expr, $set:expr) => {{
         #[allow(unused_imports)]
         use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
@@ -1987,6 +2021,64 @@ macro_rules! __remote_import {
         let mut __out = ::std::vec::Vec::new();
         (&$crate::remote::Arg::<$props>::new()).send_props($value, $set, &mut __out);
         $crate::remote::bundle::import_component($name, __out, __crossing)
+    }};
+}
+
+/// The record of a remote component the bundle provides (`site::REMOTE`):
+/// its parameters, in order, as the mount export decodes them.
+#[cfg(all(feature = "remote", any(idealyst_stream_guest, feature = "remote-loopback")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_mount_site {
+    ($name:expr, [$($p:ident : $t:ty),* $(,)?]) => {{
+        extern "C" fn __shapes() -> u64 {
+            $crate::remote::site::leak($crate::remote::site::lines(&[
+                $( (::core::stringify!($p), $crate::__shape_of!($t)) ),*
+            ]))
+        }
+        $crate::remote::site::mark(&const {
+            $crate::remote::site::Site::new($crate::remote::site::REMOTE, $name, "", __shapes)
+        });
+    }};
+}
+
+/// Register a remote component the app mounts from a bundle
+/// (`host::REMOTE_MOUNTS`): its parameters, in the order it sends them.
+#[cfg(all(feature = "remote", not(target_arch = "wasm32"), not(idealyst_stream_guest)))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_mount_entry {
+    ($name:expr, [$($p:ident : $t:ty),* $(,)?]) => {
+        const _: () = {
+            fn __params() -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+                ::std::vec![$( (::core::stringify!($p), $crate::__shape_of!($t)) ),*]
+            }
+            #[$crate::remote::__linkme::distributed_slice($crate::remote::host::REMOTE_MOUNTS)]
+            #[linkme(crate = $crate::remote::__linkme)]
+            static __ENTRY: $crate::remote::host::RemoteMount =
+                $crate::remote::host::RemoteMount { name: $name, params: __params };
+        };
+    };
+}
+
+/// Leave the record of a use of app component `$name` (`site::COMPONENT`):
+/// `$joined` is the props the call site sets (`PropSet::JOINED`, or `*\n`
+/// for all of them).
+#[cfg(all(feature = "remote", any(idealyst_stream_guest, feature = "remote-loopback")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_component_site {
+    ($name:expr, $props:ty, $joined:expr) => {{
+        extern "C" fn __shapes() -> u64 {
+            #[allow(unused_imports)]
+            use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
+            $crate::remote::site::leak($crate::remote::site::lines(
+                &(&$crate::remote::Arg::<$props>::new()).prop_shapes(),
+            ))
+        }
+        $crate::remote::site::mark(&const {
+            $crate::remote::site::Site::new($crate::remote::site::COMPONENT, $name, $joined, __shapes)
+        });
     }};
 }
 
@@ -2213,6 +2305,8 @@ pub struct ContextEntry {
     pub export: fn() -> Box<dyn std::any::Any>,
     /// Bundle side: let `inject` fall back to the app's value.
     pub register: fn(),
+    /// The type's [shape](shape).
+    pub shape: fn() -> String,
 }
 
 #[cfg(not(idealyst_stream_guest))]
@@ -2326,6 +2420,17 @@ macro_rules! __remote_context_entry {
             /// Called by the loader at load (see `CONTEXT_EXPORT_PREFIX`).
             #[export_name = ::core::concat!("__idealyst_ctx_", ::core::module_path!(), "::", ::core::stringify!($name))]
             extern "C" fn __register() {
+                extern "C" fn __shape() -> u64 {
+                    $crate::remote::site::leak($crate::__shape_of!($name))
+                }
+                $crate::remote::site::mark(&const {
+                    $crate::remote::site::Site::new(
+                        $crate::remote::site::CONTEXT,
+                        <$name as $crate::remote::RemoteContext>::NAME,
+                        "",
+                        __shape,
+                    )
+                });
                 #[allow(unused_imports)]
                 use $crate::remote::{ViaContext as _, ViaNoContext as _};
                 (&$crate::remote::Arg::<$name>::new()).register_context()
@@ -2349,7 +2454,11 @@ macro_rules! __remote_context_entry {
                 name: <$name as $crate::remote::RemoteContext>::NAME,
                 export: __export,
                 register: __register,
+                shape: __shape,
             };
+            fn __shape() -> ::std::string::String {
+                $crate::__shape_of!($name)
+            }
             fn __export() -> ::std::boxed::Box<dyn ::core::any::Any> {
                 #[allow(unused_imports)]
                 use $crate::remote::{ViaContext as _, ViaNoContext as _};
@@ -2452,6 +2561,12 @@ macro_rules! __remote_receive_side {
 #[doc(hidden)]
 macro_rules! __remote_nav_handle {
     ($t:ty) => {
+        /// Crosses as the navigator handle it wraps.
+        impl $crate::remote::RemoteShape for $t {
+            fn shape(s: &mut $crate::remote::shape::Shaper) {
+                s.push("NavHandle")
+            }
+        }
         impl $crate::remote::RemoteProp for $t {
             $crate::__remote_send_side! {
                 fn send(&self, __out: &mut ::std::vec::Vec<u8>, __keep: &mut $crate::remote::host::Keep) {

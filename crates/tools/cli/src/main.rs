@@ -110,6 +110,9 @@ enum Command {
     /// verifying or inspecting a bundle. Release builds are
     /// `idealyst build --remote`.
     Remote(cmd::remote::Args),
+    /// Over-the-air releases of the app's remote-component bundles:
+    /// `init`, `publish`, `rollback`, `status`.
+    Ota(cmd::ota::Args),
     /// Launch the framework MCP catalog server (stdio). Use as the
     /// `command` for an MCP client (Claude Desktop, claude.ai/code).
     /// Robot tools are on by default — pass `--no-robot` to omit them.
@@ -186,6 +189,7 @@ fn main() -> anyhow::Result<()> {
         Command::Scaffold(args) => cmd::scaffold::run(args),
         Command::Brs(args) => cmd::brs::run(args),
         Command::Remote(args) => cmd::remote::run(args),
+        Command::Ota(args) => cmd::ota::run(args),
         Command::Mcp(args) => cmd::mcp::run(args),
         Command::RustcCapture(args) => cmd::rustc_capture::run(args),
         Command::RunLinked(args) => cmd::run_linked::run(args),

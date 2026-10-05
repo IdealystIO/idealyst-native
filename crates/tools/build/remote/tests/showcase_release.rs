@@ -34,4 +34,13 @@ fn the_showcase_builds_as_a_signed_release_bundle() {
     // Imports only what the loader defines (the build checked; this is the
     // file it wrote).
     assert!(build_remote::foreign_imports(&wasm).unwrap().is_empty());
+    let req = remote_bundle::requires(&wasm).unwrap().expect("a requires section");
+    assert_eq!(req, b.manifest.requires);
+    // Only what remote code uses: two of idea-ui's dozens of components.
+    assert!(req.components.contains_key("idea_ui::components::button::Button"));
+    assert!(!req.components.contains_key("idea_ui::components::modal::Modal"));
+    // The shape functions are stripped once read: the release can't list
+    // itself again (its slots trap), and the codec stamp survived.
+    assert!(build_remote::requires::requires(&wasm).is_err(), "shape functions left in the release");
+    assert_eq!(build_remote::codec_version(&wasm).unwrap(), Some(2));
 }

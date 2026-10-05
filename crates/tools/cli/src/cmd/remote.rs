@@ -9,7 +9,8 @@
 //! - `sign` — sign a bundle built elsewhere (or re-sign with another key).
 //! - `verify` — check a bundle against public keys, as an app requiring a
 //!   signature would.
-//! - `inspect` — what a bundle file says it is.
+//! - `inspect` — what a bundle file says it is, and what it requires of an
+//!   app.
 
 use std::path::PathBuf;
 
@@ -49,7 +50,8 @@ pub enum Command {
         #[arg(long = "public-key", value_name = "HEX", required = true)]
         public_keys: Vec<String>,
     },
-    /// Print a bundle's metadata, size, hash and signing key.
+    /// Print a bundle's metadata, size, hash, signing key and what it
+    /// requires of an app.
     Inspect { bundle: PathBuf },
 }
 
@@ -92,9 +94,34 @@ pub fn run(args: Args) -> Result<()> {
                 Ok(None) => println!("  signed   no"),
                 Err(e) => println!("  signed   {e}"),
             }
+            match remote_bundle::requires(&wasm)? {
+                Some(r) => print!("{}", requirements(&r)),
+                None => println!("  requires (not recorded: not a release build)"),
+            }
             Ok(())
         }
     }
+}
+
+/// What a bundle requires of an app, one item per line.
+fn requirements(r: &remote_bundle::Requires) -> String {
+    let mut out = String::new();
+    for (name, props) in &r.components {
+        let props: Vec<String> = props.iter().map(|(p, shape)| format!("{p}: {shape}")).collect();
+        out.push_str(&format!("  uses     {name}({})\n", props.join(", ")));
+    }
+    for (import, shape) in &r.host_fns {
+        let path = import.rsplit_once('#').map_or(import.as_str(), |(p, _)| p);
+        // A generic host function's types are checked by kind, in the
+        // signature fingerprint its import name carries.
+        let shape = if shape == "?" { "generic" } else { shape.as_str() };
+        out.push_str(&format!("  calls    {path}: {shape}\n"));
+    }
+    for (name, params) in &r.remote {
+        let params: Vec<String> = params.iter().map(|p| format!("{}: {}", p.name, p.shape)).collect();
+        out.push_str(&format!("  provides {name}({})\n", params.join(", ")));
+    }
+    out
 }
 
 /// The build writes `<name>.json` beside `<name>.wasm`; signing changes the
@@ -133,7 +160,7 @@ fn keygen(out: &std::path::Path) -> Result<()> {
 }
 
 /// Write a private key readable only by its owner where the OS has modes.
-fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
+pub(crate) fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -173,6 +200,7 @@ mod tests {
             size: 8,
             sha256: "old".into(),
             signed_by: None,
+            requires: Default::default(),
         };
         std::fs::write(dir.path().join("shop.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
         let key = SigningKey::generate().unwrap();
@@ -184,6 +212,21 @@ mod tests {
         assert_eq!(m.size, signed.len() as u64);
         assert_eq!(m.signed_by, Some(key.public().id().to_string()));
         assert_eq!(remote_bundle::verify(&signed, &[key.public()]), Ok(key.public().id()));
+    }
+
+    #[test]
+    fn inspect_lists_what_a_bundle_requires() {
+        let mut r = remote_bundle::Requires::default();
+        r.components.insert("ui::Card".into(), [("title".to_string(), "reactive<str>".to_string())].into());
+        r.host_fns.insert("app::sort#00000000000000aa".into(), "fn(list<u32>)->list<u32>".into());
+        r.remote.insert(
+            "shop::Offer".into(),
+            vec![remote_bundle::manifest::Param { name: "id".into(), shape: "u64".into() }],
+        );
+        assert_eq!(
+            requirements(&r),
+            "  uses     ui::Card(title: reactive<str>)\n  calls    app::sort: fn(list<u32>)->list<u32>\n  provides shop::Offer(id: u64)\n"
+        );
     }
 
     #[test]

@@ -118,7 +118,79 @@ fn a_bundle_without_the_component_shows_an_error() {
     let realized = a.h.mount(tree(&a));
     a.h.flush();
     let t = text(&a, &realized);
-    assert!(t.contains("remote component `Greeting`") && t.contains("__idealyst_remote_spike_remoteattr::Greeting"), "{t}");
+    assert!(
+        t.contains("remote component `Greeting`") && t.contains("no installed bundle provides `spike_remoteattr::Greeting`"),
+        "{t}"
+    );
+}
+
+/// A loader can hold several named bundles; a remote component mounts from
+/// the one that exports it, and an unrelated bundle's arrival doesn't
+/// touch it.
+#[test]
+fn named_bundles_route_each_component_and_replace_independently() {
+    let remote = remote_host::remote::install_empty(remote_host::remote::Options { host_fns: camera(), ..Default::default() });
+    let h = Harness::new();
+    let (count, likes) = h.world.enter(|| (signal(1i64), signal(0i64)));
+    let a = App { h, count, likes, remote };
+    let realized = a.h.mount(tree(&a));
+    a.h.flush();
+    assert!(text(&a, &realized).contains("no installed bundle provides `spike_remoteattr::Greeting`"));
+
+    // A bundle without it changes nothing; the one with it mounts it.
+    a.remote.set("kernel", stream_spike::KERNEL_GUEST_WASM).expect("loads");
+    a.h.flush();
+    assert!(text(&a, &realized).contains("no installed bundle provides"));
+    a.remote.set("greeting", REMOTE_ATTR_WASM).expect("loads");
+    a.h.flush();
+    assert!(text(&a, &realized).contains("hello ada"), "{}", text(&a, &realized));
+    assert!(a.remote.provides("spike_remoteattr::Greeting"));
+    assert_eq!(a.remote.bundles(), ["kernel", "greeting"]);
+
+    // Bundle state survives another bundle being replaced...
+    let presses = a.h.shared.button_presses.borrow().clone();
+    presses[0]();
+    a.h.flush();
+    assert!(text(&a, &realized).contains("taps 1"));
+    a.remote.set("kernel", stream_spike::KERNEL_GUEST_WASM).expect("reloads");
+    a.h.flush();
+    assert!(text(&a, &realized).contains("taps 1"), "replacing another bundle remounted it:
+{}", text(&a, &realized));
+    // ...and starts over when its own is.
+    a.remote.set("greeting", REMOTE_ATTR_WASM).expect("reloads");
+    a.h.flush();
+    assert!(text(&a, &realized).contains("taps 0"), "{}", text(&a, &realized));
+
+    // Removed: it is missing again.
+    assert!(a.remote.remove("greeting"));
+    a.h.flush();
+    assert!(text(&a, &realized).contains("no installed bundle provides"), "{}", text(&a, &realized));
+    assert!(!a.remote.remove("greeting"));
+}
+
+/// With a missing-component hook, a component no bundle provides holds an
+/// empty place (no error) and names itself, so the app can fetch its
+/// bundle; it mounts once one is set.
+#[test]
+fn a_missing_component_asks_for_its_bundle_and_mounts_when_it_arrives() {
+    let remote = remote_host::remote::install_empty(remote_host::remote::Options { host_fns: camera(), ..Default::default() });
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let log = asked.clone();
+    remote.on_missing(move |c| log.borrow_mut().push(c.to_string()));
+    let h = Harness::new();
+    let (count, likes) = h.world.enter(|| (signal(1i64), signal(0i64)));
+    let a = App { h, count, likes, remote };
+    let realized = a.h.mount(tree(&a));
+    a.h.flush();
+    assert_eq!(*asked.borrow(), ["spike_remoteattr::Greeting"]);
+    let t = text(&a, &realized);
+    assert!(!t.contains("⚠") && !t.contains("hello"), "an empty placeholder:
+{t}");
+
+    a.remote.set("greeting", REMOTE_ATTR_WASM).expect("loads");
+    a.h.flush();
+    assert!(text(&a, &realized).contains("hello ada"), "{}", text(&a, &realized));
+    assert_eq!(asked.borrow().len(), 1, "not asked again once provided");
 }
 
 /// Regression: a remote component's mount export was named after the

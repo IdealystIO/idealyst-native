@@ -1930,6 +1930,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml 0.8.23",
+ "walrus",
+ "wasmi",
  "wasmparser 0.224.1",
 ]
 
@@ -6268,6 +6270,7 @@ dependencies = [
  "lint",
  "mcp-catalog",
  "mcp-server",
+ "ota-publish",
  "pathdiff",
  "quote",
  "remote-bundle",
@@ -6290,6 +6293,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 0.8.23",
+ "toml_edit 0.22.27",
  "tungstenite 0.24.0",
  "wasmparser 0.224.1",
 ]
@@ -8632,6 +8636,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "ota"
+version = "0.1.0"
+dependencies = [
+ "files",
+ "net",
+ "ota-index",
+ "ota-macros",
+ "remote-bundle",
+ "remote-host",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "ota-index"
+version = "0.1.0"
+dependencies = [
+ "remote-bundle",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ota-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "ota-publish"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ota-index",
+ "remote-bundle",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9845,16 +9896,21 @@ dependencies = [
 name = "remote-showcase"
 version = "0.1.0"
 dependencies = [
+ "build-remote",
  "host-appkit",
  "host-mock",
  "idea-ui",
  "libc",
+ "ota",
+ "ota-publish",
+ "remote-bundle",
  "remote-host",
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "tempfile",
 ]
 
 [[package]]

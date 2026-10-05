@@ -22,8 +22,9 @@ code, plus the parts of the framework it calls.
 | The bridged kernel | runtime-world (`bridge` feature) | Runs a bundle's signals, effects and scopes on the app's graph |
 | The element codec | runtime-vocabulary (`remote` feature) | Sends the bundle's UI tree to the app as data |
 | `remote-host` | its own crate | The loader: instantiates a bundle in wasmi, wires its imports, mounts its components |
-| `remote-bundle` | its own crate | The release format: metadata, signature, trust check |
+| `remote-bundle` | its own crate | The release format: metadata, requirements, signature, trust check, and `check` |
 | `build-remote` | CLI tooling | `idealyst build --remote` |
+| `ota`, `ota-index`, `ota-publish` | their own crates | Over-the-air delivery (see [ota.md](ota.md)); built only on the pieces above |
 
 ## One source, three builds
 
@@ -197,6 +198,23 @@ position and kind, so renaming one keeps old bundles loading.
   bundle and reuse the buffer. The receive buffer only grows and is reused, so a
   call doesn't clear it byte by byte.
 
+## Several bundles
+
+The loader (`remote_host::remote`) holds named bundles. A remote component
+mounts from the first bundle whose exports include its mount function, so
+which bundle serves what is read from the bundles themselves, not configured.
+
+A mounted remote component re-mounts when the number it follows changes
+(`Loader::generation_of`). Each bundle has its own number, bumped when it is
+replaced, removed or stopped, so replacing one bundle leaves the others'
+components, and their state, alone. Components no bundle provides follow a
+shared "pending" number, bumped whenever a bundle is set.
+
+All these numbers take their values from one sequence. A component switches
+numbers when its bundle arrives, from "pending" to its bundle's own. Two
+counters that both started at 0 gave that switch the same value, and the
+placeholder never re-mounted.
+
 ## Panics and invalid requests
 
 A Rust panic in wasm aborts: it traps the interpreter, and no destructors run, so
@@ -231,12 +249,16 @@ The build then:
   (`idealyst_kernel`, `idealyst_ui` and `idealyst_host_fn`);
 - reads the codec version from an `idealyst.codec` custom section, which the
   vocabulary stamps into every bundle;
+- lists what the bundle requires of an app, and strips the code that listed
+  it (below);
 - writes the release format.
 
-A release bundle is still one `.wasm` file, with two custom sections that wasm
+A release bundle is still one `.wasm` file, with custom sections that wasm
 engines ignore:
 
 - **`idealyst.bundle`:** the metadata (name, crate, version, codec) as JSON.
+- **`idealyst.requires`:** what the bundle needs from the app (below), as
+  JSON.
 - **`idealyst.signature`:** always the last section. It holds the signing key's
   id (the first 8 bytes of the SHA-256 of the public key) and an Ed25519
   signature over every byte before it, the metadata included.
@@ -247,6 +269,60 @@ it is, and nothing can be appended after it unnoticed.
 The app's `Trust` is checked before the module is even parsed, at install and
 at every reload. A bundle that claims a key the app trusts must match it, even
 when the app doesn't require signatures.
+
+## What a bundle requires
+
+A release bundle lists what it needs from the app (`idealyst.requires`), and
+the loader checks the list against what the app provides before running any
+of the bundle (`remote_bundle::check`).
+
+**Shapes.** Values cross positionally, so a type's name isn't enough: a
+`#[derive(Remote)]` struct that gained a field keeps its name and would be
+misread. Every type that crosses has a *shape*, a canonical string of its
+structure (`Invoice{lines:list<InvoiceLine{item:str,cents:u64,qty:u32}>,tax_percent:u32}`),
+written by the `RemoteShape` trait (`runtime-vocabulary`'s `remote::shape`).
+The derive writes its fields in order, and containers write their parts. A type
+with no shape is `?`, which matches anything. Both sides run the same trait
+code, so equal types give equal strings.
+
+**Records of what the bundle uses.** Each place bundle code reaches the app
+keeps a 40-byte constant, a `Site` (`remote::site`), with a magic prefix:
+
+- a `ui!` call of an app component: the component, the props that call site
+  sets, and a function that writes the shapes of its props. `ui!` passes the
+  set as a type (`BuildElement::__build_site`), so the record can be a
+  constant;
+- a host function's stub: its import name and signature shape;
+- a remote component's mount export: its parameters;
+- a `#[derive(Remote)]` type's context registration: its shape.
+
+The code that uses each record also passes it to `core::hint::black_box`.
+Without that, the optimizer would read the fields it needs straight out of
+the constant and drop the record. With it, the linker keeps a record exactly
+as long as the code using it is reachable. A component used only from a
+function nothing calls leaves no record.
+
+A custom section would be simpler, but it keeps everything compiled, reachable
+or not. A release build compiles every helper of every library the bundle
+depends on, so the list would include components the bundle never uses.
+Computing the list when the bundle runs is too late: it has to be known before
+an app downloads the bundle.
+
+**Reading them.** At release, `build_remote::requires`:
+1. finds the records by their magic in the data segments;
+2. runs each shape function once in wasmi, through the function table (bundles
+   are linked with `--export-table`), with every import trapping;
+3. assembles the list.
+
+`strip_shapes` then points each record's table slot at one trapping function
+and lets walrus remove what nothing else reaches. The shape code exists only
+for the build tool, and stripping it costs nothing in download size: the
+showcase's release is 130.9 KB brotli, the same as before the lists existed.
+
+Context types are the one imprecise part. The app registers every derived type
+as context at load, so there is no call site to tie a record to, and the list
+holds every one compiled in. A context mismatch is therefore a warning, not an
+error.
 
 ## What it costs
 

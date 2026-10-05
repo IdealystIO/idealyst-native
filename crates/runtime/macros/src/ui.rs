@@ -3691,7 +3691,9 @@ mod tests {
         // The tag is used as the type name (a `pub type Counter = …Props`
         // alias bridges to the real props), so the literal is `Counter { … }`.
         assert!(out.contains("Counter {"), "got: {out}");
-        assert!(out.contains("BuildElement :: build"), "got: {out}");
+        // `__remote_site!` is `BuildElement::build_set` outside a remote
+        // bundle build (where it also records the call site).
+        assert!(out.contains("__remote_site !"), "got: {out}");
         assert!(!out.contains("Counter !"), "no macro dispatch; got: {out}");
     }
 
@@ -3727,7 +3729,7 @@ mod tests {
             }
         });
         assert!(out.contains("Card {"), "got: {out}");
-        assert!(out.contains("BuildElement :: build"), "got: {out}");
+        assert!(out.contains("__remote_site !"), "got: {out}");
         assert!(out.contains("children :"), "children is a struct field now; got: {out}");
         assert!(out.contains("ChildList :: append_to"), "got: {out}");
     }

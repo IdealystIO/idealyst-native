@@ -724,14 +724,15 @@ fn emit_user(name: &Ident, props: &[Prop], children: Option<&[JsxNode]>) -> Toke
         set.push("children".to_string());
     }
 
+    // `__remote_site!` is `build_set` outside a remote bundle build.
     quote! {
-        ::runtime_core::BuildElement::build_set(
+        ::runtime_vocabulary::__remote_site!(
             #props_ty {
                 #(#field_assignments)*
                 #children_field
                 ..<#props_ty as ::runtime_core::BuildElement>::defaults()
             },
-            &[#(#set),*],
+            [#(#set),*]
         )
     }
 }
@@ -937,9 +938,10 @@ mod tests {
     #[test]
     fn user_component_self_closing() {
         let out = parse_and_emit(quote! { <Counter label="x" value={score} /> });
-        // Struct-literal + BuildElement::build dispatch (parity with ui!).
+        // Struct-literal + BuildElement dispatch (parity with ui!), through
+        // `__remote_site!` (`build_set` outside a remote bundle build).
         assert!(out.contains("Counter {"), "got: {out}");
-        assert!(out.contains("BuildElement :: build"), "got: {out}");
+        assert!(out.contains("__remote_site !"), "got: {out}");
         // Each field is coerced via `.into()` (literal and braced expr).
         assert!(out.contains("(\"x\") . into ()"), "got: {out}");
         assert!(out.contains("(score) . into ()"), "got: {out}");

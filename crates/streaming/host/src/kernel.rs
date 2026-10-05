@@ -627,9 +627,15 @@ pub fn define_imports(linker: &mut Linker<KState>) {
 // A loaded bundle
 // ---------------------------------------------------------------------------
 
+/// What a remote component's mount export is named after:
+/// `__idealyst_remote_<module_path>::<Name>`.
+pub const REMOTE_EXPORT_PREFIX: &str = "__idealyst_remote_";
+
 /// A bundle whose kernel runs on this app's graph.
 pub struct KernelBundle {
     inner: Rc<Inner>,
+    /// The remote components it exports (`module_path::Name`).
+    components: Vec<String>,
 }
 
 impl KernelBundle {
@@ -651,6 +657,10 @@ impl KernelBundle {
         // instead of panicking the app (`kernel`).
         runtime_world::remote::trap_faults();
         let module = Module::new(engine, wasm)?;
+        let components = module
+            .exports()
+            .filter_map(|e| e.name().strip_prefix(REMOTE_EXPORT_PREFIX).map(str::to_string))
+            .collect();
         let bundle = NEXT_BUNDLE.with(|n| {
             let id = n.get().checked_add(1).expect("kernel bridge: bundle ids exhausted");
             n.set(id);
@@ -734,7 +744,7 @@ impl KernelBundle {
             on_poison: RefCell::new(Vec::new()),
         });
         BUNDLES.with(|b| b.borrow_mut().insert(bundle, Rc::downgrade(&inner)));
-        Ok(KernelBundle { inner })
+        Ok(KernelBundle { inner, components })
     }
 
     /// Call a bundle export of shape `(params) -> results` from host code
@@ -938,6 +948,11 @@ impl KernelBundle {
     /// remote loader uses it to replace the bundle's components.
     pub fn on_poison(&self, f: impl Fn(&str) + 'static) {
         self.inner.on_poison.borrow_mut().push(Rc::new(f));
+    }
+
+    /// The remote components this bundle exports (`module_path::Name`).
+    pub fn components(&self) -> &[String] {
+        &self.components
     }
 
     pub fn mount_remote(&self, export: &str, args: &[u8]) -> Result<Element, MountError> {

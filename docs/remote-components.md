@@ -335,12 +335,21 @@ remote.reload(&newer_bytes)?;            // every mounted remote component remou
   component remounts from the new bundle. App state (the signals you passed as
   props, context) carries over; state the components kept for themselves starts
   over. If the new bundle doesn't load, the current one keeps running.
-- **Downloading** is up to the app: use your HTTP client, then call `install`
-  or `reload` with the bytes. (`remote_host::fetch` is a plain `http://` GET for
-  local development, not for production.)
+- **Several bundles:** `install_empty(options)` starts with none, and
+  `remote.set("shop", &bytes)` adds or replaces one by name. Each remote
+  component mounts from the bundle that exports it. Replacing one bundle
+  remounts only its own components; the others keep their state.
+  `remote.on_missing(|component| …)` hears about a component no bundle
+  provides yet, which shows an empty place until one is set.
+- **Downloading:** the [`ota`](ota.md) crate and `idealyst ota publish`
+  deliver bundles over the air, from static files on a CDN. Or use your own
+  HTTP client and call `install`, `set` or `reload` with the bytes.
+  (`remote_host::fetch` is a plain `http://` GET for local development, not for
+  production.)
 - **A bundle that fails to load** returns an `Err` saying why: not valid wasm,
   an unlisted or changed host function, a bundle built against a different
-  framework codec ("rebuild the bundle"), or a refused signature.
+  framework codec ("rebuild the bundle"), a refused signature, or a release
+  bundle that needs something this app doesn't have (below).
 - **A panic in a bundle never takes the app down.** The bundle is stopped, and
   each of its components shows the panic message in its place. The rest of the
   app keeps running, and reloading a fixed bundle brings the components back.
@@ -374,9 +383,10 @@ For each bundle, the build:
   names the imports;
 - stamps it with its name, crate, version, and the framework codec version it
   was built with;
+- records what it requires of an app (below);
 - signs it, if you pass a key (below);
-- writes `<name>.wasm` and `<name>.json`. The JSON holds the size, SHA-256 and
-  signing key, for your server or cache.
+- writes `<name>.wasm` and `<name>.json`. The JSON holds the size, SHA-256,
+  signing key and requirements, for your server or cache.
 
 **Dependencies only the app needs** (the loader, native SDKs, anything that
 can't compile to wasm) go in a section the bundle build skips. This matters
@@ -391,12 +401,48 @@ In code, `#[cfg(not(idealyst_stream_guest))]` marks what only the app compiles
 (add `unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }`
 under `[lints.rust]` to keep rustc quiet about the name).
 
-**The app and its bundles must agree.** Build bundles against the same
-framework version as the app, and the same version of every crate both sides
-compile (the components the bundle uses from the app, shared types, routes,
-host functions). The loader catches what it can at load: host-function
-signatures and the framework codec. A component prop the app's version doesn't
-have shows an error in that component's place.
+### Which apps a bundle runs on
+
+A release bundle carries a list of what it needs from the app, and an app
+checks the list before running any of the bundle. The list holds:
+
+- each app component the bundle builds, and each prop it sets, with the prop's
+  type;
+- each host function it calls, with its argument and return types;
+- the parameters of each remote component it provides;
+- the framework codec it was built with.
+
+So a bundle runs on every app that has at least those, with the same types. An
+app that adds a component or a prop still runs older bundles. A bundle that
+starts using something newer is refused by older apps, with every problem
+named:
+
+```text
+bundle needs what this app doesn't have:
+  `idea_ui::components::button::Button` has no prop `glow` in the app;
+  host function `shop::checkout`: the bundle calls `fn(Cart{items:list<str>,coupon:str})->u64`,
+  the app has `fn(Cart{items:list<str>})->u64`
+```
+
+- **Only what the bundle actually uses counts.** The list comes from the
+  bundle's reachable code: a component used only in a function nothing calls
+  isn't on it, and a prop counts only if some call site sets it.
+- **Types are compared by structure.** A `#[derive(Remote)]` struct that gained
+  a field is a different type, even under the same name. Values cross in field
+  order, so it would otherwise be misread.
+- **`remote_host::remote::provides(&host_fns)`** gives the app's side, and
+  `remote_bundle::check(&requires, codec, &provides)` compares them. That's how
+  a server or an update client can pick a bundle an app can run before
+  downloading it. `idealyst remote inspect` prints a bundle's list.
+- **Not covered:** a value the bundle passes to an app component by key (a
+  tone or variant name) is only checked when it crosses. Types the framework
+  defines (`Color`, `StyleRules`) are covered by the codec version, not by
+  structure. A context type the bundle reads is compared as a warning only,
+  since the list can't tell which ones it reads.
+
+Development bundles (`idealyst dev`, a build script's embedded copy) carry no
+list. They're checked as they run: a missing component or prop shows an error
+in that component's place.
 
 ## Signing bundles
 
@@ -476,7 +522,9 @@ file to serve and cache.
   that from the remote component.
 - **No callbacks or children as remote component props.** Pass signals, and
   have the component write a `Signal<T>` the app watches.
-- **One bundle can't mount another bundle's component.**
+- **One bundle can't use another bundle's remote component.** Both run in
+  the same app, side by side, but a remote component's tree can only hold app
+  components and its own bundle's.
 - **Large native results** (a photo, a video frame) cross as bytes. Keep them in
   the app and pass small values or ids to the bundle.
 - **No time or memory limit** on bundle code. Bundles are your own code, signed

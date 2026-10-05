@@ -6,6 +6,10 @@
 //! - [`METADATA_SECTION`] — [`Metadata`] as JSON: the bundle's name, the
 //!   crate and version it was built from, and the codec version it encodes
 //!   values with.
+//! - [`REQUIRES_SECTION`] — [`Requires`] as JSON: every app component
+//!   (and each prop), host function and context type the bundle uses, with
+//!   their shapes, and the remote components it provides. An app checks it
+//!   against what it [`Provides`] before running the bundle ([`check`]).
 //! - [`SIGNATURE_SECTION`] — optional, and always the LAST section: an
 //!   Ed25519 signature over everything before it (the module, metadata
 //!   included), with the signing key's id.
@@ -22,12 +26,17 @@
 
 use std::fmt;
 
+pub mod manifest;
+pub use manifest::{check, Problem, Provides, Requires};
+
 use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The custom section holding a bundle's [`Metadata`].
 pub const METADATA_SECTION: &str = "idealyst.bundle";
+/// The custom section holding what a bundle [`Requires`] of an app.
+pub const REQUIRES_SECTION: &str = "idealyst.requires";
 /// The custom section holding a bundle's signature.
 pub const SIGNATURE_SECTION: &str = "idealyst.signature";
 /// Prefixed to what is signed, so a bundle signature can't be replayed as a
@@ -202,6 +211,25 @@ pub fn with_metadata(wasm: &[u8], metadata: &Metadata) -> Result<Vec<u8>, Format
     let json = serde_json::to_vec(metadata).expect("metadata serializes");
     out.extend_from_slice(&custom_section(METADATA_SECTION, &json));
     Ok(out)
+}
+
+/// `wasm` with `requires` as its requires section, replacing any earlier
+/// one. Any signature is dropped: it no longer covers the bytes.
+pub fn with_requires(wasm: &[u8], requires: &Requires) -> Result<Vec<u8>, FormatError> {
+    let mut out = without(wasm, &[REQUIRES_SECTION, SIGNATURE_SECTION])?;
+    let json = serde_json::to_vec(requires).expect("requires serializes");
+    out.extend_from_slice(&custom_section(REQUIRES_SECTION, &json));
+    Ok(out)
+}
+
+/// What the bundle requires of an app, if its release build recorded it.
+pub fn requires(wasm: &[u8]) -> Result<Option<Requires>, FormatError> {
+    for s in sections(wasm)? {
+        if s.custom_name.as_deref() == Some(REQUIRES_SECTION) {
+            return serde_json::from_slice(&wasm[s.payload]).map(Some).map_err(|e| FormatError(format!("bad requires section: {e}")));
+        }
+    }
+    Ok(None)
 }
 
 /// The bundle's metadata section, if it has one.
@@ -459,6 +487,28 @@ mod tests {
         assert_eq!(metadata(&again).unwrap().unwrap().version, "1.3.0");
         assert_eq!(sections(&again).unwrap().iter().filter(|s| s.custom_name.as_deref() == Some(METADATA_SECTION)).count(), 1);
         assert_eq!(metadata(&module()).unwrap(), None);
+    }
+
+    /// The requires section round-trips, and a signature covers it: a
+    /// bundle can't be made to claim it needs less than it does.
+    #[test]
+    fn requires_round_trips_and_is_signed() {
+        let mut r = Requires::default();
+        r.host_fns.insert("app::sort#00000000000000aa".into(), "fn(list<u32>)->list<u32>".into());
+        let key = SigningKey::generate().unwrap();
+        let signed = sign(&with_requires(&with_metadata(&module(), &meta()).unwrap(), &r).unwrap(), &key).unwrap();
+        assert_eq!(requires(&signed).unwrap(), Some(r.clone()));
+        assert_eq!(requires(&module()).unwrap(), None);
+        let mut lighter = r.clone();
+        lighter.host_fns.clear();
+        let unsigned = without(&signed, &[SIGNATURE_SECTION]).unwrap();
+        let tampered = [with_requires(&unsigned, &lighter).unwrap(), signed[signed.len() - signature_len(&signed)..].to_vec()].concat();
+        assert_eq!(verify(&tampered, &[key.public()]), Err(TrustError::Mismatch(key.public().id())));
+    }
+
+    fn signature_len(wasm: &[u8]) -> usize {
+        let last = sections(wasm).unwrap().pop().unwrap();
+        last.range.len()
     }
 
     #[test]

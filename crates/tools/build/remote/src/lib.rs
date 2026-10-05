@@ -25,10 +25,14 @@
 //!    load; here the build fails instead, naming the imports;
 //! 3. reads the codec version the bundle was built with (the vocabulary's
 //!    `idealyst.codec` section), which also proves the crate is a bundle;
-//! 4. stamps its metadata (`remote_bundle::Metadata`) and, given a key,
-//!    signs it;
-//! 5. writes `<out>/<name>.wasm` and `<out>/<name>.json` (name, package,
-//!    version, codec, size, SHA-256, signing key id).
+//! 4. lists what it requires of an app (`requires`: the app components and
+//!    props, host functions and context types it uses, with their shapes,
+//!    and the remote components it provides), from the records its
+//!    reachable code left;
+//! 5. stamps that and its metadata (`remote_bundle::Metadata`) into it and,
+//!    given a key, signs it;
+//! 6. writes `<out>/<name>.wasm` and `<out>/<name>.json` (name, package,
+//!    version, codec, size, SHA-256, signing key id, requirements).
 //!
 //! A crate's native-only dependencies go under
 //! `[target.'cfg(not(idealyst_stream_guest))'.dependencies]`, so the bundle
@@ -40,6 +44,9 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use remote_bundle::{Metadata, SigningKey};
 use serde::{Deserialize, Serialize};
+
+pub mod requires;
+pub use remote_bundle::Requires;
 
 /// The import modules the loader (`remote-host`) defines. Anything else is
 /// a crate that can't run in a bundle.
@@ -60,8 +67,11 @@ pub const SIGNING_KEY_ENV: &str = "IDEALYST_REMOTE_SIGNING_KEY";
 /// - `--cfg idealyst_stream_guest`: a bundle build. A cfg rather than a cargo
 ///   feature, so it can never reach an app build through unification;
 /// - `-Aunused`: an app component's body is compiled out of a bundle, so the
-///   helpers only it used read as unused here.
-pub const BUNDLE_RUSTFLAGS: &str = "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused";
+///   helpers only it used read as unused here;
+/// - `--export-table`: the release build calls the bundle's shape functions
+///   through the function table to list what it requires (`requires`).
+pub const BUNDLE_RUSTFLAGS: &str =
+    "-Clink-arg=-zstack-size=65536\x1f--cfg=idealyst_stream_guest\x1f-Aunused\x1f-Clink-arg=--export-table";
 
 /// One bundle the app declares.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -110,6 +120,9 @@ pub struct Manifest {
     pub sha256: String,
     /// The id of the key that signed it, if it is signed.
     pub signed_by: Option<String>,
+    /// What it requires of an app (also inside the bundle, signed).
+    #[serde(default)]
+    pub requires: Requires,
 }
 
 /// A bundle the build wrote.
@@ -236,8 +249,11 @@ pub fn finish(wasm: &[u8], spec: &BundleSpec, version: &str, sign: Option<&Signi
             spec.package
         )
     })?;
+    let requires = requires::requires(wasm).with_context(|| format!("list what bundle `{}` requires", spec.name))?;
+    let stripped = requires::strip_shapes(wasm).with_context(|| format!("strip bundle `{}`'s shape functions", spec.name))?;
+    let wasm = &stripped[..];
     let meta = Metadata { name: spec.name.clone(), package: spec.package.clone(), version: version.to_string(), codec };
-    let mut out = remote_bundle::with_metadata(wasm, &meta)?;
+    let mut out = remote_bundle::with_requires(&remote_bundle::with_metadata(wasm, &meta)?, &requires)?;
     if let Some(key) = sign {
         out = remote_bundle::sign(&out, key)?;
     }
@@ -250,6 +266,7 @@ pub fn finish(wasm: &[u8], spec: &BundleSpec, version: &str, sign: Option<&Signi
         size: out.len() as u64,
         sha256: remote_bundle::content_hash(&out),
         signed_by: sign.map(|k| k.public().id().to_string()),
+        requires,
     };
     Ok((out, manifest))
 }

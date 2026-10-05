@@ -466,6 +466,45 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     };
     let schema_hex = format!("{schema:016x}");
 
+    // The signature's structural shape (`remote::shape`), which the
+    // release check compares where the schema can't see: a `#[derive(Remote)]`
+    // argument that gained a field keeps its spelling. A generic signature's
+    // parameters are checked by kind, in the schema, so it has none.
+    let shape_expr = if params.is_empty() {
+        let head = if is_async { "async fn(" } else { "fn(" };
+        let args = arg_types.iter().enumerate().map(|(i, ty)| {
+            let sep = if i == 0 { quote!() } else { quote! { __s.push(','); } };
+            quote! { #sep __s.push_str(&::runtime_vocabulary::__shape_of!(#ty)); }
+        });
+        quote! {{
+            let mut __s = ::std::string::String::from(#head);
+            #(#args)*
+            __s.push_str(")->");
+            __s.push_str(&::runtime_vocabulary::__shape_of!(#ret_ty));
+            __s
+        }}
+    } else {
+        quote!(::std::string::String::from(::runtime_vocabulary::remote::shape::UNKNOWN))
+    };
+    // The bundle's record of this stub (`remote::site`): kept while the
+    // stub is reachable, so the release build lists the host functions the
+    // bundle calls with their shapes.
+    let stub_site = quote! {
+        {
+            extern "C" fn __shape() -> u64 {
+                #v::site::leak(#shape_expr)
+            }
+            #v::site::mark(&const {
+                #v::site::Site::new(
+                    #v::site::HOST_FN,
+                    concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex),
+                    "",
+                    __shape,
+                )
+            });
+        }
+    };
+
     // --- App side ------------------------------------------------------------
     // The arguments and result with each erased parameter replaced by its
     // stand-in; numeric parameters stay generic (the inner call's own).
@@ -677,6 +716,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
                     #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
                     fn __import(args_ptr: *const u8, args_len: u32, then: u32);
                 }
+                #stub_site
                 #encode_args
                 fn __decode #stub_impl_g (__bytes: &[u8]) -> ::core::option::Option<#ret_ty> #stub_where {
                     let mut __bytes = __bytes;
@@ -701,6 +741,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
                     #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
                     fn __import(args_ptr: *const u8, args_len: u32) -> i64;
                 }
+                #stub_site
                 #encode_args
                 // SAFETY: as above; the reply is left in the bundle's
                 // argument buffer.
@@ -726,6 +767,12 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
                     path: concat!(module_path!(), "::", stringify!(#name)),
                     schema: #schema,
                     kind: #kind,
+                    shape: {
+                        fn __shape() -> ::std::string::String {
+                            #shape_expr
+                        }
+                        __shape
+                    },
                 }
             }
 
@@ -763,6 +810,12 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
                     path: concat!(module_path!(), "::", stringify!(#name)),
                     schema: #schema,
                     kind: #v::host_fn::HostFnKind::Listed { asynchronous: #is_async, lookup },
+                    shape: {
+                        fn __shape() -> ::std::string::String {
+                            #shape_expr
+                        }
+                        __shape
+                    },
                 }
             }
 

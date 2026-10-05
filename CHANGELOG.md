@@ -135,6 +135,45 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Over-the-air remote components** (`ota`, `ota-index`, `ota-macros`,
+  `ota-publish`, `idealyst ota`). `idealyst ota init` writes an app's
+  release location and signing key into its `Cargo.toml`; `idealyst ota
+  publish` builds, signs and publishes its bundles to an S3 prefix (or a
+  directory), saying first what a release starts to require that older
+  apps may lack; `rollback` and `status` manage them. In the app,
+  `ota::start(ota::config!(), …)` runs the cached bundles at launch,
+  downloads the newest release each bundle has that this app can run (from
+  the next launch by default), fetches a component's bundle the first time
+  it's shown, and reports `Status::AppUpdateRequired` when a release needs
+  a newer app. Releases are static files behind a CDN: there's no server,
+  and each app picks what it can run from the requirements every release
+  lists. See `docs/ota.md`.
+- **Several bundles in one app** (`remote-host`). `install_empty` and
+  `RemoteApp::set(name, bytes)` / `remove` / `bundles` / `provides`: each
+  remote component mounts from the bundle that exports it, and replacing
+  one bundle remounts only its components. `RemoteApp::on_missing` hears
+  about a component no bundle provides yet, which holds an empty place
+  until one is set. `Loader::generation_of` (`runtime-vocabulary`) is the
+  per-component remount counter this needs; it defaults to `generation`.
+
+- **A release bundle lists what it requires of an app, and the app checks
+  it before running the bundle** (`runtime-vocabulary`, `runtime-macros`,
+  `remote-bundle`, `remote-host`, `idealyst build --remote`). The list holds
+  each app component the bundle's reachable code builds and each prop it
+  sets, each host function it calls, and each remote component it provides,
+  with every type's structure (`Invoice{lines:list<…>,tax_percent:u32}`).
+  Before, a `#[derive(Remote)]` struct that gained a field kept its host
+  function's fingerprint and was misread; a prop the app lacked failed only
+  when the screen mounted. Now the loader refuses the bundle at load with
+  `LoadError::Incompatible`, naming every problem.
+  `remote_host::remote::provides(&host_fns)` and `remote_bundle::check` let
+  an update server or client pick a bundle an app can run before
+  downloading it, and `idealyst remote inspect` prints the list. The code
+  that computes the list is stripped from the release afterwards: the
+  showcase's release is the same size brotli'd (130.9 KB) and 6% smaller raw.
+  Bundles are now linked with `--export-table`. `LoadError` is now
+  `#[non_exhaustive]`.
+
 - **Release builds and signatures for remote-component bundles**
   (`remote-host`, `remote-bundle`, `remote-abi`, `runtime-vocabulary`,
   CLI). `idealyst build --remote` builds every bundle an app declares

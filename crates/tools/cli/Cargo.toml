@@ -78,6 +78,10 @@ build-sim = { workspace = true }
 # components, and their signing keys.
 build-remote = { workspace = true }
 remote-bundle = { path = "../../streaming/bundle-format" }
+# `idealyst ota`: publishing over-the-air releases; `toml_edit` writes the
+# settings into an app's Cargo.toml without disturbing the rest of it.
+ota-publish = { path = "../../ota/publish" }
+toml_edit = "0.22"
 build-web = { workspace = true }
 build-macos = { workspace = true }
 build-ssr = { workspace = true }

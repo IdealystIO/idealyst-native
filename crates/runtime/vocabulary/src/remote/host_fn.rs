@@ -48,6 +48,9 @@ pub struct HostFnDef {
     /// Fingerprint of the signature (argument and return types, asyncness).
     pub schema: u64,
     pub kind: HostFnKind,
+    /// The signature's [shape](super::shape) (`fn(A,B)->R`): what the
+    /// release check compares beyond the schema's type spellings.
+    pub shape: fn() -> String,
 }
 
 /// A type's name across the boundary, `module_path::Name`, the same in the

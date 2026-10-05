@@ -1,6 +1,6 @@
 # Remote components (spike)
 
-> To use remote components in an app, read [docs/remote-components.md](../../docs/remote-components.md); how they work inside is [docs/remote-components-internals.md](../../docs/remote-components-internals.md). This README is the development record: the crates, the tests, the measurements and the designs tried along the way.
+> To use remote components in an app, read [docs/remote-components.md](../../docs/remote-components.md); how they work inside is [docs/remote-components-internals.md](../../docs/remote-components-internals.md); delivering them over the air is [docs/ota.md](../../docs/ota.md). This README is the development record: the crates, the tests, the measurements and the designs tried along the way.
 
 A remote component (`#[component(remote)]`) is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
 
