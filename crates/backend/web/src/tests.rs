@@ -1773,6 +1773,38 @@ fn regression_filled_icon_paints_fill_not_stroke() {
     );
 }
 
+/// REGRESSION TEST (CrewForge want_8ffc74d4).
+///
+/// An icon's `<svg>` was `display:inline-block; vertical-align:middle`.
+/// Since plain views stopped being flex boxes, an icon inside a view with
+/// no flex property sat on a line box: the view grew to the inherited
+/// line-height (taller than the glyph) and the glyph sat low inside it, so
+/// a help icon beside a centred label rendered about 2px low. The view
+/// must be exactly as tall as the icon, with the icon at its top.
+#[wasm_bindgen_test]
+fn regression_icon_in_non_flex_view_does_not_sit_on_a_line_box() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    // A plain block view, as backend-web emits for a sheet with no flex
+    // property; a line-height well above the icon size makes a line box
+    // visible in the measurement.
+    let wrapper = doc.create_element("div").unwrap();
+    wrapper.set_attribute("style", "font-size:15px;line-height:24px").unwrap();
+    let icon = crate::primitives::icon::create(&mut backend, &OUTLINED_ICON, None);
+    wrapper.append_child(&icon).unwrap();
+    doc.get_element_by_id("app").unwrap().append_child(&wrapper).unwrap();
+
+    let svg: web_glue::dom::Element = icon.dyn_into().unwrap();
+    let w = wrapper.get_bounding_client_rect();
+    let i = svg.get_bounding_client_rect();
+    assert_eq!(i.height(), 15.0, "icon is 1em at 15px");
+    assert_eq!(w.height(), i.height(), "the view hugs the icon, not a 24px line box");
+    assert_eq!(i.top(), w.top(), "the icon is not pushed down inside its view");
+    wrapper.remove();
+}
+
 // ---------------------------------------------------------------------------
 // Portal focus-trap re-entrancy
 // ---------------------------------------------------------------------------

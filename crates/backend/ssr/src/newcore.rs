@@ -632,7 +632,7 @@ impl caps::IconOps for SsrBackend {
             svg.attrs.push(("stroke-linecap", "round".to_string()));
             svg.attrs.push(("stroke-linejoin", "round".to_string()));
         }
-        svg.style = Some(css::ICON_INLINE_STYLE.to_string());
+        svg.style = Some(css::ICON_STYLE.to_string());
         let fill_rule = match data.fill_rule {
             runtime_shared::primitives::icon::FillRule::NonZero => "nonzero",
             runtime_shared::primitives::icon::FillRule::EvenOdd => "evenodd",

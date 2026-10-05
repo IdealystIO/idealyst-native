@@ -91,3 +91,13 @@ core's testimony with no way to recover it. So:
 - Never re-baseline to make a red test green.
 - If a re-baseline is genuinely intended, review the HTML/CSS diff as the
   substance of the change and say so in the commit message.
+
+## Deliberate re-baselines
+
+- **2026-10-05, icon `display:block`** — `static_kitchen_sink.html`: the
+  icon's `<svg style>` changed from `display:inline-block;vertical-align:middle;`
+  to `display:block;` (`css::ICON_STYLE`). An inline-block icon in a view
+  with no flex property sat on a line box, low inside a view taller than
+  the glyph (`backend-web`
+  `regression_icon_in_non_flex_view_does_not_sit_on_a_line_box`). That
+  attribute is the only byte that moved.

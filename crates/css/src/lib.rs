@@ -117,8 +117,16 @@ pub const LINK_RESET_STYLE: &str = "color: inherit; text-decoration: none; displ
 /// Default inline style for a `Button`'s content box (icon + label row).
 pub const BUTTON_CONTENT_STYLE: &str = "display:inline-flex;align-items:center;gap:0.4em;";
 
-/// Default inline style for an `Icon`'s inline element.
-pub const ICON_INLINE_STYLE: &str = "display:inline-block;vertical-align:middle;";
+/// Default inline style for an `Icon`'s `<svg>`.
+///
+/// `display:block`, so the icon is a box the size of its glyph, as it is on
+/// every native backend. It used to be `inline-block; vertical-align:
+/// middle`, which only worked while every view was a flex box (flex
+/// blockifies its children). Once plain views became CSS blocks, an icon
+/// whose parent view had no flex property sat on a line box: the parent
+/// grew to the inherited line-height and the glyph was pushed down inside
+/// it, about 2px low beside a centred label.
+pub const ICON_STYLE: &str = "display:block;";
 
 /// Inline style for a reactive `when`/`switch`/`each` anchor placeholder:
 /// `display: contents` makes it **layout-transparent** so the branch's

@@ -45,9 +45,8 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
     // Size with em so icon scales with font-size context.
     let _ = svg.set_attribute("width", "1em");
     let _ = svg.set_attribute("height", "1em");
-    // Prevent the SVG from capturing pointer events on transparent
-    // regions — pass through to parent pressable/button.
-    let _ = svg.set_attribute("style", css::ICON_INLINE_STYLE);
+    // A block box, never an inline glyph on a line box — see css::ICON_STYLE.
+    let _ = svg.set_attribute("style", css::ICON_STYLE);
 
     let fill_rule_str = match data.fill_rule {
         FillRule::NonZero => "nonzero",
