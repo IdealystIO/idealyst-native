@@ -10,6 +10,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# The release format: signed metadata and the trust check run before a
+# bundle loads (`remote::Options::trust`).
+remote-bundle = { path = "../bundle-format" }
 # `Wire`: the codec `kernel::export_signal` & co. encode host values with.
 remote-abi = { path = "../abi" }
 # `bridge`: the host side of the kernel bridge (`kernel.rs`).

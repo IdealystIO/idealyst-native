@@ -9778,6 +9778,17 @@ name = "remote-abi"
 version = "0.1.0"
 
 [[package]]
+name = "remote-bundle"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "remote-example"
 version = "0.1.0"
 dependencies = [
@@ -9806,6 +9817,7 @@ name = "remote-host"
 version = "0.1.0"
 dependencies = [
  "remote-abi",
+ "remote-bundle",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -11580,6 +11592,7 @@ dependencies = [
  "host-mock",
  "idea-ui",
  "remote-abi",
+ "remote-bundle",
  "remote-host",
  "runtime-core",
  "runtime-scene",

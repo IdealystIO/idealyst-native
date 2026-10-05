@@ -1,0 +1,21 @@
+# remote-bundle — the release format of a remote-component bundle: its
+# signed metadata, its Ed25519 signature (both wasm custom sections, so a
+# bundle stays one .wasm file), and the trust check an app runs before
+# loading one. Shared by the CLI (`idealyst build --remote`, `idealyst
+# remote sign`) and the loader (`remote-host`), so both read and write the
+# same bytes.
+
+[package]
+name = "remote-bundle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The signed release format of idealyst remote-component bundles"
+
+[dependencies]
+ed25519-dalek = "2"
+sha2 = { workspace = true }
+# Key generation only (`SigningKey::generate`).
+getrandom = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -109,6 +109,7 @@ members = [
     # Streamed components (spike): a wasm guest bound to the host's
     # reactive graph through wasmi. See crates/streaming/README.md.
     "crates/streaming/abi",
+    "crates/streaming/bundle-format",
     "crates/streaming/host",
     "crates/streaming/spike",
     "crates/streaming/spike/camera",

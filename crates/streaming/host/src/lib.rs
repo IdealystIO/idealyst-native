@@ -38,6 +38,10 @@ pub enum LoadError {
     /// against another version of the framework's codec (`None`: one from
     /// before bundles reported it).
     IncompatibleCodec { app: u32, bundle: Option<u32> },
+    /// The app's [`Trust`](remote_bundle::Trust) refused the bundle: it
+    /// isn't signed, is signed by a key the app doesn't trust, or was
+    /// changed after signing.
+    Untrusted(remote_bundle::TrustError),
 }
 
 impl std::fmt::Display for LoadError {
@@ -47,6 +51,7 @@ impl std::fmt::Display for LoadError {
             LoadError::MissingHostFunctions(names) => {
                 write!(f, "bundle calls host functions this app does not export: {}", names.join(", "))
             }
+            LoadError::Untrusted(e) => write!(f, "bundle refused: {e}"),
             LoadError::IncompatibleCodec { app, bundle } => {
                 let bundle = bundle.map_or_else(|| "1 (unreported)".to_string(), |v| v.to_string());
                 write!(f, "bundle was built with codec version {bundle}, this app reads version {app}: rebuild the bundle against this app's framework version")

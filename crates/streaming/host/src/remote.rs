@@ -19,10 +19,39 @@ use runtime_vocabulary::remote::host::{install_loader, Loader};
 use runtime_world::Signal;
 
 use crate::kernel::KernelBundle;
+use crate::LoadError;
+
+pub use remote_bundle::{KeyId, PublicKey, Trust, TrustError};
+
+/// How a loader loads bundles: what they may call, and which it accepts.
+#[derive(Default)]
+pub struct Options {
+    /// The `#[host_fn]`s a bundle may call — the app's allowlist,
+    /// `vec![my_sdk::take_photo::export(), …]`. A bundle calling anything
+    /// else is refused at load, naming it.
+    pub host_fns: Vec<runtime_vocabulary::remote::HostFnDef>,
+    /// Which bundles load, by signature. The default accepts any bundle;
+    /// an app that downloads its bundles should trust its release key and
+    /// require a signature:
+    ///
+    /// ```ignore
+    /// trust: Trust::default().key(PublicKey::from_hex(RELEASE_KEY)?).require_signature(),
+    /// ```
+    ///
+    /// Checked before the module is even parsed, at install and at every
+    /// reload.
+    pub trust: Trust,
+}
+
+/// Check `wasm` against `trust`, then load it.
+fn load(wasm: &[u8], options: &Options) -> Result<KernelBundle, LoadError> {
+    options.trust.check(wasm).map_err(LoadError::Untrusted)?;
+    KernelBundle::load_with(&engine(), wasm, &options.host_fns)
+}
 
 struct BundleLoader {
-    /// The `#[host_fn]`s every bundle this loader loads may call.
-    host_fns: Vec<runtime_vocabulary::remote::HostFnDef>,
+    /// What every bundle this loader loads may call, and which it accepts.
+    options: Options,
     current: RefCell<Rc<KernelBundle>>,
     /// Bumped on reload. Created on first read, inside the app's world.
     generation: Cell<Option<Signal<u64>>>,
@@ -87,9 +116,16 @@ pub fn install(wasm: &[u8]) -> Result<RemoteApp, String> {
 /// `host_fns` — the app's allowlist, `[my_sdk::take_photo::export(), …]`.
 /// A bundle calling anything else is refused at load, naming it.
 pub fn install_with(wasm: &[u8], host_fns: Vec<runtime_vocabulary::remote::HostFnDef>) -> Result<RemoteApp, String> {
-    let bundle = KernelBundle::load_with(&engine(), wasm, &host_fns).map_err(|e| e.to_string())?;
+    install_with_options(wasm, Options { host_fns, ..Options::default() })
+}
+
+/// [`install`] with [`Options`]: the host functions bundles may call, and
+/// the [`Trust`] they must pass (signatures). Every later
+/// [`reload`](RemoteApp::reload) is held to the same options.
+pub fn install_with_options(wasm: &[u8], options: Options) -> Result<RemoteApp, String> {
+    let bundle = load(wasm, &options).map_err(|e| e.to_string())?;
     let loader = Rc::new(BundleLoader {
-        host_fns,
+        options,
         current: RefCell::new(Rc::new(bundle)),
         generation: Cell::new(None),
     });
@@ -148,8 +184,7 @@ impl RemoteApp {
     /// Replace the bundle; every mounted remote component remounts from it.
     /// On `Err` (it doesn't load) the current bundle stays.
     pub fn reload(&self, wasm: &[u8]) -> Result<(), String> {
-        let bundle =
-            KernelBundle::load_with(&engine(), wasm, &self.loader.host_fns).map_err(|e| e.to_string())?;
+        let bundle = load(wasm, &self.loader.options).map_err(|e| e.to_string())?;
         *self.loader.current.borrow_mut() = Rc::new(bundle);
         watch(&self.loader);
         if let Some(g) = self.loader.generation.get() {
