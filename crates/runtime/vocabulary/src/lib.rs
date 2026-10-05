@@ -296,8 +296,15 @@ macro_rules! __remote_app_component {
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __remote_import {
+    // Only ever expanded in a remote bundle build (`__remote_guest_split!`'s
+    // bundle branch), so reaching this twin means that build lacks the
+    // vocabulary's `remote` feature: say so at compile time, rather than
+    // compile a bundle whose every app component traps.
     ($($t:tt)*) => {
-        ::core::unreachable!("remote component imports exist only in a remote bundle build")
+        ::core::compile_error! {
+            "a remote bundle build needs runtime-vocabulary's `remote` feature: \
+             it imports the app's components"
+        }
     };
 }
 #[cfg(feature = "robot")]
