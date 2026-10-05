@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cpu"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "parity-goldens",
  "pico-args",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.9.1"
+version = "1.10.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "gtk4",
  "inventory",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.8.1"
+version = "1.9.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "backend-terminal"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "parity-goldens",
  "runtime-layout",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "css",
  "dev-client",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "raw-window-handle",
  "runtime-layout",
@@ -3014,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -3365,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -5559,7 +5559,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6086,7 +6086,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6106,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -10122,7 +10122,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10131,7 +10131,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10139,7 +10139,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.12.0"
+version = "1.13.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10162,7 +10162,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "runtime-world",
  "rustc-hash 2.1.2",
@@ -10182,7 +10182,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10211,7 +10211,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -10229,7 +10229,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "rustc-hash 2.1.2",
 ]
@@ -11473,7 +11473,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
@@ -11769,7 +11769,7 @@ dependencies = [
 
 [[package]]
 name = "swap-navigator"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -13784,7 +13784,7 @@ dependencies = [
 
 [[package]]
 name = "web-glue"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",
@@ -14759,7 +14759,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "dev-client",
  "dev-server",
