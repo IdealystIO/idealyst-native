@@ -33,6 +33,8 @@ cargo test -p runtime-world --features loopback-engine       # every kernel test
 cargo test -p runtime-vocabulary --features remote-loopback --test remote_elements  # the element codec
 ```
 
+Several of these suites run only under a feature, so a plain `cargo test -p runtime-world` never sees the bridge. `scripts/test-framework-core.sh` runs the whole matrix (framework core plus everything above), and is what to run before merging a change to the kernel, the codec or the bridge.
+
 The build scripts of `stream-spike`, the showcase and the example compile their bundles for `wasm32-unknown-unknown` (`rustup target add wasm32-unknown-unknown`). Without that target they don't fail: they embed empty placeholders and print a warning, so a workspace build still goes through, and anything that loads one of those bundles fails with a load error. Installing the target reruns them.
 
 ### See it live
