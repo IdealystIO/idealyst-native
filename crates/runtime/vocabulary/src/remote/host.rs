@@ -248,6 +248,12 @@ fn build_tree(conn: &Rc<Conn>, tree: Tree) -> Result<Element, DecodeError> {
     CLAIMS.with(|c| c.borrow_mut().push(Claims::default()));
     let open = Open;
     let built = build(conn, tree.node);
+    if super::take_intern_exceeded() {
+        conn.link.fail(format!(
+            "remote codec: the bundle sent more distinct names, icons and asset bytes than the app keeps \
+             (the interning budget; see INTERN_BUDGET_BYTES)"
+        ));
+    }
     let claims = CLAIMS.with(|c| std::mem::take(c.borrow_mut().last_mut().expect("this build's claims")));
     drop(open);
     if built.is_err() {
@@ -888,7 +894,7 @@ fn wire_file_drop(e: &runtime_shared::file_drop::FileDropEvent) -> WireFileDrop 
 
 /// The prims hold icon and asset data as `&'static`: decoded ones are
 /// interned, one leak per DISTINCT icon / byte blob for the process's
-/// life — bounded by what bundles actually use, like [`intern`].
+/// life, within the interners' shared budget (`INTERN_BUDGET_BYTES`).
 fn blank_icon() -> runtime_shared::primitives::icon::IconData {
     runtime_shared::primitives::icon::IconData {
         view_box: (0, 0),
@@ -903,6 +909,10 @@ fn intern_bytes(b: Vec<u8>) -> &'static [u8] {
     let mut blobs = BLOBS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     if let Some(&x) = blobs.get(&b[..]) {
         return x;
+    }
+    // Within the interners' shared budget (see `INTERN_BUDGET_BYTES`).
+    if !super::charge_intern(b.len()) {
+        return &[];
     }
     let x: &'static [u8] = Box::leak(b.into_boxed_slice());
     blobs.insert(x);

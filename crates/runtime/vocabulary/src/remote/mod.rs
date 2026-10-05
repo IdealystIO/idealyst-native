@@ -341,10 +341,57 @@ impl From<runtime_shared::primitives::icon::IconData> for WireIcon {
     }
 }
 
+/// The most the interners below leak for the process's life, in bytes.
+/// The prims hold names, icons and asset bytes as `&'static`, so what
+/// crosses is leaked once per DISTINCT value — bounded, for a real bundle,
+/// by what it ships (its names, icons and `include_bytes!` assets; fonts and
+/// images run to a few MB) times the versions loaded. A bundle that keeps
+/// sending NEW values (generated, or hostile) would grow the app without
+/// limit; past this budget the interners answer placeholders and the app
+/// stops the bundle ([`take_intern_exceeded`]). 64 MB is an order of
+/// magnitude above any bundle's assets we have measured.
+pub(crate) const INTERN_BUDGET_BYTES: usize = 64 << 20;
+
+static INTERN_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(INTERN_BUDGET_BYTES);
+static INTERNED_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Lower the interning budget, for tests that exercise it without
+/// allocating 64 MB. Process-global: use from a test binary of its own.
+#[doc(hidden)]
+pub fn __set_intern_budget(bytes: usize) {
+    INTERN_BUDGET.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+static INTERN_EXCEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Account for `n` bytes about to be leaked: `false` (and the budget
+/// marked exceeded) when they would pass [`INTERN_BUDGET_BYTES`].
+pub(crate) fn charge_intern(n: usize) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut current = INTERNED_BYTES.load(Relaxed);
+    loop {
+        let budget = INTERN_BUDGET.load(Relaxed);
+        let Some(next) = current.checked_add(n).filter(|&t| t <= budget) else {
+            INTERN_EXCEEDED.store(true, Relaxed);
+            return false;
+        };
+        match INTERNED_BYTES.compare_exchange_weak(current, next, Relaxed, Relaxed) {
+            Ok(_) => return true,
+            Err(now) => current = now,
+        }
+    }
+}
+
+/// Whether an interner refused a value since the last call (and clear it):
+/// the app checks after decoding a bundle's tree, and stops the bundle.
+pub(crate) fn take_intern_exceeded() -> bool {
+    INTERN_EXCEEDED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Interned `'static` copies of what crosses as owned data but is
 /// `'static` on the other side (an icon's paths, a name). Either side may
 /// need them: the app for a bundle's icon, a bundle for one the app sends.
-/// Each distinct value is leaked once.
+/// Each distinct value is leaked once, within [`INTERN_BUDGET_BYTES`]
+/// (past it: `""`).
 pub(crate) fn intern(s: &str) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -352,6 +399,9 @@ pub(crate) fn intern(s: &str) -> &'static str {
     let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     if let Some(&n) = names.get(s) {
         return n;
+    }
+    if !charge_intern(s.len()) {
+        return "";
     }
     let n: &'static str = Box::leak(s.to_owned().into_boxed_str());
     names.insert(n);
@@ -369,6 +419,11 @@ pub(crate) fn intern_icon(w: WireIcon) -> runtime_shared::primitives::icon::Icon
     let mut icons = ICONS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     if let Some(i) = icons.get(&key) {
         return *i;
+    }
+    // The path slice and the map's key copy, beyond the interned strings.
+    let overhead = key.0.len() * std::mem::size_of::<&str>() + key.0.iter().map(String::len).sum::<usize>();
+    if !charge_intern(overhead) {
+        return IconData { view_box: (0, 0), paths: &[], fill_rule: w.fill_rule, filled: false };
     }
     let paths: Vec<&'static str> = key.0.iter().map(|p| intern(p)).collect();
     let icon = IconData { view_box: w.view_box, paths: Box::leak(paths.into_boxed_slice()), fill_rule: w.fill_rule, filled: w.filled };
