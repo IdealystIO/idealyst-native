@@ -70,6 +70,16 @@ use std::rc::Rc;
 #[cfg(test)]
 mod tests;
 
+// The state carrier reads NATIVE slots; under the bridged engine (the
+// loopback test configuration, or a remote bundle) the active engine's
+// slots are proxies, so the combination would carry garbage. Documented as
+// unsupported in Cargo.toml; enforced here.
+#[cfg(all(feature = "hot-reload", any(feature = "loopback-engine", idealyst_stream_guest)))]
+compile_error!(
+    "runtime-world's `hot-reload` can't be combined with the bridged engine (`loopback-engine`, or a remote \
+     bundle build): hot reload's state carry reads native slots"
+);
+
 /// Dev-time hot reload: carrying signal VALUES across an in-process
 /// re-run of a patched tree. Entirely behind the `hot-reload` feature;
 /// see its module docs for why values move rather than handles.
