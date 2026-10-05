@@ -350,7 +350,18 @@ impl CpuBackend {
             // in Taffy, so we don't have to redo alignment here.
             let text_x = x.round() as i32;
             let text_y = y.round() as i32;
-            draw_text(surface, &data.content, text_x, text_y, scale, fg_color, clip);
+            // `max_lines`: this rasterizer never wraps (a text is one
+            // line), so any limit means "one line, cut at the box width
+            // with `…`". Read from the live style on every paint, so a
+            // restyle that drops the limit draws the full line again.
+            let limited = data.style.as_ref().and_then(|s| s.max_lines).is_some_and(|n| n > 0);
+            if limited {
+                let max_glyphs = (w / (font_8x8::GLYPH_W * scale) as f32).floor() as usize;
+                let line = truncate_line(&data.content, max_glyphs);
+                draw_text(surface, &line, text_x, text_y, scale, fg_color, clip);
+            } else {
+                draw_text(surface, &data.content, text_x, text_y, scale, fg_color, clip);
+            }
         }
 
         // -----------------------------------------------------------------
@@ -685,6 +696,26 @@ fn lerp_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
         f.round().clamp(0.0, 255.0) as u8
     };
     Rgba::new(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), mix(a.a, b.a))
+}
+
+/// One line of a text with a line limit, fit into `max_glyphs` cells of
+/// the fixed-width bitmap font. Whitespace (newlines included) collapses
+/// to single spaces, as CSS `white-space: nowrap` does; a line longer than
+/// the box keeps `max_glyphs - 1` glyphs and ends with
+/// [`font_8x8::ELLIPSIS`], trailing spaces trimmed so a cut at a word gap
+/// reads `word…`.
+pub(crate) fn truncate_line(content: &str, max_glyphs: usize) -> String {
+    let line = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= max_glyphs {
+        return line;
+    }
+    if max_glyphs == 0 {
+        return String::new();
+    }
+    let mut out: String = line.chars().take(max_glyphs - 1).collect();
+    out.truncate(out.trim_end().len());
+    out.push(font_8x8::ELLIPSIS);
+    out
 }
 
 /// Paint a string at `(x, y)` (top-left of first glyph) in `color`,

@@ -24,7 +24,7 @@ use runtime_shared::{
 // supplies the structural ops.
 use runtime_scene::Host;
 use runtime_vocabulary::caps::{
-    AnimationOps, ButtonOps, LifecycleOps, PressableOps, ScrollOps, StyleOps, TextOps, ViewOps,
+    AnimationOps, LifecycleOps, PressableOps, StyleOps, TextOps, ViewOps,
 };
 
 use crate::{CpuBackend, ClickOutcome, MemSurface, Surface};
@@ -569,4 +569,104 @@ fn surface_present_is_called_once_per_render() {
     backend.render(&mut surface);
     backend.render(&mut surface);
     assert_eq!(surface.present_count, 3);
+}
+
+// ---------------------------------------------------------------------------
+// max_lines — one line cut at the box width with "…"
+// ---------------------------------------------------------------------------
+
+/// A 160×8 white surface with one black text in an 80px (ten-glyph) box,
+/// styled with `max_lines`. Returns the backend + text node so a test can
+/// restyle and render again.
+fn limited_text_scene(content: &str, max_lines: Option<u32>) -> (CpuBackend, crate::CpuNode) {
+    let mut backend = CpuBackend::new(160, 8);
+    backend.set_clear_color([255, 255, 255, 255]);
+    let a11y = AccessibilityProps::default();
+    let mut root = backend.create_view(&a11y);
+    backend.apply_style(
+        &root,
+        &style_with(|s| {
+            s.width = Some(Tokenized::Literal(Length::Px(160.0)));
+            s.height = Some(Tokenized::Literal(Length::Px(8.0)));
+        }),
+    );
+    let text = backend.create_text(content, &a11y);
+    backend.apply_style(&text, &text_style(max_lines));
+    backend.insert(&mut root, text);
+    backend.finish(root);
+    (backend, text)
+}
+
+fn text_style(max_lines: Option<u32>) -> Rc<StyleRules> {
+    style_with(|s| {
+        s.color = Some(Tokenized::Literal("rgb(0, 0, 0)".into()));
+        s.width = Some(Tokenized::Literal(Length::Px(80.0)));
+        s.height = Some(Tokenized::Literal(Length::Px(8.0)));
+        s.max_lines = max_lines;
+    })
+}
+
+fn frame(backend: &mut CpuBackend) -> Vec<u8> {
+    let mut surface = MemSurface::new(160, 8);
+    backend.render(&mut surface);
+    surface.pixels().to_vec()
+}
+
+#[test]
+fn truncate_line_cuts_with_an_ellipsis_only_when_the_line_overflows() {
+    use crate::truncate_line;
+    assert_eq!(truncate_line("HELLO WORLD AGAIN", 10), "HELLO WOR\u{2026}");
+    // A cut right after a word gap trims the space: `word…`, not `word …`.
+    assert_eq!(truncate_line("HELLO WORLD", 7), "HELLO\u{2026}");
+    assert_eq!(truncate_line("SHORT", 10), "SHORT");
+    assert_eq!(truncate_line("EXACTLY10!", 10), "EXACTLY10!");
+    // Newlines collapse like CSS `white-space: nowrap`.
+    assert_eq!(truncate_line("A\nB", 10), "A B");
+    assert_eq!(truncate_line("ANYTHING", 0), "");
+}
+
+#[test]
+fn ellipsis_has_its_own_glyph_not_tofu() {
+    use crate::font_8x8::{glyph_for, ELLIPSIS};
+    assert_ne!(glyph_for(ELLIPSIS), glyph_for('\u{2603}'), "… must not render as tofu");
+}
+
+/// `max_lines: 1` on a text wider than its box paints exactly what the
+/// pre-cut string `HELLO WOR…` paints — nothing past the 80px box.
+#[test]
+fn max_lines_one_paints_the_line_cut_with_an_ellipsis() {
+    let (mut limited, _) = limited_text_scene("HELLO WORLD AGAIN", Some(1));
+    let (mut expected, _) = limited_text_scene("HELLO WOR\u{2026}", None);
+    let got = frame(&mut limited);
+    assert_eq!(got, frame(&mut expected));
+    // Nothing right of the box: the unlimited text would run to x = 136.
+    for x in 80..160 {
+        for y in 0..8 {
+            let i = ((y * 160 + x) * 4) as usize;
+            assert_eq!(&got[i..i + 4], &[255, 255, 255, 255], "pixel ({x},{y}) painted");
+        }
+    }
+}
+
+/// `None` and `Some(0)` mean no limit: the line runs past its box as before.
+#[test]
+fn max_lines_none_or_zero_paints_the_full_line() {
+    let (mut unlimited, _) = limited_text_scene("HELLO WORLD AGAIN", None);
+    let (mut zero, _) = limited_text_scene("HELLO WORLD AGAIN", Some(0));
+    let full = frame(&mut unlimited);
+    assert_eq!(full, frame(&mut zero));
+    let (mut cut, _) = limited_text_scene("HELLO WORLD AGAIN", Some(1));
+    assert_ne!(full, frame(&mut cut), "the limit must change the paint");
+}
+
+/// A restyle that drops `max_lines` draws the whole line again.
+#[test]
+fn restyle_without_max_lines_restores_the_full_line() {
+    let (mut backend, text) = limited_text_scene("HELLO WORLD AGAIN", Some(1));
+    let cut = frame(&mut backend);
+    backend.apply_style(&text, &text_style(None));
+    let restored = frame(&mut backend);
+    let (mut unlimited, _) = limited_text_scene("HELLO WORLD AGAIN", None);
+    assert_ne!(cut, restored);
+    assert_eq!(restored, frame(&mut unlimited));
 }

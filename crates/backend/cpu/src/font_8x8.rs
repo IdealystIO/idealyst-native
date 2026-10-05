@@ -12,8 +12,9 @@
 //!
 //! ## Coverage
 //!
-//! ASCII printable range only — 0x20 (space) through 0x7E (`~`).
-//! Any char outside that range renders as a hollow square
+//! ASCII printable range — 0x20 (space) through 0x7E (`~`) — plus `…`
+//! (U+2026), which the backend draws itself to end a line cut by
+//! `max_lines`. Any other char outside that range renders as a hollow square
 //! (`GLYPH_TOFU`) so missing glyphs are visible in test output
 //! instead of silently disappearing.
 //!
@@ -43,12 +44,24 @@ const GLYPH_TOFU: [u8; 8] = [
     0b00000000,
 ];
 
-/// Look up the 8-byte glyph for an ASCII character. Returns
-/// [`GLYPH_TOFU`] for anything outside the printable range.
+/// The horizontal ellipsis (U+2026) that ends a line cut by
+/// `StyleRules::max_lines`. The one non-ASCII glyph in the table: the
+/// backend draws it itself, so it must not render as tofu.
+pub const ELLIPSIS: char = '\u{2026}';
+
+/// `…` — three of the `.` glyph's 2×2 dots (rows 5–6, like `.`) packed
+/// into one cell at columns 0–1, 3–4 and 6–7 (LSB = leftmost pixel, the
+/// ordering `draw_text` reads).
+const GLYPH_ELLIPSIS: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0xDB, 0xDB, 0x00];
+
+/// Look up the 8-byte glyph for an ASCII character (plus [`ELLIPSIS`]).
+/// Returns [`GLYPH_TOFU`] for anything else outside the printable range.
 pub fn glyph_for(c: char) -> [u8; 8] {
     let b = c as u32;
     if (0x20..=0x7E).contains(&b) {
         GLYPHS[(b - 0x20) as usize]
+    } else if c == ELLIPSIS {
+        GLYPH_ELLIPSIS
     } else {
         GLYPH_TOFU
     }

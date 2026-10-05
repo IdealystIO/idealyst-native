@@ -30,7 +30,7 @@ system the renderer paints with.
 | Element            | Status                | Notes                                  |
 |----------------------|-----------------------|----------------------------------------|
 | View                 | Full                  | Backgrounds, borders (solid / dashed / dotted, per-side bars — corner radii round the fill, not the border), opacity, rounded corners |
-| Text                 | Full                  | 8×8 bitmap font, multi-line wrap       |
+| Text                 | Full                  | 8×8 bitmap font, one line: no wrapping and no text measurement (size the box). Any `max_lines` cuts the line at the box width with `…` |
 | Button               | Full                  | Label + on_click; same chrome as iOS   |
 | Pressable            | Full                  | Hit-testing, no built-in chrome        |
 | ScrollView           | Functional            | Offset + clip; no momentum, no scrollbars |
