@@ -1,8 +1,8 @@
 # Remote components (spike)
 
-A remote component (working name in code: "streamed"; the attribute will be `#[component(remote)]`) is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
+A remote component (`#[component(remote)]`) is ordinary Rust compiled to `wasm32`. An app downloads it as a **bundle**, runs it on-device in the [wasmi](https://github.com/wasmi-labs/wasmi) interpreter, and mounts it like any other component. The same mechanism covers server-driven UI (small bundles per screen) and OTA updates (one bundle per host build).
 
-This directory is a spike. It proves the boundary works end to end and measures what it costs. Nothing here is published or depended on by the framework.
+The crates in this directory (the loader `stream-host`, the showcase, the example, the spike's fixtures and tests) are unpublished. The mechanism itself ships in the framework's own crates, all behind features an app opts into: runtime-world's `bridge`, runtime-vocabulary's `remote` (and `remote-inline`), runtime-shared's `remote-serde`, and the macros (`#[component(remote)]`, `#[derive(Remote)]`, `#[host_fn]`). An app that doesn't enable them gets none of it, and web builds never compile it.
 
 What runs inside a bundle is **the bridged design**: the bundle runs the same real framework code, but its reactive kernel is *bridged*: its signals, effects and scopes live in the app's own graph, and the tree it builds crosses to the app as data, to be realized by the app's own registry and backend. One graph, one backend; the bundle carries only its own code (147 KB for `RemoteCounter`). See [The bridged design](#the-bridged-design).
 
@@ -46,7 +46,7 @@ The window shows RemoteCounter from the bundle (green, from `/remote.wasm`) next
 2. Press **Refresh bundle**. The green section remounts from the new build; the app is not rebuilt or restarted. The grey native copy keeps the old code, which is the point of comparison.
 3. The host buttons drive host state the bridged component reads: `external ± 1` is a prop, **switch user** is context.
 
-Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take. Anything else panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic at any other time (a press handler, an effect) does the same; see [Panics](#panics-in-a-bundle).
+Every builtin primitive crosses — leaves, structural primitives and navigators — except `graphics` (and `lazy`, which has no meaning in a bundle); see [The bridged design](#the-bridged-design). Using `graphics` panics in the bundle while it mounts, and the window shows the bundle's panic message in place of the component. A panic at any other time (a press handler, an effect) does the same; see [Panics](#panics-in-a-bundle).
 
 How it behaves:
 
@@ -68,7 +68,7 @@ pub fn Scoreboard(player: String, score: ReadSignal<i64>, cheers: Signal<i64>) -
 
 The file compiles twice. As the app, `Scoreboard`'s body is left out: the macro replaces it with a stub that sends the props and mounts the component from the installed bundle (`stream_host::remote::install`). As the bundle (`example/bundle`, which points at the same file; built by the app's build script and served by `stream-serve`), only the remote component's body compiles, plus a mount export. On web, `remote` is a no-op. With runtime-vocabulary's `remote-inline` feature, a native app compiles the remote components' bodies in and runs them in-process, with no bundle involved. Use it to measure a remote component against itself, or to debug one.
 
-Props are taken as declared. A `ReadSignal<T>` crosses as a handle: the bundle reads the app's signal live. A `Signal<T>` lets the bundle write it too. A plain value is copied at mount. Your own value types cross with `runtime_vocabulary::remote_value!(MyType)`.
+Props are taken as declared. A `ReadSignal<T>` crosses as a handle: the bundle reads the app's signal live. A `Signal<T>` lets the bundle write it too. A plain value is copied at mount. Your own value types cross with `#[derive(Remote)]` (see [Remote code using app components](#remote-code-using-app-components)).
 
 ```sh
 cargo run --release -p stream-spike --bin stream-serve   # terminal 1: serves /example.wasm, rebuilds on save
@@ -229,32 +229,43 @@ A bundle is built with `--cfg idealyst_stream_guest` (a build flag, not a cargo 
 **The tree crosses as data** (`runtime-vocabulary/src/remote`, feature `remote`). The bundle encodes the `Element` it built into a `Node`. Every closure in it (a dynamic text getter, an `on_press`, a `Dyn` hole's builder, a keyed list's items and render, a stylesheet) stays in a bundle-side table under a callback id, and the id crosses instead. The app decodes the `Node` into real primitives whose closures call the bundle by id, then realizes it like any other tree. When the app drops such a closure it releases the id, and the bundle frees the closure.
 - A component's `Owned` crosses as the app-side scope id it already is, and the app claims it (`runtime_world::remote::claim_scope`), so unmounting tears the bundle's state down like a native component's.
 - **Styles keep the app's theme.** Style rules cross with token names intact, so the app's theme resolves them. A stylesheet crosses as its shape, and the app rebuilds the same sheet with each closure calling back into the bundle. State, breakpoint and container overlays then work exactly as for a native sheet. Ids are refcounted, so a sheet shared by many nodes crosses once.
-- **App components are imported by name.** A bundle calls `remote::bundle::import("Card", &props, children)`; the app exports `Card` with `remote::host::register_import`. A bundle that needs a component the app doesn't export fails to decode with `MissingImport`, rather than rendering half a tree.
-- **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take (touch, wheel, hover, file drop, key, focus, blur, scroll, image load and error). Event handlers cross as callbacks whose event and reply are encoded; a stopped bundle's handlers answer the platform default. Everything else panics at encode, naming itself. `tests/remote_elements.rs` (`controls`) checks every one against the native build, handler by handler. The structural primitives cross too: `repeat`, `presence`, `portal` (viewport and named targets), `virtualizer` (including measured sizes and `item_diff`, whose snapshots stay in the bundle) and `virtual_grid`; their builders, sizes and keys are callbacks the app's backend calls, and `tests/remote_elements.rs` (`structural`) drives them the way a backend does.
+- **App components are imported by name.** In a bundle build, a `#[component]` that isn't remote is a stub that sends the props its call site set and asks the app for its own copy by `module_path::Name`; every `#[component]` in a native app with `remote` registers itself for that at link time (`remote::host::APP_COMPONENTS`). A bundle that needs a component the app doesn't have fails to decode with `MissingImport`, rather than rendering half a tree. (`remote::bundle::import` / `remote::host::register_import` are the same exchange by hand, which the codec's own tests use.)
+- **Every builtin primitive has a decision.** `remote::crossing` says whether each payload crosses; a test fails when `register_builtins` gains one with no entry. Crossing today: `view`, `pressable`, `text` (including styled runs), `button` (including icons), `image`, `icon`, `link`, `toggle`, `slider`, `activity_indicator`, `text_input`, `text_area` and `scroll_view`, with every event handler they take (touch, wheel, hover, file drop, key, focus, blur, scroll, image load and error). Event handlers cross as callbacks whose event and reply are encoded; a stopped bundle's handlers answer the platform default. Only `graphics` (and `lazy`) panic at encode, naming themselves. `tests/remote_elements.rs` (`controls`) checks every one against the native build, handler by handler. The structural primitives cross too: `repeat`, `presence`, `portal` (viewport, named and anchored targets), `virtualizer` (including measured sizes and `item_diff`, whose snapshots stay in the bundle), `virtual_grid`, and the stack and swap navigators with their outlet (see [Navigation](#navigation)); their builders, sizes and keys are callbacks the app's backend calls, and `tests/remote_elements.rs` (`structural`) drives them the way a backend does.
 
 What the tests prove (`remote_counter.rs`): the real `RemoteCounter`, written with `#[component]` and `ui!`, mounted from the bundle drives the app's backend through exactly the same calls as the native build, through mount, button presses (bundle state), a prop change and a context change (app state), and unmount. After unmount, no bundle callback or scope is left behind.
 
 ## Measurements: the bridged design
 
-`showcase/measure.sh` builds `showcase/app/examples/measure.rs` twice: once with the screens mounted from the bundle, and once with `--features inline`, which compiles the same `#[component(remote)]` source into the app (the vocabulary's `remote-inline` feature). Each is a separate binary, built under the profile a native app ships with (opt 3, no LTO). The two runs alternate, and each figure is the median of 7. Both run on host-mock, so the numbers cover the framework and the interpreter; a platform toolkit adds the same cost to both. Measured on an Apple M3 Max with the bundle at the workspace release profile (opt z, fat LTO).
+`showcase/measure.sh [ROUNDS] [macos|ios-sim]` builds `showcase/app/examples/measure.rs` twice: once with the screens mounted from the bundle, and once with `--features inline`, which compiles the same `#[component(remote)]` source into the app (the vocabulary's `remote-inline` feature). Each is a separate binary, built under the profile a native app ships with (opt 3, no LTO). The two runs alternate, and each figure is the median of 7. `ios-sim` builds for `aarch64-apple-ios-sim` and runs inside the booted simulator (`simctl spawn`): iOS-target code on the Mac's CPU, not a phone's. Both modes run on host-mock, so the numbers cover the framework and the interpreter; a platform toolkit adds the same cost to both. Apple M3 Max, wasmi 2.0, the bundle at the workspace release profile (opt z, fat LTO). The iOS simulator figures match macOS within a few percent; macOS shown.
 
 The screens use idea-ui, which renders natively either way: only the screen's own code is interpreted.
 
 | | Remote | Same code in-process |
 |---|---|---|
-| Bundle | 312 KB raw, 95 KB brotli | — |
-| Load (validate, instantiate) | 1.5 ms (first: 1.9 ms) | — |
-| `FeedScreen` mount (3 idea-ui cards with buttons, context, a host fn) | 665 µs (first: 3.0 ms) | 51 µs (first: 0.8 ms) |
-| `ShopNavigator` mount (a stack navigator defined in the bundle) | 691 µs | 41 µs |
-| Push / pop a product screen | 463 / 68 µs | 40 / 6.3 µs |
-| A press handled by the bundle (♥: an idea-ui `Button`, bundle state, its label) | 9.2 µs | 0.4 µs |
-| The app sets a signal the bundle reads (cart in the header) | 11 µs | 0.5 µs |
-| The app toggles context that adds and removes 3 bodies | 126 µs | 7.8 µs |
-| An idea-ui `Slider` drag (its handler is bundle code) | 21 µs | 2.5 µs |
-| Memory per mounted `FeedScreen` | 85 KB | 82 KB |
-| Bundle linear memory, idle / with 200 feeds mounted | 256 / 704 KB | — |
+| Bundle | 375 KB raw, 106 KB brotli | — |
+| Load (validate, instantiate) | 1.8 ms (first: 2.1 ms) | — |
+| `FeedScreen` mount (3 idea-ui cards with buttons, context, a host fn) | 922 µs (first: 3.4 ms) | 73 µs (first: 0.8 ms) |
+| `ShopNavigator` mount (a stack navigator defined in the bundle) | 740 µs | 43 µs |
+| Push / pop a product screen | 511 / 70 µs | 43 / 6.8 µs |
+| A press handled by the bundle (♥: an idea-ui `Button`, bundle state, its label) | 8.8 µs | 0.4 µs |
+| The app sets a signal the bundle reads (cart in the header) | 12 µs | 0.5 µs |
+| The app toggles context that adds and removes 3 bodies | 134 µs | 7.7 µs |
+| An idea-ui `Slider` drag (its handler is bundle code) | 21 µs | 2.4 µs |
+| A theme swap (the screen's token sheets restyle) | 49 µs | 50 µs |
+| Memory per mounted `FeedScreen` | 146 KB | 127 KB |
+| Bundle linear memory, idle / with 200 feeds mounted | 320 / 576 KB | — |
 
-Mounts cost 11–17× in-process, against about 20× when the screens drew everything themselves (the earlier hand-rolled showcase: `FeedScreen` 405 µs vs 19 µs): a library the app ships does its rendering natively.
+**Compute** (`showcase/app/src/bench.rs`: the same functions as wasm in the interpreter and as native code, checksums compared; median of 5):
+
+| | wasm (opt z bundle) | wasm (opt 3 bundle) | native |
+|---|---|---|---|
+| Recursive Fibonacci(27): calls | 10.2 ms (20×) | 9.4 ms (18×) | 0.52 ms |
+| FNV-1a over 256 KB ×8: integer math | 44.5 ms (16×) | 31.0 ms (11×) | 2.70 ms |
+| Build + parse 20k JSON-like records: allocation, strings | 99.8 ms (49×) | 52.3 ms (26×) | 2.03 ms |
+| Sort 200k u32s: memory, branches | 177.7 ms (87×) | 79.9 ms (39×) | 2.04 ms |
+| 96×96 f64 matrix multiply (native vectorizes) | 45.8 ms (339×) | 32.4 ms (240×) | 0.13 ms |
+
+UI work costs 9–27× in-process and stays well under a frame; heavy computation costs 16–340× and belongs in the app (a `#[host_fn]`) when it matters.
 
 **Where the time goes** (measured on the earlier, hand-rolled showcase). In a `sample` profile of repeated `FeedScreen` mounts, 87% of the time is wasmi executing bundle code. Decoding the tree, the bridge's imports and the app's graph each take under 1%. So the cost is the framework code that runs in the bundle (building the tree, the bridged kernel's tables, encoding), interpreted at roughly 20× native. It is not the crossing. Every mount and update above still takes well under a 16 ms frame.
 
@@ -324,3 +335,5 @@ Apple M3 Max, host-mock scene, medians. The guest was the 28 KB `spike/guest` (r
 - **A poisoned bundle can keep running in one case.** If a host→bundle call made *from inside* a bundle call traps (a bundle calling `flush`, whose effects then panic), the outer bundle frame is still on the stack and resumes. Its later imports still reach the app's graph. Imports could refuse a poisoned bundle, at the cost of every import returning a `Result`.
 - **Host handles.** Large or native results (a photo, a capture session) should cross as scoped handles, not bytes. The spike's `Photo` is a small value.
 - **Bundle signing, and caching compiled modules by content hash.**
+- **Interned strings are never freed.** What crosses as owned data but is `'static` where it's used (an icon's paths, a route name, a `test_id`) is interned once per distinct value, for the life of the process. Bounded by the distinct values bundles send — fine for real UI, unbounded for a bundle that builds names dynamically across many reloads.
+- **Bundle-only helpers are plain functions.** In a bundle build every `#[component]` that isn't remote is an import of the app's copy, so a helper that exists only in the bundle (the showcase's `product_list`) can't be a `#[component]` — it's a plain fn with positional arguments. A `#[component(bundle)]`-style marker (compiled into the bundle, not imported) would let it be one.

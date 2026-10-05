@@ -60,13 +60,23 @@ fn report_bytes(key: &str, what: &str, bytes: usize) {
     println!("MEASURE\t{key}\t{bytes}");
 }
 
-/// Resident set size of this process, in bytes (`ps`: no extra deps).
+/// Resident set size of this process, in bytes, from the kernel (works
+/// inside the iOS simulator, which has no `ps`).
 fn rss() -> usize {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-        .output()
-        .expect("run ps");
-    String::from_utf8_lossy(&out.stdout).trim().parse::<usize>().expect("ps rss") * 1024
+    // SAFETY: `task_info` fills `info` up to `count` words; both are sized
+    // for MACH_TASK_BASIC_INFO.
+    unsafe {
+        let mut info: libc::mach_task_basic_info = std::mem::zeroed();
+        let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+        let kr = libc::task_info(
+            libc::mach_task_self(),
+            libc::MACH_TASK_BASIC_INFO,
+            &mut info as *mut _ as libc::task_info_t,
+            &mut count,
+        );
+        assert_eq!(kr, libc::KERN_SUCCESS, "task_info");
+        info.resident_size as usize
+    }
 }
 
 /// The app's state the remote screens read, owned by the bench.
@@ -162,6 +172,33 @@ fn main() {
         report("unload", "unload", median(unloads));
         report_bytes("mem.per_reload", "RSS kept per load + unload (a reload)", reload_growth);
     }
+    // --- Compute: the same Rust as wasm (interpreted) vs native -------------
+    println!("\ncompute (median of 5; the same source, checksums compared):");
+    let bundle = REMOTE.then(|| {
+        stream_host::kernel::KernelBundle::load_with(&stream_host::remote::engine(), wasm, &remote_showcase::host_fns()).unwrap()
+    });
+    for (name, f, n, what) in remote_showcase::bench::WORKLOADS {
+        let expected = f(*n);
+        let export = format!("__bench_{name}");
+        let run = || -> u64 {
+            match &bundle {
+                Some(b) => b.call::<u32, u64>(&export, *n),
+                None => black_box(f(black_box(*n))),
+            }
+        };
+        // Warm: translate the export (lazy) / fault the code in.
+        assert_eq!(run(), expected, "{name}: wasm and native disagree");
+        let times: Vec<Duration> = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                black_box(run());
+                t.elapsed()
+            })
+            .collect();
+        report(&format!("compute.{name}"), what, median(times));
+    }
+    drop(bundle);
+
     remote_showcase::install_from(wasm).expect("bundle loads");
     let rss_start = rss();
 
@@ -188,11 +225,10 @@ fn main() {
     report("feed.unmount", "unmount", median(unmounts));
 
     // --- Feed: updates --------------------------------------------------------
-    let presses_before = h.shared.press_handlers.borrow().len();
     let (_, r) = mount(&h, || feed(s));
-    // The first like button (an idea-ui `Button`, a pressable): pressed in
-    // the app, handled by the screen.
-    let like = h.shared.press_handlers.borrow()[presses_before].clone();
+    // A like button (an idea-ui `Button`): pressed in the app, handled by
+    // the screen. Found by its label — the feed has other buttons first.
+    let like = h.pressable_labelled("♥");
     report("feed.like", "press ♥ (handler → screen state → its text)", per_op(&h, 2000, |_| like()));
     report(
         "feed.theme",

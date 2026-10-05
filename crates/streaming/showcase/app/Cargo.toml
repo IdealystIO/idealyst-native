@@ -38,6 +38,10 @@ stream-host = { path = "../../host" }
 [target.'cfg(target_os = "macos")'.dependencies]
 host-appkit = { workspace = true }
 
+# The benchmark reads resident memory from the kernel (`task_info`).
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 host-mock = { workspace = true }
 
@@ -48,4 +52,4 @@ version   = "0.0.1"
 targets   = ["ios", "android", "macos"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)', 'cfg(idealyst_stream_model_a)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

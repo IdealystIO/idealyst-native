@@ -36,6 +36,10 @@
 
 use std::rc::Rc;
 
+/// Compute workloads for the benchmark (`examples/measure.rs`), compiled
+/// into both builds.
+pub mod bench;
+
 use idea_ui::{tone, typography_kind, Badge, Button, Card, IdeaThemeRef, Slider, Switch, Typography};
 use runtime_core::{component, host_fn, rx, signal, ui, Element, ReadSignal, Remote, Signal};
 use runtime_shared::primitives::navigator::{Route, RouteParams};

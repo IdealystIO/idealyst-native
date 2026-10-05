@@ -1802,6 +1802,12 @@ impl Harness {
     /// Panics with the live tree when nothing shown matches. The caller
     /// flushes.
     pub fn press_labelled(&self, label: &str) {
+        (self.pressable_labelled(label))();
+    }
+
+    /// The press [`press_labelled`](Self::press_labelled) fires, without
+    /// firing it — for a caller that presses it many times (a benchmark).
+    pub fn pressable_labelled(&self, label: &str) -> Rc<dyn Fn()> {
         fn walk(h: &Harness, node: Node, out: &mut Vec<Node>) {
             out.push(node);
             for child in h.children_of(node) {
@@ -1836,7 +1842,7 @@ impl Harness {
             let screen: Vec<String> = self.live_roots().into_iter().map(|r| self.live_tree(r)).collect();
             panic!("nothing pressable shows {label:?}:\n{}", screen.join("\n"));
         };
-        press();
+        press
     }
 
     /// Every root of the LIVE tree: a node with no parent that has not
