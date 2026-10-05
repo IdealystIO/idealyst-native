@@ -128,6 +128,11 @@ pub const BUTTON_CONTENT_STYLE: &str = "display:inline-flex;align-items:center;g
 /// it, about 2px low beside a centred label.
 pub const ICON_STYLE: &str = "display:block;";
 
+/// The old name of [`ICON_STYLE`], kept so a release that renamed it isn't
+/// a breaking one. Its value is the new one: an icon is a block box now.
+#[deprecated(note = "renamed to `ICON_STYLE` (and now `display:block`)")]
+pub const ICON_INLINE_STYLE: &str = ICON_STYLE;
+
 /// Inline style for a reactive `when`/`switch`/`each` anchor placeholder:
 /// `display: contents` makes it **layout-transparent** so the branch's
 /// children inherit the surrounding flex/sizing context (and form their
