@@ -168,6 +168,39 @@ fn regression_an_unsupported_prop_fails_only_its_component() {
     assert!(t.contains("hello ada"), "the bundle still runs: {t}");
 }
 
+/// Regression: mounting a remote component while its bundle was mid-call
+/// (app code a bundle callback runs — here a host function — rendering a
+/// remote component) PANICKED: the mount borrowed the bundle's store, which
+/// the in-flight call holds. Mounts go through the call's `Caller` now.
+#[test]
+fn regression_a_mount_while_the_bundle_is_mid_call_works() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use stream_host::kernel::KernelBundle;
+    let fns = camera();
+    let bundle = Rc::new(KernelBundle::load_with(&stream_host::remote::engine(), REMOTE_ATTR_WASM, &fns).expect("loads"));
+    let h = Harness::new();
+    let nested: Rc<RefCell<Option<Result<String, String>>>> = Rc::default();
+    let (b, out) = (bundle.clone(), nested.clone());
+    spike_remoteattr::ON_NESTED.with(|f| {
+        *f.borrow_mut() = Some(Rc::new(move || {
+            let args = runtime_vocabulary::remote::to_bytes(&"nested".to_string());
+            let mounted = b
+                .mount_remote("__idealyst_remote_spike_remoteattr::elsewhere::Greeting", &args)
+                .map(|_| "mounted".to_string())
+                .map_err(|e| e.to_string());
+            *out.borrow_mut() = Some(mounted);
+        }))
+    });
+    let realized = h.mount(h.world.enter(|| bundle.mount_remote("__idealyst_remote_spike_remoteattr::Nester", &[])).expect("mounts"));
+    h.flush();
+    h.press_labelled("nest");
+    assert_eq!(nested.borrow().clone(), Some(Ok("mounted".to_string())));
+    assert!(bundle.poisoned().is_none());
+    spike_remoteattr::ON_NESTED.with(|f| *f.borrow_mut() = None);
+    drop(realized);
+}
+
 /// The remote component renders an APP component (`Panel`, not `remote`):
 /// the bundle imports the app's copy by name, and every prop crosses.
 #[test]
@@ -418,7 +451,12 @@ use spike_remoteattr::Snapshot;
 /// The app's allowlist of host functions bundles may call: the camera
 /// SDK's `#[host_fn]` records.
 fn camera() -> Vec<runtime_vocabulary::remote::HostFnDef> {
-    vec![spike_camera::battery_level::export(), spike_camera::take_photo::export()]
+    vec![
+        spike_camera::battery_level::export(),
+        spike_camera::take_photo::export(),
+        // The fixture's own (`Nester`'s).
+        spike_remoteattr::mount_nested::export(),
+    ]
 }
 
 fn snapshot_tree(a: &App) -> Element {
@@ -464,7 +502,10 @@ fn a_bundle_calling_an_unlisted_host_function_is_refused_at_load() {
 fn a_host_function_with_a_changed_signature_is_refused_at_load() {
     let mut drifted = spike_camera::take_photo::export();
     drifted.schema ^= 1;
-    let err = stream_host::remote::install_with(REMOTE_ATTR_WASM, vec![spike_camera::battery_level::export(), drifted])
+    let err = stream_host::remote::install_with(
+        REMOTE_ATTR_WASM,
+        vec![spike_camera::battery_level::export(), drifted, spike_remoteattr::mount_nested::export()],
+    )
         .err()
         .expect("refused");
     assert!(err.contains("spike_camera::take_photo"), "{err}");

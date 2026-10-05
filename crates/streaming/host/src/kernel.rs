@@ -173,6 +173,10 @@ trait GuestCall {
     fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error>;
     /// The bundle's last panic message (after a trap).
     fn last_panic(&mut self, ui: UiHooks) -> Option<String>;
+    /// Run mount export `export` of `instance` on `args`; its reply.
+    /// `Ok(None)` when the bundle has no such export.
+    fn mount(&mut self, instance: wasmi::Instance, ui: UiHooks, export: &str, args: &[u8])
+        -> Result<Option<Vec<u8>>, wasmi::Error>;
 }
 
 impl<C: AsContextMut<Data = KState>> GuestCall for C {
@@ -198,6 +202,18 @@ impl<C: AsContextMut<Data = KState>> GuestCall for C {
             .map_err(|_| wasmi::Error::new(format!("remote codec: argument buffer {ptr} out of bounds")))?;
         let packed = ui.invoke.call(&mut *self, (cb, args.len() as u32))?;
         read_packed(&*self, memory, packed)
+    }
+    fn mount(&mut self, instance: wasmi::Instance, ui: UiHooks, export: &str, args: &[u8])
+        -> Result<Option<Vec<u8>>, wasmi::Error>
+    {
+        let Ok(mount) = instance.get_typed_func::<(u32, u32), i64>(&*self, export) else { return Ok(None) };
+        let memory = self.as_context().data().memory.expect("kernel bridge: bundle exports no memory");
+        let ptr = ui.alloc.call(&mut *self, args.len() as u32)?;
+        memory
+            .write(&mut *self, ptr as usize, args)
+            .map_err(|_| wasmi::Error::new(format!("remote component: argument buffer {ptr} out of bounds")))?;
+        let packed = mount.call(&mut *self, (ptr, args.len() as u32))?;
+        read_packed(&*self, memory, packed).map(Some)
     }
     fn ui_release(&mut self, ui: UiHooks, cb: u32) -> Result<(), wasmi::Error> {
         ui.release.call(&mut *self, cb)
@@ -878,39 +894,25 @@ impl KernelBundle {
         if let Some(msg) = self.poisoned() {
             return Err(MountError::Panicked(msg));
         }
-        let mount: TypedFunc<(u32, u32), i64> = {
-            let store = self.inner.store.borrow();
-            self.inner
-                .instance
-                .get_typed_func(&*store, export)
-                .map_err(|_| MountError::NoSuchComponent(export.to_string()))?
-        };
-        let ui = ui_hooks(self.inner.id, self.inner.hooks);
-        let mark = runtime_world::remote::bundle_frames_mark();
-        let bytes = {
-            let mut store = self.inner.store.try_borrow_mut().unwrap_or_else(|_| {
-                panic!("remote component: mount `{export}` re-entered a bundle that is already running")
-            });
-            let memory = store.data().memory.expect("kernel bridge: bundle exports no memory");
-            let called = ui.alloc.call(&mut *store, args.len() as u32).and_then(|ptr| {
-                memory
-                    .write(&mut *store, ptr as usize, args)
-                    .map_err(|_| wasmi::Error::new(format!("remote component: argument buffer {ptr} out of bounds")))?;
-                let packed = mount.call(&mut *store, (ptr, args.len() as u32))?;
-                read_packed(&*store, memory, packed)
-            });
-            match called {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let msg = panic_message(&mut *store, ui).unwrap_or_else(|| e.to_string());
-                    drop(store);
-                    runtime_world::remote::unwind_bundle_frames(mark);
-                    poison(&self.inner, msg.clone());
-                    return Err(MountError::Panicked(msg));
-                }
+        let (bundle, instance) = (self.inner.id, self.inner.instance);
+        // A bundle without the element codec has no components to mount.
+        let Some(ui) = self.inner.hooks.ui else { return Err(MountError::NoSuchComponent(export.to_string())) };
+        // Through `route`, like every other call into a bundle: a mount can
+        // arrive while this bundle is mid-call (an app component the bundle
+        // imported, built inside one of its callbacks, renders a remote
+        // component), and must then go through that call's `Caller` — the
+        // store is busy. `route` also closes the kernel frames a trap
+        // leaves open and poisons the bundle.
+        let reply = route(bundle, |c, _| c.mount(instance, ui, export, args));
+        let bytes = match reply {
+            Some(Some(bytes)) => bytes,
+            Some(None) => return Err(MountError::NoSuchComponent(export.to_string())),
+            None => {
+                let msg = self.poisoned().unwrap_or_else(|| "the bundle is gone".to_string());
+                return Err(MountError::Panicked(msg));
             }
         };
-        decode(Rc::new(UiLink { bundle: self.inner.id }), &bytes).map_err(MountError::Decode)
+        decode(Rc::new(UiLink { bundle }), &bytes).map_err(MountError::Decode)
     }
 }
 

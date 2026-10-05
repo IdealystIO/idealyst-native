@@ -81,6 +81,27 @@ pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
     }
 }
 
+thread_local! {
+    /// What [`mount_nested`] runs in the app (installed by a test).
+    pub static ON_NESTED: std::cell::RefCell<Option<Rc<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A host function whose app side runs [`ON_NESTED`]: app code running
+/// while the calling bundle is mid-call, as an app component built inside
+/// one of the bundle's callbacks would.
+#[runtime_core::host_fn]
+pub fn mount_nested() {
+    if let Some(f) = ON_NESTED.with(|f| f.borrow().clone()) {
+        f();
+    }
+}
+
+/// A remote component whose button calls [`mount_nested`].
+#[component(remote)]
+pub fn Nester() -> Element {
+    ui! { button(label = "nest", on_click = move || mount_nested()) }
+}
+
 /// A prop type that can't cross to the app (no `Remote`, not plain data).
 #[derive(Clone, Default)]
 pub struct NotRemote(pub Option<Rc<dyn std::any::Any>>);
