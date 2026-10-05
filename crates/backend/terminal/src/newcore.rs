@@ -1127,6 +1127,16 @@ impl caps::StyleOps for TerminalBackend {
             .as_ref()
             .map(|t| t.resolve().clamp(0.0, 1.0));
 
+        // The text measure_fn captures its line limit by value (it can't
+        // borrow the node), so a style that sets, changes or DROPS
+        // `max_lines` must re-install it — otherwise the box keeps the old
+        // height while paint (which reads the live style) wraps differently.
+        let limit_before = self.nodes.get(&node.id).and_then(crate::render::line_limit);
+        let measures_text = self
+            .nodes
+            .get(&node.id)
+            .is_some_and(|d| matches!(d.kind, NodeKind::Text | NodeKind::Button));
+
         if let Some(d) = self.nodes.get_mut(&node.id) {
             d.style = Some(style.clone());
             d.fg = fg;
@@ -1158,6 +1168,11 @@ impl caps::StyleOps for TerminalBackend {
                 }
                 g
             });
+        }
+        let limit_after = self.nodes.get(&node.id).and_then(crate::render::line_limit);
+        if measures_text && limit_after != limit_before {
+            self.install_text_measure(node.id);
+            self.layout.mark_dirty(layout_node);
         }
     }
 }

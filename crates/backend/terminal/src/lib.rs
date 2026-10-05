@@ -823,6 +823,121 @@ mod regression_tests {
     }
 }
 
+/// `StyleRules::max_lines` on the terminal: the grid shows at most that
+/// many lines of a text, the last cut with `…`, and the measured box is
+/// that many rows tall so the next sibling sits right under it.
+#[cfg(test)]
+mod max_lines_tests {
+    use super::*;
+    use runtime_scene::Host;
+    use runtime_shared::{accessibility::AccessibilityProps, Length, StyleRules, Tokenized};
+    use runtime_vocabulary::caps::{LifecycleOps, StyleOps, TextOps, ViewOps};
+
+    const LONG: &str = "alpha beta gamma delta epsilon zeta eta theta";
+
+    fn limited(max_lines: Option<u32>) -> Rc<StyleRules> {
+        Rc::new(StyleRules { max_lines, ..Default::default() })
+    }
+
+    /// A 12-cell-wide column holding the long text (styled by `text_style`)
+    /// and a one-word marker under it. Returns the backend + text node so a
+    /// test can restyle and re-render.
+    fn scene(text_style: Rc<StyleRules>) -> (TerminalBackend, TermNode) {
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 10);
+        let a11y = AccessibilityProps::default();
+        let mut root = be.create_view(&a11y);
+        be.apply_style(
+            &root,
+            &Rc::new(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(12.0))),
+                ..Default::default()
+            }),
+        );
+        let text = be.create_text(LONG, &a11y);
+        be.apply_style(&text, &text_style);
+        let marker = be.create_text("END", &a11y);
+        be.insert(&mut root, text);
+        be.insert(&mut root, marker);
+        be.finish(root);
+        (be, text)
+    }
+
+    /// Every grid row, trailing blanks trimmed, with the empty rows at the
+    /// bottom dropped — but NOT the ones in between: a gap between the text
+    /// and `END` is exactly what a stale (too tall) measure looks like.
+    fn rows(be: &mut TerminalBackend) -> Vec<String> {
+        let grid = be.render_to_grid();
+        let mut rows: Vec<String> = (0..grid.rows)
+            .map(|r| {
+                let line: String =
+                    (0..grid.cols).map(|c| grid.cell(c, r).map(|x| x.glyph).unwrap_or(' ')).collect();
+                line.trim_end().to_string()
+            })
+            .collect();
+        while rows.last().is_some_and(|l| l.is_empty()) {
+            rows.pop();
+        }
+        rows
+    }
+
+    #[test]
+    fn max_lines_one_draws_one_line_ending_in_ellipsis() {
+        let (mut be, _) = scene(limited(Some(1)));
+        assert_eq!(rows(&mut be), vec!["alpha beta\u{2026}", "END"]);
+    }
+
+    #[test]
+    fn max_lines_two_wraps_then_cuts_the_second_line() {
+        let (mut be, _) = scene(limited(Some(2)));
+        // Unlimited this wraps to 4 lines; the second visible line gets the
+        // ellipsis because text follows it, and `END` moves up under it.
+        assert_eq!(rows(&mut be), vec!["alpha beta", "gamma delta\u{2026}", "END"]);
+    }
+
+    #[test]
+    fn max_lines_zero_or_none_is_unlimited() {
+        for limit in [None, Some(0)] {
+            let (mut be, _) = scene(limited(limit));
+            assert_eq!(
+                rows(&mut be),
+                vec!["alpha beta", "gamma delta", "epsilon zeta", "eta theta", "END"],
+                "limit {limit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_text_under_the_limit_has_no_ellipsis() {
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 4);
+        let a11y = AccessibilityProps::default();
+        let mut root = be.create_view(&a11y);
+        let text = be.create_text("short", &a11y);
+        be.apply_style(&text, &limited(Some(1)));
+        be.insert(&mut root, text);
+        be.finish(root);
+        assert_eq!(rows(&mut be), vec!["short"]);
+    }
+
+    /// Regression guard for the captured measure: dropping `max_lines` on a
+    /// restyle must give the text its full height back (the measure_fn
+    /// captured the limit and has to be re-installed), not keep one row
+    /// and paint the wrapped lines over the marker below.
+    #[test]
+    fn restyle_without_max_lines_restores_unlimited() {
+        let (mut be, text) = scene(limited(Some(1)));
+        assert_eq!(rows(&mut be).len(), 2);
+        be.apply_style(&text, &limited(None));
+        assert_eq!(
+            rows(&mut be),
+            vec!["alpha beta", "gamma delta", "epsilon zeta", "eta theta", "END"]
+        );
+        be.apply_style(&text, &limited(Some(2)));
+        assert_eq!(rows(&mut be), vec!["alpha beta", "gamma delta\u{2026}", "END"]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Toggle press helper. The framework's controlled-toggle pattern is
 // "on press, call `on_change(new_value)`; the parent flips its signal;
@@ -899,10 +1014,10 @@ impl TerminalBackend {
             Some(d) => d.layout,
             None => return,
         };
-        let content = self
+        let (content, max_lines) = self
             .nodes
             .get(&id)
-            .map(|d| d.content.clone())
+            .map(|d| (d.content.clone(), render::line_limit(d)))
             .unwrap_or_default();
         // Capture the current cell_size by value. If the host
         // changes scale mid-session, existing measure_fns won't
@@ -911,7 +1026,7 @@ impl TerminalBackend {
         // backend ships).
         let (cw, ch) = self.cell_size;
         let f: runtime_layout::MeasureFn = Rc::new(move |known, avail| {
-            measure_text(&content, known, avail, cw, ch)
+            measure_text(&content, max_lines, known, avail, cw, ch)
         });
         self.layout.set_measure_fn(layout, f);
     }
@@ -1026,11 +1141,6 @@ impl TerminalBackend {
     }
 }
 
-/// Measure a text string at the given width/height constraints. Wraps
-/// on whitespace; counts each character as one terminal cell. Honors
-/// `\n` as a hard line break.
-///
-/// All constraints and the returned size are in **layout px**, not
 /// Wrap a Button's raw label as `[ label ]` for the terminal
 /// renderer. Centralised so create + update paths emit the same
 /// shape and bracket-aware metrics flow through `install_text_measure`
@@ -1039,12 +1149,24 @@ fn format_button_label(label: &str) -> String {
     format!("[ {label} ]")
 }
 
+/// Measure a text string at the given width/height constraints. Wraps
+/// on whitespace; counts each character as one terminal cell. Honors
+/// `\n` as a hard line break.
+///
+/// `max_lines` (`StyleRules::max_lines`, `0` already normalised away)
+/// caps the reported height at that many lines, matching what
+/// `render::paint_text` draws: `1` measures the whole text as one
+/// unwrapped line (its natural width; the layout lets it shrink and the
+/// paint cuts it with `…`), `n > 1` wraps and keeps the first `n` lines.
+///
+/// All constraints and the returned size are in **layout px**, not
 /// cells — Taffy operates in px throughout. `(cw, ch)` is the
 /// active px-per-cell factor; we convert px constraints to cell
 /// counts internally, then convert the cell-based result back to px
 /// on return.
 fn measure_text(
     content: &str,
+    max_lines: Option<u32>,
     known: TaffySize<Option<f32>>,
     avail: TaffySize<AvailableSpace>,
     cw: f32,
@@ -1059,20 +1181,26 @@ fn measure_text(
             AvailableSpace::MinContent => 0.0,
         },
     };
-    let mut lines = 0u32;
-    let mut longest = 0u32;
+    if max_lines == Some(1) {
+        let w = render::single_line(content).chars().count() as f32;
+        return TaffySize {
+            width: known.width.unwrap_or(w * cw),
+            height: known.height.unwrap_or(ch),
+        };
+    }
+    // Width (in cells) of every wrapped line, in order — kept per line so
+    // a line limit can drop the tail before the widest line is taken.
+    let mut widths: Vec<u32> = Vec::new();
     for paragraph in content.split('\n') {
         // Empty paragraph still counts as one line.
         let words: Vec<&str> = paragraph.split_whitespace().collect();
         if words.is_empty() {
-            lines += 1;
+            widths.push(0);
             continue;
         }
         if max_w.is_infinite() {
             // No wrapping — single line of the full paragraph width.
-            let w = paragraph.chars().count() as u32;
-            longest = longest.max(w);
-            lines += 1;
+            widths.push(paragraph.chars().count() as u32);
             continue;
         }
         let mut col: u32 = 0;
@@ -1083,9 +1211,8 @@ fn measure_text(
             let space_cost = if line_started { 1 } else { 0 };
             if line_started && col + space_cost + wlen > max_col {
                 // Wrap to the next line.
-                longest = longest.max(col);
+                widths.push(col);
                 col = wlen;
-                lines += 1;
                 line_started = true;
             } else {
                 col += space_cost + wlen;
@@ -1093,13 +1220,14 @@ fn measure_text(
             }
         }
         if line_started {
-            longest = longest.max(col);
-            lines += 1;
+            widths.push(col);
         }
     }
-    if lines == 0 {
-        lines = 1;
+    if let Some(n) = max_lines {
+        widths.truncate(n as usize);
     }
+    let lines = (widths.len() as u32).max(1);
+    let longest = widths.iter().copied().max().unwrap_or(0);
     // Convert the cell-count result back to layout px.
     TaffySize {
         width: known.width.unwrap_or(longest as f32 * cw),

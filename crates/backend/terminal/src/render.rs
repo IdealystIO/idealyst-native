@@ -220,7 +220,7 @@ impl TerminalBackend {
             NodeKind::Text | NodeKind::Button => {
                 let mut fg = effective_fg.unwrap_or(default_fg(data));
                 fg.a = ((fg.a as f32) * effective_opacity).round() as u8;
-                paint_text(grid, &data.content, x, y, w, h, fg, effective_bg, clip);
+                paint_text(grid, &data.content, x, y, w, h, fg, effective_bg, clip, line_limit(data));
             }
             NodeKind::Toggle => {
                 let fg = effective_fg.unwrap_or(Rgba::new(220, 220, 220, 255));
@@ -228,7 +228,7 @@ impl TerminalBackend {
                 let glyph = if data.toggle_value { '●' } else { ' ' };
                 let label = format!("[{}{}{}]", ' ', glyph, ' ');
                 let color = if data.toggle_value { on_color } else { fg };
-                paint_text(grid, &label, x, y, w, h, color, effective_bg, clip);
+                paint_text(grid, &label, x, y, w, h, color, effective_bg, clip, None);
             }
             NodeKind::TextInput => {
                 let focused = self.focused_id == Some(id);
@@ -255,7 +255,7 @@ impl TerminalBackend {
                     } else {
                         (input.value.clone(), fg, false)
                     };
-                    paint_text(grid, &display, x, y, w, h, color, effective_bg, clip);
+                    paint_text(grid, &display, x, y, w, h, color, effective_bg, clip, None);
                     // Cursor. Only draw when focused. We always paint
                     // it at `cursor` cells from the left edge — for
                     // inputs longer than the visible width this is a
@@ -302,7 +302,7 @@ impl TerminalBackend {
                 let fg = effective_fg.unwrap_or(Rgba::new(127, 232, 214, 255));
                 // Center horizontally within the node's frame.
                 let cx = x + (w - 1.0) / 2.0;
-                paint_text(grid, &s, cx.floor(), y, 1.0, 1.0, fg, effective_bg, clip);
+                paint_text(grid, &s, cx.floor(), y, 1.0, 1.0, fg, effective_bg, clip, None);
             }
             NodeKind::View | NodeKind::Pressable | NodeKind::ScrollView => {}
         }
@@ -853,28 +853,48 @@ fn write_glyph_clipped(
     }
 }
 
-/// Lay out `content` inside the rect `(x, y, w, h)`, wrapping at
-/// whitespace. Honors `\n`. Truncates if more lines than `h` are
-/// produced. Writes glyph + fg + bg into the matching cells.
-fn paint_text(
-    grid: &mut Grid,
-    content: &str,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    fg: Rgba,
-    bg: Option<Rgba>,
-    clip: Option<ClipRect>,
-) {
-    let x0 = x.floor() as i32;
-    let y0 = y.floor() as i32;
-    let max_cols = w.floor() as i32;
-    let max_rows = h.ceil() as i32;
-    if max_cols <= 0 || max_rows <= 0 {
-        return;
-    }
+/// The text's line limit from its applied style: `StyleRules::max_lines`
+/// with `0` normalised to "no limit" (the style contract). Read from the
+/// cached style on every paint / measure install, so a restyle that drops
+/// `max_lines` restores unlimited wrapping with no extra state to reset.
+pub(crate) fn line_limit(data: &NodeData) -> Option<u32> {
+    data.style.as_ref().and_then(|s| s.max_lines).filter(|n| *n > 0)
+}
 
+/// The ellipsis that ends a truncated line — the same `…` (U+2026) every
+/// other backend's tail truncation draws. One terminal cell wide.
+pub(crate) const ELLIPSIS: char = '\u{2026}';
+
+/// A one-line text (`max_lines: 1`): every paragraph's words joined by
+/// single spaces, the way CSS `white-space: nowrap` collapses newlines —
+/// so measure and paint agree on what the one line holds.
+pub(crate) fn single_line(content: &str) -> String {
+    content.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Fit `line` into `max_cols` cells, ending it with [`ELLIPSIS`] when it
+/// is cut. `more_follows` marks the last visible line of a clamped text
+/// whose later lines were dropped: it gets the ellipsis even when it
+/// fits, as with `-webkit-line-clamp`. Trailing spaces before the
+/// ellipsis are trimmed so a cut at a word gap reads `word…`.
+pub(crate) fn ellipsize(line: &str, max_cols: usize, more_follows: bool) -> String {
+    let len = line.chars().count();
+    if !more_follows && len <= max_cols {
+        return line.to_string();
+    }
+    if max_cols == 0 {
+        return String::new();
+    }
+    let keep = if more_follows && len < max_cols { len } else { max_cols - 1 };
+    let mut out: String = line.chars().take(keep).collect();
+    out.truncate(out.trim_end().len());
+    out.push(ELLIPSIS);
+    out
+}
+
+/// Word-wrap `content` at `max_cols` cells: breaks at whitespace, honors
+/// `\n`, hard-breaks a word longer than the line.
+fn wrap_lines(content: &str, max_cols: i32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for paragraph in content.split('\n') {
         let words: Vec<&str> = paragraph.split_whitespace().collect();
@@ -910,6 +930,52 @@ fn paint_text(
             lines.push(line);
         }
     }
+    lines
+}
+
+/// Lay out `content` inside the rect `(x, y, w, h)`, wrapping at
+/// whitespace. Honors `\n`. Truncates if more lines than `h` are
+/// produced. Writes glyph + fg + bg into the matching cells.
+///
+/// `max_lines` (already normalised by [`line_limit`]) caps the visible
+/// lines and ends the last one with `…` where the text is cut: `1` is a
+/// single unwrapped line cut at the box width, `n > 1` wraps and drops
+/// the lines past `n`.
+fn paint_text(
+    grid: &mut Grid,
+    content: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    fg: Rgba,
+    bg: Option<Rgba>,
+    clip: Option<ClipRect>,
+    max_lines: Option<u32>,
+) {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let max_cols = w.floor() as i32;
+    let max_rows = h.ceil() as i32;
+    if max_cols <= 0 || max_rows <= 0 {
+        return;
+    }
+
+    let lines = match max_lines {
+        Some(1) => vec![ellipsize(&single_line(content), max_cols as usize, false)],
+        _ => {
+            let mut lines = wrap_lines(content, max_cols);
+            if let Some(n) = max_lines.map(|n| n as usize) {
+                if lines.len() > n {
+                    lines.truncate(n);
+                    if let Some(last) = lines.last_mut() {
+                        *last = ellipsize(last, max_cols as usize, true);
+                    }
+                }
+            }
+            lines
+        }
+    };
 
     for (row_idx, line) in lines.iter().take(max_rows as usize).enumerate() {
         let row = y0 + row_idx as i32;
