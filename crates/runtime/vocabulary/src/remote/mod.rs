@@ -739,6 +739,18 @@ pub trait RemoteProp: Sized + 'static {
     fn receive(input: &mut &[u8]) -> Self;
 }
 
+/// A crossed `Vec`'s element count, checked against the bytes left. Every
+/// element of a type that crosses encodes to at least one byte (only a
+/// zero-sized one encodes to none, and a vector of those can't cross longer
+/// than the rest of its input), so a count past them is malformed — not a
+/// reason to loop, or allocate, that many times on the other side's say-so.
+fn checked_len(n: u64, input: &[u8]) -> Result<usize, String> {
+    usize::try_from(n)
+        .ok()
+        .filter(|&n| n <= input.len())
+        .ok_or_else(|| format!("remote codec: a list claims {n} items with {} bytes left", input.len()))
+}
+
 #[doc(hidden)]
 pub fn __send_value<T: Serialize>(v: &T, out: &mut Vec<u8>) {
     out.extend_from_slice(&to_bytes(v));
@@ -814,6 +826,7 @@ impl<T: RemoteProp> RemoteProp for Vec<T> {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn receive(input: &mut &[u8]) -> Self {
         let n = __receive_value::<u64>(input);
+        let n = checked_len(n, input).unwrap_or_else(|e| panic!("{e}"));
         (0..n).map(|_| T::receive(input)).collect()
     }
 }
@@ -883,7 +896,7 @@ impl<T: RemoteValue> RemoteValue for Vec<T> {
         }
     }
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
-        let n = __try_receive_value::<u64>(input)?;
+        let n = checked_len(__try_receive_value::<u64>(input)?, input)?;
         (0..n).map(|_| T::decode(input)).collect()
     }
 }
@@ -1339,7 +1352,7 @@ impl<T: ImportArg> ImportArg for Vec<T> {
     }
     #[cfg(not(idealyst_stream_guest))]
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
-        let n = __try_receive_value::<u64>(input)?;
+        let n = checked_len(__try_receive_value::<u64>(input)?, input)?;
         (0..n).map(|_| T::receive(input, cx)).collect()
     }
 }

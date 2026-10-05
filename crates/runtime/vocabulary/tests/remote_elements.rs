@@ -998,3 +998,19 @@ fn a_result_crosses_as_a_value_both_arms() {
     let mut truncated: &[u8] = &out[..out.len() - 1];
     assert!(<Result<String, String>>::decode(&mut truncated).is_err());
 }
+
+/// Regression: a crossed list's count was trusted — a huge count of a
+/// zero-sized type looped (decoding nothing) on the other side's say-so,
+/// hanging it. A count past the bytes left is malformed now.
+#[test]
+fn regression_a_list_count_past_its_bytes_is_refused() {
+    use runtime_vocabulary::remote::RemoteValue;
+    let mut out = Vec::new();
+    u64::MAX.encode(&mut out);
+    let mut input: &[u8] = &out;
+    let err = <Vec<()>>::decode(&mut input).expect_err("refused, at once");
+    assert!(err.contains("claims"), "{err}");
+    let mut ok = Vec::new();
+    vec![1u8, 2, 3].encode(&mut ok);
+    assert_eq!(<Vec<u8>>::decode(&mut &ok[..]), Ok(vec![1, 2, 3]));
+}
