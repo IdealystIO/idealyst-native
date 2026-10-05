@@ -1531,6 +1531,17 @@ pub struct StyleRules {
     pub underline: Option<bool>,
     pub strikethrough: Option<bool>,
     pub text_transform: Option<TextTransform>,
+    /// Show at most this many lines of a text, ending the last one with
+    /// "…" where it is cut (`Some(1)`: one line, truncated at the tail).
+    /// The text can then shrink below its natural width in a row, so a
+    /// neighbour keeps its room. `None` or `Some(0)`: no limit.
+    ///
+    /// Web: `1` is `white-space: nowrap` + `overflow: hidden` +
+    /// `text-overflow: ellipsis`; more is `-webkit-line-clamp`. Native:
+    /// the platform's own line limit with tail truncation (UIKit
+    /// `numberOfLines`, AppKit `maximumNumberOfLines`, Android `maxLines` +
+    /// `ellipsize`, GTK `lines` + `ellipsize`).
+    pub max_lines: Option<u32>,
 
     // --- Visual ---
     pub opacity: Option<Tokenized<f32>>,
@@ -1703,6 +1714,7 @@ impl Clone for StyleRules {
             underline: self.underline.clone(),
             strikethrough: self.strikethrough.clone(),
             text_transform: self.text_transform.clone(),
+            max_lines: self.max_lines,
             opacity: self.opacity.clone(),
             overflow: self.overflow.clone(),
             overscroll_behavior: self.overscroll_behavior.clone(),
@@ -1784,7 +1796,7 @@ impl StyleRules {
             border_style,
             position, top, right, bottom, left,
             font_family, font_weight, font_style, line_height, letter_spacing,
-            text_align, underline, strikethrough, text_transform,
+            text_align, underline, strikethrough, text_transform, max_lines,
             opacity, overflow, overscroll_behavior, scrollbar, object_fit, shadow, text_shadow,
             background_gradient,
             transform, transform_origin,
@@ -1929,6 +1941,11 @@ impl StyleRules {
         write_enum(&mut s, "ul", self.underline.map(|b| b as u8));
         write_enum(&mut s, "st", self.strikethrough.map(|b| b as u8));
         write_enum(&mut s, "tt", self.text_transform.map(|x| x as u8));
+        if let Some(n) = self.max_lines {
+            s.push_str("ml=");
+            push_u32_hex(&mut s, n);
+            s.push(';');
+        }
 
         // Visual
         write_tokenized_f32(&mut s, "op", &self.opacity);

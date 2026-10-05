@@ -1109,6 +1109,29 @@ pub fn border_style_css(v: runtime_shared::BorderStyle) -> &'static str {
     }
 }
 
+/// The declarations for `max_lines` (see [`runtime_shared::StyleRules::max_lines`]):
+/// one line truncates with `text-overflow`, which only applies to a single
+/// unwrapped line; more uses the (universally supported, still prefixed)
+/// line clamp. Both clip with `overflow: hidden`, which also lets the text
+/// shrink below its content width in a flex row (its automatic minimum
+/// width becomes 0). Nothing for `None` / `0`.
+pub fn max_lines_decls(max_lines: Option<u32>) -> Vec<(&'static str, String)> {
+    match max_lines {
+        None | Some(0) => Vec::new(),
+        Some(1) => vec![
+            ("overflow", "hidden".into()),
+            ("white-space", "nowrap".into()),
+            ("text-overflow", "ellipsis".into()),
+        ],
+        Some(n) => vec![
+            ("overflow", "hidden".into()),
+            ("display", "-webkit-box".into()),
+            ("-webkit-box-orient", "vertical".into()),
+            ("-webkit-line-clamp", n.to_string()),
+        ],
+    }
+}
+
 /// CSS `user-select` keyword for a [`runtime_shared::UserSelect`].
 pub fn user_select_css(v: runtime_shared::UserSelect) -> &'static str {
     use runtime_shared::UserSelect;
@@ -1496,6 +1519,12 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
                 if let Some(v) = v { push_decl(&mut out, name, &v); }
             }
         }
+    }
+
+    // A line limit: after the table, so it wins over an author `overflow`
+    // or `display` on the same text (the later declaration does).
+    for (name, value) in max_lines_decls(rules.max_lines) {
+        push_decl(&mut out, name, &value);
     }
 
     // Transitions: a single CSS `transition` listing every active
@@ -2111,6 +2140,23 @@ mod tests {
         });
         assert!(css.contains("border-style: dotted"), "got: {css}");
         assert!(!rules_to_css(&StyleRules::default()).contains("border-style"));
+    }
+
+    #[test]
+    fn rules_to_css_truncates_to_max_lines() {
+        use runtime_shared::{Overflow, StyleRules};
+        let one = rules_to_css(&StyleRules { max_lines: Some(1), overflow: Some(Overflow::Visible), ..Default::default() });
+        assert!(one.contains("white-space: nowrap") && one.contains("text-overflow: ellipsis"), "{one}");
+        assert!(
+            one.rfind("overflow: hidden") > one.rfind("overflow: visible"),
+            "the limit's overflow wins over the author's: {one}"
+        );
+        let three = rules_to_css(&StyleRules { max_lines: Some(3), ..Default::default() });
+        assert!(three.contains("-webkit-line-clamp: 3") && three.contains("display: -webkit-box"), "{three}");
+        for none in [None, Some(0)] {
+            let css = rules_to_css(&StyleRules { max_lines: none, ..Default::default() });
+            assert!(!css.contains("ellipsis") && !css.contains("line-clamp"), "{css}");
+        }
     }
 
     #[test]

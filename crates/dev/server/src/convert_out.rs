@@ -264,6 +264,7 @@ pub fn style_rules_to_wire(r: &StyleRules) -> WireStyleRules {
         line_height: r.line_height.as_ref().map(tokenized_f32),
         letter_spacing: r.letter_spacing.as_ref().map(tokenized_f32),
         border_style: r.border_style.map(border_style_to_wire),
+        max_lines: r.max_lines,
     }
 }
 
@@ -632,8 +633,10 @@ mod definition_tests {
         r.line_height = Some(Tokenized::Literal(1.5));
         r.letter_spacing = Some(Tokenized::Literal(0.4));
         r.border_style = Some(runtime_shared::style::BorderStyle::Dotted);
+        r.max_lines = Some(1);
 
         let w = style_rules_to_wire(&r);
+        assert_eq!(w.max_lines, Some(1));
         assert_eq!(w.border_style, Some(wire::WireBorderStyle::Dotted));
         assert_eq!(w.border_top_width, Some(2.0));
         assert_eq!(w.border_left_width, Some(5.0));
@@ -655,5 +658,6 @@ mod definition_tests {
         assert!(w.cursor.is_none());
         assert!(w.line_height.is_none());
         assert!(w.border_style.is_none());
+        assert!(w.max_lines.is_none());
     }
 }

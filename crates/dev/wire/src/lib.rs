@@ -213,7 +213,12 @@ pub use payload_serde::{
 /// one — the exact "renders differently from `--local`" drift v19 closed.
 /// `WireBorderStyle` falls back to `Solid` for a pattern it hasn't
 /// learned, which is what an older peer draws anyway.
-pub const PROTOCOL_VERSION: u32 = 20;
+///
+/// **Bumped to 21 for `max_lines`.** One `#[serde(default)]` field again:
+/// a v20 peer decodes and draws the text unlimited. Without it a truncated
+/// name crossed as an unlimited one and overflowed its cell, unlike
+/// `--local`.
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -1331,6 +1336,9 @@ pub struct WireStyleRules {
     /// Line pattern for every side's border (PROTOCOL_VERSION 20).
     #[serde(default)]
     pub border_style: Option<WireBorderStyle>,
+    /// A text's line limit, truncated with "…" (PROTOCOL_VERSION 21).
+    #[serde(default)]
+    pub max_lines: Option<u32>,
 }
 
 /// Wire mirror of `runtime_shared::style::BorderStyle`.

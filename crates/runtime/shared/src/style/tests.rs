@@ -75,6 +75,18 @@ fn merge_keeps_border_style_under_a_width_only_overlay() {
 // A dashed and a solid border with the same width/colour must mint
 // different classes on web — a shared class would draw one of them wrong.
 #[test]
+fn max_lines_merges_and_keys() {
+    let base = StyleRules { max_lines: Some(1), ..Default::default() };
+    let hover = StyleRules { color: Some(Tokenized::Literal(Color("#fff".into()))), ..Default::default() };
+    assert_eq!(base.clone().merge(&hover).max_lines, Some(1), "an overlay without it keeps it");
+    let two = StyleRules { max_lines: Some(2), ..Default::default() };
+    assert_eq!(base.clone().merge(&two).max_lines, Some(2));
+    let none = StyleRules::default();
+    assert_ne!(base.content_key(), two.content_key());
+    assert_ne!(base.content_key(), none.content_key());
+}
+
+#[test]
 fn content_key_distinguishes_border_style() {
     let solid = StyleRules { border_style: Some(BorderStyle::Solid), ..Default::default() };
     let dashed = StyleRules { border_style: Some(BorderStyle::Dashed), ..Default::default() };
@@ -1773,6 +1785,7 @@ fn clone_round_trips_a_fully_populated_struct() {
         underline: Some(true),
         strikethrough: Some(false),
         text_transform: Some(TextTransform::Lowercase),
+        max_lines: Some(7),
         overflow: Some(Overflow::Hidden),
         overscroll_behavior: Some(crate::OverscrollBehavior::Contain),
         scrollbar: Some(crate::ScrollbarVisibility::Hidden),

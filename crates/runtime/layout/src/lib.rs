@@ -1081,6 +1081,21 @@ impl LayoutTree {
         }
 
         // Geometry-only diff: equal Taffy `Style` ⇒ a paint-only change.
+        // A text with a line limit truncates rather than overflows, so like
+        // CSS (`overflow: hidden`) it must be able to SHRINK below its
+        // content width in a row: a flex item whose overflow isn't visible
+        // has an automatic minimum size of 0. Taffy follows that rule only
+        // for `Hidden` (a scroll container) — `Clip` keeps the content
+        // minimum, as in CSS. Without it the one-line name in a table cell
+        // keeps its full width and pushes its neighbour out of the cell.
+        // Scroll nodes keep their own overflow (`set_overflow_scroll`).
+        let truncates = matches!(rules.max_lines, Some(n) if n > 0);
+        for axis in [&mut style.overflow.x, &mut style.overflow.y] {
+            if *axis != taffy::Overflow::Scroll {
+                *axis = if truncates { taffy::Overflow::Hidden } else { taffy::Overflow::Visible };
+            }
+        }
+
         let changed = style != existing;
         self.tree
             .set_style(node.0, style)
@@ -4137,6 +4152,54 @@ mod tests {
             "label must have wrapped to 2 lines (~40px), got height {}",
             label_f.height
         );
+    }
+
+    /// Regression (the "#1005 pushed out of the cell" report): a one-line,
+    /// truncating name next to an employee number in a fixed-width row. A
+    /// single-line label measures its whole text as its minimum width, so
+    /// the name couldn't shrink and pushed the number out of the cell.
+    /// `max_lines` makes it shrink like CSS `overflow: hidden` (automatic
+    /// minimum 0); the platform label then truncates it with "…".
+    #[test]
+    fn regression_a_truncating_text_shrinks_so_its_neighbour_fits() {
+        let mut t = LayoutTree::new();
+        let cell = t.new_node();
+        let row = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.flex_direction = Some(FwFlexDirection::Row);
+        t.set_style(row, &rr);
+
+        // A one-line label: every measurement is its single line (400).
+        let name = t.new_node();
+        t.set_measure_fn(name, Rc::new(|known: Size<Option<f32>>, _avail| Size {
+            width: known.width.unwrap_or(400.0),
+            height: known.height.unwrap_or(20.0),
+        }));
+        let mut nr = StyleRules::default();
+        nr.max_lines = Some(1);
+        t.set_style(name, &nr);
+
+        let number = t.new_node();
+        let mut num = StyleRules::default();
+        num.width = Some(px(60.0));
+        num.height = Some(px(20.0));
+        num.flex_shrink = Some(Tokenized::Literal(0.0));
+        t.set_style(number, &num);
+
+        t.add_child(cell, row);
+        t.add_child(row, name);
+        t.add_child(row, number);
+        t.compute(cell, 300.0, 800.0);
+
+        let (name_f, number_f) = (t.frame_of(name), t.frame_of(number));
+        assert!((name_f.width - 240.0).abs() < 0.5, "the name shrinks to what's left, got {}", name_f.width);
+        assert!(number_f.x + number_f.width <= 300.5, "the number stays in the cell, ends at {}", number_f.x + number_f.width);
+
+        // Lifting the limit restores the content minimum: the bug's shape.
+        t.set_style(name, &StyleRules::default());
+        t.compute(cell, 300.0, 800.0);
+        let number_f = t.frame_of(number);
+        assert!(number_f.x + number_f.width > 300.5, "without a limit the name keeps its width and the number overflows");
     }
 
     /// Exemption: a node with an explicit `width` larger than its parent

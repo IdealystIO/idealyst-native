@@ -303,6 +303,7 @@ pub fn wire_style_to_rules(w: WireStyleRules) -> StyleRules {
     s.line_height = w.line_height.map(Tokenized::Literal);
     s.letter_spacing = w.letter_spacing.map(Tokenized::Literal);
     s.border_style = w.border_style.map(wire_border_style);
+    s.max_lines = w.max_lines;
 
     s
 }
@@ -690,10 +691,12 @@ mod definition_tests {
             line_height: Some(1.5),
             letter_spacing: Some(0.4),
             border_style: Some(wire::WireBorderStyle::Dashed),
+            max_lines: Some(2),
             ..Default::default()
         };
         let s = wire_style_to_rules(w);
         assert_eq!(s.border_style, Some(runtime_shared::style::BorderStyle::Dashed));
+        assert_eq!(s.max_lines, Some(2));
 
         assert_eq!(s.border_top_width.map(|t| *t.value()), Some(2.0));
         assert_eq!(s.border_right_width.map(|t| *t.value()), Some(3.0));
