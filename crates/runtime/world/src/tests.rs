@@ -3174,6 +3174,57 @@ mod host_owned_values {
         }
     }
 
+    /// Regression: a bundle that traps mid-call never makes its end calls
+    /// (a wasm panic runs no destructors), so the frames it opened on the
+    /// app's kernel stacks stayed open: the world stayed entered, tracking
+    /// stayed off, the app's next creations were collected into a scope
+    /// nobody owns, and an effect's suspended frames were lost. The app now
+    /// unwinds them from a mark taken before the call.
+    #[test]
+    fn regression_a_trapped_bundle_call_leaves_the_kernel_stacks_as_it_found_them() {
+        use crate::bridge::HostOps;
+        type H = crate::bridge::host::Host<crate::bridge::guest::Local>;
+        let w = World::new();
+        let arena = crate::native::arena_of(w.id()).unwrap();
+        let checked = Rc::new(Cell::new(false));
+        let c2 = checked.clone();
+        let w_id = w.id();
+        let w2 = w.clone();
+        // Inside an app effect, so `unanchored` has frames to suspend.
+        let _ = crate::native::create_effect(
+            &arena,
+            EffectClass::Reaction,
+            Box::new(move || {
+                if c2.get() {
+                    return;
+                }
+                let before = (Native::is_entered(), Native::in_collector(), Native::in_effect());
+                let mark = crate::remote::bundle_frames_mark();
+                // What a bundle's `enter(|| untrack(|| collect_owned(||
+                // unanchored(|| unscoped(|| collect_owned(..))))))` opens,
+                // abandoned by a trap at the innermost point.
+                H::enter_push(w_id);
+                H::untrack_push();
+                H::collect_begin();
+                let leaked = host_signal(&w2, 1);
+                H::unanchored_begin();
+                H::unscoped_begin();
+                H::collect_begin();
+                assert!(!Native::in_effect(), "suspended by unanchored");
+                crate::remote::unwind_bundle_frames(mark);
+                assert_eq!(
+                    (Native::is_entered(), Native::in_collector(), Native::in_effect()),
+                    before,
+                    "entered / collecting / effect frames restored"
+                );
+                assert_eq!(crate::native::untrack_depth(), 0, "tracking back on");
+                assert!(!leaked.is_alive(), "what the abandoned scope collected is freed");
+                c2.set(true);
+            }),
+        );
+        assert!(checked.get(), "the effect ran");
+    }
+
     #[derive(Clone)]
     struct Theme(u32);
     #[derive(Clone)]

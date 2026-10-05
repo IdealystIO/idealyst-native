@@ -253,6 +253,31 @@ fn regression_a_panicking_handler_stops_the_bundle_not_the_app() {
     a.h.flush();
 }
 
+/// Regression: a handler that trapped inside the bundle's
+/// `collect_owned(|| untrack(..))` left both frames open in the APP's
+/// kernel (a wasm panic runs no destructors, so the bundle never made the
+/// end calls): the app went on collecting its own new signals into a scope
+/// nobody owned.
+#[test]
+fn regression_a_trap_mid_scope_leaves_the_apps_kernel_frames_closed() {
+    let a = app();
+    let trigger = a.h.world.enter(|| runtime_world::signal(0i64));
+    let realized = a.h.mount(fragile_tree(&a, trigger));
+    a.h.flush();
+    assert!(!runtime_world::in_collector());
+    a.h.press_labelled("trap in scope");
+    assert!(!runtime_world::in_collector(), "the bundle's abandoned collector was closed");
+    a.h.flush();
+    assert!(text(&a, &realized).contains("trapped in scope"), "and the bundle was stopped");
+    // The app's own creations are top-level again: not swept into the
+    // abandoned scope.
+    let mine = a.h.world.enter(|| runtime_world::signal(1u8));
+    assert!(mine.is_alive());
+    a.count.set(3);
+    a.h.flush();
+    assert!(text(&a, &realized).contains("app count 3"));
+}
+
 /// The same for a panic inside a bundle EFFECT, which runs in the app's
 /// flush: the flush completes, the bundle is stopped.
 #[test]
@@ -361,7 +386,7 @@ fn a_host_result_for_a_stopped_bundle_is_dropped() {
     a.h.flush();
     let presses = a.h.shared.button_presses.borrow().clone();
     (presses[0])(); // shoot
-    (presses[1])(); // boom: the bundle is stopped
+    a.h.press_labelled("boom"); // the bundle is stopped
     host_mock::pump::pump_tasks();
     host_mock::pump::pump_timers();
     host_mock::pump::pump_tasks();

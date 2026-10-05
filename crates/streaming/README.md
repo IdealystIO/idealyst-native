@@ -212,11 +212,12 @@ Plain functions are always compiled into the bundle; only `#[host_fn]` crosses t
 
 A panic in a bundle never takes the app down. A Rust panic in wasm is `panic = "abort"`: it traps the interpreter, and no destructor in the bundle runs, so a `RefCell` it held stays borrowed and its tables stay half-updated. So the first trap **poisons** the bundle (`stream-host`, `kernel.rs`):
 
-1. The call that trapped, and every later call into that bundle, answers nothing. Each kind of call has a safe answer: an effect doesn't run, a commit reports no change, a handler does nothing, a getter returns its last value, a `Dyn` hole or keyed row renders nothing, a style getter resolves to defaults (`runtime_vocabulary::remote::host`).
-2. The loader is told (`KernelBundle::on_poison`) and remounts every remote component. The poisoned bundle refuses the mounts, so each shows the bundle's own panic message (kept by the bundle's panic hook) in its place, and its old tree is torn down.
-3. The app's own UI and state carry on. Reloading a new bundle brings the components back.
+1. The kernel frames the trapped call had open in the app are closed. The bundle never makes their end calls, so without this the app would be left with an entered world, tracking off, or a collecting scope sweeping up its own new signals. The app journals every frame a bundle opens (`runtime_world::remote::bundle_frames_mark`), and each entry into a bundle unwinds back to its mark on a trap (`unwind_bundle_frames`); what an abandoned scope collected is freed.
+2. The call that trapped, and every later call into that bundle, answers nothing. Each kind of call has a safe answer: an effect doesn't run, a commit reports no change, a handler does nothing, a getter returns its last value, a `Dyn` hole or keyed row renders nothing, a style getter resolves to defaults (`runtime_vocabulary::remote::host`).
+3. The loader is told (`KernelBundle::on_poison`) and remounts every remote component. The poisoned bundle refuses the mounts, so each shows the bundle's own panic message (kept by the bundle's panic hook) in its place, and its old tree is torn down.
+4. The app's own UI and state carry on. Reloading a new bundle brings the components back.
 
-`tests/remote_attr.rs` covers a panicking press handler, a panicking effect and recovery by reload, against a real wasm bundle. Each regression test was checked to fail with the old "trap panics the app" code.
+`tests/remote_attr.rs` covers a panicking press handler (including one inside `collect_owned(|| untrack(..))`), a panicking effect and recovery by reload, against a real wasm bundle. Each regression test was checked to fail with the old "trap panics the app" code.
 
 ## The bridged design
 

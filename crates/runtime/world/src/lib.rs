@@ -334,13 +334,6 @@ pub mod remote {
         crate::bridge::host::register_context(name, Rc::new(fetch))
     }
 
-    /// Claim scope `id` — a remote component's `Owned`, sent over by
-    /// [`remote_guest::release_scope`](crate::remote_guest::release_scope) —
-    /// as an `Owned` of this side. The slots it collected (the bundle's
-    /// signals, effects and context entries, all living in this graph) now
-    /// live and die with the returned value, so an `Element::Owned` decoded
-    /// from a bundle is a component boundary exactly like a native one.
-    /// `0` (collected nothing) gives an empty `Owned`.
     /// The app's side of a signal a bundle hands to native code (a prop of
     /// an app component the bundle uses): a handle the app can read and
     /// write natively.
@@ -413,6 +406,28 @@ pub mod remote {
         crate::bridge::host::pending_scopes()
     }
 
+    /// Where the frames bundles hold open on this thread's kernel stacks
+    /// (an entered world, `untrack`, a collecting scope, …) stand: take it
+    /// before calling into a bundle. If the call TRAPS, the bundle never
+    /// makes its end calls (a wasm panic runs no destructors), and
+    /// [`unwind_bundle_frames`] closes them for it.
+    pub fn bundle_frames_mark() -> usize {
+        crate::bridge::host::frames_mark()
+    }
+
+    /// Close every bundle frame opened since `mark`, innermost first; what
+    /// an abandoned collecting scope gathered is freed.
+    pub fn unwind_bundle_frames(mark: usize) {
+        crate::bridge::host::unwind_frames(mark)
+    }
+
+    /// Claim scope `id` — a remote component's `Owned`, sent over by
+    /// [`remote_guest::release_scope`](crate::remote_guest::release_scope) —
+    /// as an `Owned` of this side. The slots it collected (the bundle's
+    /// signals, effects and context entries, all living in this graph) now
+    /// live and die with the returned value, so an `Element::Owned` decoded
+    /// from a bundle is a component boundary exactly like a native one.
+    /// `0` (collected nothing) gives an empty `Owned`.
     #[cfg(not(idealyst_stream_guest))]
     pub fn claim_scope(id: u32) -> crate::Owned {
         // Natively the scope's items move out of the bridge's table into a

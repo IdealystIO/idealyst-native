@@ -95,6 +95,11 @@ struct Inner {
 /// hook's caller already treats `None` as "bundle gone"), and the
 /// `on_poison` listeners (the remote loader) replace its components with
 /// the panic message. The app keeps running.
+///
+/// The same abort leaves the kernel frames the bundle opened in the APP
+/// (an entered world, `untrack`, a collecting scope) open, so every entry
+/// into a bundle marks them first and a trap unwinds back to the mark
+/// (`runtime_world::remote::unwind_bundle_frames`) before poisoning.
 fn poison(inner: &Inner, msg: String) {
     if inner.poisoned.borrow().is_some() {
         return;
@@ -223,6 +228,9 @@ fn route<R>(bundle: u32, f: impl FnOnce(&mut dyn GuestCall, Hooks) -> Result<R, 
         return None;
     }
     let active = ACTIVE.try_with(|a| a.borrow().iter().rev().find(|(b, _)| *b == bundle).map(|(_, p)| *p)).ok().flatten();
+    // A trap skips the bundle's end calls for every kernel frame it opened
+    // during this call; they are closed from here (see `poison`).
+    let mark = runtime_world::remote::bundle_frames_mark();
     let result = match active {
         Some(ptr) => {
             // SAFETY: `ptr` was published by `with_active` from a live
@@ -246,6 +254,7 @@ fn route<R>(bundle: u32, f: impl FnOnce(&mut dyn GuestCall, Hooks) -> Result<R, 
     match result {
         Ok(r) => Some(r),
         Err(msg) => {
+            runtime_world::remote::unwind_bundle_frames(mark);
             poison(&inner, msg);
             None
         }
@@ -596,18 +605,28 @@ impl KernelBundle {
                 _ => None,
             },
         };
-        if let Ok(init) = instance.get_typed_func::<(), ()>(&store, "idealyst_ui_init") {
-            init.call(&mut store, ())?;
-        }
-        // Register the bundle's `#[remote_context]` decoders: one export per
-        // marked type (a wasm bundle has no link-time registry).
+        // Register the bundle's context decoders (`#[derive(Remote)]`): one
+        // export per type (a wasm bundle has no link-time registry).
         let ctx_exports: Vec<String> = module
             .exports()
             .map(|e| e.name().to_string())
             .filter(|n| n.starts_with(runtime_vocabulary::remote::CONTEXT_EXPORT_PREFIX))
             .collect();
-        for name in ctx_exports {
-            instance.get_typed_func::<(), ()>(&store, &name)?.call(&mut store, ())?;
+        // A trap here refuses the bundle; close any kernel frames it left
+        // open first (see `route`).
+        let mark = runtime_world::remote::bundle_frames_mark();
+        let started = (|| -> Result<(), wasmi::Error> {
+            if let Ok(init) = instance.get_typed_func::<(), ()>(&store, "idealyst_ui_init") {
+                init.call(&mut store, ())?;
+            }
+            for name in ctx_exports {
+                instance.get_typed_func::<(), ()>(&store, &name)?.call(&mut store, ())?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = started {
+            runtime_world::remote::unwind_bundle_frames(mark);
+            return Err(e.into());
         }
         let inner = Rc::new(Inner {
             id: bundle,
@@ -806,6 +825,7 @@ impl KernelBundle {
                 .map_err(|_| MountError::NoSuchComponent(export.to_string()))?
         };
         let ui = ui_hooks(self.inner.id, self.inner.hooks);
+        let mark = runtime_world::remote::bundle_frames_mark();
         let bytes = {
             let mut store = self.inner.store.try_borrow_mut().unwrap_or_else(|_| {
                 panic!("remote component: mount `{export}` re-entered a bundle that is already running")
@@ -820,6 +840,7 @@ impl KernelBundle {
                 Err(e) => {
                     let msg = panic_message(&mut *store, ui).unwrap_or_else(|| e.to_string());
                     drop(store);
+                    runtime_world::remote::unwind_bundle_frames(mark);
                     poison(&self.inner, msg.clone());
                     return Err(MountError::Panicked(msg));
                 }

@@ -1156,6 +1156,11 @@ pub(crate) fn untrack_push() {
     with_tls(|t| t.untrack_depth += 1);
 }
 
+#[cfg(test)]
+pub(crate) fn untrack_depth() -> u32 {
+    with_tls(|t| t.untrack_depth)
+}
+
 pub(crate) fn untrack_pop() {
     let _ = TLS.try_with(|t| {
         t.borrow_mut().untrack_depth -= 1;

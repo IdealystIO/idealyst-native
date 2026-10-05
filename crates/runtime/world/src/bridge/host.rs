@@ -28,15 +28,20 @@ use crate::native::{self, CtxKey, EffectFrames, Native, OwnedItem, SavedCollecto
 pub struct Host<G>(PhantomData<fn() -> G>);
 
 /// Host-side state the native engine has no slot for: scopes handed to the
-/// bundle by id, and the stacks `unscoped` / `unanchored` suspended (their
-/// closure forms keep these on the Rust stack; across the bridge the begin
-/// and end are separate calls).
+/// bundle by id, and the frames bundles have open on the kernel's stacks.
 #[derive(Default)]
 struct HostState {
     scopes: FxHashMap<u32, Vec<OwnedItem>>,
     next_scope: u32,
-    unscoped: Vec<SavedCollectors>,
-    unanchored: Vec<EffectFrames>,
+    /// Every frame a bundle has open on the native kernel's stacks,
+    /// innermost last. Natively each is a closure (`enter`, `untrack`,
+    /// `collect_owned`, …) whose guard pops it, even on panic; across the
+    /// bridge the begin and end are separate calls, and a bundle that
+    /// TRAPS between them never makes the end call (a wasm panic aborts:
+    /// no destructor in the bundle runs). Journaled, the app unwinds them
+    /// itself ([`unwind_frames`]) instead of running on with a world still
+    /// entered, tracking off, or its creations collected into a dead scope.
+    frames: Vec<Frame>,
     /// Host-owned signals handed to bundles (props), by slot: EVERY live
     /// registration, each under its guard's token. The same signal is
     /// exported once per mount it's passed to (two remote components, a
@@ -47,6 +52,65 @@ struct HostState {
     /// Host context declared to bundles, by name (the same rule).
     contexts: FxHashMap<String, Vec<Registration<ContextFetch>>>,
     next_token: u64,
+}
+
+/// A frame a bundle opened on the native kernel's stacks.
+enum Frame {
+    Enter,
+    Untrack,
+    /// The collector stack `unscoped` suspended.
+    Unscoped(SavedCollectors),
+    /// The effect frames `unanchored` suspended.
+    Unanchored(EffectFrames),
+    Collect,
+}
+
+impl Frame {
+    fn is(&self, other: &Frame) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// End it, as the bundle's end call would have.
+    fn end(self) {
+        match self {
+            Frame::Enter => native::enter_pop(),
+            Frame::Untrack => native::untrack_pop(),
+            Frame::Unscoped(saved) => native::unscoped_end(saved),
+            Frame::Unanchored(saved) => native::unanchored_end(saved),
+            // Abandoned: free what it collected (the bundle that made them
+            // is stopped).
+            Frame::Collect => native::drop_items(native::collect_end().unwrap_or_default()),
+        }
+    }
+}
+
+fn push_frame(frame: Frame) {
+    with_host(|h| h.frames.push(frame));
+}
+
+/// Close the innermost open frame of `kind`'s kind and return it. Bundle
+/// frames nest (each is a closure in the bundle), so it is the top one.
+fn pop_frame(kind: Frame) -> Option<Frame> {
+    try_host(|h| {
+        let at = h.frames.iter().rposition(|f| f.is(&kind))?;
+        Some(h.frames.remove(at))
+    })
+    .flatten()
+}
+
+/// How many bundle frames are open: taken before calling into a bundle, so
+/// [`unwind_frames`] can close what the call left open if it traps.
+pub(crate) fn frames_mark() -> usize {
+    try_host(|h| h.frames.len()).unwrap_or(0)
+}
+
+/// End every bundle frame opened since `mark`, innermost first, as the
+/// bundle's own end calls would have. One at a time with no borrow held:
+/// freeing a collected scope runs cleanups, which may enter the bridge.
+pub(crate) fn unwind_frames(mark: usize) {
+    while let Some(frame) = try_host(|h| (h.frames.len() > mark).then(|| h.frames.pop()).flatten()).flatten() {
+        frame.end();
+    }
 }
 
 /// One registration of an export: its guard's token, and the export.
@@ -316,9 +380,11 @@ impl<G: GuestHooks> HostOps for Host<G> {
         native::context_top(&arena, CtxKey::Foreign(key), ctx_id::<G>).flatten()
     }
     fn enter_push(world: WorldId) {
-        native::enter_push(world)
+        native::enter_push(world);
+        push_frame(Frame::Enter);
     }
     fn enter_pop() {
+        pop_frame(Frame::Enter);
         native::enter_pop()
     }
 
@@ -406,35 +472,39 @@ impl<G: GuestHooks> HostOps for Host<G> {
     }
 
     fn untrack_push() {
-        native::untrack_push()
+        native::untrack_push();
+        push_frame(Frame::Untrack);
     }
     fn untrack_pop() {
+        pop_frame(Frame::Untrack);
         native::untrack_pop()
     }
     fn unscoped_begin() {
         let saved = native::unscoped_begin();
-        with_host(|h| h.unscoped.push(saved));
+        push_frame(Frame::Unscoped(saved));
     }
     fn unscoped_end() {
         // A torn-down thread has nothing left to restore.
-        if let Some(saved) = try_host(|h| h.unscoped.pop()).flatten() {
+        if let Some(Frame::Unscoped(saved)) = pop_frame(Frame::Unscoped(Default::default())) {
             native::unscoped_end(saved);
         }
     }
     fn unanchored_begin() {
         let saved = native::unanchored_begin();
-        with_host(|h| h.unanchored.push(saved));
+        push_frame(Frame::Unanchored(saved));
     }
     fn unanchored_end() {
-        if let Some(saved) = try_host(|h| h.unanchored.pop()).flatten() {
+        if let Some(Frame::Unanchored(saved)) = pop_frame(Frame::Unanchored(Default::default())) {
             native::unanchored_end(saved);
         }
     }
 
     fn collect_begin() {
-        native::collect_begin()
+        native::collect_begin();
+        push_frame(Frame::Collect);
     }
     fn collect_end() -> u32 {
+        pop_frame(Frame::Collect);
         let items = native::collect_end().expect("collector stack imbalance");
         if items.is_empty() {
             return 0;
@@ -448,6 +518,7 @@ impl<G: GuestHooks> HostOps for Host<G> {
         })
     }
     fn collect_abort() {
+        pop_frame(Frame::Collect);
         native::drop_items(native::collect_end().unwrap_or_default());
     }
     fn scope_merge(into: u32, other: u32) {

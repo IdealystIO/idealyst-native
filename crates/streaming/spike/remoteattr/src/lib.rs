@@ -58,9 +58,11 @@ pub fn Greeting(name: String, count: ReadSignal<i64>, likes: Signal<i64>) -> Ele
     }
 }
 
-/// A remote component that panics on purpose: its button's handler, and
-/// its effect when the app's `trigger` reaches 13. For the containment
-/// tests — a panic in a bundle must not take the app down.
+/// A remote component that panics on purpose: its buttons' handlers (one
+/// mid-way through a collecting, untracked region, so the trap abandons
+/// frames it opened in the app's kernel), and its effect when the app's
+/// `trigger` reaches 13. For the containment tests — a panic in a bundle
+/// must not take the app down.
 #[component(remote)]
 pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
     runtime_world::effect(move || {
@@ -71,6 +73,9 @@ pub fn Fragile(trigger: ReadSignal<i64>) -> Element {
     ui! {
         view() {
             text { "fragile sees {trigger}" }
+            button(label = "trap in scope", on_click = move || {
+                let _ = runtime_world::collect_owned(|| runtime_world::untrack(|| panic!("trapped in scope")));
+            })
             button(label = "boom", on_click = move || panic!("boom pressed"))
         }
     }
