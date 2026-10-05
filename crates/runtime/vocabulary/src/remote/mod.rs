@@ -673,7 +673,7 @@ pub fn crossing(ty: std::any::TypeId) -> Option<Crossing> {
 /// - Plain values (`String`, numbers, `bool`, `Vec`/`Option` of them) cross
 ///   as a copy, fixed at mount.
 ///
-/// Implement it for your own value types with [`remote_value!`].
+/// Your own types get it from `#[derive(Remote)]`.
 pub trait RemoteProp: Sized + 'static {
     /// Encode `self` for the bundle; anything that must live as long as the
     /// mount (an export guard) goes in `keep`.
@@ -697,9 +697,9 @@ pub fn __receive_value<T: serde::de::DeserializeOwned>(input: &mut &[u8]) -> T {
     v
 }
 
-/// `impl RemoteProp` for value types that are `Serialize +
-/// DeserializeOwned`: they cross as a copy, fixed at mount.
-#[macro_export]
+/// `impl RemoteProp` (and the rest) for the vocabulary's own plain-data
+/// types: they cross as a copy, fixed at mount. Internal — its cfgs are
+/// this crate's; an author's type derives `Remote` instead.
 macro_rules! remote_value {
     ($($t:ty),* $(,)?) => {$(
         $crate::__import_value!($t);
@@ -767,7 +767,7 @@ impl<T: RemoteProp> RemoteProp for Vec<T> {
 /// context: what a signal's value needs (once the app holds a bundle's
 /// signal, every bundle read and write re-encodes it), and a callback's
 /// arguments and result. Primitives, `String`, `Option` / `Vec` / tuples /
-/// arrays of values, and every [`remote_value!`] type have it;
+/// arrays of values, and the vocabulary's plain-data types have it;
 /// `#[derive(Remote)]` gives it field by field.
 pub trait RemoteValue: Sized + 'static {
     fn encode(&self, out: &mut Vec<u8>);
@@ -1228,8 +1228,8 @@ pub fn __try_receive_value<T: serde::de::DeserializeOwned>(input: &mut &[u8]) ->
     Ok(v)
 }
 
-/// `ImportArg` for serializable value types (also emitted by
-/// [`remote_value!`]).
+/// `ImportArg` for serializable value types (also emitted by the
+/// internal `remote_value!`).
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __import_value {

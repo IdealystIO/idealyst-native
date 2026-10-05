@@ -211,6 +211,38 @@ macro_rules! __remote_guest_split {
     (bundle: { $($b:tt)* } app: { $($a:tt)* }) => { $($a)* };
 }
 
+/// `#[component(remote)]`'s emission for this build: where the body is
+/// compiled (a remote bundle, or a web app — remote is a native mechanism)
+/// `body`, else `native` (an app that mounts the component from a bundle).
+/// The vocabulary's flags decide, so the component's crate declares no cfg.
+#[cfg(any(idealyst_stream_guest, target_arch = "wasm32"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_component {
+    (body: { $($b:tt)* } native: { $($n:tt)* }) => { $($b)* };
+}
+#[cfg(not(any(idealyst_stream_guest, target_arch = "wasm32")))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_component {
+    (body: { $($b:tt)* } native: { $($n:tt)* }) => { $($n)* };
+}
+
+/// A native app mounting a remote component needs the vocabulary's
+/// `remote` feature (the real macro lives in `remote`): without it, say so.
+#[cfg(not(all(feature = "remote", any(not(target_arch = "wasm32"), idealyst_stream_guest))))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __remote_native_body {
+    ($($t:tt)*) => {
+        // Braced: valid in item and expression position alike.
+        ::core::compile_error! {
+            "#[component(remote)] in a native app needs runtime-vocabulary's `remote` feature: \
+             the app mounts the component from a bundle"
+        }
+    };
+}
+
 /// `#[derive(Remote)]`'s output: kept in a build that hosts or is a remote
 /// bundle, dropped (unexpanded) everywhere else — so a library can derive
 /// it unconditionally and cost nothing in apps without remote components.

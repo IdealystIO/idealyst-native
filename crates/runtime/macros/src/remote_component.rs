@@ -29,9 +29,6 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{FnArg, ItemFn, Pat, Type};
 
-/// The bundle build, or a web app build: the body is compiled.
-const HAS_BODY: &str = "any(idealyst_stream_guest, target_arch = \"wasm32\")";
-
 /// Rewrite `item_fn` for remote emission. Returns the rewritten component fn
 /// (to go through the ordinary `#[component]` emission) and the extra items
 /// (the body fn and the mount export) to emit beside it.
@@ -54,7 +51,6 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
     let name_str = name.to_string();
     let body_fn = format_ident!("__{}_remote_body", name);
     let export_fn = format_ident!("__idealyst_remote_{}", name);
-    let has_body: TokenStream2 = HAS_BODY.parse().expect("cfg predicate");
 
     let mut params: Vec<(syn::Ident, Type)> = Vec::new();
     for input in item_fn.sig.inputs.iter_mut() {
@@ -92,50 +88,61 @@ pub(crate) fn prepare(mut item_fn: ItemFn) -> syn::Result<(ItemFn, TokenStream2)
     }
     crate::reactivity::rewrite(&mut body);
 
-    // A native app build mounts from the bundle, unless the vocabulary's
+    // Which build compiles the body is the vocabulary's call
+    // (`__remote_component!`), so the component's crate declares no cfg. A
+    // native app build mounts from the bundle, unless the vocabulary's
     // `remote-inline` feature runs the body in-process instead
-    // (`__remote_native_body!` picks; see the module docs).
+    // (`__remote_native_body!`; see the module docs).
     item_fn.block = Box::new(syn::parse_quote! {{
-        #[cfg(#has_body)]
-        let __remote_tree = #body_fn(#(#names),*);
-        #[cfg(not(#has_body))]
-        let __remote_tree = ::runtime_vocabulary::__remote_native_body! {
-            inline: { #body_fn(#(#names),*) }
-            mount: {
-                ::runtime_vocabulary::remote::host::__mount_remote(
-                    #name_str,
-                    move |__out: &mut ::std::vec::Vec<u8>, __keep: &mut ::runtime_vocabulary::remote::host::Keep| {
-                        #(::runtime_vocabulary::remote::RemoteProp::send(&#names, __out, __keep);)*
-                    },
-                )
+        let __remote_tree = ::runtime_vocabulary::__remote_component! {
+            body: { #body_fn(#(#names),*) }
+            native: {
+                ::runtime_vocabulary::__remote_native_body! {
+                    inline: { #body_fn(#(#names),*) }
+                    mount: {
+                        ::runtime_vocabulary::remote::host::__mount_remote(
+                            #name_str,
+                            move |__out: &mut ::std::vec::Vec<u8>, __keep: &mut ::runtime_vocabulary::remote::host::Keep| {
+                                #(::runtime_vocabulary::remote::RemoteProp::send(&#names, __out, __keep);)*
+                            },
+                        )
+                    }
+                }
             }
         };
         __remote_tree
     }});
 
     let extra = quote! {
-        #[cfg(#has_body)]
-        #[allow(non_snake_case)]
-        #body
-
-        #[cfg(not(#has_body))]
-        ::runtime_vocabulary::__remote_native_body! {
-            inline: {
+        ::runtime_vocabulary::__remote_component! {
+            body: {
                 #[allow(non_snake_case)]
                 #body
             }
-            mount: {}
+            native: {
+                ::runtime_vocabulary::__remote_native_body! {
+                    inline: {
+                        #[allow(non_snake_case)]
+                        #body
+                    }
+                    mount: {}
+                }
+            }
         }
 
-        /// The bundle's mount export for this remote component.
-        #[cfg(idealyst_stream_guest)]
-        #[no_mangle]
-        #[allow(non_snake_case)]
-        pub extern "C" fn #export_fn(_ptr: u32, len: u32) -> i64 {
-            ::runtime_vocabulary::remote::bundle::__mount(len, |__in: &mut &[u8]| {
-                #(let #names = <#types as ::runtime_vocabulary::remote::RemoteProp>::receive(__in);)*
-                #name(#(#names),*)
-            })
+        ::runtime_vocabulary::__remote_guest_split! {
+            bundle: {
+                /// The bundle's mount export for this remote component.
+                #[unsafe(no_mangle)]
+                #[allow(non_snake_case)]
+                pub extern "C" fn #export_fn(_ptr: u32, len: u32) -> i64 {
+                    ::runtime_vocabulary::remote::bundle::__mount(len, |__in: &mut &[u8]| {
+                        #(let #names = <#types as ::runtime_vocabulary::remote::RemoteProp>::receive(__in);)*
+                        #name(#(#names),*)
+                    })
+                }
+            }
+            app: {}
         }
     };
     Ok((item_fn, extra))
@@ -345,6 +352,21 @@ mod tests {
         // mounting it is the vocabulary's (`remote-inline`), in both places.
         assert!(component.contains("__remote_native_body"), "{component}");
         assert!(extra.contains("__remote_native_body"), "{extra}");
+    }
+
+    /// Regression: the emission carried raw `#[cfg(idealyst_stream_guest)]`
+    /// / `#[cfg(any(idealyst_stream_guest, target_arch = "wasm32"))]`, so
+    /// every crate defining a remote component had to declare the cfg or
+    /// warn (`unexpected_cfgs`). The vocabulary's gate macros decide now.
+    #[test]
+    fn regression_a_remote_component_emits_no_raw_cfg() {
+        let f: ItemFn = syn::parse_quote! {
+            fn Greeting(name: String) -> Element { ui! { text { "{name}" } } }
+        };
+        let (component, extra) = prepare(f).unwrap();
+        let all = format!("{} {}", quote!(#component), extra);
+        assert!(!all.contains("cfg ("), "{all}");
+        assert!(all.contains("__remote_component !") && all.contains("__remote_guest_split !"), "{all}");
     }
 
     #[test]
