@@ -48,12 +48,36 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 /// `Key` they compare with `total_cmp`. A list of floats on its own goes
 /// through [`Numeric`].
 pub trait Key: Ord + Hash + Clone + 'static {
+    /// The length of every key of this type, when they all have one (the
+    /// numbers, and structs, tuples and arrays of them): a list of such
+    /// keys crosses as one fixed-stride run instead of a length per key.
+    #[doc(hidden)]
+    const WIDTH: Option<usize> = None;
     /// Append this key's order-preserving bytes.
     #[doc(hidden)]
     fn encode_key(&self, out: &mut Vec<u8>);
     /// Take one key from the front of `input`.
     #[doc(hidden)]
     fn decode_key(input: &mut &[u8]) -> Result<Self, String>;
+}
+
+/// `Some(a + b)` when both have a width ([`Key::WIDTH`] of a sequence).
+#[doc(hidden)]
+pub const fn width_sum(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        _ => None,
+    }
+}
+
+/// `Some(a)` when both widths are the same ([`Key::WIDTH`] of an enum's
+/// variants).
+#[doc(hidden)]
+pub const fn width_same(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    match (a, b) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        _ => None,
+    }
 }
 
 fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], String> {
@@ -68,6 +92,8 @@ fn take<'a>(input: &mut &'a [u8], n: usize) -> Result<&'a [u8], String> {
 macro_rules! key_unsigned {
     ($($t:ty),*) => {$(
         impl Key for $t {
+            const WIDTH: Option<usize> = Some(size_of::<$t>());
+            #[inline]
             fn encode_key(&self, out: &mut Vec<u8>) {
                 out.extend_from_slice(&self.to_be_bytes());
             }
@@ -84,6 +110,8 @@ key_unsigned!(u8, u16, u32, u64, u128);
 macro_rules! key_signed {
     ($($t:ty => $u:ty),*) => {$(
         impl Key for $t {
+            const WIDTH: Option<usize> = Some(size_of::<$t>());
+            #[inline]
             fn encode_key(&self, out: &mut Vec<u8>) {
                 out.extend_from_slice(&((*self as $u) ^ (1 << (<$u>::BITS - 1))).to_be_bytes());
             }
@@ -99,6 +127,7 @@ key_signed!(i8 => u8, i16 => u16, i32 => u32, i64 => u64, i128 => u128);
 // The bundle is wasm32 and the app usually 64-bit: `usize`/`isize` cross as
 // 64 bits, and a bundle refuses one too big for it.
 impl Key for usize {
+    const WIDTH: Option<usize> = Some(8);
     fn encode_key(&self, out: &mut Vec<u8>) {
         (*self as u64).encode_key(out)
     }
@@ -107,6 +136,7 @@ impl Key for usize {
     }
 }
 impl Key for isize {
+    const WIDTH: Option<usize> = Some(8);
     fn encode_key(&self, out: &mut Vec<u8>) {
         (*self as i64).encode_key(out)
     }
@@ -116,6 +146,7 @@ impl Key for isize {
 }
 
 impl Key for bool {
+    const WIDTH: Option<usize> = Some(1);
     fn encode_key(&self, out: &mut Vec<u8>) {
         out.push(*self as u8);
     }
@@ -129,6 +160,7 @@ impl Key for bool {
 }
 
 impl Key for char {
+    const WIDTH: Option<usize> = Some(4);
     fn encode_key(&self, out: &mut Vec<u8>) {
         (*self as u32).encode_key(out)
     }
@@ -139,6 +171,7 @@ impl Key for char {
 }
 
 impl Key for () {
+    const WIDTH: Option<usize> = Some(0);
     fn encode_key(&self, _out: &mut Vec<u8>) {}
     fn decode_key(_input: &mut &[u8]) -> Result<Self, String> {
         Ok(())
@@ -235,6 +268,7 @@ impl<T: Key> Key for Option<T> {
 }
 
 impl<T: Key> Key for Box<T> {
+    const WIDTH: Option<usize> = T::WIDTH;
     fn encode_key(&self, out: &mut Vec<u8>) {
         (**self).encode_key(out)
     }
@@ -247,6 +281,7 @@ impl<T: Key> Key for Box<T> {
 /// prefix-free (two keys first differ at a byte where neither has ended),
 /// so inverting the bytes inverts the order.
 impl<T: Key> Key for Reverse<T> {
+    const WIDTH: Option<usize> = T::WIDTH;
     fn encode_key(&self, out: &mut Vec<u8>) {
         let start = out.len();
         self.0.encode_key(out);
@@ -266,6 +301,10 @@ impl<T: Key> Key for Reverse<T> {
 }
 
 impl<T: Key, const N: usize> Key for [T; N] {
+    const WIDTH: Option<usize> = match T::WIDTH {
+        Some(w) => Some(w * N),
+        None => None,
+    };
     fn encode_key(&self, out: &mut Vec<u8>) {
         for v in self {
             v.encode_key(out);
@@ -280,6 +319,11 @@ impl<T: Key, const N: usize> Key for [T; N] {
 macro_rules! key_tuple {
     ($($n:ident),+) => {
         impl<$($n: Key),+> Key for ($($n,)+) {
+            const WIDTH: Option<usize> = {
+                let w = Some(0);
+                $(let w = width_sum(w, $n::WIDTH);)+
+                w
+            };
             #[allow(non_snake_case)]
             fn encode_key(&self, out: &mut Vec<u8>) {
                 let ($($n,)+) = self;

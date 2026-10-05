@@ -90,6 +90,7 @@ Edit `Scoreboard`, press **Reload remote**: the remote section remounts from the
 | Tab shell (`App`, a swap navigator) | app | native code hosting remote screens |
 | `FeedScreen` | bundle | its own stylesheets over idea's theme tokens (the light/dark switch restyles it), `FeedPrefs` context read live, bundle state, a sync `#[host_fn]`, idea-ui components |
 | `ShopNavigator` | bundle | a stack navigator defined in the bundle: route links with typed params, a header reading `StackNav` and the screen's title option, an async `#[host_fn]` (reviews), idea-ui's `Slider`/`Switch`/`Button` writing the app's cart signal |
+| `ToolsScreen` (`src/tools.rs`) | bundle | every kind of `#[host_fn]`: plain values, structs and `Result`, a list of numbers, `async`, and generic ones (`Key`, `Opaque`, `Numeric`) called with the bundle's own types |
 | `Settings` | app | native controls: the idea theme (light/dark) every screen follows, and the `FeedPrefs` the feed reads |
 | idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses: imported from the app, rendered natively with the app's idea theme, not bundled |
 
@@ -212,6 +213,46 @@ Plain functions are always compiled into the bundle; only `#[host_fn]` crosses t
 
 `spike/camera` is a host-function SDK in miniature: its value types (`PhotoOptions`, `Photo`, `CameraError`) derive `Remote`, and `take_photo` returns a `Result`, which crosses as a value like `Option`.
 
+### Generic host functions
+
+A host function can be generic, and a bundle can call it with a type the app has never compiled:
+
+```rust
+#[host_fn]
+pub fn sort_order<K: Key>(keys: Vec<K>) -> Vec<u32> { … }       // the order that sorts any key
+
+#[host_fn]
+pub fn group_by<K: Key, V>(rows: Vec<(K, V)>) -> Vec<(K, Vec<V>)> { … }
+
+#[host_fn]
+pub fn stats<N: Numeric>(values: Vec<N>) -> Stats { … }
+
+// In the bundle, with its own types:
+#[derive(Clone, Key)]
+struct Seniority { team: String, hired: u16 }
+let order = sort_order(staff.iter().map(|s| Seniority { … }).collect());
+```
+
+A generic function exists in the app only as the copies the app compiled, so each type parameter is handled by what its bound lets the body do (`runtime_vocabulary::host_types`, re-exported from `runtime_core`):
+
+| Bound | The body may | The app compiles | A bundle may pass |
+|---|---|---|---|
+| `K: Key` | compare, hash, clone | one copy, `K = KeyBytes` | any `Key`, its own types included |
+| `V: Opaque`, or no bound | move it (and clone, with `+ Clone`) | one copy, `V = OpaqueBytes` | any `RemoteValue` (`#[derive(Remote)]`) |
+| `N: Numeric` | arithmetic, `total_cmp`, `to_f64` | a copy per number type (`u8`…`f64`) | any number type |
+
+- **`Key`.** A key's bytes order exactly as the key does, so the app sorts, groups, dedups and joins the bytes (`KeyBytes`) and gets the bundle's answer. `#[derive(Key)]` gives a struct or enum `Key` together with `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Hash`, from the same fields in the same order (an enum's variant first). Writing or deriving any of those as well is a conflicting-impl error, so a type can't carry an `Ord` its bytes disagree with. Numbers, `bool`, `char`, `String`, `Vec`, `Option`, `Box`, tuples, arrays and `std::cmp::Reverse` (descending) are keys. `f32`/`f64` fields of a derived key compare with `total_cmp`.
+- **`Opaque`.** A value the body only carries crosses as its own encoding, which the app holds unread and hands back.
+- **`Numeric`.** The call carries which number type it is. At most two such parameters, since each multiplies the app's copies by ten.
+- **Native callers** in the app call the function with their own types, as any Rust function: only a bundle's call goes through `KeyBytes` and `OpaqueBytes`.
+- **Where an erased parameter may appear**: as itself, or inside `Vec`, `Option`, tuples and arrays, in any argument or the result. Anything else naming one (a `HashMap<K, V>`) is a compile error naming the alternative (`Vec<(K, V)>`).
+- **Refused at compile time**: closures (`F: Fn(&T) -> bool`), which would call back into the bundle for every element, slower than doing the work there; and any other bound on an erased parameter, which the app's copy couldn't satisfy.
+- **The fingerprint** spells each type parameter by position and kind, so renaming one keeps old bundles loading and changing its kind refuses them. A non-generic function's fingerprint is unchanged.
+
+**On the wire** a key crosses as its bytes. A list of keys of a fixed width (numbers, and structs, tuples and arrays of them: `Key::WIDTH`) is one run with a single stride. Any other key carries a 4-byte length, because the app can't tell where a value of a type it doesn't know ends. Everything here is untrusted on arrival: a malformed key, frame or number tag is an `Err` that stops the bundle, never a panic in the app.
+
+`showcase/app/src/tools.rs` defines one of each kind and the Tools tab calls them from bundle code, with a `#[derive(Key)]` struct and a `#[derive(Remote)]` value declared inside the remote component's body, which the app never compiles. `tests/flow.rs` checks every result, and with `--features inline` the same code runs natively and must print the same. It was checked to fail with `KeyBytes` ordered backwards, so the remote run really is the app's copy. `src/tools.rs`'s unit tests drive the app's side with raw bytes: a call for each number type, a missing or unknown tag, and a malformed key list. The `Key` contract itself is property-tested in `runtime-vocabulary/tests/host_types.rs`.
+
 ## Panics in a bundle
 
 A panic in a bundle never takes the app down. A Rust panic in wasm is `panic = "abort"`: it traps the interpreter, and no destructor in the bundle runs, so a `RefCell` it held stays borrowed and its tables stay half-updated. So the first trap **poisons** the bundle (`stream-host`, `kernel.rs`):
@@ -273,14 +314,15 @@ The screens use idea-ui, which renders natively either way: only the screen's ow
 | Sort 200k u32s: memory, branches | 177.7 ms (87×) | 79.9 ms (39×) | 2.04 ms |
 | 96×96 f64 matrix multiply (native vectorizes) | 45.8 ms (339×) | 32.4 ms (240×) | 0.13 ms |
 
-**Handing the work to the app.** The same sorts with the sort done by a `#[host_fn]`: the bundle builds its data, sends it, and reads the answer (opt z bundle, median of 3 runs of 5):
+**Handing the work to the app.** The same work done by the generic host functions in `tools.rs`: the bundle builds its data, sends it, and reads the answer (opt z bundle, median of 3 runs of 5):
 
 | | In the bundle | By the app | Native |
 |---|---|---|---|
-| Sort 200k u32s (`Vec<u32>` there and back) | 177.6 ms | 7.8 ms | 2.0 ms |
-| Sort 200k items by a `(u16, u32)` key (the bundle sends big-endian key bytes, the app returns the order) | 196.2 ms | 51.4 ms | 3.8 ms |
+| Sort 200k u32s (`sorted`, `N: Numeric`: a `Vec<u32>` there and back) | 176.1 ms | 7.5 ms | 2.1 ms |
+| Sort 200k items by a `#[derive(Key)]` `(u16, u32)` key (`sort_order`: the app returns the order) | 195.7 ms | 66.8 ms | 3.9 ms |
+| Dedup 200k such keys, 50k distinct (`distinct`: the keys come back) | 168.2 ms | 72.4 ms | 3.9 ms |
 
-The crossing itself is now close to free, in both directions. A list of numbers crosses as one byte run (`runtime_vocabulary::remote::bulk`), and the bundle's receive buffer is reused, not cleared byte by byte. Sending 100k `u32`s to the app and getting them back unchanged costs about 0.1 ms on top of generating them, and the cost grows with the data at well under a millisecond per MB. What's left in "By the app" is the bundle's own interpreted work: generating the 200k numbers (about 29 ns each, so ~6 ms), and for the keyed sort, encoding each key and applying the order. Before these two changes, the plain sort through the app took 339 ms, slower than sorting in the bundle.
+The crossing itself is close to free. A list of numbers crosses as one byte run (`runtime_vocabulary::remote::bulk`), and so does a list of fixed-width keys, and the bundle's receive buffer is reused, not cleared byte by byte. Sending 100k `u32`s to the app and getting them back unchanged costs about 0.1 ms on top of generating them, and the cost grows with the data at well under a millisecond per MB. What's left in "By the app" is the bundle's own interpreted work: generating the 200k values (about 29 ns each), and for keys, encoding each one (a few calls per field in a size-optimized bundle) and applying the answer. So the app wins clearly on work heavier than linear (sorting, joins), and by about 2× on linear work like dedup, where encoding a key costs the bundle most of what hashing it would. Before the byte runs, the plain sort through the app took 339 ms, slower than sorting in the bundle; framing each key through a temporary buffer took the keyed sort to 373 ms.
 
 Tree-building paths (mounts, push, the context toggle) cost about 5% more than before the review fixes, measured against the pre-fix build side by side: the record of what crossed with each tree, which lets a failed decode release everything it received. Presses and updates are unchanged. UI work costs 8–25× in-process and stays well under a frame; heavy computation costs 16–340× and belongs in the app (a `#[host_fn]`) when it matters.
 

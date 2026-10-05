@@ -83,39 +83,29 @@ pub fn text(n: u32) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// The same sorts, done by the APP for the bundle (`#[host_fn]`s). What that
-// costs a bundle is the transport: encoding the values in interpreted
-// wasm, the app decoding, sorting and encoding, the bundle decoding the
-// answer. A list of numbers crosses as one byte run
-// (`runtime_vocabulary::remote::bulk`); before it did, `sort_host` took
-// longer than sorting in the bundle (339 ms against 182).
-// - `sort_host`: `Vec<u32>` there and back.
-// - `sort_host_key`: items with a two-field key. The bundle encodes the
-//   keys order-preserving (big-endian, fields in order) at a fixed stride,
-//   the app sorts those byte records and returns the permutation, and the
-//   bundle applies it to its own items — only keys cross.
-// In the app build each host fn is the plain function, so the "native"
-// column is the whole workload native.
+// The same work done by the APP for the bundle, through the generic host
+// functions in `tools.rs`. What that costs a bundle is the transport plus
+// its own share: encoding the values in interpreted wasm, the app
+// decoding, working and encoding, the bundle decoding the answer.
+// - `sort_host`: `tools::sorted` (`N: Numeric`), a `Vec<u32>` there and
+//   back as one byte run each way.
+// - `sort_host_key`: `tools::sort_order` (`K: Key`) on a `#[derive(Key)]`
+//   struct: the bundle encodes each key, the app sorts the bytes and
+//   returns the order, the bundle applies it.
+// - `dedup_host`: `tools::distinct` (`K: Key`): linear work, where encoding
+//   a key costs the bundle about what hashing it would.
+// In the app build each host fn is the plain generic function, so the
+// "native" column is the whole workload native.
 // ---------------------------------------------------------------------------
 
-use runtime_core::host_fn;
+use crate::tools::{distinct, sort_order, sorted};
+use runtime_core::Key;
 
-#[host_fn]
-pub fn bench_sort_u32(v: Vec<u32>) -> Vec<u32> {
-    let mut v = v;
-    v.sort_unstable();
-    v
-}
-
-/// The permutation that sorts `keys`, records of `stride` bytes (stable,
-/// like `sort_by_key`).
-#[host_fn]
-pub fn bench_order(stride: u32, keys: Vec<u8>) -> Vec<u32> {
-    let s = stride as usize;
-    let n = if s == 0 { 0 } else { keys.len() / s };
-    let mut idx: Vec<u32> = (0..n as u32).collect();
-    idx.sort_by(|a, b| keys[*a as usize * s..][..s].cmp(&keys[*b as usize * s..][..s]));
-    idx
+/// A two-field key, as a bundle would declare one.
+#[derive(Clone, Debug, Key)]
+pub struct GroupId {
+    group: u16,
+    id: u32,
 }
 
 fn checksum(v: &[u32]) -> u64 {
@@ -125,21 +115,36 @@ fn checksum(v: &[u32]) -> u64 {
 pub fn sort_host(n: u32) -> u64 {
     let mut next = xorshift(0x9e37_79b9);
     let v: Vec<u32> = (0..n).map(|_| next()).collect();
-    checksum(&bench_sort_u32(v))
+    checksum(&sorted(v))
 }
 
-/// Items with a two-field key `(group, id)`; sorted by the key.
+/// Items sorted by a `(group, id)` key, by the app.
 pub fn sort_host_key(n: u32) -> u64 {
     let mut next = xorshift(0x9e37_79b9);
     let items: Vec<(u16, u32)> = (0..n).map(|_| { let x = next(); ((x >> 24) as u16, x) }).collect();
-    let mut bytes = Vec::with_capacity(items.len() * 6);
-    for (g, id) in &items {
-        bytes.extend_from_slice(&g.to_be_bytes());
-        bytes.extend_from_slice(&id.to_be_bytes());
-    }
-    let order = bench_order(6, bytes);
+    let order = sort_order(items.iter().map(|&(group, id)| GroupId { group, id }).collect());
     let sorted: Vec<u32> = order.iter().map(|i| items[*i as usize].1).collect();
     checksum(&sorted)
+}
+
+/// `n` keys drawn from `n / 4` distinct values, each kept once in
+/// first-seen order — in wasm.
+pub fn dedup_key(n: u32) -> u64 {
+    let mut seen = std::collections::HashSet::new();
+    let kept: Vec<u32> = dedup_input(n).into_iter().filter(|k| seen.insert(k.clone())).map(|k| k.id).collect();
+    checksum(&kept)
+}
+
+/// The same, by the app.
+pub fn dedup_host(n: u32) -> u64 {
+    let kept: Vec<u32> = distinct(dedup_input(n)).into_iter().map(|k| k.id).collect();
+    checksum(&kept)
+}
+
+fn dedup_input(n: u32) -> Vec<GroupId> {
+    let mut next = xorshift(0x9e37_79b9);
+    let distinct = (n / 4).max(1);
+    (0..n).map(|_| { let x = next() % distinct; GroupId { group: (x >> 12) as u16, id: x } }).collect()
 }
 
 /// The same, sorted in wasm (the baseline `sort_host_key` must beat).
@@ -160,7 +165,9 @@ pub const WORKLOADS: &[(&str, fn(u32) -> u64, u32, &str)] = &[
     ("text", text, 20_000, "build + parse 20k JSON-like records: allocation, strings"),
     ("sort_host", sort_host, 200_000, "the same sort, by the app (a host fn)"),
     ("sort_key", sort_key, 200_000, "sort 200k items by a (u16, u32) key"),
-    ("sort_host_key", sort_host_key, 200_000, "the same, the app sorting key bytes"),
+    ("sort_host_key", sort_host_key, 200_000, "the same, by the app (a Key host fn)"),
+    ("dedup_key", dedup_key, 200_000, "dedup 200k keys (50k distinct)"),
+    ("dedup_host", dedup_host, 200_000, "the same, by the app (a Key host fn)"),
 ];
 
 // The bundle's exports, called directly by the benchmark (`KernelBundle::call`).
@@ -197,5 +204,13 @@ mod exports {
     #[no_mangle]
     pub extern "C" fn __bench_sort_host_key(n: u32) -> u64 {
         super::sort_host_key(n)
+    }
+    #[no_mangle]
+    pub extern "C" fn __bench_dedup_key(n: u32) -> u64 {
+        super::dedup_key(n)
+    }
+    #[no_mangle]
+    pub extern "C" fn __bench_dedup_host(n: u32) -> u64 {
+        super::dedup_host(n)
     }
 }

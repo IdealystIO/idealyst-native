@@ -152,6 +152,44 @@ fn the_showcase_runs_its_remote_screens() {
     assert_eq!(runtime_vocabulary::remote::host::live_trees(), 0);
 }
 
+/// The Tools tab (remote): bundle code calling every kind of host
+/// function — plain, struct and `Result`, number lists, async, and the
+/// generic ones on the bundle's OWN types (a `#[derive(Key)]` struct and a
+/// `#[derive(Remote)]` value the app never compiles). `--features inline`
+/// runs the same code natively, calling the generic functions with those
+/// types directly, and must print the same.
+#[test]
+fn the_tools_tab_calls_every_kind_of_host_function() {
+    let r = Run::start();
+    r.press("Tools");
+    for want in [
+        "words: 9",
+        "invoice: $56.10",
+        "empty invoice: Err(Empty)",
+        "histogram: [2, 1, 3]",
+        "by team, then hired: Sam, Ada, Bea, Ola, Lin, Kim",
+        "teams: eng, ops, sales",
+        "eng: Ada (2019), Sam (2017), Bea (2021)",
+        "ops: Lin (2021), Ola (2018)",
+        "sales: Kim (2021)",
+        "orders: Ada→Mug, Sam→Lamp, Sam→Tent",
+        "stats: n=4 min=1.5 max=9 mean=4.25",
+        "sorted: [-40, -3, 0, 7, 12]",
+        "digest: …",
+    ] {
+        assert!(r.sees(want), "missing {want:?}:\n{}", r.screen());
+    }
+    // The async ones answer once the app's executor runs them.
+    r.settle();
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in b"remote" {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    assert!(r.sees("latest hires: [2021, 2021]"), "{}", r.screen());
+    assert!(r.sees(&format!("digest: {h:016x}")), "{}", r.screen());
+}
+
 fn touch_at(x: f32) -> runtime_core::TouchEvent {
     runtime_core::TouchEvent {
         id: runtime_core::TouchId(1),

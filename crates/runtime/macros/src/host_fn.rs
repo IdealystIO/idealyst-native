@@ -16,62 +16,467 @@
 //! decodes. Each stub links an import named `<module_path>::<fn>#<schema>`,
 //! the schema a fingerprint of the signature, checked at load.
 //!
+//! # Generic host functions
+//!
+//! The app has a generic function only as the instantiations it compiled,
+//! and a bundle may call it with a type the app has never seen. So each
+//! type parameter is classified by its bound
+//! (`runtime_vocabulary::host_types`):
+//!
+//! - **`T: Key`** — the app compiles the body ONCE, with `T = KeyBytes`
+//!   (the key's order-preserving bytes); the bundle's stub encodes each
+//!   key and decodes any it gets back. Any key type works, a bundle-only
+//!   one included.
+//! - **`T: Opaque`**, or no bound at all — once, with `T = OpaqueBytes`
+//!   (the value's codec bytes, carried unread). The bundle's type must be
+//!   a `RemoteValue` (`#[derive(Remote)]`).
+//! - **`T: Numeric`** — the app compiles the body for all ten number types
+//!   and the call carries which (a tag byte per such parameter; at most
+//!   two, since each multiplies the copies by ten).
+//!
+//! Native callers in the app call the generic function with their own
+//! types, as any Rust function. Erased parameters may appear in an
+//! argument or the result as themselves or inside `Vec`, `Option`, tuples
+//! and arrays (each such place is walked by the stub); anything else
+//! naming one is a compile error saying so. A bound that needs code the
+//! bundle has (`F: Fn(..)`) is refused: calling back into the bundle for
+//! each element is slower than doing the work in the bundle.
+//!
+//! The schema hashes the signature with each type parameter written as its
+//! position and kind (`$Key0`), so renaming one doesn't refuse old bundles
+//! and changing its kind does.
+//!
 //! Which build is decided by the vocabulary (`__remote_guest_split!`,
 //! `__remote_enabled!`), so the defining crate declares no cfg and an app
 //! without remote components gets only the function.
 
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
-use syn::{FnArg, ItemFn, Pat, ReturnType, Type};
+use quote::{format_ident, quote, ToTokens};
+use syn::visit::Visit;
+use syn::visit_mut::VisitMut;
+use syn::{FnArg, GenericParam, ItemFn, Pat, ReturnType, Type, TypeParamBound, WherePredicate};
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Kind {
+    /// `KeyBytes` in the app.
+    Key,
+    /// `OpaqueBytes` in the app.
+    Opaque,
+    /// One instantiation per number type, picked by a tag.
+    Numeric,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Key => "Key",
+            Kind::Opaque => "Opaque",
+            Kind::Numeric => "Numeric",
+        }
+    }
+}
+
+/// The bound's trait name (its last path segment), or `None` for a
+/// lifetime.
+fn bound_name(b: &TypeParamBound) -> Option<(String, &syn::TraitBound)> {
+    match b {
+        TypeParamBound::Trait(t) => Some((t.path.segments.last()?.ident.to_string(), t)),
+        _ => None,
+    }
+}
+
+/// Each type parameter's kind, from its bounds (inline and in the where
+/// clause).
+fn classify(func: &ItemFn) -> syn::Result<Vec<(syn::Ident, Kind)>> {
+    let mut bounds: HashMap<String, Vec<&TypeParamBound>> = HashMap::new();
+    let mut order = Vec::new();
+    for p in &func.sig.generics.params {
+        match p {
+            GenericParam::Type(t) => {
+                order.push(t.ident.clone());
+                bounds.entry(t.ident.to_string()).or_default().extend(t.bounds.iter());
+            }
+            GenericParam::Lifetime(l) => {
+                return Err(syn::Error::new_spanned(l, "#[host_fn] can't take lifetime parameters: arguments cross by value"));
+            }
+            GenericParam::Const(c) => {
+                return Err(syn::Error::new_spanned(c, "#[host_fn] can't take const parameters"));
+            }
+        }
+    }
+    if let Some(w) = &func.sig.generics.where_clause {
+        for pred in &w.predicates {
+            let WherePredicate::Type(pt) = pred else {
+                return Err(syn::Error::new_spanned(pred, "#[host_fn]: only bounds on its type parameters are supported"));
+            };
+            let key = pt.bounded_ty.to_token_stream().to_string();
+            match bounds.get_mut(&key) {
+                Some(list) => list.extend(pt.bounds.iter()),
+                None => {
+                    return Err(syn::Error::new_spanned(
+                        &pt.bounded_ty,
+                        "#[host_fn]: a where-bound must be on one of its type parameters",
+                    ))
+                }
+            }
+        }
+    }
+
+    const KEY_EXTRAS: &[&str] = &["Key", "Opaque", "Ord", "PartialOrd", "Eq", "PartialEq", "Hash", "Clone", "Debug", "Send", "Sync"];
+    const OPAQUE_EXTRAS: &[&str] = &["Opaque", "Clone", "Debug", "Send", "Sync"];
+    const NUMERIC_EXTRAS: &[&str] = &[
+        "Numeric", "Copy", "Clone", "Debug", "Display", "Default", "PartialEq", "PartialOrd", "Send", "Sync",
+        "Add", "Sub", "Mul", "Div", "AddAssign", "SubAssign", "MulAssign", "DivAssign", "Sum", "Product",
+    ];
+
+    let mut out = Vec::new();
+    let mut numeric = 0;
+    for id in order {
+        let list = &bounds[&id.to_string()];
+        let names: Vec<(String, &syn::TraitBound)> = list.iter().filter_map(|b| bound_name(b)).collect();
+        for (n, t) in &names {
+            if matches!(n.as_str(), "Fn" | "FnMut" | "FnOnce") {
+                return Err(syn::Error::new_spanned(
+                    t,
+                    "#[host_fn] can't take a closure: the app would call back into the bundle for every use, \
+                     which is slower than doing the work in the bundle. Pass the data the closure would compute \
+                     (a key, a range, a field list) instead",
+                ));
+            }
+        }
+        let has = |n: &str| names.iter().any(|(m, _)| m == n);
+        let (kind, allowed) = if has("Numeric") {
+            (Kind::Numeric, NUMERIC_EXTRAS)
+        } else if has("Key") {
+            (Kind::Key, KEY_EXTRAS)
+        } else {
+            (Kind::Opaque, OPAQUE_EXTRAS)
+        };
+        if let Some((n, t)) = names.iter().find(|(n, _)| !allowed.contains(&n.as_str())) {
+            let hint = match kind {
+                Kind::Opaque => "a parameter without `Key` or `Numeric` is carried unread (`Opaque`)",
+                Kind::Key => "a `Key` parameter is compared, hashed and cloned as its bytes",
+                Kind::Numeric => "a `Numeric` parameter is one of the number types",
+            };
+            return Err(syn::Error::new_spanned(
+                t,
+                format!(
+                    "#[host_fn]: `{id}: {n}` isn't supported — {hint}, so the app compiles one copy for every \
+                     type a bundle could pass; `{n}` would need the bundle's own code"
+                ),
+            ));
+        }
+        if kind == Kind::Numeric {
+            numeric += 1;
+        }
+        out.push((id, kind));
+    }
+    if numeric > 2 {
+        return Err(syn::Error::new_spanned(
+            &func.sig.generics,
+            "#[host_fn]: at most two `Numeric` parameters (each multiplies the app's copies of the body by ten)",
+        ));
+    }
+    Ok(out)
+}
+
+/// Replace each type parameter with `with(ident, kind)` throughout a type.
+struct Subst<'a, F: Fn(&syn::Ident, Kind) -> Option<Type>> {
+    params: &'a [(syn::Ident, Kind)],
+    with: F,
+}
+
+impl<F: Fn(&syn::Ident, Kind) -> Option<Type>> VisitMut for Subst<'_, F> {
+    fn visit_type_mut(&mut self, ty: &mut Type) {
+        if let Type::Path(p) = ty {
+            if p.qself.is_none() && p.path.segments.len() == 1 && p.path.segments[0].arguments.is_empty() {
+                let id = &p.path.segments[0].ident;
+                if let Some((_, kind)) = self.params.iter().find(|(pid, _)| pid == id) {
+                    if let Some(new) = (self.with)(id, *kind) {
+                        *ty = new;
+                        return;
+                    }
+                }
+            }
+        }
+        syn::visit_mut::visit_type_mut(self, ty);
+    }
+}
+
+fn subst(ty: &Type, params: &[(syn::Ident, Kind)], with: impl Fn(&syn::Ident, Kind) -> Option<Type>) -> Type {
+    let mut ty = ty.clone();
+    Subst { params, with }.visit_type_mut(&mut ty);
+    ty
+}
+
+/// Does `ty` name any of `idents`?
+fn mentions(ty: &Type, idents: &[&syn::Ident]) -> bool {
+    struct Find<'a> {
+        idents: &'a [&'a syn::Ident],
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for Find<'_> {
+        fn visit_ident(&mut self, i: &'ast syn::Ident) {
+            if self.idents.contains(&i) {
+                self.found = true;
+            }
+        }
+    }
+    let mut f = Find { idents, found: false };
+    f.visit_type(ty);
+    f.found
+}
+
+/// The one generic argument of `Vec<X>` / `Option<X>` (`name` given).
+fn single_arg<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
+    let Type::Path(p) = ty else { return None };
+    let seg = p.path.segments.last()?;
+    if seg.ident != name {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(a) = &seg.arguments else { return None };
+    match a.args.first()? {
+        syn::GenericArgument::Type(t) if a.args.len() == 1 => Some(t),
+        _ => None,
+    }
+}
+
+/// The bundle stub's encoding of a value of `ty` (`expr` is a reference to
+/// it) — byte for byte what the app's `RemoteValue` of the substituted
+/// type reads: erased parameters framed, everything else as itself.
+struct Walk<'a> {
+    erased: &'a [(syn::Ident, Kind)],
+    v: TokenStream2,
+    depth: usize,
+}
+
+impl Walk<'_> {
+    fn erased_kind(&self, ty: &Type) -> Option<Kind> {
+        if let Type::Path(p) = ty {
+            if p.qself.is_none() && p.path.segments.len() == 1 && p.path.segments[0].arguments.is_empty() {
+                let id = &p.path.segments[0].ident;
+                return self.erased.iter().find(|(e, _)| e == id).map(|(_, k)| *k);
+            }
+        }
+        None
+    }
+
+    fn has_erased(&self, ty: &Type) -> bool {
+        let ids: Vec<&syn::Ident> = self.erased.iter().map(|(i, _)| i).collect();
+        mentions(ty, &ids)
+    }
+
+    fn encode(&mut self, ty: &Type, expr: TokenStream2) -> syn::Result<TokenStream2> {
+        let v = self.v.clone();
+        if let Some(kind) = self.erased_kind(ty) {
+            return Ok(match kind {
+                Kind::Key => quote! { #v::host_fn::encode_key(#expr, __out); },
+                _ => quote! { #v::host_fn::encode_opaque(#expr, __out); },
+            });
+        }
+        if !self.has_erased(ty) {
+            return Ok(quote! { #v::RemoteValue::encode(#expr, __out); });
+        }
+        // A list of keys: one run when they have a fixed width.
+        if let Some(inner) = single_arg(ty, "Vec") {
+            if self.erased_kind(inner) == Some(Kind::Key) {
+                return Ok(quote! { #v::host_fn::encode_keys::<#inner>(#expr, __out); });
+            }
+        }
+        self.depth += 1;
+        let x = format_ident!("__x{}", self.depth);
+        let out = if let Some(inner) = single_arg(ty, "Vec") {
+            let body = self.encode(inner, quote!(#x))?;
+            quote! {
+                #v::__send_value(&(::std::vec::Vec::len(#expr) as u64), __out);
+                for #x in ::core::iter::IntoIterator::into_iter(#expr) { #body }
+            }
+        } else if let Some(inner) = single_arg(ty, "Option") {
+            let body = self.encode(inner, quote!(#x))?;
+            quote! {
+                #v::__send_value(&::core::option::Option::is_some(#expr), __out);
+                if let ::core::option::Option::Some(#x) = ::core::option::Option::as_ref(#expr) { #body }
+            }
+        } else if let Type::Tuple(t) = ty {
+            let names: Vec<_> = (0..t.elems.len()).map(|i| format_ident!("__t{}_{}", self.depth, i)).collect();
+            let mut parts = Vec::new();
+            for (ty, n) in t.elems.iter().zip(&names) {
+                parts.push(self.encode(ty, quote!(#n))?);
+            }
+            quote! { { let ( #(#names,)* ) = #expr; #(#parts)* } }
+        } else if let Type::Array(a) = ty {
+            let body = self.encode(&a.elem, quote!(#x))?;
+            quote! { for #x in ::core::iter::IntoIterator::into_iter(#expr) { #body } }
+        } else if let Type::Paren(p) = ty {
+            self.encode(&p.elem, expr)?
+        } else {
+            return Err(unsupported_shape(ty));
+        };
+        Ok(out)
+    }
+
+    /// An expression decoding a value of `ty` from `__input`, in a scope
+    /// returning `Result<_, String>`.
+    fn decode(&mut self, ty: &Type) -> syn::Result<TokenStream2> {
+        let v = self.v.clone();
+        if let Some(kind) = self.erased_kind(ty) {
+            return Ok(match kind {
+                Kind::Key => quote! { #v::host_fn::decode_key::<#ty>(__input)? },
+                _ => quote! { #v::host_fn::decode_opaque::<#ty>(__input)? },
+            });
+        }
+        if !self.has_erased(ty) {
+            return Ok(quote! { <#ty as #v::RemoteValue>::decode(__input)? });
+        }
+        if let Some(inner) = single_arg(ty, "Vec") {
+            if self.erased_kind(inner) == Some(Kind::Key) {
+                return Ok(quote! { #v::host_fn::decode_keys::<#inner>(__input)? });
+            }
+        }
+        self.depth += 1;
+        let out = if let Some(inner) = single_arg(ty, "Vec") {
+            let body = self.decode(inner)?;
+            quote! {{
+                let __n = #v::__try_receive_value::<u64>(__input)?;
+                let mut __v = ::std::vec::Vec::new();
+                for _ in 0..__n { __v.push(#body); }
+                __v
+            }}
+        } else if let Some(inner) = single_arg(ty, "Option") {
+            let body = self.decode(inner)?;
+            quote! {
+                if #v::__try_receive_value::<bool>(__input)? { ::core::option::Option::Some(#body) } else { ::core::option::Option::None }
+            }
+        } else if let Type::Tuple(t) = ty {
+            let mut parts = Vec::new();
+            for ty in &t.elems {
+                parts.push(self.decode(ty)?);
+            }
+            quote! { ( #(#parts,)* ) }
+        } else if let Type::Array(a) = ty {
+            let (elem, len) = (&a.elem, &a.len);
+            let body = self.decode(elem)?;
+            quote! {{
+                let mut __v: ::std::vec::Vec<#elem> = ::std::vec::Vec::new();
+                for _ in 0..(#len) { __v.push(#body); }
+                <[#elem; #len] as ::core::convert::TryFrom<::std::vec::Vec<#elem>>>::try_from(__v)
+                    .map_err(|_| ::std::string::String::from("array length"))?
+            }}
+        } else if let Type::Paren(p) = ty {
+            self.decode(&p.elem)?
+        } else {
+            return Err(unsupported_shape(ty));
+        };
+        Ok(out)
+    }
+}
+
+fn unsupported_shape(ty: &Type) -> syn::Error {
+    syn::Error::new_spanned(
+        ty,
+        "#[host_fn]: a generic parameter can cross as itself or inside `Vec`, `Option`, tuples and arrays; \
+         use one of those here (a map crosses as `Vec<(K, V)>`)",
+    )
+}
 
 pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     let sig = &func.sig;
     let name = &sig.ident;
     let vis = &func.vis;
     let is_async = sig.asyncness.is_some();
-    if !sig.generics.params.is_empty() {
-        return Err(syn::Error::new_spanned(&sig.generics, "#[host_fn] can't be generic: the signature is a wire contract"));
-    }
+    let params = classify(&func)?;
     let mut arg_names = Vec::new();
     let mut arg_types: Vec<&Type> = Vec::new();
     for arg in &sig.inputs {
         match arg {
             FnArg::Receiver(r) => return Err(syn::Error::new_spanned(r, "#[host_fn] must be a free function")),
-            FnArg::Typed(pt) => match &*pt.pat {
-                Pat::Ident(pi) => {
-                    arg_names.push(pi.ident.clone());
-                    arg_types.push(&pt.ty);
+            FnArg::Typed(pt) => {
+                if let Type::ImplTrait(_) = &*pt.ty {
+                    return Err(syn::Error::new_spanned(&pt.ty, "#[host_fn] arguments can't be `impl Trait`: name a type parameter"));
                 }
-                other => return Err(syn::Error::new_spanned(other, "#[host_fn] arguments must be plain identifiers")),
-            },
+                match &*pt.pat {
+                    Pat::Ident(pi) => {
+                        arg_names.push(pi.ident.clone());
+                        arg_types.push(&pt.ty);
+                    }
+                    other => return Err(syn::Error::new_spanned(other, "#[host_fn] arguments must be plain identifiers")),
+                }
+            }
         }
     }
-    let ret: TokenStream2 = match &sig.output {
-        ReturnType::Default => quote!(()),
-        ReturnType::Type(_, ty) => quote!(#ty),
+    let ret_ty: Type = match &sig.output {
+        ReturnType::Default => syn::parse_quote!(()),
+        ReturnType::Type(_, ty) => (**ty).clone(),
     };
+    let v = quote!(::runtime_vocabulary::remote);
+    let ht = quote!(::runtime_vocabulary::host_types);
 
     // The type spellings, hashed with FNV-1a: app and bundle may be built
     // by different toolchains, and std's `DefaultHasher` promises no
     // stability across Rust releases. Each part is length-prefixed so
-    // `(ab, c)` and `(a, bc)` differ.
+    // `(ab, c)` and `(a, bc)` differ. A type parameter is spelled by its
+    // position and kind; a non-generic signature hashes exactly as before
+    // generics existed.
     let schema: u64 = {
-        let mut parts: Vec<String> = arg_types.iter().map(|ty| quote!(#ty).to_string()).collect();
-        parts.push(ret.to_string());
+        let positional = |ty: &Type| {
+            let t = subst(ty, &params, |id, kind| {
+                let i = params.iter().position(|(p, _)| p == id).expect("a parameter");
+                let marker = format_ident!("__{}{}", kind.name(), i);
+                Some(syn::parse_quote!(#marker))
+            });
+            quote!(#t).to_string()
+        };
+        let mut parts: Vec<String> = arg_types.iter().map(|ty| positional(ty)).collect();
+        parts.push(match &sig.output {
+            ReturnType::Default => "()".to_string(),
+            ReturnType::Type(_, ty) => positional(ty),
+        });
         parts.push(if is_async { "async" } else { "sync" }.to_string());
+        if !params.is_empty() {
+            parts.push(params.iter().map(|(_, k)| k.name()).collect::<Vec<_>>().join(","));
+        }
         fnv1a(&parts)
     };
     let schema_hex = format!("{schema:016x}");
-    let v = quote!(::runtime_vocabulary::remote);
+
+    // --- App side ------------------------------------------------------------
+    // The arguments and result with each erased parameter replaced by its
+    // stand-in; numeric parameters stay generic (the inner call's own).
+    let app_subst = |ty: &Type| {
+        subst(ty, &params, |_, kind| match kind {
+            Kind::Key => Some(syn::parse_quote!(#ht::KeyBytes)),
+            Kind::Opaque => Some(syn::parse_quote!(#ht::OpaqueBytes)),
+            Kind::Numeric => None,
+        })
+    };
+    let app_arg_types: Vec<Type> = arg_types.iter().map(|t| app_subst(t)).collect();
+    let numeric: Vec<&syn::Ident> = params.iter().filter(|(_, k)| *k == Kind::Numeric).map(|(i, _)| i).collect();
+    let turbofish: TokenStream2 = if params.is_empty() {
+        quote!()
+    } else {
+        let args = params.iter().map(|(id, kind)| match kind {
+            Kind::Key => quote!(#ht::KeyBytes),
+            Kind::Opaque => quote!(#ht::OpaqueBytes),
+            Kind::Numeric => quote!(#id),
+        });
+        quote!(::<#(#args),*>)
+    };
+    let inner_generics = if numeric.is_empty() {
+        quote!()
+    } else {
+        quote!(<#(#numeric: #ht::Numeric + #v::RemoteValue),*>)
+    };
 
     let call_ident = format_ident!("__host_fn_call_{}", name);
+    let inner_ident = format_ident!("__host_fn_inner_{}", name);
     let export_ident = format_ident!("__host_fn_export_{}", name);
     // A bundle's arguments are untrusted: one that does not decode is an
     // `Err`, which stops that bundle (never a panic in the app).
     let decode_args = quote! {
-        let mut __input: &[u8] = &__args;
         #(
-            let #arg_names: #arg_types = <#arg_types as #v::RemoteValue>::decode(&mut __input).map_err(|e| {
+            let #arg_names: #app_arg_types = <#app_arg_types as #v::RemoteValue>::decode(&mut __input).map_err(|e| {
                 ::std::format!(
                     "host_fn `{}`: argument `{}` does not decode ({})",
                     ::core::stringify!(#name), ::core::stringify!(#arg_names), e
@@ -87,57 +492,157 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
         }}
     };
 
+    // The tags a numeric call starts with, one per numeric parameter, and
+    // the dispatch from them to the inner call's instantiation.
+    let numeric_types: Vec<TokenStream2> =
+        ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f32", "f64"].iter().map(|t| t.parse().unwrap()).collect();
+    let dispatch = |call: &dyn Fn(&[&TokenStream2]) -> TokenStream2| -> TokenStream2 {
+        fn level(
+            depth: usize,
+            count: usize,
+            chosen: &mut Vec<usize>,
+            types: &[TokenStream2],
+            ht: &TokenStream2,
+            call: &dyn Fn(&[&TokenStream2]) -> TokenStream2,
+        ) -> TokenStream2 {
+            if depth == count {
+                let picked: Vec<&TokenStream2> = chosen.iter().map(|i| &types[*i]).collect();
+                return call(&picked);
+            }
+            let mut arms = Vec::new();
+            for i in 0..types.len() {
+                chosen.push(i);
+                let body = level(depth + 1, count, chosen, types, ht, call);
+                chosen.pop();
+                let t = &types[i];
+                arms.push(quote! { __t if __t == <#t as #ht::Numeric>::TAG => #body, });
+            }
+            quote! {
+                match __tags[#depth] {
+                    #(#arms)*
+                    __t => ::core::result::Result::Err(::std::format!("host_fn: no number type has tag {}", __t)),
+                }
+            }
+        }
+        level(0, numeric.len(), &mut Vec::new(), &numeric_types, &ht, call)
+    };
+    let n_tags = numeric.len();
+    let take_tags = quote! {
+        if __args.len() < #n_tags {
+            return ::core::result::Result::Err(::std::string::String::from("host_fn: the call is missing its number types"));
+        }
+        let (__tags, __rest) = __args.split_at(#n_tags);
+    };
+
     let (call_fn, kind) = if is_async {
-        let reply = encode_reply(quote!(#name(#(#arg_names),*).await));
+        let reply = encode_reply(quote!(#name #turbofish (#(#arg_names),*).await));
+        let inner = quote! {
+            fn #inner_ident #inner_generics (__args: &[u8]) -> ::core::result::Result<
+                ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::std::vec::Vec<u8>>>>,
+                ::std::string::String,
+            > {
+                let mut __input: &[u8] = __args;
+                #decode_args
+                ::core::result::Result::Ok(::std::boxed::Box::pin(async move { #reply }))
+            }
+        };
+        let body = if numeric.is_empty() {
+            quote! { #inner_ident(&__args) }
+        } else {
+            let d = dispatch(&|ts| quote! { #inner_ident::<#(#ts),*>(__rest) });
+            quote! { #take_tags #d }
+        };
         (
             quote! {
+                #inner
                 fn #call_ident(__args: ::std::vec::Vec<u8>) -> ::core::result::Result<
                     ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = ::std::vec::Vec<u8>>>>,
                     ::std::string::String,
                 > {
-                    #decode_args
-                    ::core::result::Result::Ok(::std::boxed::Box::pin(async move { #reply }))
+                    #body
                 }
             },
             quote!(#v::host_fn::HostFnKind::Async(#call_ident)),
         )
     } else {
-        let reply = encode_reply(quote!(#name(#(#arg_names),*)));
+        let reply = encode_reply(quote!(#name #turbofish (#(#arg_names),*)));
+        let inner = quote! {
+            fn #inner_ident #inner_generics (__args: &[u8]) -> ::core::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
+                let mut __input: &[u8] = __args;
+                #decode_args
+                ::core::result::Result::Ok(#reply)
+            }
+        };
+        let body = if numeric.is_empty() {
+            quote! { #inner_ident(__args) }
+        } else {
+            let d = dispatch(&|ts| quote! { #inner_ident::<#(#ts),*>(__rest) });
+            quote! { #take_tags #d }
+        };
         (
             quote! {
+                #inner
                 fn #call_ident(__args: &[u8]) -> ::core::result::Result<::std::vec::Vec<u8>, ::std::string::String> {
-                    #decode_args
-                    ::core::result::Result::Ok(#reply)
+                    #body
                 }
             },
             quote!(#v::host_fn::HostFnKind::Sync(#call_ident)),
         )
     };
 
+    // --- Bundle side -----------------------------------------------------------
+    let erased: Vec<(syn::Ident, Kind)> = params.iter().filter(|(_, k)| *k != Kind::Numeric).cloned().collect();
+    let mut walk = Walk { erased: &erased, v: v.clone(), depth: 0 };
+    let mut encode_each = Vec::new();
+    for (n, ty) in arg_names.iter().zip(&arg_types) {
+        encode_each.push(walk.encode(ty, quote!(&#n))?);
+    }
+    let decode_ret = walk.decode(&ret_ty)?;
+    let tags = numeric.iter().map(|t| quote! { __out.push(<#t as #ht::Numeric>::TAG); });
+    let encode_args = quote! {
+        let mut __args = ::std::vec::Vec::new();
+        {
+            let __out = &mut __args;
+            #(#tags)*
+            #(#encode_each)*
+        }
+    };
+    // What a bundle's value of an erased or numeric parameter needs to
+    // cross: its own codec (an `Opaque` value is carried as its encoding;
+    // a number is one).
+    let mut stub_generics = sig.generics.clone();
+    for (id, kind) in &params {
+        if *kind != Kind::Key {
+            stub_generics.make_where_clause().predicates.push(syn::parse_quote!(#id: #v::RemoteValue));
+        }
+    }
+    let (stub_impl_g, _, stub_where) = stub_generics.split_for_impl();
+    let param_idents: Vec<&syn::Ident> = params.iter().map(|(i, _)| i).collect();
+    let param_turbofish = if params.is_empty() { quote!() } else { quote!(::<#(#param_idents),*>) };
+
     let attrs = &func.attrs;
     let block = &func.block;
     let inputs = &sig.inputs;
-    let encode_args = quote! {
-        let mut __args = ::std::vec::Vec::new();
-        #( #v::RemoteValue::encode(&#arg_names, &mut __args); )*
-    };
-
     let stub = if is_async {
         quote! {
             #(#attrs)*
-            #vis fn #name(#inputs) -> #v::bundle::HostFuture<#ret> {
+            #vis fn #name #stub_impl_g (#inputs) -> #v::bundle::HostFuture<#ret_ty> #stub_where {
                 #[link(wasm_import_module = "idealyst_host_fn")]
                 unsafe extern "C" {
                     #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
                     fn __import(args_ptr: *const u8, args_len: u32, then: u32);
                 }
                 #encode_args
-                fn __decode(mut b: &[u8]) -> ::core::option::Option<#ret> {
-                    <#ret as #v::RemoteValue>::decode(&mut b).ok()
+                fn __decode #stub_impl_g (__bytes: &[u8]) -> ::core::option::Option<#ret_ty> #stub_where {
+                    let mut __bytes = __bytes;
+                    let __input = &mut __bytes;
+                    (|| -> ::core::result::Result<#ret_ty, ::std::string::String> {
+                        ::core::result::Result::Ok(#decode_ret)
+                    })().ok()
                 }
                 // SAFETY: the app copies `args_len` bytes at `args_ptr`
                 // during the call.
-                #v::bundle::HostFuture::start(stringify!(#name), __args, __decode, |ptr, len, then| unsafe {
+                #v::bundle::HostFuture::start(stringify!(#name), __args, __decode #param_turbofish, |ptr, len, then| unsafe {
                     __import(ptr, len, then)
                 })
             }
@@ -145,7 +650,7 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
     } else {
         quote! {
             #(#attrs)*
-            #vis fn #name(#inputs) -> #ret {
+            #vis fn #name #stub_impl_g (#inputs) -> #ret_ty #stub_where {
                 #[link(wasm_import_module = "idealyst_host_fn")]
                 unsafe extern "C" {
                     #[link_name = concat!(module_path!(), "::", stringify!(#name), "#", #schema_hex)]
@@ -155,8 +660,11 @@ pub(crate) fn expand(func: ItemFn) -> syn::Result<TokenStream2> {
                 // SAFETY: as above; the reply is left in the bundle's
                 // argument buffer.
                 let __reply = #v::bundle::host_fn_sync(&__args, |ptr, len| unsafe { __import(ptr, len) });
-                let mut __input: &[u8] = &__reply;
-                <#ret as #v::RemoteValue>::decode(&mut __input).unwrap_or_else(|e| panic!(
+                let mut __bytes: &[u8] = &__reply;
+                let __input = &mut __bytes;
+                (|| -> ::core::result::Result<#ret_ty, ::std::string::String> {
+                    ::core::result::Result::Ok(#decode_ret)
+                })().unwrap_or_else(|e| panic!(
                     "host_fn `{}`: the reply does not decode ({}) — the load-time schema check should have refused this bundle",
                     stringify!(#name), e
                 ))
@@ -230,6 +738,35 @@ mod tests {
         assert_ne!(fnv1a(&["ab".into(), "c".into()]), fnv1a(&["a".into(), "bc".into()]));
     }
 
+    fn schema_of(f: ItemFn) -> String {
+        let out = expand(f).unwrap().to_string();
+        let at = out.find("schema :").expect("a schema");
+        out[at..].split(',').next().unwrap().to_string()
+    }
+
+    /// Generics didn't change a non-generic function's fingerprint (old
+    /// bundles keep loading).
+    #[test]
+    fn a_non_generic_schema_is_unchanged() {
+        let f: ItemFn = syn::parse_quote! { pub fn f(a: u32, b: bool) -> u32 { 1 } };
+        let want = fnv1a(&["u32".into(), "bool".into(), "u32".into(), "sync".into()]);
+        assert!(schema_of(f).contains(&format!("{want}u64")));
+    }
+
+    /// A type parameter is spelled by position and kind: renaming it keeps
+    /// the fingerprint, changing its kind doesn't.
+    #[test]
+    fn a_generic_schema_follows_kinds_not_names() {
+        let a = schema_of(syn::parse_quote! { fn order<K: Key>(keys: Vec<K>) -> Vec<u32> { todo!() } });
+        let b = schema_of(syn::parse_quote! { fn order<T: Key>(keys: Vec<T>) -> Vec<u32> { todo!() } });
+        let c = schema_of(syn::parse_quote! { fn order<T: Opaque>(keys: Vec<T>) -> Vec<u32> { todo!() } });
+        let d = schema_of(syn::parse_quote! { fn order<T: Numeric>(keys: Vec<T>) -> Vec<u32> { todo!() } });
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
+        assert_ne!(c, d);
+    }
+
     #[test]
     fn a_host_fn_splits_by_build_through_the_vocabulary() {
         let f: ItemFn = syn::parse_quote! { pub fn set_scheme(dark: bool) -> u32 { 1 } };
@@ -241,8 +778,48 @@ mod tests {
     }
 
     #[test]
-    fn generic_host_fns_are_rejected() {
-        let f: ItemFn = syn::parse_quote! { fn g<T>(t: T) {} };
-        assert!(expand(f).is_err());
+    fn parameters_are_classified_by_their_bounds() {
+        let f: ItemFn = syn::parse_quote! {
+            fn f<K: Key + Clone, V, N: Numeric, W>(a: Vec<(K, V)>, n: Vec<N>, w: W) -> u32 where W: Opaque + Send { 0 }
+        };
+        let kinds: Vec<Kind> = classify(&f).unwrap().into_iter().map(|(_, k)| k).collect();
+        assert_eq!(kinds, [Kind::Key, Kind::Opaque, Kind::Numeric, Kind::Opaque]);
+    }
+
+    /// In the app, `Key` becomes `KeyBytes`, `Opaque` `OpaqueBytes`, and a
+    /// numeric parameter is dispatched by tag over all ten types.
+    #[test]
+    fn the_app_instantiates_stand_ins_and_dispatches_numbers() {
+        let f: ItemFn = syn::parse_quote! { fn group<K: Key, V: Opaque, N: Numeric>(rows: Vec<(K, V)>, w: Vec<N>) -> Vec<(K, Vec<V>)> { todo!() } };
+        let out = expand(f).unwrap().to_string();
+        assert!(out.contains("group :: < :: runtime_vocabulary :: host_types :: KeyBytes , :: runtime_vocabulary :: host_types :: OpaqueBytes , N >"), "{out}");
+        for t in ["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "f32", "f64"] {
+            assert!(out.contains(&format!("__host_fn_inner_group :: < {t} >")), "{t}: {out}");
+        }
+    }
+
+    fn err(f: ItemFn) -> String {
+        expand(f).err().expect("refused").to_string()
+    }
+
+    #[test]
+    fn closures_and_other_bounds_are_refused_with_a_reason() {
+        assert!(err(syn::parse_quote! { fn f<T, F: Fn(&T) -> bool>(v: Vec<T>, keep: F) {} }).contains("closure"));
+        assert!(err(syn::parse_quote! { fn f<T: Display>(v: T) {} }).contains("`T: Display` isn't supported"));
+        assert!(err(syn::parse_quote! { fn f<K: Key + Default>(v: K) {} }).contains("`K: Default` isn't supported"));
+        assert!(err(syn::parse_quote! { fn f<'a>(v: &'a str) {} }).contains("lifetime"));
+        assert!(err(syn::parse_quote! { fn f<const N: usize>(v: [u8; N]) {} }).contains("const"));
+        assert!(err(syn::parse_quote! { fn f(v: impl Key) {} }).contains("impl Trait"));
+        assert!(err(syn::parse_quote! { fn f<A: Numeric, B: Numeric, C: Numeric>(a: A, b: B, c: C) {} }).contains("at most two"));
+    }
+
+    /// An erased parameter inside a type the stub can't walk is refused,
+    /// naming the alternative.
+    #[test]
+    fn an_erased_parameter_in_an_unwalkable_shape_is_refused() {
+        let e = err(syn::parse_quote! { fn f<K: Key>(m: HashMap<K, u32>) {} });
+        assert!(e.contains("Vec<(K, V)>"), "{e}");
+        // Numbers cross as themselves anywhere: no walk needed.
+        assert!(expand(syn::parse_quote! { fn f<N: Numeric>(m: Option<N>) -> (N, u8) { todo!() } }).is_ok());
     }
 }

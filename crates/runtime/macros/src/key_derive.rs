@@ -180,6 +180,34 @@ pub(crate) fn derive(input: DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     let (decode_idx, decode_build): (Vec<u32>, Vec<TokenStream2>) = decode_arms.into_iter().unzip();
+
+    // Every key's length, when all have one: the sum of the fields' (an
+    // enum's when every variant's is the same, plus its tag).
+    let field_width = |ty: &Type| match float(ty) {
+        Float::F64 => quote!(::core::option::Option::Some(8usize)),
+        Float::F32 => quote!(::core::option::Option::Some(4usize)),
+        Float::No => quote!(<#ty as #k::Key>::WIDTH),
+    };
+    let variant_width = |fields: &Fields| {
+        let parts = field_types(fields).into_iter().map(|t| field_width(t));
+        quote! {{
+            let __w = ::core::option::Option::Some(0usize);
+            #( let __w = #k::width_sum(__w, #parts); )*
+            __w
+        }}
+    };
+    let width = if is_enum {
+        let tag = if wide { 4usize } else { 1usize };
+        let first = variant_width(arms[0].fields);
+        let rest = arms[1..].iter().map(|a| variant_width(a.fields));
+        quote! {{
+            let __w = #first;
+            #( let __w = #k::width_same(__w, #rest); )*
+            #k::width_sum(__w, ::core::option::Option::Some(#tag))
+        }}
+    } else {
+        variant_width(arms[0].fields)
+    };
     let (cmp_body, hash_body, encode_body, decode_body) = if is_enum {
         let read_tag = if wide {
             quote! { <u32 as #k::Key>::decode_key(__input)? }
@@ -253,6 +281,7 @@ pub(crate) fn derive(input: DeriveInput) -> syn::Result<TokenStream2> {
             fn hash<__H: ::core::hash::Hasher>(&self, __h: &mut __H) { #hash_body }
         }
         impl #impl_g #k::Key for #name #ty_g #where_g {
+            const WIDTH: ::core::option::Option<usize> = #width;
             #[allow(unused_variables)]
             fn encode_key(&self, __out: &mut ::std::vec::Vec<u8>) { #encode_body }
             #[allow(unused_variables)]

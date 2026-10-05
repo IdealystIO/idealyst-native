@@ -60,38 +60,157 @@ pub fn parse_import_name(name: &str) -> Option<(&str, u64)> {
 // A generic `#[host_fn]`'s `K: Key` parameter is `KeyBytes` in the app and
 // `V: Opaque` is `OpaqueBytes`; each crosses FRAMED (its length, then its
 // bytes), because the app can't tell where a value of a type it doesn't
-// know ends. The app decodes them as the `RemoteValue`s below; a bundle's
+// know ends. The length is a fixed 4 bytes (little-endian) so the bundle
+// writes the value straight into the call's buffer and patches the length
+// after: framing through a temporary buffer and a varint cost several
+// allocations per key, interpreted — 373 ms to send 200k two-field keys,
+// against 51 ms for the same bytes built by hand. The app decodes them as the `RemoteValue`s below; a bundle's
 // stub, which has the real types, writes and reads them with these
 // functions — so the two agree byte for byte.
 
 use super::RemoteValue;
 use crate::host_types::{Key, KeyBytes, OpaqueBytes};
 
-fn frame(bytes: &[u8], out: &mut Vec<u8>) {
-    super::__send_value(&(bytes.len() as u64), out);
-    out.extend_from_slice(bytes);
+/// Write a frame whose body `write` appends.
+fn frame(out: &mut Vec<u8>, write: impl FnOnce(&mut Vec<u8>)) {
+    let at = out.len();
+    out.extend_from_slice(&[0; 4]);
+    write(out);
+    let n = u32::try_from(out.len() - at - 4).expect("a value over 4 GB");
+    out[at..at + 4].copy_from_slice(&n.to_le_bytes());
 }
 
 fn unframe<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], String> {
-    let n = super::__try_receive_value::<u64>(input)?;
-    let n = usize::try_from(n).ok().filter(|&n| n <= input.len()).ok_or_else(|| format!("a value claims {n} bytes with {} left", input.len()))?;
-    let (head, tail) = input.split_at(n);
-    *input = tail;
-    Ok(head)
+    let len: [u8; 4] = input.get(..4).ok_or("a value's length is cut off")?.try_into().expect("4 bytes");
+    let n = u32::from_le_bytes(len) as usize;
+    let body = input.get(4..4 + n).ok_or_else(|| format!("a value claims {n} bytes with {} left", input.len() - 4))?;
+    *input = &input[4 + n..];
+    Ok(body)
 }
+
+/// A list of keys starts with its layout: [`STRIDE`] then one length for
+/// all (keys of a fixed width, `Key::WIDTH`, or a reply whose keys happen
+/// to be one length), or [`FRAMED`], a length per key.
+const FRAMED: u8 = 0;
+const STRIDE: u8 = 1;
 
 impl RemoteValue for KeyBytes {
     fn encode(&self, out: &mut Vec<u8>) {
-        frame(self.as_bytes(), out)
+        frame(out, |out| out.extend_from_slice(self.as_bytes()))
     }
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         Ok(KeyBytes::from_raw(unframe(input)?.to_vec()))
+    }
+    fn encode_many(items: &[Self], out: &mut Vec<u8>) {
+        match items.first() {
+            Some(first) if items.iter().all(|k| k.as_bytes().len() == first.as_bytes().len()) => {
+                out.push(STRIDE);
+                out.extend_from_slice(&(first.as_bytes().len() as u32).to_le_bytes());
+                for k in items {
+                    out.extend_from_slice(k.as_bytes());
+                }
+            }
+            _ => {
+                out.push(FRAMED);
+                for k in items {
+                    k.encode(out);
+                }
+            }
+        }
+    }
+    fn decode_many(n: usize, input: &mut &[u8]) -> Result<Vec<Self>, String> {
+        match take_layout(input)? {
+            None => (0..n).map(|_| <KeyBytes as RemoteValue>::decode(input)).collect(),
+            Some(stride) => {
+                let run = take_run(n, stride, input)?;
+                Ok(if stride == 0 { vec![KeyBytes::from_raw(Vec::new()); n] } else { run.chunks(stride).map(|c| KeyBytes::from_raw(c.to_vec())).collect() })
+            }
+        }
+    }
+}
+
+/// A list's layout byte: `Some(stride)` or `None` (framed).
+fn take_layout(input: &mut &[u8]) -> Result<Option<usize>, String> {
+    let (&mode, rest) = input.split_first().ok_or("a key list's layout is cut off")?;
+    *input = rest;
+    match mode {
+        FRAMED => Ok(None),
+        STRIDE => {
+            let len: [u8; 4] = input.get(..4).ok_or("a key list's stride is cut off")?.try_into().expect("4 bytes");
+            *input = &input[4..];
+            Ok(Some(u32::from_le_bytes(len) as usize))
+        }
+        m => Err(format!("a key list has layout {m}")),
+    }
+}
+
+/// `n` keys of `stride` bytes, checked against what's left before anything
+/// is allocated.
+fn take_run<'a>(n: usize, stride: usize, input: &mut &'a [u8]) -> Result<&'a [u8], String> {
+    let total = n
+        .checked_mul(stride)
+        .filter(|&t| t <= input.len())
+        .ok_or_else(|| format!("{n} keys of {stride} bytes with {} left", input.len()))?;
+    let (run, rest) = input.split_at(total);
+    *input = rest;
+    Ok(run)
+}
+
+/// A bundle's `Vec<K>` as the app's `Vec<KeyBytes>` reads it: one run
+/// when `K` has a fixed width, a frame per key otherwise.
+#[doc(hidden)]
+pub fn encode_keys<K: Key>(keys: &[K], out: &mut Vec<u8>) {
+    super::__send_value(&(keys.len() as u64), out);
+    match K::WIDTH {
+        Some(w) => {
+            out.push(STRIDE);
+            out.extend_from_slice(&(w as u32).to_le_bytes());
+            out.reserve(w * keys.len());
+            for k in keys {
+                k.encode_key(out);
+            }
+        }
+        None => {
+            out.push(FRAMED);
+            for k in keys {
+                encode_key(k, out);
+            }
+        }
+    }
+}
+
+/// The app's `Vec<KeyBytes>` reply as the bundle's `Vec<K>`.
+#[doc(hidden)]
+pub fn decode_keys<K: Key>(input: &mut &[u8]) -> Result<Vec<K>, String> {
+    let n = super::__try_receive_value::<u64>(input)?;
+    let n = usize::try_from(n).map_err(|_| "a key list too long".to_string())?;
+    match take_layout(input)? {
+        None => {
+            let mut keys = Vec::new();
+            for _ in 0..n {
+                keys.push(decode_key(input)?);
+            }
+            Ok(keys)
+        }
+        Some(stride) => {
+            let mut run = take_run(n, stride, input)?;
+            let mut keys = Vec::with_capacity(n);
+            for _ in 0..n {
+                let (mut one, rest) = run.split_at(stride);
+                keys.push(K::decode_key(&mut one)?);
+                if !one.is_empty() {
+                    return Err(format!("{} bytes after a key", one.len()));
+                }
+                run = rest;
+            }
+            Ok(keys)
+        }
     }
 }
 
 impl RemoteValue for OpaqueBytes {
     fn encode(&self, out: &mut Vec<u8>) {
-        frame(self.as_raw(), out)
+        frame(out, |out| out.extend_from_slice(self.as_raw()))
     }
     fn decode(input: &mut &[u8]) -> Result<Self, String> {
         Ok(OpaqueBytes::from_raw(unframe(input)?.to_vec()))
@@ -101,9 +220,7 @@ impl RemoteValue for OpaqueBytes {
 /// A bundle's `K` as the app's `KeyBytes` reads it.
 #[doc(hidden)]
 pub fn encode_key<K: Key>(k: &K, out: &mut Vec<u8>) {
-    let mut bytes = Vec::new();
-    k.encode_key(&mut bytes);
-    frame(&bytes, out)
+    frame(out, |out| k.encode_key(out))
 }
 
 /// A `KeyBytes` the app sent back, as the bundle's `K`. `Err` when the
@@ -118,9 +235,7 @@ pub fn decode_key<K: Key>(input: &mut &[u8]) -> Result<K, String> {
 /// A bundle's `V` as the app's `OpaqueBytes` reads it.
 #[doc(hidden)]
 pub fn encode_opaque<V: RemoteValue>(v: &V, out: &mut Vec<u8>) {
-    let mut bytes = Vec::new();
-    v.encode(&mut bytes);
-    frame(&bytes, out)
+    frame(out, |out| v.encode(out))
 }
 
 /// An `OpaqueBytes` the app sent back, as the bundle's `V`.
@@ -140,23 +255,24 @@ mod tests {
     /// as the bundle's keys — byte for byte, so the two sides agree.
     #[test]
     fn a_bundles_keys_read_as_the_apps_key_bytes_and_back() {
-        let keys = vec![(3u16, "b".to_string()), (1, "a\0".to_string()), (3, "a".to_string())];
-        let mut wire = Vec::new();
-        super::super::__send_value(&(keys.len() as u64), &mut wire);
-        for k in &keys {
-            encode_key(k, &mut wire);
+        fn round<K: Key + std::fmt::Debug>(keys: Vec<K>) {
+            let mut wire = Vec::new();
+            encode_keys(&keys, &mut wire);
+            let mut app: Vec<KeyBytes> = RemoteValue::decode(&mut &wire[..]).unwrap();
+            assert_eq!(app, keys.iter().map(KeyBytes::of).collect::<Vec<_>>());
+            app.sort();
+            let mut reply = Vec::new();
+            app.encode(&mut reply);
+            let back: Vec<K> = decode_keys(&mut &reply[..]).unwrap();
+            let mut want = keys;
+            want.sort();
+            assert_eq!(back, want, "sorting the bytes sorted the keys");
         }
-        let mut app: Vec<KeyBytes> = RemoteValue::decode(&mut &wire[..]).unwrap();
-        assert_eq!(app, keys.iter().map(KeyBytes::of).collect::<Vec<_>>());
-        app.sort();
-        let mut reply = Vec::new();
-        app.encode(&mut reply);
-        let mut input = &reply[..];
-        let n = super::super::__try_receive_value::<u64>(&mut input).unwrap();
-        let back: Vec<(u16, String)> = (0..n).map(|_| decode_key(&mut input).unwrap()).collect();
-        let mut want = keys.clone();
-        want.sort();
-        assert_eq!(back, want, "sorting the bytes sorted the keys");
+        // Framed (a String has no fixed width), then one run.
+        round(vec![(3u16, "b".to_string()), (1, "a\0".to_string()), (3, "a".to_string())]);
+        round(vec![(3u16, -1i32), (1, 7), (3, -9)]);
+        round(Vec::<u32>::new());
+        round(vec![(), ()]);
     }
 
     #[test]
@@ -170,6 +286,33 @@ mod tests {
         assert_eq!(decode_opaque::<(u32, Vec<f64>, String)>(&mut &back[..]).unwrap(), v);
     }
 
+    /// A fixed-width list really is one run: the count, the layout, the
+    /// stride, then the keys back to back.
+    #[test]
+    fn fixed_width_keys_cross_as_one_run() {
+        let mut wire = Vec::new();
+        encode_keys(&[1u16, 0x0203], &mut wire);
+        assert_eq!(wire, [2, STRIDE, 2, 0, 0, 0, 0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_malformed_key_list_is_refused() {
+        // 3 keys of 4 bytes claimed, 8 bytes there.
+        let bad = [3u8, STRIDE, 4, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+        assert!(decode_keys::<u32>(&mut &bad[..]).is_err());
+        assert!(<Vec<KeyBytes>>::decode(&mut &bad[..]).is_err());
+        // A stride the type doesn't fill exactly.
+        let odd = [1u8, STRIDE, 5, 0, 0, 0, 1, 2, 3, 4, 5];
+        assert!(decode_keys::<u32>(&mut &odd[..]).is_err());
+        assert!(decode_keys::<u32>(&mut &[1u8, 9][..]).is_err(), "an unknown layout");
+        // A stride times a count that overflows is refused, not wrapped.
+        let mut huge = Vec::new();
+        super::super::__send_value(&(u32::MAX as u64), &mut huge);
+        huge.extend_from_slice(&[STRIDE, 0xff, 0xff, 0xff, 0xff]);
+        huge.extend(std::iter::repeat_n(0u8, 64));
+        assert!(decode_keys::<u32>(&mut &huge[..]).is_err());
+    }
+
     /// A key frame that doesn't hold exactly one key is refused.
     #[test]
     fn a_malformed_key_frame_is_refused() {
@@ -177,6 +320,7 @@ mod tests {
         encode_key(&7u32, &mut wire);
         assert!(decode_key::<u16>(&mut &wire[..]).is_err(), "bytes left in the frame");
         assert!(decode_key::<u64>(&mut &wire[..]).is_err(), "the frame ends early");
-        assert!(decode_key::<u32>(&mut &[9u8, 1][..]).is_err(), "a frame longer than the input");
+        assert!(decode_key::<u32>(&mut &[9u8, 0, 0, 0, 1][..]).is_err(), "a frame longer than the input");
+        assert!(decode_key::<u32>(&mut &[4u8, 0][..]).is_err(), "a length cut off");
     }
 }

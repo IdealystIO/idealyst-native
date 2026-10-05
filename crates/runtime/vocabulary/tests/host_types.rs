@@ -134,6 +134,9 @@ fn check<K: Key + Gen + Debug>(seed: u64) {
     for _ in 0..4000 {
         let (a, b) = (K::gen(&mut r), K::gen(&mut r));
         let (ea, eb) = (bytes(&a), bytes(&b));
+        if let Some(w) = K::WIDTH {
+            assert_eq!((ea.len(), eb.len()), (w, w), "{a:?} / {b:?}: WIDTH says {w}");
+        }
         assert_eq!(a.cmp(&b), ea.cmp(&eb), "{a:?} vs {b:?}: bytes {ea:02x?} vs {eb:02x?}");
         assert_eq!(a == b, ea == eb, "{a:?} vs {b:?}");
         if a == b {
@@ -304,6 +307,34 @@ fn malformed_keys_are_refused() {
     assert!(Vec::<u8>::decode_key(&mut &[1u8, 5, 2][..]).is_err());
     assert!(Shape::decode_key(&mut &[9u8][..]).is_err());
     assert!(KeyBytes::of(&7u32).decode::<u16>().is_none(), "bytes left over");
+}
+
+/// A fixed width only where every key has it: the numbers and what's
+/// built from them alone.
+#[test]
+fn widths_are_known_exactly_for_fixed_size_keys() {
+    assert_eq!(<(u16, u32)>::WIDTH, Some(6));
+    assert_eq!(<[i8; 3]>::WIDTH, Some(3));
+    assert_eq!(<Reverse<u64>>::WIDTH, Some(8));
+    assert_eq!(<Pair<u8, bool>>::WIDTH, Some(2));
+    assert_eq!(Unit::WIDTH, Some(0));
+    assert_eq!(String::WIDTH, None);
+    assert_eq!(<Option<u8>>::WIDTH, None);
+    assert_eq!(Employee::WIDTH, None);
+    assert_eq!(Shape::WIDTH, None, "variants of different widths");
+    #[derive(Clone, Debug, Key)]
+    enum Same {
+        A(u32),
+        B(i32),
+    }
+    assert_eq!(Same::WIDTH, Some(5), "a tag byte and four");
+    #[derive(Clone, Debug, Key)]
+    struct Point {
+        x: f64,
+        y: f32,
+    }
+    assert_eq!(Point::WIDTH, Some(12));
+    assert_eq!(KeyBytes::of(&Point { x: 1.0, y: 2.0 }).as_bytes().len(), 12);
 }
 
 #[test]

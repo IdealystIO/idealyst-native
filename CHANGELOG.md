@@ -135,6 +135,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Generic host functions** (`runtime-vocabulary`, `runtime-macros`,
+  `runtime-core`). A `#[host_fn]` can now be generic, and a remote
+  bundle can call it with types the app has never compiled. A parameter
+  bounded by `Key` (compare, hash, clone) runs in the app as the key's
+  order-preserving bytes, one compiled copy for every key type. A
+  parameter bounded by `Opaque`, or not bounded at all, is carried
+  unread. A `Numeric` parameter is compiled for each number type. The
+  new `#[derive(Key)]` gives a struct or enum `Key` together with
+  `Eq`, `Ord` and `Hash` from the same fields. Closures and other bounds
+  are refused at compile time with the reason. Sorting 200k items by a
+  two-field key through the app takes 67 ms from a bundle, against
+  196 ms in the bundle itself. See "Generic host functions" in
+  `crates/streaming/README.md`; the showcase's Tools tab calls one of
+  each kind.
+
 - **`runtime_core` re-exports `GridPlacement` and `OverscrollBehavior`**,
   so `StyleRules::grid_row` / `grid_column` / `overscroll_behavior` can be
   filled without a direct `runtime-shared` dependency. A compile test

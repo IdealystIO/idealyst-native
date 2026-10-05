@@ -340,7 +340,9 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
 
 /// `#[host_fn]` — an app function remote code can call: the function in the
 /// app, a stub asking the app to run it in a remote bundle. Arguments and
-/// result cross as `RemoteValue`s. See `host_fn`.
+/// result cross as `RemoteValue`s. It may be generic over `Key`, `Opaque`
+/// and `Numeric` parameters, and a bundle may call it with types the app
+/// never compiled. See `host_fn`.
 #[proc_macro_attribute]
 pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {

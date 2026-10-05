@@ -9,6 +9,7 @@
 //! | Tab shell (`App`, a swap navigator) | app | native code hosting remote screens |
 //! | `FeedScreen` | bundle | remote screen, its own stylesheets over idea's theme tokens, bundle state, app context, a sync `#[host_fn]` |
 //! | `ShopNavigator` | bundle | a navigator DEFINED in the bundle: typed routes, route links, screen options in its header, an async `#[host_fn]`, writing the app's cart |
+//! | `ToolsScreen` (`tools.rs`) | bundle | every kind of `#[host_fn]`, generic ones included, called with the bundle's own types |
 //! | `Settings` | app | native controls: the idea theme (light/dark) every screen follows, and the `FeedPrefs` context the feed reads |
 //! | idea-ui (`Card`, `Badge`, `Button`, `Typography`, `Switch`, `Slider`) | app | a component library the bundle uses — imported from the app, not bundled |
 //!
@@ -40,6 +41,10 @@ use std::rc::Rc;
 /// into both builds.
 pub mod bench;
 
+/// Every kind of `#[host_fn]`, and the remote screen calling them (the
+/// Tools tab).
+pub mod tools;
+
 use idea_ui::{tone, typography_kind, Badge, Button, Card, IdeaThemeRef, Slider, Switch, Typography};
 use runtime_core::{component, host_fn, rx, signal, ui, Element, ReadSignal, Remote, Signal};
 use runtime_shared::primitives::navigator::{Route, RouteParams};
@@ -52,6 +57,7 @@ use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
 pub const FEED: Route = Route::new("feed", "/feed");
 pub const SHOP: Route = Route::new("shop", "/shop");
 pub const SETTINGS: Route = Route::new("settings", "/settings");
+pub const TOOLS: Route = Route::new("tools", "/tools");
 /// The shop's own routes (relative to its tab).
 pub const PRODUCTS: Route = Route::new("products", "/");
 pub const PRODUCT: Route<ProductId> = Route::new("product", "/item/:id");
@@ -407,8 +413,9 @@ mod app {
     /// What remote code may call.
     pub fn host_fns() -> Vec<runtime_vocabulary::remote::HostFnDef> {
         let mut fns = vec![device_name::export(), fetch_reviews::export()];
-        // The compute benchmark's host-side sorts (`bench.rs`).
-        fns.extend([bench::bench_sort_u32::export(), bench::bench_order::export()]);
+        // Every kind of host function, for the Tools tab (`tools.rs`) and
+        // the compute benchmark's host-side rows (`bench.rs`).
+        fns.extend(tools::host_fns());
         // What remote code calling idea-ui's global functions needs
         // (`set_idea_color_scheme`, `push_toast`, …).
         fns.extend(idea_ui::host_fns());
@@ -506,6 +513,7 @@ mod app {
                             })
                             .child(tab("feed", "Feed"))
                             .child(tab("shop", "Shop"))
+                            .child(tab("tools", "Tools"))
                             .child(tab("settings", "Settings"))
                             .child(
                                 text()
@@ -523,6 +531,7 @@ mod app {
             })
             .screen(FEED, |()| ui! { FeedScreen() })
             .screen(SHOP, move |()| ui! { ShopNavigator(cart = cart) })
+            .screen(TOOLS, |()| ui! { tools::ToolsScreen() })
             .screen(SETTINGS, move |()| settings(compact, cart))
             .build()
     }
