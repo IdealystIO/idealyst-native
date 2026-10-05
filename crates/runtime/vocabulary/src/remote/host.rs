@@ -146,13 +146,14 @@ fn nothing() -> Element {
 
 /// Decode a bundle's tree. Errors in the tree itself are reported here;
 /// a subtree a `Dyn` hole or keyed row builds LATER is decoded when the
-/// host realizes it, and an error there panics with the same message — by
-/// then there is no caller to hand a `Result` to.
+/// host realizes it, and an error there renders as the error's message in
+/// the subtree's place — by then there is no caller to hand a `Result` to.
+/// Either way, what crossed with the tree is released.
 pub fn decode(link: Rc<dyn Link>, bytes: &[u8]) -> Result<Element, DecodeError> {
-    let node: Node = from_bytes(bytes).map_err(|e| DecodeError::Malformed(e.to_string()))?;
+    let tree: Tree = from_bytes(bytes).map_err(|e| DecodeError::Malformed(e.to_string()))?;
     let conn = Rc::new(Conn { link, sheets: RefCell::new(HashMap::new()) });
     LIVE_TREES.with(|n| n.set(n.get() + 1));
-    let element = build(&conn, node)?;
+    let element = build_tree(&conn, tree)?;
     // The mounted tree owns its connection: the handles the app holds for
     // the bundle (`handles`) live exactly as long as the tree, even one
     // with no callbacks to keep the connection alive (a view with a ref).
@@ -180,12 +181,91 @@ pub fn live_trees() -> usize {
     LIVE_TREES.with(|n| n.get())
 }
 
+/// A tree a bundle built later (a `Dyn` hole, a keyed row, a screen…):
+/// one that fails to decode renders as its error, rather than taking the
+/// app down.
 fn subtree(conn: &Rc<Conn>, bytes: &[u8]) -> Element {
-    let node: Node = from_bytes(bytes).unwrap_or_else(|e| panic!("remote codec: a subtree does not decode: {e}"));
-    build(conn, node).unwrap_or_else(|e| panic!("remote component: {e}"))
+    let built = from_bytes::<Tree>(bytes)
+        .map_err(|e| DecodeError::Malformed(e.to_string()))
+        .and_then(|tree| build_tree(conn, tree));
+    built.unwrap_or_else(|e| decode_failed(&e))
+}
+
+/// What a subtree that failed to decode shows.
+fn decode_failed(e: &DecodeError) -> Element {
+    crate::builders::text().content(format!("⚠ remote component: {e}")).build()
+}
+
+thread_local! {
+    /// The copies each tree being built has claimed, innermost last (see
+    /// [`build_tree`]).
+    static CLAIMS: RefCell<Vec<Claims>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Default)]
+struct Claims {
+    ids: Vec<Cb>,
+    scopes: Vec<u32>,
+}
+
+/// Record that the tree being built took its copy of `id` (it now holds,
+/// or has already released, that copy).
+fn claim(id: Cb) {
+    CLAIMS.with(|c| {
+        if let Some(top) = c.borrow_mut().last_mut() {
+            top.ids.push(id);
+        }
+    });
+}
+
+/// Build a tree, releasing every copy that crossed with it if it fails.
+/// What the failed build had claimed was dropped with its partial result;
+/// the rest, past the failure point (or inside props no decoder finished),
+/// the app never saw — its share of [`Crossed`] goes back to the bundle
+/// here, and its scopes are claimed and dropped.
+fn build_tree(conn: &Rc<Conn>, tree: Tree) -> Result<Element, DecodeError> {
+    struct Open;
+    impl Drop for Open {
+        // Popped even if the build panics, so a later build's claims never
+        // land in this one's frame.
+        fn drop(&mut self) {
+            let _ = CLAIMS.try_with(|c| c.borrow_mut().pop());
+        }
+    }
+    CLAIMS.with(|c| c.borrow_mut().push(Claims::default()));
+    let open = Open;
+    let built = build(conn, tree.node);
+    let claims = CLAIMS.with(|c| std::mem::take(c.borrow_mut().last_mut().expect("this build's claims")));
+    drop(open);
+    if built.is_err() {
+        abandon(conn, tree.crossed, claims);
+    }
+    built
+}
+
+fn abandon(conn: &Rc<Conn>, crossed: Crossed, claims: Claims) {
+    let mut unclaimed: HashMap<Cb, i64> = HashMap::new();
+    let fresh = crossed.fresh.into_iter().flat_map(|(first, last)| first..=last);
+    for id in fresh.chain(crossed.again) {
+        *unclaimed.entry(id).or_default() += 1;
+    }
+    for id in claims.ids {
+        *unclaimed.entry(id).or_default() -= 1;
+    }
+    for (id, n) in unclaimed {
+        for _ in 0..n {
+            conn.link.release(id);
+        }
+    }
+    for scope in crossed.scopes {
+        if !claims.scopes.contains(&scope) {
+            drop(runtime_world::remote::claim_scope(scope));
+        }
+    }
 }
 
 fn cb(conn: &Rc<Conn>, id: Cb) -> Rc<CbRef> {
+    claim(id);
     Rc::new(CbRef::new(id, conn.clone()))
 }
 
@@ -671,7 +751,14 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
         }
         Node::Keyed { items, render } => keyed(conn, cb(conn, items), cb(conn, render)),
         Node::Owned { scope, element } => {
-            runtime_scene::owned(build(conn, *element)?, runtime_world::remote::claim_scope(scope))
+            // Claimed first: if its tree fails, dropping it frees the scope.
+            CLAIMS.with(|c| {
+                if let Some(top) = c.borrow_mut().last_mut() {
+                    top.scopes.push(scope);
+                }
+            });
+            let owned = runtime_world::remote::claim_scope(scope);
+            runtime_scene::owned(build(conn, *element)?, owned)
         }
         Node::Import { name, props, children } => {
             let children = build_all(conn, children)?;
@@ -924,6 +1011,7 @@ fn application(conn: &Rc<Conn>, app: App) -> StyleApplication {
 /// proxy already holds one), else a new proxy that owns this copy.
 fn sheet(conn: &Rc<Conn>, r: SheetRef) -> Rc<StyleSheet> {
     if let Some(live) = conn.sheets.borrow().get(&r.id).and_then(Weak::upgrade) {
+        claim(r.id);
         conn.link.release(r.id);
         return live;
     }
@@ -1093,6 +1181,10 @@ impl ImportCx {
     pub(crate) fn build(&self, node: Node) -> Result<Element, String> {
         build(&self.0, node).map_err(|e| e.to_string())
     }
+    /// A tree the bundle replied later (a render slot's): see [`subtree`].
+    pub(crate) fn subtree(&self, bytes: &[u8]) -> Element {
+        subtree(&self.0, bytes)
+    }
     pub(crate) fn callback(&self, id: Cb) -> CallbackRef {
         CallbackRef(cb(&self.0, id))
     }
@@ -1186,14 +1278,13 @@ fn nav_config(conn: &Rc<Conn>, w: WireNavConfig) -> NavConfig {
                     let reply = build.call(&to_bytes(&wire));
                     drop(item);
                     match reply {
-                        Some(bytes) => {
-                            let ws: WireScreen = from_bytes(&bytes)
-                                .unwrap_or_else(|e| panic!("remote codec: a screen does not decode: {e}"));
-                            Screen {
-                                element: self::build(&c1, ws.element).unwrap_or_else(|e| panic!("remote component: {e}")),
+                        Some(bytes) => match from_bytes::<WireScreen>(&bytes) {
+                            Ok(ws) => Screen {
+                                element: build_tree(&c1, ws.element).unwrap_or_else(|e| decode_failed(&e)),
                                 options: ws.options.map(|id| Rc::new(OptionsRef(CbRef::new(id, c1.clone()))) as Rc<dyn std::any::Any>),
-                            }
-                        }
+                            },
+                            Err(e) => Screen::new(decode_failed(&DecodeError::Malformed(e.to_string()))),
+                        },
                         None => Screen::new(nothing()),
                     }
                 }),

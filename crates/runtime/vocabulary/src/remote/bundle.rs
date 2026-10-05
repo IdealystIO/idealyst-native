@@ -65,6 +65,63 @@ thread_local! {
     static TABLE: RefCell<Table> = RefCell::new(Table::default());
 }
 
+thread_local! {
+    /// The crossings being recorded — a tree being encoded ([`tree`]), an
+    /// app component's props being sent ([`__props_begin`]) — innermost
+    /// last, each with the first id it will register: everything
+    /// registered from then until it closes is its own fresh range.
+    static CROSSING: RefCell<Vec<(Cb, Crossed)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Note a crossing that isn't a fresh registration, in the innermost
+/// record only: an outer one gets it when the inner one's owner is encoded
+/// into it (an import's props join the tree that encodes the import).
+fn crossed(f: impl FnOnce(&mut Crossed)) {
+    CROSSING.with(|c| {
+        if let Some((_, top)) = c.borrow_mut().last_mut() {
+            f(top);
+        }
+    });
+}
+
+/// Encode `element` as a reply: the tree, and what crossed with it (see
+/// [`Crossed`]). Every reply that carries a tree uses this; an element
+/// nested in one (an `Owned` boundary, an `Element` prop) is part of it.
+pub fn tree(element: Element) -> Tree {
+    let open = open_crossing();
+    let node = encode(element);
+    Tree { node, crossed: close_crossing(open) }
+}
+
+/// Start recording a crossing: returns the first id it will register.
+fn open_crossing() -> Cb {
+    let first = TABLE.with(|t| t.borrow().next) + 1;
+    CROSSING.with(|c| c.borrow_mut().push((first, Crossed::default())));
+    first
+}
+
+/// Stop recording the innermost crossing, opened at `first`.
+fn close_crossing(first: Cb) -> Crossed {
+    let (opened, mut crossed) = CROSSING.with(|c| c.borrow_mut().pop()).expect("an open crossing");
+    debug_assert_eq!(opened, first, "crossings close innermost first");
+    crossed.fresh.push((first, TABLE.with(|t| t.borrow().next)));
+    crossed
+}
+
+/// An import's props crossings, joining the innermost record. A props
+/// range registered after that record opened is inside its own fresh
+/// range already (the import was built while it was open — an `Element`
+/// prop of another import), so only earlier ranges are added.
+fn join_crossing(props: Crossed) {
+    CROSSING.with(|c| {
+        if let Some((first, top)) = c.borrow_mut().last_mut() {
+            top.fresh.extend(props.fresh.into_iter().filter(|&(_, last)| last < *first));
+            top.again.extend(props.again);
+            top.scopes.extend(props.scopes);
+        }
+    });
+}
+
 fn register(entry: Entry) -> Cb {
     TABLE.with(|t| {
         let mut t = t.borrow_mut();
@@ -87,6 +144,9 @@ fn register_sheet(sheet: &Rc<StyleSheet>) -> Cb {
         t.slots.get_mut(&id).expect("sheet index points at a live entry").refs += 1;
         Some(id)
     });
+    if let Some(id) = existing {
+        crossed(|c| c.again.push(id));
+    }
     existing.unwrap_or_else(|| {
         let id = register(Entry::Sheet(sheet.clone()));
         TABLE.with(|t| t.borrow_mut().sheets.insert(ptr, id));
@@ -203,7 +263,7 @@ pub fn invoke(cb: Cb, args: &[u8]) -> Vec<u8> {
         }
         Call::Get(f) => f(),
         Call::Changed(f) => to_bytes(&f()),
-        Call::Build(f) => to_bytes(&encode(f())),
+        Call::Build(f) => to_bytes(&tree(f())),
         Call::Items(f) => {
             let rows: Vec<(WireKey, Cb)> =
                 f().into_iter().map(|(key, item)| (key.into(), register(Entry::Item(Some(item))))).collect();
@@ -216,7 +276,7 @@ pub fn invoke(cb: Cb, args: &[u8]) -> Vec<u8> {
                 _ => None,
             });
             let item = item.unwrap_or_else(|| panic!("remote codec: render of keyed item {item_id}, which is gone"));
-            to_bytes(&encode(f(item)))
+            to_bytes(&tree(f(item)))
         }
         Call::Call(f) => f(args),
         Call::Sheet(sheet) => {
@@ -238,13 +298,30 @@ pub fn invoke(cb: Cb, args: &[u8]) -> Vec<u8> {
 pub struct ImportPrim {
     pub name: String,
     pub props: Vec<u8>,
+    /// What sending the props registered (callbacks, getters…): handed to
+    /// the tree that encodes this, so an app that can't decode the props
+    /// still releases them. `None` once encoded.
+    crossed: Option<Crossed>,
+}
+
+impl Drop for ImportPrim {
+    /// Built but never encoded (the element was dropped bundle-side): the
+    /// props' callbacks never crossed, so nothing will release them.
+    fn drop(&mut self) {
+        if let Some(crossed) = self.crossed.take() {
+            let ranges = crossed.fresh.into_iter().flat_map(|(first, last)| first..=last);
+            for id in ranges.chain(crossed.again) {
+                release(id);
+            }
+        }
+    }
 }
 
 /// Use the app's component `name` here, with these props and children. The
 /// app must have registered it (`remote::host::register_import`) with props
 /// that decode from what `props` serializes to.
 pub fn import(name: &str, props: &impl Serialize, children: Vec<Element>) -> Element {
-    runtime_scene::item(ImportPrim { name: name.to_owned(), props: to_bytes(props) }, children)
+    runtime_scene::item(ImportPrim { name: name.to_owned(), props: to_bytes(props), crossed: None }, children)
 }
 
 // ---------------------------------------------------------------------------
@@ -281,14 +358,17 @@ pub fn encode(element: Element) -> Node {
             items: register(Entry::Items(Rc::from(items))),
             render: register(Entry::Render(Rc::from(render))),
         },
-        Element::Owned { element, owned } => Node::Owned {
-            scope: runtime_world::remote_guest::release_scope(owned),
-            element: Box::new(encode(*element)),
-        },
+        Element::Owned { element, owned } => {
+            let scope = runtime_world::remote_guest::release_scope(owned);
+            if scope != 0 {
+                crossed(|c| c.scopes.push(scope));
+            }
+            Node::Owned { scope, element: Box::new(encode(*element)) }
+        }
         Element::Many { data } => match data.downcast_ref::<PrimCell<RepeatPrim>>() {
             Some(cell) => {
                 let RepeatPrim { count, row_builder } = cell.take();
-                Node::Repeat { count, row: handler(move |i: &usize| encode(row_builder(*i))) }
+                Node::Repeat { count, row: handler(move |i: &usize| tree(row_builder(*i))) }
             }
             None => refuse("a multi-node primitive", "payload"),
         },
@@ -301,8 +381,12 @@ fn encode_all(children: Vec<Element>) -> Vec<Node> {
 
 fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     let data = match data.downcast::<ImportPrim>() {
-        Ok(import) => {
-            let ImportPrim { name, props } = *import;
+        Ok(mut import) => {
+            // The props' crossings join the tree encoding this.
+            if let Some(props) = import.crossed.take() {
+                join_crossing(props);
+            }
+            let (name, props) = (std::mem::take(&mut import.name), std::mem::take(&mut import.props));
             return Node::Import { name, props, children: encode_all(children) };
         }
         Err(data) => data,
@@ -518,7 +602,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             item_key: handler(move |i: &usize| key(*i)),
             measured,
             item_size: handler(move |i: &usize| size(*i)),
-            render_item: handler(move |i: &usize| encode(render(*i))),
+            render_item: handler(move |i: &usize| tree(render(*i))),
             item_diff: p.item_diff.map(|d| {
                 let (capture, differs) = (d.capture, d.differs);
                 (
@@ -549,7 +633,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             col_width: handler(move |i: &usize| cw(*i)),
             row_height: handler(move |i: &usize| rh(*i)),
             cell_key: handler(move |&(r, c): &(usize, usize)| key(r, c)),
-            render_cell: handler(move |&(r, c): &(usize, usize)| encode(render(r, c))),
+            render_cell: handler(move |&(r, c): &(usize, usize)| tree(render(r, c))),
             overscan: p.overscan,
             on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
         };
@@ -560,7 +644,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             handler(move |nav: &Option<WireStackNav>| {
                 let nav = nav.as_ref().map(import_stack_nav);
                 let f = f.clone();
-                encode(runtime_scene::component_scope(move || {
+                tree(runtime_scene::component_scope(move || {
                     if let Some(nav) = nav {
                         runtime_world::provide(nav);
                     }
@@ -584,7 +668,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             handler(move |nav: &Option<WireSwapNav>| {
                 let nav = nav.as_ref().map(import_swap_nav);
                 let f = f.clone();
-                encode(runtime_scene::component_scope(move || {
+                tree(runtime_scene::component_scope(move || {
                     if let Some(nav) = nav {
                         runtime_world::provide(nav);
                     }
@@ -783,7 +867,7 @@ fn wire_app(app: StyleApplication) -> App {
 pub fn __mount(len: u32, build: impl FnOnce(&mut &[u8]) -> Element) -> i64 {
     let args = super::wasm::take_args(len);
     let tree = runtime_scene::component_scope(|| build(&mut &args[..]));
-    super::wasm::reply(to_bytes(&encode(tree)))
+    super::wasm::reply(to_bytes(&self::tree(tree)))
 }
 
 // ---------------------------------------------------------------------------
@@ -791,11 +875,20 @@ pub fn __mount(len: u32, build: impl FnOnce(&mut &[u8]) -> Element) -> i64 {
 // `ImportArg` impls use
 // ---------------------------------------------------------------------------
 
-/// Use the app's component `name` (its `#[component]` registration key)
-/// with `props` encoded by its props' `ImportArg`.
+/// Start sending an app component's props (`__remote_import!`): what
+/// they register is recorded until [`import_component`].
 #[doc(hidden)]
-pub fn import_component(name: &'static str, props: Vec<u8>) -> Element {
-    runtime_scene::item(ImportPrim { name: name.to_owned(), props }, Vec::new())
+pub fn __props_begin() -> Cb {
+    open_crossing()
+}
+
+/// Use the app's component `name` (its `#[component]` registration key)
+/// with `props` encoded by its props' `ImportArg`, sent since `crossing`
+/// ([`__props_begin`]).
+#[doc(hidden)]
+pub fn import_component(name: &'static str, props: Vec<u8>, crossing: Cb) -> Element {
+    let crossed = close_crossing(crossing);
+    runtime_scene::item(ImportPrim { name: name.to_owned(), props, crossed: Some(crossed) }, Vec::new())
 }
 
 /// A getter the app can call (a live `Reactive` prop).
@@ -926,7 +1019,7 @@ fn nav_config(c: crate::prims::NavConfig) -> WireNavConfig {
                     };
                     let screen = build(params);
                     WireScreen {
-                        element: encode(screen.element),
+                        element: tree(screen.element),
                         options: screen.options.map(|o| register(Entry::Item(Some(Box::new(o))))),
                     }
                 }),

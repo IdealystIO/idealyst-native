@@ -66,6 +66,31 @@ pub mod wasm;
 /// bundles holds one [`host::Link`] per bundle.
 pub type Cb = u32;
 
+/// A tree as it crosses in a reply: its root, and what crossed with it.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Tree {
+    pub node: Node,
+    pub crossed: Crossed,
+}
+
+/// Everything a [`Tree`] handed the app a copy of — so an app that fails
+/// to decode it part-way (an import it doesn't have, props that don't
+/// decode) can release what it never reached. Without it, each callback id
+/// and scope past the failure point stayed live in the bundle for good,
+/// including ids inside import props, which only their component can parse.
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct Crossed {
+    /// Callback ids registered for this tree, as `first..=last` ranges
+    /// (one for the encode, one per imported component's props, which
+    /// were sent when the bundle built the element): each crossed once.
+    pub fresh: Vec<(Cb, Cb)>,
+    /// Existing ids that crossed again (a shared stylesheet), once per
+    /// crossing.
+    pub again: Vec<Cb>,
+    /// Scopes released into the tree ([`Node::Owned`]).
+    pub scopes: Vec<u32>,
+}
+
 /// One node of a remote tree.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Node {
@@ -424,7 +449,7 @@ pub enum WireParams {
 /// (the bundle's layout reads them back through `StackNav::screen_chrome`).
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WireScreen {
-    pub element: Node,
+    pub element: Tree,
     pub options: Option<Cb>,
 }
 
@@ -1286,19 +1311,16 @@ impl ImportArg for runtime_scene::Element {
 impl ImportArg for std::rc::Rc<dyn Fn() -> runtime_scene::Element> {
     #[cfg(any(idealyst_stream_guest, feature = "remote-loopback"))]
     fn send(self, out: &mut Vec<u8>) {
-        __send_value(&bundle::register_call(std::rc::Rc::new(move |_: &[u8]| to_bytes(&bundle::encode(self())))), out)
+        __send_value(&bundle::register_call(std::rc::Rc::new(move |_: &[u8]| to_bytes(&bundle::tree(self())))), out)
     }
     #[cfg(not(idealyst_stream_guest))]
     fn receive(input: &mut &[u8], cx: &host::ImportCx) -> Result<Self, String> {
         let r = cx.callback(__try_receive_value(input)?);
         let cx = cx.clone();
-        Ok(std::rc::Rc::new(move || {
-            let built = r
-                .call(&[])
-                .ok_or_else(|| "the bundle stopped (it panicked)".to_string())
-                .and_then(|bytes| from_bytes::<Node>(&bytes).map_err(|e| e.to_string()))
-                .and_then(|node| cx.build(node));
-            built.unwrap_or_else(|_| crate::glue::empty_absolute_view())
+        Ok(std::rc::Rc::new(move || match r.call(&[]) {
+            Some(bytes) => cx.subtree(&bytes),
+            // The bundle stopped (it panicked).
+            None => crate::glue::empty_absolute_view(),
         }))
     }
 }
@@ -1772,9 +1794,10 @@ macro_rules! __remote_import {
     ($name:expr, $props:ty, $value:expr, $set:expr) => {{
         #[allow(unused_imports)]
         use $crate::remote::{ViaProps as _, ViaUnsupportedProps as _};
+        let __crossing = $crate::remote::bundle::__props_begin();
         let mut __out = ::std::vec::Vec::new();
         (&$crate::remote::Arg::<$props>::new()).send_props($value, $set, &mut __out);
-        $crate::remote::bundle::import_component($name, __out)
+        $crate::remote::bundle::import_component($name, __out, __crossing)
     }};
 }
 

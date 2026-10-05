@@ -51,6 +51,6 @@ mod exports {
             // copy of the code with the app's.
             runtime_scene::component_scope(move || remote_counter_view(title.into(), external))
         });
-        wasm::reply(to_bytes(&bundle::encode(tree)))
+        wasm::reply(to_bytes(&bundle::tree(tree)))
     }
 }

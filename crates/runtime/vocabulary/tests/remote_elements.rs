@@ -40,7 +40,7 @@ impl Link for InProc {
 
 /// Encode as a bundle would, decode as the host would.
 fn cross(element: Element) -> Element {
-    decode(Rc::new(InProc), &to_bytes(&bundle::encode(element))).expect("decodes")
+    decode(Rc::new(InProc), &to_bytes(&bundle::tree(element))).expect("decodes")
 }
 
 fn card_sheet() -> Rc<StyleSheet> {
@@ -178,7 +178,7 @@ fn a_shared_sheet_crosses_once() {
             .child(view().style(StyleApplication::new(sheet.clone()).with("tone", "danger")))
             .build()
     });
-    let node = bundle::encode(tree);
+    let node = bundle::tree(tree);
     assert_eq!(bundle::live_callbacks(), 1, "three crossings, one entry");
     let realized = h.mount(decode(Rc::new(InProc), &to_bytes(&node)).expect("decodes"));
     h.flush();
@@ -211,8 +211,112 @@ fn an_app_component_is_imported_by_name() {
 #[test]
 fn a_missing_app_component_fails_to_decode_by_name() {
     let tree = bundle::import("NotExported", &(), Vec::new());
-    let err = decode(Rc::new(InProc), &to_bytes(&bundle::encode(tree))).err();
+    let err = decode(Rc::new(InProc), &to_bytes(&bundle::tree(tree))).err();
     assert_eq!(err, Some(DecodeError::MissingImport("NotExported".into())));
+}
+
+// ---- a tree that fails to decode releases what crossed with it ----
+
+/// Regression: a decode that failed part-way (an app component the app
+/// doesn't have) left every callback past the failure point — siblings
+/// after it, never visited — and every scope there live in the bundle and
+/// the app for good.
+#[test]
+fn regression_a_failed_decode_releases_what_it_never_reached() {
+    let h = Harness::new();
+    let tree = h.world.enter(|| {
+        view()
+            .child(button().label("before").on_press(|| {}))
+            .child(bundle::import("NotExported", &(), Vec::new()))
+            .child(button().label("after").on_press(|| {}))
+            .child(component_scope(|| {
+                let s = signal(1u8);
+                text().content(move || format!("{}", s.get())).build()
+            }))
+            .build()
+    });
+    let bytes = to_bytes(&bundle::tree(tree));
+    assert!(bundle::live_callbacks() >= 3);
+    let err = h.world.enter(|| decode(Rc::new(InProc), &bytes).err());
+    assert_eq!(err, Some(DecodeError::MissingImport("NotExported".into())));
+    assert_eq!(bundle::live_callback_kinds(), vec![], "every callback that crossed was released");
+    assert_eq!(runtime_world::remote::pending_scopes(), 0, "the unreached component's scope was freed");
+}
+
+/// Regression: callbacks inside an app component's PROPS (sent when the
+/// bundle built the element, readable only by that component's decoder)
+/// leaked when the component couldn't be decoded.
+#[test]
+fn regression_a_failed_import_releases_the_callbacks_in_its_props() {
+    let _h = Harness::new();
+    let crossing = bundle::__props_begin();
+    let id = bundle::register_call(Rc::new(|_: &[u8]| Vec::new()));
+    let tree = bundle::import_component("NotExported", to_bytes(&id), crossing);
+    let bytes = to_bytes(&bundle::tree(tree));
+    assert!(decode(Rc::new(InProc), &bytes).is_err());
+    assert_eq!(bundle::live_callback_kinds(), vec![]);
+}
+
+/// A shared sheet that re-crossed in a failed tree is released once for
+/// that crossing only: the live tree holding it keeps working.
+#[test]
+fn a_failed_decode_releases_a_shared_sheet_once() {
+    let h = Harness::new();
+    let sheet = card_sheet();
+    let live = h.world.enter(|| view().style(StyleApplication::new(sheet.clone())).build());
+    let realized = h.mount(cross(live));
+    h.flush();
+    let failed = h.world.enter(|| {
+        view()
+            .child(bundle::import("NotExported", &(), Vec::new()))
+            .child(view().style(StyleApplication::new(sheet.clone())))
+            .build()
+    });
+    assert!(decode(Rc::new(InProc), &to_bytes(&bundle::tree(failed))).is_err());
+    assert_eq!(bundle::live_callback_kinds().iter().map(|e| (e.1, e.2)).collect::<Vec<_>>(), [("sheet", 1)]);
+    drop(realized);
+    assert_eq!(bundle::live_callbacks(), 0);
+}
+
+/// An app component element the bundle built but never sent releases the
+/// callbacks its props registered.
+#[test]
+fn an_unsent_import_releases_its_props_callbacks() {
+    let crossing = bundle::__props_begin();
+    let id = bundle::register_call(Rc::new(|_: &[u8]| Vec::new()));
+    drop(bundle::import_component("NotExported", to_bytes(&id), crossing));
+    assert_eq!(bundle::live_callbacks(), 0);
+}
+
+/// Regression: a subtree that fails to decode LATER (a `Dyn` hole's build,
+/// realized by the app) panicked the app. It now renders the error in its
+/// place, and what crossed with it is released.
+#[test]
+fn regression_a_lazy_subtree_that_fails_to_decode_shows_an_error() {
+    let h = Harness::new();
+    let tree = h.world.enter(|| {
+        view()
+            .child(runtime_scene::dyn_element(|| {
+                view()
+                    .child(bundle::import("NotExported", &(), Vec::new()))
+                    .child(button().label("after").on_press(|| {}))
+                    .build()
+            }))
+            .build()
+    });
+    let realized = h.mount(cross(tree));
+    h.flush();
+    let root = realized.collect_nodes()[0];
+    let shown = h.tree(root);
+    assert!(shown.contains("remote component") && shown.contains("NotExported"), "{shown}");
+    assert_eq!(
+        bundle::live_callback_kinds().iter().map(|e| e.1).collect::<Vec<_>>(),
+        ["build"],
+        "only the hole's own builder is live"
+    );
+    drop(realized);
+    drop(h);
+    assert_eq!(bundle::live_callbacks(), 0);
 }
 
 #[test]
@@ -286,7 +390,7 @@ fn regression_a_poisoned_bundles_tree_keeps_running_without_it() {
     let inputs = h.world.enter(|| Inputs { count: signal(1), items: signal(vec![1, 2, 3]), show: signal(false) });
     let poisoned = Rc::new(std::cell::Cell::new(false));
     let link = Rc::new(Poisonable(poisoned.clone()));
-    let tree = h.world.enter(|| decode(link, &to_bytes(&bundle::encode(app(&inputs)))).expect("decodes"));
+    let tree = h.world.enter(|| decode(link, &to_bytes(&bundle::tree(app(&inputs)))).expect("decodes"));
     let realized = h.mount(tree);
     h.flush();
     let before = h.live_tree(realized.collect_nodes()[0]);
