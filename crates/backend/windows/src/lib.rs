@@ -365,6 +365,12 @@ pub(crate) struct TextVisual {
     /// Style `line-height` in px (the css crate emits it as px). Line
     /// advance + CSS half-leading; `None` = the font's natural height.
     pub line_height: Option<f32>,
+    /// `StyleRules::max_lines` with `0` normalised to `None` (no limit).
+    /// Feeds both the measure fn and the `layout_pass` line fill through
+    /// `WrapPlan::lines_limited`, so the measured height and the drawn
+    /// (cut, `…`-ended) lines agree. Re-set on every `apply_style`, so a
+    /// restyle without it restores unlimited wrapping.
+    pub max_lines: Option<u32>,
 }
 
 impl TextVisual {
@@ -378,6 +384,7 @@ impl TextVisual {
             lines: None,
             align: runtime_shared::TextAlign::Left,
             line_height: None,
+            max_lines: None,
         }
     }
 }
@@ -884,6 +891,7 @@ impl WindowsBackend {
         let content = t.content.clone();
         let key = t.font_key.clone();
         let style_advance = t.line_height;
+        let max_lines = t.max_lines;
         let hfont = match &key {
             Some(k) => font::entry_for(&mut self.font_cache, k)
                 .map(|e| e.hfont)
@@ -901,7 +909,9 @@ impl WindowsBackend {
             let advance = style_advance.unwrap_or(plan.font_height).max(1.0);
             self.layout.set_measure_fn(
                 layout,
-                Rc::new(move |known, avail| wrap::measure_size(&plan, advance, known, avail)),
+                Rc::new(move |known, avail| {
+                    wrap::measure_size(&plan, advance, max_lines, known, avail)
+                }),
             );
         }
         self.layout_dirty = true;
@@ -1053,9 +1063,9 @@ impl WindowsBackend {
             if let Some(meta) = self.nodes.get_mut(&id) {
                 meta.frame = (frame.x, frame.y, frame.width, frame.height);
                 // Break text lines at the final frame width so paint
-                // (read-only) never re-wraps. Same pure `lines_at` the
-                // measure fn used → breaks can't disagree with the
-                // height Taffy was told.
+                // (read-only) never re-wraps. Same pure `lines_limited`
+                // the measure fn used → breaks (and `max_lines` cuts)
+                // can't disagree with the height Taffy was told.
                 if let NodeKind::Text(t) = &mut meta.kind {
                     if let Some(plan) = t.plan.clone() {
                         let stale = t
@@ -1066,7 +1076,7 @@ impl WindowsBackend {
                         if stale {
                             t.lines = Some(wrap::WrappedLines {
                                 width: frame.width,
-                                lines: plan.lines_at(frame.width),
+                                lines: plan.lines_limited(frame.width, t.max_lines),
                             });
                         }
                     }
@@ -2295,6 +2305,14 @@ impl WindowsBackend {
                     }
                     if font_key.is_some() && t.font_key != font_key {
                         t.font_key = font_key.clone();
+                        remeasure = true;
+                    }
+                    // Assigned unconditionally (unlike the fields above):
+                    // a style WITHOUT `max_lines` must lift a limit an
+                    // earlier style set. The measure fn captures it.
+                    let max_lines = style.max_lines.filter(|n| *n > 0);
+                    if t.max_lines != max_lines {
+                        t.max_lines = max_lines;
                         remeasure = true;
                     }
                 }
