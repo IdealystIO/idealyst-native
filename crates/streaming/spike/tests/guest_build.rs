@@ -41,3 +41,28 @@ fn regression_bundle_sources_include_the_libraries_the_bundle_compiles() {
     assert!(has("spike/remoteattr/src"), "the bundle's own source: {sources:?}");
     assert!(has("runtime/vocabulary/src/remote"), "a library it compiles: {sources:?}");
 }
+
+/// The build scripts skip the bundles (with a warning) instead of failing
+/// when wasm32 is not installed; this is the probe that decides. A rustc
+/// that doesn't exist has no wasm32; the one building these tests does
+/// (they embed real bundles).
+#[test]
+fn the_wasm32_probe_tells_a_missing_target_from_an_installed_one() {
+    let (_, missing) = stream_spike::guest_build::wasm32_libdir("/nonexistent/rustc");
+    assert!(!missing);
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let (dir, installed) = stream_spike::guest_build::wasm32_libdir(&rustc);
+    assert!(installed, "{dir:?}");
+}
+
+/// A skipped build still leaves every file the crate embeds.
+#[test]
+fn skipping_writes_empty_placeholders() {
+    let dir = std::env::temp_dir().join(format!("skip-bundles-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    stream_spike::guest_build::skip_bundles(&dir, &["a.wasm", "b.wasm"], None);
+    for f in ["a.wasm", "b.wasm"] {
+        assert_eq!(std::fs::read(dir.join(f)).unwrap(), Vec::<u8>::new());
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

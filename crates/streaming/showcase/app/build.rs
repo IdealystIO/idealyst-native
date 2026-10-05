@@ -14,6 +14,11 @@ fn main() {
     if std::env::var("CARGO_ENCODED_RUSTFLAGS").is_ok_and(|f| f.contains("idealyst_stream_guest")) {
         return;
     }
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let (libdir, wasm32) = wasm32_libdir(&rustc);
+    if !wasm32 {
+        return skip_bundles(&out, &["bundle.wasm"], libdir.as_deref());
+    }
     let target_dir = out.join("bundle-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let package = "remote-showcase-bundle";

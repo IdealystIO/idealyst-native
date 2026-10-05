@@ -10,6 +10,12 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let target_dir = out.join("guest-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let (libdir, wasm32) = wasm32_libdir(&rustc);
+    if !wasm32 {
+        let files = ["spike_kernelguest.wasm", "spike_remoteguest.wasm", "spike_remoteattr.wasm", "spike_ideaui.wasm"];
+        return skip_bundles(&out, &files, libdir.as_deref());
+    }
 
     for package in ["spike-kernelguest", "spike-remoteguest", "spike-remoteattr", "spike-ideaui"] {
         let status = guest_build_command(&cargo, &manifest, &target_dir, package)

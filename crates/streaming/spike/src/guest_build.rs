@@ -37,6 +37,39 @@ pub const BRIDGED_SOURCES: &[&str] = &[
     "../../runtime/world/src",
 ];
 
+/// The `wasm32-unknown-unknown` standard library's directory for `rustc`
+/// (a build script passes cargo's `RUSTC`), and whether it is installed.
+/// Without it a bundle can't be built.
+pub fn wasm32_libdir(rustc: &str) -> (Option<std::path::PathBuf>, bool) {
+    let dir = std::process::Command::new(rustc)
+        .args(["--print", "target-libdir", "--target", "wasm32-unknown-unknown"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| std::path::PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+    let installed = dir.as_ref().is_some_and(|d| std::fs::read_dir(d).is_ok_and(|mut e| e.next().is_some()));
+    (dir, installed)
+}
+
+/// A build script's way out when wasm32 is not installed: write each of
+/// `files` empty into `out` (so `include_bytes!` still compiles), and say
+/// why. Everything else in the crate builds; loading one of these bundles
+/// fails with a load error. `libdir` (when known) is watched, so installing
+/// the target reruns the script.
+pub fn skip_bundles(out: &std::path::Path, files: &[&str], libdir: Option<&std::path::Path>) {
+    for file in files {
+        std::fs::write(out.join(file), b"").unwrap_or_else(|e| panic!("write placeholder {file}: {e}"));
+    }
+    println!(
+        "cargo:warning=the wasm32-unknown-unknown target is not installed, so the remote-component \
+         bundles were not built (empty placeholders embedded; loading one fails). Install it with \
+         `rustup target add wasm32-unknown-unknown`."
+    );
+    if let Some(dir) = libdir {
+        println!("cargo:rerun-if-changed={}", dir.display());
+    }
+}
+
 /// A `cargo build` of bundle crate `package` for wasm32 into `target_dir`.
 ///
 /// Uses its own target dir: sharing an outer build's would deadlock on
