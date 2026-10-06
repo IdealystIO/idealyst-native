@@ -42,10 +42,40 @@ fn the_protocol_over_http() {
     assert!(answer.answers(&id));
     assert_eq!(post(serde_json::json!({ "manifest": id })).status(), 200, "known now");
 
-    let forged = post(serde_json::json!({ "manifest": "abc", "provides": app }));
+    let forged = post(serde_json::json!({ "manifest": id.replace('0', "1"), "provides": app }));
     assert_eq!(forged.status(), 400);
     assert!(forged.text().unwrap().contains("its content's is"));
 
+    // An id that isn't one names no file: refused before any read, and
+    // nothing is written for it.
+    let before = files(dir.path());
+    for bad in ["../index", "../../etc/passwd", "abc", &id.to_uppercase()] {
+        for body in [serde_json::json!({ "manifest": bad }), serde_json::json!({ "manifest": bad, "provides": app })] {
+            let refused = post(body);
+            assert_eq!(refused.status(), 400, "`{bad}`");
+            assert!(refused.text().unwrap().contains("isn't a manifest id"), "`{bad}`");
+        }
+    }
+    assert_eq!(files(dir.path()), before, "nothing stored for a malformed id");
+
     let huge = "x".repeat(2 << 20);
     assert_eq!(post(serde_json::json!({ "manifest": huge })).status(), 413, "a body past the limit");
+}
+
+/// Every file under `dir`, relative.
+fn files(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push(p.strip_prefix(dir).unwrap().display().to_string());
+            }
+        }
+    }
+    out.sort();
+    out
 }

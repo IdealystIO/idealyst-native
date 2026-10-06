@@ -1,16 +1,14 @@
 //! The demo's window, against the mock backend, reading the live release
 //! location in Cargo.toml (the local MinIO from ./setup.sh, with a release
-//! published by ./publish.sh). Skipped unless `IDEALYST_OTA_DEMO_LIVE` is
-//! set: it needs both.
+//! published by ./publish.sh). `#[ignore]`d, so a plain `cargo test` lists
+//! it as ignored instead of passing it unrun: run ./setup.sh and
+//! ./publish.sh, then `cargo test -p ota-demo --test live -- --ignored`.
 
 use host_mock::{pump, Harness};
 
 #[test]
+#[ignore = "needs the demo's MinIO with a release: run ./setup.sh and ./publish.sh, then cargo test -p ota-demo --test live -- --ignored"]
 fn the_window_shows_the_updater_and_the_downloaded_panel() {
-    if std::env::var_os("IDEALYST_OTA_DEMO_LIVE").is_none() {
-        eprintln!("skipped: run ./setup.sh and ./publish.sh, then set IDEALYST_OTA_DEMO_LIVE=1");
-        return;
-    }
     let cache = tempfile::tempdir().unwrap();
     pump::install_executor();
     pump::install_scheduler();
@@ -40,5 +38,7 @@ fn the_window_shows_the_updater_and_the_downloaded_panel() {
     assert!(after.contains("REMOTE · from the bundle") && after.contains("bundle `panel`"), "{after}");
     assert!(after.contains("Up to date"), "{after}");
     // How the check got its answer, and under which manifest.
-    assert!(after.contains("manifest ") && after.contains("answered by") || after.contains("decided here from the index"), "{after}");
+    // Either line names the manifest; the service or the precomputed answer
+    // says "answered by", the index "decided here from the index".
+    assert!(after.contains("manifest ") && (after.contains("answered by") || after.contains("decided here from the index")), "{after}");
 }

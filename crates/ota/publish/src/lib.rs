@@ -329,12 +329,54 @@ fn read(target: &Target) -> Result<(Index, Option<String>)> {
 ///
 /// Every write bumps the index's `generation`, which the answers made from
 /// it record ([`resolve_registered`]).
+///
+/// An index read at generation 0 was last written by something that
+/// doesn't record one: never written yet, or rewritten by an older CLI
+/// (`ota-publish` 0.1), which drops the field. Counting up from 0 again
+/// would give answers [`write_answer`] refuses, since the stored ones
+/// record the generation from before — every precomputed answer would
+/// stay stale. So the count resumes past the newest stored answer
+/// ([`answers_generation`]). A listing, paid only on such a write.
 fn update<T>(target: &Target, mut change: impl FnMut(&mut Index) -> Result<T>) -> Result<T> {
     update_file(target, INDEX_FILE, Index::new, |b| Index::parse(b).map_err(|e| anyhow!(e)), Index::to_json, |index| {
         let out = change(index)?;
+        if index.generation == 0 {
+            index.generation = answers_generation(target)?;
+        }
         index.generation += 1;
         Ok(out)
     })
+}
+
+/// Where the precomputed answers are (`ota_index::resolved_path`).
+const RESOLVED_DIR: &str = "resolved/";
+
+/// The newest generation a stored answer records (0 if none).
+fn answers_generation(target: &Target) -> Result<u64> {
+    let mut newest = 0;
+    for (path, _) in target.list(RESOLVED_DIR)? {
+        // One that doesn't parse (a newer format) isn't one this can
+        // outrank; `write_answer` leaves it alone anyway.
+        if let Some((bytes, _)) = target.get(&path)? {
+            if let Ok(answer) = Resolution::parse(&bytes) {
+                newest = newest.max(answer.generation);
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// The index to make answers from. One at generation 0 while answers
+/// record a later one (an older CLI rewrote it, see [`update`]) is first
+/// rewritten unchanged, which moves its generation past theirs — else
+/// the answers made from it would be refused as older.
+fn index_for_answers(target: &Target) -> Result<Index> {
+    let index = read_index(target)?;
+    if index.generation == 0 && answers_generation(target)? > 0 {
+        update(target, |_| Ok(()))?;
+        return read_index(target);
+    }
+    Ok(index)
 }
 
 /// [`update`] for any JSON file at the location.
@@ -706,7 +748,7 @@ pub fn register(
             Ok(if was_reported { Registration::Updated } else { Registration::Added })
         },
     )?;
-    write_answer(target, &resolve(&read_index(target)?, &manifest.provides))?;
+    write_answer(target, &resolve(&index_for_answers(target)?, &manifest.provides))?;
     Ok(outcome)
 }
 
@@ -737,7 +779,7 @@ pub fn resolve_registered(target: &Target) -> Result<Resolved> {
     if !registry.manifests.iter().any(|m| m.source == ManifestSource::Build) {
         return Ok(out);
     }
-    let index = read_index(target)?;
+    let index = index_for_answers(target)?;
     for entry in registry.manifests.iter().filter(|m| m.source == ManifestSource::Build) {
         let result = read_manifest(target, &entry.id)
             .and_then(|m| m.ok_or_else(|| anyhow!("its manifest is missing")))
@@ -1098,5 +1140,78 @@ mod tests {
         assert!(matches!(t.put("index.json", b"b", "", "", Some(&Expect::Absent)).unwrap(), Written::Conflict));
         assert!(matches!(t.put("index.json", b"b", "", "", Some(&Expect::Version(v.clone()))).unwrap(), Written::Done));
         assert!(matches!(t.put("index.json", b"c", "", "", Some(&Expect::Version(v))).unwrap(), Written::Conflict));
+    }
+
+    /// What `ota-publish` 0.1 (an older CLI) does to the index when it
+    /// publishes `upload`: reads it as its own types and writes them back,
+    /// which drops `generation`, `pinned` and what a take-down recorded,
+    /// and rewrites no answer.
+    fn publish_with_0_1(t: &Target, upload: Upload, published: u64) {
+        let (bytes, _) = t.get(INDEX_FILE).unwrap().unwrap();
+        let mut index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let index = index.as_object_mut().unwrap();
+        index.remove("generation");
+        for bundle in index["bundles"].as_object_mut().unwrap().values_mut() {
+            let bundle = bundle.as_object_mut().unwrap();
+            bundle.remove("pinned");
+            let release = serde_json::to_value(release_of(&upload, published).unwrap()).unwrap();
+            bundle["releases"].as_array_mut().unwrap().insert(0, release);
+        }
+        let bytes = serde_json::to_vec_pretty(&index).unwrap();
+        assert!(matches!(t.put(INDEX_FILE, &bytes, "application/json", INDEX_CACHE, None).unwrap(), Written::Done));
+        t.put(&Release::path_for("shop", &sha_of(&upload)), &upload.wasm, "application/wasm", BUNDLE_CACHE, None).unwrap();
+    }
+
+    fn sha_of(u: &Upload) -> String {
+        remote_bundle::content_hash(&u.wasm)
+    }
+
+    /// Regression: an older CLI rewriting the index dropped `generation`,
+    /// so the next write here counted up from 0 again, and every answer it
+    /// made was refused as older than the stored one — the precomputed
+    /// answers, which apps prefer to the index, stayed stale for good. Now
+    /// a write that finds generation 0 resumes past the newest stored
+    /// answer, and `resolve_registered` (`idealyst ota resolve`) does the
+    /// same before rewriting the answers.
+    #[test]
+    fn regression_an_older_cli_writing_the_index_leaves_answers_stale() {
+        // `idealyst ota resolve` after the older CLI's publish.
+        let dir = tempfile::tempdir().unwrap();
+        let t = Target::Dir(dir.path().into());
+        let app = manifest(false);
+        register(&t, &app, ManifestSource::Build, None, None).unwrap();
+        for n in 1..=3 {
+            publish(&t, &[bundle(n)], u64::from(n), "cli:me").unwrap();
+        }
+        let before = answer(&t, &app).unwrap();
+        assert_eq!((before.generation, before.bundles["shop"].release.as_ref().unwrap().version.as_str()), (3, "1.0.3"));
+        publish_with_0_1(&t, bundle(4), 4);
+        assert_eq!(read_index(&t).unwrap().generation, 0, "the older CLI dropped it");
+        assert_eq!(answer(&t, &app).unwrap(), before, "and rewrote no answer");
+        let r = resolve_registered(&t).unwrap();
+        assert_eq!((r.written, r.current, r.failed.len()), (1, 0, 0));
+        let after = answer(&t, &app).unwrap();
+        assert_eq!(after.bundles["shop"].release.as_ref().unwrap().version, "1.0.4");
+        assert!(after.generation > before.generation);
+        assert_eq!(after.generation, read_index(&t).unwrap().generation);
+
+        // The next publish here, after the older CLI's.
+        let dir = tempfile::tempdir().unwrap();
+        let t = Target::Dir(dir.path().into());
+        register(&t, &app, ManifestSource::Build, None, None).unwrap();
+        for n in 1..=3 {
+            publish(&t, &[bundle(n)], u64::from(n), "cli:me").unwrap();
+        }
+        publish_with_0_1(&t, bundle(4), 4);
+        publish(&t, &[bundle(5)], 5, "cli:me").unwrap();
+        let after = answer(&t, &app).unwrap();
+        assert_eq!(after.bundles["shop"].release.as_ref().unwrap().version, "1.0.5");
+        assert_eq!((after.generation, read_index(&t).unwrap().generation), (4, 4), "resumed past the stored answer's 3");
+
+        // A location no older CLI touched counts as before.
+        let dir = tempfile::tempdir().unwrap();
+        let t = Target::Dir(dir.path().into());
+        publish(&t, &[bundle(1)], 1, "cli:me").unwrap();
+        assert_eq!(read_index(&t).unwrap().generation, 1);
     }
 }

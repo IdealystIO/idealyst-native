@@ -86,6 +86,10 @@ pub fn QrCode(
             rules.aspect_ratio = Some(1.0);
         }
     }
+    // Built with canvas's documented builder form rather than `ui!`: `Canvas`
+    // returns a `CanvasBound` that takes its style through `.with_style`
+    // (canvas-core `prim.rs`), and `.into_element()` is the real conversion
+    // here, not the no-op one the macros already do.
     Canvas(CanvasProps { draw, ..Default::default() })
         .with_style(Rc::new(StyleSheet::r#static(rules)))
         .into_element()

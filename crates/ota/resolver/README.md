@@ -21,7 +21,7 @@ those, so if it's down, users still get updates.
 |---|---|
 | `200`, the answer (`ota_index::Resolution`) | the location knows this build: registered from its build (`idealyst ota manifest`), or reported before |
 | `404` | it doesn't: the app sends `{"manifest": "<id>", "provides": {…}}` once |
-| `400` | the manifest sent isn't the one its id names |
+| `400` | the id isn't one (64 lowercase hex characters, what `Provides::id()` gives), or the manifest sent isn't the one its id names. A malformed id is refused before anything is read |
 | `413` | a body over 1 MB |
 | `502` | the location couldn't be read |
 
@@ -54,7 +54,7 @@ cargo run -p ota-resolver --release             # → http://127.0.0.1:3200/v1/r
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | — | Read the location; write `manifests/` and `reported/` |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | `us-east-1` | |
 | `AWS_ENDPOINT_URL` | AWS for the region | MinIO, R2, … |
-| `OTA_RESOLVE_REPORTS` | `keep` | `ignore`: answer manifests apps send, but don't store them |
+| `OTA_RESOLVE_REPORTS` | `keep` | `ignore`: answer manifests apps send, but don't store them. The app then sends its manifest again on every check |
 | `OTA_RESOLVE_MAX_REPORTED` | `500` | How many reported builds to store |
 | `OTA_RESOLVE_INDEX_TTL_SECS` | `5` | How long an instance reuses the index: a publish or take-down reaches apps asking here at most this much later |
 | `PORT` | `3200` | The server binary |
@@ -76,6 +76,11 @@ function's role the bucket permissions above. Lambda supplies the
 credentials. An instance keeps the manifests it has read, and the index for
 `OTA_RESOLVE_INDEX_TTL_SECS`, across warm invocations. A cold instance reads
 them again.
+
+An instance only keeps manifests the location stores: registered builds, and
+reports it stored. A manifest it answered but didn't store (reports ignored,
+or past `OTA_RESOLVE_MAX_REPORTED`) is forgotten, so clients posting many
+manifests can't grow its memory.
 
 ## Locally, with the demo's MinIO
 

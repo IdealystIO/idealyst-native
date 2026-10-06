@@ -52,6 +52,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[path = "pixels.rs"]
 mod pixels;
 
+// Pure texture-layer composite math (source → destination mapping, border
+// color), tested on every host by `tests/layer_geometry.rs`.
+#[path = "layer_geometry.rs"]
+mod layer_geometry;
+
 pub(crate) fn mount_canvas(
     cx: &mut MountCx<'_, AndroidBackend>,
     prim: &Rc<CanvasPrim>,
@@ -354,7 +359,11 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
 
     // Clip to the DRAWN rect (letterboxed for Contain), rounded when
     // `corner_radius > 0`, so corners clip the image and the full-bitmap draw
-    // below can't spill outside the destination.
+    // below can't spill outside the destination. The rect itself comes from
+    // `source_rects` (tested in canvas-core); that the clip actually bounds the
+    // matrix draw can only be seen on a device — there is no host
+    // `android.graphics.Canvas` to read pixels back from (README: Android
+    // checklist).
     let r = (layer.corner_radius)().clamp(0.0, ow.min(oh) * 0.5);
     if r > 0.0 {
         if let Some(clip) = round_rect_path(env, ox, oy, ow, oh, r) {
@@ -371,25 +380,21 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
     }
 
     // Map the (fractional) source rect onto the destination with a Matrix
-    // rather than `drawBitmap(Rect, RectF)`: that overload takes an INTEGER
-    // source rect, so a crop or Cover offset would snap to whole source pixels
-    // and drift from the web/Apple/vello framing, which sample the exact
-    // `source_rects` sub-rect.
-    if let (Some(src), Some(dst)) = (rect_f(env, sx, sy, sw, sh), rect_f(env, ox, oy, ow, oh)) {
-        let fill = env
-            .get_static_field(
-                "android/graphics/Matrix$ScaleToFit",
-                "FILL",
-                "Landroid/graphics/Matrix$ScaleToFit;",
-            )
-            .and_then(|v| v.l());
-        let matrix = env.new_object("android/graphics/Matrix", "()V", &[]);
-        if let (Ok(fill), Ok(matrix)) = (fill, matrix) {
+    // rather than `drawBitmap(Rect, RectF)`, whose source rect is INTEGER — see
+    // `layer_geometry::source_to_dest` (the math, host-tested) for why.
+    if let Some((kx, ky, tx, ty)) = layer_geometry::source_to_dest((sx, sy, sw, sh), (ox, oy, ow, oh)) {
+        if let Ok(matrix) = env.new_object("android/graphics/Matrix", "()V", &[]) {
             let _ = env.call_method(
                 &matrix,
-                "setRectToRect",
-                "(Landroid/graphics/RectF;Landroid/graphics/RectF;Landroid/graphics/Matrix$ScaleToFit;)Z",
-                &[JValue::Object(&src), JValue::Object(&dst), JValue::Object(&fill)],
+                "setScale",
+                "(FF)V",
+                &[JValue::Float(kx as jfloat), JValue::Float(ky as jfloat)],
+            );
+            let _ = env.call_method(
+                &matrix,
+                "postTranslate",
+                "(FF)Z",
+                &[JValue::Float(tx as jfloat), JValue::Float(ty as jfloat)],
             );
             let _ = env.call_method(
                 canvas,
@@ -430,11 +435,7 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
             // The layer opacity fades the frame along with the picture, as on
             // web (`globalAlpha` covers both) and vello (`bcolor.a * opacity`).
             let c = layer.border_color;
-            let a = (c.a as f32 * layer.opacity.clamp(0.0, 1.0)).round() as i32;
-            let argb = (a << 24)
-                | ((c.r as i32) << 16)
-                | ((c.g as i32) << 8)
-                | (c.b as i32);
+            let argb = layer_geometry::border_argb(c.r, c.g, c.b, c.a, layer.opacity);
             let _ = env.call_method(&border_paint, "setColor", "(I)V", &[JValue::Int(argb)]);
             let inset = bw * 0.5;
             let br = (r - inset).max(0.0);

@@ -64,6 +64,14 @@ impl Drop for ObserverGuard {
 /// Takes a `web_sys::HtmlCanvasElement` because that is what `canvas-vello`
 /// holds; the element crosses into web-glue once, here (HYBRID-BRIDGE:
 /// wgpu).
+///
+/// **The scene must already be placed.** Texture layers (`props.layers`) are
+/// drawn ONLY where the scene carries a `DrawOp::Texture { index }` op; the
+/// rasterizer never appends them after the scene. A scene from
+/// [`canvas_core::paint_scene`] or `CanvasPrim::paint` is already placed (both
+/// run [`canvas_core::place_textures`]). A raw [`Scene`] built any other way
+/// must go through `place_textures(scene, props.layers.len())` first, or every
+/// layer it never placed is silently not drawn.
 #[cfg(feature = "web-sys-canvas")]
 pub fn make_2d_rasterizer(
     canvas: web_sys::HtmlCanvasElement,

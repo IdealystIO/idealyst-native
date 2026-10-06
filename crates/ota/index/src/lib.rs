@@ -337,6 +337,14 @@ impl Resolution {
 /// The list of registered app builds, at the location's root.
 pub const MANIFESTS_FILE: &str = "manifests.json";
 
+/// Whether `id` has the form of a manifest id (`Provides::id`: a SHA-256
+/// in lowercase hex, 64 characters). Anything that names a file at the
+/// location by an id it was sent ([`manifest_path`], [`resolved_path`])
+/// checks this first: an id is a path segment, and `../index` is not one.
+pub fn is_manifest_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Where a manifest is stored: `manifests/<id>.json`.
 pub fn manifest_path(id: &str) -> String {
     format!("manifests/{id}.json")
@@ -648,5 +656,17 @@ mod tests {
         i.format = FORMAT + 1;
         assert!(Index::parse(&i.to_json()).unwrap_err().contains("format"));
         assert_eq!(Index::parse(&index().to_json()).unwrap(), index());
+    }
+
+    /// Every id `Provides::id` makes passes; a path, an uppercase or
+    /// short hash, or anything else doesn't.
+    #[test]
+    fn manifest_ids_are_lowercase_sha256_hex() {
+        let id = Provides { codec: 2, ..Default::default() }.id();
+        assert!(is_manifest_id(&id), "{id}");
+        assert!(is_manifest_id(&Provides::default().id()));
+        for bad in ["", "abc", "../index", "../../etc/passwd", &id.to_uppercase(), &id[..63], &format!("{id}0"), &format!("../{}", &id[3..])] {
+            assert!(!is_manifest_id(bad), "{bad}");
+        }
     }
 }

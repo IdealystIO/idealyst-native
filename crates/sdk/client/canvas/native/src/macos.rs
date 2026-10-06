@@ -517,6 +517,40 @@ mod tests {
         assert_px(&buf, 17, 10, GREEN);
     }
 
+    /// Regression: texture pixels are STRAIGHT alpha (`TextureLayer::resolve_rgba`),
+    /// but the CoreGraphics texture image was created as
+    /// `kCGImageAlphaPremultipliedLast`, so a translucent texel was composited
+    /// as if its color were already multiplied by its alpha — too bright. A
+    /// straight red at alpha 128 over black must land at about half red.
+    ///
+    /// The backdrop is black, not white, on purpose: over white, pure red
+    /// gives (255,127,127) under BOTH readings (the misread's red channel
+    /// saturates at 255 and green/blue are 0 in both), so it can't tell them
+    /// apart. Black and the half-red-over-white case below separate them.
+    #[test]
+    fn regression_translucent_texture_is_composited_as_straight_alpha() {
+        let half_red = [255, 0, 0, 128];
+        let props = CanvasProps {
+            draw: draw(|s| fill(s, 0.0, 0.0, 20.0, 20.0, [0, 0, 0, 255])),
+            layers: vec![image_layer(1, 1, solid(half_red), (0.0, 0.0, 20.0, 20.0))],
+            ..Default::default()
+        };
+        let buf = render(&props);
+        // Straight: 255 × 128/255 + 0 = 128. Premultiplied misread: 255.
+        assert_px(&buf, 10, 10, [128, 0, 0, 255]);
+
+        // Over white with a color whose misread does not saturate: straight
+        // (128,0,0,128) → 128×0.502 + 255×0.498 ≈ (191,127,127); the misread
+        // gives 128 + 127 = 255 in red.
+        let props = CanvasProps {
+            draw: draw(|s| fill(s, 0.0, 0.0, 20.0, 20.0, [255, 255, 255, 255])),
+            layers: vec![image_layer(1, 1, solid([128, 0, 0, 128]), (0.0, 0.0, 20.0, 20.0))],
+            ..Default::default()
+        };
+        let buf = render(&props);
+        assert_px(&buf, 10, 10, [191, 127, 127, 255]);
+    }
+
     /// `Fit::Contain` letterboxes: outside the fitted rect nothing is drawn.
     #[test]
     fn contain_fit_leaves_the_letterbox_empty() {

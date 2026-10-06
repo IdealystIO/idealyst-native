@@ -54,6 +54,13 @@ committed through a 0 ms scheduler timer (every backend flushes after scheduler
 callbacks, and resize notifications arrive outside the framework's dispatch),
 and a report that lands after the canvas unmounted is dropped.
 
+Renderers draw texture layers only where the scene has a texture op and never
+add the missing ones at the end themselves; `paint_scene` / `CanvasPrim::paint`
+already did that. So a scene handed straight to `canvas_native::make_2d_rasterizer`
+must come from one of those, or be run through
+`canvas_core::place_textures(scene, layers.len())` first. Otherwise any layer it
+never placed is not drawn.
+
 ## Bulk shapes (instanced)
 
 For a grid or scatter of **many** simple shapes, filling one `Path::circle` /
@@ -230,10 +237,15 @@ renderers (CLAUDE.md §7), so verify the **GPU (`canvas-vello`)** and **CPU
 
 - [x] `cargo test -p canvas-core` — `tests/size.rs`: a renderer's size report reaches the painter and repaints, same-size reports don't repaint, a report after unmount is ignored; and the texture-op rules (`place_textures`: placement, appending unplaced layers, base state at a texture + state resumed after it, nested/out-of-range removal) and `TextureLayer::source_rects` / `source_to_canvas`
 - [x] `cargo test -p canvas-native --target wasm32-unknown-unknown --test web_canvas` — `the_painter_sees_the_laid_out_canvas_size` (the resize observer's report reaches `Scene::size`); `texture_ops_order_vector_content_around_layers`: a fill after `texture(0)` is on top, the texture ignores the author transform, an unplaced layer composites over the scene, `src_crop` is honored
-- [x] `cargo test -p canvas-native` (macOS host) — headless CoreGraphics tests in `native/src/macos.rs` drive the shared Apple painter (iOS + macOS): texture-op ordering, unplaced layers, transform reset, upright image, `src_crop`, Contain letterbox; `native/tests/pixels.rs` — RGBA premultiply / Cairo ARGB32 conversions
+- [x] `cargo test -p canvas-native` (macOS host) — headless CoreGraphics tests in `native/src/macos.rs` drive the shared Apple painter (iOS + macOS): texture-op ordering, unplaced layers, transform reset, upright image, `src_crop`, Contain letterbox, a translucent texture composited as straight alpha; `native/tests/pixels.rs` — RGBA premultiply / Cairo ARGB32 conversions; `native/tests/layer_geometry.rs` — the Android layer math (fractional source rect → drawn rect mapping, border color faded by opacity)
 - [x] Linux (Cairo) — `cargo test -p canvas-native` inside a Linux environment with gtk4/cairo (e.g. a devcontainer: `CARGO_TARGET_DIR=/tmp/cn-linux-target cargo test --locked -p canvas-native`): texture-op ordering, unplaced layers, `src_crop`, transform/clip reset, rounded/faded/framed layers
 - [x] `cargo test -p canvas-vello` (macOS Metal) — texture-op ordering on the GPU (`vello/tests/headless_compositor.rs`), the overlay-reuse submit-ordering model (`texture_runs.rs`), segmentation incl. keeping the Cached/Hybrid/Shapes fast paths with layers (`plan.rs`), shared layer crop/fit/clip geometry (`layer_blit.rs`)
-- [ ] Android `android.graphics` texture compositing — compile-checked (`cargo check -p canvas-native --target aarch64-linux-android`); needs a device/emulator run
+- [ ] Android `android.graphics` texture compositing — compile-checked (`cargo check -p canvas-native --target aarch64-linux-android`) and its pure math host-tested (`native/tests/layer_geometry.rs`); there is no host `android.graphics.Canvas` to read pixels back from, so these need a device/emulator run:
+  - a layer drawn at `texture(i)` sits under the vector content recorded after it, and an unplaced layer over everything;
+  - a `src_crop` / Cover crop that starts mid-pixel frames the same as on web (the `Matrix` `setScale` + `postTranslate` draw, not the integer `Rect` overload);
+  - a square-cornered layer (`corner_radius` 0) does not spill outside its drawn rect — the `clipRect` bounds the whole-bitmap matrix draw, most visible with `src_crop` or `Fit::Cover`;
+  - a layer's border frame fades with `opacity` (try 0.5 with a white border);
+  - a translucent image layer (a logo's soft edge) is not too bright (the straight → premultiplied upload).
 
 **Behavior**
 - [ ] **Web** — register `canvas-native`; a `draw` scene renders via Canvas2D; reactive `Signal` reads re-render on change; self-capture records via `captureStream()`.

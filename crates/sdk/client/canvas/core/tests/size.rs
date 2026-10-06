@@ -106,18 +106,53 @@ fn a_canvas_outside_a_world_reports_nothing_and_paints_at_zero() {
 
 /// The reporter can outlive the canvas (a late resize callback during
 /// teardown). Its deferred write must be skipped once the canvas's scope is
-/// gone — writing a freed signal aborts.
+/// gone — writing a freed signal panics with `stale-signal-handle`, and on a
+/// real backend that panic is raised in a non-unwinding platform callback,
+/// which aborts.
+///
+/// The canvas is built inside a reactive hole so it has a scope of its own
+/// that unmount really disposes while the world lives on — the shape of a
+/// route change. Built at the world root instead, its size signal is never
+/// freed and the test would pass with the guard removed.
 #[test]
-fn a_report_after_unmount_is_ignored() {
+fn regression_a_report_after_unmount_is_ignored() {
+    use runtime_vocabulary::builders::view;
+    use runtime_world::signal;
+
     let h = harness();
     let seen = Rc::new(RefCell::new(Vec::new()));
-    let el = h.world.enter(|| recording_canvas(seen.clone()));
-    let realized: Realized<u32> = h.mount(el);
+    let shown_slot = Rc::new(RefCell::new(None));
+    let el = h.world.enter(|| {
+        let shown = signal(true);
+        *shown_slot.borrow_mut() = Some(shown);
+        let seen = seen.clone();
+        view()
+            .child(move || {
+                if shown.get() {
+                    recording_canvas(seen.clone())
+                } else {
+                    view().build()
+                }
+            })
+            .build()
+    });
+    let _realized: Realized<u32> = h.mount(el);
     h.flush();
-    let late = reporter();
-    drop(realized);
-    h.flush();
+    let shown = shown_slot.borrow().expect("hole built");
 
-    late.report(50.0, 50.0); // must not panic
+    // Sanity: while mounted the reporter really writes, so the silence
+    // below means "guarded", not "never wired".
+    let late = reporter();
+    late.report(40.0, 40.0);
     h.flush();
+    assert_eq!(seen.borrow().last(), Some(&(40.0, 40.0)), "reports land while mounted");
+
+    // Unmount only the canvas's scope; the world survives.
+    shown.set(false);
+    h.flush();
+    let paints = seen.borrow().len();
+
+    late.report(50.0, 50.0); // must not write the freed size signal
+    h.flush();
+    assert_eq!(seen.borrow().len(), paints, "an unmounted canvas never repaints");
 }

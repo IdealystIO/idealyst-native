@@ -255,14 +255,14 @@ fn an_unsigned_release_is_refused_when_signatures_are_required() {
 
 /// Over real HTTP, from an S3-compatible store: set `IDEALYST_OTA_TEST_URL`
 /// to a release location `idealyst ota publish` wrote the showcase to (a
-/// MinIO bucket, say — `docs/ota.md`, "Testing against S3"). Skipped
-/// otherwise: it needs the network and a published release.
+/// MinIO bucket, say — `docs/ota.md`, "Testing against S3"). Ignored by
+/// default, so a run without one reports it as ignored rather than passed:
+/// it needs the network and a published release.
 #[test]
+#[ignore = "needs a published release: IDEALYST_OTA_TEST_URL=http://… cargo test -p remote-showcase --test ota over_http -- --ignored"]
 fn over_http_from_s3() {
-    let Ok(url) = std::env::var("IDEALYST_OTA_TEST_URL") else {
-        eprintln!("skipped: set IDEALYST_OTA_TEST_URL to run against a published release");
-        return;
-    };
+    let url = std::env::var("IDEALYST_OTA_TEST_URL")
+        .expect("set IDEALYST_OTA_TEST_URL to the release location the showcase was published to");
     let cache = tempfile::tempdir().unwrap();
     pump::install_executor();
     pump::install_scheduler();

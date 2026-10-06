@@ -17,7 +17,14 @@
 //! and keeps nothing it can't read again: run one instance, many, or a
 //! Lambda (`src/bin/lambda.rs`).
 //!
-//! What it caches, per instance: manifests (immutable under their id), and
+//! The id is checked before anything is read: it must have the form
+//! `Provides::id` gives (`ota_index::is_manifest_id`, 64 lowercase hex), or
+//! the request is refused (`400`). It names a file at the location
+//! (`manifests/<id>.json`), so an id like `../index` must never reach a
+//! read.
+//!
+//! What it caches, per instance: the manifests the location keeps
+//! (immutable under their id; see [`Resolver`] for why only those), and
 //! the index for [`Settings::index_ttl`] — a change reaches apps asking
 //! here at most that much later.
 
@@ -85,7 +92,18 @@ impl Settings {
 pub struct Resolver {
     target: Target,
     settings: Settings,
-    /// Manifests read or received, by id: immutable, so kept for good.
+    /// Manifests the location keeps, by id: immutable, so kept for good.
+    ///
+    /// Only ones the location stores — read from it, or stored by this
+    /// instance — never one merely received. Anyone can post a manifest,
+    /// so caching every one would let a client grow this map without end;
+    /// the stored ones are bounded by what the location keeps (reports
+    /// capped at [`Settings::max_reported`], builds registered by whoever
+    /// publishes), each at most a request body. A manifest that wasn't
+    /// stored (reports off, the cap reached, the store failing) is
+    /// answered and forgotten: its app gets a `404` next time and sends
+    /// it again. A count cap with eviction would bound it as well, but
+    /// would also evict the registered builds the cache exists for.
     known: Mutex<HashMap<String, Provides>>,
     /// The index, and when it was read.
     index: Mutex<Option<(Instant, Arc<Index>)>>,
@@ -124,26 +142,37 @@ impl Resolver {
 
     /// Answer one request. Blocking: it may read the location.
     pub fn reply(&self, request: Request) -> Result<Reply> {
+        if !ota_index::is_manifest_id(&request.manifest) {
+            return Ok(Reply::Refused(format!(
+                "`{}` isn't a manifest id (64 lowercase hex characters, `Provides::id`)",
+                request.manifest.chars().take(80).collect::<String>()
+            )));
+        }
         let provides = match request.provides {
             Some(provides) => {
                 let manifest = Manifest { rule: remote_bundle::RULE, id: request.manifest.clone(), provides };
                 if let Err(why) = manifest.verify() {
                     return Ok(Reply::Refused(why));
                 }
-                if self.settings.keep_reports {
-                    // Full, or the store unwritable: still answered.
-                    let stored = ota_publish::register(
+                // Full, or the store unwritable: still answered, but not
+                // cached (see `known`).
+                let stored = self.settings.keep_reports
+                    && match ota_publish::register(
                         &self.target,
                         &manifest,
                         ManifestSource::Reported,
                         None,
                         Some(self.settings.max_reported),
-                    );
-                    if let Err(e) = stored {
-                        eprintln!("ota-resolver: a reported manifest wasn't stored: {e:#}");
-                    }
+                    ) {
+                        Ok(_) => true,
+                        Err(e) => {
+                            eprintln!("ota-resolver: a reported manifest wasn't stored: {e:#}");
+                            false
+                        }
+                    };
+                if stored {
+                    self.known.lock().expect("not poisoned").insert(manifest.id, manifest.provides.clone());
                 }
-                self.known.lock().expect("not poisoned").insert(manifest.id, manifest.provides.clone());
                 manifest.provides
             }
             None => {
@@ -214,7 +243,7 @@ mod tests {
         let quiet = Resolver::new(target.clone(), Settings { keep_reports: false, ..Settings::default() });
         assert!(matches!(ask(&quiet, false), Reply::Unknown));
         assert!(matches!(ask(&quiet, true), Reply::Answer(_)));
-        assert!(matches!(ask(&quiet, false), Reply::Answer(_)), "kept in memory");
+        assert!(matches!(ask(&quiet, false), Reply::Unknown), "reports off: answered, not kept");
         assert!(ota_publish::read_registry(&target).unwrap().manifests.is_empty(), "reports off: nothing stored");
 
         let keeping = Resolver::new(target.clone(), Settings::default());
@@ -252,5 +281,64 @@ mod tests {
         assert_eq!(generation(&cached), 1, "still the one it read");
         let uncached = Resolver::new(target, Settings { index_ttl: Duration::ZERO, ..Settings::default() });
         assert_eq!(generation(&uncached), 2);
+    }
+
+    /// Regression: the id named a file (`manifests/<id>.json`) unchecked,
+    /// so on a directory location `../` walked out of it — here, to a
+    /// valid manifest planted beside the store, which was read and
+    /// answered. Now any id not of `Provides::id`'s form is refused before
+    /// a read: the store below is a FILE, so any read of it would fail
+    /// with an error instead of a refusal.
+    #[test]
+    fn regression_manifest_id_path_traversal_refused_before_any_read() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("store/manifests")).unwrap();
+        let planted = Manifest::new(app());
+        std::fs::write(root.path().join("planted.json"), planted.to_json()).unwrap();
+        let store = Resolver::new(Target::Dir(root.path().join("store")), Settings::default());
+        let outside = store.reply(Request { manifest: "../../planted".into(), provides: None }).unwrap();
+        assert!(matches!(outside, Reply::Refused(_)), "read outside the store: {outside:?}");
+
+        let not_a_dir = root.path().join("not-a-dir");
+        std::fs::write(&not_a_dir, b"").unwrap();
+        let untouchable = Resolver::new(Target::Dir(not_a_dir), Settings::default());
+        assert!(untouchable.reply(Request { manifest: app().id(), provides: None }).is_err(), "a read here fails");
+        let id = app().id();
+        for bad in ["../index".to_string(), "abc".into(), id.to_uppercase(), format!("{id}/../{id}"), String::new()] {
+            for provides in [None, Some(app())] {
+                match untouchable.reply(Request { manifest: bad.clone(), provides }) {
+                    Ok(Reply::Refused(why)) => assert!(why.contains("isn't a manifest id"), "{why}"),
+                    other => panic!("`{bad}`: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// Regression: every manifest posted was cached for good, stored or
+    /// not, so a client posting distinct valid manifests grew the
+    /// instance's memory without bound. Only the ones the location keeps
+    /// are cached: reports off, or past `max_reported`, nothing is.
+    #[test]
+    fn regression_unstored_reports_are_not_cached() {
+        let manifest = |codec: u32| Provides { codec, ..Default::default() };
+        let post = |r: &Resolver, p: Provides| r.reply(Request { manifest: p.id(), provides: Some(p) }).unwrap();
+        let cached = |r: &Resolver| r.known.lock().unwrap().len();
+
+        let dir = tempfile::tempdir().unwrap();
+        let quiet = Resolver::new(Target::Dir(dir.path().into()), Settings { keep_reports: false, ..Settings::default() });
+        for codec in 0..50 {
+            assert!(matches!(post(&quiet, manifest(codec)), Reply::Answer(_)));
+        }
+        assert_eq!(cached(&quiet), 0, "reports off: nothing kept");
+
+        let dir = tempfile::tempdir().unwrap();
+        let capped = Resolver::new(Target::Dir(dir.path().into()), Settings { max_reported: 3, ..Settings::default() });
+        for codec in 0..50 {
+            assert!(matches!(post(&capped, manifest(codec)), Reply::Answer(_)), "past the cap: still answered");
+        }
+        assert_eq!(cached(&capped), 3, "only the three stored");
+        let by_id = |codec: u32| capped.reply(Request { manifest: manifest(codec).id(), provides: None }).unwrap();
+        assert!(matches!(by_id(0), Reply::Answer(_)));
+        assert!(matches!(by_id(49), Reply::Unknown), "not stored: asked for again");
     }
 }

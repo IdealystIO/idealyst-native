@@ -1,7 +1,16 @@
 //! Against a real S3 API: set `IDEALYST_OTA_TEST_S3` to a writable prefix
 //! (`s3://ota-test/race`), with the `aws` CLI's credentials and, for
-//! MinIO, `AWS_ENDPOINT_URL`. Skipped otherwise. See docs/ota.md,
-//! "Testing against S3".
+//! MinIO, `AWS_ENDPOINT_URL`. Every test here is `#[ignore]`d, so a plain
+//! `cargo test` lists them as ignored instead of passing them unrun; run
+//! them with
+//!
+//! ```sh
+//! IDEALYST_OTA_TEST_S3=s3://ota-test/race cargo test -p ota-publish --features s3-http --test s3 -- --ignored
+//! ```
+//!
+//! Asked to run without the prefix (or, for the signed-HTTP ones, without
+//! `--features s3-http`), a test fails saying what's missing. See
+//! docs/ota.md, "Testing against S3".
 
 use ota_publish::{publish, read_index, rollback, Target, Upload};
 
@@ -17,26 +26,21 @@ fn bundle(n: u32) -> Vec<u8> {
 /// A fresh prefix under `IDEALYST_OTA_TEST_S3`, reached through the `aws`
 /// CLI — or, with `http`, the console's own signed requests (`S3Http`,
 /// which reads the same AWS_* variables).
-fn target_via(test: &str, http: bool) -> Option<Target> {
-    let Ok(prefix) = std::env::var("IDEALYST_OTA_TEST_S3") else {
-        eprintln!("skipped: set IDEALYST_OTA_TEST_S3 to an s3:// prefix to run");
-        return None;
-    };
+fn target_via(test: &str, http: bool) -> Target {
+    let prefix = std::env::var("IDEALYST_OTA_TEST_S3")
+        .expect("set IDEALYST_OTA_TEST_S3 to an s3:// prefix (see this file's header, or docs/ota.md \"Testing against S3\")");
     let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let location = format!("{}/{test}-{run}", prefix.trim_end_matches('/'));
     if http {
         #[cfg(feature = "s3-http")]
-        return Some(Target::S3Http(ota_publish::S3Http::from_env(&location).unwrap()));
+        return Target::S3Http(ota_publish::S3Http::from_env(&location).unwrap());
         #[cfg(not(feature = "s3-http"))]
-        {
-            eprintln!("skipped: build with --features s3-http");
-            return None;
-        }
+        panic!("the signed-HTTP tests need `--features s3-http`");
     }
-    Some(Target::parse(&location).unwrap())
+    Target::parse(&location).unwrap()
 }
 
-fn target(test: &str) -> Option<Target> {
+fn target(test: &str) -> Target {
     target_via(test, false)
 }
 
@@ -44,8 +48,9 @@ fn target(test: &str) -> Option<Target> {
 /// only written if no one changed it since it was read; a loser re-reads
 /// and re-applies its change.
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn racing_publishes_all_land() {
-    let Some(target) = target("race") else { return };
+    let target = target("race");
     let threads: Vec<_> = (0..8)
         .map(|n| {
             let target = target.clone();
@@ -60,15 +65,16 @@ fn racing_publishes_all_land() {
 }
 
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn publish_twice_and_roll_back() {
-    let Some(target) = target("rollback") else { return };
-    publish_twice_and_roll_back_at(target);
+    publish_twice_and_roll_back_at(target("rollback"));
 }
 
 /// The same, through the console's signed HTTP requests.
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn over_signed_http_too() {
-    let Some(target) = target_via("http", true) else { return };
+    let target = target_via("http", true);
     publish_twice_and_roll_back_at(target.clone());
     // And the take-down, pin and audit trail the console drives.
     publish(&target, &[Upload { name: "shop".into(), wasm: bundle(3) }], 4, "test").unwrap();
@@ -110,15 +116,15 @@ fn registered_answers_follow_the_index_at(target: Target) {
 }
 
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn registered_answers_follow_the_index() {
-    let Some(target) = target("answers") else { return };
-    registered_answers_follow_the_index_at(target);
+    registered_answers_follow_the_index_at(target("answers"));
 }
 
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn registered_answers_follow_the_index_over_signed_http() {
-    let Some(target) = target_via("answers-http", true) else { return };
-    registered_answers_follow_the_index_at(target);
+    registered_answers_follow_the_index_at(target_via("answers-http", true));
 }
 
 /// Builds reported from the field are markers of their own, found by
@@ -145,13 +151,13 @@ fn reports_are_listed_at(target: Target) {
 }
 
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn reports_are_listed() {
-    let Some(target) = target("reports") else { return };
-    reports_are_listed_at(target);
+    reports_are_listed_at(target("reports"));
 }
 
 #[test]
+#[ignore = "needs an S3 API: IDEALYST_OTA_TEST_S3=s3://… cargo test -p ota-publish --features s3-http --test s3 -- --ignored"]
 fn reports_are_listed_over_signed_http() {
-    let Some(target) = target_via("reports-http", true) else { return };
-    reports_are_listed_at(target);
+    reports_are_listed_at(target_via("reports-http", true));
 }

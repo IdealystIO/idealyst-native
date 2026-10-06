@@ -145,9 +145,51 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `after_ms` / `after_animation_frame` / `raf_loop` and the screen
   recorder's frame interval. *Migration:* code that stores one of these
   handles changes its type from `i32` to `f64`.
+- **`ota-index` 0.2 and `ota-macros` 0.2 need `ota` 0.2** (`ota-index`,
+  `ota-macros`, `ota`). `Index` gains a pub `generation` field and
+  `Bundle` a pub `pinned` field, and `Bundle::withdrawn` changes from
+  `Vec<Release>` to `Vec<Withdrawn>` (the release, plus when it was taken
+  down, whether with the kill switch, and why; the release itself is
+  `.release`). Code that builds an `Index { .. }` or `Bundle { .. }`
+  literal, or reads a withdrawn entry as a `Release`, no longer compiles.
+  Indexes already written still parse: a missing `generation` reads as 0
+  and an old withdrawn entry as a `Withdrawn`. `ota::config!()` now
+  expands to an `ota::Config` with `resolver` and `host_fns`, so
+  `ota-macros` 0.2 only works with `ota` 0.2. *Migration:* take both
+  together, add `generation: 0` / `pinned: None` to literals (or start
+  from `Index::new()` / `Bundle::default()`), and read
+  `withdrawn[i].release` where you read `withdrawn[i]`.
+- **Canvas renderers draw layers only where the scene places them**
+  (`canvas-core`, `canvas-native`, `canvas-vello` 2.0). `paint_scene`
+  now hands a renderer a placed scene: each texture layer sits at the top
+  level with the transform and clip reset around it, and a layer the
+  scene never placed is appended at the end, so an app sees the same
+  picture as before. A renderer fed a raw `Scene` is what changes:
+  `canvas_native::make_2d_rasterizer` no longer draws the layers after
+  it, so a scene that did not come from `paint_scene` /
+  `CanvasPrim::paint` must go through `place_textures(scene, n)` first
+  or its layers are not drawn. On wasm32,
+  `canvas_vello::build_canvas` now takes `&Rc<CanvasPrim>` instead of
+  `&Rc<CanvasProps>`. *Migration:* pass the scene through
+  `place_textures`; build a `CanvasPrim` for `build_canvas`.
 
 ### Added
 
+- **Canvas layers in the draw order, and the canvas's size** (`canvas`,
+  `canvas-core`). `Scene::texture(i)` draws layer `i` at that point in the
+  scene, so anything drawn after it lands on top (an outline over a camera
+  frame). Every renderer follows it, and Linux's Cairo renderer gains
+  texture layers. A painter reads the laid-out size with `Scene::size()`
+  and repaints on resize; renderers report it through
+  `CanvasPrim::size_reporter()` (`SizeReporter`).
+- **`qr` 0.1.0** — QR codes on every target, in three features. `scan`
+  reads codes out of any live `MediaStream` (camera, screen) without
+  opening a camera of its own, decoding off the main thread (a Web Worker
+  on web, a thread on native) with the same pure-Rust decoder everywhere;
+  `decode_rgba8` / `decode_luma8` read a still image. `generate` encodes a
+  `QrMatrix` and exports it as an `.svg`, with no UI dependency, so server
+  code can use it. `component` adds `QrCode`, the code drawn as vector
+  rectangles in a `canvas`, square and centered in whatever box it gets.
 - **`--simulator <NAME|UDID>`** (`idealyst-cli`, `run-ios`) on
   `idealyst run ios` and `idealyst dev --ios` picks the target
   simulator; without it the first booted one is used, as before.
@@ -710,6 +752,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   track. The Checkbox box and the Radio ring shrank the same way. The
   track, the thumb, the box and the ring now never shrink
   (`flex_shrink: 0`); the text wraps instead.
+- **Canvas layer fixes** (`canvas-native`, `canvas-vello`). The CPU
+  renderers honour `src_crop` (they drew the whole frame), and a fractional
+  crop is no longer snapped to whole pixels on Android. On the GPU, the
+  rounded-corner mask of a `Fit::Contain` layer follows the drawn,
+  letterboxed rect rather than the whole layer rect. On Android a layer's
+  border fades with its `opacity`, as on web and vello. On Apple a
+  translucent texture is read as straight alpha, so it no longer draws
+  too bright.
+- **A web `graphics` canvas takes the size its style gives it** (`css`,
+  `backend-web`). Its fill-the-parent default was an inline
+  `width:100%;height:100%`, which beats any class rule, so a
+  `.with_style` size was ignored (a `QrCode` drew full-width at 2:1). The
+  default is now a zero-specificity sheet rule,
+  `css::GRAPHICS_FILL_RESET`; an unstyled canvas still fills its parent.
 - **The layout grows back after the soft keyboard closes on iOS**
   (`backend-ios-mobile`). When a flush removed the focused text input,
   UIKit posted the keyboard's closing frame while the backend was
@@ -785,6 +841,30 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   can lose more. It now retries up to 16 times with a jittered pause.
   Verified against MinIO: eight racing publishes all land (`tests/s3.rs`,
   `docs/ota.md` "Testing against S3").
+- **Precomputed OTA answers recover after an older CLI writes the index**
+  (`ota-publish`). `ota-publish` 0.1 rewrites `index.json` without its
+  `generation`, so the next write counted up from 0 and every answer it
+  made was refused as older than the stored one: apps of registered
+  builds, which read their answer first, kept a stale one for good. A
+  write that finds generation 0 now continues past the newest stored
+  answer, and `idealyst ota resolve` does the same before rewriting.
+  The older CLI still drops pins and kill switches and rewrites no answer,
+  so `docs/ota.md` now says to upgrade every CLI that publishes to a
+  location before registering builds there, and how to recover.
+- **`ota-resolver` checks the manifest id before reading** (`ota-resolver`,
+  `ota-index`). The id named a file (`manifests/<id>.json`) unchecked, so
+  on a directory location an id with `../` read outside it. An id that
+  isn't 64 lowercase hex characters (`ota_index::is_manifest_id`, the form
+  `Provides::id()` gives) now gets `400` before anything is read. The
+  resolver also caches only the manifests the location stores: every
+  manifest posted was kept in memory for good, so a client posting many
+  distinct ones grew it without bound. With reports off, or past
+  `OTA_RESOLVE_MAX_REPORTED`, an app now sends its manifest again on its
+  next check.
+- **The OTA tests that need S3 or the demo's MinIO show as ignored**
+  (`ota-publish`, `ota-demo`). They returned early and reported as passed
+  when their environment wasn't set. They're `#[ignore]`d now, and run
+  with `-- --ignored` (`docs/ota.md`, "Testing against S3").
 
 - **The local timezone is right on every native backend**
   (`runtime-shared`, new `zone-offset` crate). `runtime_core::time::

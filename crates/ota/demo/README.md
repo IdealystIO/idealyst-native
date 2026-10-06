@@ -47,5 +47,6 @@ Things to try:
   itself, and the console lists it.
 - **Watch the bucket** at http://localhost:9001 (otatest / otatest-secret).
 
-`IDEALYST_OTA_DEMO_LIVE=1 cargo test -p ota-demo` renders the window against
+`cargo test -p ota-demo --test live -- --ignored` renders the window against
 the mock backend with the live release, as a check that the whole loop works.
+It is ignored by a plain `cargo test`, since it needs the MinIO and a release.

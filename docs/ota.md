@@ -178,6 +178,24 @@ failed partway), the change still stands, and the command says so;
 `idealyst ota resolve` rewrites them. An older answer never overwrites a newer
 one: each records the index `generation` it came from.
 
+**Upgrade every CLI that publishes to a location before you register builds
+there.** An older `idealyst` (one whose `ota-publish` predates registered
+builds) still publishes and rolls back, but it rewrites the index without what
+it doesn't know: the `generation`, the pin, and how each release was taken
+down, including the kill switch. It also leaves every precomputed answer as
+it was. Apps of registered builds read their answer before the index, so they
+don't see that publish or rollback at all. A newer CLI or the console notices
+an index whose generation was dropped and counts on from the newest stored
+answer, so the answers recover with the next change made through it.
+
+To recover after an older CLI wrote to the location:
+
+1. Upgrade that CLI.
+2. Run `idealyst ota resolve` with the new one. It rewrites every registered
+   build's answer from the current index.
+3. In the console, pin again what was pinned, and take down again with the
+   kill switch what had it. The audit log (`audit.json`) lists both.
+
 **The id, for another language.** It is the SHA-256, in lowercase hex, of the
 compact JSON `{"rule":<RULE>,"provides":<manifest>}`. The manifest's fields
 come in this order: `codec`, `components`, `host_fns`, `remote`, `contexts`.
@@ -281,15 +299,19 @@ IDEALYST_OTA_BUCKET=s3://ota-test/my-app idealyst ota publish
 IDEALYST_OTA_URL=http://localhost:9000/ota-test/my-app cargo run   # the app reads it
 ```
 
-The framework's own tests run against it when asked (they skip otherwise):
+The framework's own tests run against it when asked. The `ota-publish` ones
+are `#[ignore]`d, so a plain `cargo test` lists them as ignored; `--ignored`
+runs them:
 
 ```sh
-# Eight publishes racing to one index all land; publish, republish, roll back:
-IDEALYST_OTA_TEST_S3=s3://ota-test/race cargo test -p ota-publish --test s3
+# Eight publishes racing to one index all land; publish, republish, roll back;
+# registered answers and reports, through the aws CLI and signed HTTP:
+IDEALYST_OTA_TEST_S3=s3://ota-test/race \
+  cargo test -p ota-publish --features s3-http --test s3 -- --ignored
 # The showcase published there, downloaded over HTTP by the app's client:
 IDEALYST_OTA_BUCKET=s3://ota-test/showcase idealyst ota publish crates/streaming/showcase/app
 IDEALYST_OTA_TEST_URL=http://localhost:9000/ota-test/showcase \
-  cargo test -p remote-showcase --test ota over_http
+  cargo test -p remote-showcase --test ota over_http -- --ignored
 ```
 
 `AWS_ENDPOINT_URL` needs AWS CLI 2.13 or later; the conditional writes need
