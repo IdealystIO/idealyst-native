@@ -7,7 +7,7 @@
 
 [package]
 name = "remote-bundle"
-version = "1.0.0"
+version = "1.1.0"
 edition.workspace = true
 license.workspace = true
 description = "The signed release format of idealyst remote-component bundles"
