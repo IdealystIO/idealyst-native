@@ -10,6 +10,7 @@ pub(crate) mod portal;
 pub(crate) mod press_state;
 pub(crate) mod phase_timer;
 pub(crate) mod keyboard;
+pub(crate) mod pending_focus;
 pub(crate) mod screenshot;
 pub(crate) mod sticky;
 pub(crate) mod styled_text;
@@ -1994,7 +1995,9 @@ impl IosBackend {
         // overlay-label hack; for v1 we accept the `placeholder` arg
         // but ignore it (callers shouldn't depend on placeholder
         // text rendering on iOS yet — flagged on Element::TextArea).
-        let view: Retained<UITextView> = unsafe { UITextView::new(self.mtm) };
+        // `IdealystTextView`: a UITextView subclass for its `didMoveToWindow`,
+        // the attach hook of the attach-safe `focus()` (`pending_focus`).
+        let view: Retained<UITextView> = text_inset::IdealystTextView::new(self.mtm);
         let ns_val = NSString::from_str(initial_value);
         unsafe { view.setText(Some(&ns_val)) };
 

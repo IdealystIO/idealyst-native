@@ -123,3 +123,11 @@ objc2-app-kit = { version = "0.2", features = [
     "NSAccessibilityConstants",
 ] }
 raw-window-handle = "0.6"
+
+# Real-AppKit test of the attach-safe `focus()` (`src/imp/pending_focus.rs`).
+# AppKit only builds windows on the MAIN thread, and libtest runs every case on
+# a worker thread (see `rect_is_window_relative_not_parent_relative`, which has
+# to skip) — so this test owns `main` and runs on the main thread for real.
+[[test]]
+name = "focus_attach"
+harness = false

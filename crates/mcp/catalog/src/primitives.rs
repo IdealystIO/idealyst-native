@@ -347,9 +347,15 @@ inventory::submit! {
                 constraint: "inline prop or builder method `.on_focus(..)`",
             },
             PropFieldSpec {
+                name: "autofocus",
+                type_str: "bool",
+                doc: "Focus once, right after mount (HTML autofocus). Mount-time only; the last autofocus field mounted wins. Works inside a Modal/portal — no timer needed.",
+                constraint: "plain bool, read at mount only",
+            },
+            PropFieldSpec {
                 name: "ref",
                 type_str: "Ref<TextInputHandle>",
-                doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text).",
+                doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text). focus() is attach-safe: called before the field is on screen (right after mount, inside a portal), it applies once the field is attached; a blur() first cancels it.",
                 constraint: "`bind = r` inline, or the `.bind(r)` builder method",
             },
             COMMON_STYLE_FIELD,
@@ -393,9 +399,15 @@ inventory::submit! {
                 constraint: "",
             },
             PropFieldSpec {
+                name: "autofocus",
+                type_str: "bool",
+                doc: "Focus once, right after mount (HTML autofocus). Mount-time only; the last autofocus field mounted wins.",
+                constraint: "builder method `.autofocus(bool)`",
+            },
+            PropFieldSpec {
                 name: "ref",
                 type_str: "Ref<TextAreaHandle>",
-                doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text).",
+                doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text). focus() is attach-safe (applies once the field is attached).",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,

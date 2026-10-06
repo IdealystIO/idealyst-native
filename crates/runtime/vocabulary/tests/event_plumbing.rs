@@ -316,3 +316,59 @@ fn on_scroll_author_state_is_released_at_teardown() {
          the framework installed exactly one copy"
     );
 }
+
+// ===========================================================================
+// autofocus — one focus through the handle ops, right after mount
+// ===========================================================================
+
+/// Mount `el` and return the handle-method log the mount produced.
+fn handle_log_of_mount(h: &Harness, el: impl FnOnce() -> runtime_scene::Element) -> (Vec<String>, runtime_scene::Realized<host_mock::Node>) {
+    host_mock::take_handle_log();
+    let realized = h.world.enter(|| realize(&h.backend, &h.registry, el()));
+    (host_mock::take_handle_log(), realized)
+}
+
+#[test]
+fn text_input_autofocus_focuses_once_after_mount() {
+    let h = harness();
+    let (log, realized) = handle_log_of_mount(&h, || text_input().value("").autofocus(true).build());
+    assert_eq!(log.len(), 1, "exactly one focus: {log:?}");
+    assert!(log[0].starts_with("focus n"), "{log:?}");
+    h.flush();
+    assert_eq!(host_mock::take_handle_log(), Vec::<String>::new(), "no second focus on flush");
+    drop(realized);
+}
+
+#[test]
+fn text_input_without_autofocus_never_focuses() {
+    let h = harness();
+    let (log, realized) = handle_log_of_mount(&h, || text_input().value("").build());
+    assert_eq!(log, Vec::<String>::new());
+    let (log, realized2) = handle_log_of_mount(&h, || text_input().value("").autofocus(false).build());
+    assert_eq!(log, Vec::<String>::new());
+    drop((realized, realized2));
+}
+
+#[test]
+fn text_area_autofocus_focuses_once_after_mount() {
+    let h = harness();
+    let (log, realized) = handle_log_of_mount(&h, || text_area().value("").autofocus(true).build());
+    assert_eq!(log.len(), 1, "exactly one focus: {log:?}");
+    assert!(log[0].starts_with("focus n"), "{log:?}");
+    let (log, realized2) = handle_log_of_mount(&h, || text_area().value("").build());
+    assert_eq!(log, Vec::<String>::new());
+    drop((realized, realized2));
+}
+
+/// The autofocus focus runs BEFORE the author's `on_handle`, so an author
+/// who blurs (or focuses something else) from the fill has the last word.
+#[test]
+fn autofocus_runs_before_the_authors_ref_fill() {
+    let h = harness();
+    let (log, realized) = handle_log_of_mount(&h, || {
+        text_input().value("").autofocus(true).on_handle(|hd| hd.blur()).build()
+    });
+    let methods: Vec<&str> = log.iter().map(|l| l.split(' ').next().unwrap_or("")).collect();
+    assert_eq!(methods, ["focus", "blur"], "{log:?}");
+    drop(realized);
+}

@@ -131,3 +131,9 @@ raw-window-handle = "0.6"
 # for tests that need real DOM (the `node_id` identity invariant
 # can't be verified without it).
 wasm-bindgen-test = "0.3"
+# The autofocus-in-a-Modal browser test (`newcore::tests`): an idea-ui
+# `Field(autofocus)` inside a Top `Modal` — portal + presence + focus trap —
+# must end up the document's active element. Dev-only; idea-ui does not
+# depend on backend-web, so there is no cycle.
+idea-ui = { workspace = true, default-features = false }
+idea-theme = { workspace = true }

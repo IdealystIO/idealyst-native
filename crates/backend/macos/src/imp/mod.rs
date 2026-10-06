@@ -19,6 +19,7 @@ pub(crate) mod image;
 pub(crate) mod introspect;
 pub(crate) mod keyboard;
 pub(crate) mod node;
+pub(crate) mod pending_focus;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
@@ -3587,10 +3588,14 @@ impl MacosBackend {
         // instantiate it instead when `secure`. The binding stays typed
         // as NSTextField (the superclass) since every subsequent
         // msg_send uses NSTextField/NSControl/NSView API.
+        //
+        // Both are framework subclasses (`IdealystTextField` /
+        // `IdealystSecureTextField`) for their `viewDidMoveToWindow`, which
+        // the attach-safe `focus()` hooks (`pending_focus`).
         let cls = if secure {
-            objc2::class!(NSSecureTextField)
+            <view::IdealystSecureTextField as objc2::ClassType>::class()
         } else {
-            objc2::class!(NSTextField)
+            <view::IdealystTextField as objc2::ClassType>::class()
         };
         let field: Retained<objc2_app_kit::NSTextField> =
             unsafe { msg_send_id![msg_send_id![cls, alloc], init] };

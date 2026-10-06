@@ -236,6 +236,12 @@ pub struct AutocompleteProps {
     /// [`AutocompleteProps::selection`].
     #[prop(static)]
     pub on_selection_change: Option<Rc<dyn Fn(Vec<String>)>>,
+    /// Focus the input once, right after the combobox mounts (HTML
+    /// `autofocus`). Focus opens the menu, as a user's focus does.
+    /// Mount-time only; the last autofocus field mounted wins. Default
+    /// `false`.
+    #[prop(static)]
+    pub autofocus: bool,
 }
 
 impl Default for AutocompleteProps {
@@ -251,6 +257,7 @@ impl Default for AutocompleteProps {
             footer: None,
             selection: None,
             on_selection_change: None,
+            autofocus: false,
         }
     }
 }
@@ -555,7 +562,8 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     .bind(input_ref)
     // `placeholder` is routed LIVE: a reactive source updates the native
     // placeholder in place; a `Static` one sets it once.
-    .placeholder_reactive(placeholder);
+    .placeholder_reactive(placeholder)
+    .autofocus(props.autofocus);
     let input = input
         // Focus opens the menu (a combobox invites browsing the moment the
         // field activates); losing focus dismisses + reverts, same as
@@ -884,6 +892,30 @@ mod tests {
             };
             assert!(preserves_focus, "the chevron must not blur the input when pressed");
     });
+    }
+
+    /// `autofocus` reaches the combobox's `text_input`, and defaults off.
+    #[test]
+    fn autofocus_forwards_to_the_text_input() {
+        fn input_autofocus(props: AutocompleteProps) -> bool {
+            let mut children = match classify(Autocomplete(props)) {
+                P::View { children, .. } => children,
+                _ => panic!("Autocomplete renders a view wrapper"),
+            };
+            let mut wrapper_children = match classify(children.remove(0)) {
+                P::View { children, .. } => children,
+                _ => panic!("first child is the input+chevron wrapper view"),
+            };
+            let P::TextInput { autofocus, .. } = classify(wrapper_children.remove(0)) else {
+                panic!("the wrapper's first child is the input");
+            };
+            autofocus
+        }
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            assert!(input_autofocus(AutocompleteProps { autofocus: true, ..Default::default() }));
+            assert!(!input_autofocus(AutocompleteProps::default()));
+        });
     }
 
     // REGRESSION: opening the menu always put the keyboard cursor on row 0,

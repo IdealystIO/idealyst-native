@@ -75,6 +75,7 @@ mod robot_screenshot;
 pub mod dispatch_hook;
 pub mod drop_deferral;
 pub mod logger;
+mod pending_focus;
 mod phase_timer;
 mod primitives;
 #[cfg(feature = "async-driver")]
@@ -3440,6 +3441,13 @@ impl WebBackend {
     }
 
     pub(crate) fn finish_impl(&mut self, root: Node) {
+        self.attach_root(root);
+        // The whole tree just entered the document: a field that asked for
+        // focus while it was being built focuses now (`pending_focus`).
+        crate::pending_focus::node_attached();
+    }
+
+    fn attach_root(&mut self, root: Node) {
         #[cfg(feature = "hydrate")]
         if self.hydrating {
             // The initial adoption pass is done; subsequent reactive

@@ -442,11 +442,13 @@ struct WebTextAreaOps;
 impl TextAreaOps for WebTextAreaOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
-            let _ = t.focus();
+            // Attach-safe (see `pending_focus`).
+            crate::pending_focus::request_focus(t.as_ref());
         }
     }
     fn blur(&self, node: &dyn Any) {
         if let Some(t) = node.downcast_ref::<web_glue::dom::HtmlTextAreaElement>() {
+            crate::pending_focus::cancel(t.as_ref());
             let _ = t.blur();
         }
     }

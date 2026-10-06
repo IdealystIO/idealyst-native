@@ -97,6 +97,11 @@ pub struct TextareaProps {
     /// fill its column; `Some(px)` fixes the width.
     #[schema(constraint = "pixels; None = fill column")]
     pub width: Option<f32>,
+    /// Focus the text area once, right after it mounts (HTML `autofocus`).
+    /// Mount-time only; the last autofocus field mounted wins. Works inside
+    /// a `Modal`/portal (the focus waits for attach). Default `false`.
+    #[prop(static)]
+    pub autofocus: bool,
 }
 
 impl Default for TextareaProps {
@@ -115,6 +120,7 @@ impl Default for TextareaProps {
             max_rows: Reactive::Static(0),
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
+            autofocus: false,
         }
     }
 }
@@ -221,7 +227,8 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     };
     let help_node = crate::components::optional_reactive_text(help_combined, help_style);
 
-    let mut input = runtime_core::text_area(value, move |v: String| (on_change)(v));
+    let mut input =
+        runtime_core::text_area(value, move |v: String| (on_change)(v)).autofocus(props.autofocus);
     // Autogrow bounds now ride on the PRIMITIVE so every backend converts
     // rows→px from its real line height (web included). Snapshotted at build —
     // a live `rows`/`max_rows` source isn't routed through yet (mirrors the
@@ -331,6 +338,26 @@ mod tests {
             }
         }
         panic!("Textarea tree has no text_area node");
+    }
+
+    /// `autofocus` reaches the `text_area` primitive, and defaults off.
+    #[test]
+    fn autofocus_forwards_to_the_text_area() {
+        let flag = |ta: Element| -> bool {
+            let P::View { children, .. } = classify(ta) else { panic!("Textarea renders a view wrapper") };
+            children
+                .into_iter()
+                .find_map(|c| match classify(c) {
+                    P::TextArea { autofocus, .. } => Some(autofocus),
+                    _ => None,
+                })
+                .expect("Textarea tree has a text_area node")
+        };
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            assert!(flag(Textarea(&TextareaProps { autofocus: true, ..Default::default() })));
+            assert!(!flag(Textarea(&TextareaProps::default())));
+        });
     }
 
     /// Pull the primitive `min_rows`/`max_rows` off the built `text_area` node.

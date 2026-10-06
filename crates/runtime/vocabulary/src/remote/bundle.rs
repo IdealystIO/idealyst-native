@@ -549,7 +549,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TextInputPrim>>() {
         let p = cell.take();
-        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::text_input::TextInputHandle::new(n, &super::handles::REMOTE_OPS));
+        let fill = super::handles::fill(autofocus_fill(p.autofocus, p.ref_fill, |h: &runtime_shared::primitives::text_input::TextInputHandle| h.focus()), |n| runtime_shared::primitives::text_input::TextInputHandle::new(n, &super::handles::REMOTE_OPS));
         let f = p.on_change;
         return Node::TextInput {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
@@ -564,7 +564,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TextAreaPrim>>() {
         let p = cell.take();
-        let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::text_area::TextAreaHandle::new(n, &super::handles::REMOTE_OPS));
+        let fill = super::handles::fill(autofocus_fill(p.autofocus, p.ref_fill, |h: &runtime_shared::primitives::text_area::TextAreaHandle| h.focus()), |n| runtime_shared::primitives::text_area::TextAreaHandle::new(n, &super::handles::REMOTE_OPS));
         let f = p.on_change;
         return Node::TextArea {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
@@ -750,6 +750,30 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
         "remote component: primitive `{name}` can't cross to the host — the remote codec does not \
          carry it (see runtime-vocabulary src/remote `crossing`)"
     )
+}
+
+/// `autofocus` crosses as a handle call, not a wire field: when it is set,
+/// the ref fill (made one if the author asked for none) first calls
+/// `focus()` on the app's handle, then hands it to the author's own fill.
+/// An app of any age already answers `HandleCall::Focus` (level 0), and
+/// the app's `focus()` is attach-safe — so a bundle using `autofocus`
+/// needs nothing new from the app, and the encoded `Node` stays the shape
+/// an older app decodes. Focus runs before the author's fill, as the
+/// native mount handler orders it, so an `on_handle` that blurs wins.
+fn autofocus_fill<H: 'static>(
+    autofocus: bool,
+    ref_fill: Option<Box<dyn FnOnce(H)>>,
+    focus: fn(&H),
+) -> Option<Box<dyn FnOnce(H)>> {
+    if !autofocus {
+        return ref_fill;
+    }
+    Some(Box::new(move |h: H| {
+        focus(&h);
+        if let Some(f) = ref_fill {
+            f(h);
+        }
+    }))
 }
 
 fn common(test_id: Option<&'static str>, style: Option<StyleProp>, a11y: AccessibilityProps) -> Common {

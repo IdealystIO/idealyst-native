@@ -314,12 +314,15 @@ impl LinuxTextInputOps {
 impl runtime_shared::primitives::text_input::TextInputOps for LinuxTextInputOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(e) = Self::entry(node) {
-            e.grab_focus();
+            // Attach-safe: an entry not yet mapped in a window grabs focus
+            // once it is (`pending_focus`).
+            pending_focus::request_focus(&e);
         }
     }
 
     fn blur(&self, node: &dyn Any) {
         if let Some(e) = Self::entry(node) {
+            pending_focus::cancel(&e);
             // GTK has no "unfocus this widget"; moving focus to the window
             // root is the toolkit's way of dropping it from a specific widget.
             if let Some(root) = e.root() {
@@ -361,4 +364,62 @@ pub(crate) fn make_text_input_handle(
         }) as std::rc::Rc<dyn Any>,
         &LINUX_TEXT_INPUT_OPS,
     )
+}
+
+/// Attach-safe `focus()` for the GTK entry (the `TextInputOps::focus`
+/// contract). `grab_focus` does nothing for a widget that isn't in a mapped
+/// toplevel yet, and realize builds a subtree before appending it, so a
+/// `focus()` right after mount used to be lost.
+///
+/// A focus on an unmapped entry is recorded in the shared [`PendingFocus`]
+/// slot and a one-shot `map` handler is connected. `map` can fire inside the
+/// backend's own `append` (a child appended to a mapped parent maps
+/// synchronously), where grabbing focus would fire the focus notifier (a
+/// style re-apply) mid-insert — so the handler defers to the next main-loop
+/// iteration (`idle_add_local_once`), then focuses the entry if it is still
+/// the pending one (a later `focus()` elsewhere or a `blur()` cancels).
+mod pending_focus {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use gtk4::glib;
+    use gtk4::prelude::*;
+    use runtime_shared::primitives::text_input::{FocusRequest, PendingFocus};
+
+    thread_local! {
+        static PENDING: RefCell<PendingFocus<gtk4::Entry>> = const { RefCell::new(PendingFocus::new()) };
+    }
+
+    fn attached(e: &gtk4::Entry) -> bool {
+        e.root().is_some() && e.is_mapped()
+    }
+
+    pub(super) fn request_focus(e: &gtk4::Entry) {
+        let req = PENDING.with(|p| p.borrow_mut().request(e.clone(), attached(e)));
+        match req {
+            FocusRequest::Now(e) => {
+                e.grab_focus();
+            }
+            FocusRequest::Deferred => {
+                let id: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+                let slot = id.clone();
+                let handler = e.connect_map(move |w| {
+                    if let Some(id) = slot.borrow_mut().take() {
+                        w.disconnect(id);
+                    }
+                    glib::idle_add_local_once(|| {
+                        let ready = PENDING.with(|p| p.borrow_mut().take_attached(attached));
+                        if let Some(e) = ready {
+                            e.grab_focus();
+                        }
+                    });
+                });
+                *id.borrow_mut() = Some(handler);
+            }
+        }
+    }
+
+    pub(super) fn cancel(e: &gtk4::Entry) {
+        PENDING.with(|p| p.borrow_mut().cancel(|q| q == e));
+    }
 }

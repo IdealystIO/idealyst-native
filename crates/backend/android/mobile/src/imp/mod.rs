@@ -15,6 +15,7 @@ pub(crate) mod callbacks;
 mod font;
 mod jni_exports;
 pub(crate) mod keyboard;
+pub(crate) mod pending_focus;
 mod primitives;
 pub(crate) mod scheduler;
 mod screenshot;

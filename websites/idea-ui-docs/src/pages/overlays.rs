@@ -413,7 +413,9 @@ ui! {
                     distance below the top of the safe area (`top_offset`, default 15% of the \
                     safe height) and centers it horizontally; the card grows downward, caps to \
                     the room below the offset, then scrolls. Type in the demo: the field stays \
-                    put as the list changes length.".to_string())
+                    put as the list changes length. `autofocus = true` on the Field puts the \
+                    caret in it as the palette opens — no timer: focus waits until the \
+                    modal's content is on screen.".to_string())
                 DemoSurface {
                     Button(
                         label = "Open palette".to_string(),
@@ -440,6 +442,7 @@ ui! {
                                         value = query,
                                         on_change = on_query,
                                         placeholder = Some("Search commands…".to_string()),
+                                        autofocus = true,
                                     )
                                     for name in results, key = name.to_string() {
                                         Typography(content = name.to_string())
@@ -456,7 +459,8 @@ ui! {
     on_dismiss = Some(on_close.clone()),
     content = move || ui! {
         Field(value = query, on_change = on_query.clone(),
-              placeholder = Some("Search commands…".into()))
+              placeholder = Some("Search commands…".into()),
+              autofocus = true)   // focused as the palette opens
         // results — the card grows downward as these change
     },
 )"##.to_string())

@@ -1566,6 +1566,8 @@ dependencies = [
  "css",
  "dev-client",
  "dev-hot",
+ "idea-theme",
+ "idea-ui",
  "inventory",
  "raw-window-handle",
  "runtime-scene",

@@ -275,6 +275,14 @@ pub struct FieldProps {
     /// `DateInput` turns Tab into "complete the current date segment".
     /// `None` (default) attaches no handler.
     pub on_key_down: Option<Rc<dyn Fn(&KeyEvent) -> KeyOutcome>>,
+    /// Focus the input once, right after the Field mounts (HTML
+    /// `autofocus`) — e.g. a command palette's search box. Mount-time only
+    /// (a plain `bool`, not reactive); when several autofocus fields mount
+    /// together the last one wins. Works inside a `Modal`/portal: the
+    /// focus waits for the input to be attached, so no timer is needed.
+    /// Default `false`.
+    #[prop(static)]
+    pub autofocus: bool,
 }
 
 impl Default for FieldProps {
@@ -297,6 +305,7 @@ impl Default for FieldProps {
             field_ref: None,
             on_focus_change: None,
             on_key_down: None,
+            autofocus: false,
         }
     }
 }
@@ -736,7 +745,8 @@ pub fn Field(props: &FieldProps) -> Element {
     // placeholder in place (no rebuild); a `Static` one sets it once.
     let mut input = runtime_core::text_input(value, move |v: String| (on_change)(v))
         .secure(secure)
-        .placeholder_reactive(props.placeholder.clone());
+        .placeholder_reactive(props.placeholder.clone())
+        .autofocus(props.autofocus);
     if let Some(field_ref) = props.field_ref.clone() {
         input = input.bind(field_ref);
     }
@@ -1099,6 +1109,33 @@ mod tests {
             let rules = resolve_input_style(Field(&props));
             assert_eq!(rules.width, Some(Tokenized::Literal(Length::Px(240.0))));
     });
+    }
+
+    /// The `autofocus` flag on the Field's `text_input`, found anywhere in
+    /// the view tree (the adorned layout nests it inside the row shell).
+    fn input_autofocus(el: Element) -> Option<bool> {
+        match classify(el) {
+            P::TextInput { autofocus, .. } => Some(autofocus),
+            P::View { children, .. } => children.into_iter().find_map(input_autofocus),
+            _ => None,
+        }
+    }
+
+    /// `autofocus` reaches the primitive in both layouts, and defaults off.
+    #[test]
+    fn autofocus_forwards_to_the_text_input() {
+        with_test_world(|| {
+            theme();
+            let on = FieldProps { autofocus: true, ..Default::default() };
+            assert_eq!(input_autofocus(Field(&on)), Some(true));
+            let adorned = FieldProps {
+                autofocus: true,
+                leading: Adornment::element(|| runtime_core::ui! { view() }),
+                ..Default::default()
+            };
+            assert_eq!(input_autofocus(Field(&adorned)), Some(true), "adorned layout");
+            assert_eq!(input_autofocus(Field(&FieldProps::default())), Some(false));
+        });
     }
 
     /// The built Field's `text_input` secure flag, evaluated NOW.

@@ -1039,6 +1039,39 @@ mod refs {
         assert!(native.1[0].starts_with("rect n") && native.1[1].starts_with("anchor Below Start 4 Some("), "{:?}", native.1);
     }
 
+    /// `autofocus` on a bundle's field crosses as a `focus()` handle call
+    /// after the fill — no new wire field, so an app of any age (one that
+    /// answers `HandleCall::Focus`, level 0) focuses it — and reaches the
+    /// backend's handle exactly as the native mount does: one focus, before
+    /// the author's own `on_handle`.
+    #[test]
+    fn autofocus_crosses_as_a_focus_call_exactly_like_the_native_one() {
+        use runtime_vocabulary::builders::text_area;
+        let run = |remote: bool| {
+            let h = Harness::new();
+            let tree = h.world.enter(|| {
+                view()
+                    .child(text_input().value("x").on_change(|_| {}).autofocus(true).on_handle(|hd| hd.select_all()))
+                    .child(text_area().value("y").on_change(|_| {}).autofocus(true))
+                    .child(text_input().value("z").on_change(|_| {}))
+                    .build()
+            });
+            let tree = if remote { cross(tree) } else { tree };
+            host_mock::take_handle_log();
+            let realized = h.mount(tree);
+            h.flush();
+            let out = host_mock::take_handle_log();
+            drop(realized);
+            h.flush();
+            h.forget_handlers();
+            out
+        };
+        let native = run(false);
+        assert_eq!(run(true), native);
+        let methods: Vec<&str> = native.iter().map(|l| l.split(' ').next().unwrap_or("")).collect();
+        assert_eq!(methods, ["focus", "select_all", "focus"], "{native:?}");
+    }
+
     /// The app releases every handle it held for a bundle: when the bundle
     /// drops its copy, and — for a bundle that never does (it was stopped)
     /// — when the tree that made it is gone.

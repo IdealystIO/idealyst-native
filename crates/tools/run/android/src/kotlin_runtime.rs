@@ -198,6 +198,12 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustAttachFocus.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustAttachFocus.kt"
+        ),
+    ),
+    (
         "RustPopupDismissListener.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustPopupDismissListener.kt"

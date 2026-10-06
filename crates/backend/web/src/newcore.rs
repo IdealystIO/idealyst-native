@@ -851,16 +851,21 @@ impl Host for WebBackend {
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_insert");
-        WebBackend::insert_impl(self, parent, child)
+        WebBackend::insert_impl(self, parent, child);
+        // A field whose `focus()` arrived before it was in the document
+        // focuses once this attach lands (`pending_focus`).
+        crate::pending_focus::node_attached();
     }
 
     fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
         let _t = crate::phase_timer::PhaseTimer::start("nc_insert_many");
-        WebBackend::insert_many_impl(self, parent, children)
+        WebBackend::insert_many_impl(self, parent, children);
+        crate::pending_focus::node_attached();
     }
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        WebBackend::insert_at_impl(self, parent, child, index)
+        WebBackend::insert_at_impl(self, parent, child, index);
+        crate::pending_focus::node_attached();
     }
 
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
@@ -3296,5 +3301,202 @@ mod tests {
         drop(realized);
         drop(world);
         setup_mount();
+    }
+
+    // ---- attach-safe focus (`pending_focus`) + `autofocus` ----
+
+    /// A realize harness: real `WebBackend`, builtin registry, a world.
+    fn focus_harness() -> (Rc<RefCell<WebBackend>>, Rc<Registry<WebBackend>>, World) {
+        setup_mount();
+        crate::pending_focus::reset_for_test();
+        // The boot path's scheduler (`start_in` installs it): without one,
+        // a microtask the teardown schedules runs inline, inside the drop.
+        crate::scheduler::install_scheduler();
+        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        crate::install_global_self(&backend);
+        let mut registry: Registry<WebBackend> = Registry::new();
+        runtime_vocabulary::register_builtins(&mut registry);
+        (backend, Rc::new(registry), World::new())
+    }
+
+    fn active_is(node: &web_glue::dom::Node) -> bool {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        doc.active_element().is_some_and(|a| node.is_same_node(Some(a.as_ref())))
+    }
+
+    /// Settle every queued microtask (a macrotask turn runs after all of
+    /// them).
+    async fn settle() {
+        let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
+            web_glue::dom::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
+                .unwrap();
+        });
+        let _ = web_glue::JsFuture::new(&promise).await;
+    }
+
+    /// REGRESSION (CrewForge command palette): `TextInputHandle::focus()`
+    /// called from the ref fill, right after mount, ran `HTMLElement.focus()`
+    /// on an input realize had not yet put in the document — a silent
+    /// no-op, worked around with a 100 ms timer. The focus now waits for
+    /// the attach.
+    #[wasm_bindgen_test]
+    async fn regression_focus_before_the_input_is_connected_focuses_it_once_connected() {
+        let (backend, registry, world) = focus_harness();
+        let realized = world.enter(|| {
+            let tree = view()
+                .child(runtime_vocabulary::builders::text_input().value("").on_handle(|h| h.focus()).build())
+                .build();
+            realize(&backend, &registry, tree)
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let input = root.first_child().expect("the input");
+        assert!(!input.is_connected(), "the ref fill ran before the tree was attached");
+        setup_mount_append(&root);
+        settle().await;
+        assert!(active_is(&input), "the input is focused once it is in the document");
+        drop(realized);
+    }
+
+    /// The attach-hook path: a field still disconnected when the first
+    /// check runs (a portal / presence child inserted later) focuses when
+    /// the backend's `insert` attaches it — and a `blur()` before then
+    /// cancels it.
+    #[wasm_bindgen_test]
+    async fn focus_waits_for_a_later_backend_insert_and_blur_cancels_it() {
+        let (backend, registry, world) = focus_harness();
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        let (handle, realized) = world.enter(|| {
+            let slot: Rc<RefCell<Option<runtime_shared::TextInputHandle>>> = Rc::new(RefCell::new(None));
+            let s = slot.clone();
+            let tree = runtime_vocabulary::builders::text_input()
+                .value("")
+                .on_handle(move |h| *s.borrow_mut() = Some(h))
+                .build();
+            let r = realize(&backend, &registry, tree);
+            let h = slot.borrow_mut().take().expect("ref filled");
+            (h, r)
+        });
+        let input = realized.collect_nodes().pop().expect("the input");
+        handle.focus();
+        settle().await;
+        assert!(!active_is(&input), "nothing to focus while detached");
+        assert!(crate::pending_focus::is_pending(), "the focus waits");
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, input.clone());
+        settle().await;
+        assert!(active_is(&input), "the backend insert attached it and the pending focus ran");
+        assert!(!crate::pending_focus::is_pending());
+
+        // Blur before attach cancels.
+        let _ = parent.remove_child(&input);
+        handle.focus();
+        handle.blur();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, input.clone());
+        settle().await;
+        assert!(!active_is(&input), "a blur before attach cancels the pending focus");
+        drop(realized);
+    }
+
+    /// `autofocus` on an input mounted after page load: it ends up the
+    /// document's active element, with no timer.
+    #[wasm_bindgen_test]
+    async fn autofocus_input_mounted_after_load_is_the_active_element() {
+        let (backend, registry, world) = focus_harness();
+        let realized = world.enter(|| {
+            let tree = view()
+                .child(runtime_vocabulary::builders::text_input().value("").build())
+                .child(runtime_vocabulary::builders::text_input().value("").autofocus(true).build())
+                .child(runtime_vocabulary::builders::text_area().value("").build())
+                .build();
+            realize(&backend, &registry, tree)
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, root.clone());
+        settle().await;
+        let second = root.child_nodes().item(1).expect("the autofocus input");
+        assert!(active_is(&second), "the autofocus field is focused");
+        drop(realized);
+    }
+
+    /// `text_area` autofocus takes the same path.
+    #[wasm_bindgen_test]
+    async fn autofocus_text_area_mounted_after_load_is_the_active_element() {
+        let (backend, registry, world) = focus_harness();
+        let realized = world.enter(|| {
+            realize(&backend, &registry, runtime_vocabulary::builders::text_area().value("").autofocus(true).build())
+        });
+        let area = realized.collect_nodes().pop().expect("the area");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, area.clone());
+        settle().await;
+        assert!(active_is(&area));
+        drop(realized);
+    }
+
+    /// The CrewForge command palette, end to end: an idea-ui `Field` with
+    /// `autofocus` inside a `ModalPresentation::Top` `Modal` (presence →
+    /// portal under `<body>` → focus trap) that opens after mount. The
+    /// field's input must be the active element once the open settles, and
+    /// the modal's `trap_focus` must not take it back.
+    #[wasm_bindgen_test]
+    async fn autofocus_field_inside_a_top_modal_is_focused_when_it_opens() {
+        let (backend, registry, world) = focus_harness();
+        let (open, realized) = world.enter(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let open = signal(false);
+            let tree = view()
+                .child(idea_ui::Modal(idea_ui::ModalProps {
+                    open: open.into(),
+                    presentation: idea_ui::ModalPresentation::Top.into(),
+                    content: (|| {
+                        idea_ui::Field(&idea_ui::FieldProps {
+                            autofocus: true,
+                            ..Default::default()
+                        })
+                    })
+                    .into(),
+                    ..Default::default()
+                }))
+                .build();
+            (open, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        let mut parent: web_glue::dom::Node = setup_mount_child();
+        Host::insert(&mut *backend.borrow_mut(), &mut parent, root);
+        settle().await;
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        assert!(
+            doc.query_selector("[data-portal-id] input").unwrap().is_none(),
+            "closed: no modal content yet"
+        );
+
+        open.set(true);
+        world.flush();
+        settle().await;
+        let input = doc
+            .query_selector("[data-portal-id] input")
+            .unwrap()
+            .expect("the modal's field mounted into its portal");
+        let input: web_glue::dom::Node = input.unchecked_into();
+        assert!(active_is(&input), "the autofocus field inside the open modal is focused");
+        // One more turn: nothing (trap, presence) moves it afterwards.
+        settle().await;
+        assert!(active_is(&input), "the focus trap leaves an inside focus alone");
+        drop(realized);
+    }
+
+    fn setup_mount_append(node: &web_glue::dom::Node) {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        doc.get_element_by_id("app").unwrap().append_child(node).unwrap();
+    }
+
+    /// A fresh connected `div` under `#app` to insert into.
+    fn setup_mount_child() -> web_glue::dom::Node {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let div = doc.create_element("div").unwrap();
+        doc.get_element_by_id("app").unwrap().append_child(&div).unwrap();
+        div.unchecked_into()
     }
 }

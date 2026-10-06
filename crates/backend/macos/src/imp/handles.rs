@@ -426,26 +426,23 @@ use runtime_shared::primitives::text_area::{TextAreaHandle, TextAreaOps};
 use runtime_shared::primitives::text_input::{TextInputHandle, TextInputOps};
 
 /// Make `node`'s view the window's first responder — shows the caret and
-/// routes keystrokes to it. No-op until the view is in a window.
+/// routes keystrokes to it. Attach-safe: a field not yet in a window becomes
+/// first responder once it gets one (`pending_focus`).
 fn make_first_responder(node: &dyn Any) {
     let Some(n) = node.downcast_ref::<MacosNode>() else { return };
     // For a `text_area` the node is the NSScrollView wrapper — focus must land
     // on the inner NSTextView, not the scroll view. `editable_text_target` is
     // identity for a single-line NSTextField.
     let target = crate::imp::editable_text_target(n.as_view());
-    let target: &NSView = &target;
-    unsafe {
-        let window: *mut objc2::runtime::AnyObject = msg_send![target, window];
-        if !window.is_null() {
-            let _: bool = msg_send![window, makeFirstResponder: target];
-        }
-    }
+    crate::imp::pending_focus::request_focus(&target);
 }
 
-/// Resign first responder (clears the caret), via the window.
+/// Resign first responder (clears the caret), via the window. Also cancels a
+/// focus still waiting for the field to get a window.
 fn resign_first_responder(node: &dyn Any) {
     let Some(n) = node.downcast_ref::<MacosNode>() else { return };
     let target = crate::imp::editable_text_target(n.as_view());
+    crate::imp::pending_focus::cancel(&target);
     let target: &NSView = &target;
     unsafe {
         let window: *mut objc2::runtime::AnyObject = msg_send![target, window];

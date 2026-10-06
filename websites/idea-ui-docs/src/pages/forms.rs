@@ -538,6 +538,7 @@ ui! {
                 Prop { name: "secure",      ty: "bool",                      desc: "Mask the entered text (password entry)." },
                 Prop { name: "leading",     ty: "Adornment",                 desc: "Icon/element before the input (Adornment::Icon / ::element). Default None." },
                 Prop { name: "trailing",    ty: "Adornment",                 desc: "Icon/element after the input — e.g. a clear button or password-visibility toggle." },
+                Prop { name: "autofocus",   ty: "bool",                      desc: "Focus the input once when the Field mounts (works inside a Modal). The last autofocus field mounted wins. Default false." },
             ])
         }
     }])
@@ -612,6 +613,7 @@ pub fn textarea() -> Element {
                 Prop { name: "variant",     ty: "FieldAppearance",           desc: "Outline (default) / Contained / Bare." },
                 Prop { name: "rows",        ty: "u32",                       desc: "Resting height in lines — the floor the box grows from. Default: 3." },
                 Prop { name: "max_rows",    ty: "u32",                       desc: "Ceiling in lines before it stops growing and scrolls. 0 (default) = uncapped." },
+                Prop { name: "autofocus",   ty: "bool",                      desc: "Focus the text area once when it mounts. The last autofocus field mounted wins. Default false." },
             ])
         }
     }])

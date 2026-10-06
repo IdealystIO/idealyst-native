@@ -228,6 +228,7 @@ pub fn text_input() -> TextInputBuilder {
             on_focus: None,
             placeholder: Value::Const(None),
             secure: Value::Const(false),
+            autofocus: false,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -310,6 +311,14 @@ impl TextInputBuilder {
         self
     }
 
+    /// Focus the field once, right after it mounts (HTML `autofocus`).
+    /// Mount-time only; the last autofocus field mounted wins. See
+    /// [`TextInputPrim::autofocus`](crate::prims::TextInputPrim::autofocus).
+    pub fn autofocus(mut self, autofocus: bool) -> Self {
+        self.prim.autofocus = autofocus;
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(TextInputHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -333,6 +342,7 @@ pub fn text_area() -> TextAreaBuilder {
             wrap: true,
             min_rows: None,
             max_rows: None,
+            autofocus: false,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -395,6 +405,14 @@ impl TextAreaBuilder {
     /// (`robot` feature; the slot is inert otherwise).
     pub fn test_id(mut self, id: &'static str) -> Self {
         self.prim.test_id = Some(id);
+        self
+    }
+
+    /// Focus the field once, right after it mounts (HTML `autofocus`).
+    /// Mount-time only; the last autofocus field mounted wins. See
+    /// [`TextInputPrim::autofocus`](crate::prims::TextInputPrim::autofocus).
+    pub fn autofocus(mut self, autofocus: bool) -> Self {
+        self.prim.autofocus = autofocus;
         self
     }
 

@@ -184,7 +184,7 @@ where
 /// Sequence: `create_text_input(initial value/placeholder/secure,
 /// callbacks)` → attach_style → focus notifier → controlled-value
 /// write-back binding (first fire at mount) → `Dyn`-only secure binding
-/// → `Dyn`-only placeholder binding → ref-fill.
+/// → `Dyn`-only placeholder binding → `autofocus` → ref-fill.
 pub fn mount_text_input<H>(
     cx: &mut MountCx<'_, H>,
     prim: TextInputPrim,
@@ -268,6 +268,18 @@ where
             b.borrow_mut().update_text_input_placeholder(&n, p.as_deref());
         });
     }
+    // `autofocus`: one focus through the handle's own ops, after the
+    // value/style/focus-notifier wiring so `on_focus(true)` reaches the
+    // author and the field shows its value. No timer — `focus()` is
+    // attach-safe by contract (`TextInputOps::focus`), so a node realize
+    // hasn't attached yet (a portal, presence) focuses when it lands.
+    // Before the ref fill so an author's `on_handle` that blurs wins. The
+    // borrow ends before `focus()` runs: a backend that fires its focus
+    // notifier synchronously may re-enter the backend.
+    if prim.autofocus {
+        let handle = backend.borrow().make_text_input_handle(&node);
+        handle.focus();
+    }
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_text_input_handle(&node);
         fill(handle);
@@ -328,6 +340,18 @@ where
         bind_value(prim.value, move |v| {
             b.borrow_mut().update_text_area_value(&n, v);
         });
+    }
+    // `autofocus`: one focus through the handle's own ops, after the
+    // value/style/focus-notifier wiring so `on_focus(true)` reaches the
+    // author and the field shows its value. No timer — `focus()` is
+    // attach-safe by contract (`TextInputOps::focus`), so a node realize
+    // hasn't attached yet (a portal, presence) focuses when it lands.
+    // Before the ref fill so an author's `on_handle` that blurs wins. The
+    // borrow ends before `focus()` runs: a backend that fires its focus
+    // notifier synchronously may re-enter the backend.
+    if prim.autofocus {
+        let handle = backend.borrow().make_text_area_handle(&node);
+        handle.focus();
     }
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_text_area_handle(&node);

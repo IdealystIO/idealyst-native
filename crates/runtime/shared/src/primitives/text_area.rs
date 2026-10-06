@@ -33,6 +33,10 @@ impl TextAreaHandle {
         Self { node, ops }
     }
 
+    /// Move keyboard focus to this text area. Attach-safe, like
+    /// [`TextInputHandle::focus`](crate::TextInputHandle::focus): before
+    /// the node is attached the focus waits for attach (a `blur` cancels
+    /// it).
     pub fn focus(&self) {
         self.ops.focus(&*self.node);
     }
@@ -58,7 +62,10 @@ impl TextAreaHandle {
 }
 
 pub trait TextAreaOps {
+    /// Attach-safe focus — the same contract as
+    /// [`TextInputOps::focus`](crate::primitives::text_input::TextInputOps::focus).
     fn focus(&self, node: &dyn Any);
+    /// Drop focus; cancels a pending pre-attach focus.
     fn blur(&self, node: &dyn Any);
     fn select_all(&self, node: &dyn Any);
     /// See [`TextAreaHandle::insert_text`].

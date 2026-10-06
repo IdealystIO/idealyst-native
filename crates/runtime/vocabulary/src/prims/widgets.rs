@@ -83,6 +83,13 @@ pub struct TextInputPrim {
     pub on_focus: Option<FocusHandler>,
     pub placeholder: Value<Option<String>>,
     pub secure: Value<bool>,
+    /// Focus this field once, right after it mounts (HTML `autofocus`).
+    /// Mount-time only: flipping it later does nothing. Runs through the
+    /// same `focus()` a `Ref` handle calls, which is attach-safe — a node
+    /// not yet in a window/document focuses when it gets there. When
+    /// several autofocus fields mount in one pass, the last one mounted
+    /// wins (each `focus()` moves focus).
+    pub autofocus: bool,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(TextInputHandle)>>,
@@ -103,6 +110,9 @@ pub struct TextAreaPrim {
     pub wrap: bool,
     pub min_rows: Option<u32>,
     pub max_rows: Option<u32>,
+    /// Focus once, right after mount — same contract as
+    /// [`TextInputPrim::autofocus`].
+    pub autofocus: bool,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(TextAreaHandle)>>,

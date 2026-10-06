@@ -376,14 +376,45 @@ canonical pattern:
 ```rust
 let name = signal(String::new());
 ui! {
-    TextInput(value = name, on_change = move |s| name.set(s))
+    text_input(value = name, on_change = move |s| name.set(s))
 }
 ```
 
 Cyclic but stable — backends are required to no-op when set to
 their current value, so the round-trip terminates.
 
-Imperative handle: `focus()`, `blur()`, `select_all()`.
+Imperative handle: `focus()`, `blur()`, `select_all()`,
+`insert_text()`.
+
+**`focus()` works before the field is on screen.** Realize builds a
+subtree before it inserts it, and a modal's content lands in a portal
+later still, so a `focus()` from `on_handle` right after mount often
+reaches a field with no window or document yet. Every backend handles
+that the same way: if the field can take focus now it does; otherwise
+the backend remembers the request and focuses the field when it is
+attached (the DOM insert on web, `viewDidMoveToWindow` on macOS,
+`didMoveToWindow` on iOS, `onViewAttachedToWindow` on Android, `map`
+on GTK). A `blur()` before then cancels it, and only the latest
+request is kept: a later `focus()` on another field wins. No timer
+is needed. (The wgpu, terminal and Windows backends have no
+text-input handle yet; `focus()` does nothing there.)
+
+**`autofocus = true`** focuses the field once, right after it mounts
+(HTML's `autofocus`). It is a plain `bool`, read at mount only.
+When several autofocus fields mount together the last one mounted
+wins. It goes through the same attach-safe `focus()`, so it works
+for a field inside a `Modal`:
+
+```rust
+ui! {
+    text_input(value = query, on_change = move |s| query.set(s), autofocus = true)
+}
+```
+
+`text_area` takes the same `.autofocus(bool)` setter, and its
+handle has the same attach-safe `focus()`. Over a remote bundle,
+`autofocus` crosses as a `focus()` call on the app's handle, which
+every app version already answers.
 
 **Why controlled?** The rest of the framework's reactive shape
 assumes a single source of truth per piece of state. Uncontrolled

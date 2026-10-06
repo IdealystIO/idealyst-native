@@ -288,11 +288,14 @@ pub(crate) struct IosTextInputOps;
 impl TextInputOps for IosTextInputOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(field) = node.downcast_ref::<Retained<UITextField>>() {
-            let _: bool = unsafe { msg_send![&**field, becomeFirstResponder] };
+            // Attach-safe: a windowless field becomes first responder once
+            // it gets a window (`pending_focus`).
+            crate::imp::pending_focus::request_focus(field);
         }
     }
     fn blur(&self, node: &dyn Any) {
         if let Some(field) = node.downcast_ref::<Retained<UITextField>>() {
+            crate::imp::pending_focus::cancel(field);
             let _: bool = unsafe { msg_send![&**field, resignFirstResponder] };
         }
     }
@@ -330,11 +333,13 @@ pub(crate) struct IosTextAreaOps;
 impl TextAreaOps for IosTextAreaOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(view) = node.downcast_ref::<Retained<UITextView>>() {
-            let _: bool = unsafe { msg_send![&**view, becomeFirstResponder] };
+            // Attach-safe (`pending_focus`).
+            crate::imp::pending_focus::request_focus(view);
         }
     }
     fn blur(&self, node: &dyn Any) {
         if let Some(view) = node.downcast_ref::<Retained<UITextView>>() {
+            crate::imp::pending_focus::cancel(view);
             let _: bool = unsafe { msg_send![&**view, resignFirstResponder] };
         }
     }

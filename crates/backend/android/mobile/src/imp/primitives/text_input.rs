@@ -229,7 +229,10 @@ pub(crate) fn make_text_area_handle(node: &GlobalRef) -> TextAreaHandle {
 /// `InputMethodManager.SHOW_FORCED` (legacy but the most reliable
 /// signal — system honors it from arbitrary contexts; the modern
 /// SHOW_IMPLICIT is a hint that can be vetoed by recent focus state).
-fn focus_edit_text(node: &GlobalRef) {
+/// requestFocus + show the IME, on an ATTACHED field. `focus()` goes
+/// through [`crate::imp::pending_focus`], which calls this now or once the
+/// field attaches.
+pub(crate) fn focus_edit_text(node: &GlobalRef) {
     with_env(|env| {
         let _ = env.call_method(node.as_obj(), "requestFocus", "()Z", &[]);
         let context = env
@@ -366,11 +369,13 @@ pub(crate) struct AndroidTextInputOps;
 impl TextInputOps for AndroidTextInputOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(g) = node.downcast_ref::<GlobalRef>() {
-            focus_edit_text(g);
+            // Attach-safe: a detached field focuses once it attaches.
+            crate::imp::pending_focus::request_focus(g, focus_edit_text);
         }
     }
     fn blur(&self, node: &dyn Any) {
         if let Some(g) = node.downcast_ref::<GlobalRef>() {
+            crate::imp::pending_focus::cancel(g);
             blur_edit_text(g);
         }
     }
@@ -391,11 +396,13 @@ pub(crate) struct AndroidTextAreaOps;
 impl TextAreaOps for AndroidTextAreaOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(g) = node.downcast_ref::<GlobalRef>() {
-            focus_edit_text(g);
+            // Attach-safe: a detached field focuses once it attaches.
+            crate::imp::pending_focus::request_focus(g, focus_edit_text);
         }
     }
     fn blur(&self, node: &dyn Any) {
         if let Some(g) = node.downcast_ref::<GlobalRef>() {
+            crate::imp::pending_focus::cancel(g);
             blur_edit_text(g);
         }
     }

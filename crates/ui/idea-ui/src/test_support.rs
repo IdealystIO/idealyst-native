@@ -125,11 +125,15 @@ pub enum P {
         on_focus: bool,
         /// Evaluated current value.
         secure: bool,
+        /// The mount-time `autofocus` flag.
+        autofocus: bool,
         style: Option<TStyle>,
     },
     TextArea {
         min_rows: Option<u32>,
         max_rows: Option<u32>,
+        /// The mount-time `autofocus` flag.
+        autofocus: bool,
         style: Option<TStyle>,
     },
     ScrollView {
@@ -297,6 +301,7 @@ mod imp {
                 on_change: p.on_change,
                 on_focus: p.on_focus.is_some(),
                 secure: eval(p.secure),
+                autofocus: p.autofocus,
                 style: style(p.style),
             };
         }
@@ -305,6 +310,7 @@ mod imp {
             return P::TextArea {
                 min_rows: p.min_rows,
                 max_rows: p.max_rows,
+                autofocus: p.autofocus,
                 style: style(p.style),
             };
         }

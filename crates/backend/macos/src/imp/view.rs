@@ -34,7 +34,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSColor, NSCursor, NSEvent, NSSecureTextFieldCell, NSText, NSTextField, NSTextFieldCell,
+    NSColor, NSCursor, NSEvent, NSSecureTextField, NSSecureTextFieldCell, NSText, NSTextField,
+    NSTextFieldCell,
     NSTextView, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker, NSString};
@@ -1284,6 +1285,59 @@ impl IdealystLabel {
     }
 }
 
+declare_class!(
+    /// The `text_input` field (plain). Exists for ONE override:
+    /// `viewDidMoveToWindow`, the attach notification the attach-safe
+    /// `focus()` contract needs — a field focused before it had a window
+    /// becomes first responder once it gets one (see `pending_focus`).
+    /// Everything else is stock `NSTextField`; the framework's centering /
+    /// chrome lives on the cell, as before.
+    pub(crate) struct IdealystTextField;
+
+    unsafe impl ClassType for IdealystTextField {
+        type Super = NSTextField;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystTextField";
+    }
+
+    impl DeclaredClass for IdealystTextField {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystTextField {
+        #[method(viewDidMoveToWindow)]
+        fn view_did_move_to_window(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            crate::imp::pending_focus::view_moved_to_window(self);
+        }
+    }
+);
+
+declare_class!(
+    /// The `secure` `text_input` field — [`IdealystTextField`]'s
+    /// `NSSecureTextField` twin (same single override), so a password field
+    /// created `secure` keeps `NSSecureTextField`'s own behavior.
+    pub(crate) struct IdealystSecureTextField;
+
+    unsafe impl ClassType for IdealystSecureTextField {
+        type Super = NSSecureTextField;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystSecureTextField";
+    }
+
+    impl DeclaredClass for IdealystSecureTextField {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystSecureTextField {
+        #[method(viewDidMoveToWindow)]
+        fn view_did_move_to_window(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            crate::imp::pending_focus::view_moved_to_window(self);
+        }
+    }
+);
+
 pub(crate) struct TextViewIvars {
     /// Placeholder string, drawn by `drawRect:` in the text view's OWN text
     /// system (at `textContainerInset` + `lineFragmentPadding`) only while the
@@ -1331,6 +1385,15 @@ declare_class!(
         fn did_change_text(&self) {
             let _: () = unsafe { msg_send![super(self), didChangeText] };
             let _: () = unsafe { msg_send![self, setNeedsDisplay: true] };
+        }
+        // Attach notification for the attach-safe `focus()` (see
+        // `pending_focus`). AppKit sends it to every view in a subtree that
+        // moves into a window, so the text view inside its scroll wrapper
+        // gets it when the wrapper is inserted.
+        #[method(viewDidMoveToWindow)]
+        fn view_did_move_to_window(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            crate::imp::pending_focus::view_moved_to_window(self);
         }
         // An NSTextView is its OWN editor (no field-editor cell), so first-
         // responder transitions ARE the focus events. Drive `StateBits::FOCUSED`

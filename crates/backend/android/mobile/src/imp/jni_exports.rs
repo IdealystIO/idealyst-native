@@ -977,3 +977,24 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustBorderDrawable_native
     });
     border_geometry_to_java(&mut env, g.as_ref().map(|a| &a[..]))
 }
+
+/// `RustAttachFocus.onViewAttachedToWindow` → (posted one main-loop turn
+/// later) `nativeAttached(view)`: apply a `focus()` that arrived before the
+/// field was attached (`imp::pending_focus`).
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustAttachFocus_nativeAttached(
+    mut env: JNIEnv,
+    _this: JObject,
+    view: JObject,
+) {
+    run_void_callback(
+        "attach_focus",
+        std::panic::AssertUnwindSafe(|| {
+            crate::imp::pending_focus::attached(
+                &mut env,
+                &view,
+                crate::imp::primitives::text_input::focus_edit_text,
+            )
+        }),
+    );
+}

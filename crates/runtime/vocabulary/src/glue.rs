@@ -1966,6 +1966,15 @@ pub mod primitives {
                 self.b = self.b.secure(secure);
                 self
             }
+
+            /// Focus once, right after mount (HTML `autofocus`). Plain
+            /// `bool`, mount-time only; the last autofocus field mounted
+            /// wins. Works inside a portal / modal: `focus()` waits for
+            /// the node to be attached.
+            pub fn autofocus(mut self, autofocus: bool) -> Self {
+                self.b = self.b.autofocus(autofocus);
+                self
+            }
         }
 
         glue_wrapper_common!(GlueTextInput);
@@ -2746,6 +2755,13 @@ pub mod primitives {
             /// parent at the call site.
             pub fn code_mode(self) -> Self {
                 self.wrap(false)
+            }
+
+            /// Focus once, right after mount — see
+            /// [`GlueTextInput::autofocus`](super::text_input::GlueTextInput::autofocus).
+            pub fn autofocus(mut self, autofocus: bool) -> Self {
+                self.b = self.b.autofocus(autofocus);
+                self
             }
 
             /// Mirror of `Bound::<TextAreaHandle>::bind`.

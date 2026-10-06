@@ -1021,7 +1021,8 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
     } else {
         quote! {}
     };
-    // `secure`, `on_focus`, `on_key_down`, `placeholder_reactive`, `bind`.
+    // `secure`, `on_focus`, `on_key_down`, `placeholder_reactive`, `bind`,
+    // `autofocus`.
     let setters = builder_calls(props, TEXT_INPUT_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call #setters
@@ -1158,7 +1159,7 @@ const IMAGE_BUILDER_PROPS: &[&str] = &["on_load", "on_error", "alt_reactive", "b
 /// `text_input`'s inline setters. `placeholder` is the emitter's own
 /// (literal `.into()`).
 const TEXT_INPUT_BUILDER_PROPS: &[&str] =
-    &["secure", "on_focus", "on_key_down", "placeholder_reactive", "bind"];
+    &["secure", "on_focus", "on_key_down", "placeholder_reactive", "bind", "autofocus"];
 
 const SLIDER_BUILDER_PROPS: &[&str] = &["step"];
 
@@ -2878,6 +2879,17 @@ mod tests {
         assert!(out.contains(". on_load ("), "{out}");
         assert!(out.contains(". on_error ("), "{out}");
         assert!(out.contains(". alt ("), "{out}");
+    }
+
+    /// `text_input(autofocus = true)` lowers to the glue setter rather
+    /// than the unknown-prop compile error.
+    #[test]
+    fn ui_text_input_lowers_autofocus() {
+        let out = parse_and_emit(quote::quote! {
+            text_input(value = v, autofocus = true)
+        });
+        assert!(out.contains(". autofocus (true)"), "{out}");
+        assert!(!out.contains("compile_error"), "{out}");
     }
 
     /// Regression (#49/#62/Wave-16/Wave-28): an unknown prop on a

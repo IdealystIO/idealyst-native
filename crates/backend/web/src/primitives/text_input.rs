@@ -158,11 +158,14 @@ struct WebTextInputOps;
 impl TextInputOps for WebTextInputOps {
     fn focus(&self, node: &dyn Any) {
         if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
-            let _ = input.focus();
+            // Attach-safe: a disconnected input focuses when it is
+            // inserted (see `pending_focus`).
+            crate::pending_focus::request_focus(input.as_ref());
         }
     }
     fn blur(&self, node: &dyn Any) {
         if let Some(input) = node.downcast_ref::<web_glue::dom::HtmlInputElement>() {
+            crate::pending_focus::cancel(input.as_ref());
             let _ = input.blur();
         }
     }

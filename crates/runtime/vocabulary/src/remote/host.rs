@@ -506,6 +506,10 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     }),
                     placeholder: value(conn, placeholder),
                     secure: value(conn, secure),
+                    // A bundle's `autofocus` arrives as a `focus()` handle
+                    // call after the fill (`bundle::autofocus_fill`), not as
+                    // a field — the app mounts it unfocused.
+                    autofocus: false,
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::TextInput),
@@ -526,6 +530,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     wrap,
                     min_rows,
                     max_rows,
+                    autofocus: false,
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::TextArea),

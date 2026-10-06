@@ -28,7 +28,7 @@ use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker};
-use objc2_ui_kit::{UILabel, UITextField, UIView};
+use objc2_ui_kit::{UILabel, UITextField, UITextView, UIView};
 
 /// Per-side text inset, in points. Layout matches `UIEdgeInsets`
 /// (top, left, bottom, right) so the same struct can be sent over
@@ -210,6 +210,15 @@ declare_class!(
             self.inset_rect(base)
         }
 
+        /// Attach hook of the attach-safe `focus()`: a field focused before
+        /// it had a window becomes first responder once it gets one
+        /// (`pending_focus`).
+        #[method(didMoveToWindow)]
+        fn did_move_to_window(&self) {
+            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+            crate::imp::pending_focus::view_moved_to_window(self);
+        }
+
         /// Focus gained → flip FOCUSED on (the focus ring).
         #[method(becomeFirstResponder)]
         fn become_first_responder(&self) -> bool {
@@ -290,4 +299,38 @@ pub(crate) fn set_text_field_focus_setter(view: &UIView, setter: Rc<dyn Fn(bool)
     let field: &IdealystTextField =
         unsafe { &*(view as *const UIView as *const IdealystTextField) };
     field.set_focus_setter(setter);
+}
+
+declare_class!(
+    /// The `text_area` view: a stock `UITextView` plus ONE override,
+    /// `didMoveToWindow` — the attach hook of the attach-safe `focus()`
+    /// (`pending_focus`), the same one `IdealystTextField` carries.
+    pub(crate) struct IdealystTextView;
+
+    unsafe impl ClassType for IdealystTextView {
+        type Super = UITextView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystTextView";
+    }
+
+    impl DeclaredClass for IdealystTextView {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystTextView {
+        #[method(didMoveToWindow)]
+        fn did_move_to_window(&self) {
+            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+            crate::imp::pending_focus::view_moved_to_window(self);
+        }
+    }
+);
+
+impl IdealystTextView {
+    /// A new text view, typed as the `UITextView` the backend speaks.
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<UITextView> {
+        let this = mtm.alloc::<Self>().set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
+        Retained::into_super(this)
+    }
 }

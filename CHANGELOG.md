@@ -175,6 +175,34 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`autofocus` on `text_input` and `text_area`, and `focus()` works
+  before the field is on screen** (`runtime-shared`,
+  `runtime-vocabulary`, `runtime-macros`, `backend-web`,
+  `backend-macos`, `backend-ios-mobile`, `backend-android-mobile`,
+  `backend-linux`, `idea-ui`). `TextInputHandle::focus()` /
+  `TextAreaHandle::focus()` used to do nothing when called before the
+  native field was in a window or document — which is exactly when an
+  `on_handle` fill runs, since realize builds a subtree before inserting
+  it, and a `Modal`'s content mounts into a portal later still. Apps
+  worked around it with a timer (CrewForge's command palette waited
+  100 ms). Now every backend focuses an attached field immediately and
+  otherwise remembers the request and applies it once the field is
+  attached: the DOM insert on web, `viewDidMoveToWindow` on macOS,
+  `didMoveToWindow` on iOS, `onViewAttachedToWindow` on Android, `map`
+  on GTK. A `blur()` first cancels it, and the latest request wins (one
+  shared state machine, `runtime_shared::primitives::text_input::PendingFocus`).
+  The macOS fields and the iOS text view are now framework subclasses
+  (`IdealystTextField`, `IdealystSecureTextField`, `IdealystTextView`)
+  for that hook; Android adds the Kotlin class `RustAttachFocus`, so
+  reinstall the CLI. The wgpu, terminal and Windows backends still have
+  no text-input handle. New `autofocus: bool` (builder `.autofocus(..)`,
+  `ui!` `text_input(autofocus = true)`) focuses a field once right after
+  mount, through the same `focus()`; the last autofocus field mounted
+  wins. idea-ui's `Field`, `Textarea` and `Autocomplete` take an
+  `autofocus` prop. Over a remote bundle `autofocus` crosses as a
+  `focus()` call on the app's handle, which every app already answers,
+  so no wire change.
+
 - **A `virtual_grid`'s handle reports its scrollport** (`runtime-shared`,
   `runtime-vocabulary`, `backend-web`, `backend-macos`,
   `backend-ios-mobile`, `backend-android-mobile`, `host-mock`).
