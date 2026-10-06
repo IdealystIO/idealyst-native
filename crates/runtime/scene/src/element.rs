@@ -42,9 +42,9 @@ pub enum Element {
         rebuild: Option<std::rc::Rc<dyn Any>>,
     },
     /// Siblings with no node of their own. Spliced flat into the enclosing
-    /// children list; the threaded `inserted` index counts THROUGH it so a
-    /// reactive region after a fragment captures the correct absolute
-    /// base index (pinned by `fragment_base_index.spliced.golden`).
+    /// children list; the threaded splice cursor counts THROUGH it so a
+    /// reactive region after a fragment resolves the correct absolute
+    /// index (pinned by `fragment_base_index.spliced.golden`).
     Fragment(Vec<Element>),
     /// A structural hole: a subtree that re-realizes when the dependencies
     /// of its [`DynSpec`] change. The old subtree unrealizes (effects

@@ -28,7 +28,7 @@ robot = ["runtime-core/robot"]
 # Off by default. Exposes the premint delta-introspection accessors
 # (`premint_variant_axes`, `premint_base`, …) that `runtime-core` gates
 # behind `style-dump`. Declared HERE rather than only on the dep line
-# because the `examples/dump_premint_manifest.rs` converter calls those
+# because the `examples/design_sync.rs` converter calls those
 # accessors directly, and a feature enabled only on a dependency is not
 # visible to this crate's own build. Same rule as the `debug-stats`
 # forwarding documented in CLAUDE.md §6.
@@ -108,18 +108,22 @@ table = { workspace = true, optional = true }
 # this. Used by `collapsible_direct_mount.rs`.
 host-mock = { path = "../../dev/host-mock" }
 # The CSS-emission half of the design-sync converter
-# (`examples/design_sync_dump.rs`). Turns the PREMINT_SHEETS registry
+# (`examples/design_sync.rs`). Turns the PREMINT_SHEETS registry
 # this crate's `stylesheet!` blocks register into (under
 # `--cfg idealyst_premint_dump`) into the shipped .css text. Dev-only:
 # examples never link into a shipped app.
 premint-dump = { path = "../../tools/premint-dump" }
 # The HTML-emission half of the design-sync converter
-# (`examples/design_sync_render.rs`). Rendering each component through the
+# (`examples/design_sync.rs`). Rendering each component through the
 # real SSR backend is what makes the exported markup ground truth: the
 # framework decides the DOM shape and the preminted class list, rather
 # than the converter inferring either. Dev-only.
 backend-ssr = { path = "../../backend/ssr" }
 runtime-scene = { path = "../../runtime/scene" }
+# `tests/switch_flex_shrink_layout.rs` lays a mounted tree out with the
+# same Taffy wrapper the native backends use, to prove fixed-size controls
+# keep their width when a flex row is squeezed.
+runtime-layout = { path = "../../runtime/layout" }
 # `tests/loading_button_spawn.rs` drives `spawn_then` through a manually
 # pumped test executor (the `tests/scoped_spawn.rs` pattern in
 # runtime-vocabulary): the executor install seam lives in
@@ -127,3 +131,14 @@ runtime-scene = { path = "../../runtime/scene" }
 # with `async-driver` on (feature unification covers the lib build).
 runtime-shared = { path = "../../runtime/shared", features = ["async-driver"] }
 runtime-core = { path = "../../runtime/core", features = ["async-driver"] }
+
+# The design-sync converter needs both dev-only features: `catalog` for
+# `runtime_core::__mcp` and the `recipe!` fns in `idea_ui::recipes` (both
+# compile to nothing without it), `style-dump` for the premint accessors
+# (`premint_variant_axes`, …). Declaring them here makes a bare
+# `cargo test -p idea-ui` / `cargo build --examples` skip the example
+# instead of failing to compile it. Build it with
+# `--features style-dump,catalog` (see `.design-sync/NOTES.md`).
+[[example]]
+name = "design_sync"
+required-features = ["style-dump", "catalog"]

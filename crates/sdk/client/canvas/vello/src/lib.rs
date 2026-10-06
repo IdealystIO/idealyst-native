@@ -62,6 +62,11 @@ mod plan;
 // itself instead of punting layered canvases to Canvas2D.
 mod shape_pass;
 
+// Compositing a scene's texture runs (layers at their `DrawOp::Texture`
+// position, vector ops after them on top) — the frame model shared by the
+// native, web and headless renderers, with its GPU-ordering rule.
+mod texture_runs;
+
 // Full-frame source-over compositor: lays vello's content over the instanced
 // shape backdrop in the hybrid path. Shared by the native and web renderers.
 mod compose;
@@ -70,6 +75,12 @@ mod compose;
 // affine (the `DrawOp::LayerCached` fast path). Shared by the native and web
 // renderers. Pure wgpu + `canvas_core`, so it isn't wasm-gated.
 mod compose_transform;
+
+// The texture-layer blit (shader + crop/fit geometry + uniform slots) shared by
+// the GPU layer compositors: macOS, Linux and web. Other native targets use the
+// no-op stub compositor.
+#[cfg(any(target_os = "macos", target_os = "linux", target_arch = "wasm32"))]
+mod layer_blit;
 
 // Web renderer: async wgpu init over the browser's WebGPU backend, with a
 // per-canvas Canvas2D fallback when WebGPU is unavailable.

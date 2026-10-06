@@ -17,13 +17,13 @@
 //! no explicit tone is given. `size` is a closed enum (`FieldSize`).
 //!
 //! Styles are resolved from a programmatic sheet (size × tone axes +
-//! focused/disabled states), installed lazily. The input style is a
-//! STATIC `StyleApplication` (applied at build time, theme-swapped in
-//! bulk by the cohort — no per-node Effect, no first-paint flicker)
-//! WHENEVER the tone is fixed at build. When the tone is *derived from a
-//! live `error` signal*, the input style is instead attached as a
-//! reactive closure so the border color re-resolves on each validation
-//! change (see the `INVARIANT (D9)` note in [`Field`]).
+//! focused/disabled states), installed lazily. The input style is always
+//! a reactive closure (it carries the focus ring and reads `tone`/`error`
+//! live — see the `INVARIANT (D9)` note in [`Field`]), so a live `error`
+//! turns the border Danger in place. The help/error line follows the same
+//! tone: a STATIC `StyleApplication` when `tone` and `error` are both
+//! fixed at build, and a reactive closure when either is live, so a live
+//! validation error paints in the Danger tone rather than the help grey.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -696,15 +696,6 @@ pub fn Field(props: &FieldProps) -> Element {
         }
     };
 
-    // The help-text tone tracks the input tone. When the tone is reactive
-    // the error text already re-paints via `help_combined` below; the help
-    // *color* is a static decision keyed off the build-time tone (a tone
-    // flip from a live error still shows the right color because the help
-    // node only exists when `error`/`help` is `Some`, and Danger is the
-    // only error tone). Resolve the build-time key for it.
-    let help_style =
-        StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
-
     let label_node =
         crate::components::optional_reactive_text(props.label.clone(), FieldLabel());
 
@@ -715,7 +706,26 @@ pub fn Field(props: &FieldProps) -> Element {
         (Reactive::Static(e), Reactive::Static(h)) => Reactive::Static(e.or(h)),
         (e, h) => Reactive::Dynamic(Rc::new(move || e.get().or_else(|| h.get()))),
     };
-    let help_node = crate::components::optional_reactive_text(help_combined, help_style);
+
+    // The help line's tone tracks the input tone — the same `tone_key_for`
+    // the input border reads. When `tone` or `error` is LIVE the help style
+    // must be a reactive closure: the tone is derived from `error`, so a
+    // build-time key snapshots "default" (muted grey) for a Field whose
+    // error starts `None`, and the first validation error then paints in
+    // grey instead of Danger. (The help node being mounted on demand does
+    // NOT save a snapshot — the remount re-applies the same build-time
+    // application.) With both props static the key can't change, so it
+    // stays a one-shot (premintable, Effect-free) application.
+    let help_node = if props.tone.is_static() && error.is_static() {
+        let help_style =
+            StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
+        crate::components::optional_reactive_text(help_combined, help_style)
+    } else {
+        let tone_key_for = tone_key_for.clone();
+        let help_style =
+            move || StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
+        crate::components::optional_reactive_text(help_combined, help_style)
+    };
 
     let secure = props.secure.clone();
     let leading = render_adornment(&props.leading, size);

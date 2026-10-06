@@ -116,3 +116,9 @@ inventory = "0.3"
 # majors in a process would be two incompatible GObject wrapper sets.
 [target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
 backend-linux = { workspace = true }
+
+# The Cairo renderer's glyph test (`linux.rs` tests) outlines a reference glyph
+# itself to compare against the Glyphs arm. Test-only: the renderer reaches
+# skrifa through canvas-core's `expand_glyph_run`, never directly.
+[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dev-dependencies]
+skrifa = "0.42"

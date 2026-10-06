@@ -45,6 +45,12 @@ mod label_text_policy;
 // any host; the half that borrows the backend and runs Taffy is
 // ios-only. See the module docs for the dropped-pass bug it pins.
 mod layout_drain_policy;
+// Pure never-drop delivery of soft-keyboard frame changes (latest-wins
+// mailbox drained by the layout pass when the backend is borrowed).
+// Un-gated so the regression tests run from any host; the UIKit observer
+// and overlap math are ios-only. See the module docs for the stuck
+// keyboard-height band it pins.
+mod keyboard_frame_policy;
 /// How the layout pass treats a root that is a `virtual_grid` cell.
 mod grid_cell_root_policy;
 

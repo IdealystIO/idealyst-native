@@ -28,6 +28,13 @@
 //! indicator is a filled dot inside a
 //! tone-colored ring; override the appearance via
 //! `install_radio_sheets(RadioSheetBuilder::new().add_tone(Hype).build())`.
+//!
+//! `disabled` follows `Switch` (and `Button`) on both `Radio` and
+//! `RadioGroup` (where it disables every option): it blocks selection
+//! through the ring pressable's own disabled binding (so `on_select` /
+//! `on_change` never fire, and the host gets the native/a11y disabled
+//! state), guards the label row's tap the same way, and dims the ring via
+//! the sheet's `dimmed` axis.
 
 use std::rc::Rc;
 
@@ -57,6 +64,7 @@ use crate::stylesheets::{ControlRow, FieldLabel};
 fn radio_indicator(
     is_selected: impl Fn() -> bool + Clone + 'static,
     on_select: Rc<dyn Fn()>,
+    disabled: Reactive<bool>,
     a11y_label: Option<String>,
     appearance: impl Fn() -> String + Clone + 'static,
     size_key: impl Fn() -> String + Clone + 'static,
@@ -79,17 +87,30 @@ fn radio_indicator(
         }
     };
 
-    // Outer ring — the pressable host.
+    // Outer ring — the pressable host. `disabled` is read LIVE in the style
+    // so the dim follows a reactive prop in place (the `dimmed` axis —
+    // Switch/Button parity).
     let outer_sheet = sheets.outer_sheet.clone();
     let sel_for_ring = is_selected;
+    let disabled_dim = disabled.clone();
     let ring = runtime_core::pressable(vec![dot], move || (on_select)())
         .with_style(move || {
             StyleApplication::new(outer_sheet.clone())
                 .with("appearance", appearance())
                 .with("checked", if sel_for_ring() { "on" } else { "off" }.to_string())
                 .with("size", size_key())
+                .with("dimmed", if disabled_dim.get() { "on" } else { "off" }.to_string())
         })
         .a11y_role(Role::RadioButton);
+    // Block the press through the pressable's own `disabled` binding (see
+    // Switch): press block, host `set_disabled`, DISABLED state bit.
+    // Attached only when the radio can be disabled — a `Static(false)`
+    // radio carries no binding, like Button.
+    let ring = match disabled {
+        Reactive::Static(false) => ring,
+        Reactive::Static(true) => ring.disabled(true),
+        live => ring.disabled(move || live.get()),
+    };
     // The label sits outside the pressable, so the ring can't derive its
     // accessible name from child content — name it explicitly. Snapshot: a
     // `Reactive` label's later values don't re-announce (the a11y prop bag
@@ -109,6 +130,7 @@ fn radio_row(
     is_selected: impl Fn() -> bool + Clone + 'static,
     label: Option<(Element, Option<String>)>,
     on_select: Rc<dyn Fn()>,
+    disabled: Reactive<bool>,
     appearance: impl Fn() -> String + Clone + 'static,
     size_key: impl Fn() -> String + Clone + 'static,
     sheets: RadioSheets,
@@ -117,15 +139,30 @@ fn radio_row(
         Some((el, text)) => (Some(el), text),
         None => (None, None),
     };
-    let indicator =
-        radio_indicator(is_selected, on_select.clone(), label_text, appearance, size_key, sheets);
+    let row_disabled = disabled.clone();
+    let indicator = radio_indicator(
+        is_selected,
+        on_select.clone(),
+        disabled,
+        label_text,
+        appearance,
+        size_key,
+        sheets,
+    );
     // No label — the indicator IS the whole control; skip the wrapper row.
     let Some(label_el) = label_el else { return indicator };
 
     // Builder form, not `ui!`: the `ui!` `view` emitter takes only
     // `style`/`test_id`/a11y props and DROPS anything else, so an
     // `on_touch = …` attribute there would silently never attach.
-    let row_tap = tap(TapRecognizer::new(), move || (on_select)());
+    //
+    // The row is a plain view, not a pressable, so it has no disabled
+    // binding of its own — the tap checks the live `disabled` itself.
+    let row_tap = tap(TapRecognizer::new(), move || {
+        if !row_disabled.get() {
+            (on_select)()
+        }
+    });
     runtime_core::view(vec![indicator, label_el])
         .with_style(|| StyleApplication::new(ControlRow::sheet()))
         .on_touch(move |ev| row_tap(ev))
@@ -137,8 +174,8 @@ fn radio_row(
 // =============================================================================
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
-// `Reactive<T>` (tone/variant/size), so a `ui!` call site can pass a
-// `Signal`/`rx!` and re-style in place. The controlled `selected` `Signal`
+// `Reactive<T>` (tone/variant/size/disabled), so a `ui!` call site can pass
+// a `Signal`/`rx!` and re-style in place. The controlled `selected` `Signal`
 // stays bare (a reactive *source*), `on_select` is a handler, `label` is
 // already `Reactive`.
 #[runtime_core::props]
@@ -159,6 +196,13 @@ pub struct RadioProps {
     pub variant: VariantRef,
     /// Indicator scale. Default Md.
     pub size: ControlSize,
+    /// When `true`, blocks selection (`on_select` never fires, from the ring
+    /// or the label row) and dims the ring — the same opacity drop a disabled
+    /// `Button` gets — and marks the ring disabled for the host (native
+    /// disabled state / a11y). Default `false`. Reactive: pass a
+    /// `Signal<bool>`/`rx!` and the radio enables and disables in place.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
 }
 
 impl Default for RadioProps {
@@ -170,6 +214,7 @@ impl Default for RadioProps {
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),
             size: Reactive::Static(ControlSize::default()),
+            disabled: Reactive::Static(false),
         }
     }
 }
@@ -195,6 +240,7 @@ pub fn Radio(props: &RadioProps) -> Element {
         move || selected.get(),
         label,
         props.on_select.clone(),
+        props.disabled.clone(),
         appearance,
         size_key,
         installed_radio_sheets(),
@@ -246,7 +292,7 @@ impl runtime_core::VariantEnum for RadioAxis {
 }
 
 // Reactive-by-default: `#[props]` wraps the scalar-DATA style props
-// (tone/variant/size). The controlled `value` `Signal` stays bare,
+// (tone/variant/size/disabled). The controlled `value` `Signal` stays bare,
 // `on_change` is a handler, and `options` is a `Vec` (auto-skipped — bare).
 // `axis` drives STRUCTURE (it selects the Stack layout branch) and so isn't
 // routed reactively here — see the body TODO.
@@ -269,6 +315,13 @@ pub struct RadioGroupProps {
     pub variant: VariantRef,
     /// Indicator scale applied to every option. Default Md.
     pub size: ControlSize,
+    /// When `true`, disables every option: selection is blocked
+    /// (`on_change` never fires), each ring dims — the same opacity drop a
+    /// disabled `Button` gets — and is marked disabled for the host (native
+    /// disabled state / a11y). Default `false`. Reactive: pass a
+    /// `Signal<bool>`/`rx!` and the group enables and disables in place.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
 }
 
 impl Default for RadioGroupProps {
@@ -281,6 +334,7 @@ impl Default for RadioGroupProps {
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),
             size: Reactive::Static(ControlSize::default()),
+            disabled: Reactive::Static(false),
         }
     }
 }
@@ -303,11 +357,13 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
     let size = props.size.clone();
     let size_key = move || size.get().as_variant_str().to_string();
     let sheets = installed_radio_sheets();
+    let disabled = props.disabled.clone();
 
-    let mut rows: Vec<Element> = Vec::with_capacity(props.options.len());
-    for option in props.options {
+    // One option's row: reports its id via `on_change`, shows selected while
+    // `value` matches it.
+    let option_row = move |option: RadioOption| -> Element {
         let id = option.id.clone();
-        let id_for_select = option.id.clone();
+        let id_for_select = option.id;
         let on_change_for_row = on_change.clone();
         let on_select: Rc<dyn Fn()> = Rc::new(move || (on_change_for_row)(id_for_select.clone()));
 
@@ -316,23 +372,31 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
             .with_style(|| StyleApplication::new(FieldLabel::sheet()))
             .into_element();
 
-        rows.push(radio_row(
+        radio_row(
             move || value.get() == id,
             Some((label, Some(a11y_label))),
             on_select,
+            disabled.clone(),
             appearance.clone(),
             size_key.clone(),
             sheets.clone(),
-        ));
-    }
+        )
+    };
 
-    let gap = StackGap::Sm;
     // TODO(reactive-sweep): `axis` drives STRUCTURE (which Stack layout branch
     // is built), so a reactive axis won't re-lay-out without a `when()`/`switch`
     // around the Stack. Read once for now; the common case is a fixed axis.
-    match props.axis.get() {
-        RadioAxis::Column => ui! { Stack(gap = gap, axis = StackAxis::Column) { rows } },
-        RadioAxis::Row => ui! { Stack(gap = gap, axis = StackAxis::Row) { rows } },
+    let stack_axis = match props.axis.get() {
+        RadioAxis::Column => StackAxis::Column,
+        RadioAxis::Row => StackAxis::Row,
+    };
+    let options = props.options;
+    ui! {
+        Stack(gap = StackGap::Sm, axis = stack_axis) {
+            for option in options {
+                option_row(option)
+            }
+        }
     }
 }
 
@@ -434,5 +498,60 @@ mod tests {
                 "an unlabelled Radio is the ring pressable itself"
             );
         });
+    }
+
+    /// Drive one tap (touch down + up in place) through a view's real
+    /// `on_touch` handler.
+    fn tap_row(row: Element) {
+        use runtime_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+        let mut el = row;
+        while let Element::Owned { element, .. } = el {
+            el = *element;
+        }
+        let handler = match el {
+            Element::Item { data, .. } => data
+                .downcast_ref::<runtime_vocabulary::prims::PrimCell<runtime_vocabulary::prims::ViewPrim>>()
+                .expect("a labelled Radio renders a View row")
+                .take()
+                .on_touch
+                .expect("the row carries on_touch"),
+            _ => panic!("a labelled Radio renders a View item"),
+        };
+        for phase in [TouchPhase::Began, TouchPhase::Ended] {
+            handler(&TouchEvent {
+                id: TouchId(1),
+                phase,
+                position: TouchPoint::new(1.0, 1.0),
+                window_position: TouchPoint::new(1.0, 1.0),
+                timestamp_ns: 0,
+                force: None,
+            });
+        }
+    }
+
+    fn row_tap_hits(disabled: Reactive<bool>) -> u32 {
+        let hits = Rc::new(std::cell::Cell::new(0u32));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let sink = hits.clone();
+            let props = RadioProps {
+                label: Reactive::Static(Some("Email".into())),
+                on_select: Rc::new(move || sink.set(sink.get() + 1)),
+                disabled,
+                ..Default::default()
+            };
+            tap_row(Radio(&props));
+        });
+        hits.get()
+    }
+
+    /// Regression guard for `disabled`: the label row is a plain view with
+    /// its own tap recognizer, OUTSIDE the ring pressable's disabled
+    /// binding — so without its own check, tapping the label of a disabled
+    /// Radio still fired `on_select`.
+    #[test]
+    fn regression_disabled_radio_label_row_tap_does_not_fire() {
+        assert_eq!(row_tap_hits(Reactive::Static(false)), 1, "an enabled row tap fires");
+        assert_eq!(row_tap_hits(Reactive::Static(true)), 0, "a disabled row tap is ignored");
     }
 }

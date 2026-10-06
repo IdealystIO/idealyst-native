@@ -1,0 +1,80 @@
+[package]
+name = "qr"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "QR codes on every target: read them out of any live MediaStream (camera, screen) or a still image, and generate them — drawn on screen as a crisp vector QrCode component, or exported as an SVG file."
+
+# Two halves behind features, so an app only links the half it uses:
+#
+# - `scan` — a CONSUMER of a `MediaStream`, never its own camera. The app
+#   opens its camera (or any other producer) once, shows it however it likes,
+#   and hands the same stream to `QrScanner::new`. The scanner taps the
+#   stream's CPU frames, converts the one it wants to greyscale, and decodes
+#   it off the main thread through `offload` (a Web Worker on web, a
+#   `std::thread` on native), with `rqrr` — pure Rust, the same decoder on
+#   every target. The platform detectors (Vision, ML Kit, BarcodeDetector)
+#   were not used: AVFoundation's metadata output is wired to its OWN capture
+#   session, BarcodeDetector is missing from Firefox and desktop Safari, and
+#   three engines would disagree on edge cases.
+#
+# - `generate` — `QrMatrix::encode` (pure Rust, `qrcode`) and
+#   `QrMatrix::to_svg` for a standalone `.svg` file. No UI dependency, so it
+#   works in server code too (an emailed or downloaded code).
+#
+# - `component` (implies `generate`) — the `QrCode` component: the matrix
+#   drawn as vector rectangles into a `canvas`, which renders identically on
+#   every canvas renderer and scales to whatever box it's given.
+#
+# No capability is declared: this crate never touches a camera. The producer
+# (`camera`) declares `capabilities = ["camera"]`.
+
+[features]
+default = ["scan", "generate", "component"]
+scan = ["dep:media-stream", "dep:offload", "dep:serde", "dep:thiserror", "dep:rqrr"]
+generate = ["dep:qrcode", "dep:thiserror"]
+component = ["generate", "dep:canvas", "dep:runtime-core", "dep:runtime-vocabulary"]
+
+[dependencies]
+# scan: the live-source vocabulary (`MediaStream::subscribe` is the CPU tap),
+# the off-main-thread runner, and the frame's wire format to the web worker.
+media-stream = { workspace = true, optional = true }
+offload = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+# scan: pure-Rust QR detector/decoder. `default-features = false` drops its
+# `image` integration — frames arrive as raw pixels, fed in as greyscale.
+rqrr = { version = "0.11", default-features = false, optional = true }
+# generate: pure-Rust QR encoder. No default features: we only read its module
+# matrix — the SVG and the on-screen drawing are ours.
+qrcode = { version = "0.14", default-features = false, optional = true }
+# component: the canvas the `QrCode` component draws into, and the author
+# surface (`#[component]`, `memo`) — `runtime-vocabulary` for the macro
+# emission's absolute `::runtime_vocabulary::glue::…` paths.
+canvas = { workspace = true, optional = true }
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Block on `QrScanner::next()` in native tests.
+pollster = "0.3"
+# Encodes the QR codes the scan tests render into frames (independently of
+# our own `generate`, so the two halves check each other's work).
+qrcode = { version = "0.14", default-features = false }
+
+# `tests/roundtrip.rs` (native): mount `QrCode` through the scene registry on
+# the host-mock substrate, paint it at a reported size, rasterize the scene on
+# the GPU with vello's headless compositor, and decode the pixels with `scan`.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+host-mock = { workspace = true }
+canvas-vello = { workspace = true }
+runtime-world = { workspace = true }
+runtime-scene = { workspace = true }
+
+# Browser tests (`tests/web_scanner.rs`) — the decode runs in a real Web
+# Worker through `offload`. Run with `cargo test -p qr --target
+# wasm32-unknown-unknown` (the workspace runner supplies web-glue's JS; a
+# matching chromedriver via `CHROMEDRIVER`).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+web-glue = { workspace = true }

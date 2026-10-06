@@ -177,8 +177,20 @@ go beyond.
 
 ### Sanctioned divergences from the frozen reference
 
-None. Every fixture reproduces the pre-rewrite recording byte for byte
-in both modes, with `ui-overlay` on and off.
+None from the EMITTER. Every fixture's `ui!` emission reproduces the
+pre-rewrite recording in both modes, with `ui-overlay` on and off.
+
+Op-stream changes made by the runtime underneath, not by `ui!`, are
+recorded in the goldens:
+
+- **`release_subtree` after a spliced keyed row's `remove_child`**
+  (`for_keyed_reactive`, `for_keyed_reorder_and_insert`,
+  `for_reactive_range`, `.spliced`). The spliced keyed reconciler now
+  tells the host a removed row is discarded, as the Dyn swaps and the
+  anchored keyed rebuild already did (and as the `.anchored` goldens
+  already show). The only diff is the added `release_subtree` lines.
+  Pinned by `runtime-vocabulary`
+  `subtree_release.rs::regression_spliced_keyed_removal_releases_the_rows_it_discards`.
 
 ## One prop the emitter drops
 

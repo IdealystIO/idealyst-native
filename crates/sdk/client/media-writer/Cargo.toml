@@ -28,7 +28,7 @@ license.workspace = true
 # CoreMedia/CoreVideo/AudioToolbox expose C functions (CMSampleBuffer*,
 # CVPixelBuffer*, the audio format ctor) that surface as undefined symbols.
 [package.metadata.idealyst.ios]
-frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "AudioToolbox"]
+frameworks = ["AVFoundation", "CoreMedia", "CoreVideo", "AudioToolbox", "CoreFoundation", "IOSurface"]
 
 [dependencies]
 thiserror = { workspace = true }

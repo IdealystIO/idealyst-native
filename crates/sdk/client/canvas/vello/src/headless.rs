@@ -20,11 +20,13 @@
 
 use crate::compose::OverlayCompositor;
 use crate::encode::encode_scene;
+use crate::plan::split_segments;
+use crate::texture_runs::{composite_texture_runs, RunHost};
 use crate::native_capture::{LayerCompositor, NativeCapture};
 use crate::render::{
     headless_device, make_target, new_vello_renderer, read_target_rgba, RenderedImage,
 };
-use canvas_core::{Scene as CanvasScene, TextureLayer};
+use canvas_core::{place_textures, DrawOp, Scene as CanvasScene, TextureLayer};
 use media_stream::FrameWriter;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
@@ -104,8 +106,12 @@ impl HeadlessCompositor {
         self.overlay = Some((tex, view, (w, h)));
     }
 
-    /// Composite `scene` (drawn first) then `layers` (in order, on top) into the
-    /// offscreen target at `w × h` physical pixels. `scale` maps the author's
+    /// Composite `base` and `layers` into the offscreen target at `w × h`
+    /// physical pixels. `base` places layers like a canvas scene does:
+    /// `Scene::texture(i)` composites `layers[i]` at that point (ops after it
+    /// draw on top), and a layer it never places is composited after it, in
+    /// order — so a `base` without texture ops draws first with every layer on
+    /// top, as before texture ops existed. `scale` maps the author's
     /// LOGICAL-coordinate scene/layer rects onto the physical target (dpr); pass
     /// `1.0` to treat the scene coordinates as physical pixels.
     ///
@@ -133,11 +139,25 @@ impl HeadlessCompositor {
             antialiasing_method: AaConfig::Area,
         };
 
-        // Paint the base scene into the target (transparent base). Disjoint field
-        // borrows: `&mut self.renderer`/`&mut self.scene` vs `&self.device`/
+        // Normalize `base` exactly as `paint_scene` does for a canvas, so the
+        // segments below are self-contained (see `canvas_core::place_textures`).
+        // Without layers or texture ops there is nothing to place: skip the copy.
+        let placed;
+        let ops: &[DrawOp] = if layers.is_empty()
+            && !base.ops().iter().any(|op| matches!(op, DrawOp::Texture { .. }))
+        {
+            base.ops()
+        } else {
+            placed = place_textures(CanvasScene::from_ops(base.ops().to_vec()), layers.len());
+            placed.ops()
+        };
+        let segments = split_segments(ops);
+
+        // Paint the base segment into the target (transparent base). Disjoint
+        // field borrows: `&mut self.renderer`/`&mut self.scene` vs `&self.device`/
         // `&self.queue`/`&self.target` are distinct fields, so this is sound.
         self.scene.reset();
-        encode_scene(base.ops(), &mut self.scene, Affine::scale(scale as f64));
+        encode_scene(segments.base, &mut self.scene, Affine::scale(scale as f64));
         {
             let (_, target_view, _) = self.target.as_ref().unwrap();
             // A render failure (device lost) leaves the previous frame in the
@@ -151,24 +171,17 @@ impl HeadlessCompositor {
             );
         }
 
-        // Composite the texture layers over the painted base scene.
-        let mut enc = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("headless-layers") });
-        {
-            let (_, target_view, _) = self.target.as_ref().unwrap();
-            self.layer_compositor.composite_layers(
-                &self.device,
-                &self.queue,
-                &mut enc,
-                layers,
-                target_view,
-                scale,
-                w,
-                h,
-            );
+        // Texture runs: each run's layers, then its vector ops over them (see
+        // `crate::texture_runs`, which also owns the GPU-ordering rule). The
+        // layers / scale / size for this frame ride along in `HeadlessRuns`.
+        if !segments.runs.is_empty() {
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("headless-layers"),
+            });
+            let mut host = HeadlessRuns { c: self, layers, scale, w, h };
+            composite_texture_runs(&mut host, &segments.runs, &mut enc, false);
+            self.queue.submit([enc.finish()]);
         }
-        self.queue.submit([enc.finish()]);
 
         // Overlay scene (drawn text/graphics) ON TOP of the layers: render it over
         // a transparent overlay texture, then source-over composite onto the
@@ -255,5 +268,56 @@ impl HeadlessCompositor {
         if let Some(idx) = idx {
             self.output.as_ref().unwrap().publish(idx);
         }
+    }
+}
+
+/// [`HeadlessCompositor`] as a [`RunHost`] for one `composite` call: the
+/// compositor plus that frame's layers, scale and size.
+struct HeadlessRuns<'a> {
+    c: &'a mut HeadlessCompositor,
+    layers: &'a [TextureLayer],
+    scale: f32,
+    w: u32,
+    h: u32,
+}
+
+impl RunHost for HeadlessRuns<'_> {
+    type Enc = wgpu::CommandEncoder;
+
+    fn composite_layers(&mut self, enc: &mut wgpu::CommandEncoder, which: &[u32]) {
+        let c = &mut *self.c;
+        let (_, target_view, _) = c.target.as_ref().unwrap();
+        c.layer_compositor.composite_layers(
+            &c.device, &c.queue, enc, self.layers, which, target_view, self.scale, self.w, self.h,
+        );
+    }
+
+    fn render_overlay(&mut self, ops: &[DrawOp]) -> bool {
+        let c = &mut *self.c;
+        c.ensure_overlay(self.w, self.h);
+        c.scene.reset();
+        encode_scene(ops, &mut c.scene, Affine::scale(self.scale as f64));
+        let (_, overlay_view, _) = c.overlay.as_ref().unwrap();
+        let params = RenderParams {
+            base_color: Color::from_rgba8(0, 0, 0, 0),
+            width: self.w,
+            height: self.h,
+            antialiasing_method: AaConfig::Area,
+        };
+        c.renderer.render_to_texture(&c.device, &c.queue, &c.scene, overlay_view, &params).is_ok()
+    }
+
+    fn composite_overlay(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let c = &*self.c;
+        let (_, target_view, _) = c.target.as_ref().unwrap();
+        let (_, overlay_view, _) = c.overlay.as_ref().unwrap();
+        c.overlay_compositor.composite(&c.device, enc, overlay_view, target_view);
+    }
+
+    fn submit(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let fresh = self.c.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("headless-layers"),
+        });
+        self.c.queue.submit([std::mem::replace(enc, fresh).finish()]);
     }
 }

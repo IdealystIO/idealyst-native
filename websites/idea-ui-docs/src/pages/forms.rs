@@ -29,13 +29,14 @@ use crate::shell::{Callout, CodePanel, Demo, DemoSurface, Prop, PropsTable, Sect
 // =============================================================================
 
 pub fn checkbox() -> Element {
-    // A standing-on / standing-off pair for the States row plus a disabled
-    // mock (idea-ui's Checkbox has no `disabled` prop, so we dim a static
-    // checked box to show the intent).
+    // A standing-on / standing-off pair for the States row, plus a disabled
+    // checked box.
     let off = signal(false);
     let on_off: Rc<dyn Fn(bool)> = Rc::new(move |v| off.set(v));
     let on = signal(true);
     let on_on: Rc<dyn Fn(bool)> = Rc::new(move |v| on.set(v));
+    let locked = signal(true);
+    let on_locked: Rc<dyn Fn(bool)> = Rc::new(move |v| locked.set(v));
 
     let agree = signal(false);
     let on_agree: Rc<dyn Fn(bool)> = Rc::new(move |v| agree.set(v));
@@ -46,14 +47,15 @@ pub fn checkbox() -> Element {
 
     body(vec![ui! {
         Section(title = "States".to_string()) {
-            P(content = "Off and on are the two committed states. idea-ui's Checkbox is a \
-                two-state box — there is no separate indeterminate or disabled prop; \
-                model those by controlling the bound signal and dimming the surrounding \
-                row yourself.".to_string())
+            P(content = "Off and on are the two committed states. `disabled = true` dims the \
+                box and ignores presses on the box and its label; it also takes a \
+                `Signal<bool>` or `rx!` to enable and disable in place. There is no \
+                indeterminate state.".to_string())
             DemoSurface {
                 Stack(gap = StackGap::Sm) {
                     Checkbox(label = Some("Off".to_string()), value = off, on_change = on_off)
                     Checkbox(label = Some("On".to_string()), value = on, on_change = on_on, tone = tone::Primary)
+                    Checkbox(label = Some("Disabled".to_string()), value = locked, on_change = on_locked, disabled = true)
                 }
             }
         }
@@ -91,6 +93,7 @@ ui! {
                 Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the checked fill. Default: Primary." },
                 Prop { name: "variant",   ty: "VariantRef",              desc: "Surface skeleton for the checked fill. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg box scale. Default: Md." },
+                Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses (box and label) and dims the box. Takes a Signal/rx! too. Default: false." },
             ])
         }
     }])
@@ -181,6 +184,7 @@ ui! {
                 Prop { name: "tone",      ty: "ToneRef",            desc: "Semantic palette for the selected ring + dot. Default: Primary." },
                 Prop { name: "variant",   ty: "VariantRef",        desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",       desc: "Sm / Md / Lg indicator scale. Default: Md." },
+                Prop { name: "disabled",  ty: "bool",              desc: "When true, ignores presses and dims the ring (every option, on RadioGroup). Takes a Signal/rx! too. Default: false." },
                 Prop { name: "selected",  ty: "Signal<bool>",      desc: "Standalone Radio only: whether this row is selected." },
                 Prop { name: "on_select", ty: "Rc<dyn Fn()>",      desc: "Standalone Radio only: fires when the row is clicked." },
             ])
@@ -260,6 +264,7 @@ pub fn switch() -> Element {
                 Prop { name: "tone",      ty: "ToneRef",                  desc: "Semantic palette for the 'on' track fill. Default: Primary." },
                 Prop { name: "variant",   ty: "VariantRef",              desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",             desc: "Sm / Md / Lg track + thumb scale. Default: Md." },
+                Prop { name: "disabled",  ty: "bool",                     desc: "When true, ignores presses and dims the track. Takes a Signal/rx! too. Default: false." },
             ])
         }
     }])

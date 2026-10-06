@@ -67,6 +67,7 @@ drop into `ui!`.
 | `microphone` | [`microphone/`](./client/microphone) | Live microphone capture — a raw f32 PCM stream via cpal (desktop/iOS), `getUserMedia`+Web Audio (web), and `AudioRecord`/JNI (Android). |
 | `camera` | [`camera/`](./client/camera) | Live camera capture — yields a `MediaStream` (see `media-stream`). `AVCaptureSession` (iOS/macOS), `getUserMedia`+`<canvas>` (web), `Camera2`+`ImageReader` via a Kotlin shim (Android). No preview widget. |
 | `media-stream` | [`media-stream/`](./client/media-stream) | The platform-agnostic live-video-source abstraction — the common currency between capture SDKs (`camera`, `screen-recorder`) and display/compositing consumers. Thin + GPU-free: a CPU frame tap (`subscribe`/`latest`) plus an opaque zero-copy `native_source` handle. |
+| `qr` | [`qr/`](./client/qr) | QR codes on every target. **Show**: a `QrCode` component drawn as vector rectangles in a `canvas`. **Export**: `QrMatrix::to_svg` for a standalone SVG (pure Rust, works server-side). **Scan**: `QrScanner` reads codes out of any `MediaStream` (camera, screen) or a still image; it consumes the stream and never opens its own camera. Pure-Rust `qrcode`/`rqrr` everywhere; decoding runs off the main thread via `offload`. Each half is behind a feature. |
 | `screen-recorder` | [`screen-recorder/`](./client/screen-recorder) | Screen / window frame capture as a raw frame stream. Capability API plus a private-layer overlay primitive (`register_scene`). |
 | `menu` | [`menu/`](./client/menu) | OS menu-bar definitions — `NSMenu` / native app menus. A capability API (no rendered primitive); reactivity is full on macOS, one-shot elsewhere. |
 
@@ -184,6 +185,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `microphone` | 🧪 unit (framing math, config builders) · 🖥️ host capture (`#[ignore]`) | ✅ host capture (cpal); 🟢 web/iOS/Android run in `mic-demo` |
 | `camera` | 🧪 unit (config builders) · 🖥️ host capture (`#[ignore]`) | ✅ **macOS hardware-verified** (`host_capture` — AVFoundation through the `MediaStream`/`subscribe` path, shared with iOS); 🟢 web compiles/runs in `camera-demo`; ⚠️ **Android Camera2 compile-checked only** |
 | `media-stream` | 🧪 unit (frame channel: subscribe/latest, RGBA/BGRA, lifecycle) | n/a — pure Rust, no native backend (the abstraction layer) |
+| `qr` | 🧪 unit (encoding, module runs, SVG, luma box filter) · 🔌 integration (round trips: every EC level, binary/large payloads, the SVG, and the `QrCode` component rasterized on the GPU then decoded; live `MediaStream` scan, `next_frame`, stop/release lifecycle) · 🌐 browser (`web_scanner` — decode in a real Web Worker) | n/a — pure Rust encoder/decoder; drawing goes through `canvas`, the camera is the producer's concern |
 | `screen-recorder` | 🧪 unit (portable) | ⚠️ per-platform capture paths compile-checked |
 | `menu` | — none | 🟢 macOS (`NSMenu`) reactive; one-shot elsewhere |
 | `i18n` · `i18n-macros` | 🧪 unit (locale, packs, format) · 🔌 macro + compile-fail UI tests | n/a — pure Rust, no native backend |
@@ -244,6 +246,27 @@ A missing reason falls back to a generic default with a build warning. The
 known capabilities and their per-platform mapping live in one registry —
 `crates/tools/build/ios/src/capabilities.rs`; add a row there to support a
 new one.
+
+## Declaring iOS frameworks
+
+An SDK that links an Apple framework with
+`#[link(name = "Network", kind = "framework")]` must also declare it for iOS:
+
+```toml
+[package.metadata.idealyst.ios]
+frameworks = ["Network"]
+```
+
+On iOS the Rust code is linked as a staticlib by Xcode (device) or `swiftc`
+(simulator), and a staticlib does not carry `#[link]` directives. The iOS
+run tool links a fixed base set (UIKit, Foundation, CoreGraphics, QuartzCore)
+plus every framework declared this way across the app's dependency graph
+(`crates/tools/run/ios/src/frameworks.rs`). An undeclared framework fails the
+device link with undefined symbols, or — for one used only through the Obj-C
+runtime — leaves its classes missing at launch. macOS needs no declaration:
+there rustc links the binary and honors `#[link]`.
+`crates/tools/run/ios/tests/sdk_framework_declarations.rs` scans every crate
+under `crates/sdk/` and fails when a framework linked on iOS is not declared.
 
 ## The two SDK shapes
 

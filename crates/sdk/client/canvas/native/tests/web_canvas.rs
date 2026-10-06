@@ -230,6 +230,84 @@ async fn texture_layers_and_self_capture() {
     backend_web::newcore::stop();
 }
 
+/// `Scene::texture(i)` composites layer `i` at that point in the draw order:
+/// a fill drawn after it lands ON TOP of the texture (the QR-outline-over-
+/// camera case), the scene's transform carries past it without moving the
+/// texture itself, a layer the scene never places still composites over the
+/// whole scene, and `src_crop` frames the source (CPU renderers used to
+/// ignore it).
+#[wasm_bindgen_test]
+async fn texture_ops_order_vector_content_around_layers() {
+    let host = fresh_host();
+    backend_web::newcore::start_in("#app", canvas_native::register, move || {
+        let white = Arc::new(ImageSource::from_rgba8(21, 1, 1, vec![255, 255, 255, 255]));
+        let blue = Arc::new(ImageSource::from_rgba8(22, 1, 1, vec![0, 0, 255, 255]));
+        // Left pixel red, right pixel green; cropped to the right half.
+        let split = Arc::new(ImageSource::from_rgba8(23, 2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]));
+        Canvas(CanvasProps {
+            draw: draw(|s| {
+                s.fill_path(Path::rect(0.0, 0.0, 100.0, 60.0), Color::new(0, 0, 0, 255));
+                // An author transform BEFORE the texture: must not shift the
+                // texture, must still apply to what's drawn after it.
+                s.translate(5.0, 0.0);
+                s.texture(0);
+                s.fill_path(Path::rect(20.0, 10.0, 20.0, 20.0), RED); // → x 25..45
+                s.texture(2);
+                // layer 1 is never placed → appended after everything.
+            }),
+            layers: vec![
+                TextureLayer::image(Rc::new(move || Some(white.clone())), Rc::new(|| (0.0, 0.0, 60.0, 40.0)))
+                    .fit(canvas_core::Fit::Fill),
+                TextureLayer::image(Rc::new(move || Some(blue.clone())), Rc::new(|| (70.0, 0.0, 30.0, 40.0)))
+                    .fit(canvas_core::Fit::Fill),
+                TextureLayer::image(Rc::new(move || Some(split.clone())), Rc::new(|| (0.0, 45.0, 30.0, 15.0)))
+                    .fit(canvas_core::Fit::Fill)
+                    .src_crop((0.5, 0.0, 0.5, 1.0)),
+            ],
+            ..Default::default()
+        })
+        .with_style(sized(100.0, 60.0))
+        .into_element()
+    });
+    sleep(80).await;
+
+    let canvas = mounted_canvas(&host);
+    let px = |x, y| pixel(&canvas, x, y);
+    assert_eq!(px(2.0, 35.0), [255, 255, 255, 255], "texture ignores the author translate");
+    assert_eq!(px(22.0, 20.0), [255, 255, 255, 255], "texture shows where nothing is drawn over it");
+    assert_eq!(px(42.0, 20.0), [255, 0, 0, 255], "fill after texture(0) is on top, translated");
+    assert_eq!(px(85.0, 20.0), [0, 0, 255, 255], "unplaced layer composites over the scene");
+    assert_eq!(px(15.0, 52.0), [0, 255, 0, 255], "src_crop selects the right half of the source");
+    backend_web::newcore::stop();
+}
+
+/// `Scene::size` on the web renderer: the `ResizeObserver` reports the CSS
+/// box, the deferred write is committed by the post-dispatch flush, and the
+/// painter re-runs at the real size — so a "fill my whole canvas" scene covers
+/// the far corner. Before the size seam the painter only ever saw `(0, 0)`.
+#[wasm_bindgen_test]
+async fn the_painter_sees_the_laid_out_canvas_size() {
+    let host = fresh_host();
+    backend_web::newcore::start_in("#app", canvas_native::register, || {
+        Canvas(CanvasProps {
+            draw: draw(|s| {
+                let (w, h) = s.size();
+                s.fill_path(Path::rect(0.0, 0.0, w, h), GREEN);
+                // A marker square in the bottom-right corner, placed from the size.
+                s.fill_path(Path::rect(w - 10.0, h - 10.0, 10.0, 10.0), RED);
+            }),
+            ..Default::default()
+        })
+        .with_style(sized(130.0, 70.0))
+        .into_element()
+    });
+    sleep(120).await;
+    let canvas = mounted_canvas(&host);
+    assert_eq!(pixel(&canvas, 5.0, 5.0), [0, 255, 0, 255], "filled to the reported size");
+    assert_eq!(pixel(&canvas, 125.0, 65.0), [255, 0, 0, 255], "corner placed from Scene::size");
+    backend_web::newcore::stop();
+}
+
 /// canvas-vello's entry point: `make_2d_rasterizer` takes a
 /// `web_sys::HtmlCanvasElement` and must draw into that very element.
 /// (`--features web-sys-canvas`, which canvas-vello enables.)

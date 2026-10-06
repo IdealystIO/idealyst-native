@@ -27,7 +27,7 @@
 use std::fmt;
 
 pub mod manifest;
-pub use manifest::{check, Problem, Provides, Requires};
+pub use manifest::{check, Problem, Provides, Requires, RULE};
 
 use ed25519_dalek::{Signer, Verifier};
 use serde::{Deserialize, Serialize};

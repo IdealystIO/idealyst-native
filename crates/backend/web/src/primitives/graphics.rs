@@ -182,10 +182,10 @@ pub(crate) fn create(
         fresh
     };
 
-    // Default sizing: fill the parent. Authors can override via
-    // .with_style(...) — these are just so an unstyled Graphics
-    // shows up at all.
-    let _ = canvas.set_attribute("style", "display: block; width: 100%; height: 100%");
+    // Default sizing (fill the parent) comes from the zero-specificity
+    // `css::GRAPHICS_FILL_RESET` rule keyed on `data-graphics-id` (set just
+    // below), NOT an inline style: inline beats the author's class, so
+    // `.with_style(...)` sizes were silently ignored.
 
     // Mint a stable id and write it on the canvas as a data
     // attribute so `make_handle` and `release` can find this

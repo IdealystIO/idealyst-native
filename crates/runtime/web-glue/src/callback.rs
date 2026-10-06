@@ -9,7 +9,14 @@
 //!   AND marks the JS function dead. A later JS call throws
 //!   `web-glue: callback #N called after its Rust owner dropped it` — a
 //!   loud error, never a call into freed memory. Event listeners must be
-//!   detached before their `Closure` drops, exactly as today.
+//!   detached before their `Closure` drops, exactly as today, and frames /
+//!   timers cancelled. The throw stays loud on purpose: a callback the host
+//!   can still call after its owner dropped it means a missed detach or
+//!   cancel, which is a bug to fix at the owner (a fake clock's `1e12` timer
+//!   ids once made every cancel miss — see
+//!   `dom::Window::request_animation_frame`). The one expected late call is
+//!   a promise reaction, since a promise can't be unsubscribed; those are
+//!   minted [`FLAG_SILENT`] (a dropped `JsFuture`) and return quietly.
 //! * **Ids are never reused** (a monotonically increasing `u32`, panicking
 //!   on exhaustion), so even a JS function that escaped revocation could
 //!   not reach a different closure that later took its id.

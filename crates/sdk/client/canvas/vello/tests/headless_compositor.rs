@@ -127,3 +127,102 @@ fn image_layer_respects_source_alpha() {
     assert!(g > 60 && g < 220, "green should be a partial blend, got {g}");
     assert!(b > 150, "blue background should still show through, got {b}");
 }
+
+fn fill_rect(s: &mut Scene, x: f32, y: f32, w: f32, h: f32, rgba: [u8; 4]) {
+    s.fill_path(
+        canvas_core::Path::rect(x, y, w, h),
+        canvas_core::Color::new(rgba[0], rgba[1], rgba[2], rgba[3]),
+    );
+}
+
+fn full_layer(id: u64, rect: (f32, f32, f32, f32), rgba: [u8; 4]) -> TextureLayer {
+    let img = solid(id, 4, 4, rgba);
+    TextureLayer::image(Rc::new(move || Some(img.clone())), Rc::new(move || rect))
+        .fit(canvas_core::Fit::Fill)
+}
+
+fn assert_px(data: &[u8], w: u32, x: u32, y: u32, want: [u8; 3], what: &str) {
+    let (r, g, b, a) = px(data, w, x, y);
+    let close = |got: u8, want: u8| (got as i32 - want as i32).abs() < 40;
+    assert!(
+        close(r, want[0]) && close(g, want[1]) && close(b, want[2]) && a > 200,
+        "{what} at ({x},{y}): want {want:?}, got {:?}",
+        (r, g, b, a)
+    );
+}
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const GREEN: [u8; 4] = [0, 255, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+const YELLOW: [u8; 4] = [255, 255, 0, 255];
+
+/// `Scene::texture(i)` composites the layer at that point: an opaque fill drawn
+/// after it is ON TOP of the texture there, the texture shows elsewhere — and
+/// the author's transform (set before the texture) still applies after it.
+#[test]
+fn ops_after_a_texture_op_draw_over_the_texture() {
+    let Some(mut c) = HeadlessCompositor::new() else {
+        eprintln!("no GPU adapter — skipping texture-op test");
+        return;
+    };
+    let (w, h) = (16u32, 16u32);
+    let layer = full_layer(10, (0.0, 0.0, 16.0, 16.0), GREEN);
+    let mut base = Scene::new();
+    base.transform(canvas_core::Transform::translate(8.0, 0.0));
+    base.texture(0);
+    fill_rect(&mut base, 0.0, 0.0, 8.0, 16.0, RED); // → x 8..16 under the translate
+
+    c.composite(&base, std::slice::from_ref(&layer), &Scene::new(), w, h, 1.0);
+    let data = c.read_rgba().unwrap().data;
+    assert_px(&data, w, 12, 8, [255, 0, 0], "fill drawn after the texture is on top");
+    assert_px(&data, w, 3, 8, [0, 255, 0], "texture shows where nothing covers it");
+}
+
+/// A layer the scene never places still composites over the whole scene (the
+/// behavior before texture ops existed).
+#[test]
+fn an_unplaced_layer_composites_over_the_scene() {
+    let Some(mut c) = HeadlessCompositor::new() else {
+        eprintln!("no GPU adapter — skipping unplaced-layer test");
+        return;
+    };
+    let (w, h) = (16u32, 16u32);
+    let layer = full_layer(11, (8.0, 0.0, 8.0, 16.0), GREEN);
+    let mut base = Scene::new();
+    fill_rect(&mut base, 0.0, 0.0, 16.0, 16.0, BLUE);
+
+    c.composite(&base, std::slice::from_ref(&layer), &Scene::new(), w, h, 1.0);
+    let data = c.read_rgba().unwrap().data;
+    assert_px(&data, w, 12, 8, [0, 255, 0], "unplaced layer over the scene");
+    assert_px(&data, w, 3, 8, [0, 0, 255], "scene where the layer isn't");
+}
+
+/// Two texture ops each followed by vector ops: both runs render through the
+/// same overlay texture, so the first run's composite must reach the GPU before
+/// the second run's vello pass overwrites it. If it didn't, the first run would
+/// composite the SECOND run's pixels (blue missing, yellow under the red layer).
+#[test]
+fn two_texture_runs_each_composite_their_own_content_in_order() {
+    let Some(mut c) = HeadlessCompositor::new() else {
+        eprintln!("no GPU adapter — skipping two-run test");
+        return;
+    };
+    let (w, h) = (16u32, 16u32);
+    let layers = [
+        full_layer(12, (0.0, 0.0, 16.0, 16.0), GREEN),
+        full_layer(13, (4.0, 4.0, 8.0, 8.0), RED),
+    ];
+    let mut base = Scene::new();
+    base.texture(0);
+    fill_rect(&mut base, 0.0, 0.0, 16.0, 8.0, BLUE); // run 1: top half
+    base.texture(1);
+    fill_rect(&mut base, 0.0, 10.0, 16.0, 6.0, YELLOW); // run 2: bottom strip
+
+    c.composite(&base, &layers, &Scene::new(), w, h, 1.0);
+    let data = c.read_rgba().unwrap().data;
+    assert_px(&data, w, 2, 2, [0, 0, 255], "run 1 over layer 0");
+    assert_px(&data, w, 8, 6, [255, 0, 0], "layer 1 over run 1");
+    assert_px(&data, w, 2, 9, [0, 255, 0], "layer 0 alone");
+    assert_px(&data, w, 8, 11, [255, 255, 0], "run 2 over layer 1");
+    assert_px(&data, w, 2, 14, [255, 255, 0], "run 2 over layer 0");
+}

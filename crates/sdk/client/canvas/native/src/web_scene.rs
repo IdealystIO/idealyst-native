@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_web::WebBackend;
-use canvas_core::{paint_scene, CanvasPrim, Scene};
+use canvas_core::{CanvasPrim, Scene};
 use runtime_scene::{Element, MountCx};
 use web_glue::dom::{HtmlCanvasElement, ResizeObserver};
 use web_glue::{Closure, JsCast};
@@ -49,12 +49,20 @@ pub(crate) fn mount_canvas(
     // Per-frame rasterizer (2d ctx + texture layers + captureStream) —
     // the shared function `canvas-vello` also uses as its Canvas2D
     // fallback, so both paths produce identical output.
-    let rasterize = Rc::new(RefCell::new(rasterizer_2d(canvas, &prim.props)));
+    let rasterize = Rc::new(RefCell::new(rasterizer_2d(canvas.clone(), &prim.props)));
 
+    // The observer learns the laid-out CSS box: report it (the painter reads
+    // it as `Scene::size`, and a change re-runs the paint effect) and replay
+    // the cached scene so the resized backing store isn't left blank meanwhile.
+    let sizing = prim.size_reporter();
     let cb = Closure::new({
         let rasterize = rasterize.clone();
         let cell = cell.clone();
-        move |_entries| (rasterize.borrow_mut())(&cell.borrow())
+        let canvas = canvas.clone();
+        move |_entries| {
+            sizing.report(canvas.client_width() as f32, canvas.client_height() as f32);
+            (rasterize.borrow_mut())(&cell.borrow())
+        }
     });
     let observer = ResizeObserver::new(cb.as_js().unchecked_ref()).expect("ResizeObserver::new");
     observer.observe(&el);
@@ -64,12 +72,12 @@ pub(crate) fn mount_canvas(
     // collected into the mounting subtree — it (and the guard +
     // rasterizer it owns) live until unmount, exactly like the old
     // walker-scope-owned `effect!`.
-    let props = prim.props.clone();
+    let paint_prim = prim.clone();
     runtime_world::effect(move || {
         // Capture the observer guard into the subtree-owned effect so it
         // is dropped (→ disconnected) exactly when the canvas unmounts.
         let _keep = &guard;
-        *cell.borrow_mut() = paint_scene(&props);
+        *cell.borrow_mut() = paint_prim.paint();
         (rasterize.borrow_mut())(&cell.borrow());
     });
 

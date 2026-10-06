@@ -22,6 +22,7 @@
 
 use canvas_core::{
     BlendMode, Color, DrawOp, FillRule, ImageSource, LineCap, LineJoin, Paint, PaintKind, Path,
+    TextureLayer,
 };
 
 use objc2::rc::Retained;
@@ -158,6 +159,14 @@ extern "C" {
     fn CGImageRelease(image: CGImageRef);
     fn CGImageRetain(image: CGImageRef) -> CGImageRef;
     fn CGDataProviderCreateWithCFData(data: CFDataRef) -> CGDataProviderRef;
+    // Texture layers (`DrawOp::Texture`): a provider that OWNS a per-frame
+    // pixel copy, freed through `release_boxed_pixels`.
+    fn CGDataProviderCreateWithData(
+        info: *mut c_void,
+        data: *const c_void,
+        size: usize,
+        release: *const c_void,
+    ) -> CGDataProviderRef;
     fn CGDataProviderRelease(provider: CGDataProviderRef);
     // Persistent layer (`DrawOp::Layer`): an offscreen RGBA bitmap context.
     fn CGContextGetClipBoundingBox(c: CGContextRef) -> CGRect;
@@ -206,10 +215,35 @@ pub(crate) struct ApplePainter {
 }
 
 impl ApplePainter {
-    /// Replay every op of `scene` into the active `CGContext`.
-    pub(crate) fn paint_scene(&self, ctx: CGContextRef, scene: &canvas_core::Scene) {
+    /// Replay every op of `scene` into the active `CGContext`, compositing
+    /// `layers[index]` exactly where the scene has a `DrawOp::Texture { index }`.
+    ///
+    /// `scene` must come from [`canvas_core::paint_scene`] over the same props
+    /// `layers` came from: its `place_textures` pass guarantees every `Texture`
+    /// op is top-level, names an existing layer, and sees the BASE state (no
+    /// author transform or clip open), and it has already appended the layers
+    /// the author never placed. So this replay never composites layers on its
+    /// own — order is entirely the op list's — and the on-screen `drawRect:`
+    /// and the offscreen capture produce the same image by calling this.
+    pub(crate) fn paint_scene(
+        &self,
+        ctx: CGContextRef,
+        scene: &canvas_core::Scene,
+        layers: &[TextureLayer],
+    ) {
         for op in scene.ops() {
-            self.apply_op(ctx, op);
+            match op {
+                DrawOp::Texture { index } => {
+                    debug_assert!(
+                        (*index as usize) < layers.len(),
+                        "place_textures keeps texture indices in range"
+                    );
+                    if let Some(layer) = layers.get(*index as usize) {
+                        self.composite_texture(ctx, layer);
+                    }
+                }
+                op => self.apply_op(ctx, op),
+            }
         }
     }
 
@@ -356,6 +390,11 @@ impl ApplePainter {
                     self.apply_op(ctx, op);
                 }
             }
+            // Texture ops are composited by `paint_scene` at the top level.
+            // Reaching here means one sat inside a Layer/LayerCached/MaskGroup
+            // op list, which `canvas_core::place_textures` strips — so this is
+            // unreachable for a scene from `paint_scene`, and a no-op otherwise.
+            DrawOp::Texture { .. } => {}
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
             _ => {}
         }
@@ -513,6 +552,81 @@ impl ApplePainter {
         }
     }
 
+    /// Composite one [`TextureLayer`] at the current point of the replay: pull
+    /// its current RGBA (a stream's latest frame or a static image), and draw
+    /// it into its rect with the shared [`TextureLayer::source_rects`] crop +
+    /// fit, clipped to its rounded corners, at its opacity, with its border.
+    /// No-op when the source has nothing to draw this frame.
+    ///
+    /// The whole source image is drawn at the scale and offset that land the
+    /// crop/fit source rect exactly on the destination rect, and the clip to
+    /// the destination cuts away the rest. Unlike cropping with
+    /// `CGImageCreateWithImageInRect` (which rounds the crop out to whole
+    /// pixels), this keeps fractional crops exact, so the picture lands where
+    /// [`TextureLayer::source_to_canvas`] says it does — content an author
+    /// registers to the frame (a scan outline) lines up on every backend.
+    ///
+    /// Shapes go through the painter's bezier class and color factory, so iOS
+    /// and macOS draw the identical clip and border.
+    fn composite_texture(&self, ctx: CGContextRef, layer: &TextureLayer) {
+        let mut rgba: Vec<u8> = Vec::new();
+        let Some((vw, vh)) = layer.resolve_rgba(&mut rgba) else { return };
+        if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
+            return;
+        }
+        let ((sx, sy, sw, sh), (dx, dy, dw, dh)) = layer.source_rects(vw as f32, vh as f32);
+        if sw <= 0.0 || sh <= 0.0 || dw <= 0.0 || dh <= 0.0 {
+            return;
+        }
+        let Some(image) = owned_rgba_image(rgba, vw as usize, vh as usize) else { return };
+        // Canvas units per source pixel; the full source rect in canvas space.
+        let (kx, ky) = (dw / sw, dh / sh);
+        let full = CGRect::new(
+            CGPoint::new((dx - sx * kx) as CGFloat, (dy - sy * ky) as CGFloat),
+            CGSize::new((vw as f32 * kx) as CGFloat, (vh as f32 * ky) as CGFloat),
+        );
+        let r = (layer.corner_radius)().clamp(0.0, dw.min(dh) * 0.5);
+
+        unsafe {
+            CGContextSaveGState(ctx);
+            CGContextSetAlpha(ctx, layer.opacity.clamp(0.0, 1.0) as CGFloat);
+            // Clip to the (rounded) destination rect — this is also what trims
+            // the full-source draw down to the crop/fit source rect.
+            let clip = self.build_path(&rounded_rect_path(dx, dy, dw, dh, r));
+            let _: () = msg_send![&clip, addClip];
+            // Same upright-image flip as the `DrawOp::Image` arm: the context is
+            // top-left-origin, CoreGraphics draws images bottom-left-origin.
+            CGContextSaveGState(ctx);
+            CGContextTranslateCTM(ctx, full.origin.x, full.origin.y + full.size.height);
+            CGContextScaleCTM(ctx, 1.0, -1.0);
+            CGContextDrawImage(ctx, CGRect::new(CGPoint::new(0.0, 0.0), full.size), image);
+            CGContextRestoreGState(ctx);
+            CGImageRelease(image);
+
+            // Border frame, composited WITH the image so it stays locked to the
+            // moving picture (a separate framework-view border lags during a
+            // drag). Stroked on a rounded rect inset by half the width, so the
+            // whole stroke sits inside the layer rect and traces the image's
+            // rounded edge.
+            let bw = layer.border_width;
+            if bw > 0.0 {
+                let inset = bw * 0.5;
+                let border = self.build_path(&rounded_rect_path(
+                    dx + inset,
+                    dy + inset,
+                    dw - bw,
+                    dh - bw,
+                    (r - inset).max(0.0),
+                ));
+                let _: () = msg_send![&border, setLineWidth: bw as CGFloat];
+                let col = (self.make_color)(layer.border_color);
+                let _: () = msg_send![&col, setStroke];
+                let _: () = msg_send![&border, stroke];
+            }
+            CGContextRestoreGState(ctx);
+        }
+    }
+
     /// Fill `bezier` with a gradient paint: clip to the path, draw the
     /// gradient over the clipped region, restore. Mirrors the svg painter.
     fn fill_gradient(&self, ctx: CGContextRef, bezier: &Retained<NSObject>, paint: &Paint) {
@@ -586,6 +700,101 @@ impl ApplePainter {
             }
         }
         bezier
+    }
+}
+
+/// A rounded rectangle with CIRCULAR corners of radius `r` (clamped to half the
+/// shorter side), each a quarter-circle cubic. `Path::rounded_rect` uses
+/// quadratic corners, which visibly flatten a fully-rounded layer (a circular
+/// camera bubble) into a squircle; texture layers are rounded with true arcs.
+/// `r == 0` is a plain rectangle.
+fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Path {
+    let r = r.min(w * 0.5).min(h * 0.5).max(0.0);
+    if r == 0.0 {
+        return Path::rect(x, y, w, h);
+    }
+    // Control-point offset for a quarter circle as one cubic (4/3·(√2 − 1)).
+    const K: f32 = 0.552_284_8;
+    let k = r * K;
+    let (x1, y1) = (x + w, y + h);
+    Path::new()
+        .move_to(x + r, y)
+        .line_to(x1 - r, y)
+        .cubic_to(x1 - r + k, y, x1, y + r - k, x1, y + r)
+        .line_to(x1, y1 - r)
+        .cubic_to(x1, y1 - r + k, x1 - r + k, y1, x1 - r, y1)
+        .line_to(x + r, y1)
+        .cubic_to(x + r - k, y1, x, y1 - r + k, x, y1 - r)
+        .line_to(x, y + r)
+        .cubic_to(x, y + r - k, x + r - k, y, x + r, y)
+        .close()
+}
+
+/// `CGDataProviderReleaseDataCallback` — frees the heap pixel copy that
+/// [`owned_rgba_image`]'s data provider owns. CoreGraphics hands back the exact
+/// `data` pointer + `size` we gave it; rebuild the `Box<[u8]>` and drop it.
+/// Fires when the last `CGImage` referencing the provider is released.
+extern "C" fn release_boxed_pixels(_info: *mut c_void, data: *const c_void, size: usize) {
+    if data.is_null() {
+        return;
+    }
+    // SAFETY: `data`/`size` are exactly the pointer + length of the `Box<[u8]>`
+    // leaked in `owned_rgba_image`; CoreGraphics returns them verbatim and runs
+    // this callback at most once (on the provider's final release).
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(data as *mut u8, size);
+        drop(Box::from_raw(slice as *mut [u8]));
+    }
+}
+
+/// Wrap straight RGBA8 pixels (`w × h`, tightly packed) as a `CGImage` whose
+/// data provider OWNS them. Returns a +1 image the caller releases.
+///
+/// The provider must own the pixels: a no-copy provider over a borrowed buffer
+/// flickers, because CoreGraphics may decode the image LAZILY — after the
+/// buffer is dropped — and read freed memory (intermittent garbage frames; it
+/// surfaced the first time the iOS canvas composited a live per-frame camera
+/// stream). Straight alpha (`kCGImageAlphaLast`) is what
+/// [`TextureLayer::resolve_rgba`] yields for both images and stream frames.
+fn owned_rgba_image(rgba: Vec<u8>, w: usize, h: usize) -> Option<CGImageRef> {
+    unsafe {
+        let boxed: Box<[u8]> = rgba.into_boxed_slice();
+        let len = boxed.len();
+        let data_ptr = Box::into_raw(boxed) as *mut u8 as *const c_void;
+        let provider = CGDataProviderCreateWithData(
+            std::ptr::null_mut(),
+            data_ptr,
+            len,
+            release_boxed_pixels as *const c_void,
+        );
+        // A provider that failed to take the data never calls the release
+        // callback; free the copy here so it doesn't leak.
+        if provider.is_null() {
+            release_boxed_pixels(std::ptr::null_mut(), data_ptr, len);
+            return None;
+        }
+        let cs = CGColorSpaceCreateDeviceRGB();
+        let image = CGImageCreate(
+            w,
+            h,
+            8,
+            32,
+            w * 4,
+            cs,
+            CG_IMAGE_ALPHA_LAST,
+            provider,
+            std::ptr::null(),
+            true,
+            CG_RENDERING_INTENT_DEFAULT,
+        );
+        // The image retains the colorspace + provider; drop our references.
+        CGColorSpaceRelease(cs);
+        CGDataProviderRelease(provider);
+        if image.is_null() {
+            None
+        } else {
+            Some(image)
+        }
     }
 }
 

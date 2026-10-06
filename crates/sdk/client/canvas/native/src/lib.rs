@@ -178,7 +178,7 @@ fn mount_canvas_linux(
     _children: Vec<Element>,
 ) -> backend_linux::LinuxNode {
     let backend = cx.backend().clone();
-    let node = crate::linux::build_canvas(&prim.props, &mut backend.borrow_mut());
+    let node = crate::linux::build_canvas(prim, &mut backend.borrow_mut());
     finish_mount(&backend, &node, prim);
     node
 }

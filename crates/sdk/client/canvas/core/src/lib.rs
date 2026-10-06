@@ -56,7 +56,7 @@ pub mod glyph_outline;
 pub use glyph_outline::expand_glyph_run;
 
 mod prim;
-pub use prim::{register_ssr, Canvas, CanvasBound, CanvasPrim};
+pub use prim::{register_ssr, Canvas, CanvasBound, CanvasPrim, SizeReporter};
 
 use runtime_core::{IdealystSchema, Length, StyleRules, StyleSheet};
 use std::rc::Rc;
@@ -99,16 +99,26 @@ pub struct CanvasProps {
     #[schema(constraint = "optional media_stream::FrameWriter to record the canvas output")]
     pub capture: Option<media_stream::FrameWriter>,
 
-    /// Texture layers composited ON TOP of the painted scene, in order — each a
-    /// live `MediaStream` (a camera, screen share, …) drawn as a positioned,
-    /// rounded, opacity-blended rectangle. They become part of the rendered
-    /// output, so both the on-screen canvas AND the self-capture recording show
-    /// them (WYSIWYG). Every renderer composites them — the GPU vello renderer
-    /// imports each stream's native surface (an IOSurface on macOS) for a
-    /// zero-copy texture; the CPU renderers (web/iOS/Android) pull the stream's
-    /// latest RGBA frame ([`MediaStream::latest`](media_stream::MediaStream::latest))
-    /// and draw it with their native 2D engine. All share [`Fit::map_rects`] so
-    /// the crop/letterbox is identical across backends. Empty by default.
+    /// Texture sources — each a live `MediaStream` (a camera, screen share, …)
+    /// or a static image, drawn as a positioned, fitted, rounded,
+    /// opacity-blended rectangle.
+    ///
+    /// The scene decides where each one sits in the draw order:
+    /// `Scene::texture(i)` composites `layers[i]` at that point, so anything
+    /// drawn after it goes on top (an outline over a camera frame). A layer
+    /// the scene never places is composited after the whole scene, in order.
+    /// [`paint_scene`] applies these rules once for every renderer (see
+    /// [`place_textures`]).
+    ///
+    /// Textures are part of the rendered output, so both the on-screen canvas
+    /// AND the self-capture recording show them (WYSIWYG). Every renderer
+    /// composites them at their op position — the GPU vello renderer imports
+    /// each stream's native surface (an IOSurface on macOS) for a zero-copy
+    /// texture; the CPU renderers pull the stream's latest RGBA frame
+    /// ([`MediaStream::latest`](media_stream::MediaStream::latest)) and draw it
+    /// with their native 2D engine. All share
+    /// [`TextureLayer::source_rects`], so crop and fit frame a layer identically
+    /// across backends. Empty by default.
     #[schema(constraint = "texture layers (e.g. a camera) composited over the scene")]
     pub layers: Vec<TextureLayer>,
 }
@@ -219,9 +229,9 @@ pub struct TextureLayer {
     /// Optional NORMALIZED source crop `(x, y, w, h)` in `0.0..=1.0` — sample only
     /// this sub-rectangle of the source before applying [`fit`](Self::fit). `None`
     /// (the default) samples the whole source. Used by the `video-compose` crop
-    /// op to select a region of an input video. Honored by the GPU compositor
-    /// (folded into the sampling UV); the CPU renderers currently ignore it
-    /// (whole-source), so crop is a GPU-path feature for now.
+    /// op to select a region of an input video. Honored by every renderer: the
+    /// GPU compositor folds it into the sampling UV, the CPU renderers sample
+    /// [`source_rects`](Self::source_rects) (crop, then fit).
     pub src_crop: Option<(f32, f32, f32, f32)>,
     /// Corner radius in LOGICAL points (0 = square). Reactive — read each composite
     /// like [`rect`](Self::rect) — so a shape/size change (e.g. a camera widget
@@ -315,6 +325,50 @@ impl TextureLayer {
         self
     }
 
+    /// The source and destination rectangles for drawing a `vw × vh` source
+    /// into this layer's current [`rect`](Self::rect): the
+    /// [`src_crop`](Self::src_crop) (if any) is applied first, then the
+    /// [`fit`](Self::fit). Returns `(src, dst)` as in [`Fit::map_rects`], with
+    /// `src` in source pixels and `dst` in canvas logical coordinates.
+    ///
+    /// Every CPU renderer composites a texture with these rects, and
+    /// [`source_to_canvas`](Self::source_to_canvas) is derived from them, so a
+    /// crop or fit frames a layer identically on every backend.
+    #[allow(clippy::type_complexity)]
+    pub fn source_rects(&self, vw: f32, vh: f32) -> ((f32, f32, f32, f32), (f32, f32, f32, f32)) {
+        let (cx, cy, cw, ch) = self.src_crop.unwrap_or((0.0, 0.0, 1.0, 1.0));
+        let (ox, oy) = (cx * vw, cy * vh);
+        let (cvw, cvh) = (cw * vw, ch * vh);
+        let (dx, dy, dw, dh) = (self.rect)();
+        let ((sx, sy, sw, sh), dst) = self.fit.map_rects(cvw, cvh, dx, dy, dw, dh);
+        ((ox + sx, oy + sy, sw, sh), dst)
+    }
+
+    /// The transform from this layer's SOURCE pixel coordinates (a `vw × vh`
+    /// video frame or image) to the canvas's logical coordinates, as the layer
+    /// is currently drawn (its rect, crop and fit). Use it to draw vector
+    /// content registered to the picture — e.g. map a QR code's corners from
+    /// frame pixels onto the composited frame:
+    ///
+    /// ```ignore
+    /// let m = layer.source_to_canvas(scan.width as f32, scan.height as f32);
+    /// let (x, y) = m.apply(corner.x, corner.y);
+    /// ```
+    ///
+    /// Map points rather than pushing it with `Scene::transform` when stroking,
+    /// so the stroke width stays in canvas units. With [`Fit::Cover`] points
+    /// can map outside the drawn rect (the cropped-away part of the source).
+    pub fn source_to_canvas(&self, vw: f32, vh: f32) -> Transform {
+        let ((sx, sy, sw, sh), (dx, dy, dw, dh)) = self.source_rects(vw, vh);
+        if sw <= 0.0 || sh <= 0.0 {
+            return Transform::translate(dx, dy);
+        }
+        let (kx, ky) = (dw / sw, dh / sh);
+        Transform::translate(-sx, -sy)
+            .then(Transform::scale(kx, ky))
+            .then(Transform::translate(dx, dy))
+    }
+
     /// Resolve this layer's current pixels into `buf` for a CPU renderer
     /// (web `<canvas>`, iOS CoreGraphics, Android `drawBitmap`), returning the
     /// source `(width, height)`, or `None` if there's nothing to draw this frame
@@ -404,10 +458,152 @@ pub fn draw<F: Fn(&mut Scene) + 'static>(f: F) -> DrawFn {
 /// handlers call this (inside their reactive effect) to obtain the
 /// scene to replay; the wire serializer calls it to capture a static
 /// snapshot for transport.
+///
+/// The result is normalized by [`place_textures`] against `props.layers`, so
+/// every renderer receives the same op list: texture layers at their placed
+/// positions (unplaced ones appended), each with the base transform/clip state.
 pub fn paint_scene(props: &CanvasProps) -> Scene {
-    let mut scene = Scene::new();
+    paint_scene_sized(props, (0.0, 0.0))
+}
+
+/// [`paint_scene`] for a canvas of logical size `size`, which the painter
+/// reads with [`Scene::size`]. Renderers call it through
+/// [`CanvasPrim::paint`], which supplies the size the canvas last reported.
+pub fn paint_scene_sized(props: &CanvasProps, size: (f32, f32)) -> Scene {
+    let mut scene = Scene::with_size(size.0, size.1);
     (props.draw)(&mut scene);
-    scene
+    place_textures(scene, props.layers.len())
+}
+
+/// Normalize a painted scene's [`DrawOp::Texture`] ops against a canvas with
+/// `layer_count` texture layers. This is the ONE place the texture ordering
+/// rules live, so renderers only ever replay ops in order:
+///
+/// 1. A `Texture` op nested inside a `Layer` / `LayerCached` / `MaskGroup` op
+///    list, or whose index names no layer, is removed.
+/// 2. Every layer the scene never placed is appended after the scene, in
+///    `layers` order (the behavior from before texture ops existed).
+/// 3. Around each top-level `Texture` op the scene's state is reset and then
+///    restored: the rewrite wraps the scene in an outer `Save`, closes every
+///    open save frame (`Restore`s) just before the texture, and re-opens the
+///    same frames (re-emitting their `Transform` / `Clip` ops) right after. So
+///    every renderer composites the texture with the BASE transform and no
+///    clip, the author's state continues unchanged after it, and each run of
+///    vector ops between textures is self-contained — which a GPU renderer
+///    that draws those runs as separate passes depends on.
+///
+/// An author `Restore` with no matching `Save` is dropped (it would otherwise
+/// pop the outer frame). A scene with no textures to place is returned as is.
+pub fn place_textures(scene: Scene, layer_count: usize) -> Scene {
+    let size = scene.size();
+    let mut placed_scene = place_texture_ops(scene.into_ops(), layer_count);
+    placed_scene.set_size(size);
+    placed_scene
+}
+
+fn place_texture_ops(ops: Vec<DrawOp>, layer_count: usize) -> Scene {
+    let in_range = |index: u32| (index as usize) < layer_count;
+    let mut placed = vec![false; layer_count];
+    for op in &ops {
+        if let DrawOp::Texture { index } = op {
+            if in_range(*index) {
+                placed[*index as usize] = true;
+            }
+        }
+    }
+    // Any layer means at least one texture is placed (explicitly or appended);
+    // without layers, only stray Texture ops (out of range / nested) need
+    // removing.
+    let needs_rewrite = layer_count > 0
+        || ops.iter().any(|o| matches!(o, DrawOp::Texture { .. }) || op_nests_texture(o));
+    if !needs_rewrite {
+        return Scene::from_ops(ops);
+    }
+
+    // `frames[k]` = the Transform/Clip ops issued inside save frame k (0 = the
+    // outer frame this rewrite adds).
+    let mut frames: Vec<Vec<DrawOp>> = vec![Vec::new()];
+    let mut out = Vec::with_capacity(ops.len() + 2 + layer_count * 2);
+    out.push(DrawOp::Save);
+
+    let place = |out: &mut Vec<DrawOp>, frames: &[Vec<DrawOp>], index: u32| {
+        out.extend(std::iter::repeat_n(DrawOp::Restore, frames.len()));
+        out.push(DrawOp::Texture { index });
+        for frame in frames {
+            out.push(DrawOp::Save);
+            out.extend(frame.iter().cloned());
+        }
+    };
+
+    for op in ops {
+        match op {
+            DrawOp::Texture { index } => {
+                if in_range(index) {
+                    place(&mut out, &frames, index);
+                }
+            }
+            DrawOp::Save => {
+                frames.push(Vec::new());
+                out.push(DrawOp::Save);
+            }
+            DrawOp::Restore => {
+                if frames.len() > 1 {
+                    frames.pop();
+                    out.push(DrawOp::Restore);
+                }
+            }
+            DrawOp::Transform(_) | DrawOp::Clip { .. } => {
+                frames.last_mut().expect("outer frame").push(op.clone());
+                out.push(op);
+            }
+            other => out.push(strip_nested_textures(other)),
+        }
+    }
+    for (index, was_placed) in placed.iter().enumerate() {
+        if !was_placed {
+            place(&mut out, &frames, index as u32);
+        }
+    }
+    out.extend(std::iter::repeat_n(DrawOp::Restore, frames.len()));
+    Scene::from_ops(out)
+}
+
+/// Whether `op` carries a `Texture` op somewhere in a nested op list.
+fn op_nests_texture(op: &DrawOp) -> bool {
+    let any = |ops: &[DrawOp]| {
+        ops.iter().any(|o| matches!(o, DrawOp::Texture { .. }) || op_nests_texture(o))
+    };
+    match op {
+        DrawOp::Layer { ops, .. } | DrawOp::LayerCached { ops, .. } => any(ops),
+        DrawOp::MaskGroup { content, mask, .. } => any(content) || any(mask),
+        _ => false,
+    }
+}
+
+/// Remove `Texture` ops from `op`'s nested op lists (recursively).
+fn strip_nested_textures(op: DrawOp) -> DrawOp {
+    fn strip(ops: Vec<DrawOp>) -> Vec<DrawOp> {
+        ops.into_iter()
+            .filter(|o| !matches!(o, DrawOp::Texture { .. }))
+            .map(strip_nested_textures)
+            .collect()
+    }
+    match op {
+        DrawOp::Layer { id, clear, ops, alpha, blend } => {
+            DrawOp::Layer { id, clear, ops: strip(ops), alpha, blend }
+        }
+        DrawOp::LayerCached { id, dirty, transform, ops, alpha, blend } => {
+            DrawOp::LayerCached { id, dirty, transform, ops: strip(ops), alpha, blend }
+        }
+        DrawOp::MaskGroup { content, mask, luminance, alpha, blend } => DrawOp::MaskGroup {
+            content: strip(content),
+            mask: strip(mask),
+            luminance,
+            alpha,
+            blend,
+        },
+        other => other,
+    }
 }
 
 /// Default "fill the parent box" style for an unstyled canvas, built
@@ -471,6 +667,228 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(paint_scene(&props).ops().len(), 1);
+    }
+
+    fn layer(rect: (f32, f32, f32, f32)) -> TextureLayer {
+        let img = Arc::new(ImageSource::from_rgba8(1, 1, 1, vec![0, 0, 0, 255]));
+        TextureLayer::image(Rc::new(move || Some(img.clone())), Rc::new(move || rect))
+    }
+
+    fn props(draw_fn: impl Fn(&mut Scene) + 'static, layers: usize) -> CanvasProps {
+        CanvasProps {
+            draw: draw(draw_fn),
+            layers: (0..layers).map(|_| layer((0.0, 0.0, 10.0, 10.0))).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn fill() -> DrawOp {
+        DrawOp::Fill {
+            path: Path::rect(0.0, 0.0, 1.0, 1.0),
+            paint: Color::new(255, 0, 0, 255).into(),
+            fill_rule: FillRule::NonZero,
+        }
+    }
+
+    fn rect_fill(s: &mut Scene) {
+        s.fill_path(Path::rect(0.0, 0.0, 1.0, 1.0), Color::new(255, 0, 0, 255));
+    }
+
+    /// Before texture ops existed every layer composited after the scene.
+    /// A scene that places none must keep exactly that order.
+    #[test]
+    fn unplaced_layers_are_appended_after_the_scene_in_order() {
+        let ops = paint_scene(&props(rect_fill, 2)).into_ops();
+        assert_eq!(
+            ops,
+            vec![
+                DrawOp::Save,
+                fill(),
+                DrawOp::Restore,
+                DrawOp::Texture { index: 0 },
+                DrawOp::Save,
+                DrawOp::Restore,
+                DrawOp::Texture { index: 1 },
+                DrawOp::Save,
+                DrawOp::Restore,
+            ]
+        );
+    }
+
+    /// The point of the op: content drawn after `texture(i)` is on top of it,
+    /// and a placed layer is not appended a second time.
+    #[test]
+    fn a_placed_layer_draws_at_its_position_and_is_not_repeated() {
+        let ops = paint_scene(&props(
+            |s| {
+                s.texture(0);
+                rect_fill(s);
+            },
+            1,
+        ))
+        .into_ops();
+        assert_eq!(
+            ops,
+            vec![
+                DrawOp::Save,
+                DrawOp::Restore,
+                DrawOp::Texture { index: 0 },
+                DrawOp::Save,
+                fill(),
+                DrawOp::Restore,
+            ]
+        );
+    }
+
+    /// Every renderer must see a texture with the base transform and no clip,
+    /// and the author's state must resume after it. The rewrite closes all
+    /// open frames before the texture and re-opens them (same transforms and
+    /// clips) after it.
+    #[test]
+    fn texture_sees_base_state_and_author_state_resumes_after_it() {
+        let t1 = Transform::translate(5.0, 0.0);
+        let t2 = Transform::scale(2.0, 2.0);
+        let clip_path = Path::rect(0.0, 0.0, 4.0, 4.0);
+        let cp = clip_path.clone();
+        let ops = paint_scene(&props(
+            move |s| {
+                s.transform(t1);
+                s.save();
+                s.transform(t2);
+                s.add_path(cp.clone()).clip();
+                s.texture(0);
+                rect_fill(s);
+                s.restore();
+            },
+            1,
+        ))
+        .into_ops();
+        let clip = DrawOp::Clip { path: clip_path, fill_rule: FillRule::NonZero };
+        assert_eq!(
+            ops,
+            vec![
+                DrawOp::Save,
+                DrawOp::Transform(t1),
+                DrawOp::Save,
+                DrawOp::Transform(t2),
+                clip.clone(),
+                // texture: both frames closed → base state
+                DrawOp::Restore,
+                DrawOp::Restore,
+                DrawOp::Texture { index: 0 },
+                // both frames re-opened with their state
+                DrawOp::Save,
+                DrawOp::Transform(t1),
+                DrawOp::Save,
+                DrawOp::Transform(t2),
+                clip,
+                fill(),
+                DrawOp::Restore, // author's restore
+                DrawOp::Restore, // outer frame
+            ]
+        );
+    }
+
+    #[test]
+    fn out_of_range_and_nested_textures_are_removed() {
+        let ops = paint_scene(&props(
+            |s| {
+                s.texture(7);
+                s.layer(1, true, |inner| {
+                    inner.texture(0);
+                    rect_fill(inner);
+                });
+            },
+            0,
+        ))
+        .into_ops();
+        assert_eq!(
+            ops,
+            vec![
+                DrawOp::Save,
+                DrawOp::Layer {
+                    id: 1,
+                    clear: true,
+                    ops: vec![fill()],
+                    alpha: 1.0,
+                    blend: BlendMode::Normal
+                },
+                DrawOp::Restore,
+            ]
+        );
+    }
+
+    /// An unbalanced author `Restore` must not pop the rewrite's outer frame.
+    #[test]
+    fn an_unbalanced_restore_is_dropped() {
+        let ops = paint_scene(&props(
+            |s| {
+                s.restore();
+                s.texture(0);
+            },
+            1,
+        ))
+        .into_ops();
+        assert_eq!(
+            ops,
+            vec![DrawOp::Save, DrawOp::Restore, DrawOp::Texture { index: 0 }, DrawOp::Save, DrawOp::Restore]
+        );
+    }
+
+    #[test]
+    fn a_scene_without_layers_or_textures_is_untouched() {
+        let ops = paint_scene(&props(rect_fill, 0)).into_ops();
+        assert_eq!(ops, vec![fill()]);
+    }
+
+    /// `source_to_canvas` must land source pixels exactly where the layer's
+    /// fit puts them, so an overlay registers to the picture.
+    #[test]
+    fn source_to_canvas_matches_the_drawn_frame() {
+        // 200×100 source in a 100×100 rect at (10, 20).
+        let contain = layer((10.0, 20.0, 100.0, 100.0)).fit(Fit::Contain);
+        let m = contain.source_to_canvas(200.0, 100.0);
+        // Contain letterboxes to (10, 45, 100, 50): corners map onto it.
+        assert_eq!(m.apply(0.0, 0.0), (10.0, 45.0));
+        assert_eq!(m.apply(200.0, 100.0), (110.0, 95.0));
+
+        let cover = layer((10.0, 20.0, 100.0, 100.0)).fit(Fit::Cover);
+        let m = cover.source_to_canvas(200.0, 100.0);
+        // Cover samples source x 50..150 across the full rect.
+        assert_eq!(m.apply(50.0, 0.0), (10.0, 20.0));
+        assert_eq!(m.apply(150.0, 100.0), (110.0, 120.0));
+    }
+
+    /// `src_crop` applies before fit, on every renderer (they all composite
+    /// through `source_rects`).
+    #[test]
+    fn source_rects_apply_the_crop_before_the_fit() {
+        let l = layer((0.0, 0.0, 50.0, 50.0)).fit(Fit::Fill).src_crop((0.5, 0.0, 0.5, 1.0));
+        let (src, dst) = l.source_rects(200.0, 100.0);
+        assert_eq!(src, (100.0, 0.0, 100.0, 100.0));
+        assert_eq!(dst, (0.0, 0.0, 50.0, 50.0));
+        let (x, _) = l.source_to_canvas(200.0, 100.0).apply(100.0, 0.0);
+        assert_eq!(x, 0.0);
+    }
+
+    /// `Scene::size` is the painter's view of the canvas: nested layer
+    /// builders see the same size, and the texture rewrite keeps it.
+    #[test]
+    fn painted_size_reaches_nested_scenes_and_survives_place_textures() {
+        let nested = Rc::new(std::cell::Cell::new((0.0f32, 0.0f32)));
+        let n = nested.clone();
+        let scene = paint_scene_sized(
+            &props(
+                move |s| {
+                    s.layer(1, true, |inner| n.set(inner.size()));
+                    s.texture(0);
+                },
+                1,
+            ),
+            (320.0, 200.0),
+        );
+        assert_eq!(scene.size(), (320.0, 200.0));
+        assert_eq!(nested.get(), (320.0, 200.0));
     }
 
     /// `Fit::map_rects` is the shared crop/letterbox math every CPU renderer

@@ -1918,3 +1918,279 @@ fn registry_kinds_lists_single_and_multi_node_payloads() {
     want.sort();
     assert_eq!(kinds, want);
 }
+
+// ============================================================================
+// Keyed: a row whose KEY changes but whose POSITION does not
+// ============================================================================
+//
+// Report: in a keyed list, changing one item's key (a digest of the whole
+// item) remounts that row one position too high; with two sibling keyed
+// lists, a remounted section head landed after the items list. These pin
+// the final child order the host holds — the thing the user sees — not
+// just the op log.
+
+/// A row keyed on a digest of the WHOLE item, like the reporter's
+/// `key = item.digest()`: flipping `required` changes the key.
+#[derive(Clone, PartialEq)]
+struct Field {
+    id: u32,
+    required: bool,
+}
+
+impl Field {
+    fn digest(&self) -> String {
+        format!("{}:{}", self.id, self.required)
+    }
+    fn label(&self) -> String {
+        format!("f{}{}", self.id, if self.required { "*" } else { "" })
+    }
+}
+
+fn fields(n: u32) -> Vec<Field> {
+    (1..=n).map(|id| Field { id, required: false }).collect()
+}
+
+fn toggled(mut list: Vec<Field>, id: u32) -> Vec<Field> {
+    for f in &mut list {
+        if f.id == id {
+            f.required = !f.required;
+        }
+    }
+    list
+}
+
+fn field_list(list: runtime_world::Signal<Vec<Field>>) -> Element {
+    keyed(move || list.get(), |f: &Field| f.digest(), |f: Field| t(&f.label()))
+}
+
+#[test]
+fn keyed_key_change_in_place_keeps_position_middle_row() {
+    for n in 3..=5u32 {
+        let rig = Rig::new(true);
+        let list = rig.world.enter(|| signal(fields(n)));
+        let _shell = rig.realize(v(vec![field_list(list)]));
+        list.set(toggled(list.peek(), 2));
+        rig.flush();
+        let want: Vec<String> = (1..=n)
+            .map(|id| if id == 2 { "f2*".to_string() } else { format!("f{id}") })
+            .collect();
+        assert_eq!(rig.dom(0), format!("view[{}]", want.join(" ")), "n = {n}");
+    }
+}
+
+#[test]
+fn keyed_key_change_in_place_keeps_position_first_and_last_rows() {
+    let rig = Rig::new(true);
+    let list = rig.world.enter(|| signal(fields(4)));
+    let _shell = rig.realize(v(vec![field_list(list)]));
+
+    list.set(toggled(list.peek(), 1));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f1* f2 f3 f4]");
+
+    list.set(toggled(list.peek(), 4));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f1* f2 f3 f4*]");
+
+    // Both ends at once, then back.
+    list.set(toggled(toggled(list.peek(), 1), 4));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f1 f2 f3 f4]");
+}
+
+#[test]
+fn keyed_key_change_in_place_with_static_siblings() {
+    let rig = Rig::new(true);
+    let list = rig.world.enter(|| signal(fields(3)));
+    let _shell = rig.realize(v(vec![t("before"), field_list(list), t("after")]));
+    for id in [2, 1, 3, 2] {
+        list.set(toggled(list.peek(), id));
+        rig.flush();
+    }
+    assert_eq!(rig.dom(0), "view[before f1* f2 f3* after]");
+}
+
+#[test]
+fn keyed_key_change_in_first_of_two_sibling_lists() {
+    // Reporter's shape 2: a section-head list, then an items list, both
+    // spliced into the same parent.
+    let rig = Rig::new(true);
+    let heads = rig.world.enter(|| signal(vec![Field { id: 0, required: false }]));
+    let items = rig.world.enter(|| signal(fields(3)));
+    let _shell = rig.realize(v(vec![field_list(heads), field_list(items)]));
+    assert_eq!(rig.dom(0), "view[f0 f1 f2 f3]");
+
+    heads.set(toggled(heads.peek(), 0));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f0* f1 f2 f3]");
+
+    items.set(toggled(items.peek(), 1));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f0* f1* f2 f3]");
+}
+
+/// The bug: a spliced region captured its base index ONCE, at mount, as
+/// the number of nodes before it at that moment. A region EARLIER in the
+/// same parent that later changes its node count (an `if` that turns on,
+/// a sibling keyed list that grows) shifts where this region really
+/// starts, but every later splice still used the stale base. A key change
+/// then removes the row and re-inserts it at `stale_base + i` — one slot
+/// high per node the earlier region gained.
+#[test]
+fn regression_keyed_key_change_after_earlier_conditional_turns_on() {
+    let rig = Rig::new(true);
+    let show = rig.world.enter(|| signal(false));
+    let list = rig.world.enter(|| signal(fields(3)));
+    let _shell = rig.realize(v(vec![
+        dyn_keyed(move || show.get(), |&on| {
+            if on {
+                t("banner")
+            } else {
+                fragment(vec![])
+            }
+        }),
+        field_list(list),
+    ]));
+    assert_eq!(rig.dom(0), "view[f1 f2 f3]");
+
+    show.set(true);
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[banner f1 f2 f3]");
+
+    list.set(toggled(list.peek(), 2));
+    rig.flush();
+    assert_eq!(
+        rig.dom(0),
+        "view[banner f1 f2* f3]",
+        "the remounted row lands between its unchanged neighbours"
+    );
+}
+
+#[test]
+fn regression_keyed_key_change_after_sibling_list_grows() {
+    // Shape 2 as it happens with async data: the head list mounts empty,
+    // so the items list bases at 0; heads then load.
+    let rig = Rig::new(true);
+    let heads = rig.world.enter(|| signal(Vec::<Field>::new()));
+    let items = rig.world.enter(|| signal(fields(2)));
+    let _shell = rig.realize(v(vec![field_list(heads), field_list(items)]));
+
+    heads.set(vec![Field { id: 0, required: false }]);
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f0 f1 f2]");
+
+    items.set(toggled(items.peek(), 1));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f0 f1* f2]");
+}
+
+#[test]
+fn regression_head_key_change_after_earlier_region_shrinks() {
+    // The other direction: an earlier region SHRINKS (a loading row goes
+    // away), so the head list's stale base points past where it really
+    // is and its remounted node lands after the items list.
+    let rig = Rig::new(true);
+    let loading = rig.world.enter(|| signal(true));
+    let heads = rig.world.enter(|| signal(vec![Field { id: 0, required: false }]));
+    let items = rig.world.enter(|| signal(fields(1)));
+    let _shell = rig.realize(v(vec![
+        dyn_keyed(move || loading.get(), |&on| {
+            if on {
+                t("loading")
+            } else {
+                fragment(vec![])
+            }
+        }),
+        field_list(heads),
+        field_list(items),
+    ]));
+    loading.set(false);
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f0 f1]");
+
+    heads.set(toggled(heads.peek(), 0));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f0* f1]");
+}
+
+#[test]
+fn regression_dyn_after_keyed_list_that_changed_length() {
+    // Same stale base, Dyn flavour: the hole after a list that grew.
+    let rig = Rig::new(true);
+    let list = rig.world.enter(|| signal(fields(1)));
+    let s = rig.world.enter(|| signal(0));
+    let _shell = rig.realize(v(vec![
+        field_list(list),
+        dyn_keyed(move || s.get(), |&n| t(&format!("tail{n}"))),
+        t("end"),
+    ]));
+    list.set(fields(3));
+    rig.flush();
+    s.set(1);
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f1 f2 f3 tail1 end]");
+
+    list.set(fields(2));
+    rig.flush();
+    s.set(2);
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f1 f2 tail2 end]");
+}
+
+#[test]
+fn regression_keyed_key_change_with_length_change_and_neighbours_moving() {
+    // Key change plus a length change in the same update, across several
+    // renders, with dynamic regions on both sides.
+    let rig = Rig::new(true);
+    let a = rig.world.enter(|| signal(fields(2)));
+    let b = rig.world.enter(|| signal(fields(3)));
+    let show = rig.world.enter(|| signal(true));
+    let _shell = rig.realize(v(vec![
+        t("top"),
+        field_list(a),
+        dyn_keyed(move || show.get(), |&on| {
+            if on {
+                fragment(vec![t("x"), t("y")])
+            } else {
+                fragment(vec![])
+            }
+        }),
+        field_list(b),
+        t("bottom"),
+    ]));
+    assert_eq!(rig.dom(0), "view[top f1 f2 x y f1 f2 f3 bottom]");
+
+    a.set(toggled(fields(3), 2));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[top f1 f2* f3 x y f1 f2 f3 bottom]");
+
+    show.set(false);
+    rig.flush();
+    b.set(toggled(fields(4), 3));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[top f1 f2* f3 f1 f2 f3* f4 bottom]");
+
+    a.set(vec![]);
+    rig.flush();
+    show.set(true);
+    rig.flush();
+    b.set(toggled(toggled(fields(4), 3), 1));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[top x y f1* f2 f3* f4 bottom]");
+}
+
+#[test]
+fn regression_deferred_drain_after_earlier_region_grew() {
+    // A parked item recorded its index at park time; a keyed list before
+    // it that grew since then used to make the drain splice the real node
+    // into the list's rows.
+    let rig = Rig::with_registry(true, |r| r.defer::<Heavy>());
+    let list = rig.world.enter(|| signal(fields(1)));
+    let _shell = rig.realize(v(vec![field_list(list), heavy("H", vec![]), t("end")]));
+    list.set(fields(3));
+    rig.flush();
+    assert_eq!(rig.dom(0), "view[f1 f2 f3 anchor end]");
+
+    rig.registry.register_deferred::<Heavy, _>(mount_heavy);
+    assert_eq!(rig.dom(0), "view[f1 f2 f3 H end]");
+}

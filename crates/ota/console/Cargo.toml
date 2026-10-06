@@ -1,0 +1,65 @@
+# ota-console — a self-hosted web console for over-the-air releases: see each
+# bundle's releases, take one down (with the kill switch), restore it, pin
+# one ahead of newer ones, see which app builds run what, and read the
+# audit log. It edits the release index in an S3-compatible bucket; apps
+# never talk to it (they may ask `ota-resolver`, deployed separately).
+# See README.md.
+
+[package]
+name = "ota-console"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# The server: reaches the bucket (`ota-publish` over signed HTTP).
+server = ["server/server", "dep:ota-publish", "dep:ota-index", "dep:remote-bundle", "dep:anyhow", "dep:axum", "dep:tokio", "dep:tower-http"]
+
+[dependencies]
+idealyst = { workspace = true }
+server = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+
+# Server only: the release operations, over S3.
+ota-publish = { path = "../publish", features = ["s3-http"], optional = true }
+ota-index = { workspace = true, optional = true }
+# Manifests (`Provides`), for the app-build views.
+remote-bundle = { workspace = true, optional = true }
+anyhow = { version = "1", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+
+[dependencies.axum]
+version = "0.7"
+optional = true
+[dependencies.tokio]
+version = "1"
+features = ["macros", "rt-multi-thread", "sync"]
+optional = true
+[dependencies.tower-http]
+version = "0.6"
+features = ["fs"]
+optional = true
+
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[package.metadata.idealyst.app]
+name       = "OTA Console"
+bundle_id  = "ai.truday.idealyst.otaconsole"
+version    = "0.0.1"
+server_bin = "server"
+server_port = 3100
+targets    = ["web"]

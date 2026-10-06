@@ -633,8 +633,10 @@ impl LayoutObserverView {
 // NSNotificationCenter does NOT retain its `addObserver:selector:…` observers,
 // so the backend retains this object in `callback_targets`; dropping that ref
 // ends observation. No ivars — the backend is reached via the global
-// `with_backend` self-handle (the notification fires on the main thread, the
-// only thread the backend is touched from).
+// self-handle (the notification fires on the main thread, the only thread the
+// backend is touched from) through `deliver_keyboard_frame`, which never drops
+// a frame: if the backend is borrowed the frame waits in a mailbox that the
+// next layout pass drains.
 // =========================================================================
 declare_class!(
     pub(crate) struct KeyboardObserver;
@@ -655,8 +657,14 @@ declare_class!(
             // `note` is the NSNotification. Pull the keyboard's END frame
             // (window/screen base coordinates) out of
             // `userInfo[UIKeyboardFrameEndUserInfoKey]`.
+            //
+            // NOT `with_backend`: that drops the call when the backend is
+            // borrowed, and the CLOSE frame typically arrives exactly then
+            // (a flush unmounting the focused field makes UIKit resign first
+            // responder and post this synchronously). See
+            // `keyboard_frame_policy`.
             if let Some(rect) = unsafe { keyboard_end_frame(note) } {
-                crate::imp::with_backend(|b| b.on_keyboard_frame_changed(rect));
+                crate::imp::deliver_keyboard_frame(rect);
             }
         }
     }

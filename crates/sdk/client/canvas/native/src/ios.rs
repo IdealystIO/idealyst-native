@@ -16,7 +16,7 @@
 //! `drawRect:` CTM already matches, so no axis flip is needed.
 
 use backend_ios::{IosBackend, IosNode};
-use canvas_core::{CanvasPrim, CanvasProps, Color, TextureLayer};
+use canvas_core::{CanvasPrim, Color, TextureLayer};
 use runtime_scene::{Element, MountCx};
 
 use objc2::rc::{Allocated, Retained};
@@ -26,8 +26,8 @@ use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::UIView;
 
 use std::cell::RefCell;
+#[cfg(target_abi = "sim")]
 use std::ffi::c_void;
-use std::ptr::{null, null_mut};
 use std::rc::Rc;
 
 // Self-capture (recording) is a CPU read-back path. On iOS it's compiled ONLY
@@ -47,7 +47,18 @@ extern "C" {
 
 // Offscreen-rasterization bindings for the Simulator-only CPU self-capture path.
 #[cfg(target_abi = "sim")]
+type CGColorSpaceRef = *mut c_void;
+
+/// `kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault` — RGBA byte
+/// order, alpha last: the RGBA8 layout a `CGBitmapContext` render target
+/// supports.
+#[cfg(target_abi = "sim")]
+const RGBA_BITMAP_INFO: u32 = 1;
+
+#[cfg(target_abi = "sim")]
 extern "C" {
+    fn CGColorSpaceCreateDeviceRGB() -> CGColorSpaceRef;
+    fn CGColorSpaceRelease(cs: CGColorSpaceRef);
     fn CGBitmapContextCreate(
         data: *mut c_void,
         width: usize,
@@ -62,64 +73,6 @@ extern "C" {
     fn CGContextScaleCTM(c: CGContextRef, sx: CGFloat, sy: CGFloat);
     fn UIGraphicsPushContext(ctx: CGContextRef);
     fn UIGraphicsPopContext();
-}
-
-// ============================================================================
-// CoreGraphics bindings for CPU texture-layer compositing (camera-in-canvas)
-// ============================================================================
-
-/// Opaque `CGImage`. A pointer to it (`CGImageRef`) encodes as `^{CGImage=}`,
-/// which is what `+[UIImage imageWithCGImage:]`'s runtime signature expects —
-/// passing a bare `*mut c_void` (`^v`) would trip objc2's encoding check.
-#[repr(C)]
-struct CGImageOpaque {
-    _private: [u8; 0],
-}
-// `RefEncode` (not `Encode`): it's only ever used behind a pointer, and objc2's
-// blanket impl gives `*mut CGImageOpaque` an `Encode` of `^{CGImage=}` from this.
-unsafe impl objc2::RefEncode for CGImageOpaque {
-    const ENCODING_REF: objc2::Encoding =
-        objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGImage", &[]));
-}
-type CGImageRef = *mut CGImageOpaque;
-
-type CGDataProviderRef = *mut c_void;
-type CGColorSpaceRef = *mut c_void;
-
-/// `kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault` — RGBA byte
-/// order, alpha last. Camera frames are opaque, so premultiplied vs straight is
-/// moot; this is the widely-supported combination for 8-bit RGBA.
-const RGBA_BITMAP_INFO: u32 = 1;
-
-extern "C" {
-    fn CGColorSpaceCreateDeviceRGB() -> CGColorSpaceRef;
-    fn CGColorSpaceRelease(cs: CGColorSpaceRef);
-    fn CGDataProviderCreateWithData(
-        info: *mut c_void,
-        data: *const c_void,
-        size: usize,
-        release: *const c_void,
-    ) -> CGDataProviderRef;
-    fn CGDataProviderRelease(p: CGDataProviderRef);
-    #[allow(clippy::too_many_arguments)]
-    fn CGImageCreate(
-        width: usize,
-        height: usize,
-        bits_per_component: usize,
-        bits_per_pixel: usize,
-        bytes_per_row: usize,
-        space: CGColorSpaceRef,
-        bitmap_info: u32,
-        provider: CGDataProviderRef,
-        decode: *const CGFloat,
-        should_interpolate: bool,
-        intent: u32,
-    ) -> CGImageRef;
-    fn CGImageCreateWithImageInRect(image: CGImageRef, rect: CGRect) -> CGImageRef;
-    fn CGImageRelease(image: CGImageRef);
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextSetAlpha(c: CGContextRef, alpha: CGFloat);
 }
 
 // ============================================================================
@@ -151,14 +104,18 @@ pub(crate) struct CanvasViewIvars {
     /// The current scene to replay. `RefCell` so the Effect closure can
     /// swap it without `&mut self`.
     scene: RefCell<canvas_core::Scene>,
-    /// Texture layers (camera, …) composited over the scene each `drawRect:`.
-    /// Their `source`/`rect` closures are re-evaluated per paint so a live
-    /// camera and a reactive drag position both follow.
+    /// Texture layers (camera, …) the scene's `DrawOp::Texture` ops composite,
+    /// installed together with the scene so the indices agree. Their
+    /// `source`/`rect` closures are re-evaluated per paint so a live camera and
+    /// a reactive drag position both follow.
     layers: RefCell<Vec<TextureLayer>>,
     /// One throwaway CPU-frame subscription per active layer, so a camera
     /// producer keeps feeding the frames our `latest()` pull reads (see
     /// [`canvas_core::sync_layer_subscriptions`]).
     layer_subs: RefCell<Vec<Option<canvas_core::Subscription>>>,
+    /// Reports the view's bounds to the canvas (`Scene::size`). Set at
+    /// mount; read on every `drawRect:`, which runs whenever the bounds change.
+    sizing: RefCell<Option<canvas_core::SizeReporter>>,
     /// Self-capture sink (iOS Simulator only — the CPU recording fallback). On a
     /// real device vello owns the canvas + its GPU capture, so this isn't stored.
     #[cfg(target_abi = "sim")]
@@ -204,6 +161,7 @@ impl IdealystCanvasView {
             scene: RefCell::new(canvas_core::Scene::new()),
             layers: RefCell::new(Vec::new()),
             layer_subs: RefCell::new(Vec::new()),
+            sizing: RefCell::new(None),
             #[cfg(target_abi = "sim")]
             capture: RefCell::new(None),
         });
@@ -233,17 +191,22 @@ impl IdealystCanvasView {
         let _: () = unsafe { msg_send![self, setNeedsDisplay] };
     }
 
-    /// Replay the cached scene, then composite the texture layers over it.
+    /// Replay the cached scene (texture layers composite at their op positions).
     fn paint_now(&self) {
+        // `drawRect:` runs whenever the bounds change (contentMode = Redraw),
+        // so it is where this view learns its size. The reporter dedupes.
+        if let Some(sizing) = &*self.ivars().sizing.borrow() {
+            let bounds: CGRect = unsafe { msg_send![self, bounds] };
+            sizing.report(bounds.size.width as f32, bounds.size.height as f32);
+        }
         let ctx = unsafe { UIGraphicsGetCurrentContext() };
         if ctx.is_null() {
             return;
         }
         let scene = self.ivars().scene.borrow();
-        painter().paint_scene(ctx, &scene);
-        for layer in self.ivars().layers.borrow().iter() {
-            composite_layer(ctx, layer);
-        }
+        // Texture layers composite at their `DrawOp::Texture` positions inside
+        // the replay (see `ApplePainter::paint_scene`), not after it.
+        painter().paint_scene(ctx, &scene, &self.ivars().layers.borrow());
         // Simulator-only: while recording, re-rasterize offscreen and read back.
         #[cfg(target_abi = "sim")]
         self.capture_frame_if_recording(&scene);
@@ -319,10 +282,9 @@ impl IdealystCanvasView {
             CGContextScaleCTM(ctx, scale, -scale);
 
             UIGraphicsPushContext(ctx);
-            painter().paint_scene(ctx, scene);
-            for layer in self.ivars().layers.borrow().iter() {
-                composite_layer(ctx, layer);
-            }
+            // The same replay as `paint_now`, so the recording matches the
+            // screen (textures at their op positions).
+            painter().paint_scene(ctx, scene, &self.ivars().layers.borrow());
             UIGraphicsPopContext();
 
             CGContextRelease(ctx);
@@ -330,147 +292,6 @@ impl IdealystCanvasView {
         }
 
         writer.write_rgba8(w_px as u32, h_px as u32, &buf);
-    }
-}
-
-/// `CGDataProviderReleaseDataCallback` — frees the heap pixel copy that
-/// [`composite_layer`]'s data provider owns. The provider stored the `data`
-/// pointer + `size` we passed; reconstruct the `Box<[u8]>` from them and drop it.
-/// Fires when the last `CGImage` referencing the provider is released.
-extern "C" fn release_boxed_pixels(_info: *mut c_void, data: *const c_void, size: usize) {
-    if data.is_null() {
-        return;
-    }
-    // SAFETY: `data`/`size` are exactly the pointer + length of the `Box<[u8]>`
-    // leaked in `composite_layer`; CoreGraphics hands them back verbatim, and this
-    // callback runs at most once (on the provider's final release).
-    unsafe {
-        let slice = std::slice::from_raw_parts_mut(data as *mut u8, size);
-        drop(Box::from_raw(slice as *mut [u8]));
-    }
-}
-
-/// Composite one [`TextureLayer`] over the canvas: pull the stream's latest RGBA
-/// frame, wrap it as a `CGImage`, crop to the source rect, and draw it into a
-/// rounded, alpha-blended destination rect using the shared
-/// [`canvas_core::Fit::map_rects`] geometry. Mirrors the web/Android paths.
-/// No-op when the stream has no frame yet.
-fn composite_layer(ctx: CGContextRef, layer: &TextureLayer) {
-    let mut rgba: Vec<u8> = Vec::new();
-    let Some((vw, vh)) = layer.resolve_rgba(&mut rgba) else { return };
-    if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
-        return;
-    }
-    let (dx, dy, dw, dh) = (layer.rect)();
-    if dw < 1.0 || dh < 1.0 {
-        return;
-    }
-    let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
-        layer.fit.map_rects(vw as f32, vh as f32, dx, dy, dw, dh);
-
-    // The data provider OWNS a heap copy of the pixels, freed by
-    // `release_boxed_pixels` when the last referencing CGImage is released. A
-    // no-copy provider over the local `rgba` flickers: CoreGraphics may decode the
-    // image LAZILY — after this fn returns and `rgba` is dropped — so it reads
-    // freed memory (intermittent garbage frames). This surfaced the first time the
-    // iOS canvas composited a live per-frame stream (the simulator camera). All CG
-    // objects created here are released here.
-    unsafe {
-        let cs = CGColorSpaceCreateDeviceRGB();
-        let boxed: Box<[u8]> = rgba.into_boxed_slice();
-        let len = boxed.len();
-        let data_ptr = Box::into_raw(boxed) as *mut u8 as *const c_void;
-        let provider = CGDataProviderCreateWithData(
-            null_mut(),
-            data_ptr,
-            len,
-            release_boxed_pixels as *const c_void,
-        );
-        // If the provider failed to take the data, free the copy ourselves so it
-        // doesn't leak (CoreGraphics won't call the release callback then).
-        if provider.is_null() {
-            release_boxed_pixels(null_mut(), data_ptr, len);
-            CGColorSpaceRelease(cs);
-            return;
-        }
-        let img = CGImageCreate(
-            vw as usize,
-            vh as usize,
-            8,
-            32,
-            (vw as usize) * 4,
-            cs,
-            RGBA_BITMAP_INFO,
-            provider,
-            null(),
-            false,
-            0,
-        );
-        CGColorSpaceRelease(cs);
-        CGDataProviderRelease(provider);
-        if img.is_null() {
-            return;
-        }
-        // Crop the source to the fit rect, then release the full image.
-        let src = CGRect::new(
-            CGPoint::new(sx as CGFloat, sy as CGFloat),
-            CGSize::new(sw as CGFloat, sh as CGFloat),
-        );
-        let cropped = CGImageCreateWithImageInRect(img, src);
-        CGImageRelease(img);
-        if cropped.is_null() {
-            return;
-        }
-
-        let dst = CGRect::new(
-            CGPoint::new(ox as CGFloat, oy as CGFloat),
-            CGSize::new(ow as CGFloat, oh as CGFloat),
-        );
-
-        CGContextSaveGState(ctx);
-        CGContextSetAlpha(ctx, layer.opacity.clamp(0.0, 1.0) as CGFloat);
-        // Round the drawn (letterboxed for Contain) rect so corners clip the image.
-        let r = (layer.corner_radius)().clamp(0.0, ow.min(oh) * 0.5) as CGFloat;
-        if r > 0.0 {
-            if let Some(cls) = AnyClass::get("UIBezierPath") {
-                let path: Retained<NSObject> =
-                    msg_send_id![cls, bezierPathWithRoundedRect: dst, cornerRadius: r];
-                let _: () = msg_send![&path, addClip];
-            }
-        }
-        // CGImage → UIImage → drawInRect: so UIKit handles the top-left
-        // orientation (a raw CGContextDrawImage would render flipped here).
-        if let Some(uiimage_cls) = AnyClass::get("UIImage") {
-            let image: Retained<NSObject> = msg_send_id![uiimage_cls, imageWithCGImage: cropped];
-            let _: () = msg_send![&image, drawInRect: dst];
-        }
-        CGImageRelease(cropped);
-
-        // Border frame, composited WITH the image so it stays locked to the moving
-        // picture (a separate framework-view border lags during a drag). Stroked on
-        // a rounded rect inset by half the width, so the whole stroke sits inside
-        // the layer rect and traces the image's rounded edge.
-        let bw = layer.border_width;
-        if bw > 0.0 {
-            let inset = (bw * 0.5) as CGFloat;
-            let brect = CGRect::new(
-                CGPoint::new(ox as CGFloat + inset, oy as CGFloat + inset),
-                CGSize::new((ow - bw) as CGFloat, (oh - bw) as CGFloat),
-            );
-            let br = (r - inset).max(0.0);
-            if let Some(cls) = AnyClass::get("UIBezierPath") {
-                let path: Retained<NSObject> = if br > 0.0 {
-                    msg_send_id![cls, bezierPathWithRoundedRect: brect, cornerRadius: br]
-                } else {
-                    msg_send_id![cls, bezierPathWithRect: brect]
-                };
-                let _: () = msg_send![&path, setLineWidth: bw as CGFloat];
-                let stroke_color = ui_color(layer.border_color);
-                let _: () = msg_send![&stroke_color, setStroke];
-                let _: () = msg_send![&path, stroke];
-            }
-        }
-        CGContextRestoreGState(ctx);
     }
 }
 
@@ -486,13 +307,14 @@ pub(crate) fn mount_canvas(
     let backend = cx.backend().clone();
     let node = {
         let mut b = backend.borrow_mut();
-        build_canvas(&prim.props, &mut b)
+        build_canvas(prim, &mut b)
     };
     crate::finish_mount(&backend, &node, prim);
     node
 }
 
-fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
+fn build_canvas(prim: &Rc<CanvasPrim>, b: &mut IosBackend) -> IosNode {
+    let props = &prim.props;
     let view = IdealystCanvasView::new(b.mtm());
     // Cast to UIView for layout registration; Obj-C dispatch still reaches
     // IdealystCanvasView's drawRect on the same pointer.
@@ -505,12 +327,15 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut IosBackend) -> IosNode {
     #[cfg(target_abi = "sim")]
     view_canvas.set_capture(props.capture.clone());
 
+    *view_canvas.ivars().sizing.borrow_mut() = Some(prim.size_reporter());
+
     let view_for_effect = view_canvas.clone();
     let props_clone = props.clone();
+    let paint_prim = prim.clone();
     // Reactive repaint. Realize runs world-entered, so this effect is
     // collected into the mounting subtree and dies at unmount.
     runtime_world::effect(move || {
-        let scene = canvas_core::paint_scene(&props_clone);
+        let scene = paint_prim.paint();
         // Clone the layer descriptors (cheap — Rc closures); their sources are
         // resolved per `drawRect:` so the live camera + drag rect stay current.
         view_for_effect.install(scene, props_clone.layers.clone());

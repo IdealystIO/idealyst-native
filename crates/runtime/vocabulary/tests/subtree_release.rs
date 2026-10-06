@@ -122,3 +122,45 @@ fn a_region_that_does_not_swap_releases_nothing() {
         );
     });
 }
+
+/// The spliced KEYED path — the one every shipping backend takes for a
+/// `for … key =` list. 18b4fd31 taught the two Dyn swaps and the anchored
+/// keyed rebuild to release what they discard, but the spliced
+/// reconciler's removal pass only detached its rows: on `backend-ios`
+/// every removed row's view and Taffy node lived on, and in host-mock
+/// they showed up as extra parentless live roots.
+#[test]
+fn regression_spliced_keyed_removal_releases_the_rows_it_discards() {
+    let h = harness(true);
+    let world = h.world.clone();
+    world.enter(|| {
+        let rows = signal(vec![1u32, 2, 3, 4]);
+        let element = view()
+            .child(runtime_scene::keyed(
+                move || rows.get(),
+                |n| *n,
+                |n: u32| text().content(format!("row{n}")).build(),
+            ))
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        h.take_log();
+
+        rows.set(vec![1, 4]);
+        world.flush();
+
+        let log = h.take_log();
+        let released = log.iter().filter(|l| l.starts_with("release_subtree")).count();
+        assert_eq!(released, 2, "both removed rows are released: {log:?}");
+        let removed = log.iter().position(|l| l.starts_with("remove_child"));
+        let release = log.iter().position(|l| l.starts_with("release_subtree"));
+        assert!(
+            removed < release,
+            "detached first, as the spliced Dyn swap does: {log:?}"
+        );
+        assert_eq!(
+            h.live_roots().len(),
+            1,
+            "no removed row lingers as a parentless live node"
+        );
+    });
+}

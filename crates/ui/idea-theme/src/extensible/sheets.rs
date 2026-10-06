@@ -373,7 +373,7 @@ impl ButtonSheetBuilder {
             // marks the node with the platform disabled state.
             .variant("dimmed", "off", |_vs| StyleRules::default())
             .variant("dimmed", "on", |_vs| StyleRules {
-                opacity: Some(Tokenized::Literal(0.45)),
+                opacity: Some(Tokenized::Literal(DISABLED_CONTROL_OPACITY)),
                 ..Default::default()
             });
 
@@ -1660,6 +1660,11 @@ pub fn installed_switch_sheet() -> Rc<StyleSheet> {
     })
 }
 
+/// Opacity of a control the author marked `disabled` (the `dimmed` axis
+/// on the Button, Switch, Checkbox-box and Radio-ring sheets) — one value
+/// so every disabled control reads equally "off".
+pub const DISABLED_CONTROL_OPACITY: f32 = 0.45;
+
 /// Closed track dimensions per size: `(width, height)` in px.
 pub const SWITCH_TRACK_DIMS: [(&str, f32, f32); 3] =
     [("sm", 30.0, 18.0), ("md", 38.0, 22.0), ("lg", 48.0, 28.0)];
@@ -1697,6 +1702,11 @@ impl SwitchSheetBuilder {
             padding_bottom: Some(Tokenized::Literal(Length::Px(2.0))),
             padding_left: Some(Tokenized::Literal(Length::Px(2.0))),
             padding_right: Some(Tokenized::Literal(Length::Px(2.0))),
+            // Fixed-size control: never flex-shrink. In a row narrower than its
+            // content (a label beside it) the default shrink 1 squeezes the
+            // track below its declared width while the thumb's translate
+            // travel stays fixed, so the thumb overshoots the track (web).
+            flex_shrink: Some(Tokenized::Literal(0.0)),
             background_transition: Some(Transition::new(180, Easing::EaseOut)),
             ..Default::default()
         });
@@ -1737,10 +1747,21 @@ impl SwitchSheetBuilder {
             });
         }
 
+        // The author's `disabled` prop — the same deterministic dim as the
+        // Button sheet's `dimmed` axis, applied whether or not the host marks
+        // the node with the platform disabled state (that's `__state_disabled`).
+        sheet = sheet
+            .variant("dimmed", "off", |_vs| StyleRules::default())
+            .variant("dimmed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(DISABLED_CONTROL_OPACITY)),
+                ..Default::default()
+            });
+
         sheet = sheet
             .variant_default("appearance", "primary_filled")
             .variant_default("checked", "off")
-            .variant_default("size", "md");
+            .variant_default("size", "md")
+            .variant_default("dimmed", "off");
         sheet.premint_as(&premint_identity(
             "switch",
             [
@@ -1821,6 +1842,8 @@ impl CheckboxSheetBuilder {
 
         // ---- box ----
         let mut box_sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            // Fixed-size control: never flex-shrink (see the Switch track).
+            flex_shrink: Some(Tokenized::Literal(0.0)),
             align_items: Some(AlignItems::Center),
             justify_content: Some(JustifyContent::Center),
             border_top_left_radius: Some(radius()),
@@ -1852,10 +1875,20 @@ impl CheckboxSheetBuilder {
                 ..Default::default()
             });
         }
+        // The author's `disabled` prop — the same deterministic dim as the
+        // Switch track. On the box (the pressable), so the checkmark inside
+        // dims with it.
+        box_sheet = box_sheet
+            .variant("dimmed", "off", |_vs| StyleRules::default())
+            .variant("dimmed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(DISABLED_CONTROL_OPACITY)),
+                ..Default::default()
+            });
         box_sheet = box_sheet
             .variant_default("appearance", "primary_filled")
             .variant_default("checked", "off")
-            .variant_default("size", "md");
+            .variant_default("size", "md")
+            .variant_default("dimmed", "off");
 
         // ---- glyph (checkmark) ----
         let mut glyph_sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules {
@@ -1951,6 +1984,8 @@ impl RadioSheetBuilder {
 
         // ---- outer ring ----
         let mut outer = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            // Fixed-size control: never flex-shrink (see the Switch track).
+            flex_shrink: Some(Tokenized::Literal(0.0)),
             align_items: Some(AlignItems::Center),
             justify_content: Some(JustifyContent::Center),
             border_top_left_radius: Some(pill()),
@@ -2012,10 +2047,20 @@ impl RadioSheetBuilder {
                 ..Default::default()
             });
         }
+        // The author's `disabled` prop — the same deterministic dim as the
+        // Switch track. On the ring (the pressable), so the dot inside dims
+        // with it.
+        outer = outer
+            .variant("dimmed", "off", |_vs| StyleRules::default())
+            .variant("dimmed", "on", |_vs| StyleRules {
+                opacity: Some(Tokenized::Literal(DISABLED_CONTROL_OPACITY)),
+                ..Default::default()
+            });
         outer = outer
             .variant_default("appearance", "primary_filled")
             .variant_default("checked", "off")
-            .variant_default("size", "md");
+            .variant_default("size", "md")
+            .variant_default("dimmed", "off");
 
         // ---- inner dot ----
         let mut dot = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
@@ -2530,6 +2575,29 @@ mod selection_sheet_tests {
         // The switch track carries the themed focus ring (replaces the native
         // ring; the sole focus indicator on web + desktop).
         assert!(has(&sheet, "__state_focused", "on"));
+        // The author's `disabled` prop rides the `dimmed` axis (Button parity).
+        assert!(has(&sheet, "dimmed", "off"));
+        assert!(has(&sheet, "dimmed", "on"));
+    }
+
+    /// Regression (web): a Switch beside a label in a narrow row shrank
+    /// below its declared track width (default `flex-shrink: 1`), while
+    /// the thumb's TranslateX travel stayed fixed — the thumb slid past
+    /// the track's end. Fixed-size controls must opt out of shrinking.
+    #[test]
+    fn regression_switch_track_compresses_and_misplaces_thumb() {
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let no_shrink = |sheet: &Rc<StyleSheet>, what: &str| {
+                match sheet.resolve(&VariantSet::default()).flex_shrink {
+                    Some(Tokenized::Literal(v)) => assert_eq!(v, 0.0, "{what} flex_shrink"),
+                    other => panic!("{what} must pin flex_shrink to 0, got {other:?}"),
+                }
+            };
+            no_shrink(&SwitchSheetBuilder::new().build(), "switch track");
+            no_shrink(&CheckboxSheetBuilder::new().build().box_sheet, "checkbox box");
+            no_shrink(&RadioSheetBuilder::new().build().outer_sheet, "radio ring");
+        });
     }
 
     #[test]
@@ -2590,6 +2658,11 @@ mod selection_sheet_tests {
         assert_eq!(appearance_arms(&s.glyph_sheet), BUILTIN_APPEARANCE_ARMS);
         assert!(has(&s.box_sheet, "checked", "off"));
         assert!(has(&s.box_sheet, "size", "lg"));
+        // The author's `disabled` prop rides the box's `dimmed` axis (Switch
+        // parity); the checkmark dims with its box, so it carries none.
+        assert!(has(&s.box_sheet, "dimmed", "off"));
+        assert!(has(&s.box_sheet, "dimmed", "on"));
+        assert!(!has(&s.glyph_sheet, "dimmed", "on"));
     }
 
     /// The focus ring belongs to the CONTROL, never to the label row: the
@@ -2616,6 +2689,11 @@ mod selection_sheet_tests {
         assert_eq!(appearance_arms(&s.outer_sheet), BUILTIN_APPEARANCE_ARMS);
         assert_eq!(appearance_arms(&s.dot_sheet), BUILTIN_APPEARANCE_ARMS);
         assert!(has(&s.outer_sheet, "checked", "off"));
+        // The author's `disabled` prop rides the ring's `dimmed` axis (Switch
+        // parity); the dot dims with its ring, so it carries none.
+        assert!(has(&s.outer_sheet, "dimmed", "off"));
+        assert!(has(&s.outer_sheet, "dimmed", "on"));
+        assert!(!has(&s.dot_sheet, "dimmed", "on"));
     }
 
     #[test]

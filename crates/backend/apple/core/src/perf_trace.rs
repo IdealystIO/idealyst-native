@@ -39,7 +39,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 use objc2::rc::Retained;
-use objc2::runtime::NSObject;
+use objc2::runtime::{AnyClass, NSObject};
 use objc2::{class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_foundation::{MainThreadMarker, NSString};
 
@@ -212,15 +212,49 @@ impl DisplayProbe {
 /// Install the frame-pacing trace. Idempotent; main-thread only (no-op
 /// otherwise). Called from `install_scheduler` in debug iOS/tvOS/macOS builds.
 pub fn install() {
+    // The display link and the screen are main-thread objects, so off the main
+    // thread this is a no-op, as documented. `install_scheduler` is reached off
+    // the main thread by libtest's worker threads in the backends' host tests.
+    if !is_main_thread() {
+        return;
+    }
     if INSTALLED.with(|c| c.replace(true)) {
         return;
     }
-    // SAFETY: `install_scheduler` (our only caller) runs once at startup on the
-    // main thread, before the first render — the same assumption the rest of the
-    // Apple scheduler makes.
+    // SAFETY: checked just above.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    install_on_main(mtm);
+}
 
-    let target = DisplayProbe::new(mtm);
+fn is_main_thread() -> bool {
+    // libSystem, always linked on Apple targets. Used instead of
+    // `MainThreadMarker::new()`, which needs objc2-foundation's `NSThread`
+    // feature for one call.
+    extern "C" {
+        fn pthread_main_np() -> std::os::raw::c_int;
+    }
+    unsafe { pthread_main_np() != 0 }
+}
+
+/// Look up an Objective-C class by name, or `None` when its framework is not
+/// loaded in this process.
+///
+/// Why not `class!(..)`: that macro PANICS when the class is missing, and this
+/// crate deliberately links neither UIKit nor AppKit (see Cargo.toml). The app
+/// always has them — the leaf backend and the app link them — but a host test
+/// binary built from a backend crate does not. `cargo test -p
+/// backend-ios-mobile` on a Mac compiles this file's macOS branch into a binary
+/// that never links AppKit, and `class!(NSScreen)` aborted every test that
+/// reached `install_scheduler`. A debug-only trace must never take the process
+/// down, so a missing class means "nothing to pace against" and we skip.
+fn lookup_class(name: &str) -> Option<&'static AnyClass> {
+    AnyClass::get(name)
+}
+
+/// The body of [`install`], given proof of the main thread. Returns whether a
+/// display link was installed (`false` when the display API isn't available in
+/// this process, or there is no screen).
+fn install_on_main(mtm: MainThreadMarker) -> bool {
     // `displayLinkWithTarget:selector:` returns an autoreleased CADisplayLink
     // (msg_send_id retains it). The link retains its target.
     //
@@ -228,41 +262,62 @@ pub fn install() {
     // class itself; macOS (14+) has no such class method — the display link is
     // vended from an `NSScreen`/`NSView`/`NSWindow`. We use `+[NSScreen
     // mainScreen]`, which needs no view and tracks the primary display's vsync.
+    // Each platform branch names only its own toolkit's classes: `NSScreen`
+    // does not exist on iOS/tvOS, `UIScreen` does not exist on macOS.
     #[cfg(any(target_os = "ios", target_os = "tvos"))]
-    let link: Retained<NSObject> = unsafe {
+    let link: Retained<NSObject> = {
+        let Some(display_link_class) = lookup_class("CADisplayLink") else {
+            apple_log("[perf] frame-pacing trace: QuartzCore not loaded, skipping.");
+            return false;
+        };
         // The screen's nominal refresh is the dropped-frame budget basis.
-        let screen: Option<Retained<NSObject>> =
-            msg_send_id![class!(UIScreen), mainScreen];
-        if let Some(screen) = screen {
-            let max_fps: isize = msg_send![&*screen, maximumFramesPerSecond];
-            set_nominal_vsync(max_fps as f64);
+        if let Some(screen_class) = lookup_class("UIScreen") {
+            let screen: Option<Retained<NSObject>> =
+                unsafe { msg_send_id![screen_class, mainScreen] };
+            if let Some(screen) = screen {
+                let max_fps: isize = unsafe { msg_send![&*screen, maximumFramesPerSecond] };
+                set_nominal_vsync(max_fps as f64);
+            }
         }
-        msg_send_id![
-            class!(CADisplayLink),
-            displayLinkWithTarget: &*target,
-            selector: sel!(tick:)
-        ]
+        let target = DisplayProbe::new(mtm);
+        let link = unsafe {
+            msg_send_id![
+                display_link_class,
+                displayLinkWithTarget: &*target,
+                selector: sel!(tick:)
+            ]
+        };
+        REC.with(|cell| cell.borrow_mut()._target = Some(target));
+        link
     };
     #[cfg(target_os = "macos")]
     let link: Retained<NSObject> = {
+        let Some(screen_class) = lookup_class("NSScreen") else {
+            // AppKit not loaded (a host test binary of a backend crate).
+            apple_log("[perf] frame-pacing trace: AppKit not loaded, skipping.");
+            return false;
+        };
         let screen: Option<Retained<NSObject>> =
-            unsafe { msg_send_id![class!(NSScreen), mainScreen] };
+            unsafe { msg_send_id![screen_class, mainScreen] };
         let Some(screen) = screen else {
             // Headless / no attached display — nothing to pace against.
             apple_log("[perf] frame-pacing trace: no main screen, skipping.");
-            return;
+            return false;
         };
         // The screen's nominal refresh is the dropped-frame budget basis
         // (e.g. 120 on ProMotion). `maximumFramesPerSecond` is macOS 12+.
         let max_fps: isize = unsafe { msg_send![&*screen, maximumFramesPerSecond] };
         set_nominal_vsync(max_fps as f64);
-        unsafe {
+        let target = DisplayProbe::new(mtm);
+        let link = unsafe {
             msg_send_id![
                 &*screen,
                 displayLinkWithTarget: &*target,
                 selector: sel!(tick:)
             ]
-        }
+        };
+        REC.with(|cell| cell.borrow_mut()._target = Some(target));
+        link
     };
 
     // Common modes so it keeps ticking during scroll/drag tracking — that is
@@ -275,14 +330,45 @@ pub fn install() {
     let common_modes: &NSString = unsafe { &*NSRunLoopCommonModes };
     let _: () = unsafe { msg_send![&*link, addToRunLoop: &*run_loop, forMode: common_modes] };
 
-    REC.with(|cell| {
-        let mut r = cell.borrow_mut();
-        r._link = Some(link);
-        r._target = Some(target);
-    });
+    REC.with(|cell| cell.borrow_mut()._link = Some(link));
 
     apple_log(
         "[perf] frame-pacing trace ON (debug build). Logs per second while \
          animating; watch 'raf' ticks vs frames during a drag.",
     );
+    true
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    /// Regression: `cargo test -p backend-ios-mobile` on a Mac failed four
+    /// tests with "class NSScreen could not be found" — the macOS branch used
+    /// `class!(NSScreen)`, which panics when AppKit isn't loaded, and a backend
+    /// crate's host test binary doesn't link AppKit. This crate's own test
+    /// binary doesn't either, so it reproduces the same process shape.
+    #[test]
+    fn regression_install_without_appkit_skips_instead_of_panicking() {
+        assert!(
+            AnyClass::get("NSScreen").is_none(),
+            "precondition: this test binary must not load AppKit, or it no \
+             longer exercises the missing-class path"
+        );
+        // SAFETY: with AppKit absent the install bails before touching any
+        // main-thread-only object; the marker is never used.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        assert!(!install_on_main(mtm), "no display API, so no link is installed");
+        REC.with(|r| assert!(r.borrow()._link.is_none()));
+    }
+
+    /// `install` is documented as a no-op off the main thread; libtest runs
+    /// tests on worker threads, so this is the path every backend host test
+    /// that reaches `install_scheduler` takes.
+    #[test]
+    fn install_off_main_thread_is_a_no_op() {
+        assert!(!is_main_thread());
+        install();
+        assert!(!INSTALLED.with(|c| c.get()), "off-main install must not latch INSTALLED");
+    }
 }

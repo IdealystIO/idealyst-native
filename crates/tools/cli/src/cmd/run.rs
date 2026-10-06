@@ -68,6 +68,13 @@ pub struct Args {
     #[arg(long)]
     pub udid: Option<String>,
 
+    /// iOS simulator only: the simulator to run on, by name (as listed by
+    /// `xcrun simctl list devices`, e.g. "iPad Pro 13-inch (M4)") or UDID.
+    /// Booted if it isn't running. Defaults to the first booted iOS
+    /// simulator, else the first iPhone on the newest runtime.
+    #[arg(long, value_name = "NAME|UDID")]
+    pub simulator: Option<String>,
+
     /// iOS only: force a fully clean reinstall. The default flow already
     /// terminates the running app before installing (so `launch` can't
     /// re-foreground a stale process); `--clean` additionally uninstalls
@@ -175,6 +182,12 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                      deploy a standalone signed build to the phone."
                 );
             }
+            if args.simulator.is_some() {
+                anyhow::bail!(
+                    "`--simulator` picks a simulator and `--device` a physical device; \
+                     pass one (use `--udid` to pick the device)."
+                );
+            }
             let team = run_ios::device::resolve_team(args.team.as_deref())?;
             eprintln!("[idealyst run ios --device] signing team {team}");
             // Default RELEASE for device (debug is unusably slow on-device);
@@ -216,6 +229,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     source,
                     user_features: Vec::new(),
                     clean: args.clean,
+                    simulator: args.simulator.clone(),
                 },
             )?;
             eprintln!();

@@ -21,6 +21,13 @@
 //! stylesheet (override via
 //! `install_switch_sheet(SwitchSheetBuilder::new().add_tone(Hype).build())`);
 //! the thumb's horizontal travel is animated via `AnimProp::TranslateX`.
+//!
+//! `disabled` follows `Button`: it blocks the toggle through the track
+//! pressable's own disabled binding (so `on_change` never fires, and the
+//! host gets the native/a11y disabled state) and dims the track via the
+//! sheet's `dimmed` axis. The track never flex-shrinks (the sheet pins
+//! `flex_shrink: 0`): the thumb's travel is a fixed distance, so a
+//! squeezed track would leave the "on" thumb hanging off its end.
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -53,7 +60,7 @@ fn travel_for(size: ControlSize) -> f32 {
 }
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
-// `Reactive<T>` (tone/variant/size/icon). The controlled `value` `Signal`
+// `Reactive<T>` (tone/variant/size/icon/disabled). The controlled `value` `Signal`
 // stays bare (a reactive *source*), `on_change` is a handler, `label` is
 // already `Reactive`. NOTE `size` ALSO drives structure (thumb travel
 // distance + icon px feed the animation/layout), read once at build — only
@@ -76,6 +83,13 @@ pub struct SwitchProps {
     pub variant: VariantRef,
     /// Track + thumb scale. Default Md.
     pub size: ControlSize,
+    /// When `true`, blocks the toggle (`on_change` never fires) and dims the
+    /// track — the same opacity drop a disabled `Button` gets — and marks the
+    /// track disabled for the host (native disabled state / a11y). Default
+    /// `false`. Reactive: pass a `Signal<bool>`/`rx!` and the switch enables
+    /// and disables in place.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
     /// Optional icon shown inside the thumb (e.g. a check/power glyph).
     /// Tinted with the muted text color so it reads on the white thumb.
     /// `None` = a plain thumb.
@@ -95,6 +109,7 @@ impl Default for SwitchProps {
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),
             size: Reactive::Static(ControlSize::default()),
+            disabled: Reactive::Static(false),
             icon: Reactive::Static(None),
             test_id: None,
         }
@@ -164,14 +179,29 @@ pub fn Switch(props: &SwitchProps) -> Element {
         .into_element();
 
     // --- track: a pressable that toggles, styled by the checked axis ---
+    // `disabled` is read LIVE here so the dim follows a reactive prop in
+    // place (the `dimmed` axis — Button parity).
+    let disabled_dim = props.disabled.clone();
     let track_style = move || {
         StyleApplication::new(installed_switch_sheet())
             .with("appearance", appearance_for())
             .with("checked", if value.get() { "on" } else { "off" }.to_string())
             .with("size", size_key.clone())
+            .with("dimmed", if disabled_dim.get() { "on" } else { "off" }.to_string())
     };
     let toggle = move || (on_change)(!value.get());
     let track = runtime_core::pressable(vec![thumb], toggle).with_style(track_style);
+    // Block the press through the pressable's own `disabled` binding: the
+    // mount handler wraps the callback in a press-block flag (mouse,
+    // keyboard and programmatic activation alike), calls the host's
+    // `set_disabled` (native disabled / a11y state) and flips the DISABLED
+    // state bit. Attached only when the switch can be disabled — a
+    // `Static(false)` switch carries no binding, like Button.
+    let track = match props.disabled.clone() {
+        Reactive::Static(false) => track,
+        Reactive::Static(true) => track.disabled(true),
+        live => track.disabled(move || live.get()),
+    };
     // Forward the test id to the interactive track so a robot suite can
     // locate + click it — set on the BUILDER (`.test_id` on the pressable
     // wrapper). Gated: the id slot only registers under `robot`, and the

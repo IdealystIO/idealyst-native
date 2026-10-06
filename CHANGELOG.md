@@ -132,8 +132,103 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `set_cookie` never cleared anything) and every deletion carries
   `Expires`. *Migration:* for a cookie set with non-default attributes,
   replace `clear_cookie(name)` with `the_same_cookie("").clearing()`.
+- **Frame and timer handles are `f64`** (`web-glue`; fixes in
+  `backend-web`, `camera`, `screen-recorder`). `Window::request_animation_frame`
+  and `Window::set_timeout` return, and `cancel_animation_frame` /
+  `clear_timeout` take, the host's id as an `f64` instead of an `i32`. A
+  fake clock issues ids an `i32` can't hold: Playwright's `page.clock`
+  (`install()` and `setFixedTime()`) numbers its timers from `1e12`. The
+  truncated id made every cancel miss, so a cancelled frame or timeout
+  still fired into its dropped closure and logged `web-glue: callback #N
+  called after its Rust owner dropped it`. The camera's teardown in a
+  pinned-clock e2e run hit this, and so did the web scheduler's cancelled
+  `after_ms` / `after_animation_frame` / `raf_loop` and the screen
+  recorder's frame interval. *Migration:* code that stores one of these
+  handles changes its type from `i32` to `f64`.
 
 ### Added
+
+- **`--simulator <NAME|UDID>`** (`idealyst-cli`, `run-ios`) on
+  `idealyst run ios` and `idealyst dev --ios` picks the target
+  simulator; without it the first booted one is used, as before.
+- **`Switch(disabled = …)`** (`idea-ui`, `idea-theme`). The same shape as
+  `Button`'s `disabled`: a `bool` that also takes a `Signal`/`rx!`. A
+  disabled Switch never calls `on_change`, its track dims to the Button's
+  disabled opacity (the Switch sheet's new `dimmed` axis, both reading
+  `DISABLED_CONTROL_OPACITY`), and the host is told the track is disabled
+  (native disabled and accessibility state). A live value enables and
+  disables the switch in place.
+
+- **`Checkbox(disabled = …)`** (`idea-ui`, `idea-theme`). The same as
+  Switch's: a `bool` that also takes a `Signal`/`rx!`. A disabled Checkbox
+  never calls `on_change`, whether the box or its label is pressed, its box
+  (and the checkmark inside it) dims to `DISABLED_CONTROL_OPACITY` through
+  the box sheet's new `dimmed` axis, and the host is told the box is
+  disabled. A live value enables and disables it in place.
+
+- **`Radio(disabled = …)` and `RadioGroup(disabled = …)`** (`idea-ui`,
+  `idea-theme`). The same as Switch's. A disabled Radio never calls
+  `on_select` and a disabled RadioGroup never calls `on_change`, whether the
+  ring or the label is pressed. The ring (and its dot) dims through the ring
+  sheet's new `dimmed` axis, and the host is told the ring is disabled. On
+  a RadioGroup the prop applies to every option. A live value enables and
+  disables them in place.
+
+- **Update answers per app build** (`remote-bundle`, `ota-index`,
+  `ota-publish`, `ota`, `ota-macros`, `ota-console`, `idealyst ota`). An app
+  build's manifest (what it offers bundles) has an id, `Provides::id()`: a
+  hash of the manifest and the compatibility rule's version
+  (`remote_bundle::RULE`). Compatibility problems now serialize to JSON.
+  - **`ota_index::resolve`** gives one build's whole answer: per bundle, what
+    to run, the kill-switched releases, and why each release can or can't
+    run. `choose` is now built on it.
+  - **`idealyst ota manifest`** captures a build's manifest by linking the
+    app's library. It registers the manifest at the release location
+    (`manifests/<id>.json`, listed in `manifests.json`) and writes the
+    build's precomputed answer (`resolved/<id>.json`). Every index change
+    rewrites that answer, and an older answer never overwrites a newer one,
+    because the index now records a `generation`. `idealyst ota resolve`
+    repairs answers that a failed change left behind.
+  - **Where `ota` gets its answer**, in order: the resolver
+    (`resolver` in the settings: the id first, the full manifest
+    only when it's unknown), then the build's precomputed answer, then the
+    index. `Checks::answered_by` says which.
+  - **Declaring the host functions** in the settings (`host_fns = "app::host_fns"`)
+    gives the app and its registered manifest the same list.
+  - **`idealyst ota publish`** names the registered builds a release won't
+    reach, and **`status`** lists the builds and what each runs.
+  - **The console** lists the app builds and shows a compatibility grid
+    per bundle: each build against each live release, with the reason
+    behind every ✗. It also names the builds a take-down moves.
+  - **`ota-resolver`** (`crates/ota/resolver`) serves `POST /v1/resolve`,
+    as a server or on AWS Lambda (`--features lambda`). A build reported
+    through it writes files of its own (`reported/<id>.json`), so a burst
+    of reports never contends for a shared file. The registry is read by
+    listing, and `ota-publish` can now list objects over the `aws` CLI and
+    signed HTTP. Each instance reuses the index for a few seconds.
+
+  Breaking for code that builds `ota::Config` by hand: it gains `resolver`
+  and `host_fns`.
+- **The OTA console, take-downs, the kill switch and pinning**
+  (`ota-console`, `ota-publish`, `ota-index`, `ota`). `crates/ota/console`
+  is a self-hosted web page (an idealyst app with `#[server]` functions)
+  over a release location in any S3-compatible store: each bundle's
+  releases in the order apps choose them, with what each newly requires;
+  take any release down, optionally with the kill switch (apps running it
+  replace it at once, whatever their `apply` setting, falling back to their
+  built-in copy or nothing); restore; pin a release ahead of newer ones;
+  and an audit log of every action and CLI publish (`audit.json`). It only
+  edits the index: apps never talk to it, and signing keys stay with the
+  CLI. `ota-publish` gains these operations (`take_down`, `restore`, `pin`,
+  `unpin`, `read_audit`) and S3 over signed HTTP for servers (`S3Http`,
+  feature `s3-http`; checked against AWS's documented SigV4 example and
+  MinIO). A pin is the order of `releases`, so older clients follow it;
+  the kill switch needs `ota` 0.2.
+- **`ota` status for apps** (`ota`): `Ota::bundles()` (each bundle's
+  running release and where it came from, the newest it can run, what the
+  updater is doing), `Ota::checks()`, and `Options::check_every` for
+  scheduled checks. `crates/ota/demo` shows them: a macOS window whose
+  bottom half is a remote component updated from a local MinIO.
 
 - **Over-the-air remote components** (`ota`, `ota-index`, `ota-macros`,
   `ota-publish`, `idealyst ota`). `idealyst ota init` writes an app's
@@ -600,6 +695,81 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A `Field`'s live `error` shows in the Danger tone** (`idea-ui`). With
+  `error = rx!(err.get())` starting at `None`, the help line's tone was
+  chosen once when the Field was built ("default", the muted help grey),
+  so the first validation error appeared in grey while only the border
+  turned red. The help line now follows the same live tone as the border
+  when `tone` or `error` is live, both into and out of the error.
+- **`Switch`, `Checkbox` and `Radio` keep their size in a squeezed row**
+  (`idea-theme`, `idea-ui`). Beside long wrapping text in a narrow row
+  (`Stack(axis = Row) { Switch(..) Typography(..) }` in a 260px pane) the
+  browser shrank the Switch track to its padding plus thumb (22px instead
+  of 38) while the thumb's slide stayed 16px, so the thumb came off the
+  track. The Checkbox box and the Radio ring shrank the same way. The
+  track, the thumb, the box and the ring now never shrink
+  (`flex_shrink: 0`); the text wraps instead.
+- **The layout grows back after the soft keyboard closes on iOS**
+  (`backend-ios-mobile`). When a flush removed the focused text input,
+  UIKit posted the keyboard's closing frame while the backend was
+  borrowed, and the event was dropped, so every later screen stayed
+  short by the keyboard's height until restart. A keyboard frame is now
+  kept until it can be applied: at once when the backend is free,
+  otherwise on the next layout pass, which also applies any waiting
+  frame before measuring the viewport.
+- **A keyed `for` row whose key changes stays in its position**
+  (`runtime-scene`). A list spliced into its parent remembered where it
+  started at mount, so once an earlier sibling region (another keyed
+  list, a branch) changed how many nodes it held, a row remounted under
+  a new key landed one position too high or too low until a full
+  rebuild. Each spliced region's start is now worked out from the live
+  node counts before it, every time it splices.
+- **A spliced keyed list releases the rows it removes**
+  (`runtime-scene`). Removed rows were detached but never passed to
+  `Host::release_subtree`, so on iOS each kept its `UIView` and layout
+  node alive. The anchored keyed list and both `when` paths already
+  released theirs.
+- **Camera frames follow the screen's rotation on iOS and Android**
+  (`camera`). iOS pinned the capture to portrait when the session
+  opened, and Android rotated only by the sensor's mounting angle, so
+  the preview and the RGBA frames from `MediaStream::latest` came out
+  90° off in landscape (180° upside down on Android). Both now follow
+  the interface/display rotation and re-apply on rotation. Frames stay
+  unmirrored on both cameras, as on web.
+- **iOS SDKs declare the frameworks they link** (`connectivity`,
+  `biometrics`, `file-picker`, `location`, `media-stream`,
+  `media-writer`, `permissions`, `video`, `run-ios`). Xcode drops a
+  staticlib's `#[link(kind = "framework")]`, so `connectivity` failed to
+  link on a device (`_nw_path_monitor_create` undefined) and seven other
+  SDKs linked only by luck. Each now lists its frameworks under
+  `[package.metadata.idealyst.ios]`, and the iOS base set gains CoreText
+  and CoreFoundation, which the backend itself links. A test in
+  `run-ios` scans every SDK and framework crate and fails on a link
+  that nothing declares.
+- **`idealyst run ios --device` fails when the launch fails**
+  (`run-ios`, `idealyst-cli`). It reported "installed + launched" and
+  exited 0 whenever the install succeeded, even when ios-deploy's lldb
+  said the app could not launch. It now reads the launch result, exits
+  non-zero, and for an untrusted developer profile says to trust it in
+  Settings → General → VPN & Device Management.
+- **The iOS simulator app runs full-size on iPad** (`run-ios`). The
+  simulator Info.plist had no `UIDeviceFamily`, so an iPad simulator ran
+  the app in iPhone compatibility mode. The simulator and device builds
+  now take the device family (`[1, 2]`) from one constant. With no
+  simulator booted, the CLI now boots an iPhone on the newest runtime
+  rather than the oldest.
+- **`backend-apple-core`'s frame-pacing trace no longer panics without
+  AppKit**. It looked up `NSScreen` with `class!`, which panics when
+  AppKit is not linked, as in `backend-ios-mobile`'s host test binary;
+  it now skips the trace, and does nothing off the main thread, as its
+  docs already said.
+
+- **Racing publishes from one process lost a download** (`ota-publish`).
+  The `aws` CLI's scratch files were named from the process id and the
+  clock, and macOS's clock has microsecond resolution: two publishes got the
+  same name and one deleted the other's file mid-read. Named with a counter
+  now.
 
 - **An unknown tone or variant in a host function's argument no longer stops
   the bundle** (`runtime-vocabulary`). A value crossing by key (`ToneRef`,

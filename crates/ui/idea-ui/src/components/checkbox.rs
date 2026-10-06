@@ -20,6 +20,11 @@
 //! (`variant::Filled` → solid, `Soft` → tint, `Outlined` → bordered);
 //! unselected it's a muted outline. Override the appearance via
 //! `install_checkbox_sheets(CheckboxSheetBuilder::new().add_tone(Hype).build())`.
+//!
+//! `disabled` follows `Switch` (and `Button`): it blocks the toggle through
+//! the box pressable's own disabled binding (so `on_change` never fires, and
+//! the host gets the native/a11y disabled state), guards the label row's
+//! tap the same way, and dims the box via the sheet's `dimmed` axis.
 
 use std::rc::Rc;
 
@@ -75,7 +80,7 @@ fn checkmark_icon(data: IconData, app: StyleApplication) -> Element {
 }
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
-// `Reactive<T>` (tone/variant/size/icon), so a `ui!` call site can pass a
+// `Reactive<T>` (tone/variant/size/icon/disabled), so a `ui!` call site can pass a
 // `Signal`/`rx!` and have it re-style in place. The controlled `value`
 // `Signal` stays bare (a reactive *source*), `on_change` is a handler, and
 // `label` is already `Reactive`.
@@ -96,6 +101,13 @@ pub struct CheckboxProps {
     pub variant: VariantRef,
     /// Box scale. Default Md.
     pub size: ControlSize,
+    /// When `true`, blocks the toggle (`on_change` never fires, from the box
+    /// or the label row) and dims the box — the same opacity drop a disabled
+    /// `Button` gets — and marks the box disabled for the host (native
+    /// disabled state / a11y). Default `false`. Reactive: pass a
+    /// `Signal<bool>`/`rx!` and the checkbox enables and disables in place.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
     /// Optional custom checked-state icon, shown in place of the default
     /// checkmark glyph (e.g. `icons_lucide::CHECK` or a task-specific mark).
     /// Inherits the checkmark's foreground color. `None` = the default ✓.
@@ -115,6 +127,7 @@ impl Default for CheckboxProps {
             tone: Reactive::Static(ToneRef::default()),
             variant: Reactive::Static(VariantRef::default()),
             size: Reactive::Static(ControlSize::default()),
+            disabled: Reactive::Static(false),
             icon: Reactive::Static(None),
             test_id: None,
         }
@@ -194,7 +207,20 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
     // host, so the sheet's `__state_focused` ring draws around the square
     // alone. (A pressable row rings box *and* label — a stray border around
     // the text, which is not what a focus indicator should look like.)
-    let toggle: Rc<dyn Fn()> = Rc::new(move || (on_change)(!value.get()));
+    //
+    // `toggle` also serves the label row's tap, which has no disabled
+    // binding of its own (a plain view, not a pressable) — so it checks the
+    // live `disabled` itself. On the box the pressable's binding has
+    // already blocked the press before this runs.
+    let toggle_disabled = props.disabled.clone();
+    let toggle: Rc<dyn Fn()> = Rc::new(move || {
+        if !toggle_disabled.get() {
+            (on_change)(!value.get())
+        }
+    });
+    // `disabled` is read LIVE in the style so the dim follows a reactive
+    // prop in place (the `dimmed` axis — Switch/Button parity).
+    let disabled_dim = props.disabled.clone();
     let box_sheet = sheets.box_sheet.clone();
     let box_appearance_for = appearance_for;
     let box_size_for = size_key_for;
@@ -205,8 +231,18 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
                 .with("appearance", box_appearance_for())
                 .with("checked", if value.get() { "on" } else { "off" }.to_string())
                 .with("size", box_size_for())
+                .with("dimmed", if disabled_dim.get() { "on" } else { "off" }.to_string())
         })
         .a11y_role(Role::Checkbox);
+    // Block the press through the pressable's own `disabled` binding (see
+    // Switch): press block, host `set_disabled`, DISABLED state bit.
+    // Attached only when the checkbox can be disabled — a `Static(false)`
+    // checkbox carries no binding, like Button.
+    let box_el = match props.disabled.clone() {
+        Reactive::Static(false) => box_el,
+        Reactive::Static(true) => box_el.disabled(true),
+        live => box_el.disabled(move || live.get()),
+    };
     // The label sits outside the pressable now, so the box can't derive its
     // accessible name from child content — name it explicitly. Snapshot: a
     // `Reactive` label's later values don't re-announce (the a11y prop bag is
@@ -412,5 +448,60 @@ mod tests {
                 "an unlabelled Checkbox is the box pressable itself"
             );
         });
+    }
+
+    /// Drive one tap (touch down + up in place) through a view's real
+    /// `on_touch` handler.
+    fn tap_row(row: Element) {
+        use runtime_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+        let mut el = row;
+        while let Element::Owned { element, .. } = el {
+            el = *element;
+        }
+        let handler = match el {
+            Element::Item { data, .. } => data
+                .downcast_ref::<runtime_vocabulary::prims::PrimCell<runtime_vocabulary::prims::ViewPrim>>()
+                .expect("a labelled Checkbox renders a View row")
+                .take()
+                .on_touch
+                .expect("the row carries on_touch"),
+            _ => panic!("a labelled Checkbox renders a View item"),
+        };
+        for phase in [TouchPhase::Began, TouchPhase::Ended] {
+            handler(&TouchEvent {
+                id: TouchId(1),
+                phase,
+                position: TouchPoint::new(1.0, 1.0),
+                window_position: TouchPoint::new(1.0, 1.0),
+                timestamp_ns: 0,
+                force: None,
+            });
+        }
+    }
+
+    fn row_tap_hits(disabled: Reactive<bool>) -> u32 {
+        let hits = Rc::new(std::cell::Cell::new(0u32));
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let sink = hits.clone();
+            let props = CheckboxProps {
+                label: Reactive::Static(Some("I agree".into())),
+                on_change: Rc::new(move |_v: bool| sink.set(sink.get() + 1)),
+                disabled,
+                ..Default::default()
+            };
+            tap_row(Checkbox(&props));
+        });
+        hits.get()
+    }
+
+    /// Regression guard for `disabled`: the label row is a plain view with
+    /// its own tap recognizer, OUTSIDE the box pressable's disabled
+    /// binding — so without its own check, tapping the label of a disabled
+    /// Checkbox still fired `on_change`.
+    #[test]
+    fn regression_disabled_checkbox_label_row_tap_does_not_fire() {
+        assert_eq!(row_tap_hits(Reactive::Static(false)), 1, "an enabled row tap fires");
+        assert_eq!(row_tap_hits(Reactive::Static(true)), 0, "a disabled row tap is ignored");
     }
 }

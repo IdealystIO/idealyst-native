@@ -38,10 +38,11 @@ use crate::compose::OverlayCompositor;
 use crate::compose_transform::TransformCompositor;
 use crate::anim::AnimTextures;
 use crate::encode::encode_scene;
-use crate::plan::{plan_scene, CachedRef, ScenePlan};
+use crate::plan::{plan_scene, split_segments, CachedRef, ScenePlan};
+use crate::texture_runs::{composite_texture_runs, RunHost};
 use crate::shape_pass::ShapePass;
 use crate::web_layer::WebLayerCompositor;
-use canvas_core::{paint_scene, CanvasPrim, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
+use canvas_core::{CanvasPrim, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
 use runtime_scene::{Element, Host, MountCx, Registry};
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives::graphics::{GraphicsSurface, OnReadyEvent, OnResizeEvent};
@@ -132,7 +133,7 @@ where
     let backend = cx.backend().clone();
     let node = {
         let mut b = backend.borrow_mut();
-        build_canvas(&prim.props, &mut *b)
+        build_canvas(prim, &mut *b)
     };
     finish_mount(&backend, &node, prim);
     node
@@ -228,7 +229,16 @@ fn web_dpr() -> f64 {
     }
 }
 
-pub fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::Node {
+pub fn build_canvas<H: GraphicsOps>(prim: &Rc<CanvasPrim>, backend: &mut H) -> H::Node {
+    let props = &prim.props;
+    // The web graphics primitive reports PHYSICAL size with `scale == 1.0`
+    // (see `web_dpr`), so the logical size the painter reads as
+    // `Scene::size` is `size / web_dpr()`.
+    let sizing = prim.size_reporter();
+    let report = move |size: (u32, u32)| {
+        let dpr = web_dpr() as f32;
+        sizing.report(size.0 as f32 / dpr, size.1 as f32 / dpr);
+    };
     // Latest painted scene + the installed renderer, shared between the reactive
     // effect and the surface lifecycle callbacks. `render_fn` is `None` until
     // the async `on_ready` probe installs a GPU or Canvas2D renderer.
@@ -251,12 +261,12 @@ pub fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) ->
     // what keeps it alive past `build_canvas` return). Clones hoisted so the
     // macro's `move` captures them (cloned once).
     {
-        let props = props.clone();
+        let paint_prim = prim.clone();
         let scene_cell = scene_cell.clone();
         let render_fn = render_fn.clone();
         let frame_pending = frame_pending.clone();
         runtime_world::effect(move || {
-            *scene_cell.borrow_mut() = paint_scene(&props);
+            *scene_cell.borrow_mut() = paint_prim.paint();
             schedule_repaint(&render_fn, &scene_cell, &frame_pending);
         });
     }
@@ -265,7 +275,9 @@ pub fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) ->
         let scene_cell = scene_cell.clone();
         let render_fn = render_fn.clone();
         let props = props.clone();
+        let report = report.clone();
         move |ev: OnReadyEvent| {
+            report(ev.size);
             // Acquire the GPU asynchronously — blocking is illegal on the wasm
             // main thread. A fresh `on_ready` can follow an `on_lost`, so each
             // run does its own probe and reinstalls `render_fn`.
@@ -286,7 +298,10 @@ pub fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) ->
         let render_fn = render_fn.clone();
         // The renderer re-reads the (already-resized) canvas backing store each
         // frame, so a resize just needs to trigger a repaint.
-        move |_ev: OnResizeEvent| repaint(&render_fn, &scene_cell)
+        move |ev: OnResizeEvent| {
+            report(ev.size);
+            repaint(&render_fn, &scene_cell)
+        }
     };
 
     let on_lost = {
@@ -350,9 +365,9 @@ fn repaint(render_fn: &Rc<RefCell<Option<RenderFn>>>, scene_cell: &Rc<RefCell<Ca
     }
 }
 
-/// Decide the renderer for one canvas: vello GPU when WebGPU is viable and the
-/// canvas has no texture layers, else canvas-native's Canvas2D rasterizer on the
-/// same (still-unclaimed) element.
+/// Decide the renderer for one canvas: vello GPU when WebGPU is viable (texture
+/// layers included — `WebLayerCompositor`), else canvas-native's Canvas2D
+/// rasterizer on the same (still-unclaimed) element.
 async fn build_render_fn(ev: OnReadyEvent, props: Rc<CanvasProps>) -> RenderFn {
     let canvas = match ev.surface().and_then(canvas_from_surface) {
         Some(c) => c,
@@ -743,6 +758,54 @@ impl GpuState {
         }
     }
 
+    /// Encode `ops` with vello and render them into `target` (clearing it) or,
+    /// with `to_overlay`, into the separate `overlay` texture (which must
+    /// exist) over a transparent base. `render_to_texture` SUBMITS its own
+    /// command buffer immediately. Returns `false` if vello failed.
+    fn render_vello(&mut self, ops: &[DrawOp], to_overlay: bool) -> bool {
+        self.scene.reset();
+        // Base transform = device scale: the author's Scene is logical; scaling
+        // by dpr fills the physical-pixel surface (no retina under-fill).
+        encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
+        let params = RenderParams {
+            base_color: Color::from_rgba8(0, 0, 0, 0),
+            width: self.config.width,
+            height: self.config.height,
+            antialiasing_method: AaConfig::Area,
+        };
+        let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
+        // Route image-bearing content (a live-dragged media item in `rest`) to
+        // the dedicated `image_renderer` — the main renderer's atlas is shrunk
+        // by image-less bakes, blanking a later live image (media vanishes
+        // mid-drag). Mirror of the native `render` fix + the layer-bake routing.
+        let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+        if has_image && self.image_renderer.is_none() {
+            self.image_renderer = Renderer::new(
+                &self.device,
+                RendererOptions {
+                    use_cpu: false,
+                    antialiasing_support: AaSupport::area_only(),
+                    num_init_threads: None,
+                    pipeline_cache: None,
+                },
+            )
+            .ok();
+        }
+        // Flush any animated-image frames this encode staged into their
+        // override textures before rendering (see `anim.rs`).
+        self.anim.apply(
+            &self.device,
+            &self.queue,
+            &mut self.renderer,
+            self.image_renderer.as_mut(),
+        );
+        let renderer = match (has_image, self.image_renderer.as_mut()) {
+            (true, Some(r)) => r,
+            _ => &mut self.renderer,
+        };
+        renderer.render_to_texture(&self.device, &self.queue, &self.scene, view, &params).is_ok()
+    }
+
     fn render(&mut self, canvas_scene: &CanvasScene) {
         // Refresh the device-pixel ratio each frame (it can change when the window
         // moves between monitors or the page zooms); the backing-store size below
@@ -771,9 +834,15 @@ impl GpuState {
         // path as the native renderer. vello renders the content (whole scene for
         // `Vello` → `target`; only `rest` for `Hybrid` → the separate `overlay`)
         // over a transparent base; `Shapes` skips vello entirely.
-        let plan = plan_scene(canvas_scene.ops());
+        //
+        // Texture layers: the scene is split at its `Texture` ops
+        // (`split_segments`); only the BASE segment (the whole scene when there
+        // are none) is classified here, and the texture runs are composited
+        // afterwards by `composite_texture_runs` — the native renderer's model.
+        let segments = split_segments(canvas_scene.ops());
+        let plan = plan_scene(segments.base);
         let (content_ops, to_overlay): (Option<&[DrawOp]>, bool) = match &plan {
-            ScenePlan::Vello => (Some(canvas_scene.ops()), false),
+            ScenePlan::Vello => (Some(segments.base), false),
             ScenePlan::Hybrid { rest, .. } => {
                 if self.overlay.is_none() {
                     self.overlay =
@@ -814,50 +883,7 @@ impl GpuState {
             self.bake_cached_layers(layers);
         }
         if let Some(ops) = content_ops {
-            self.scene.reset();
-            // Base transform = device scale: the author's Scene is logical; scaling
-            // by dpr fills the physical-pixel surface (no retina under-fill).
-            encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
-            let params = RenderParams {
-                base_color: Color::from_rgba8(0, 0, 0, 0),
-                width: self.config.width,
-                height: self.config.height,
-                antialiasing_method: AaConfig::Area,
-            };
-            let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
-            // Route image-bearing content (a live-dragged media item in `rest`) to
-            // the dedicated `image_renderer` — the main renderer's atlas is shrunk
-            // by image-less bakes, blanking a later live image (media vanishes
-            // mid-drag). Mirror of the native `render` fix + the layer-bake routing.
-            let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
-            if has_image && self.image_renderer.is_none() {
-                self.image_renderer = Renderer::new(
-                    &self.device,
-                    RendererOptions {
-                        use_cpu: false,
-                        antialiasing_support: AaSupport::area_only(),
-                        num_init_threads: None,
-                        pipeline_cache: None,
-                    },
-                )
-                .ok();
-            }
-            // Flush any animated-image frames this encode staged into their
-            // override textures before rendering (see `anim.rs`).
-            self.anim.apply(
-                &self.device,
-                &self.queue,
-                &mut self.renderer,
-                self.image_renderer.as_mut(),
-            );
-            let renderer = match (has_image, self.image_renderer.as_mut()) {
-                (true, Some(r)) => r,
-                _ => &mut self.renderer,
-            };
-            if renderer
-                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params)
-                .is_err()
-            {
+            if !self.render_vello(ops, to_overlay) {
                 return;
             }
         }
@@ -954,26 +980,53 @@ impl GpuState {
             }
         }
 
-        // Composite the texture layers (camera) over the scene, INTO the same
-        // target the blit + captureStream read — so the camera is on screen AND in
-        // the recording, while the dots backdrop above stayed GPU-instanced.
-        if !self.layers.is_empty() {
-            if self.layer_compositor.is_none() {
-                self.layer_compositor = Some(WebLayerCompositor::new(&self.device));
+        // Texture layers (the camera) + the vector runs drawn over them, INTO
+        // the same target the blit + captureStream read — so the camera is on
+        // screen AND in the recording. No runs (no layers) → nothing here.
+        if !segments.runs.is_empty() {
+            let overlay_pending = to_overlay && content_ops.is_some();
+            if !composite_texture_runs(self, &segments.runs, &mut encoder, overlay_pending) {
+                return;
             }
-            let device = &self.device;
-            let queue = &self.queue;
-            let target_view = &self.target_view;
-            let (cw, ch) = (self.config.width, self.config.height);
-            let s = self.scale as f32;
-            self.layer_compositor.as_mut().unwrap().composite_layers(
-                device, queue, &mut encoder, &self.layers, target_view, s, cw, ch,
-            );
         }
 
         self.blitter.copy(&self.device, &mut encoder, &self.target_view, &surface_view);
         self.queue.submit([encoder.finish()]);
         frame.present();
+    }
+}
+
+/// Texture runs (see `crate::texture_runs`): layers via the layer compositor,
+/// each run's vector ops via vello into `overlay`, composited over `target`.
+impl RunHost for GpuState {
+    type Enc = wgpu::CommandEncoder;
+
+    fn composite_layers(&mut self, enc: &mut wgpu::CommandEncoder, which: &[u32]) {
+        let (cw, ch) = (self.config.width, self.config.height);
+        let lc = self.layer_compositor.get_or_insert_with(|| WebLayerCompositor::new(&self.device));
+        lc.composite_layers(
+            &self.device, &self.queue, enc, &self.layers, which, &self.target_view,
+            self.scale as f32, cw, ch,
+        );
+    }
+
+    fn render_overlay(&mut self, ops: &[DrawOp]) -> bool {
+        if self.overlay.is_none() {
+            self.overlay = Some(make_target(&self.device, self.config.width, self.config.height));
+        }
+        self.render_vello(ops, true)
+    }
+
+    fn composite_overlay(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let oc = self.overlay_compositor.get_or_insert_with(|| OverlayCompositor::new(&self.device));
+        oc.composite(&self.device, enc, &self.overlay.as_ref().unwrap().1, &self.target_view);
+    }
+
+    fn submit(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let fresh = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("canvas-vello-web-blit"),
+        });
+        self.queue.submit([std::mem::replace(enc, fresh).finish()]);
     }
 }
 

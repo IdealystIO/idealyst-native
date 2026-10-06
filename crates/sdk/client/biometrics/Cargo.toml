@@ -77,3 +77,10 @@ web-glue = { workspace = true }
 # runner supplies web-glue's JS; `wasm-pack test` cannot load it).
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+# `LAContext` (src/apple.rs) lives in LocalAuthentication.
+# iOS links the Rust code as a staticlib inside Xcode/swiftc, which drops
+# `#[link(kind = "framework")]`; the iOS run tool links what is declared
+# here (`tests/sdk_framework_declarations.rs` in run-ios checks the two match).
+[package.metadata.idealyst.ios]
+frameworks = ["LocalAuthentication"]

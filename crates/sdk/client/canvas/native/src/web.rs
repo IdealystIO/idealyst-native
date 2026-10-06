@@ -95,10 +95,13 @@ pub(crate) fn rasterizer_2d(
     let capture = capture_stream_of(&canvas, props);
 
     Box::new(move |scene: &Scene| {
-        render_scene(&canvas, &ctx, scene);
-        if !layers.is_empty() {
-            draw_layers(&document, &ctx, &layers, &layer_videos);
-        }
+        // Textures composite where the scene places them (`DrawOp::Texture`);
+        // `paint_scene` has already appended any the author didn't place.
+        render_scene(&canvas, &ctx, scene, &mut |ctx, index| {
+            if let Some(layer) = layers.get(index as usize) {
+                draw_texture(&document, ctx, index as usize, layer, &layer_videos);
+            }
+        });
         // Manual capture: grab the just-rendered frame (paced to CAPTURE_FPS).
         if let Some(c) = &capture {
             c.tick();
@@ -200,14 +203,17 @@ impl LayerVideo {
     }
 }
 
-/// Draw each layer's stream over the scene. The ctx already carries the dpr base
-/// transform (set in `render_scene`), so we work in LOGICAL coordinates — same
-/// space as the rect. Cover-fit (centered crop) + rounded-rect clip + opacity,
-/// matching the macOS GPU `LayerCompositor`.
-fn draw_layers(
+/// Composite texture layer `i` at the current point of the replay. The ctx
+/// carries only the dpr base transform here (`place_textures` closes every
+/// author save frame before a `Texture` op), so we work in LOGICAL coordinates —
+/// the same space as the rect. Crop + fit via `TextureLayer::source_rects`
+/// (shared by every renderer), rounded-rect clip, opacity and border, matching
+/// the GPU `LayerCompositor`.
+fn draw_texture(
     document: &Document,
     ctx: &Ctx2d,
-    layers: &[TextureLayer],
+    i: usize,
+    layer: &TextureLayer,
     videos: &Rc<RefCell<Vec<LayerVideo>>>,
 ) {
     // A layer draws from either a stream's hidden `<video>` (indexed slot) or a
@@ -218,86 +224,83 @@ fn draw_layers(
         Image(HtmlCanvasElement),
     }
     let mut vids = videos.borrow_mut();
-    for (i, layer) in layers.iter().enumerate() {
-        let (vw, vh, src) = match &layer.source {
-            canvas_core::LayerSource::Stream(f) => {
-                let Some(stream) = f() else { continue };
-                let Some(ms) = stream
-                    .native_source()
-                    .and_then(|rc| rc.downcast::<MediaStream>().ok())
-                else {
-                    continue;
-                };
-                while vids.len() <= i {
-                    vids.push(LayerVideo::new(document));
-                }
-                let lv = &mut vids[i];
-                lv.ensure(&ms);
-                let (vw, vh) = (lv.el.video_width() as f32, lv.el.video_height() as f32);
-                if vw < 1.0 || vh < 1.0 {
-                    continue; // first frames not decoded yet
-                }
-                (vw, vh, LayerSrc::Video(i))
+    let (vw, vh, src) = match &layer.source {
+        canvas_core::LayerSource::Stream(f) => {
+            let Some(stream) = f() else { return };
+            let Some(ms) = stream
+                .native_source()
+                .and_then(|rc| rc.downcast::<MediaStream>().ok())
+            else {
+                return;
+            };
+            while vids.len() <= i {
+                vids.push(LayerVideo::new(document));
             }
-            canvas_core::LayerSource::Image(f) => {
-                let Some(img) = f() else { continue };
-                if !img.is_valid() {
-                    continue;
-                }
-                let Some(canvas) = image_canvas_cached(&img) else { continue };
-                (img.width as f32, img.height as f32, LayerSrc::Image(canvas))
+            let lv = &mut vids[i];
+            lv.ensure(&ms);
+            let (vw, vh) = (lv.el.video_width() as f32, lv.el.video_height() as f32);
+            if vw < 1.0 || vh < 1.0 {
+                return; // first frames not decoded yet
             }
-        };
-        let (dx, dy, dw, dh) = (layer.rect)();
-        if dw < 1.0 || dh < 1.0 {
-            continue;
+            (vw, vh, LayerSrc::Video(i))
         }
-        // Shared crop/letterbox math (same on every backend).
-        let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
-            layer.fit.map_rects(vw, vh, dx, dy, dw, dh);
-        // Clip to the DRAWN rect (letterboxed for Contain) so corners round the
-        // image, not the empty bars.
-        let r = ((layer.corner_radius)() as f64).clamp(0.0, (ow.min(oh) as f64) * 0.5);
-
-        ctx.save();
-        ctx.set_global_alpha(layer.opacity.clamp(0.0, 1.0) as f64);
-        ctx.begin_path();
-        let _ = ctx.round_rect(ox as f64, oy as f64, ow as f64, oh as f64, r);
-        ctx.clip(false);
-        match &src {
-            LayerSrc::Video(idx) => {
-                let _ = ctx.draw_image_src_dst(
-                    vids[*idx].el.as_js(), sx as f64, sy as f64, sw as f64, sh as f64, ox as f64,
-                    oy as f64, ow as f64, oh as f64,
-                );
+        canvas_core::LayerSource::Image(f) => {
+            let Some(img) = f() else { return };
+            if !img.is_valid() {
+                return;
             }
-            LayerSrc::Image(canvas) => {
-                let _ = ctx.draw_image_src_dst(
-                    canvas.as_js(), sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64,
-                    ow as f64, oh as f64,
-                );
-            }
+            let Some(canvas) = image_canvas_cached(&img) else { return };
+            (img.width as f32, img.height as f32, LayerSrc::Image(canvas))
         }
-        // Border frame, composited WITH the image (stays locked to the moving
-        // picture). Stroked on a rounded rect inset by half the width.
-        let bw = layer.border_width as f64;
-        if bw > 0.0 {
-            let inset = bw * 0.5;
-            let br = (r - inset).max(0.0);
-            ctx.begin_path();
-            let _ = ctx.round_rect(
-                ox as f64 + inset,
-                oy as f64 + inset,
-                ow as f64 - bw,
-                oh as f64 - bw,
-                br,
-            );
-            ctx.set_line_width(bw);
-            ctx.set_stroke_style_str(&rgba_css(layer.border_color));
-            ctx.stroke();
-        }
-        ctx.restore();
+    };
+    let (_, _, dw, dh) = (layer.rect)();
+    if dw < 1.0 || dh < 1.0 {
+        return;
     }
+    // Shared crop + letterbox math (same on every backend).
+    let ((sx, sy, sw, sh), (ox, oy, ow, oh)) = layer.source_rects(vw, vh);
+    // Clip to the DRAWN rect (letterboxed for Contain) so corners round the
+    // image, not the empty bars.
+    let r = ((layer.corner_radius)() as f64).clamp(0.0, (ow.min(oh) as f64) * 0.5);
+
+    ctx.save();
+    ctx.set_global_alpha(layer.opacity.clamp(0.0, 1.0) as f64);
+    ctx.begin_path();
+    let _ = ctx.round_rect(ox as f64, oy as f64, ow as f64, oh as f64, r);
+    ctx.clip(false);
+    match &src {
+        LayerSrc::Video(idx) => {
+            let _ = ctx.draw_image_src_dst(
+                vids[*idx].el.as_js(), sx as f64, sy as f64, sw as f64, sh as f64, ox as f64,
+                oy as f64, ow as f64, oh as f64,
+            );
+        }
+        LayerSrc::Image(canvas) => {
+            let _ = ctx.draw_image_src_dst(
+                canvas.as_js(), sx as f64, sy as f64, sw as f64, sh as f64, ox as f64, oy as f64,
+                ow as f64, oh as f64,
+            );
+        }
+    }
+    // Border frame, composited WITH the image (stays locked to the moving
+    // picture). Stroked on a rounded rect inset by half the width.
+    let bw = layer.border_width as f64;
+    if bw > 0.0 {
+        let inset = bw * 0.5;
+        let br = (r - inset).max(0.0);
+        ctx.begin_path();
+        let _ = ctx.round_rect(
+            ox as f64 + inset,
+            oy as f64 + inset,
+            ow as f64 - bw,
+            oh as f64 - bw,
+            br,
+        );
+        ctx.set_line_width(bw);
+        ctx.set_stroke_style_str(&rgba_css(layer.border_color));
+        ctx.stroke();
+    }
+    ctx.restore();
 }
 
 /// Hard ceiling for one backing-store dimension. A canvas whose CSS box is not
@@ -310,7 +313,12 @@ fn draw_layers(
 const MAX_BACKING_DIM: f64 = 16384.0;
 
 /// Resize the backing store and replay `scene` into `ctx`.
-fn render_scene(canvas: &HtmlCanvasElement, ctx: &Ctx2d, scene: &Scene) {
+fn render_scene(
+    canvas: &HtmlCanvasElement,
+    ctx: &Ctx2d,
+    scene: &Scene,
+    texture: &mut dyn FnMut(&Ctx2d, u32),
+) {
     let dpr = web_glue::dom::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
     let css_w = canvas.client_width() as f64;
     let css_h = canvas.client_height() as f64;
@@ -336,7 +344,10 @@ fn render_scene(canvas: &HtmlCanvasElement, ctx: &Ctx2d, scene: &Scene) {
     // Protect the dpr base transform from an unbalanced author `restore`.
     ctx.save();
     for op in scene.ops() {
-        apply_op(ctx, op);
+        match op {
+            DrawOp::Texture { index } => texture(ctx, *index),
+            op => apply_op(ctx, op),
+        }
     }
     ctx.restore();
 }
@@ -444,6 +455,9 @@ fn apply_op(ctx: &Ctx2d, op: &DrawOp) {
                 apply_op(ctx, op);
             }
         }
+        // Top-level textures are composited by `render_scene`; nested ones
+        // never reach a renderer (`canvas_core::place_textures` strips them).
+        DrawOp::Texture { .. } => {}
         // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
         _ => {}
     }

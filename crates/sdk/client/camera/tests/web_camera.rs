@@ -85,3 +85,54 @@ async fn camera_subscriber_receives_rgba_frames() {
     assert!(w > 0 && h > 0);
     assert_eq!(len, (w * h * 4) as usize, "tightly packed RGBA8");
 }
+
+/// Regression (CrewForge kiosk e2e, camera 1.6.0 on web-glue 1.6.0): the
+/// camera step's teardown logged `web-glue: callback #N called after its
+/// Rust owner dropped it` once. The kiosk ran under Playwright's pinned
+/// clock, whose fake `requestAnimationFrame` numbers frames from `1e12`;
+/// the pump's frame handle crossed into wasm as an `i32`, so `Drop`'s
+/// `cancelAnimationFrame` named a frame the clock never issued, and the one
+/// frame still queued fired into the dropped pump closure. Here a fake rAF
+/// of that shape drives the pump: after the stream drops, nothing may be
+/// left queued and running the queue may not throw.
+#[wasm_bindgen_test]
+async fn regression_camera_teardown_cancels_its_frame_under_a_fake_clock() {
+    // A manual rAF with Playwright-style ids; `__fakeRaf.run()` fires every
+    // queued frame and returns the messages of any that threw.
+    Function::new_no_args(
+        "const w = window; const real = { raf: w.requestAnimationFrame, caf: w.cancelAnimationFrame }; \
+         let next = 1e12; const q = new Map(); \
+         w.requestAnimationFrame = (f) => { const id = next++; q.set(id, f); return id; }; \
+         w.cancelAnimationFrame = (id) => { q.delete(Number(id)); }; \
+         w.__fakeRaf = { \
+           pending: () => q.size, \
+           run: () => { const errs = []; const due = Array.from(q.values()); q.clear(); \
+                        for (const f of due) { try { f(0); } catch (e) { errs.push(String(e.message || e)); } } \
+                        return errs.join('\\n'); }, \
+           restore: () => { w.requestAnimationFrame = real.raf; w.cancelAnimationFrame = real.caf; delete w.__fakeRaf; }, \
+         };",
+    )
+    .call0(&JsValue::UNDEFINED)
+    .unwrap();
+    let fake = |m: &str| {
+        Function::new_no_args(&format!("return window.__fakeRaf.{m}();"))
+            .call0(&JsValue::UNDEFINED)
+            .unwrap()
+    };
+
+    let opened = Camera::new().open(CameraConfig::default()).await;
+    // Let the pump run a few (fake) frames, so the queued one at teardown
+    // is a re-arm from inside the pump, as in the kiosk.
+    let before = fake("pending").as_f64();
+    for _ in 0..3 {
+        let _ = fake("run");
+    }
+    drop(opened);
+    let pending = fake("pending").as_f64();
+    let errors = fake("run").as_string().unwrap_or_default();
+    fake("restore");
+
+    assert_eq!(before, Some(1.0), "the open pump queues exactly one frame");
+    assert_eq!(pending, Some(0.0), "dropping the stream must cancel the pump's queued frame");
+    assert_eq!(errors, "", "no frame may fire into the dropped pump");
+}

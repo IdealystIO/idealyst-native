@@ -18,9 +18,10 @@ use crate::compose_transform::TransformCompositor;
 use crate::anim::AnimTextures;
 use crate::encode::encode_scene;
 use crate::native_capture::{LayerCompositor, NativeCapture};
-use crate::plan::{plan_scene, CachedRef, ScenePlan};
+use crate::plan::{plan_scene, split_segments, CachedRef, ScenePlan};
+use crate::texture_runs::{composite_texture_runs, RunHost};
 use crate::shape_pass::ShapePass;
-use canvas_core::{paint_scene, CanvasPrim, CanvasProps, DrawOp, Scene as CanvasScene, TextureLayer};
+use canvas_core::{CanvasPrim, DrawOp, Scene as CanvasScene, TextureLayer};
 use media_stream::FrameWriter;
 use runtime_scene::{Element, MountCx, Registry};
 use runtime_shared::accessibility::AccessibilityProps;
@@ -76,7 +77,7 @@ where
     let backend = cx.backend().clone();
     let node = {
         let mut b = backend.borrow_mut();
-        build_canvas(&prim.props, &mut *b)
+        build_canvas(prim, &mut *b)
     };
     finish_mount(&backend, &node, prim);
     node
@@ -154,7 +155,15 @@ fn gpu_can_run_vello() -> bool {
     ok
 }
 
-fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::Node {
+fn build_canvas<H: GraphicsOps>(prim: &Rc<CanvasPrim>, backend: &mut H) -> H::Node {
+    let props = &prim.props;
+    // The surface reports physical pixels + a scale; the painter's
+    // `Scene::size` is logical (what the scene draws in).
+    let sizing = prim.size_reporter();
+    let report = move |size: (u32, u32), scale: f32| {
+        let s = if scale > 0.0 { scale } else { 1.0 };
+        sizing.report(size.0 as f32 / s, size.1 as f32 / s);
+    };
     // Latest painted scene + GPU state, shared between the reactive effect
     // and the surface lifecycle callbacks.
     let scene_cell: Rc<RefCell<CanvasScene>> = Rc::new(RefCell::new(CanvasScene::new()));
@@ -166,11 +175,11 @@ fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::
     // Built in the canvas walker, so the component scope owns it. The clones
     // are hoisted so the macro's `move` captures them (cloned once).
     {
-        let props = props.clone();
+        let paint_prim = prim.clone();
         let scene_cell = scene_cell.clone();
         let state_cell = state_cell.clone();
         runtime_world::effect(move || {
-            *scene_cell.borrow_mut() = paint_scene(&props);
+            *scene_cell.borrow_mut() = paint_prim.paint();
             if let Some(state) = state_cell.borrow_mut().as_mut() {
                 state.render(&scene_cell.borrow());
             }
@@ -185,8 +194,10 @@ fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::
         let capture = props.capture.clone();
         // Texture layers composited into the canvas (Clone: MediaStream + Rc).
         let layers = props.layers.clone();
+        let report = report.clone();
         move |ev: OnReadyEvent| {
             let (size, scale) = (ev.size, ev.scale);
+            report(size, scale);
             // Two kinds of target: a raw window handle (swapchain — iOS/Android/
             // macOS/web) or a lent GL context (GTK4, which can't hand out a
             // per-widget window handle — see `GraphicsTarget`). `RenderState::new`
@@ -257,6 +268,7 @@ fn build_canvas<H: GraphicsOps>(props: &Rc<CanvasProps>, backend: &mut H) -> H::
         let scene_cell = scene_cell.clone();
         let state_cell = state_cell.clone();
         move |ev: OnResizeEvent| {
+            report(ev.size, ev.scale);
             if let Some(state) = state_cell.borrow_mut().as_mut() {
                 state.scale = ev.scale.max(0.0) as f64;
                 state.resize(ev.size);
@@ -964,6 +976,67 @@ impl RenderState {
         }
     }
 
+    /// Encode `ops` with vello and render them into `target` (clearing it) or,
+    /// with `to_overlay`, into the separate `overlay` texture (which must
+    /// exist) over a transparent base. `render_to_texture` SUBMITS its own
+    /// command buffer immediately. Returns `false` if vello failed.
+    fn render_vello(&mut self, ops: &[DrawOp], to_overlay: bool) -> bool {
+        self.scene.reset();
+        // Base transform = device scale: the author's Scene is in LOGICAL
+        // coordinates; scaling by the dpr makes it fill the physical-pixel
+        // surface (no retina under-fill). `1.0` → identity (physical scale).
+        encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
+
+        let params = RenderParams {
+            base_color: Color::from_rgba8(0, 0, 0, 0),
+            width: self.config.width,
+            height: self.config.height,
+            antialiasing_method: AaConfig::Area,
+        };
+        let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
+        // Route image-bearing content (a live-dragged media item lives in
+        // `rest`) to the dedicated `image_renderer`. The main renderer's vello
+        // image atlas is shrunk to 1×1 by image-less bakes (grid/ink); a later
+        // image render resizes it back WITHOUT re-uploading the cached image →
+        // the live image renders blank ("media disappears while dragging").
+        // `image_renderer` only ever renders image content, so its atlas keeps
+        // the upload (same protection as the cached image-layer bakes).
+        let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
+        // Normally built eagerly in the constructor; retry here only if that
+        // transiently failed.
+        if has_image && self.image_renderer.is_none() {
+            // GL path (surface None) needs single-threaded shader init.
+            self.image_renderer = new_vello_renderer(&self.device, self.surface.is_none());
+        }
+        // Image content MUST render on a renderer whose vello image atlas was
+        // never shrunk by an image-less frame, or the image renders blank/
+        // black (see the comment above). The dedicated `image_renderer` is
+        // that renderer. If it's unavailable, `self.renderer` may have been
+        // contaminated by image-less frames (e.g. a vector-only page shown
+        // before an image-bearing one) — so make `self.renderer` safe for
+        // images too by forcing the cached images to RE-UPLOAD this frame
+        // (bumping the encode cache's generation rebuilds their Blob, so vello
+        // can't reuse a stale/evicted atlas slot).
+        if has_image && self.image_renderer.is_none() {
+            crate::encode::force_image_reupload();
+            self.scene.reset();
+            encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
+        }
+        // Flush any animated-image frames this encode staged into their
+        // override textures before rendering (see `anim.rs`).
+        self.anim.apply(
+            &self.device,
+            &self.queue,
+            &mut self.renderer,
+            self.image_renderer.as_mut(),
+        );
+        let renderer = match (has_image, self.image_renderer.as_mut()) {
+            (true, Some(r)) => r,
+            _ => &mut self.renderer,
+        };
+        renderer.render_to_texture(&self.device, &self.queue, &self.scene, view, &params).is_ok()
+    }
+
     /// Render the scene and present a frame. Returns `true` iff a frame was
     /// actually presented; `false` when the swapchain texture couldn't be
     /// acquired (drawable not ready yet — common for the very first frame on a
@@ -987,14 +1060,21 @@ impl RenderState {
         // instanced pass alone; a scene whose LEADING ops are shapes (a backdrop)
         // instances those and composites vello's content over them; anything else
         // is plain vello. All three converge on the same pixels (CLAUDE.md §7).
-        let plan = plan_scene(canvas_scene.ops());
+        //
+        // Texture layers: the scene is split at its `Texture` ops
+        // (`split_segments`). Only the BASE segment (the ops before the first
+        // texture — the whole scene when there are none) goes through the plan
+        // below, unchanged; each texture run is composited afterwards by
+        // `composite_texture_runs`.
+        let segments = split_segments(canvas_scene.ops());
+        let plan = plan_scene(segments.base);
 
         // vello renders its content (the whole scene for `Vello`, only `rest` for
         // `Hybrid`) over a transparent base. `Vello` targets the main `target`;
         // `Hybrid` targets the separate `overlay`, so the instanced backdrop drawn
         // into `target` below survives underneath. `Shapes` skips vello entirely.
         let (content_ops, to_overlay): (Option<&[DrawOp]>, bool) = match &plan {
-            ScenePlan::Vello => (Some(canvas_scene.ops()), false),
+            ScenePlan::Vello => (Some(segments.base), false),
             ScenePlan::Hybrid { rest, .. } => {
                 if self.overlay.is_none() {
                     self.overlay =
@@ -1043,63 +1123,7 @@ impl RenderState {
             self.bake_cached_layers(layers);
         }
         if let Some(ops) = content_ops {
-            self.scene.reset();
-            // Base transform = device scale: the author's Scene is in LOGICAL
-            // coordinates; scaling by the dpr makes it fill the physical-pixel
-            // surface (no retina under-fill). `1.0` → identity (physical scale).
-            encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
-
-            let params = RenderParams {
-                base_color: Color::from_rgba8(0, 0, 0, 0),
-                width: self.config.width,
-                height: self.config.height,
-                antialiasing_method: AaConfig::Area,
-            };
-            let view = if to_overlay { &self.overlay.as_ref().unwrap().1 } else { &self.target_view };
-            // Route image-bearing content (a live-dragged media item lives in
-            // `rest`) to the dedicated `image_renderer`. The main renderer's vello
-            // image atlas is shrunk to 1×1 by image-less bakes (grid/ink); a later
-            // image render resizes it back WITHOUT re-uploading the cached image →
-            // the live image renders blank ("media disappears while dragging").
-            // `image_renderer` only ever renders image content, so its atlas keeps
-            // the upload (same protection as the cached image-layer bakes).
-            let has_image = ops.iter().any(|op| matches!(op, DrawOp::Image { .. }));
-            // Normally built eagerly in the constructor; retry here only if that
-            // transiently failed.
-            if has_image && self.image_renderer.is_none() {
-                // GL path (surface None) needs single-threaded shader init.
-                self.image_renderer = new_vello_renderer(&self.device, self.surface.is_none());
-            }
-            // Image content MUST render on a renderer whose vello image atlas was
-            // never shrunk by an image-less frame, or the image renders blank/
-            // black (see the comment above). The dedicated `image_renderer` is
-            // that renderer. If it's unavailable, `self.renderer` may have been
-            // contaminated by image-less frames (e.g. a vector-only page shown
-            // before an image-bearing one) — so make `self.renderer` safe for
-            // images too by forcing the cached images to RE-UPLOAD this frame
-            // (bumping the encode cache's generation rebuilds their Blob, so vello
-            // can't reuse a stale/evicted atlas slot).
-            if has_image && self.image_renderer.is_none() {
-                crate::encode::force_image_reupload();
-                self.scene.reset();
-                encode_scene(ops, &mut self.scene, Affine::scale(self.scale));
-            }
-            // Flush any animated-image frames this encode staged into their
-            // override textures before rendering (see `anim.rs`).
-            self.anim.apply(
-                &self.device,
-                &self.queue,
-                &mut self.renderer,
-                self.image_renderer.as_mut(),
-            );
-            let renderer = match (has_image, self.image_renderer.as_mut()) {
-                (true, Some(r)) => r,
-                _ => &mut self.renderer,
-            };
-            if renderer
-                .render_to_texture(&self.device, &self.queue, &self.scene, view, &params)
-                .is_err()
-            {
+            if !self.render_vello(ops, to_overlay) {
                 return false;
             }
         }
@@ -1198,18 +1222,14 @@ impl RenderState {
                 }
             }
         }
-        // Texture layers (macOS): composite the camera/screen-share/… into the
-        // target BEFORE the blits, so the strokes + layers are one image that
-        // both the on-screen surface AND the recording IOSurface receive.
-        // Disjoint field borrows — bind the shared ones first.
-        {
-            let device = &self.device;
-            let queue = &self.queue;
-            let target_view = &self.target_view;
-            let (cw, ch) = (self.config.width, self.config.height);
-            let s = self.scale as f32;
-            if let Some(lc) = self.layer_compositor.as_mut() {
-                lc.composite_layers(device, queue, &mut encoder, &self.layers, target_view, s, cw, ch);
+        // Texture layers + the vector runs drawn over them, into the target
+        // BEFORE the blits, so the scene and its layers are one image that both
+        // the on-screen surface AND the recording (IOSurface ring / read-back)
+        // receive. A scene with no layers has no runs: nothing happens here.
+        if !segments.runs.is_empty() {
+            let overlay_pending = to_overlay && content_ops.is_some();
+            if !composite_texture_runs(self, &segments.runs, &mut encoder, overlay_pending) {
+                return false;
             }
         }
 
@@ -1489,6 +1509,41 @@ impl RenderState {
         // vello target is Rgba8Unorm, top-down, straight alpha — exactly the
         // FrameWriter contract.
         writer.write_rgba8(w, h, &frame);
+    }
+}
+
+/// Texture runs (see `crate::texture_runs`): layers via the layer compositor,
+/// each run's vector ops via vello into `overlay`, composited over `target`.
+impl RunHost for RenderState {
+    type Enc = wgpu::CommandEncoder;
+
+    fn composite_layers(&mut self, enc: &mut wgpu::CommandEncoder, which: &[u32]) {
+        let (cw, ch) = (self.config.width, self.config.height);
+        if let Some(lc) = self.layer_compositor.as_mut() {
+            lc.composite_layers(
+                &self.device, &self.queue, enc, &self.layers, which, &self.target_view,
+                self.scale as f32, cw, ch,
+            );
+        }
+    }
+
+    fn render_overlay(&mut self, ops: &[DrawOp]) -> bool {
+        if self.overlay.is_none() {
+            self.overlay = Some(make_target(&self.device, self.config.width, self.config.height));
+        }
+        self.render_vello(ops, true)
+    }
+
+    fn composite_overlay(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let oc = self.overlay_compositor.get_or_insert_with(|| OverlayCompositor::new(&self.device));
+        oc.composite(&self.device, enc, &self.overlay.as_ref().unwrap().1, &self.target_view);
+    }
+
+    fn submit(&mut self, enc: &mut wgpu::CommandEncoder) {
+        let fresh = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("canvas-vello-blit"),
+        });
+        self.queue.submit([std::mem::replace(enc, fresh).finish()]);
     }
 }
 

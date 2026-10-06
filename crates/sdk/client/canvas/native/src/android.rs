@@ -47,6 +47,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+// Pure pixel-format conversions shared with the Cairo renderer (and tested on
+// every host by `tests/pixels.rs`).
+#[path = "pixels.rs"]
+mod pixels;
+
 pub(crate) fn mount_canvas(
     cx: &mut MountCx<'_, AndroidBackend>,
     prim: &Rc<CanvasPrim>,
@@ -55,13 +60,14 @@ pub(crate) fn mount_canvas(
     let backend = cx.backend().clone();
     let node = {
         let mut b = backend.borrow_mut();
-        build_canvas(&prim.props, &mut b)
+        build_canvas(prim, &mut b)
     };
     crate::finish_mount(&backend, &node, prim);
     node
 }
 
-fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
+fn build_canvas(prim: &Rc<CanvasPrim>, b: &mut AndroidBackend) -> GlobalRef {
+    let props = &prim.props;
     let view = b.with_jni(|env, ctx| {
         let class = env
             .find_class("android/widget/ImageView")
@@ -103,15 +109,26 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     let layer_subs: Rc<RefCell<Vec<Option<canvas_core::Subscription>>>> =
         Rc::new(RefCell::new(Vec::new()));
 
+    let sizing = prim.size_reporter();
     let render: Rc<dyn Fn()> = {
         let view = view.clone();
         let cell = cell.clone();
         let props = props.clone();
         let layer_subs = layer_subs.clone();
+        let sizing = sizing.clone();
         Rc::new(move || {
             canvas_core::sync_layer_subscriptions(&props.layers, &mut layer_subs.borrow_mut());
-            render_scene_into_view(&view, &cell.borrow(), &props);
+            render_scene_into_view(&view, &cell.borrow(), &props, &sizing);
         })
+    };
+
+    // Later resizes: the backend's own layout notification (what
+    // `ViewHandle::on_layout` uses), already in dp. A size change re-runs the
+    // paint effect through the reporter, which re-renders at the new size.
+    let layout_sub = {
+        let sizing = sizing.clone();
+        runtime_vocabulary::caps::ViewOps::make_view_handle(b, &view)
+            .on_layout(move |w, h| sizing.report(w, h))
     };
 
     // Reactive repaint: re-record the Picture whenever a signal the draw
@@ -119,11 +136,13 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
     // world-entered, so the effect is collected into the mounting subtree and
     // dies at unmount. Clones hoisted so the closure captures them once.
     {
-        let props = props.clone();
+        let paint_prim = prim.clone();
         let cell = cell.clone();
         let render = render.clone();
         runtime_world::effect(move || {
-            *cell.borrow_mut() = canvas_core::paint_scene(&props);
+            // Owned by the subtree-scoped effect, so it unsubscribes at unmount.
+            let _keep = &layout_sub;
+            *cell.borrow_mut() = paint_prim.paint();
             render();
         });
     }
@@ -142,12 +161,17 @@ fn build_canvas(props: &Rc<CanvasProps>, b: &mut AndroidBackend) -> GlobalRef {
 }
 
 /// Rasterize `scene` into a fresh `Bitmap` sized to the view's pixels
-/// (density-scaled), composite any texture `layers` (e.g. a camera) over it,
-/// install the result via `setImageBitmap`, and — while a recorder is
+/// (density-scaled), compositing texture `layers` (e.g. a camera) where the
+/// scene's `DrawOp::Texture` ops place them, install the result via `setImageBitmap`, and — while a recorder is
 /// subscribed to `props.capture` — read the composited bitmap back and push it
 /// to that stream (self-capture). No-op until the view has been laid out
 /// (non-zero size).
-fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) {
+fn render_scene_into_view(
+    view: &GlobalRef,
+    scene: &Scene,
+    props: &CanvasProps,
+    sizing: &canvas_core::SizeReporter,
+) {
     let layers = &props.layers;
     with_jni_env(|env| {
         let w_px = call_int(env, view.as_obj(), "getWidth");
@@ -156,6 +180,9 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) 
             return;
         }
         let density = view_density(env, view).max(0.01);
+        // The view's laid-out size in dp — what the painter reads as
+        // `Scene::size` (deduped; a change re-paints through the effect).
+        sizing.report(w_px as f32 / density, h_px as f32 / density);
 
         // Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         let config = match argb_8888_config(env) {
@@ -202,22 +229,12 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) 
         );
 
         // Protect the base (density) CTM from any unbalanced author
-        // save/restore in the scene, so layers composite in a known transform.
+        // save/restore in the scene.
         let _ = env.call_method(&canvas, "save", "()I", &[]);
         if let Some(mut painter) = CanvasPainter::new(env, &canvas) {
-            for op in scene.ops() {
-                painter.apply(op);
-            }
-            drop(painter);
+            replay_scene(&mut painter, scene.ops(), layers);
         }
         let _ = env.call_method(&canvas, "restore", "()V", &[]);
-
-        // Texture layers (camera, screen share, …) composited OVER the scene,
-        // in the same logical coordinate space (the density scale is still
-        // active). Mirrors the web `draw_layers` path; shares `Fit::map_rects`.
-        for layer in layers {
-            composite_layer(env, &canvas, layer);
-        }
 
         let _ = env.call_method(
             view.as_obj(),
@@ -281,22 +298,47 @@ fn render_scene_into_view(view: &GlobalRef, scene: &Scene, props: &CanvasProps) 
     });
 }
 
-/// Composite one [`TextureLayer`] over the canvas: pull the stream's latest
-/// RGBA frame, build a `Bitmap`, and `drawBitmap(src, dst)` into a rounded,
-/// alpha-blended rect using the shared [`canvas_core::Fit::map_rects`] geometry.
-/// No-op when the stream has no frame yet (camera still warming up).
+/// Replay a top-level scene op list: every op goes through the painter except
+/// [`DrawOp::Texture`], which composites `layers[index]` right there, so ops
+/// after it draw on top of it.
+///
+/// `canvas_core::paint_scene` (via `place_textures`) guarantees each `Texture`
+/// op sits at the top level with an in-range index and the BASE canvas state
+/// around it (all author saves closed — only our density scale is active), and
+/// it has already appended the layers the author didn't place. So this is a
+/// plain in-order replay; no post-scene layer loop.
+fn replay_scene(painter: &mut CanvasPainter, ops: &[DrawOp], layers: &[TextureLayer]) {
+    for op in ops {
+        match op {
+            DrawOp::Texture { index } => {
+                if let Some(layer) = layers.get(*index as usize) {
+                    composite_layer(painter.env, painter.canvas, layer);
+                }
+            }
+            op => painter.apply(op),
+        }
+    }
+}
+
+/// Composite one [`TextureLayer`] onto the canvas: pull the stream's latest
+/// RGBA frame, build a `Bitmap`, and draw its cropped/fitted source rect into a
+/// rounded, alpha-blended rect using the shared
+/// [`TextureLayer::source_rects`] geometry (crop, then fit — identical on every
+/// backend). No-op when the stream has no frame yet (camera still warming up).
 fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
     let mut rgba: Vec<u8> = Vec::new();
     let Some((vw, vh)) = layer.resolve_rgba(&mut rgba) else { return };
     if vw == 0 || vh == 0 || rgba.len() < (vw as usize) * (vh as usize) * 4 {
         return;
     }
-    let (dx, dy, dw, dh) = (layer.rect)();
+    let (_, _, dw, dh) = (layer.rect)();
     if dw < 1.0 || dh < 1.0 {
         return;
     }
-    let ((sx, sy, sw, sh), (ox, oy, ow, oh)) =
-        layer.fit.map_rects(vw as f32, vh as f32, dx, dy, dw, dh);
+    let ((sx, sy, sw, sh), (ox, oy, ow, oh)) = layer.source_rects(vw as f32, vh as f32);
+    if sw <= 0.0 || sh <= 0.0 || ow <= 0.0 || oh <= 0.0 {
+        return;
+    }
 
     let Some(bmp) = rgba_bitmap(env, vw as i32, vh as i32, &mut rgba) else { return };
 
@@ -310,7 +352,9 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
 
     let _ = env.call_method(canvas, "save", "()I", &[]);
 
-    // Round the DRAWN rect (letterboxed for Contain) so corners clip the image.
+    // Clip to the DRAWN rect (letterboxed for Contain), rounded when
+    // `corner_radius > 0`, so corners clip the image and the full-bitmap draw
+    // below can't spill outside the destination.
     let r = (layer.corner_radius)().clamp(0.0, ow.min(oh) * 0.5);
     if r > 0.0 {
         if let Some(clip) = round_rect_path(env, ox, oy, ow, oh, r) {
@@ -322,24 +366,38 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
                 &[JValue::Object(&local)],
             );
         }
+    } else if let Some(dst) = rect_f(env, ox, oy, ow, oh) {
+        let _ = env.call_method(canvas, "clipRect", "(Landroid/graphics/RectF;)Z", &[JValue::Object(&dst)]);
     }
 
-    // src in bitmap pixels (int Rect), dst in logical points (RectF).
-    if let (Some(src), Some(dst)) = (
-        int_rect(env, sx, sy, sw, sh),
-        rect_f(env, ox, oy, ow, oh),
-    ) {
-        let _ = env.call_method(
-            canvas,
-            "drawBitmap",
-            "(Landroid/graphics/Bitmap;Landroid/graphics/Rect;Landroid/graphics/RectF;Landroid/graphics/Paint;)V",
-            &[
-                JValue::Object(&bmp),
-                JValue::Object(&src),
-                JValue::Object(&dst),
-                JValue::Object(&paint),
-            ],
-        );
+    // Map the (fractional) source rect onto the destination with a Matrix
+    // rather than `drawBitmap(Rect, RectF)`: that overload takes an INTEGER
+    // source rect, so a crop or Cover offset would snap to whole source pixels
+    // and drift from the web/Apple/vello framing, which sample the exact
+    // `source_rects` sub-rect.
+    if let (Some(src), Some(dst)) = (rect_f(env, sx, sy, sw, sh), rect_f(env, ox, oy, ow, oh)) {
+        let fill = env
+            .get_static_field(
+                "android/graphics/Matrix$ScaleToFit",
+                "FILL",
+                "Landroid/graphics/Matrix$ScaleToFit;",
+            )
+            .and_then(|v| v.l());
+        let matrix = env.new_object("android/graphics/Matrix", "()V", &[]);
+        if let (Ok(fill), Ok(matrix)) = (fill, matrix) {
+            let _ = env.call_method(
+                &matrix,
+                "setRectToRect",
+                "(Landroid/graphics/RectF;Landroid/graphics/RectF;Landroid/graphics/Matrix$ScaleToFit;)Z",
+                &[JValue::Object(&src), JValue::Object(&dst), JValue::Object(&fill)],
+            );
+            let _ = env.call_method(
+                canvas,
+                "drawBitmap",
+                "(Landroid/graphics/Bitmap;Landroid/graphics/Matrix;Landroid/graphics/Paint;)V",
+                &[JValue::Object(&bmp), JValue::Object(&matrix), JValue::Object(&paint)],
+            );
+        }
     }
 
     // Border frame, composited WITH the image (stays locked to the moving
@@ -369,8 +427,11 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
                 "(F)V",
                 &[JValue::Float(bw as jfloat)],
             );
+            // The layer opacity fades the frame along with the picture, as on
+            // web (`globalAlpha` covers both) and vello (`bcolor.a * opacity`).
             let c = layer.border_color;
-            let argb = ((c.a as i32) << 24)
+            let a = (c.a as f32 * layer.opacity.clamp(0.0, 1.0)).round() as i32;
+            let argb = (a << 24)
                 | ((c.r as i32) << 16)
                 | ((c.g as i32) << 8)
                 | (c.b as i32);
@@ -396,11 +457,6 @@ fn composite_layer(env: &mut JNIEnv, canvas: &JObject, layer: &TextureLayer) {
     let _ = env.call_method(canvas, "restore", "()V", &[]);
 }
 
-/// Build a mutable `ARGB_8888` `Bitmap` of `w × h` from tightly-packed RGBA8
-/// bytes. Android's `ARGB_8888` is byte-order R,G,B,A in memory, matching the
-/// `MediaStream` frame layout, so `copyPixelsFromBuffer` is a straight copy. A
-/// direct `ByteBuffer` wraps the Rust slice (no intermediate Java array); the
-/// copy is synchronous, so the slice need only outlive this call.
 thread_local! {
     /// Per-thread cache of uploaded image `Bitmap`s (as `GlobalRef`s) keyed
     /// by [`ImageSource::id`], so a static image isn't re-uploaded to the JVM
@@ -422,6 +478,16 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// Build a mutable `ARGB_8888` `Bitmap` of `w × h` from tightly-packed,
+/// STRAIGHT-alpha RGBA8 bytes (the `MediaStream` / `ImageSource` layout).
+///
+/// Android's `ARGB_8888` is byte-order R,G,B,A in memory, but a `Bitmap` is
+/// premultiplied by default and `copyPixelsFromBuffer` copies bytes verbatim
+/// (unlike `setPixels`, it does not premultiply). So `rgba` is premultiplied in
+/// place first; without it every semi-transparent pixel (a logo watermark's
+/// soft edge) composites too bright. Opaque pixels — every camera frame — are
+/// unchanged. A direct `ByteBuffer` wraps the Rust slice (no intermediate Java
+/// array); the copy is synchronous, so the slice need only outlive this call.
 fn rgba_bitmap<'env>(
     env: &mut JNIEnv<'env>,
     w: i32,
@@ -440,6 +506,7 @@ fn rgba_bitmap<'env>(
         .ok()?
         .l()
         .ok()?;
+    pixels::premultiply_rgba8(rgba);
     // SAFETY: the buffer is consumed synchronously by copyPixelsFromBuffer
     // below; Java does not retain it past this call.
     let buf = unsafe { env.new_direct_byte_buffer(rgba.as_mut_ptr(), rgba.len()).ok()? };
@@ -692,6 +759,11 @@ impl<'p, 'env> CanvasPainter<'p, 'env> {
                     self.apply(op);
                 }
             }
+            // Top-level Texture ops are composited by `replay_scene`, which
+            // never hands them here. Nested op lists (Layer / LayerCached /
+            // MaskGroup contents) never contain one: `canvas_core::place_textures`
+            // strips them.
+            DrawOp::Texture { .. } => {}
             // `DrawOp` is `#[non_exhaustive]`; future ops no-op until wired.
             _ => {}
         }

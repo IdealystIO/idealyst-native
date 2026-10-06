@@ -26,6 +26,15 @@ license.workspace = true
 # this capability per platform.
 capabilities = ["network_state"]
 
+# `NWPathMonitor` (src/apple.rs) lives in the Network framework. The
+# `#[link]` there covers macOS (rustc links the binary) but not iOS: the app
+# links the Rust code as a staticlib inside Xcode/swiftc, which drops it, and
+# the device link failed with undefined `_nw_path_monitor_*`. The iOS run
+# tool links what is declared here (`tests/sdk_framework_declarations.rs` in
+# run-ios checks every SDK).
+[package.metadata.idealyst.ios]
+frameworks = ["Network"]
+
 [features]
 # Compile-checked usage recipes for the catalog / MCP / docs surface. Off in
 # production builds, so recipes cost nothing there.

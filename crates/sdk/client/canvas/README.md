@@ -25,6 +25,35 @@ ui! {
 Any `Signal` read inside `draw` re-renders the canvas when it changes (the same
 reactive convention as `video`/`svg`).
 
+## The canvas's size
+
+`s.size()` in the `draw` closure is the canvas's laid-out size `(width,
+height)`, in the same logical units the scene draws in. Reading it makes the
+painter re-run when the canvas is resized, so content can scale to its box with
+no measuring code:
+
+```rust
+draw: canvas::draw(|s| {
+    let (w, h) = s.size();
+    s.fill_path(Path::rect(0.0, 0.0, w, h), background);
+})
+```
+
+It is `(0, 0)` on the first paint (which can run before layout) and for a
+scene built outside a canvas. Scenes built by `layer` / `layer_cached` see the
+same size as their parent.
+
+**For renderer authors.** A renderer paints through `CanvasPrim::paint()`
+(instead of `paint_scene`) inside its repaint effect, and reports the size from
+wherever it already learns it, through `CanvasPrim::size_reporter()`: a resize
+observer (web), `drawRect:` (iOS/macOS), the backend's layout notification
+(Android), the widget snapshot (Linux), the surface's ready/resize events
+(vello). Report LOGICAL units (divide physical pixels by the scale). Everything
+else lives in `SizeReporter` once: duplicate reports are ignored, the write is
+committed through a 0 ms scheduler timer (every backend flushes after scheduler
+callbacks, and resize notifications arrive outside the framework's dispatch),
+and a report that lands after the canvas unmounted is dropped.
+
 ## Bulk shapes (instanced)
 
 For a grid or scatter of **many** simple shapes, filling one `Path::circle` /
@@ -75,6 +104,45 @@ dashes a stroke. `DrawOp::MaskGroup` masks one op list by another's **luminance*
 (soft masks / watermarks): on `canvas-vello` it uses vello's luminance-mask
 layer; the [`pdf`](../pdf/) SDK builds these from PDF `/SMask`s.
 
+## Textures (live video and images) in the draw order
+
+`CanvasProps::layers` lists texture sources: a live `MediaStream` (a camera, a
+screen share) or a static image, each with a reactive `rect`, a `fit`, an
+optional `src_crop`, corner radius, opacity and border. The scene decides where
+each one is drawn. `s.texture(i)` composites `layers[i]` at that point in the
+draw order, so anything drawn after it lands on top:
+
+```rust
+canvas(CanvasProps {
+    draw: canvas::draw(move |s: &mut Scene| {
+        s.texture(0);                                   // the camera frame
+        let m = camera.source_to_canvas(frame_w, frame_h);
+        let (x, y) = m.apply(corner.x, corner.y);       // frame pixels → canvas
+        // ... stroke an outline over the frame
+    }),
+    layers: vec![camera.clone()],
+    ..Default::default()
+})
+```
+
+The rules, applied once in `canvas_core::paint_scene` (`place_textures`) so every
+renderer behaves the same:
+
+- A texture is drawn in the canvas's logical coordinates. The scene's current
+  transform and clip don't apply to it, and they carry on unchanged after it.
+- A layer the scene never places is drawn after the whole scene, in `layers`
+  order. A canvas that never calls `texture` therefore looks exactly as before.
+- `texture` only counts at the top level of a scene. Inside a raster `layer`,
+  a cached layer or a mask group it is ignored, as is an index with no layer.
+
+`TextureLayer::source_rects` gives the crop + fit rectangles every renderer
+composites with, and `TextureLayer::source_to_canvas` maps the source's pixel
+coordinates into canvas coordinates, which is what you need to register vector
+content to the picture (an outline around something detected in the frame).
+
+A live layer only shows new frames when the canvas repaints, so keep a
+`raf_loop` bumping a signal the painter reads while the stream is on.
+
 ## Renderers
 
 Pick **one** at the boot entry's registry seam (the scene registry is
@@ -82,7 +150,7 @@ Pick **one** at the boot entry's registry seam (the scene registry is
 
 | Crate | Engine | Where it runs |
 | ----- | ------ | ------------- |
-| [`canvas-native`](native/) | each platform's native 2D API — web Canvas2D, iOS/macOS CoreGraphics, Android `android.graphics` | everywhere with a native 2D API |
+| [`canvas-native`](native/) | each platform's native 2D API — web Canvas2D, iOS/macOS CoreGraphics, Android `android.graphics`, Linux Cairo | everywhere with a native 2D API |
 | [`canvas-vello`](vello/) | GPU compute 2D via [`vello`](https://github.com/linebender/vello) on `wgpu` (Metal / Vulkan / DX12) | every native backend with a capable GPU |
 
 Registering both (native first, then vello) is the recommended setup on
@@ -159,6 +227,13 @@ renderers (CLAUDE.md §7), so verify the **GPU (`canvas-vello`)** and **CPU
 - [ ] `cargo test -p canvas` — scene-model logic (paths, paint, `ShapeInstance` batches, glyph runs, blend/mask ops)
 - [ ] `cargo build -p canvas --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p canvas-native --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `native/tests/web_canvas.rs`: the web Canvas2D replay (on web-glue) read back pixel by pixel — solid / gradient / image / even-odd fills, persistent layer, transform + clip — image and live-stream texture layers, the `captureStream` self-capture's native source (a `web_glue::dom::MediaStream`), and (`--features web-sys-canvas`) `make_2d_rasterizer` on a `web_sys` canvas (canvas-vello's fallback entry, the one HYBRID-BRIDGE: wgpu seam — behind that feature so a canvas app without canvas-vello links no wasm-bindgen and builds in own mode; `native/tests/no_wasm_bindgen.rs` pins it)
+
+- [x] `cargo test -p canvas-core` — `tests/size.rs`: a renderer's size report reaches the painter and repaints, same-size reports don't repaint, a report after unmount is ignored; and the texture-op rules (`place_textures`: placement, appending unplaced layers, base state at a texture + state resumed after it, nested/out-of-range removal) and `TextureLayer::source_rects` / `source_to_canvas`
+- [x] `cargo test -p canvas-native --target wasm32-unknown-unknown --test web_canvas` — `the_painter_sees_the_laid_out_canvas_size` (the resize observer's report reaches `Scene::size`); `texture_ops_order_vector_content_around_layers`: a fill after `texture(0)` is on top, the texture ignores the author transform, an unplaced layer composites over the scene, `src_crop` is honored
+- [x] `cargo test -p canvas-native` (macOS host) — headless CoreGraphics tests in `native/src/macos.rs` drive the shared Apple painter (iOS + macOS): texture-op ordering, unplaced layers, transform reset, upright image, `src_crop`, Contain letterbox; `native/tests/pixels.rs` — RGBA premultiply / Cairo ARGB32 conversions
+- [x] Linux (Cairo) — `cargo test -p canvas-native` inside a Linux environment with gtk4/cairo (e.g. a devcontainer: `CARGO_TARGET_DIR=/tmp/cn-linux-target cargo test --locked -p canvas-native`): texture-op ordering, unplaced layers, `src_crop`, transform/clip reset, rounded/faded/framed layers
+- [x] `cargo test -p canvas-vello` (macOS Metal) — texture-op ordering on the GPU (`vello/tests/headless_compositor.rs`), the overlay-reuse submit-ordering model (`texture_runs.rs`), segmentation incl. keeping the Cached/Hybrid/Shapes fast paths with layers (`plan.rs`), shared layer crop/fit/clip geometry (`layer_blit.rs`)
+- [ ] Android `android.graphics` texture compositing — compile-checked (`cargo check -p canvas-native --target aarch64-linux-android`); needs a device/emulator run
 
 **Behavior**
 - [ ] **Web** — register `canvas-native`; a `draw` scene renders via Canvas2D; reactive `Signal` reads re-render on change; self-capture records via `captureStream()`.

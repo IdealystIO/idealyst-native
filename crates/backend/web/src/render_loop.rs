@@ -34,7 +34,7 @@ struct WebHandle {
 struct State {
     window: web_glue::dom::Window,
     /// Browser's rAF handle for the currently-queued frame.
-    pending: Option<i32>,
+    pending: Option<f64>,
     /// The per-frame callback. We own it so we can drop it after telling
     /// the browser to cancel — never the other way around.
     closure: Option<Closure>,

@@ -56,7 +56,11 @@ pub trait Host: 'static {
     /// Called by the navigator handler at the points where it drops a
     /// screen's `Realized` — the eviction, stack pop / replace / reset,
     /// and navigator teardown — while the subtree is still assembled,
-    /// so a host that walks its own children can still find them.
+    /// so a host that walks its own children can still find them. The
+    /// scene's reactive regions call it too, for every subtree they
+    /// throw away: a `when`/`switch` branch swapped out (anchored and
+    /// spliced), a keyed list's anchored rebuild, and each row a spliced
+    /// keyed list removes.
     ///
     /// Default: no-op. Hosts that keep no per-node state outside the
     /// node itself (web, SSR — the DOM node dies with its last

@@ -102,3 +102,48 @@ async fn screen_recorder_subscriber_receives_rgba_frames() {
     assert_eq!((w, h), (48, 24));
     assert!(px[1] > 140 && px[0] < 70 && px[3] == 255, "pixel {px:?}");
 }
+
+/// Regression (same bug class as the camera pump's teardown error): the
+/// pump's `setInterval` id crossed into wasm as an `i32`. Under a fake clock
+/// that numbers timers from `1e12` (Playwright's `page.clock`, which
+/// `setFixedTime` installs) the id was truncated, `Drop`'s `clearInterval`
+/// missed, and the interval kept firing into the dropped pump closure —
+/// `web-glue: callback #N called after its Rust owner dropped it` on every
+/// tick. Stopping the recording must clear the host's interval.
+#[wasm_bindgen_test]
+async fn regression_stopping_the_recording_clears_its_interval_under_a_fake_clock() {
+    let _rec = fake_display_media();
+    // A manual setInterval with Playwright-style ids. Installed AFTER the
+    // stand-in picker, whose own paint interval stays on the real clock.
+    Function::new_no_args(
+        "const w = window; const real = { si: w.setInterval, ci: w.clearInterval }; \
+         let next = 1e12; const live = new Map(); \
+         w.setInterval = (f) => { const id = next++; live.set(id, f); return id; }; \
+         w.clearInterval = (id) => { live.delete(Number(id)); }; \
+         w.__fakeInterval = { \
+           live: () => live.size, \
+           tick: () => { const errs = []; for (const f of live.values()) { \
+                            try { f(); } catch (e) { errs.push(String(e.message || e)); } } \
+                          return errs.join('\\n'); }, \
+           restore: () => { w.setInterval = real.si; w.clearInterval = real.ci; delete w.__fakeInterval; }, \
+         };",
+    )
+    .call0(&JsValue::UNDEFINED)
+    .unwrap();
+    let fake = |m: &str| {
+        Function::new_no_args(&format!("return window.__fakeInterval.{m}();"))
+            .call0(&JsValue::UNDEFINED)
+            .unwrap()
+    };
+
+    let stream = ScreenRecorder::new().start(RecordingConfig::default()).await;
+    let before = fake("live").as_f64();
+    drop(stream);
+    let after = fake("live").as_f64();
+    let errors = fake("tick").as_string().unwrap_or_default();
+    fake("restore");
+
+    assert_eq!(before, Some(1.0), "the recording runs one pump interval");
+    assert_eq!(after, Some(0.0), "stopping the recording must clear its interval");
+    assert_eq!(errors, "", "no tick may fire into the dropped pump");
+}

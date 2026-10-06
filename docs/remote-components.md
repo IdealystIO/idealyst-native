@@ -433,7 +433,9 @@ bundle needs what this app doesn't have:
 - **`remote_host::remote::provides(&host_fns)`** gives the app's side, and
   `remote_bundle::check(&requires, codec, &provides)` compares them. That's how
   a server or an update client can pick a bundle an app can run before
-  downloading it. `idealyst remote inspect` prints a bundle's list.
+  downloading it. `provides.id()` names an app's side by a hash, so an app
+  can send the id instead of the whole list ([docs/ota.md](ota.md#answers-per-app-build)).
+  `idealyst remote inspect` prints a bundle's list.
 - **Not covered:** a value that crosses by key (a tone or variant name) is
   only checked when it crosses. A key this app doesn't have, as an app
   component's prop, shows an error in the remote component's place, naming

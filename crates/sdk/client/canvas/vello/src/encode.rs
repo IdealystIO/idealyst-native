@@ -288,6 +288,13 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
                 vs.pop_layer(); // apply mask to the content
                 vs.pop_layer(); // close the group
             }
+            // A texture layer can't be drawn by vello (a camera's native surface
+            // isn't a vello image). The renderers SEGMENT the top-level op list at
+            // `Texture` ops (`plan::split_segments`) and composite the layer
+            // between vello passes, so a `Texture` op never reaches this encoder
+            // from them — and `place_textures` strips nested ones. A raw scene
+            // handed straight to `render_to_rgba` (no layers) has nothing to draw.
+            DrawOp::Texture { .. } => {}
             _ => {}
         }
     }

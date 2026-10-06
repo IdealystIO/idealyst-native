@@ -128,6 +128,12 @@ members = [
     "crates/ota/client",
     "crates/ota/macros",
     "crates/ota/publish",
+    # The over-the-air demo (a macOS window updated from a local MinIO).
+    "crates/ota/demo",
+    # The over-the-air console (self-hosted: manage a release location).
+    "crates/ota/console",
+    # The over-the-air resolution service (an app's update answer, per build).
+    "crates/ota/resolver",
     # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
     "crates/dev/parity-goldens",
     "crates/dev/headless-screenshot",
@@ -235,6 +241,8 @@ members = [
     "crates/sdk/client/microphone",
     "crates/sdk/client/camera",
     "crates/sdk/client/media-stream",
+    "crates/sdk/client/qr",
+    "crates/sdk/client/qr/examples/qr-demo",
     "crates/sdk/client/media-writer",
     "crates/sdk/client/video-compose",
     "crates/sdk/client/denoise",
@@ -629,6 +637,7 @@ graphql = { path = "crates/sdk/client/graphql", version = "1.5.2", registry = "i
 microphone = { path = "crates/sdk/client/microphone", version = "1.6.0", registry = "idealyst" }
 camera = { path = "crates/sdk/client/camera", version = "1.6.0", registry = "idealyst" }
 media-stream = { path = "crates/sdk/client/media-stream", version = "1.6.0", registry = "idealyst" }
+qr = { path = "crates/sdk/client/qr", version = "0.1.0", registry = "idealyst" }
 media-writer = { path = "crates/sdk/client/media-writer", version = "1.6.0", registry = "idealyst" }
 video-compose = { path = "crates/sdk/client/video-compose", version = "1.6.0", registry = "idealyst" }
 denoise = { path = "crates/sdk/client/denoise", version = "1.5.2", registry = "idealyst" }

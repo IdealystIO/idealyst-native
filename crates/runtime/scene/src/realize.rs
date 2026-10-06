@@ -37,6 +37,114 @@ use crate::host::Host;
 use crate::registry::Registry;
 
 // ============================================================================
+// Splice positions
+// ============================================================================
+
+/// The live node counts of every spliced region in ONE parent's child
+/// list, in child order. Shared (via `Rc`) by the regions of that parent
+/// so each can find where it starts at the moment it splices.
+///
+/// # The bug this prevents
+///
+/// A spliced region used to capture its start as a plain `usize` at
+/// mount: the number of nodes before it AT THAT MOMENT. When a region
+/// earlier in the same parent later changed how many nodes it holds — an
+/// `if` turning on, a sibling keyed list growing or shrinking, a `match`
+/// arm with a different node count — every later region kept splicing at
+/// the stale index. A keyed row whose key changed in place (removed, then
+/// re-inserted at `base + i`) landed one slot too high per node the
+/// earlier region had gained; a sibling list's remounted head landed
+/// after the items list when an earlier region shrank. Counting the live
+/// totals of the earlier regions at splice time keeps the index exact
+/// without touching the host contract (`insert_at` stays index-based).
+#[derive(Default)]
+struct SpliceLedger {
+    counts: RefCell<Vec<usize>>,
+}
+
+/// Where a spliced region (or a parked deferred item) starts in its
+/// parent: the nodes before it that never change count (`fixed` — static
+/// items, anchored regions, `Many` rows, parked placeholders) plus the
+/// CURRENT node count of every spliced region before it. Read when the
+/// region splices, never cached.
+#[derive(Clone)]
+pub(crate) struct SpliceBase {
+    fixed: usize,
+    ledger: Rc<SpliceLedger>,
+    regions_before: usize,
+}
+
+impl SpliceBase {
+    /// The region's absolute child index in its parent right now.
+    pub(crate) fn index(&self) -> usize {
+        let counts = self.ledger.counts.borrow();
+        self.fixed + counts[..self.regions_before].iter().sum::<usize>()
+    }
+}
+
+/// A spliced region's handle for publishing its own node count, so the
+/// regions after it in the same parent see it. Must be updated whenever
+/// the region's node set in the parent changes.
+pub(crate) struct SpliceCount {
+    ledger: Rc<SpliceLedger>,
+    slot: usize,
+}
+
+impl SpliceCount {
+    fn set(&self, count: usize) {
+        self.ledger.counts.borrow_mut()[self.slot] = count;
+    }
+}
+
+/// The running position while realizing one parent's children. Threaded
+/// THROUGH fragments (they splice flat into the same parent), fresh per
+/// parent.
+pub(crate) struct SpliceCursor {
+    fixed: usize,
+    ledger: Rc<SpliceLedger>,
+}
+
+impl SpliceCursor {
+    fn new() -> Self {
+        SpliceCursor {
+            fixed: 0,
+            ledger: Rc::new(SpliceLedger::default()),
+        }
+    }
+
+    /// Account `n` nodes whose count never changes.
+    fn advance_fixed(&mut self, n: usize) {
+        self.fixed += n;
+    }
+
+    /// Where the next child starts, for a fixed-size child.
+    fn base(&self) -> SpliceBase {
+        SpliceBase {
+            fixed: self.fixed,
+            ledger: self.ledger.clone(),
+            regions_before: self.ledger.counts.borrow().len(),
+        }
+    }
+
+    /// Open a spliced region at the current position: its base, plus the
+    /// handle it publishes its live node count through (starts at 0, which
+    /// is exact until the region's first splice inserts anything).
+    fn open_region(&mut self) -> (SpliceBase, SpliceCount) {
+        let base = self.base();
+        let mut counts = self.ledger.counts.borrow_mut();
+        let slot = counts.len();
+        counts.push(0);
+        (
+            base,
+            SpliceCount {
+                ledger: self.ledger.clone(),
+                slot,
+            },
+        )
+    }
+}
+
+// ============================================================================
 // Live tree
 // ============================================================================
 
@@ -255,10 +363,10 @@ pub(crate) struct DeferredSlot<N> {
     /// The item element, held verbatim until the handler arrives. `None`
     /// once drained.
     pub(crate) element: Option<Element>,
-    /// The parent to splice into, and the absolute child index the
-    /// placeholder occupies within it.
+    /// The parent to splice into, and where the placeholder sits within
+    /// it (resolved at drain time — see [`SpliceBase`]).
     pub(crate) parent: N,
-    pub(crate) index: usize,
+    pub(crate) base: SpliceBase,
     /// `Some` while parked, `None` once drained.
     pub(crate) placeholder: Option<N>,
     pub(crate) realized: Option<Realized<N>>,
@@ -273,12 +381,12 @@ pub(crate) struct DeferredSlot<N> {
 /// so the handler call, the child walk, the node shape and the subtree's
 /// own [`Owned`] scope are all exactly what an eager mount would have
 /// produced. Only the attach differs: `insert_at` at the placeholder's
-/// recorded index, then `remove_child` of the placeholder — in that order,
-/// so the index is still valid when the real node goes in.
+/// index, then `remove_child` of the placeholder — in that order, so the
+/// index is still valid when the real node goes in.
 ///
-/// The recorded index is stable under the SAME constraint the spliced
-/// reactive regions already document: content BEFORE the item must be
-/// structurally static. A deferred item may not be a subtree ROOT at all
+/// The index is resolved NOW, from the placeholder's [`SpliceBase`], so
+/// spliced regions before the item that changed their node count since
+/// it parked are accounted for. A deferred item may not be a subtree ROOT at all
 /// (see [`MountCx::mount_item`]), which is what keeps every cached
 /// top-level node vector in the tree (keyed rows, spliced holes) out of
 /// the drain's way — those caches only ever hold region roots.
@@ -287,18 +395,19 @@ pub(crate) fn realize_parked<H: Host>(
     registry: &Rc<Registry<H>>,
     slot: &Rc<RefCell<DeferredSlot<H::Node>>>,
 ) {
-    let (element, parent, index, placeholder) = {
+    let (element, parent, base, placeholder) = {
         let mut s = slot.borrow_mut();
         // Already drained (a second registration for the same kind).
         let (Some(element), Some(placeholder)) = (s.element.take(), s.placeholder.take()) else {
             return;
         };
-        (element, s.parent.clone(), s.index, placeholder)
+        (element, s.parent.clone(), s.base.clone(), placeholder)
         // borrow released before any handler runs
     };
 
     let realized = realize(backend, registry, element);
     let nodes = realized.collect_nodes();
+    let index = base.index();
     {
         let mut b = backend.borrow_mut();
         let mut p = parent.clone();
@@ -391,15 +500,17 @@ impl<'a, H: Host> MountCx<'a, H> {
     /// the old walker's `view.rs::splice_children`. Static items append
     /// with plain `insert`; fragments splice flat; reactive regions take
     /// the spliced path (when [`Host::supports_splice`]) or nest under an
-    /// anchor. A single threaded `inserted` counter runs THROUGH fragments
-    /// so a reactive region after a fragment captures its correct ABSOLUTE
-    /// base index in `parent` (`fragment_base_index.spliced.golden`).
+    /// anchor. A single threaded [`SpliceCursor`] runs THROUGH fragments
+    /// so a reactive region after a fragment resolves its correct ABSOLUTE
+    /// index in `parent` (`fragment_base_index.spliced.golden`), and every
+    /// spliced region's live node count is shared with the regions after
+    /// it, so their indices stay exact as earlier regions grow or shrink.
     ///
-    /// Call once per parent: the counter starts at 0, so a second batch of
+    /// Call once per parent: the cursor starts at 0, so a second batch of
     /// children for the same parent would mis-base later reactive regions.
     pub fn realize_children_into(&mut self, parent: &mut H::Node, children: Vec<Element>) {
-        let mut inserted = 0usize;
-        let nodes = self.splice_children(parent, children, &mut inserted);
+        let mut cursor = SpliceCursor::new();
+        let nodes = self.splice_children(parent, children, &mut cursor);
         self.frames
             .last_mut()
             .expect("realize_children_into called outside a handler invocation")
@@ -481,14 +592,14 @@ impl<'a, H: Host> MountCx<'a, H> {
         }
     }
 
-    /// The core child-splice loop. `inserted` is threaded (never reset) so
+    /// The core child-splice loop. `cursor` is threaded (never reset) so
     /// fragments — and any reactive region following one — see the
     /// absolute child index within `parent`.
     fn splice_children(
         &mut self,
         parent: &mut H::Node,
         children: Vec<Element>,
-        inserted: &mut usize,
+        cursor: &mut SpliceCursor,
     ) -> Vec<LiveNode<H::Node>> {
         let mut out = Vec::with_capacity(children.len());
         for child in children {
@@ -497,15 +608,15 @@ impl<'a, H: Host> MountCx<'a, H> {
                 Element::Fragment(sub) => {
                     // Layout-transparent: splice the fragment's children
                     // directly into `parent`, sharing the SAME counter.
-                    let nested = self.splice_children(parent, sub, inserted);
+                    let nested = self.splice_children(parent, sub, cursor);
                     out.push(LiveNode::Fragment(nested));
                 }
                 Element::Many { data } => {
                     // Multi-node primitive: the handler mounts N siblings
                     // directly into the REAL parent (batched or per-node
                     // — its call) and reports how many top-level nodes it
-                    // contributed, so a reactive region after it captures
-                    // the correct absolute base index.
+                    // contributed, so a reactive region after it resolves
+                    // the correct absolute index.
                     let type_id = (*data).type_id();
                     let handler = self.registry.get_many(type_id).unwrap_or_else(|| {
                         panic!(
@@ -517,23 +628,24 @@ impl<'a, H: Host> MountCx<'a, H> {
                     });
                     let payload: Rc<dyn Any> = Rc::from(data);
                     let (live, count) = handler(self, payload, parent);
-                    *inserted += count;
+                    cursor.advance_fixed(count);
                     out.push(live);
                 }
-                other => out.push(self.realize_placed(parent, other, inserted)),
+                other => out.push(self.realize_placed(parent, other, cursor)),
             }
             run_exits(exits);
         }
         out
     }
 
-    /// Realize one non-fragment child into `parent`, advancing `inserted`
-    /// by the number of top-level nodes the child contributed.
+    /// Realize one non-fragment child into `parent`, advancing `cursor`
+    /// by the top-level nodes the child contributed (a spliced region
+    /// registers its live count instead of a fixed one).
     fn realize_placed(
         &mut self,
         parent: &mut H::Node,
         element: Element,
-        inserted: &mut usize,
+        cursor: &mut SpliceCursor,
     ) -> LiveNode<H::Node> {
         // Late-bound kind whose handler has not arrived: park it. This is
         // the ONLY place parking happens, because it is the only place
@@ -542,7 +654,7 @@ impl<'a, H: Host> MountCx<'a, H> {
         if let Element::Item { data, .. } = &element {
             let type_id = (**data).type_id();
             if self.registry.get(type_id).is_none() && self.registry.is_deferred(type_id) {
-                return self.park_item(parent, element, type_id, inserted);
+                return self.park_item(parent, element, type_id, cursor);
             }
         }
         match element {
@@ -552,26 +664,27 @@ impl<'a, H: Host> MountCx<'a, H> {
                     unreachable!("mount_item returns LiveNode::Item")
                 };
                 self.backend.borrow_mut().insert(parent, node.clone());
-                *inserted += 1;
+                cursor.advance_fixed(1);
                 live
             }
             Element::Dyn(spec) => {
                 if self.backend.borrow().supports_splice() {
                     // Anchorless: the hole splices its subtree directly
-                    // into the real parent at the captured base index.
-                    let (slot, count) = drive_dyn_spliced(
+                    // into the real parent at its live base index.
+                    let (base, count) = cursor.open_region();
+                    let slot = drive_dyn_spliced(
                         self.backend,
                         self.registry,
                         parent.clone(),
-                        *inserted,
+                        base,
+                        count,
                         spec,
                     );
-                    *inserted += count;
                     LiveNode::Dyn(DynLive { anchor: None, slot })
                 } else {
                     let (anchor, slot) = drive_dyn_anchored(self.backend, self.registry, spec);
                     self.backend.borrow_mut().insert(parent, anchor.clone());
-                    *inserted += 1;
+                    cursor.advance_fixed(1);
                     LiveNode::Dyn(DynLive {
                         anchor: Some(anchor),
                         slot,
@@ -580,21 +693,22 @@ impl<'a, H: Host> MountCx<'a, H> {
             }
             Element::Keyed { items, render } => {
                 if self.backend.borrow().supports_splice() {
-                    let (state, count) = drive_keyed_spliced(
+                    let (base, count) = cursor.open_region();
+                    let state = drive_keyed_spliced(
                         self.backend,
                         self.registry,
                         parent.clone(),
-                        *inserted,
+                        base,
+                        count,
                         items,
                         render,
                     );
-                    *inserted += count;
                     LiveNode::Keyed(KeyedLive::Spliced { state })
                 } else {
                     let (anchor, slot) =
                         drive_keyed_anchored(self.backend, self.registry, items, render);
                     self.backend.borrow_mut().insert(parent, anchor.clone());
-                    *inserted += 1;
+                    cursor.advance_fixed(1);
                     LiveNode::Keyed(KeyedLive::Anchored { anchor, slot })
                 }
             }
@@ -662,25 +776,25 @@ impl<'a, H: Host> MountCx<'a, H> {
     /// The placeholder is what makes the drain non-disruptive: the item
     /// occupies exactly one child index from mount onwards, so every
     /// sibling's index — including a following spliced reactive region's
-    /// captured base index — is the same before and after the handler
+    /// index — is the same before and after the handler
     /// arrives.
     fn park_item(
         &mut self,
         parent: &mut H::Node,
         element: Element,
         type_id: std::any::TypeId,
-        inserted: &mut usize,
+        cursor: &mut SpliceCursor,
     ) -> LiveNode<H::Node> {
         let placeholder = self.backend.borrow_mut().create_anchor();
         self.backend
             .borrow_mut()
             .insert(parent, placeholder.clone());
-        let index = *inserted;
-        *inserted += 1;
+        let base = cursor.base();
+        cursor.advance_fixed(1);
         let slot = Rc::new(RefCell::new(DeferredSlot {
             element: Some(element),
             parent: parent.clone(),
-            index,
+            base,
             placeholder: Some(placeholder),
             realized: None,
             nodes: Vec::new(),
@@ -1031,8 +1145,8 @@ fn build_into_anchor<H: Host>(
 ) -> Realized<H::Node> {
     build_realized(backend, registry, produce, produce_tracked, |cx, element| {
         let mut anchor_mut = anchor.clone();
-        let mut inserted = 0usize;
-        let mut nodes = cx.splice_children(&mut anchor_mut, vec![element], &mut inserted);
+        let mut cursor = SpliceCursor::new();
+        let mut nodes = cx.splice_children(&mut anchor_mut, vec![element], &mut cursor);
         if nodes.len() == 1 {
             nodes.pop().expect("len checked")
         } else {
@@ -1184,16 +1298,23 @@ fn release_discarded<H: Host>(backend: &Rc<RefCell<H>>, nodes: &[H::Node]) {
 
 /// The spliced Dyn driver — port of `when_switch.rs::build_when_spliced` /
 /// `build_switch_spliced`. No anchor: the subtree's top nodes splice
-/// directly into the real parent at the stable `base_index` captured from
-/// the threaded child counter. Returns the region's initial node count so
-/// the caller advances its running index for trailing siblings.
+/// directly into the real parent at `base`, resolved on every swap (see
+/// [`SpliceLedger`]), and the region publishes its live node count
+/// through `count` so later regions in the parent resolve theirs.
+///
+/// A retire-owned swap leaves the old nodes attached (after the new ones)
+/// until the hook detaches them, and the published count does NOT include
+/// them: the scene cannot see when the hook detaches. That is exact for
+/// the one retire user, presence, whose hole is the only child of its
+/// placeholder — there is no later sibling to misplace.
 fn drive_dyn_spliced<H: Host>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
     parent: H::Node,
-    base_index: usize,
+    base: SpliceBase,
+    count: SpliceCount,
     spec: DynSpec,
-) -> (Rc<RefCell<DynSlot<H::Node>>>, usize) {
+) -> Rc<RefCell<DynSlot<H::Node>>> {
     let slot: Rc<RefCell<DynSlot<H::Node>>> = Rc::new(RefCell::new(DynSlot {
         realized: None,
         nodes: Vec::new(),
@@ -1240,14 +1361,17 @@ fn drive_dyn_spliced<H: Host>(
                             b.remove_child(&parent, node);
                         }
                     }
+                    // The parent no longer holds them: publish before the
+                    // scope drop runs arbitrary cleanups.
+                    count.set(0);
                     drop(old);
                     release_discarded(&backend, &old_nodes);
                 }
             }
         }
-        // Build detached, then splice every top node at the stable base.
-        // (base_index is stable as long as content BEFORE the region is
-        // static — the same documented constraint the old walker had.)
+        // Build detached, then splice every top node at the region's
+        // CURRENT start — resolved now, so an earlier sibling region that
+        // grew or shrank since mount is accounted for.
         let (nodes, realized) = match &kind {
             DynKind::Plain(f) => {
                 // Tracked producer — see build_realized's tracking split.
@@ -1261,21 +1385,22 @@ fn drive_dyn_spliced<H: Host>(
             DynKind::Guarded { build, .. } => build_detached(&backend, &registry, || build()),
         };
         {
+            let base_index = base.index();
             let mut b = backend.borrow_mut();
             let mut p = parent.clone();
             for (i, node) in nodes.iter().enumerate() {
                 b.insert_at(&mut p, node.clone(), base_index + i);
             }
         }
+        count.set(nodes.len());
         let mut s = slot_e.borrow_mut();
         s.nodes = nodes;
         s.realized = Some(realized);
     });
 
-    // The effect ran once synchronously above, so the slot holds the
-    // initial node set — this region's contribution to the parent index.
-    let count = slot.borrow().nodes.len();
-    (slot, count)
+    // The effect ran once synchronously above, so the region's initial
+    // count is already published for the siblings that follow.
+    slot
 }
 
 // ============================================================================
@@ -1286,15 +1411,18 @@ type KeyedItems = Box<dyn Fn() -> Vec<(Key, Box<dyn Any>)>>;
 type KeyedRender = Box<dyn Fn(Box<dyn Any>) -> Element>;
 
 /// The spliced Keyed driver — port of `each.rs::build_spliced` +
-/// `reconcile`, the 4-pass keyed reconciler.
+/// `reconcile`, the 4-pass keyed reconciler. Rows splice at `base`,
+/// resolved on every pass, and the list publishes its live node count
+/// through `count` (see [`SpliceLedger`]).
 fn drive_keyed_spliced<H: Host>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
     parent: H::Node,
-    base_index: usize,
+    base: SpliceBase,
+    count: SpliceCount,
     items: KeyedItems,
     render: KeyedRender,
-) -> (Rc<RefCell<KeyedState<H::Node>>>, usize) {
+) -> Rc<RefCell<KeyedState<H::Node>>> {
     let state = Rc::new(RefCell::new(KeyedState { rows: Vec::new() }));
 
     let backend = backend.clone();
@@ -1305,12 +1433,11 @@ fn drive_keyed_spliced<H: Host>(
         // TRACKED: enumerating the items is the rebuild dependency set.
         let new_items = items();
         reconcile(
-            &backend, &registry, &parent, base_index, new_items, &render, &state_e,
+            &backend, &registry, &parent, &base, &count, new_items, &render, &state_e,
         );
     });
 
-    let count = state.borrow().rows.iter().map(|e| e.nodes.len()).sum();
-    (state, count)
+    state
 }
 
 /// One keyed reconcile pass — `each.rs::reconcile`, pass for pass.
@@ -1318,7 +1445,8 @@ fn reconcile<H: Host>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
     parent: &H::Node,
-    base_index: usize,
+    base: &SpliceBase,
+    count: &SpliceCount,
     items: Vec<(Key, Box<dyn Any>)>,
     render: &KeyedRender,
     state: &Rc<RefCell<KeyedState<H::Node>>>,
@@ -1373,6 +1501,20 @@ fn reconcile<H: Host>(
     // out FIRST, then the scope drops (dispose_order_each.spliced.golden —
     // a reactive effect in the row can't fire against a half-detached
     // node). Surviving rows are untouched.
+    // The live count tracks the parent through the pass: it starts as
+    // every old row's nodes, and drops as removed rows leave, BEFORE their
+    // cleanups run (a cleanup that touches a sibling region must see the
+    // parent as it really is).
+    let mut live: usize = old_slots
+        .iter()
+        .flatten()
+        .map(|e| e.nodes.len())
+        .sum::<usize>()
+        + new_rows
+            .iter()
+            .filter(|(_, is_new)| !is_new)
+            .map(|(e, _)| e.nodes.len())
+            .sum::<usize>();
     for slot in old_slots.iter_mut() {
         if let Some(entry) = slot.take() {
             {
@@ -1381,7 +1523,15 @@ fn reconcile<H: Host>(
                     b.remove_child(parent, node);
                 }
             }
+            live -= entry.nodes.len();
+            count.set(live);
             drop(entry.realized); // row cleanups fire here
+            // Discarded for good, not parked: tell the host, in the same
+            // order as the spliced Dyn swap (detach, scope drop, release).
+            // Without it a host with a per-node side registry (iOS: a
+            // strong UIView + a Taffy node per view) kept every removed
+            // row forever.
+            release_discarded(backend, &entry.nodes);
         }
     }
 
@@ -1391,6 +1541,10 @@ fn reconcile<H: Host>(
     // repositions every node of every row in target order
     // (each_reverse.spliced.golden, each_multi_node_rows.spliced.golden).
     {
+        // Resolved AFTER pass B and the row renders: the list's start in
+        // the parent right now, including any earlier sibling region that
+        // changed its node count since this list mounted.
+        let base_index = base.index();
         let mut b = backend.borrow_mut();
         let mut p = parent.clone();
         let mut pos = base_index;
@@ -1403,6 +1557,7 @@ fn reconcile<H: Host>(
             }
         }
     }
+    count.set(new_rows.iter().map(|(e, _)| e.nodes.len()).sum());
 
     // PASS D — publish the new ordering, flagging duplicate keys (a usage
     // error that makes row identity ambiguous).

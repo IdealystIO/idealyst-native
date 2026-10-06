@@ -10,7 +10,11 @@
 //!   release that requires something its current release didn't is shown
 //!   first: apps lacking it keep the release they have.
 //! - `rollback` — take back a bundle's newest release.
-//! - `status` — what is published.
+//! - `status` — what is published, and what each registered app build runs.
+//! - `manifest` — capture this app build's manifest (what it offers
+//!   bundles) and register it, so the release location answers for it
+//!   (`resolved/<id>.json`) and the console and `publish` can name it.
+//! - `resolve` — rewrite every registered build's answer from the index.
 //!
 //! The app's side is the `ota` crate: `ota::start(ota::config!(), …)`.
 
@@ -18,6 +22,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use ota_index::{ManifestSource, Registered};
 use ota_publish::{Planned, Target, Upload};
 use remote_bundle::SigningKey;
 
@@ -69,8 +74,30 @@ pub enum Command {
         #[arg(default_value = ".")]
         dir: PathBuf,
     },
-    /// Show what is published.
+    /// Show what is published, and what each registered app build runs.
     Status {
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Capture this app build's manifest (what it offers bundles) and
+    /// register it at the release location. Run it for each app release.
+    Manifest {
+        /// What to call this build (the console, `status`, `publish`);
+        /// `<app> <version>` by default.
+        #[arg(long)]
+        label: Option<String>,
+        /// Only write the manifest to a file; don't register it.
+        #[arg(long)]
+        no_register: bool,
+        /// Where to write the manifest as well.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Rewrite every registered build's answer from the index (after a
+    /// change that couldn't finish writing them).
+    Resolve {
         #[arg(default_value = ".")]
         dir: PathBuf,
     },
@@ -82,14 +109,70 @@ pub fn run(args: Args) -> Result<()> {
         Command::Publish { bundles, sign_key, yes, dir } => publish(&dir, &bundles, sign_key.as_deref(), yes),
         Command::Rollback { bundle, dir } => {
             let target = settings(&dir)?.target()?;
-            match ota_publish::rollback(&target, &bundle)? {
+            match ota_publish::rollback(&target, &bundle, &actor())? {
                 Some(r) => println!("`{bundle}`: apps go back to {} at their next check", r.version),
                 None => println!("`{bundle}`: no release left"),
             }
             Ok(())
         }
         Command::Status { dir } => status(&dir),
+        Command::Manifest { label, no_register, out, dir } => manifest(&dir, label, !no_register, out.as_deref()),
+        Command::Resolve { dir } => {
+            let r = ota_publish::resolve_registered(&settings(&dir)?.target()?)?;
+            println!("{} answer(s) written, {} already current", r.written, r.current);
+            for (id, e) in &r.failed {
+                eprintln!("  {}: {e}", &id[..12]);
+            }
+            if !r.failed.is_empty() {
+                bail!("{} answer(s) not written", r.failed.len());
+            }
+            Ok(())
+        }
     }
+}
+
+/// `idealyst ota manifest`.
+fn manifest(dir: &Path, label: Option<String>, register: bool, out: Option<&Path>) -> Result<()> {
+    let settings = settings(dir)?;
+    let host_fns = settings.host_fns.as_deref().ok_or_else(|| {
+        anyhow!(
+            "declare the app's host functions in [package.metadata.idealyst.ota] — `host_fns = \"app::host_fns\"`, a path from the library's root to a public `fn() -> Vec<HostFnDef>` — and leave `Options::host_fns` empty: the app and its manifest then use the same list"
+        )
+    })?;
+    let captured = super::ota_capture::capture(dir, host_fns)?;
+    let app = build_ios::parse_manifest(&std::fs::canonicalize(dir)?)?;
+    let label = label.unwrap_or_else(|| format!("{} {}", app.name, app.app.version));
+    if let Some(out) = out {
+        std::fs::write(out, captured.to_json()).with_context(|| format!("write {}", out.display()))?;
+    }
+    let p = &captured.provides;
+    println!(
+        "{label}: manifest {}  ({} components, {} host functions, {} remote components, {} context types)",
+        captured.id,
+        p.components.len(),
+        p.host_fns.len(),
+        p.remote.len(),
+        p.contexts.len()
+    );
+    if !register {
+        return Ok(());
+    }
+    let target = settings.target()?;
+    let outcome = ota_publish::register(&target, &captured, ManifestSource::Build, Some(label), None)?;
+    println!(
+        "{}",
+        match outcome {
+            ota_publish::Registration::Added => "registered: the location now answers for this build",
+            ota_publish::Registration::Updated => "registered: known from the field until now; its answer is now precomputed",
+            ota_publish::Registration::Known => "already registered",
+        }
+    );
+    Ok(())
+}
+
+/// Who is acting, for the release location's audit log.
+fn actor() -> String {
+    format!("cli:{}", std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "unknown".into()))
 }
 
 /// `[package.metadata.idealyst.ota]`.
@@ -98,6 +181,8 @@ struct Settings {
     url: Option<String>,
     bucket: Option<String>,
     public_keys: Vec<String>,
+    /// A path from the library's root to the app's host functions.
+    host_fns: Option<String>,
 }
 
 impl Settings {
@@ -120,7 +205,7 @@ fn parse_settings(manifest: &str) -> Result<Option<Settings>> {
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
-    Ok(Some(Settings { url: text("url"), bucket: text("bucket"), public_keys }))
+    Ok(Some(Settings { url: text("url"), bucket: text("bucket"), public_keys, host_fns: text("host_fns") }))
 }
 
 fn settings(dir: &Path) -> Result<Settings> {
@@ -198,9 +283,13 @@ fn init(dir: &Path, url: Option<&str>, bucket: Option<&str>) -> Result<()> {
     println!("settings     {} [package.metadata.idealyst.ota]", manifest_path.display());
     println!();
     println!("In the app:");
-    println!("  let ota = ota::start(ota::config!(), ota::Options {{ host_fns: …, ..Default::default() }})?;");
+    println!("  let ota = ota::start(ota::config!(), ota::Options::default())?;");
+    println!("with its host functions declared in the settings (a path from the library's root):");
+    println!("  host_fns = \"app::host_fns\"");
     println!("Publish:");
     println!("  idealyst ota publish");
+    println!("For each app release, register the build, so the location answers for it:");
+    println!("  idealyst ota manifest");
     println!("In CI, put the key's contents in ${} instead of the file.", build_remote::SIGNING_KEY_ENV);
     Ok(())
 }
@@ -256,14 +345,58 @@ fn publish(dir: &Path, only: &[String], key_file: Option<&Path>, yes: bool) -> R
         println!("nothing to publish");
         return Ok(());
     }
-    if planned.iter().any(|p| !p.new_requirements.is_empty()) && !yes && !confirm()? {
+    let unreached = unreached(&target, &uploads, &planned)?;
+    print!("{unreached}");
+    if (planned.iter().any(|p| !p.new_requirements.is_empty()) || !unreached.is_empty()) && !yes && !confirm()? {
         bail!("not published");
     }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    ota_publish::publish(&target, &uploads, now)?;
+    ota_publish::publish(&target, &uploads, now, &actor())?;
     let place = settings.url.as_deref().unwrap_or("its URL");
     println!("published: apps reading {place} pick it up at their next check");
     Ok(())
+}
+
+/// The registered app builds that won't run a new release, and why (the
+/// first reason, and how many more).
+fn unreached(target: &Target, uploads: &[Upload], planned: &[Planned]) -> Result<String> {
+    let registry = ota_publish::read_registry(target)?;
+    let mut builds = Vec::new();
+    for entry in &registry.manifests {
+        if let Some(m) = ota_publish::read_manifest(target, &entry.id)? {
+            builds.push((entry, m.provides));
+        }
+    }
+    let mut out = String::new();
+    for (u, p) in uploads.iter().zip(planned).filter(|(_, p)| !p.unchanged) {
+        let release = ota_publish::release_of(u, 0)?;
+        let mut lines = Vec::new();
+        for (entry, provides) in &builds {
+            let errors: Vec<_> = remote_bundle::check(&release.requires, release.codec, provides).into_iter().filter(|p| p.is_error()).collect();
+            if let Some(first) = errors.first() {
+                let more = if errors.len() > 1 { format!(", and {} more", errors.len() - 1) } else { String::new() };
+                lines.push(format!("      - {}: {first}{more}\n", build_name(entry)));
+            }
+        }
+        if !lines.is_empty() {
+            out.push_str(&format!("    registered app builds that won't run {} {} (they keep what they run):\n", p.bundle, p.version));
+            out.extend(lines);
+        }
+    }
+    Ok(out)
+}
+
+/// A registered build, for people: its label (or id), and where it came from.
+fn build_name(entry: &Registered) -> String {
+    let id = &entry.id[..12];
+    let from = match entry.source {
+        ManifestSource::Build => "",
+        ManifestSource::Reported => ", seen in the field",
+    };
+    match &entry.label {
+        Some(label) => format!("{label} ({id}{from})"),
+        None => format!("{id}{from}"),
+    }
 }
 
 /// What a publish will do, for the publisher.
@@ -321,6 +454,28 @@ fn status(dir: &Path) -> Result<()> {
             }
         }
     }
+    let registry = ota_publish::read_registry(&target)?;
+    if !registry.manifests.is_empty() {
+        println!();
+        println!("app builds:");
+    }
+    for entry in &registry.manifests {
+        let Some(m) = ota_publish::read_manifest(&target, &entry.id)? else {
+            println!("  {}: its manifest is missing", build_name(entry));
+            continue;
+        };
+        let answer = ota_index::resolve(&index, &m.provides);
+        let runs: Vec<String> = answer
+            .bundles
+            .iter()
+            .map(|(name, r)| match (&r.release, r.needs_app_update) {
+                (Some(rel), false) => format!("{name} {}", rel.version),
+                (Some(rel), true) => format!("{name} {} (newer needs an app update)", rel.version),
+                (None, _) => format!("{name}: nothing it can run"),
+            })
+            .collect();
+        println!("  {}: {}", build_name(entry), runs.join(", "));
+    }
     Ok(())
 }
 
@@ -360,7 +515,12 @@ mod tests {
         assert!(once.contains("[package.metadata.idealyst.app]\nname = \"Shop\""), "{once}");
         assert_eq!(
             parse_settings(&once).unwrap(),
-            Some(Settings { url: Some("https://ota.example.com/shop".into()), bucket: Some("s3://ota/shop".into()), public_keys: vec!["ab".into()] })
+            Some(Settings {
+                url: Some("https://ota.example.com/shop".into()),
+                bucket: Some("s3://ota/shop".into()),
+                public_keys: vec!["ab".into()],
+                host_fns: None
+            })
         );
         // Again, with a second key: added once, the rest kept.
         let twice = write_settings(&write_settings(&once, None, None, Some("cd")).unwrap(), None, None, Some("cd")).unwrap();
@@ -377,6 +537,35 @@ mod tests {
         assert_eq!(
             describe(&planned),
             "  shop 1.2.0: new release\n    it requires what the current release didn't — apps that lack it keep the current release:\n      - prop `ui::Card.glow`\n  home 1.0.0: unchanged\n"
+        );
+    }
+
+    /// Publishing names each registered build a new release won't reach,
+    /// with the reason; builds it reaches aren't listed.
+    #[test]
+    fn publishing_names_the_registered_builds_a_release_wont_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = Target::Dir(dir.path().into());
+        let app = |props: &[&str]| {
+            let mut p = remote_bundle::Provides { codec: 2, ..Default::default() };
+            p.components.insert("ui::Card".into(), props.iter().map(|k| (k.to_string(), "u8".to_string())).collect());
+            ota_index::Manifest::new(p)
+        };
+        ota_publish::register(&target, &app(&[]), ManifestSource::Build, Some("shop 1.0".into()), None).unwrap();
+        ota_publish::register(&target, &app(&["glow"]), ManifestSource::Reported, None, None).unwrap();
+        let meta = remote_bundle::Metadata { name: "shop".into(), package: "shop".into(), version: "1.2.0".into(), codec: 2 };
+        let wasm = remote_bundle::with_metadata(b"\0asm\x01\0\0\0", &meta).unwrap();
+        let mut requires = remote_bundle::Requires::default();
+        requires.components.insert("ui::Card".into(), [("glow".to_string(), "u8".to_string())].into());
+        let uploads = [Upload { name: "shop".into(), wasm: remote_bundle::with_requires(&wasm, &requires).unwrap() }];
+        let planned = ota_publish::plan(&ota_publish::read_index(&target).unwrap(), &uploads).unwrap();
+        let id = app(&[]).id;
+        assert_eq!(
+            unreached(&target, &uploads, &planned).unwrap(),
+            format!(
+                "    registered app builds that won't run shop 1.2.0 (they keep what they run):\n      - shop 1.0 ({}): `ui::Card` has no prop `glow` in the app\n",
+                &id[..12]
+            )
         );
     }
 

@@ -71,6 +71,17 @@
 mod config;
 mod error;
 
+// Interface orientation → capture rotation: the pure mapping the iOS device
+// backend (`apple.rs`) applies. Compiled for tests on every host so the
+// mapping is covered without iOS hardware.
+#[cfg(any(test, all(target_os = "ios", not(target_abi = "sim"))))]
+mod orientation;
+
+// Sensor mounting + display rotation → frame rotation: the pure mapping the
+// Android backend's Kotlin shim asks for over JNI. Host-tested like the above.
+#[cfg(any(test, all(target_os = "android", not(target_arch = "wasm32"))))]
+mod android_rotation;
+
 pub use config::{CameraConfig, CameraFacing};
 pub use error::CameraError;
 

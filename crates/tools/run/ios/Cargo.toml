@@ -19,3 +19,12 @@ icon-gen = { workspace = true }
 # Parses `cargo metadata` JSON to derive the linked Apple frameworks from the
 # dep graph (each SDK declares `[package.metadata.idealyst.ios].frameworks`).
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# `tests/sdk_framework_declarations.rs` parses every SDK crate's sources
+# (following `mod`s, evaluating `#[cfg]`s for iOS) to check that each
+# `#[link(kind = "framework")]` is declared in the crate's metadata.
+# It also scans the framework crates in every app's base closure against
+# the run tool's BASE framework set.
+syn = { workspace = true }
+toml = "0.8"

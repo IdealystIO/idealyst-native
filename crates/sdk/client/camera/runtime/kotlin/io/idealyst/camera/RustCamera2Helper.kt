@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.display.DisplayManager
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
@@ -14,6 +15,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Range
 import android.util.Size
+import android.view.Display
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -46,12 +48,24 @@ object RustCamera2Helper {
         var reader: ImageReader? = null
         var thread: HandlerThread? = null
         var handler: Handler? = null
-        // SENSOR_ORIENTATION (0/90/180/270): the camera sensor is mounted
-        // landscape, so frames arrive rotated by this amount relative to a
-        // portrait-held device. We rotate the RGBA output by it so upright
-        // frames reach the FrameWriter — the Android analog of the iOS
-        // AVCaptureConnection.videoOrientation fix.
+        // SENSOR_ORIENTATION (0/90/180/270): how the sensor is mounted
+        // relative to the device's natural orientation.
         var sensorOrientation: Int = 0
+        // LENS_FACING == FRONT. The front camera turns the opposite way on a
+        // display rotation (it faces the user).
+        var front: Boolean = false
+        // Clockwise degrees each frame is rotated by so it's upright on the
+        // CURRENT display rotation — `nativeFrameRotation(sensor, display,
+        // front)`, the host-tested Rust formula. Written on the main thread
+        // (open + every display rotation), read per frame on the capture
+        // thread, hence @Volatile. Up to camera 1.6.0 this was the sensor
+        // angle alone, so frames were only upright with the device held
+        // naturally (portrait) — 90°/180° off in every other orientation.
+        @Volatile var rotation: Int = 0
+        // Re-computes `rotation` when the display rotates; unregistered in
+        // cleanup().
+        var displayManager: DisplayManager? = null
+        var displayListener: DisplayManager.DisplayListener? = null
         // Reused direct RGBA output buffer, allocated once per session
         // (re-sized only if the frame dimensions change). Converting into
         // it and handing it to `nativeFrameDirect` means each frame neither
@@ -120,7 +134,10 @@ object RustCamera2Helper {
         val session = Session()
         session.sensorOrientation =
             characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        session.front = characteristics.get(CameraCharacteristics.LENS_FACING) ==
+            CameraCharacteristics.LENS_FACING_FRONT
         sessions[token] = session
+        followDisplayRotation(context, session)
 
         val thread = HandlerThread("idealyst-camera-$token").also { it.start() }
         val handler = Handler(thread.looper)
@@ -132,7 +149,9 @@ object RustCamera2Helper {
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
-                val rot = session.sensorOrientation
+                // One read per frame: a rotation landing mid-frame applies
+                // from the next frame, never half-way through this one.
+                val rot = session.rotation
                 // 90°/270° rotation swaps the frame's width and height.
                 val swap = rot == 90 || rot == 270
                 val outW = if (swap) image.height else image.width
@@ -253,9 +272,49 @@ object RustCamera2Helper {
         return pool.maxByOrNull { it.width.toLong() * it.height.toLong() }
     }
 
+    /**
+     * Keep [Session.rotation] in step with the display. Called on the main
+     * thread (from [start]); the listener runs there too.
+     *
+     * A `DisplayListener` rather than the runtime's
+     * `Activity.onConfigurationChanged` path: a 180° turn (landscape →
+     * reverse landscape, portrait → upside down) changes no configuration
+     * axis, so `onConfigurationChanged` never fires for it, but the display's
+     * rotation does change and `onDisplayChanged` reports it. It is also
+     * self-contained — the SDK needs no hook in the generated Activity.
+     * An `OrientationEventListener` would follow the physical sensor even when
+     * the app's UI is rotation-locked; the DISPLAY rotation is what the user
+     * sees as "up", matching web (the browser) and iOS (interface
+     * orientation).
+     */
+    private fun followDisplayRotation(context: Context, session: Session) {
+        val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        fun update() {
+            val display = dm?.getDisplay(Display.DEFAULT_DISPLAY)
+            val displayRotation = display?.rotation ?: 0 // Surface.ROTATION_0
+            session.rotation =
+                nativeFrameRotation(session.sensorOrientation, displayRotation, session.front)
+        }
+        update()
+        if (dm == null) return
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {}
+            override fun onDisplayRemoved(displayId: Int) {}
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == Display.DEFAULT_DISPLAY) update()
+            }
+        }
+        // `null` handler = the calling (main) looper.
+        dm.registerDisplayListener(listener, null)
+        session.displayManager = dm
+        session.displayListener = listener
+    }
+
     /** Tear down everything associated with [token]. Idempotent. */
     private fun cleanup(token: Long) {
         val session = sessions.remove(token) ?: return
+        session.displayListener?.let { l -> session.displayManager?.unregisterDisplayListener(l) }
+        session.displayListener = null
         try {
             session.captureSession?.stopRepeating()
         } catch (_: Throwable) {
@@ -292,14 +351,14 @@ object RustCamera2Helper {
     /**
      * Convert a `YUV_420_888` [image] to tightly-packed top-down `RGBA8`
      * (BT.601 full-range), rotating the output by [rotation] degrees clockwise
-     * (the camera's `SENSOR_ORIENTATION`) so frames are upright on a
-     * portrait-held device. The rotation is baked into the destination index —
+     * ([Session.rotation]: sensor mounting + display rotation) so frames are
+     * upright on the current display. The rotation is baked into the destination index —
      * no extra copy pass. O(width*height); a future GPU/RenderScript path can
      * replace this without touching the Rust side.
      *
      * For 90°/270° the output is `height × width` (dimensions swapped); the
-     * caller emits the swapped size to [nativeFrameDirect]. Like the iOS fix this
-     * assumes a portrait device and does not mirror the front camera.
+     * caller emits the swapped size to [nativeFrameDirect]. Never mirrors —
+     * the front camera comes out unmirrored, matching the web and iOS backends.
      */
     // Converts `image` (YUV_420_888) to tightly-packed top-down RGBA8,
     // rotated by `rotation`, writing directly into `out` (a cleared direct
@@ -370,6 +429,18 @@ object RustCamera2Helper {
 
     @JvmStatic
     private external fun nativeError(token: Long, code: Int, message: String?)
+
+    /**
+     * Clockwise frame rotation for [sensorOrientation] (degrees), the
+     * display's `Surface.ROTATION_*` [displayRotation] and [front] facing.
+     * Implemented in Rust (`android_rotation::frame_rotation`).
+     */
+    @JvmStatic
+    private external fun nativeFrameRotation(
+        sensorOrientation: Int,
+        displayRotation: Int,
+        front: Boolean,
+    ): Int
 
     @JvmStatic
     private external fun nativeFrameDirect(

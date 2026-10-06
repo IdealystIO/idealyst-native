@@ -49,8 +49,8 @@ pub type Handler<H> =
 /// the mount context, the payload, and the REAL parent node, mounts N
 /// sibling nodes into it (batched or per-node — the handler's call), and
 /// returns the resulting live subtree plus the number of top-level nodes it
-/// contributed to `parent` (the child-splice loop's `inserted` accounting;
-/// a following reactive region's base index depends on it).
+/// contributed to `parent` (the child-splice loop's position accounting;
+/// a following reactive region's index depends on it).
 pub type ManyHandler<H> = Rc<
     dyn Fn(
         &mut MountCx<'_, H>,

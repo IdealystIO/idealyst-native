@@ -57,6 +57,12 @@ remote-bundle = { workspace = true }
 # `tests/ota.rs`: the showcase updated over the air from a release directory.
 ota = { workspace = true }
 ota-publish = { path = "../../../ota/publish" }
+# `tests/ota.rs`: the app's client against the real resolution service,
+# served in-process (and its requests read as JSON).
+ota-resolver = { path = "../../../ota/resolver" }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+serde_json = { workspace = true }
 tempfile = "3"
 
 [package.metadata.idealyst.app]

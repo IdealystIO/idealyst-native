@@ -419,6 +419,13 @@ pub struct Args {
     #[arg(long)]
     pub ios: bool,
 
+    /// `--ios` only: the simulator to run on, by name (as listed by
+    /// `xcrun simctl list devices`, e.g. "iPad Pro 13-inch (M4)") or UDID.
+    /// Booted if it isn't running. Defaults to the first booted iOS
+    /// simulator, else the first iPhone on the newest runtime.
+    #[arg(long, value_name = "NAME|UDID")]
+    pub simulator: Option<String>,
+
     /// Build and run on the Android emulator.
     #[arg(long)]
     pub android: bool,
@@ -4162,6 +4169,7 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             // simulator from re-foregrounding a stale process. A full
             // uninstall would wipe app state on every reload, so keep it off.
             clean: false,
+            simulator: args.simulator.clone(),
         },
     )
     .context("iOS dev launch failed")?;
@@ -4491,6 +4499,7 @@ impl Args {
             no_headless_client: self.no_headless_client,
             screenshot_dir: self.screenshot_dir.clone(),
             ios: self.ios,
+            simulator: self.simulator.clone(),
             android: self.android,
             macos: self.macos,
             terminal: self.terminal,

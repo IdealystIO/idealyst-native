@@ -160,10 +160,10 @@ impl WebBackend {
             head.append_child(&elem).expect("append style to head");
             self.style_element = Some(elem);
 
-            // Seed the resets at indices 0–4. We never delete or
+            // Seed the resets at indices 0–5. We never delete or
             // shift these, so the rule recycler in `insert_rule`
             // doesn't need to know about them — it appends or
-            // recycles at index ≥ 5.
+            // recycles at index ≥ 6.
             let sheet = self
                 .style_element
                 .as_ref()
@@ -234,10 +234,19 @@ impl WebBackend {
             // theme's `color-text`, so web must too, or they come out in
             // the browser's black on a dark theme. `var()` re-tints through
             // the cascade on a theme swap. Shared with the SSR backend via
-            // `base_reset_css`. These five fixed resets occupy indices 0–4;
-            // author rules append at sheet length (index 5+) or recycle
-            // deleted author slots, so these indices never collide.
+            // `base_reset_css`.
             let _ = sheet.insert_rule_with_index(css::DEFAULT_TEXT_COLOR_RESET, 4);
+
+            // Index 5 — a graphics `<canvas>` fills its parent by default.
+            //
+            // Zero specificity, so an author size (a minted class) wins; it
+            // used to be an inline style, which no class can beat. See
+            // `css::GRAPHICS_FILL_RESET`. Web-only (SSR never stamps
+            // `data-graphics-id`, so it is not in `base_reset_css`). These six
+            // fixed resets occupy indices 0–5;
+            // author rules append at sheet length (index 6+) or recycle
+            // deleted author slots, so these indices never collide.
+            let _ = sheet.insert_rule_with_index(css::GRAPHICS_FILL_RESET, 5);
         }
         self.style_element.as_ref().unwrap().clone()
     }

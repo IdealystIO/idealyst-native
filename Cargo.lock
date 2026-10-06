@@ -2227,6 +2227,7 @@ dependencies = [
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
+ "runtime-world",
  "serde",
  "serde_json",
  "skrifa 0.42.1",
@@ -2269,6 +2270,7 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "skrifa 0.42.1",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "web-glue",
@@ -4473,6 +4475,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "g2gen"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7e0eb46f83a20260b850117d204366674e85d3a908d90865c78df9a6b1dfc"
+dependencies = [
+ "g2poly",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "g2p"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "539e2644c030d3bf4cd208cb842d2ce2f80e82e6e8472390bcef83ceba0d80ad"
+dependencies = [
+ "g2gen",
+ "g2poly",
+]
+
+[[package]]
+name = "g2poly"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
+
+[[package]]
 name = "gdk-pixbuf"
 version = "0.20.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4738,7 +4768,7 @@ checksum = "68dde9640ec6f986f59a265b4c0a5177f61e87e3ba71983b2195dab119cda0fa"
 dependencies = [
  "cosmic-text",
  "etagere",
- "lru",
+ "lru 0.16.4",
  "rustc-hash 2.1.2",
  "wgpu",
 ]
@@ -6132,6 +6162,7 @@ dependencies = [
  "mcp-catalog",
  "premint-dump",
  "runtime-core",
+ "runtime-layout",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -6270,6 +6301,7 @@ dependencies = [
  "lint",
  "mcp-catalog",
  "mcp-server",
+ "ota-index",
  "ota-publish",
  "pathdiff",
  "quote",
@@ -7213,6 +7245,15 @@ name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+
+[[package]]
+name = "lru"
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
+dependencies = [
+ "hashbrown 0.17.1",
+]
 
 [[package]]
 name = "lru-slab"
@@ -8654,6 +8695,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "ota-console"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "idea-ui",
+ "idealyst",
+ "ota-index",
+ "ota-publish",
+ "remote-bundle",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "serde",
+ "server",
+ "tokio",
+ "tower-http",
+ "web-sys",
+]
+
+[[package]]
+name = "ota-demo"
+version = "1.0.0"
+dependencies = [
+ "host-appkit",
+ "host-mock",
+ "idea-ui",
+ "ota",
+ "runtime-core",
+ "runtime-shared",
+ "runtime-vocabulary",
+ "runtime-world",
+ "tempfile",
+]
+
+[[package]]
 name = "ota-index"
 version = "0.1.0"
 dependencies = [
@@ -8668,6 +8745,7 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "syn 2.0.117",
  "toml 0.8.23",
 ]
 
@@ -8676,10 +8754,31 @@ name = "ota-publish"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hmac 0.12.1",
  "ota-index",
  "remote-bundle",
+ "reqwest",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "ota-resolver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "ota-index",
+ "ota-publish",
+ "remote-bundle",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "server-aws",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -9461,6 +9560,55 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
 
 [[package]]
+name = "qr"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "canvas-vello",
+ "host-mock",
+ "media-stream",
+ "offload",
+ "pollster 0.3.0",
+ "qrcode",
+ "rqrr",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "runtime-world",
+ "serde",
+ "thiserror 2.0.18",
+ "wasm-bindgen-test",
+ "web-glue",
+]
+
+[[package]]
+name = "qr-demo"
+version = "0.1.0"
+dependencies = [
+ "camera",
+ "canvas",
+ "canvas-native",
+ "canvas-vello",
+ "dev-server",
+ "host-mock",
+ "idea-ui",
+ "idealyst",
+ "media-stream",
+ "qr",
+ "qrcode",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-vocabulary",
+]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "query_map"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9896,6 +10044,7 @@ dependencies = [
 name = "remote-showcase"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "build-remote",
  "host-appkit",
  "host-mock",
@@ -9903,6 +10052,7 @@ dependencies = [
  "libc",
  "ota",
  "ota-publish",
+ "ota-resolver",
  "remote-bundle",
  "remote-host",
  "runtime-core",
@@ -9910,7 +10060,9 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
+ "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -10133,6 +10285,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
+name = "rqrr"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d084c50c5cfa397a081850da329566c8667b0b6c4e81da16abff1fef27de93b"
+dependencies = [
+ "g2p",
+ "lru 0.18.5",
+]
+
+[[package]]
 name = "rubato"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10163,6 +10325,8 @@ dependencies = [
  "build-ios",
  "icon-gen",
  "serde_json",
+ "syn 2.0.117",
+ "toml 0.8.23",
 ]
 
 [[package]]

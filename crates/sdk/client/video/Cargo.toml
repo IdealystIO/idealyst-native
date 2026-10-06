@@ -124,3 +124,10 @@ objc2-app-kit = { version = "0.2", features = [
     "NSView",
     "NSResponder",
 ] }
+
+# src/ios.rs: AVPlayer/AVPlayerLayer + the CoreMedia/CoreFoundation C calls.
+# iOS links the Rust code as a staticlib inside Xcode/swiftc, which drops
+# `#[link(kind = "framework")]`; the iOS run tool links what is declared
+# here (`tests/sdk_framework_declarations.rs` in run-ios checks the two match).
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation", "CoreFoundation", "CoreMedia"]

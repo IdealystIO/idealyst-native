@@ -159,10 +159,11 @@ crate::import! {
     fn js_window() -> u32 = "() => typeof window === 'undefined' ? 0 : G.add(window)";
 
     // ---- timers / frames --------------------------------------------------
-    fn js_raf(w: u32, f: u32) -> i32 = "(w, f) => G.get(w).requestAnimationFrame(G.get(f))";
-    fn js_cancel_raf(w: u32, h: i32) = "(w, h) => { G.get(w).cancelAnimationFrame(h); }";
-    fn js_set_timeout(w: u32, f: u32, ms: i32) -> i32 = "(w, f, ms) => G.get(w).setTimeout(G.get(f), ms)";
-    fn js_clear_timeout(w: u32, h: i32) = "(w, h) => { G.get(w).clearTimeout(h); }";
+    // Handles cross as `f64`, not `i32` — see `Window::request_animation_frame`.
+    fn js_raf(w: u32, f: u32) -> f64 = "(w, f) => G.get(w).requestAnimationFrame(G.get(f))";
+    fn js_cancel_raf(w: u32, h: f64) = "(w, h) => { G.get(w).cancelAnimationFrame(h); }";
+    fn js_set_timeout(w: u32, f: u32, ms: i32) -> f64 = "(w, f, ms) => G.get(w).setTimeout(G.get(f), ms)";
+    fn js_clear_timeout(w: u32, h: f64) = "(w, h) => { G.get(w).clearTimeout(h); }";
     fn js_perf_now() -> f64 = "() => performance.now()";
     fn js_date_now() -> f64 = "() => Date.now()";
     fn js_tz_offset() -> f64 = "() => new Date().getTimezoneOffset()";
@@ -209,21 +210,34 @@ pub fn window() -> Option<Window> {
 }
 
 impl Window {
-    /// `requestAnimationFrame(f)` → the frame handle.
-    pub fn request_animation_frame(&self, f: &Closure) -> i32 {
+    /// `requestAnimationFrame(f)` → the frame handle, for
+    /// [`cancel_animation_frame`](Self::cancel_animation_frame).
+    ///
+    /// Frame and timer handles are opaque JS numbers carried as `f64` and
+    /// handed back verbatim. They used to be `i32` (web-sys's type, after
+    /// the spec's `long`), but a host may issue ids outside that range:
+    /// Playwright's `page.clock` — installed by `clock.install()` AND by
+    /// `clock.setFixedTime()` — numbers its fake timers from `1e12`. The
+    /// wasm boundary ToInt32-truncated that id, the cancel named a timer the
+    /// clock never issued, and the callback fired into its dropped
+    /// `Closure` ("called after its Rust owner dropped it" — the camera
+    /// pump's teardown in the CrewForge kiosk e2e). An `f64` holds every
+    /// integer a JS host can return exactly.
+    pub fn request_animation_frame(&self, f: &Closure) -> f64 {
         unsafe { js_raf(self.0.raw(), f.as_js().raw()) }
     }
 
-    pub fn cancel_animation_frame(&self, handle: i32) {
+    pub fn cancel_animation_frame(&self, handle: f64) {
         unsafe { js_cancel_raf(self.0.raw(), handle) }
     }
 
-    /// `setTimeout(f, ms)` → the timer handle.
-    pub fn set_timeout(&self, f: &Closure, ms: i32) -> i32 {
+    /// `setTimeout(f, ms)` → the timer handle (an `f64`, for the reason on
+    /// [`request_animation_frame`](Self::request_animation_frame)).
+    pub fn set_timeout(&self, f: &Closure, ms: i32) -> f64 {
         unsafe { js_set_timeout(self.0.raw(), f.as_js().raw(), ms) }
     }
 
-    pub fn clear_timeout(&self, handle: i32) {
+    pub fn clear_timeout(&self, handle: f64) {
         unsafe { js_clear_timeout(self.0.raw(), handle) }
     }
 

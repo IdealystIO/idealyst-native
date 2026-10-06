@@ -188,8 +188,7 @@ Commit the version bumps it writes; the next release compares against that
 commit. Run `plan` first to see what it would do — it touches nothing.
 
 The full procedure around those two commands — what to review before
-publishing, which packages and targets to verify (a bare `cargo test -p
-idea-ui` cannot build its `design_sync` example, and four `newcore::tests`
+publishing, which packages and targets to verify (four `newcore::tests`
 fail on any host that has not linked AppKit), and how to confirm the result
 from outside the workspace — is the `release` skill in
 [`.claude/skills/release/`](../.claude/skills/release/SKILL.md).

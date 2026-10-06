@@ -564,73 +564,16 @@ mod egl {
 // re-uploading only when the frame `generation()` changes. Everything else — the
 // blit shader, fit/rounded/border/opacity math, the draw — mirrors macOS.
 //
-// The WGSL + fit math + uniform packing below are kept in lockstep with
-// `native_capture.rs`'s compositor; that module is macOS-`#[cfg]`-only so it
-// can't be shared without a refactor that couldn't be verified against a macOS
-// build from here (§5). Any change to the layer look must be made in BOTH.
+// The WGSL, the crop/fit geometry and the uniform packing are shared with the
+// macOS and web compositors (`crate::layer_blit`), so the layer look is defined
+// once.
 // ============================================================================
 
-use canvas_core::{Fit, LayerSource, TextureLayer};
+use canvas_core::{LayerSource, TextureLayer};
 use std::collections::HashMap;
 
-/// WGSL for a layer blit — VERBATIM from `native_capture.rs` (keep in sync).
-const LAYER_BLIT_WGSL: &str = r#"
-struct Layer {
-    uv: vec4<f32>,     // uv_scale.xy, uv_offset.xy
-    geo: vec4<f32>,    // rect_w_px, rect_h_px, radius_px, opacity
-    border: vec4<f32>, // border_width_px, use_src_alpha, _, _
-    bcolor: vec4<f32>, // border r, g, b, a (0..1)
-};
-@group(0) @binding(0) var tex: texture_2d<f32>;
-@group(0) @binding(1) var samp: sampler;
-@group(0) @binding(2) var<uniform> layer: Layer;
+use crate::layer_blit::{layer_blit, slot_offset, LAYER_BLIT_WGSL, LAYER_STRIDE, LAYER_UNIFORM_SIZE, MAX_LAYERS};
 
-struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> VsOut {
-    var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-    var out: VsOut;
-    let xy = p[i];
-    out.pos = vec4<f32>(xy, 0.0, 1.0);
-    out.uv = vec2<f32>((xy.x + 1.0) * 0.5, (1.0 - xy.y) * 0.5);
-    return out;
-}
-
-fn sd_round_box(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
-    let q = abs(p) - b + vec2<f32>(r);
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
-}
-
-@fragment
-fn fs(in: VsOut) -> @location(0) vec4<f32> {
-    let suv = in.uv * layer.uv.xy + layer.uv.zw;
-    let inside = all(suv >= vec2<f32>(0.0)) && all(suv <= vec2<f32>(1.0));
-    let inb = select(0.0, 1.0, inside);
-    let texel = textureSample(tex, samp, clamp(suv, vec2<f32>(0.0), vec2<f32>(1.0)));
-    let col = texel.rgb;
-    let size = layer.geo.xy;
-    let radius = layer.geo.z;
-    let opacity = layer.geo.w;
-    let pp = (in.uv - vec2<f32>(0.5)) * size;
-    let d = sd_round_box(pp, size * 0.5, radius);
-    let aa = 1.0 - smoothstep(-1.0, 1.0, d);
-    let use_src_alpha = layer.border.y;
-    let src_a = mix(1.0, texel.a, use_src_alpha);
-    var rgb = col;
-    var a = aa * inb * opacity * src_a;
-    let bw = layer.border.x;
-    if (bw > 0.0) {
-        let inner = 1.0 - smoothstep(-1.0, 1.0, d + bw);
-        let bcov = clamp(aa - inner, 0.0, 1.0);
-        rgb = mix(rgb, layer.bcolor.rgb, bcov);
-        a = mix(a, layer.bcolor.a * opacity, bcov);
-    }
-    return vec4<f32>(rgb, a);
-}
-"#;
-
-const LAYER_STRIDE: u64 = 256;
-const MAX_LAYERS: usize = 16;
 const MAX_CACHE: usize = 32;
 
 /// A cached, GPU-resident copy of a stream layer's most recent CPU frame, keyed
@@ -686,7 +629,7 @@ impl LayerCompositor {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
-                        min_binding_size: std::num::NonZeroU64::new(64),
+                        min_binding_size: std::num::NonZeroU64::new(LAYER_UNIFORM_SIZE),
                     },
                     count: None,
                 },
@@ -757,12 +700,19 @@ impl LayerCompositor {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         layers: &[TextureLayer],
+        which: &[u32],
         target_view: &wgpu::TextureView,
         scale: f32,
         target_w: u32,
         target_h: u32,
     ) {
-        for (i, layer) in layers.iter().enumerate().take(MAX_LAYERS) {
+        for &index in which {
+            let i = index as usize;
+            // Slot = the layer's index in `layers`, not its position in `which`:
+            // see "Uniform slots" in `layer_blit`. Layers past MAX_LAYERS skip.
+            let (Some(layer), Some(offset)) = (layers.get(i), slot_offset(i)) else {
+                continue;
+            };
             // Resolve the layer's texture into the appropriate cache, then re-borrow
             // its bind group + size for the shared draw below.
             let resolved = match &layer.source {
@@ -812,43 +762,15 @@ impl LayerCompositor {
                 }
             };
             // Image layers carry meaningful alpha; stream layers are opaque.
-            let use_src_alpha = matches!(resolved, Resolved::Image(_)) as u32 as f32;
+            let use_src_alpha = matches!(resolved, Resolved::Image(_));
 
-            let (lx, ly, lw, lh) = (layer.rect)();
-            let (rx, ry, rw, rh) = (lx * scale, ly * scale, lw * scale, lh * scale);
-            if rw < 1.0 || rh < 1.0 {
+            // Crop + fit + mask geometry shared with every renderer.
+            let Some(blit) =
+                layer_blit(layer, cam_w, cam_h, use_src_alpha, scale, target_w, target_h)
+            else {
                 continue;
-            }
-            let vx = rx.clamp(0.0, target_w as f32);
-            let vy = ry.clamp(0.0, target_h as f32);
-            let vw = (rx + rw).clamp(0.0, target_w as f32) - vx;
-            let vh = (ry + rh).clamp(0.0, target_h as f32) - vy;
-            if vw < 1.0 || vh < 1.0 {
-                continue;
-            }
-
-            let (cx, cy, cw, ch) = layer.src_crop.unwrap_or((0.0, 0.0, 1.0, 1.0));
-            let cropped_w = cam_w as f32 * cw.max(f32::EPSILON);
-            let cropped_h = cam_h as f32 * ch.max(f32::EPSILON);
-            let cam_aspect = cropped_w / cropped_h.max(1.0);
-            let dst_aspect = vw / vh;
-            let (fsx, fsy, fox, foy) = uv_transform(layer.fit, cam_aspect, dst_aspect);
-            let (sx, sy, ox, oy) = (fsx * cw, fsy * ch, fox * cw + cx, foy * ch + cy);
-            let radius_px = ((layer.corner_radius)() * scale).max(0.0);
-            let border_px = (layer.border_width * scale).max(0.0);
-            let bc = layer.border_color;
-            let u = [
-                sx, sy, ox, oy,
-                vw, vh, radius_px, layer.opacity.clamp(0.0, 1.0),
-                border_px, use_src_alpha, 0.0, 0.0,
-                bc.r as f32 / 255.0, bc.g as f32 / 255.0, bc.b as f32 / 255.0, bc.a as f32 / 255.0,
-            ];
-            let mut bytes = [0u8; 64];
-            for (j, f) in u.iter().enumerate() {
-                bytes[j * 4..j * 4 + 4].copy_from_slice(&f.to_ne_bytes());
-            }
-            let offset = i as u64 * LAYER_STRIDE;
-            queue.write_buffer(&self.uniforms, offset, &bytes);
+            };
+            queue.write_buffer(&self.uniforms, offset, &blit.uniform);
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("layer-composite"),
@@ -865,6 +787,7 @@ impl LayerCompositor {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind_group, &[offset as u32]);
+            let (vx, vy, vw, vh) = blit.viewport;
             pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
             pass.draw(0..3, 0..1);
         }
@@ -989,7 +912,7 @@ impl LayerCompositor {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.uniforms,
                         offset: 0,
-                        size: std::num::NonZeroU64::new(64),
+                        size: std::num::NonZeroU64::new(LAYER_UNIFORM_SIZE),
                     }),
                 },
             ],
@@ -1027,35 +950,10 @@ enum Resolved {
     Image(u64),
 }
 
-/// UV scale + offset mapping the source into the destination rect for a `Fit`.
-/// VERBATIM from `native_capture.rs` (keep in sync).
-fn uv_transform(fit: Fit, cam_aspect: f32, dst_aspect: f32) -> (f32, f32, f32, f32) {
-    match fit {
-        Fit::Fill => (1.0, 1.0, 0.0, 0.0),
-        Fit::Cover => {
-            if cam_aspect > dst_aspect {
-                let sx = dst_aspect / cam_aspect;
-                (sx, 1.0, (1.0 - sx) * 0.5, 0.0)
-            } else {
-                let sy = cam_aspect / dst_aspect;
-                (1.0, sy, 0.0, (1.0 - sy) * 0.5)
-            }
-        }
-        Fit::Contain => {
-            if cam_aspect > dst_aspect {
-                let f = dst_aspect / cam_aspect;
-                (1.0, 1.0 / f, 0.0, (f - 1.0) / (2.0 * f))
-            } else {
-                let f = cam_aspect / dst_aspect;
-                (1.0 / f, 1.0, (f - 1.0) / (2.0 * f), 0.0)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use canvas_core::Fit;
     use glow::HasContext;
 
     extern "C" {
@@ -1268,7 +1166,7 @@ mod tests {
         .fit(Fit::Fill);
 
         let mut compositor = LayerCompositor::new(&device);
-        compositor.composite_layers(&device, &queue, &mut enc, &[layer], &target_view, 1.0, W, H);
+        compositor.composite_layers(&device, &queue, &mut enc, &[layer], &[0], &target_view, 1.0, W, H);
         queue.submit([enc.finish()]);
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
 

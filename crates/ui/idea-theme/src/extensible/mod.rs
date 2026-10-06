@@ -67,7 +67,7 @@ pub use sheets::{
     ProgressSheets, RadioSheetBuilder, RadioSheets, SliderSheetBuilder, SliderSheets,
     SwitchSheetBuilder, TagSheetBuilder,
     TypographySheetBuilder, font_weight_key, premint_identity, tone_keys, variant_keys,
-    CHECKBOX_DIMS, FONT_WEIGHT_KEYS, PROGRESS_DIMS, PROGRESS_FILL_WIDTH_MS,
+    CHECKBOX_DIMS, DISABLED_CONTROL_OPACITY, FONT_WEIGHT_KEYS, PROGRESS_DIMS, PROGRESS_FILL_WIDTH_MS,
     PROGRESS_SWEEP_FRACTION, RADIO_DIMS, SLIDER_DIMS, SWITCH_TRACK_DIMS,
 };
 

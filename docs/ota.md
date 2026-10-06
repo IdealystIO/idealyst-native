@@ -40,15 +40,23 @@ The bundles are the ones the app already declares for
 
 ```rust
 let ota = ota::start(ota::config!(), ota::Options {
-    host_fns: host_fns(),                             // what bundles may call
     built_in: vec![("screens", include_bytes!(…))],   // optional: runs on first launch, offline
     ..Default::default()
 })?;
 ```
 
+```toml
+[package.metadata.idealyst.ota]
+host_fns = "app::host_fns"   # what bundles may call: a public fn() -> Vec<HostFnDef>, from the library's root
+```
+
 Call it once at startup, inside the app's world (it creates a signal).
 `ota::config!()` reads the settings from `Cargo.toml` when the app compiles.
 To point a staging build elsewhere, set `IDEALYST_OTA_URL` when building it.
+
+Declaring `host_fns` in `Cargo.toml` means the app runs with the same list
+`idealyst ota manifest` registers (below). `Options::host_fns` still works for
+an app that doesn't register its builds; giving both is an error.
 
 After that, `#[component(remote)]` components just work:
 
@@ -77,7 +85,18 @@ if ota.status().get() == ota::Status::AppUpdateRequired {
 | `AppUpdateRequired` | A newer release exists that this app version can't run |
 | `Failed(reason)` | The last check failed (offline, say); running what it has |
 
-`ota.check()` checks again, for a pull-to-refresh or a timer.
+`ota.check()` checks again, for a pull-to-refresh. `check_every:
+Some(Duration::from_secs(300))` checks on a schedule.
+
+For a settings screen or a debug panel, `ota.bundles()` is each bundle's
+state:
+- what runs (version, content hash, and whether it came built in, from the
+  cache or from a download);
+- the newest release it can run, and whether a newer one needs an app update;
+- what it's doing (downloading, ready for the next launch, failed).
+
+`ota.checks()` gives when the last check ended and when the next starts.
+`crates/ota/demo` shows all of it live, against a local MinIO.
 
 ## Publish
 
@@ -108,6 +127,93 @@ idealyst ota status           # what's published: each bundle's newest release, 
 idealyst ota rollback shop    # take back shop's newest release; apps return to the one before
 ```
 
+## Answers per app build
+
+Each app build has a **manifest**: what it offers bundles (its components and
+their props, its host functions, the remote components it mounts, its context
+types), each with its type's shape. The manifest's **id** is a hash of it, so
+two builds that offer the same things share an id. `ota.manifest_id()` gives
+it.
+
+A check gets its answer (what each bundle should run) from the first of these
+that has one:
+
+1. **A resolution service**, when the settings name one (`resolver =
+   "https://…"`, or `IDEALYST_OTA_RESOLVER` at build time). The app sends its
+   id. Only if the service has never seen it does the app send the whole
+   manifest, once. `ota-resolver` is that service, run as a server or on
+   AWS Lambda ([its README](../crates/ota/resolver/README.md)).
+2. **The build's precomputed answer** at the release location,
+   `resolved/<id>.json`. It is there once the build is registered, and every
+   publish, take-down, restore and pin rewrites it.
+3. **The index**, deciding on the device, as before.
+
+All three make the same decision (`ota_index::resolve`). An answer made for
+another manifest, or under another version of the compatibility rule, is
+ignored. The app still checks each bundle's signature and requirements before
+running it. A wrong answer can delay an update, but can't make the app run a
+bundle it can't. `ota.checks().get().answered_by` says which one answered.
+
+**Register each app release:**
+
+```sh
+idealyst ota manifest     # capture this build's manifest and register it
+```
+
+This builds a small program that links the app's library for this machine and
+prints `ota::manifest(&host_fns())`, the same call the app makes at startup.
+It then stores the manifest at the location and writes the build's answer.
+Code compiled only on some platforms (`cfg(target_os)`) can make the shipped
+build's manifest differ from this one. Such a build simply has no precomputed
+answer: it reads the index, or reports its own manifest to the service.
+
+Once builds are registered:
+- `idealyst ota status` lists each build and what it runs;
+- `idealyst ota publish` names each registered build a new release won't
+  reach, and why;
+- the console shows the same, and names the builds a take-down would move.
+
+If a change to the index can't finish rewriting the answers (the store
+failed partway), the change still stands, and the command says so;
+`idealyst ota resolve` rewrites them. An older answer never overwrites a newer
+one: each records the index `generation` it came from.
+
+**The id, for another language.** It is the SHA-256, in lowercase hex, of the
+compact JSON `{"rule":<RULE>,"provides":<manifest>}`. The manifest's fields
+come in this order: `codec`, `components`, `host_fns`, `remote`, `contexts`.
+Map keys are sorted, and there's no whitespace. `RULE` is
+`remote_bundle::RULE`, the compatibility rule's version. It changes whenever
+the rule could decide differently, so ids never span two rules.
+
+## Managing releases: the console
+
+`crates/ota/console` is a self-hosted web page for the release location
+([its README](../crates/ota/console/README.md)). With it you can:
+
+- **Take down** any release. Apps move to the newest remaining release they
+  can run, when they'd apply any update.
+- **Kill switch:** a take-down marked urgent. Apps *running* that release
+  replace it at once, whatever their `apply` setting. If none is left, they
+  return to their built-in copy, or stop running the bundle.
+- **Restore** a taken-down release, to its place by publish time.
+- **Pin** a release ahead of newer ones, including ones published later.
+  Unpin to serve the newest again.
+- **App builds:** each registered build and what it runs. Before a
+  take-down, see which builds run that release and where each would go.
+- **Compatibility grid:** per bundle, every registered build against every
+  live release, with the reason behind each ✗.
+- **Audit log:** every action, and every CLI publish, in `audit.json` beside
+  the index.
+
+The console edits the index; apps never talk to it. The service apps can ask,
+`ota-resolver`, runs separately (see [Answers per app build](#answers-per-app-build)). Signing keys stay with the
+CLI, so the console can rearrange signed releases but not ship code.
+
+**How older apps see these.** A pin is expressed as the *order* of
+`releases`, which every client follows, so apps built before pinning existed
+serve the pinned release too. The kill switch needs `ota` 0.2 or later: older
+clients treat an urgent take-down as a plain one.
+
 ## How an app picks a release
 
 Every release bundle lists what it needs from an app: the app components and
@@ -122,11 +228,21 @@ against what it has itself, and runs the newest release that fits. So:
 - the loader checks the same list again before running a bundle, so even a
   wrongly published release is refused, not misrun.
 
+`crates/streaming/showcase/app/tests/fleet.rs` shows it across a fleet. Four
+app versions, real code, change a prop, a host function, an argument type and
+a struct field. They are checked against six releases: which release each
+version can run, why it can't run the others, and which it chooses.
+
 ## What's in the bucket
 
 ```text
 index.json                          ← rewritten on each publish; served revalidated
 bundles/<name>/<sha256>.wasm        ← never change; cached forever
+manifests.json                      ← app builds registered from their build
+reported/<id>.json                  ← app builds reported from the field, one marker each
+manifests/<id>.json                 ← each build's manifest; never changes
+resolved/<id>.json                  ← each registered build's answer; rewritten with the index
+audit.json                          ← who changed what
 ```
 
 Bundles are uploaded before the index names them, so an app never sees an index
@@ -190,7 +306,8 @@ None of this is required. The framework's side is the loader
   `remote_bundle::check(&requires, codec, &provides)` says whether a bundle
   fits.
 - `remote_bundle::requires(&wasm)` reads a bundle's list; `ota_index` has the
-  index format and `choose`.
+  index format, `resolve` (one app's whole answer) and `choose`.
 
-A server can pick releases per app instead (the app sends its `provides`), or
-deliver bundles any other way.
+`ota-resolver` is one server that picks releases per app. Any
+other can speak the same protocol (`POST /v1/resolve`, the app's id, then its
+manifest on a 404), or deliver bundles another way.

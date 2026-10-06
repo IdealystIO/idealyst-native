@@ -527,6 +527,11 @@ impl Transform {
         Self { a: co, b: s, c: -s, d: co, e: 0.0, f: 0.0 }
     }
 
+    /// Map the point `(x, y)` through this transform.
+    pub fn apply(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.a * x + self.c * y + self.e, self.b * x + self.d * y + self.f)
+    }
+
     /// Compose: apply `self` first, then `next`. Equivalent to the
     /// matrix product `next · self`.
     pub fn then(self, next: Transform) -> Transform {
@@ -1033,6 +1038,30 @@ pub enum DrawOp {
         /// Fill paint (color / gradient + blend) for every glyph in the run.
         paint: Paint,
     },
+    /// Composite the canvas's texture layer `index` (an entry of
+    /// `CanvasProps::layers` — a live camera, a screen share, a static image)
+    /// at this point in the draw order. Ops after it draw ON TOP of the
+    /// texture; ops before it are underneath. This is how vector content goes
+    /// over a video frame (a scan outline, a label, a HUD).
+    ///
+    /// The layer is drawn with its own `rect`/`fit`/`src_crop`/corner
+    /// radius/opacity/border, in the canvas's logical coordinates: it is NOT
+    /// affected by the scene's current transform or clip, and the scene's
+    /// transform/clip state carries on unchanged after it. `paint_scene`
+    /// guarantees that uniformly by rewriting the op list (see
+    /// `place_textures`), so every renderer sees each `Texture` op with the
+    /// base state and each run of vector ops between textures self-contained.
+    ///
+    /// Only meaningful at the top level of a scene: a `Texture` op inside a
+    /// [`Layer`](DrawOp::Layer), [`LayerCached`](DrawOp::LayerCached) or
+    /// [`MaskGroup`](DrawOp::MaskGroup) op list is removed, as is one whose
+    /// `index` names no layer. A layer the scene never places is composited
+    /// after the whole scene, in `layers` order — the behavior before this op
+    /// existed.
+    Texture {
+        /// Index into `CanvasProps::layers`.
+        index: u32,
+    },
     /// Draw `content`, modulated by a soft **mask** rendered from `mask`'s ops.
     ///
     /// The mask's coverage scales the content's alpha: where the mask is opaque
@@ -1114,12 +1143,49 @@ pub struct Scene {
     /// Work. See [`tests::forgotten_path_does_not_accumulate`].
     #[serde(skip)]
     current_consumed: bool,
+    /// The logical size `(width, height)` of the canvas this scene is painted
+    /// for — see [`size`](Self::size). Not serialized: it is an input to the
+    /// painter, not part of the drawing.
+    #[serde(skip)]
+    size: (f32, f32),
 }
 
 impl Scene {
     /// An empty scene.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty scene for a canvas of logical size `width × height`. Renderers
+    /// get one from `CanvasPrim::paint`; authors normally only read
+    /// [`size`](Self::size).
+    pub fn with_size(width: f32, height: f32) -> Self {
+        Self { size: (width, height), ..Self::default() }
+    }
+
+    /// The canvas's logical size `(width, height)`, in the same units the
+    /// scene draws in. Reading it inside the `draw` closure makes the canvas
+    /// re-paint when it is resized, so content can scale to fit:
+    ///
+    /// ```ignore
+    /// draw: canvas::draw(|s| {
+    ///     let (w, h) = s.size();
+    ///     s.fill_path(Path::rect(0.0, 0.0, w, h), bg);
+    /// })
+    /// ```
+    ///
+    /// `(0.0, 0.0)` until the canvas has been laid out (the first paint can
+    /// run before layout), and for a scene built outside a canvas. Scenes
+    /// built by the [`layer`](Self::layer) / [`layer_cached`](Self::layer_cached)
+    /// builders report the same size as their parent.
+    pub fn size(&self) -> (f32, f32) {
+        self.size
+    }
+
+    /// Set the size a scene reports — used when a scene is rebuilt from its
+    /// ops (`place_textures`).
+    pub(crate) fn set_size(&mut self, size: (f32, f32)) {
+        self.size = size;
     }
 
     /// The recorded ops, for a renderer to replay.
@@ -1132,7 +1198,7 @@ impl Scene {
     /// (e.g. a PDF interpreter recording into a flat op stream) rather than
     /// through the imperative builders. The ops are replayed verbatim.
     pub fn from_ops(ops: Vec<DrawOp>) -> Self {
-        Self { ops, current: Path::new(), current_consumed: false }
+        Self { ops, current: Path::new(), current_consumed: false, size: (0.0, 0.0) }
     }
 
     /// Append a fully-formed op to the scene, bypassing the current-path cursor.
@@ -1141,6 +1207,11 @@ impl Scene {
     pub fn push_op(&mut self, op: DrawOp) -> &mut Self {
         self.ops.push(op);
         self
+    }
+
+    /// Consume the scene, returning its recorded ops.
+    pub fn into_ops(self) -> Vec<DrawOp> {
+        self.ops
     }
 
     /// `true` if nothing has been drawn yet.
@@ -1293,6 +1364,13 @@ impl Scene {
         self.transform(Transform::rotate(radians))
     }
 
+    /// Composite texture layer `index` (an entry of `CanvasProps::layers`)
+    /// here: everything drawn after this call lands on top of it. See
+    /// [`DrawOp::Texture`] for the coordinate and state rules.
+    pub fn texture(&mut self, index: usize) -> &mut Self {
+        self.push_op(DrawOp::Texture { index: index as u32 })
+    }
+
     /// Blit `image` into the `dst` rectangle (scaled to fit), fully opaque,
     /// source-over. Does not touch the current path. Accepts an owned
     /// [`ImageSource`] or an `Arc<ImageSource>` — pass the `Arc` to re-blit the
@@ -1333,7 +1411,7 @@ impl Scene {
         blend: BlendMode,
         f: impl FnOnce(&mut Scene),
     ) -> &mut Self {
-        let mut sub = Scene::new();
+        let mut sub = Scene::with_size(self.size.0, self.size.1);
         f(&mut sub);
         self.ops.push(DrawOp::Layer {
             id,
@@ -1373,7 +1451,7 @@ impl Scene {
         // Only bake when dirty; `dirty = false` carries no ops (the renderer
         // reuses its retained raster), so skip running the builder entirely.
         let ops = if dirty {
-            let mut sub = Scene::new();
+            let mut sub = Scene::with_size(self.size.0, self.size.1);
             f(&mut sub);
             sub.ops
         } else {

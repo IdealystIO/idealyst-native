@@ -242,7 +242,10 @@ pub struct IosBackend {
     /// subtracts this to shrink the layout viewport — making content reflow
     /// above the keyboard and restore when it dismisses (the iOS analog of
     /// Android's window resize). Driven by the `KeyboardObserver` →
-    /// [`Self::on_keyboard_frame_changed`].
+    /// [`deliver_keyboard_frame`] → [`Self::on_keyboard_frame_changed`], or
+    /// by the layout pass when the frame arrived while the backend was
+    /// borrowed (it must never be dropped — a lost close frame leaves the
+    /// viewport short by the keyboard height for good).
     pub(crate) keyboard_overlap: f32,
     /// Per-view cached animation state. Mirrors the web backend's
     /// `animated_states` map; see [`animated`] for the routing
@@ -386,6 +389,12 @@ pub fn install_global_self(weak: std::rc::Weak<std::cell::RefCell<IosBackend>>) 
 /// another caller (the borrow_mut fails silently rather than
 /// panicking). Callers that need the result should match on the
 /// `Option`; otherwise it's fine to ignore.
+///
+/// Do NOT use it for an OS notification that updates latched backend
+/// state: UIKit posts many notifications synchronously from inside our own
+/// mutations (i.e. while the backend is borrowed), and the dropped call is
+/// never retried. The soft-keyboard frame is the case that bit — see
+/// [`deliver_keyboard_frame`].
 pub fn with_backend<R>(f: impl FnOnce(&mut IosBackend) -> R) -> Option<R> {
     let weak = IOS_BACKEND_SELF.with(|s| s.borrow().clone())?;
     let rc = weak.upgrade()?;
@@ -445,6 +454,40 @@ thread_local! {
     /// as a drain point — see [`schedule_layout_pass`].
     static LAYOUT_OBSERVER: std::cell::RefCell<Option<Retained<UIView>>> =
         const { std::cell::RefCell::new(None) };
+
+    /// The newest soft-keyboard end frame not yet applied to the backend.
+    /// Filled by [`deliver_keyboard_frame`], drained either right there (when
+    /// the backend is free) or at the top of
+    /// [`IosBackend::run_layout_pass_global`]. See `keyboard_frame_policy`.
+    static KEYBOARD_FRAME_MAILBOX:
+        crate::keyboard_frame_policy::KeyboardFrameMailbox<objc2_foundation::CGRect> =
+        const { crate::keyboard_frame_policy::KeyboardFrameMailbox::new() };
+}
+
+/// Hand a `UIKeyboardWillChangeFrameNotification` end frame to the backend
+/// without ever dropping it.
+///
+/// UIKit posts the CLOSE notification synchronously from
+/// `resignFirstResponder`, which runs when a flush removes the focused text
+/// field — i.e. while the backend is mutably borrowed. `with_backend` would
+/// drop it there and leave `keyboard_overlap` stuck at the open height (the
+/// layout viewport then stays short by the keyboard until restart). Instead
+/// the frame goes into a latest-wins mailbox; if the backend is busy we
+/// queue a layout pass, whose drain retries until the borrow is released and
+/// applies the mailbox before reading the viewport.
+pub(crate) fn deliver_keyboard_frame(rect: objc2_foundation::CGRect) {
+    let rc = IOS_BACKEND_SELF
+        .with(|s| s.borrow().clone())
+        .and_then(|weak| weak.upgrade());
+    KEYBOARD_FRAME_MAILBOX.with(|mailbox| {
+        crate::keyboard_frame_policy::deliver(
+            mailbox,
+            rect,
+            rc.as_deref(),
+            |b: &mut IosBackend, frame| b.on_keyboard_frame_changed(frame),
+            schedule_layout_pass,
+        );
+    });
 }
 
 /// Remember the layout observer so a queued pass can mark it as needing
@@ -4537,6 +4580,15 @@ impl IosBackend {
     /// new views land after that (navigation pushes, drawer mounts).
     pub(crate) fn run_layout_pass_global(&mut self) {
         let _t = phase_timer::PhaseTimer::start("run_layout_pass_global");
+        // Apply a keyboard frame that arrived while the backend was borrowed
+        // (the close frame, posted from `resignFirstResponder` inside a
+        // flush) BEFORE reading the viewport — `deliver_keyboard_frame`
+        // queued this pass for exactly that. Also covers runtime-server mode,
+        // where there is no global self-handle and the host's synchronous
+        // `run_layout` is the only drain.
+        if let Some(frame) = KEYBOARD_FRAME_MAILBOX.with(|m| m.take()) {
+            self.apply_keyboard_frame(frame);
+        }
         let (vw, vh) = self.viewport_size();
         backend_ios_core::ios_log(&format!(
             "[layout] run_layout_pass viewport=({:.1}, {:.1}) registered_views={}",
@@ -5023,6 +5075,20 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
     /// frame sits below the host, the intersection is empty, and the overlap
     /// returns to 0 — making open and close symmetric.
     pub(crate) fn on_keyboard_frame_changed(&mut self, kb_frame_screen: objc2_foundation::CGRect) {
+        if self.apply_keyboard_frame(kb_frame_screen) {
+            // Defer to the next main-queue turn (the standard out-of-band
+            // relayout path) rather than recomputing synchronously inside the
+            // notification dispatch.
+            schedule_layout_pass();
+        }
+    }
+
+    /// Recompute `keyboard_overlap` from a keyboard end frame. Returns
+    /// whether it changed (by more than half a point). Shared by the
+    /// immediate path ([`Self::on_keyboard_frame_changed`]) and the layout
+    /// pass, which applies a frame that arrived while the backend was
+    /// borrowed and so needs no further pass scheduled.
+    fn apply_keyboard_frame(&mut self, kb_frame_screen: objc2_foundation::CGRect) -> bool {
         let overlap = match &self.host_root {
             Some(host) => {
                 // `convertRect:fromView:nil` interprets the rect in the
@@ -5040,10 +5106,9 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
         };
         if (self.keyboard_overlap - overlap).abs() > 0.5 {
             self.keyboard_overlap = overlap;
-            // Defer to the next main-queue turn (the standard out-of-band
-            // relayout path) rather than recomputing synchronously inside the
-            // notification dispatch.
-            schedule_layout_pass();
+            true
+        } else {
+            false
         }
     }
 

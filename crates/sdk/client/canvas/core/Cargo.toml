@@ -21,6 +21,9 @@ runtime-core = { workspace = true }
 # The scene registry (`item` + `Registry`/`MountCx`) + the vocabulary
 # style channel (`attach_style`) the renderer handlers drive.
 runtime-scene = { workspace = true }
+# `is_entered`: the prim only creates its size signal inside a world (a
+# canvas built outside one — a test, a wire snapshot — has no size).
+runtime-world = { workspace = true }
 runtime-vocabulary = { workspace = true }
 # Scene serialization (a painted snapshot is what crosses a process
 # boundary — a painter closure can't). `rc` so

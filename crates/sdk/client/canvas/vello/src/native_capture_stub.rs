@@ -46,6 +46,7 @@ impl LayerCompositor {
         _queue: &wgpu::Queue,
         _encoder: &mut wgpu::CommandEncoder,
         _layers: &[canvas_core::TextureLayer],
+        _which: &[u32],
         _target_view: &wgpu::TextureView,
         _scale: f32,
         _target_w: u32,

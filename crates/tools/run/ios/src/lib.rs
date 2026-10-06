@@ -51,6 +51,7 @@ use build_ios::{capabilities, BuildOptions, FrameworkSource, Manifest};
 /// [`device::run`] and [[project_ios_device_deploy_from_cli]].
 pub mod device;
 pub mod frameworks;
+pub mod simulator;
 /// App Store Connect distribution path for `idealyst publish ios`:
 /// distribution-signed archive → exported `.ipa` → optional upload. Reuses
 /// the device path's [`device::prepare_xcode_project`] layout machinery; the
@@ -70,6 +71,36 @@ const VIEW_CONTROLLER_AAS_SWIFT: &str = include_str!("../templates/ViewControlle
 pub(crate) const BRIDGING_HEADER_LOCAL_H: &str = include_str!("../templates/BridgingHeader.h");
 const BRIDGING_HEADER_AAS_H: &str = include_str!("../templates/BridgingHeaderRuntimeServer.h");
 pub(crate) const INFO_PLIST_TMPL: &str = include_str!("../templates/Info.plist.tmpl");
+
+/// The device families every iOS build targets: 1 = iPhone, 2 = iPad.
+///
+/// The one source for both build paths. The simulator bundle is assembled by
+/// hand, so its Info.plist gets `UIDeviceFamily` from
+/// [`ui_device_family_plist_entry`]; the device/archive path renders the
+/// same entry into its Info.plist and `TARGETED_DEVICE_FAMILY` into the
+/// pbxproj from [`targeted_device_family`] (xcodebuild writes
+/// `UIDeviceFamily` from that setting). Without `UIDeviceFamily` iOS treats
+/// the app as iPhone-only, so on an iPad simulator it ran in iPhone
+/// compatibility mode while the device build ran natively.
+pub(crate) const DEVICE_FAMILIES: &[u8] = &[1, 2];
+
+/// `UIDeviceFamily` as an Info.plist entry, from [`DEVICE_FAMILIES`].
+pub(crate) fn ui_device_family_plist_entry() -> String {
+    let items: String = DEVICE_FAMILIES
+        .iter()
+        .map(|f| format!("\n        <integer>{f}</integer>"))
+        .collect();
+    format!("<key>UIDeviceFamily</key>\n    <array>{items}\n    </array>")
+}
+
+/// The pbxproj `TARGETED_DEVICE_FAMILY` value (`"1,2"`), from [`DEVICE_FAMILIES`].
+pub(crate) fn targeted_device_family() -> String {
+    DEVICE_FAMILIES
+        .iter()
+        .map(|f| f.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 /// The runtime-server-mode iOS staticlib is `backend-ios-mobile` itself, built
 /// with its `runtime-server` feature. That feature compiles in the
@@ -155,6 +186,10 @@ pub struct RunOptions {
     /// without losing data; `clean` is the bigger hammer for when an
     /// install-over still resurfaces the old build.
     pub clean: bool,
+    /// The simulator to run on, by name (`"iPad Pro 13-inch (M4)"`) or
+    /// UDID. `None` reuses the first booted iOS simulator, or boots the
+    /// first iPhone on the newest runtime. See [`simulator::select_simulator`].
+    pub simulator: Option<String>,
 }
 
 #[derive(Debug)]
@@ -290,7 +325,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     fs::write(app_bundle.join("PkgInfo"), b"APPL????")?;
 
     // ── 6. Simulator: boot, then run the (re)install plan ─────────
-    let udid = ensure_simulator_booted()?;
+    let udid = ensure_simulator_booted(opts.simulator.as_deref())?;
     let bundle_id = manifest.app.require_bundle_id()?;
     for step in reinstall_plan(opts.clean) {
         match step {
@@ -390,7 +425,8 @@ fn compile_and_link(
     // Frameworks the Rust staticlib needs at link time, DERIVED from the dep
     // graph (base set + each SDK's declared frameworks) rather than hardcoded.
     // UIKit/Foundation must weak-link (objc2 back-deploy fix — see
-    // `frameworks`); CoreGraphics/QuartzCore and the SDK frameworks
+    // `frameworks`); the other base frameworks (CoreGraphics/QuartzCore/
+    // CoreText/CoreFoundation) and the SDK frameworks
     // (CoreMedia/CoreVideo C-symbol path, ReplayKit/AVFoundation classes)
     // strong-link. `-weak_framework` is the swiftc/ld spelling of the pbxproj
     // `ATTRIBUTES = (Weak, )`.
@@ -583,6 +619,7 @@ fn render_info_plist(
         .replace("{{EXECUTABLE}}", &xml_escape(executable_name))
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
         .replace("{{BUILD_NUMBER}}", &xml_escape(&manifest.app.build_number))
+        .replace("{{UI_DEVICE_FAMILY}}", &ui_device_family_plist_entry())
         .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
 }
 
@@ -628,22 +665,21 @@ pub(crate) fn xml_escape(s: &str) -> String {
 // Simulator orchestration
 // ---------------------------------------------------------------------------
 
-/// Find a booted simulator if one exists, or boot the first available
-/// iPhone. Returns its UDID. Also opens Simulator.app so the window
-/// surfaces; on a fresh machine the boot can take a few seconds.
-fn ensure_simulator_booted() -> Result<String> {
-    if let Some(udid) = find_booted_simulator()? {
-        eprintln!("[run-ios] reusing booted simulator {udid}");
+/// Resolve the simulator to run on (see [`simulator::select_simulator`]) and
+/// boot it if it isn't running. Returns its UDID. Also opens Simulator.app so
+/// the window surfaces; on a fresh machine the boot can take a few seconds.
+fn ensure_simulator_booted(wanted: Option<&str>) -> Result<String> {
+    let sim = simulator::find_simulator(wanted)?;
+    if sim.booted {
+        eprintln!("[run-ios] reusing booted simulator {} ({})", sim.name, sim.udid);
         // Make sure Simulator.app is visible.
         let _ = Command::new("open").args(["-a", "Simulator"]).status();
-        return Ok(udid);
+        return Ok(sim.udid);
     }
 
-    // Nothing booted — pick the first available iPhone and boot it.
-    let udid = pick_iphone()?;
-    eprintln!("[run-ios] booting simulator {udid}");
+    eprintln!("[run-ios] booting simulator {} ({})", sim.name, sim.udid);
     let status = Command::new("xcrun")
-        .args(["simctl", "boot", &udid])
+        .args(["simctl", "boot", &sim.udid])
         .status()
         .with_context(|| "spawn xcrun simctl boot")?;
     if !status.success() {
@@ -652,70 +688,8 @@ fn ensure_simulator_booted() -> Result<String> {
     // Surface the Simulator window.
     let _ = Command::new("open").args(["-a", "Simulator"]).status();
 
-    wait_for_boot(&udid)?;
-    Ok(udid)
-}
-
-/// Run `simctl list devices booted` and pick the first UDID. Returns
-/// `None` if none are booted. We parse the human-readable output —
-/// simctl's JSON mode works but the keys vary across Xcode versions
-/// and the text format is stable enough for our needs.
-fn find_booted_simulator() -> Result<Option<String>> {
-    let out = Command::new("xcrun")
-        .args(["simctl", "list", "devices", "booted"])
-        .output()
-        .with_context(|| "spawn xcrun simctl list devices booted")?;
-    if !out.status.success() {
-        return Ok(None);
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        // Format: "    iPhone 15 (XXXX-XXXX) (Booted)"
-        if !line.contains("(Booted)") {
-            continue;
-        }
-        if let Some(udid) = extract_udid(line) {
-            return Ok(Some(udid));
-        }
-    }
-    Ok(None)
-}
-
-/// Pull the first parenthesized GUID out of an simctl line.
-fn extract_udid(line: &str) -> Option<String> {
-    let start = line.find('(')? + 1;
-    let rest = &line[start..];
-    let end = rest.find(')')?;
-    Some(rest[..end].to_string())
-}
-
-/// Pick the first available iPhone simulator. Boot it if it isn't
-/// already running. We prefer matching `iPhone N` lines from the
-/// `available` list — that filters out unavailable runtimes.
-fn pick_iphone() -> Result<String> {
-    let out = Command::new("xcrun")
-        .args(["simctl", "list", "devices", "available"])
-        .output()
-        .with_context(|| "spawn xcrun simctl list devices available")?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "xcrun simctl list devices available failed: {}",
-            String::from_utf8_lossy(&out.stderr),
-        );
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("iPhone ") {
-            if let Some(udid) = extract_udid(trimmed) {
-                return Ok(udid);
-            }
-        }
-    }
-    anyhow::bail!(
-        "no available iPhone simulator found — run `xcrun simctl list devices available` \
-         to see what's installed, or `xcodebuild -downloadPlatform iOS` to fetch a runtime"
-    )
+    wait_for_boot(&sim.udid)?;
+    Ok(sim.udid)
 }
 
 fn wait_for_boot(udid: &str) -> Result<()> {
@@ -973,5 +947,38 @@ mod tests {
                 SimStep::Launch,
             ],
         );
+    }
+
+    /// Regression: the simulator Info.plist had no `UIDeviceFamily`, so on
+    /// an iPad simulator the app ran in iPhone compatibility mode. It must
+    /// declare iPhone + iPad, in both run modes.
+    #[test]
+    fn regression_sim_plist_declares_iphone_and_ipad_device_family() {
+        for mode in [
+            RunMode::Local,
+            RunMode::RuntimeServer { endpoint: String::new() },
+        ] {
+            let plist = render_info_plist(&fake_manifest(), "demo", &mode, "", "")
+                .expect("render plist");
+            assert!(
+                plist.contains(
+                    "<key>UIDeviceFamily</key>\n    <array>\n        <integer>1</integer>\n        \
+                     <integer>2</integer>\n    </array>"
+                ),
+                "UIDeviceFamily [1, 2] missing for {mode:?}:\n{plist}"
+            );
+            assert!(!plist.contains("{{"), "unsubstituted placeholder:\n{plist}");
+        }
+    }
+
+    /// The plist entry and the pbxproj setting come from one list.
+    #[test]
+    fn device_family_renders_from_one_source() {
+        assert_eq!(DEVICE_FAMILIES, &[1, 2]);
+        assert_eq!(targeted_device_family(), "1,2");
+        let entry = ui_device_family_plist_entry();
+        for f in DEVICE_FAMILIES {
+            assert!(entry.contains(&format!("<integer>{f}</integer>")), "{entry}");
+        }
     }
 }

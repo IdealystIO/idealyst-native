@@ -90,6 +90,25 @@ pub const IMG_FIT_RESET: &str = ":where(img) { object-fit: contain; }";
 /// color anywhere below still wins.
 pub const DEFAULT_TEXT_COLOR_RESET: &str = ":where(html) { color: var(--color-text, #1a1a1f); }";
 
+/// Default size for a `graphics` surface's `<canvas>` (what GPU renderers such
+/// as `canvas-vello` draw into): a block that fills its parent, so an unstyled
+/// surface shows up at all instead of the HTML default 300×150.
+///
+/// It is a zero-specificity rule, NOT an inline style, so the author's sheet
+/// wins. It used to be written inline on the element (`style="width: 100%;
+/// height: 100%"`), and inline beats every class rule, so a sized canvas
+/// (`.with_style` → a minted class) silently kept 100% × 100%. Under an
+/// auto-height parent that `height: 100%` fell back to the canvas's 2:1
+/// intrinsic ratio: a 180 px square QR code rendered full-width and half as
+/// tall. Scoped by the `data-graphics-id` attribute the web backend sets on
+/// every graphics canvas, so other `<canvas>` elements are untouched.
+///
+/// Web-only: NOT part of [`base_reset_css`]. Only the live web backend stamps
+/// `data-graphics-id`; an SSR page's canvas never carries it, so the rule
+/// would match nothing there.
+pub const GRAPHICS_FILL_RESET: &str =
+    ":where(canvas[data-graphics-id]) { display: block; width: 100%; height: 100%; }";
+
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
 /// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`] +
 /// [`DEFAULT_TEXT_COLOR_RESET`]). The SSR backend emits this

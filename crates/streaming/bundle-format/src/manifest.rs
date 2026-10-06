@@ -51,6 +51,43 @@ pub struct Provides {
     pub contexts: BTreeMap<String, String>,
 }
 
+/// The version of the compatibility rule: what [`check`] decides for a
+/// given bundle and app. Part of every [`Provides::id`], and recorded in
+/// every answer computed elsewhere (a resolution service, a precomputed
+/// file), so an app never acts on an answer an older or newer rule gave.
+///
+/// Bump it whenever [`check`] or [`shapes_match`] can decide differently
+/// for some input — a new problem kind that is an error, a shape that
+/// matches where it didn't. A new field in [`Provides`] changes the ids by
+/// itself.
+pub const RULE: u32 = 1;
+
+impl Provides {
+    /// The manifest's id: the SHA-256 (hex) of its canonical JSON together
+    /// with [`RULE`]. Two app builds that offer bundles the same things
+    /// have the same id, so an answer computed for one serves the other;
+    /// an app can send its id instead of its manifest.
+    ///
+    /// Canonical because every map is a `BTreeMap` (sorted keys) and
+    /// `serde_json` writes struct fields in declaration order with one
+    /// escaping: the same value always gives the same bytes, on any
+    /// platform. So the order of the fields in [`Provides`] is part of
+    /// the id — reordering them changes every id (the regression test
+    /// `the_id_is_stable` pins one).
+    pub fn id(&self) -> String {
+        self.id_under(RULE)
+    }
+
+    fn id_under(&self, rule: u32) -> String {
+        #[derive(Serialize)]
+        struct Keyed<'a> {
+            rule: u32,
+            provides: &'a Provides,
+        }
+        crate::content_hash(&serde_json::to_vec(&Keyed { rule, provides: self }).expect("a manifest serializes"))
+    }
+}
+
 /// One parameter of a remote component: its name and shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Param {
@@ -58,8 +95,10 @@ pub struct Param {
     pub shape: String,
 }
 
-/// One way a bundle doesn't fit an app.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One way a bundle doesn't fit an app. Serialized with its `kind`
+/// (`missing-component`, …), for answers sent to apps and the console.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Problem {
     /// The bundle was built with another value codec.
     Codec { bundle: u32, app: u32 },
@@ -299,6 +338,48 @@ mod tests {
         assert!(!shapes_match("(?,u8)", "(str,u16)"));
         assert!(!shapes_match("list<?>", "opt<u8>"));
         assert!(!shapes_match("Person{a:u8}", "Person{a:u8,b:u8}"));
+    }
+
+    /// The id is the hash of the canonical JSON with the rule version: the
+    /// same on every platform and run, so a device, the CLI and a server
+    /// agree on it. Pinned: a change here means every registered manifest
+    /// and precomputed answer stops matching the apps that use them.
+    #[test]
+    fn the_id_is_stable() {
+        assert_eq!(app().id(), "3b21f6e3cd489890e248673b27699f6dd4dabd7cf9cee7ac24b48fa3c2e05308");
+        assert_eq!(app().id(), app().clone().id());
+    }
+
+    /// Anything a bundle could be checked against changes the id, and so
+    /// does the rule: an answer is never reused across either.
+    #[test]
+    fn the_id_follows_the_manifest_and_the_rule() {
+        let base = app().id();
+        let mut p = app();
+        p.codec = 3;
+        assert_ne!(p.id(), base);
+        let mut p = app();
+        p.components.get_mut("ui::Card").unwrap().insert("elevation".into(), "u8".into());
+        assert_ne!(p.id(), base);
+        let mut p = app();
+        p.host_fns.insert("app::sort#00000000000000aa".into(), "fn(list<u64>)->list<u32>".into());
+        assert_ne!(p.id(), base);
+        let mut p = app();
+        p.remote.get_mut("shop::Offer").unwrap()[0].shape = "u32".into();
+        assert_ne!(p.id(), base);
+        let mut p = app();
+        p.contexts.clear();
+        assert_ne!(p.id(), base);
+        assert_ne!(app().id_under(RULE + 1), base);
+    }
+
+    /// Problems cross to apps and the console as JSON, tagged by kind.
+    #[test]
+    fn problems_round_trip() {
+        let p = Problem::MissingHostFn { path: "app::gone".into(), changed: true };
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(json, r#"{"kind":"missing-host-fn","path":"app::gone","changed":true}"#);
+        assert_eq!(serde_json::from_str::<Problem>(&json).unwrap(), p);
     }
 
     #[test]

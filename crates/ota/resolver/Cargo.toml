@@ -1,0 +1,41 @@
+# ota-resolver — answers an app's update check for its build: what each
+# bundle should run, decided from the release location's index and the
+# app's manifest (`ota_index::resolve`, the same decision the app makes on
+# its own). The `resolver` an app's settings name. Stateless apart from a
+# cache: run one, many, or a Lambda (`--features lambda`). See README.md.
+
+[package]
+name = "ota-resolver"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+# The Lambda binary (`src/bin/lambda.rs`): the same router on AWS Lambda.
+lambda = ["dep:server-aws"]
+
+[dependencies]
+ota-publish = { path = "../publish", features = ["s3-http"] }
+ota-index = { workspace = true }
+remote-bundle = { workspace = true }
+anyhow = "1"
+axum = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+server-aws = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+
+[[bin]]
+name = "ota-resolver"
+path = "src/bin/ota-resolver.rs"
+
+[[bin]]
+name = "lambda"
+path = "src/bin/lambda.rs"
+required-features = ["lambda"]

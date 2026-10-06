@@ -501,7 +501,13 @@ dependencies are whatever the closure read — nothing is declared:
    rebuild, change the value (e.g. fold a generation counter into the
    scrutinee tuple). Keyed `for` reconciles rows by `Key` identity, and
    duplicate keys panic (`tests.rs::keyed_scopes_reconcile_by_identity`,
-   `duplicate_keys_panic`).
+   `duplicate_keys_panic`). A row whose key changes is a remove plus a
+   fresh mount at that row's own position. Regions that share a parent
+   (several `for` lists, `if`s, a static `for` in between) work out where
+   they start each time they splice, from the current size of every
+   region before them, so one list growing or emptying never displaces
+   the next (`runtime-scene` `tests.rs::regression_keyed_*`,
+   `ui-lowering-parity/tests/keyed_position.rs`).
 3. **Style resolution.** Each styled node has a binding effect that
    resolves its `StyleApplication` against the active theme and applies
    the resulting `StyleRules` through `StyleOps`. The theme is itself

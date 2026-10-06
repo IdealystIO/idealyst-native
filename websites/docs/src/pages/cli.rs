@@ -69,8 +69,17 @@ pub fn page() -> Element {
             SectionWithCode(
                 title = "Run".to_string(),
                 body = "Build and launch on a connected device or simulator. The target \
-                        platform is a positional argument.".to_string(),
+                        platform is a positional argument. On iOS, `--simulator` picks the \
+                        simulator by name or UDID (`run ios` and `dev --ios`); without it \
+                        the first booted simulator is used. `--device` builds, signs, and \
+                        installs on a connected iPhone or iPad, and `--udid` picks which \
+                        one. If the device hasn't trusted your developer certificate, the \
+                        launch fails with a pointer to Settings \u{2192} General \u{2192} \
+                        VPN & Device Management.".to_string(),
                 code = "idealyst run ios\n\
+                        idealyst run ios --simulator \"iPad Pro 13-inch (M4)\"\n\
+                        idealyst dev --ios --simulator 471A6C9B-9AA6-4134-8EE7-5E5466CF8F55\n\
+                        idealyst run ios --device\n\
                         idealyst run android".to_string(),
             )
 

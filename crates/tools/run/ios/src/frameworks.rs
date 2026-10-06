@@ -63,6 +63,19 @@ pub struct Framework {
 /// - **UIKit / Foundation** — weak (objc2 back-deploy fix, see module docs).
 /// - **CoreGraphics / QuartzCore** — strong (old/stable; CGRect/CGFloat at the
 ///   FFI boundary + backend-ios' CALayer code).
+/// - **CoreText / CoreFoundation** — strong (old/stable C APIs, present on
+///   every supported iOS). `backend-apple-core` calls them directly through
+///   `#[link(kind = "framework")]` blocks: CoreText for font registration
+///   (`font.rs`), CoreFoundation for `CFRelease` / the pre-commit run-loop
+///   observer (`font.rs`, `pre_commit.rs`). Those attributes are lost when
+///   the staticlib is linked by Xcode/swiftc, and before these entries the
+///   symbols only resolved because the Swift host's `import UIKit` autolinks
+///   UIKit's transitive module imports (CoreText and CoreFoundation among
+///   them). Naming them here makes the link independent of that.
+///
+/// `tests/sdk_framework_declarations.rs` checks every framework the
+/// framework's own crates in the app's base closure link on iOS against this
+/// list, so a new `#[link]` in the backend can't silently rely on autolinking.
 ///
 /// Order here is the order they appear in the generated pbxproj / swiftc line,
 /// so it's fixed for reproducibility. BASE wins on a name conflict with an SDK
@@ -72,6 +85,8 @@ const BASE: &[(&str, bool)] = &[
     ("Foundation", true),
     ("CoreGraphics", false),
     ("QuartzCore", false),
+    ("CoreText", false),
+    ("CoreFoundation", false),
 ];
 
 /// Compute the full framework set for an iOS build: the [`BASE`] set unioned
@@ -232,9 +247,15 @@ mod tests {
     fn base_only_when_no_sdk_frameworks() {
         let fws = merge_frameworks(&[]);
         let names: Vec<&str> = fws.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["UIKit", "Foundation", "CoreGraphics", "QuartzCore"]);
+        assert_eq!(
+            names,
+            ["UIKit", "Foundation", "CoreGraphics", "QuartzCore", "CoreText", "CoreFoundation"]
+        );
         assert!(fws[0].weak && fws[1].weak, "UIKit/Foundation weak");
-        assert!(!fws[2].weak && !fws[3].weak, "CoreGraphics/QuartzCore strong");
+        assert!(
+            fws[2..].iter().all(|f| !f.weak),
+            "CoreGraphics/QuartzCore/CoreText/CoreFoundation strong"
+        );
     }
 
     /// BASE + SDK frameworks merge, dedup, and SDK entries are strong-linked
@@ -256,13 +277,15 @@ mod tests {
                 "Foundation",
                 "CoreGraphics",
                 "QuartzCore",
+                "CoreText",
+                "CoreFoundation",
                 "CoreMedia",
                 "CoreVideo",
                 "ReplayKit",
             ]
         );
         // Every SDK framework is strong.
-        for f in &fws[4..] {
+        for f in &fws[BASE.len()..] {
             assert!(!f.weak, "{} (SDK-declared) must be strong-linked", f.name);
         }
     }
@@ -275,7 +298,7 @@ mod tests {
         // BASE) must not flip either, nor add a second copy.
         let sdk = vec!["CoreGraphics".to_string(), "UIKit".to_string()];
         let fws = merge_frameworks(&sdk);
-        assert_eq!(fws.len(), 4, "no duplicates added: {fws:?}");
+        assert_eq!(fws.len(), BASE.len(), "no duplicates added: {fws:?}");
         let cg = fws.iter().find(|f| f.name == "CoreGraphics").unwrap();
         assert!(!cg.weak, "CoreGraphics stays strong");
         let uikit = fws.iter().find(|f| f.name == "UIKit").unwrap();
@@ -318,6 +341,8 @@ mod tests {
                 "Foundation",
                 "CoreGraphics",
                 "QuartzCore",
+                "CoreText",
+                "CoreFoundation",
                 "AVFoundation",
                 "CoreMedia",
                 "CoreVideo",

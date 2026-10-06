@@ -78,7 +78,7 @@ pub(crate) struct StreamHandle {
     video: JsValue,
     stream: MediaStream,
     running: Rc<Cell<bool>>,
-    raf_id: Rc<Cell<i32>>,
+    raf_id: Rc<Cell<f64>>,
     // Owns the rAF closure (and, inside it, the frame writer) for the pump's
     // lifetime. The closure holds a clone of this `Rc` to re-arm itself, so
     // `Drop` takes it out to break that cycle.
@@ -140,7 +140,7 @@ pub(crate) async fn open(
         .map_err(|e| CameraError::Backend(format!("get 2d context: {}", err_string(&e))))?;
 
     let running = Rc::new(Cell::new(true));
-    let raf_id = Rc::new(Cell::new(0));
+    let raf_id = Rc::new(Cell::new(0.0));
     let pump: PumpClosure = Rc::new(RefCell::new(None));
 
     let closure = {
@@ -212,8 +212,8 @@ fn pump_frame(video: &JsValue, ctx: &JsValue, writer: &FrameWriter, frame: &mut 
     writer.write_rgba8(width, height, frame);
 }
 
-fn request_animation_frame(f: &Closure) -> i32 {
-    web_glue::dom::window().map(|w| w.request_animation_frame(f)).unwrap_or(0)
+fn request_animation_frame(f: &Closure) -> f64 {
+    web_glue::dom::window().map(|w| w.request_animation_frame(f)).unwrap_or(0.0)
 }
 
 /// Run `getUserMedia({ video: <constraints> })` and await the resulting

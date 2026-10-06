@@ -84,6 +84,47 @@ This SDK renders **nothing** — by design. The [`MediaStream`] is meant to be
 Because the format is uniform RGBA8 (and the native source is hidden behind
 [`media-stream`]), consumer code is the same on every platform.
 
+## Orientation and mirroring
+
+Frames are **upright as the user sees the screen**, and the front camera is
+**not mirrored** (text held up to it reads correctly) — on every backend that
+has an orientation to follow:
+
+- **Web** — the browser rotates `getUserMedia` frames itself and never
+  mirrors them; the published `MediaStream` and the canvas RGBA readback are
+  the raw, unmirrored stream. (Mirroring a selfie preview is a display
+  choice — a CSS `scaleX(-1)` on your side — not something this SDK does.)
+- **iOS device** — the backend follows the **interface orientation**
+  (`UIWindowScene.interfaceOrientation`) in all four orientations, re-applying
+  it whenever the device rotates (`UIDeviceOrientationDidChangeNotification`)
+  or the app returns to the foreground. It sets `videoRotationAngle` on
+  iOS 17+ and falls back to `videoOrientation` on iOS 16, on the data
+  output's connection. That one connection feeds both the zero-copy
+  `AVSampleBufferDisplayLayer` preview and the CPU RGBA frames from
+  `subscribe` / `latest`, so both rotate together. Mirroring is switched off
+  for both cameras to match web. A rotation lock in the app (e.g. a
+  portrait-only app) keeps frames upright *for that interface*, exactly like
+  a browser. Expect `width`/`height` to swap when the interface turns between
+  portrait and landscape. The mapping lives in `src/orientation.rs`.
+- **macOS / desktop Linux** — a fixed webcam is landscape-natural and its
+  frames are already upright; there's no interface orientation to follow.
+- **iOS Simulator** — the synthetic stream is generated upright.
+- **Android** — the shim rotates each frame by the sensor mounting
+  (`SENSOR_ORIENTATION`) combined with the **display rotation**, using the
+  standard Camera2 formula for an unmirrored image: back
+  `(sensor − display + 360) % 360`, front `(sensor + display) % 360`. A
+  `DisplayManager.DisplayListener` re-applies it whenever the display rotates
+  (including 180° turns, which `onConfigurationChanged` never reports). Like
+  web and iOS, it follows what the user sees as "up", so a rotation-locked
+  app stays upright for its locked orientation, and the front camera is
+  unmirrored. The math is `src/android_rotation.rs` (host-tested), called
+  from Kotlin through the `nativeFrameRotation` JNI export.
+
+> Up to 1.6.0 the iOS backend pinned Portrait once at open and the Android
+> shim rotated by the sensor mounting alone, so on a tablet (or phone) in
+> landscape the frames came out rotated 90° (180° for the reversed
+> orientations).
+
 ## Delivery model
 
 A **live source you tap**, on purpose. `subscribe` fires from the capture
@@ -210,15 +251,15 @@ compiles for that target but isn't confirmed on real hardware yet (see the
 verification note above). Tick each item as you exercise it.
 
 **Automated**
-- [ ] `cargo test -p camera` — portable logic (frame-size math + config builders)
+- [x] `cargo test -p camera` — portable logic (frame-size math + config builders) the iOS orientation mapping (`src/orientation.rs`: all four interface orientations × front/back, mirroring, sensor calibration) and the Android frame rotation (`src/android_rotation.rs`: all four display rotations × front/back)
 - [ ] `cargo test -p camera --test host_capture -- --ignored --nocapture` — opens the host camera, asserts a well-formed RGBA8 frame
 - [ ] `cargo build -p camera --target wasm32-unknown-unknown` — web target
 - [x] `cargo test -p camera --target wasm32-unknown-unknown` (headless Chrome through the workspace runner; `webdriver.json` gives it a fake camera) — `tests/web_camera.rs`: the published `native_source` IS the capture stream (stopping the camera ends a consumer's tracks — the old web-sys `stream.clone()` published a copy), and a subscriber receives RGBA8 frames off the canvas pump
 
 **Behavior**
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); `subscribe` delivers live RGBA8 frames at the requested resolution; deny → `PermissionDenied`, no crash.
-- [ ] **iOS** — on a **device**, permission prompt with the app's reason; preview shows live frames at the requested resolution + correct orientation; front/back switch works; deny → `PermissionDenied`. On the **Simulator** the synthetic gradient/bouncing-ball stream renders (no hardware). ⚠️ device path not yet re-confirmed since permission moved to the `permissions` SDK — verify the prompt still appears.
-- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `open()` yields RGBA8 frames after grant; deny → `PermissionDenied`.
+- [ ] **iOS** — on a **device**, permission prompt with the app's reason; preview shows live frames at the requested resolution; preview AND `latest()` RGBA frames are upright in all four interface orientations on an iPhone and an iPad, and re-orient on rotation; the front camera is unmirrored (matches web); front/back switch works; deny → `PermissionDenied`. On the **Simulator** the synthetic gradient/bouncing-ball stream renders (no hardware). ⚠️ device path not yet re-confirmed since permission moved to the `permissions` SDK — verify the prompt still appears.
+- [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `open()` yields RGBA8 frames after grant; frames are upright in all four display rotations (front and back, unmirrored) and re-orient on rotation, including 180° flips; deny → `PermissionDenied`.
 - [ ] **macOS** — hardware-verified against the built-in camera (`host_capture`); confirm the prompt still appears now that the grant routes through the `permissions` SDK.
 - [ ] **desktop Linux** — synthetic-frame verified headless (`videotestsrc_delivers_mapped_rgba_frame`); on a host with a webcam run `cargo test -p camera imp::tests::live_v4l2 -- --ignored --nocapture` (needs read access to `/dev/videoN`) and confirm real RGBA8 frames arrive.
 

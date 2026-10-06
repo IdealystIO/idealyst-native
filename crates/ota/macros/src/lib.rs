@@ -6,11 +6,13 @@
 //! url = "https://ota.example.com/my-app"   # where the app reads releases
 //! bucket = "s3://my-app-ota/my-app"        # where `idealyst ota publish` writes (not compiled in)
 //! public_keys = ["c5dcf42a…"]              # written by `idealyst ota init`
+//! host_fns = "app::host_fns"               # optional: the app's host functions, from the crate root
+//! resolver = "https://ota-api.example.com" # optional: a resolution service to ask first
 //! ```
 //!
-//! `IDEALYST_OTA_URL`, set when the app is compiled, replaces `url` (a
-//! staging build). The manifest is read at compile time and tracked, so
-//! editing it rebuilds the app.
+//! `IDEALYST_OTA_URL` and `IDEALYST_OTA_RESOLVER`, set when the app is
+//! compiled, replace `url` and `resolver` (a staging build). The manifest
+//! is read at compile time and tracked, so editing it rebuilds the app.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -32,11 +34,14 @@ fn error(msg: &str) -> TokenStream {
 
 const HELP: &str = "add to the app's Cargo.toml:\n\n  [package.metadata.idealyst.ota]\n  url = \"https://ota.example.com/my-app\"\n\n(`idealyst ota init` writes it)";
 
-/// The settings in a `Cargo.toml`: the package name, `url`, `public_keys`.
+/// The settings in a `Cargo.toml`.
 struct Settings {
     name: String,
     url: Option<String>,
     keys: Vec<String>,
+    resolver: Option<String>,
+    /// A path from the crate root to `fn() -> Vec<HostFnDef>`.
+    host_fns: Option<syn::Path>,
 }
 
 fn settings(text: &str) -> Result<Settings, String> {
@@ -62,18 +67,47 @@ fn settings(text: &str) -> Result<Settings, String> {
             return Err(format!("ota::config!: public key `{k}` isn't 64 hex characters"));
         }
     }
-    Ok(Settings { name: name.to_string(), url, keys })
+    let resolver = match ota.get("resolver") {
+        None => None,
+        Some(toml::Value::String(r)) => Some(r.clone()),
+        Some(_) => return Err("ota::config!: `resolver` is a URL (a string)".into()),
+    };
+    let host_fns = match ota.get("host_fns") {
+        None => None,
+        Some(toml::Value::String(p)) => Some(host_fns_path(p)?),
+        Some(_) => return Err("ota::config!: `host_fns` is a path (a string), like \"app::host_fns\"".into()),
+    };
+    Ok(Settings { name: name.to_string(), url, keys, resolver, host_fns })
+}
+
+/// `host_fns`: a path from the crate root, without `crate::` (the same
+/// text names it from the generated program `idealyst ota manifest`
+/// builds, as `<lib>::<path>`).
+fn host_fns_path(text: &str) -> Result<syn::Path, String> {
+    let bad = || format!("ota::config!: `host_fns = \"{text}\"` isn't a path from the crate root, like \"app::host_fns\"");
+    if text.starts_with("crate::") || text.starts_with("::") || text.starts_with("self::") || text.starts_with("super::") {
+        return Err(bad());
+    }
+    syn::parse_str::<syn::Path>(text).map_err(|_| bad())
 }
 
 fn expand() -> Result<proc_macro2::TokenStream, String> {
     let dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "ota::config!: CARGO_MANIFEST_DIR is not set (build with cargo)".to_string())?;
     let path = std::path::Path::new(&dir).join("Cargo.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("ota::config!: read {}: {e}", path.display()))?;
-    let Settings { name, url, keys } = settings(&text)?;
+    let Settings { name, url, keys, resolver, host_fns } = settings(&text)?;
     let missing_url = format!("ota::config!: no `url` — set IDEALYST_OTA_URL, or {HELP}");
     let url = match &url {
         Some(u) => quote!(#u),
         None => quote!(::core::panic!(#missing_url)),
+    };
+    let resolver = match &resolver {
+        Some(r) => quote!(::core::option::Option::Some(#r)),
+        None => quote!(::core::option::Option::None),
+    };
+    let host_fns = match &host_fns {
+        Some(p) => quote!(::core::option::Option::Some(crate::#p as fn() -> ::std::vec::Vec<_>)),
+        None => quote!(::core::option::Option::None),
     };
     let tracked = path.to_string_lossy().into_owned();
     Ok(quote! {{
@@ -83,7 +117,11 @@ fn expand() -> Result<proc_macro2::TokenStream, String> {
             ::core::option::Option::Some(u) => u,
             ::core::option::Option::None => #url,
         };
-        ::ota::Config { url: __URL, public_keys: &[#(#keys),*], app: #name }
+        const __RESOLVER: ::core::option::Option<&str> = match ::core::option_env!("IDEALYST_OTA_RESOLVER") {
+            ::core::option::Option::Some(r) => ::core::option::Option::Some(r),
+            ::core::option::Option::None => #resolver,
+        };
+        ::ota::Config { url: __URL, public_keys: &[#(#keys),*], app: #name, resolver: __RESOLVER, host_fns: #host_fns }
     }})
 }
 
@@ -109,5 +147,18 @@ mod tests {
         assert!(err("[package]\nname = \"shop\"\n[package.metadata.idealyst.ota]\npublic_keys = [\"ab\"]\n").contains("isn't 64 hex"));
         // No url is allowed here: IDEALYST_OTA_URL may supply it, checked at compile time.
         assert_eq!(settings("[package]\nname = \"shop\"\n[package.metadata.idealyst.ota]\n").unwrap().url, None);
+        assert!(err("[package]\nname = \"shop\"\n[package.metadata.idealyst.ota]\nhost_fns = \"crate::host_fns\"\n").contains("from the crate root"));
+        assert!(err("[package]\nname = \"shop\"\n[package.metadata.idealyst.ota]\nhost_fns = \"not a path\"\n").contains("from the crate root"));
+    }
+
+    #[test]
+    fn reads_the_resolver_and_host_functions() {
+        let s = settings(
+            "[package]\nname = \"shop\"\n[package.metadata.idealyst.ota]\nresolver = \"https://api.example.com\"\nhost_fns = \"app::host_fns\"\n",
+        )
+        .unwrap();
+        assert_eq!(s.resolver.as_deref(), Some("https://api.example.com"));
+        let path = s.host_fns.unwrap();
+        assert_eq!(quote!(#path).to_string(), "app :: host_fns");
     }
 }

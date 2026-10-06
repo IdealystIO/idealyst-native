@@ -27,8 +27,9 @@
 //!    with "Symbol not found" on the older OS. Weak-linking makes absent
 //!    symbols resolve to NULL (we never call them), the same back-deploy
 //!    Xcode applies automatically. This lives in the generated pbxproj's
-//!    `ATTRIBUTES = (Weak, )` on those framework build files. CoreGraphics /
-//!    QuartzCore stay strong (old/stable). The simulator never hits this
+//!    `ATTRIBUTES = (Weak, )` on those framework build files. The other base
+//!    frameworks (CoreGraphics / QuartzCore / CoreText / CoreFoundation)
+//!    stay strong (old/stable). The simulator never hits this
 //!    because it has a current-OS runtime.
 //! 2. **Build the staticlib in RELEASE by default.** A debug staticlib makes
 //!    compute-heavy paths (camera BGRA→RGBA swizzle, framework layout/reactive)
@@ -53,7 +54,8 @@ use build_ios::{BuildOptions, FrameworkSource, Manifest};
 
 use crate::frameworks::{collect_ios_frameworks, pbx_ids, Framework};
 use crate::{
-    render_view_controller, title_case_for_executable, xml_escape,
+    render_view_controller, targeted_device_family, title_case_for_executable,
+    ui_device_family_plist_entry, xml_escape,
     RunMode, APP_DELEGATE_SWIFT, BRIDGING_HEADER_LOCAL_H, INFO_PLIST_TMPL,
 };
 
@@ -337,6 +339,7 @@ fn render_device_info_plist(
         .replace("{{EXECUTABLE}}", &xml_escape(executable_name))
         .replace("{{VERSION}}", &xml_escape(&manifest.app.version))
         .replace("{{BUILD_NUMBER}}", &xml_escape(&manifest.app.build_number))
+        .replace("{{UI_DEVICE_FAMILY}}", &ui_device_family_plist_entry())
         .replace("{{EXTRA_PLIST_ENTRIES}}", &extra_entries))
 }
 
@@ -385,6 +388,7 @@ fn render_pbxproj(params: &PbxParams) -> String {
             &params.library_search_path.display().to_string(),
         )
         .replace("{{LIB_NAME}}", params.lib_name)
+        .replace("{{TARGETED_DEVICE_FAMILY}}", &targeted_device_family())
         .replace("{{FRAMEWORK_BUILD_FILES}}", &build_files)
         .replace("{{FRAMEWORK_FILE_REFS}}", &file_refs)
         .replace("{{FRAMEWORK_PHASE_FILES}}", &phase_files)
@@ -594,10 +598,12 @@ fn xcodebuild_for_device(
 /// assertion"); ios-deploy uses the classic lockdown/AFC path that works on
 /// iPhone X / iOS 16.7.
 ///
-/// ios-deploy with `--justlaunch` frequently exits non-zero on lldb detach
-/// even when install + launch succeeded, so we treat the run as a success if
-/// the output contains the success markers rather than trusting the exit code
-/// blindly.
+/// Success is decided from ios-deploy's OUTPUT, not its exit code (see
+/// [`classify_ios_deploy_output`]): `--justlaunch` can exit non-zero on lldb
+/// detach after a good launch, and it can exit 0 after the launch FAILED —
+/// the untrusted-developer-profile case, where lldb prints
+/// `error: Cannot launch ...` and the run used to be reported as
+/// "installed + launched".
 fn install_and_launch(udid: &str, app_bundle: &Path, clean: bool) -> Result<()> {
     ensure_ios_deploy_present()?;
     eprintln!(
@@ -624,28 +630,135 @@ fn install_and_launch(udid: &str, app_bundle: &Path, clean: bool) -> Result<()> 
     if !stdout.trim().is_empty() {
         eprint!("{stdout}");
     }
+    if !stderr.trim().is_empty() {
+        eprint!("{stderr}");
+    }
 
-    if installed_ok(&stdout) || installed_ok(&stderr) {
-        // ios-deploy may still report a non-zero exit on lldb detach — that's
-        // benign once we've seen the success markers.
-        return Ok(());
+    match classify_ios_deploy_output(&stdout, &stderr, out.status.success()) {
+        DeployOutcome::Launched => Ok(()),
+        failure => anyhow::bail!("{}", failure.message(&out.status.to_string())),
     }
-    if out.status.success() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "ios-deploy did not report a successful install/launch (exit {}).\n--- stderr ---\n{}",
-        out.status,
-        stderr.trim(),
-    )
 }
 
-/// Did ios-deploy's output indicate a completed install + launch? It prints
-/// `[100%] Installed package ...` / "InstallComplete" and a launch line; we
-/// match the stable markers.
-fn installed_ok(output: &str) -> bool {
-    (output.contains("Installed package") || output.contains("InstallComplete"))
-        || (output.contains("success") && output.contains("Installed"))
+/// What an `ios-deploy --justlaunch` run did, read from its output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeployOutcome {
+    /// Installed, and lldb reported the launch as `success`.
+    Launched,
+    /// Installed, but iOS refused to launch it because the developer
+    /// profile isn't trusted on the device (or the signature/entitlements
+    /// are bad — iOS reports all three with the same message).
+    LaunchUntrusted { detail: String },
+    /// Installed, but the device was locked when lldb tried to launch.
+    LaunchDeviceLocked,
+    /// Installed, but the launch failed for another reason, or no launch
+    /// result was reported and ios-deploy exited non-zero.
+    LaunchFailed { detail: String },
+    /// The install itself failed (no `Installed package` line).
+    InstallFailed { detail: String },
+}
+
+impl DeployOutcome {
+    /// The user-facing error for a failed outcome. `status` is ios-deploy's
+    /// exit status, rendered.
+    fn message(&self, status: &str) -> String {
+        match self {
+            DeployOutcome::Launched => "installed + launched".to_string(),
+            DeployOutcome::LaunchUntrusted { detail } => format!(
+                "the app installed but iOS refused to launch it:\n  {detail}\n\n\
+                 The device doesn't trust your developer certificate yet. On the device, \
+                 open Settings → General → VPN & Device Management, select your Apple \
+                 Development profile, tap Trust, then run this command again."
+            ),
+            DeployOutcome::LaunchDeviceLocked => {
+                "the app installed but the device is locked, so it couldn't be launched. \
+                 Unlock the device and run this command again."
+                    .to_string()
+            }
+            DeployOutcome::LaunchFailed { detail } => format!(
+                "the app installed but did not launch (ios-deploy {status}):\n  {detail}"
+            ),
+            DeployOutcome::InstallFailed { detail } => format!(
+                "ios-deploy did not install the app ({status}):\n  {detail}"
+            ),
+        }
+    }
+}
+
+/// Phrases iOS uses when it refuses to launch an app whose developer profile
+/// the user hasn't trusted (lldb: "Unable to launch <id> because it has an
+/// invalid code signature, inadequate entitlements or its profile has not
+/// been explicitly trusted by the user").
+const UNTRUSTED_MARKERS: &[&str] = &[
+    "has not been explicitly trusted",
+    "invalid code signature",
+    "inadequate entitlements",
+];
+
+/// Classify an `ios-deploy --justlaunch` run from its output.
+///
+/// ios-deploy's lldb script prints the launch result on its own line — the
+/// text of lldb's `SBError`, which is `success` or `error: ...` — then
+/// detaches. It prints `Device Locked` for a locked device and
+/// `[ !! ] ...` for its own errors. The exit status is only a tiebreaker:
+/// it is non-zero after some successful launches (lldb detach) and was 0
+/// after the untrusted-profile launch failure.
+pub(crate) fn classify_ios_deploy_output(
+    stdout: &str,
+    stderr: &str,
+    exit_ok: bool,
+) -> DeployOutcome {
+    let lines: Vec<&str> = stdout.lines().chain(stderr.lines()).map(str::trim).collect();
+    let installed = lines
+        .iter()
+        .any(|l| l.contains("Installed package") || l.contains("InstallComplete"));
+    let errors: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| {
+            l.starts_with("error:")
+                || l.starts_with("[ !! ]")
+                || *l == "PROCESS_NOT_STARTED"
+                || *l == "Application has not been launched"
+        })
+        .collect();
+    let detail = |fallback: &str| {
+        if errors.is_empty() {
+            fallback.to_string()
+        } else {
+            errors.join("\n  ")
+        }
+    };
+
+    if lines.iter().any(|l| *l == "Device Locked") {
+        return DeployOutcome::LaunchDeviceLocked;
+    }
+    if errors
+        .iter()
+        .any(|l| UNTRUSTED_MARKERS.iter().any(|m| l.contains(m)))
+    {
+        return DeployOutcome::LaunchUntrusted { detail: detail("") };
+    }
+    if !installed {
+        return DeployOutcome::InstallFailed {
+            detail: detail("no `Installed package` line in ios-deploy's output"),
+        };
+    }
+    // lldb's launch result line is exactly `success`. It outranks other
+    // `error:` lines, which lldb can print for benign setup steps (symbol
+    // lookup) before the launch.
+    if lines.iter().any(|l| *l == "success") {
+        return DeployOutcome::Launched;
+    }
+    if !errors.is_empty() {
+        return DeployOutcome::LaunchFailed { detail: detail("") };
+    }
+    if exit_ok {
+        return DeployOutcome::Launched;
+    }
+    DeployOutcome::LaunchFailed {
+        detail: "ios-deploy reported no launch result".to_string(),
+    }
 }
 
 /// Verify `ios-deploy` is on PATH; emit an actionable error otherwise. We
@@ -1065,5 +1178,152 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             plist.contains("<key>CFBundleVersion</key>\n    <string>73</string>"),
             "CFBundleVersion must come from build_number:\n{plist}",
         );
+    }
+
+    /// The device build declares the same device families as the simulator
+    /// build: `TARGETED_DEVICE_FAMILY` in the pbxproj (both configurations)
+    /// and `UIDeviceFamily` in the Info.plist, both from
+    /// [`crate::DEVICE_FAMILIES`].
+    #[test]
+    fn device_build_targets_iphone_and_ipad_from_shared_source() {
+        let frameworks = camera_frameworks();
+        let rendered = render_pbxproj(&PbxParams {
+            app_name: "Demo",
+            bundle_id: "ai.example.demo",
+            team: "ABCDE12345",
+            library_search_path: Path::new("/tmp/lib"),
+            lib_name: "demo_ios_wrapper",
+            frameworks: &frameworks,
+        });
+        let setting = format!("TARGETED_DEVICE_FAMILY = \"{}\";", crate::targeted_device_family());
+        assert_eq!(rendered.matches(&setting).count(), 2, "Debug + Release:\n{rendered}");
+        assert!(!rendered.contains("{{"), "unsubstituted placeholder");
+
+        let plist = render_device_info_plist(&crate::tests_support::fake_manifest(), "Demo", "", "")
+            .expect("render");
+        assert!(plist.contains(&crate::ui_device_family_plist_entry()), "{plist}");
+        assert!(!plist.contains("{{"), "unsubstituted placeholder:\n{plist}");
+    }
+
+    // ── ios-deploy output classification ────────────────────────────
+    //
+    // Captured from `ios-deploy 1.12.2 --id <udid> --bundle X.app
+    // --justlaunch` (paths/UDIDs shortened). The lldb section is the
+    // embedded `fruitstrap` script echoing its commands; the line after
+    // `run` is lldb's `SBError` text.
+
+    const DEPLOY_INSTALL_PHASE: &str = "\
+[....] Waiting for iOS device to be connected
+[....] Using 00008030-001A2B3C4D5E802E (D421AP, iPhone 11 Pro, iphoneos, arm64e, 17.5, 21F79) a.k.a. 'Test iPhone'.
+------ Install phase ------
+[  0%] Found 00008030-001A2B3C4D5E802E (D421AP, iPhone 11 Pro, iphoneos, arm64e, 17.5, 21F79) a.k.a. 'Test iPhone' connected through USB, beginning install
+[  5%] Copying /tmp/build/Build/Products/Debug-iphoneos/X.app/META-INF/ to device
+[ 52%] CreatingStagingDirectory
+[ 57%] ExtractingPackage
+[ 60%] InspectingPackage
+[ 65%] PreflightingApplication
+[ 70%] VerifyingApplication
+[ 75%] CreatingContainer
+[ 80%] InstallingApplication
+[ 85%] PostflightingApplication
+[ 90%] SandboxingApplication
+[ 95%] GeneratingApplicationMap
+[100%] InstallComplete
+[100%] Installed package /tmp/build/Build/Products/Debug-iphoneos/X.app
+------ Debug phase ------
+Starting debug of 00008030-001A2B3C4D5E802E (D421AP, iPhone 11 Pro, iphoneos, arm64e, 17.5, 21F79) a.k.a. 'Test iPhone' connected through USB...
+[  0%] Looking up developer disk image
+[ 95%] Developer disk image mounted successfully
+[100%] Connecting to remote debug server
+-------------------------
+(lldb) command source -s 0 '/tmp/X.app/fruitstrap-lldb-prep-cmds-00008030'
+(lldb)     platform select remote-ios --sysroot '/Users/me/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)/Symbols'
+  Platform: remote-ios
+ Connected: no
+  SDK Path: \"/Users/me/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)/Symbols\"
+(lldb)     target create \"/tmp/build/Build/Products/Debug-iphoneos/X.app\"
+Current executable set to '/tmp/build/Build/Products/Debug-iphoneos/X.app' (arm64).
+(lldb)     script fruitstrap_device_app=\"/private/var/containers/Bundle/Application/5F3C/X.app\"
+(lldb)     script fruitstrap_connect_url=\"connect://127.0.0.1:62078\"
+(lldb)     script fruitstrap_output_path=\"\"
+(lldb)     script fruitstrap_error_path=\"\"
+(lldb)     target modules search-paths add /usr \"/Users/me/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)/Symbols/usr\"
+(lldb)     command script import \"/tmp/fruitstrap_00008030.py\"
+(lldb)     command script add -f fruitstrap_00008030.connect_command connect
+(lldb)     command script add -s asynchronous -f fruitstrap_00008030.run_command run
+(lldb)     command script add -s asynchronous -f fruitstrap_00008030.autoexit_command autoexit
+(lldb)     command script add -s asynchronous -f fruitstrap_00008030.safequit_command safequit
+(lldb)     connect
+(lldb)     run
+";
+
+    #[test]
+    fn ios_deploy_success_is_launched() {
+        let stdout = format!("{DEPLOY_INSTALL_PHASE}success\n(lldb)     safequit\nProcess 1234 detached\n");
+        assert_eq!(classify_ios_deploy_output(&stdout, "", true), DeployOutcome::Launched);
+        // `--justlaunch` can exit non-zero on lldb detach after a good
+        // launch; the `success` line wins.
+        assert_eq!(classify_ios_deploy_output(&stdout, "", false), DeployOutcome::Launched);
+    }
+
+    /// Regression: the untrusted-developer-profile launch failure exited 0
+    /// and was reported as "installed + launched". It must fail, and the
+    /// message must point at Settings → General → VPN & Device Management.
+    #[test]
+    fn regression_ios_deploy_untrusted_profile_exit_zero_is_failure() {
+        let stdout = format!(
+            "{DEPLOY_INSTALL_PHASE}error: Cannot launch '/private/var/containers/Bundle/Application/5F3C/X.app': \
+             Unable to launch com.x because it has an invalid code signature, inadequate entitlements or its \
+             profile has not been explicitly trusted by the user.\n(lldb)     safequit\n"
+        );
+        let outcome = classify_ios_deploy_output(&stdout, "", true);
+        let DeployOutcome::LaunchUntrusted { detail } = &outcome else {
+            panic!("expected LaunchUntrusted, got {outcome:?}");
+        };
+        assert!(detail.contains("Cannot launch"), "{detail}");
+        let msg = outcome.message("exit status: 0");
+        assert!(msg.contains("VPN & Device Management"), "{msg}");
+        assert!(msg.contains("Trust"), "{msg}");
+    }
+
+    #[test]
+    fn ios_deploy_generic_launch_error_is_failure() {
+        let stdout = format!(
+            "{DEPLOY_INSTALL_PHASE}error: process launch failed: timed out trying to launch app\n\
+             (lldb)     safequit\n\nApplication has not been launched\n\n"
+        );
+        let outcome = classify_ios_deploy_output(&stdout, "", false);
+        let DeployOutcome::LaunchFailed { detail } = &outcome else {
+            panic!("expected LaunchFailed, got {outcome:?}");
+        };
+        assert!(detail.contains("timed out trying to launch app"), "{detail}");
+        assert!(!outcome.message("exit status: 1").contains("VPN & Device Management"));
+    }
+
+    #[test]
+    fn ios_deploy_install_error_is_install_failure() {
+        let stdout = "[....] Waiting for iOS device to be connected\n\
+                      ------ Install phase ------\n\
+                      [  0%] Found 00008030 connected through USB, beginning install\n";
+        let stderr = "[ !! ] Error 0xe8008015: A valid provisioning profile for this executable was not found. \
+                      AMDeviceSecureInstallApplication(0, device, url, options, install_callback, 0)\n";
+        let outcome = classify_ios_deploy_output(stdout, stderr, false);
+        let DeployOutcome::InstallFailed { detail } = &outcome else {
+            panic!("expected InstallFailed, got {outcome:?}");
+        };
+        assert!(detail.contains("0xe8008015"), "{detail}");
+    }
+
+    #[test]
+    fn ios_deploy_locked_device_is_failure() {
+        let stdout = format!("{DEPLOY_INSTALL_PHASE}\nDevice Locked\n\n");
+        assert_eq!(classify_ios_deploy_output(&stdout, "", false), DeployOutcome::LaunchDeviceLocked);
+    }
+
+    /// Installed, no launch result, non-zero exit: not a success.
+    #[test]
+    fn ios_deploy_no_launch_result_and_nonzero_exit_is_failure() {
+        let outcome = classify_ios_deploy_output(DEPLOY_INSTALL_PHASE, "", false);
+        assert!(matches!(outcome, DeployOutcome::LaunchFailed { .. }), "{outcome:?}");
     }
 }

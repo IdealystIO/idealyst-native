@@ -787,6 +787,9 @@ stylesheet! {
         base(t) {
             background: Color("#ffffff".into()),
             border_radius: t.radius.pill(),
+            // Fixed-size puck: never flex-shrink (the slide travel assumes
+            // the declared diameter).
+            flex_shrink: 0.0,
             // Center an optional thumb icon (without this it sits in the corner).
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,

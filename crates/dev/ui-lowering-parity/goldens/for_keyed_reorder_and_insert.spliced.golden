@@ -44,6 +44,7 @@ insert_at n0 <- n4 @ 1
 
 -- remove-first --
 remove_child n0 -x n3
+release_subtree n3
 
 -- unmount --
 (none)

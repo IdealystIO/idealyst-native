@@ -64,8 +64,12 @@ web_glue::import! {
            try { ctx.drawImage(G.get(v), 0, 0); \
              G.u8().set(ctx.getImageData(0, 0, w, h).data, o >>> 0); return 1; } \
            catch (_) { return 0; } }";
-    fn js_set_interval(f: u32, ms: i32) -> i32 = "(f, ms) => setInterval(G.get(f), ms)";
-    fn js_clear_interval(id: i32) = "(id) => { clearInterval(id); }";
+    // The interval id crosses as `f64`, not `i32`: a fake clock (Playwright's
+    // `page.clock`) issues ids from `1e12`, which an `i32` truncates — the
+    // clear then misses and the interval fires into the dropped `_pump`
+    // (see `web_glue::dom::Window::request_animation_frame`).
+    fn js_set_interval(f: u32, ms: i32) -> f64 = "(f, ms) => setInterval(G.get(f), ms)";
+    fn js_clear_interval(id: f64) = "(id) => { clearInterval(id); }";
 }
 
 /// No pre-prompt on web: `getDisplayMedia` must run from a user gesture and
@@ -166,7 +170,7 @@ pub(crate) async fn start(
 /// A live web recording. Holds the DOM/stream resources alive; tearing it
 /// down stops the interval and the capture tracks.
 pub(crate) struct Recording {
-    interval_id: i32,
+    interval_id: f64,
     // Kept alive so the interval callback stays valid; dropped with us,
     // after `Drop` cleared the interval.
     _pump: Closure,

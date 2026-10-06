@@ -107,10 +107,203 @@ pub(crate) fn plan_scene(ops: &[DrawOp]) -> ScenePlan<'_> {
     }
 }
 
+/// One composite step after the base pass: the texture layers to composite
+/// (indices into `CanvasProps::layers`, in order), then the vector ops that draw
+/// ON TOP of them up to the next texture (empty when nothing is drawn there).
+#[derive(Debug, PartialEq)]
+pub(crate) struct TextureRun<'a> {
+    pub layers: Vec<u32>,
+    pub ops: &'a [DrawOp],
+}
+
+/// A scene's top-level op list split at its [`DrawOp::Texture`] ops (see
+/// [`split_segments`]).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Segments<'a> {
+    /// The ops before the first texture — rendered exactly like a texture-less
+    /// scene (classified by [`plan_scene`], so the `Cached`/`Hybrid`/`Shapes`
+    /// fast paths apply). Empty when nothing is drawn there.
+    pub base: &'a [DrawOp],
+    /// One entry per run of textures, in draw order. Empty (no allocation) for a
+    /// scene without textures.
+    pub runs: Vec<TextureRun<'a>>,
+}
+
+/// Split a scene's top-level ops at its `Texture` ops.
+///
+/// vello can't draw a native camera texture inside its own scene, so a GPU
+/// renderer draws a textured scene as alternating passes: vello renders a run
+/// of vector ops, the layer compositor draws the texture over it, vello renders
+/// the next run into a separate target that is composited on top, and so on.
+/// That only works because `canvas_core::place_textures` (run by `paint_scene`)
+/// leaves every top-level `Texture` op at the base state with each run between
+/// textures self-contained (balanced saves, its own transform/clip) — so each
+/// run can be encoded on its own.
+///
+/// Each segment is also trimmed:
+/// - a segment that only manipulates state (`Save`/`Restore`/`Transform`/`Clip`)
+///   draws nothing and becomes empty, so textures separated only by
+///   `place_textures`' re-open/close bookkeeping merge into one run with no
+///   vello pass between them;
+/// - an outer `Save … Restore` pair wrapping the whole segment is dropped. It
+///   changes nothing (the state is discarded at the segment end), but
+///   `place_textures` wraps the scene in one, and a leading `Save` would hide the
+///   segment's leading `LayerCached` / `Shapes` ops from [`plan_scene`] and lose
+///   the fast paths whenever the canvas has a layer.
+///
+/// Pure slicing: a scene without `Texture` ops costs one scan of its top-level
+/// ops and no allocation.
+pub(crate) fn split_segments(ops: &[DrawOp]) -> Segments<'_> {
+    let is_texture = |op: &DrawOp| matches!(op, DrawOp::Texture { .. });
+    let Some(first) = ops.iter().position(is_texture) else {
+        return Segments { base: trim_segment(ops), runs: Vec::new() };
+    };
+    let base = trim_segment(&ops[..first]);
+    let mut runs: Vec<TextureRun<'_>> = Vec::new();
+    let mut i = first;
+    while i < ops.len() {
+        let DrawOp::Texture { index } = ops[i] else {
+            unreachable!("loop invariant: `i` is at a Texture op")
+        };
+        let end = ops[i + 1..].iter().position(is_texture).map_or(ops.len(), |p| i + 1 + p);
+        let seg = trim_segment(&ops[i + 1..end]);
+        // Textures with nothing drawn between them composite as one run.
+        match runs.last_mut() {
+            Some(run) if run.ops.is_empty() => run.layers.push(index),
+            _ => runs.push(TextureRun { layers: vec![index], ops: &[] }),
+        }
+        runs.last_mut().expect("just pushed").ops = seg;
+        i = end;
+    }
+    Segments { base, runs }
+}
+
+/// Drop what a self-contained segment doesn't need (see [`split_segments`]).
+fn trim_segment(mut ops: &[DrawOp]) -> &[DrawOp] {
+    let state_only = |op: &DrawOp| {
+        matches!(op, DrawOp::Save | DrawOp::Restore | DrawOp::Transform(_) | DrawOp::Clip { .. })
+    };
+    if ops.iter().all(state_only) {
+        return &[];
+    }
+    while ops.len() >= 2
+        && matches!(ops.first(), Some(DrawOp::Save))
+        && matching_restore(ops) == Some(ops.len() - 1)
+    {
+        ops = &ops[1..ops.len() - 1];
+    }
+    ops
+}
+
+/// Index of the `Restore` that closes the `Save` at `ops[0]`.
+fn matching_restore(ops: &[DrawOp]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, op) in ops.iter().enumerate() {
+        match op {
+            DrawOp::Save => depth += 1,
+            DrawOp::Restore => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use canvas_core::{Color, Paint, Path, Scene};
+
+    fn red_fill(s: &mut Scene) {
+        s.fill_path(Path::rect(0.0, 0.0, 1.0, 1.0), Color::new(255, 0, 0, 255));
+    }
+
+    fn painted(layers: usize, f: impl Fn(&mut Scene)) -> Vec<DrawOp> {
+        let mut s = Scene::new();
+        f(&mut s);
+        canvas_core::place_textures(s, layers).into_ops()
+    }
+
+    #[test]
+    fn a_scene_without_textures_is_one_base_segment() {
+        let ops = painted(0, red_fill);
+        let segs = split_segments(&ops);
+        assert_eq!(segs.base, &ops[..]);
+        assert!(segs.runs.is_empty());
+    }
+
+    /// Unplaced layers are appended by `place_textures` with only save/restore
+    /// bookkeeping between them: they must composite as ONE run with no vello
+    /// pass after it — the pre-texture-op cost of a layered canvas.
+    #[test]
+    fn appended_layers_composite_as_one_run_with_no_pass_after() {
+        let ops = painted(2, red_fill);
+        let segs = split_segments(&ops);
+        assert_eq!(segs.base.len(), 1, "outer save/restore trimmed: {:?}", segs.base);
+        assert!(matches!(segs.base[0], DrawOp::Fill { .. }));
+        assert_eq!(segs.runs, vec![TextureRun { layers: vec![0, 1], ops: &[] }]);
+    }
+
+    /// The trimmed base must keep the `Cached` fast path when the canvas has a
+    /// layer (`place_textures` wraps the scene in a leading `Save`).
+    #[test]
+    fn a_layered_canvas_keeps_the_cached_fast_path() {
+        let ops = painted(1, |s| {
+            s.layer_cached(1, true, Transform::IDENTITY, red_fill);
+            red_fill(s);
+        });
+        let segs = split_segments(&ops);
+        assert!(matches!(plan_scene(segs.base), ScenePlan::Cached { .. }), "{:?}", segs.base);
+    }
+
+    #[test]
+    fn ops_after_a_texture_form_a_run_drawn_over_it() {
+        let ops = painted(2, |s| {
+            red_fill(s);
+            s.texture(1);
+            s.transform(Transform::translate(3.0, 0.0));
+            red_fill(s);
+            s.texture(0);
+            red_fill(s);
+        });
+        let segs = split_segments(&ops);
+        assert_eq!(segs.base.len(), 1);
+        assert_eq!(segs.runs.len(), 2);
+        assert_eq!(segs.runs[0].layers, vec![1]);
+        // The run re-establishes the author's transform itself (self-contained).
+        assert!(matches!(segs.runs[0].ops[0], DrawOp::Transform(_)), "{:?}", segs.runs[0].ops);
+        assert!(matches!(segs.runs[0].ops.last(), Some(DrawOp::Fill { .. })));
+        assert_eq!(segs.runs[1].layers, vec![0]);
+        assert!(matches!(segs.runs[1].ops.last(), Some(DrawOp::Fill { .. })));
+    }
+
+    #[test]
+    fn a_texture_first_scene_has_an_empty_base() {
+        let ops = painted(1, |s| {
+            s.texture(0);
+            red_fill(s);
+        });
+        let segs = split_segments(&ops);
+        assert!(segs.base.is_empty());
+        assert_eq!(segs.runs.len(), 1);
+        assert_eq!(segs.runs[0].ops.len(), 1);
+    }
+
+    /// A `Save` whose `Restore` isn't the segment's last op isn't a wrapper.
+    #[test]
+    fn a_non_wrapping_save_is_kept() {
+        let mut s = Scene::new();
+        s.save();
+        red_fill(&mut s);
+        s.restore();
+        red_fill(&mut s);
+        let ops = s.into_ops();
+        assert_eq!(split_segments(&ops).base.len(), 4);
+    }
 
     #[test]
     fn plan_scene_classifies_leading_cached_layers() {

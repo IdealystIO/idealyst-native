@@ -20,8 +20,11 @@
 //!   emits a bare `<canvas>` + author style so pre-rendered pages ship
 //!   the real element.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+use runtime_core::scheduling::{after_ms, ScheduledTask};
+use runtime_core::{signal, ScopeAlive, Signal};
 
 use runtime_scene::{item, Element, MountCx, Registry};
 use runtime_vocabulary::caps::ExternalOps;
@@ -30,7 +33,7 @@ use runtime_vocabulary::style_attach::{
     attach_style, on_teardown, IntoStyleProp, StyleProp, StyleServices,
 };
 
-use crate::{default_fill_style, CanvasProps};
+use crate::{default_fill_style, paint_scene_sized, CanvasProps, Scene};
 
 /// Scene payload for a `Canvas` item. Registry key type — renderer
 /// crates dispatch on it. The style slot is single-take (the vocabulary
@@ -41,9 +44,26 @@ pub struct CanvasPrim {
     /// capture sink, texture layers).
     pub props: Rc<CanvasProps>,
     style: RefCell<Option<StyleProp>>,
+    sizing: SizeReporter,
 }
 
 impl CanvasPrim {
+    /// Run the author's painter for this canvas's current size and normalize
+    /// the result ([`paint_scene_sized`]). Renderers call this inside their
+    /// repaint effect instead of [`paint_scene`](crate::paint_scene): it reads
+    /// the size the canvas last reported, so a resize re-runs the painter.
+    pub fn paint(&self) -> Scene {
+        let size = self.sizing.inner.size.map(|s| s.get()).unwrap_or_default();
+        paint_scene_sized(&self.props, size)
+    }
+
+    /// The handle a renderer reports this canvas's laid-out size through.
+    /// Clone it into whatever callback learns the size (a resize observer, a
+    /// layout pass, a surface resize).
+    pub fn size_reporter(&self) -> SizeReporter {
+        self.sizing.clone()
+    }
+
     /// Take the author style out of the prim (once, at mount). The
     /// renderer's handler attaches it to the node it returns via
     /// `attach_style`.
@@ -102,9 +122,84 @@ impl IntoElement for CanvasBound {
             CanvasPrim {
                 props: self.props,
                 style: RefCell::new(Some(style)),
+                sizing: SizeReporter::new(),
             },
             Vec::new(),
         )
+    }
+}
+
+/// A renderer's channel for telling the canvas its laid-out logical size,
+/// which the author's painter reads as [`Scene::size`].
+///
+/// Every renderer already learns its size to size its drawing surface; it
+/// calls [`report`](Self::report) from that same place. The rest is here, once,
+/// so it behaves identically everywhere:
+///
+/// - **Deduped.** Reporting the size already reported does nothing, so a
+///   renderer may report on every layout pass.
+/// - **Committed via the scheduler.** The size is written from a 0 ms
+///   scheduler timer rather than directly. Resize notifications arrive from
+///   platform callbacks outside the framework's dispatch, where a staged
+///   write would sit uncommitted; every backend flushes after a scheduler
+///   callback (its post-dispatch hook), so this is the one host-agnostic way
+///   to get the write committed. It also keeps a renderer that reports from
+///   inside its repaint effect from writing a signal mid-effect. A burst of
+///   reports in one tick coalesces into the last one.
+/// - **Scoped.** The size signal belongs to the scope the canvas was built in;
+///   the deferred write is skipped once that scope is torn down, and a pending
+///   write is cancelled when the last reporter clone drops.
+///
+/// A canvas built outside a world (a test, a wire snapshot) has no size
+/// signal; reporting is then a no-op and [`Scene::size`] stays `(0, 0)`.
+#[derive(Clone)]
+pub struct SizeReporter {
+    inner: Rc<SizeState>,
+}
+
+struct SizeState {
+    size: Option<Signal<(f32, f32)>>,
+    alive: Option<ScopeAlive>,
+    last: Cell<(f32, f32)>,
+    pending: RefCell<Option<ScheduledTask>>,
+}
+
+/// Size changes smaller than this (in logical units) are layout noise, not a
+/// resize worth re-painting for.
+const SIZE_EPSILON: f32 = 0.01;
+
+impl SizeReporter {
+    fn new() -> Self {
+        let in_world = runtime_world::is_entered();
+        SizeReporter {
+            inner: Rc::new(SizeState {
+                size: in_world.then(|| signal((0.0f32, 0.0f32))),
+                alive: in_world.then(ScopeAlive::current),
+                last: Cell::new((0.0, 0.0)),
+                pending: RefCell::new(None),
+            }),
+        }
+    }
+
+    /// Report the canvas's laid-out logical size (the same units its scene
+    /// draws in — CSS px / points / dp, not device pixels).
+    pub fn report(&self, width: f32, height: f32) {
+        let (Some(size), Some(alive)) = (self.inner.size, self.inner.alive.clone()) else {
+            return;
+        };
+        let next = (width.max(0.0), height.max(0.0));
+        let last = self.inner.last.get();
+        if (last.0 - next.0).abs() < SIZE_EPSILON && (last.1 - next.1).abs() < SIZE_EPSILON {
+            return;
+        }
+        self.inner.last.set(next);
+        let task = after_ms(0, move || {
+            if alive.get() {
+                size.set(next);
+            }
+        });
+        // Replacing the handle cancels a still-pending earlier report.
+        *self.inner.pending.borrow_mut() = Some(task);
     }
 }
 

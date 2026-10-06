@@ -273,6 +273,303 @@ unsafe fn repack_bgra_to_rgba(
 }
 
 // ---------------------------------------------------------------------------
+// iOS orientation. Keeps the capture connection's rotation in step with the
+// INTERFACE orientation (`UIWindowScene.interfaceOrientation`), so frames are
+// upright in all four orientations — the mapping itself is the pure, unit-
+// tested `crate::orientation::capture_rotation`.
+//
+// Everything that touches UIKit runs on the main thread: `start`/`stop` hop
+// there with `performSelectorOnMainThread:` (inline when already on main),
+// and the notification handlers fire there because UIDevice/UIApplication
+// post on main. The connection setters themselves are thread-safe and may be
+// changed while the session runs.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "ios")]
+use crate::orientation::{
+    calibrated_portrait_angle, capture_rotation, CameraPosition, CaptureRotation,
+    InterfaceOrientation, STANDARD_PORTRAIT_ANGLE,
+};
+
+/// Posted on `[UIDevice currentDevice]` when the device turns. The constant's
+/// value equals its name, so it's built from the literal (no UIKit link).
+#[cfg(target_os = "ios")]
+const DEVICE_ORIENTATION_DID_CHANGE: &str = "UIDeviceOrientationDidChangeNotification";
+/// Posted when the app comes back to the foreground — the interface may have
+/// rotated while it was away, with no device-orientation change after.
+#[cfg(target_os = "ios")]
+const APP_DID_BECOME_ACTIVE: &str = "UIApplicationDidBecomeActiveNotification";
+/// `UISceneActivationStateForegroundActive` / `…ForegroundInactive`.
+#[cfg(target_os = "ios")]
+const SCENE_FOREGROUND_ACTIVE: isize = 0;
+#[cfg(target_os = "ios")]
+const SCENE_FOREGROUND_INACTIVE: isize = 1;
+
+#[cfg(target_os = "ios")]
+pub(crate) struct OrientationIvars {
+    /// The data output's video connection (the only one — see `open`).
+    connection: Retained<AnyObject>,
+    position: CameraPosition,
+    /// This connection's `videoRotationAngle` for Portrait (iOS 17+).
+    portrait_angle: f64,
+    /// Registered for notifications (main thread only).
+    observing: std::cell::Cell<bool>,
+    /// Last orientation applied, to skip redundant connection writes.
+    applied: std::cell::Cell<Option<InterfaceOrientation>>,
+}
+
+#[cfg(target_os = "ios")]
+declare_class!(
+    pub(crate) struct OrientationObserver;
+
+    unsafe impl ClassType for OrientationObserver {
+        type Super = NSObject;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "IdealystCameraOrientationObserver";
+    }
+
+    impl DeclaredClass for OrientationObserver {
+        type Ivars = OrientationIvars;
+    }
+
+    unsafe impl NSObjectProtocol for OrientationObserver {}
+
+    unsafe impl OrientationObserver {
+        /// Main thread. Apply the current orientation, then follow changes.
+        #[method(startObserving)]
+        fn start_observing(&self) {
+            if self.ivars().observing.replace(true) {
+                return;
+            }
+            unsafe {
+                let center: Retained<AnyObject> =
+                    msg_send_id![class!(NSNotificationCenter), defaultCenter];
+                if let Some(device_class) = objc2::runtime::AnyClass::get("UIDevice") {
+                    let device: Retained<AnyObject> = msg_send_id![device_class, currentDevice];
+                    // Ref-counted by UIKit; balanced in `stopObserving`.
+                    let _: () = msg_send![&*device, beginGeneratingDeviceOrientationNotifications];
+                    let name = NSString::from_str(DEVICE_ORIENTATION_DID_CHANGE);
+                    let _: () = msg_send![
+                        &*center,
+                        addObserver: self,
+                        selector: objc2::sel!(interfaceMayHaveRotated:),
+                        name: &*name,
+                        object: &*device,
+                    ];
+                }
+                let name = NSString::from_str(APP_DID_BECOME_ACTIVE);
+                let _: () = msg_send![
+                    &*center,
+                    addObserver: self,
+                    selector: objc2::sel!(interfaceMayHaveRotated:),
+                    name: &*name,
+                    object: ptr::null::<AnyObject>(),
+                ];
+            }
+            self.sync();
+        }
+
+        /// Main thread. Undo everything `startObserving` registered.
+        #[method(stopObserving)]
+        fn stop_observing(&self) {
+            if !self.ivars().observing.replace(false) {
+                return;
+            }
+            unsafe {
+                let center: Retained<AnyObject> =
+                    msg_send_id![class!(NSNotificationCenter), defaultCenter];
+                let _: () = msg_send![&*center, removeObserver: self];
+                let _: () = msg_send![
+                    class!(NSObject),
+                    cancelPreviousPerformRequestsWithTarget: self
+                ];
+                if let Some(device_class) = objc2::runtime::AnyClass::get("UIDevice") {
+                    let device: Retained<AnyObject> = msg_send_id![device_class, currentDevice];
+                    let _: () = msg_send![&*device, endGeneratingDeviceOrientationNotifications];
+                }
+            }
+        }
+
+        /// Notification handler (main thread). The device-orientation
+        /// notification can reach us BEFORE UIKit has rotated the interface
+        /// for the same event (observer order is unspecified), so reading
+        /// `interfaceOrientation` here could see the old value. Defer the read
+        /// to the next run-loop turn, after UIKit has handled the rotation.
+        #[method(interfaceMayHaveRotated:)]
+        fn interface_may_have_rotated(&self, _note: *mut AnyObject) {
+            unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelector: objc2::sel!(syncOrientation),
+                    withObject: ptr::null::<AnyObject>(),
+                    afterDelay: 0.0f64,
+                ];
+            }
+        }
+
+        /// Main thread. Deferred target of `interfaceMayHaveRotated:`.
+        #[method(syncOrientation)]
+        fn sync_orientation(&self) {
+            self.sync();
+        }
+    }
+);
+
+#[cfg(target_os = "ios")]
+impl OrientationObserver {
+    /// Configure `connection` (mirroring off, Portrait angle calibrated) and
+    /// start following the interface orientation. When called on the main
+    /// thread the current orientation is applied before this returns, so the
+    /// session's first frames are already upright.
+    unsafe fn start(connection: Retained<AnyObject>, position: CameraPosition) -> Retained<Self> {
+        // Mirroring BEFORE rotation: the calibration below reads the angle of
+        // the connection as it will actually run.
+        disable_mirroring(&connection);
+        let portrait_angle = calibrate_portrait_angle(&connection);
+        let this = Self::alloc().set_ivars(OrientationIvars {
+            connection,
+            position,
+            portrait_angle,
+            observing: std::cell::Cell::new(false),
+            applied: std::cell::Cell::new(None),
+        });
+        let this: Retained<Self> = msg_send_id![super(this), init];
+        this.on_main(objc2::sel!(startObserving));
+        this
+    }
+
+    /// Main thread. Read the interface orientation and apply it.
+    fn sync(&self) {
+        let ivars = self.ivars();
+        if !ivars.observing.get() {
+            return;
+        }
+        // Unknown (no scene yet / mid-teardown): keep the last rotation.
+        let Some(orientation) = (unsafe { current_interface_orientation() }) else {
+            return;
+        };
+        if ivars.applied.get() == Some(orientation) {
+            return;
+        }
+        let rotation = capture_rotation(orientation, ivars.position, ivars.portrait_angle);
+        unsafe { apply_rotation(&ivars.connection, rotation) };
+        ivars.applied.set(Some(orientation));
+    }
+
+    /// Stop following orientation (from `StreamHandle::drop`, any thread).
+    fn stop(&self) {
+        // SAFETY: `stopObserving` is a declared no-argument method.
+        unsafe { self.on_main(objc2::sel!(stopObserving)) };
+    }
+
+    /// Run `sel` on the main thread: inline when already there, otherwise
+    /// queued without blocking (blocking could deadlock a main thread that is
+    /// itself waiting on this one). The queued perform retains `self`, and
+    /// main runs queued performs in order, so a stop always follows its start.
+    unsafe fn on_main(&self, sel: objc2::runtime::Sel) {
+        let is_main: Bool = msg_send![class!(NSThread), isMainThread];
+        let _: () = msg_send![
+            self,
+            performSelectorOnMainThread: sel,
+            withObject: ptr::null::<AnyObject>(),
+            waitUntilDone: is_main,
+        ];
+    }
+}
+
+/// The interface orientation of the app's foreground window scene
+/// (foreground-active preferred), or `None` if there is none / it's Unknown.
+#[cfg(target_os = "ios")]
+unsafe fn current_interface_orientation() -> Option<InterfaceOrientation> {
+    // Resolved by name so the camera crate needn't link UIKit (every iOS app
+    // does); absent → nothing to follow.
+    let app_class = objc2::runtime::AnyClass::get("UIApplication")?;
+    let scene_class = objc2::runtime::AnyClass::get("UIWindowScene")?;
+    let app: Option<Retained<AnyObject>> = msg_send_id![app_class, sharedApplication];
+    let app = app?;
+    let scenes: Retained<AnyObject> = msg_send_id![&*app, connectedScenes];
+    let scenes: Retained<AnyObject> = msg_send_id![&*scenes, allObjects];
+    let count: usize = msg_send![&*scenes, count];
+    let mut fallback: Option<isize> = None;
+    for i in 0..count {
+        let scene: Retained<AnyObject> = msg_send_id![&*scenes, objectAtIndex: i];
+        let is_window_scene: Bool = msg_send![&*scene, isKindOfClass: scene_class];
+        if !is_window_scene.as_bool() {
+            continue;
+        }
+        let state: isize = msg_send![&*scene, activationState];
+        let raw: isize = msg_send![&*scene, interfaceOrientation];
+        if state == SCENE_FOREGROUND_ACTIVE {
+            return InterfaceOrientation::from_raw(raw);
+        }
+        if state == SCENE_FOREGROUND_INACTIVE || fallback.is_none() {
+            fallback = Some(raw);
+        }
+    }
+    fallback.and_then(InterfaceOrientation::from_raw)
+}
+
+/// Whether `obj` implements `sel` — the iOS 17 API probe.
+#[cfg(target_os = "ios")]
+unsafe fn responds_to(obj: &AnyObject, sel: objc2::runtime::Sel) -> bool {
+    let r: Bool = msg_send![obj, respondsToSelector: sel];
+    r.as_bool()
+}
+
+/// Turn mirroring off for both cameras, matching the web backend (raw
+/// `getUserMedia` frames are unmirrored). `automaticallyAdjustsVideoMirroring`
+/// must be cleared FIRST: setting `videoMirrored` while it is YES raises an
+/// Obj-C exception.
+#[cfg(target_os = "ios")]
+unsafe fn disable_mirroring(connection: &AnyObject) {
+    let supported: Bool = msg_send![connection, isVideoMirroringSupported];
+    if supported.as_bool() {
+        let _: () = msg_send![connection, setAutomaticallyAdjustsVideoMirroring: Bool::NO];
+        let _: () = msg_send![connection, setVideoMirrored: Bool::NO];
+    }
+}
+
+/// This connection's `videoRotationAngle` for Portrait. Most sensors give
+/// 90°, but not all (the iPhone 17 Pro front camera reports 0°), and only
+/// AVFoundation knows the mounting. So ask it: set the (deprecated, still
+/// honored) `videoOrientation = Portrait` and read back the angle AVFoundation
+/// translated it to. iOS 16 (no `videoRotationAngle`) never uses the angle.
+#[cfg(target_os = "ios")]
+unsafe fn calibrate_portrait_angle(connection: &AnyObject) -> f64 {
+    if !responds_to(connection, objc2::sel!(setVideoRotationAngle:)) {
+        return STANDARD_PORTRAIT_ANGLE;
+    }
+    let supported: Bool = msg_send![connection, isVideoOrientationSupported];
+    if !supported.as_bool() {
+        return STANDARD_PORTRAIT_ANGLE;
+    }
+    // AVCaptureVideoOrientationPortrait.
+    let _: () = msg_send![connection, setVideoOrientation: 1isize];
+    let read_back: f64 = msg_send![connection, videoRotationAngle];
+    calibrated_portrait_angle(read_back).unwrap_or(STANDARD_PORTRAIT_ANGLE)
+}
+
+/// Apply `rotation`: `videoRotationAngle` on iOS 17+ (probed with
+/// `respondsToSelector:`), else `videoOrientation`. Unsupported values are
+/// skipped — both setters raise an Obj-C exception on them.
+#[cfg(target_os = "ios")]
+unsafe fn apply_rotation(connection: &AnyObject, rotation: CaptureRotation) {
+    if responds_to(connection, objc2::sel!(setVideoRotationAngle:)) {
+        // CGFloat == f64 on every 64-bit iOS target.
+        let angle: f64 = rotation.rotation_angle;
+        let supported: Bool = msg_send![connection, isVideoRotationAngleSupported: angle];
+        if supported.as_bool() {
+            let _: () = msg_send![connection, setVideoRotationAngle: angle];
+        }
+    } else {
+        let supported: Bool = msg_send![connection, isVideoOrientationSupported];
+        if supported.as_bool() {
+            let _: () = msg_send![connection, setVideoOrientation: rotation.video_orientation];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Stream handle. Holds the session alive; drop stops capture and releases
 // the queue. Not `Send` (Obj-C handles), matching the public docs.
 // ---------------------------------------------------------------------------
@@ -281,12 +578,20 @@ pub(crate) struct StreamHandle {
     session: Retained<AnyObject>,
     _delegate: Retained<FrameDelegate>,
     _queue: Retained<AnyObject>,
+    /// Keeps the capture connection following the interface orientation.
+    /// `None` only if the output had no video connection.
+    #[cfg(target_os = "ios")]
+    orientation_observer: Option<Retained<OrientationObserver>>,
 }
 
 impl Drop for StreamHandle {
     fn drop(&mut self) {
         unsafe {
             let _: () = msg_send![&*self.session, stopRunning];
+        }
+        #[cfg(target_os = "ios")]
+        if let Some(observer) = &self.orientation_observer {
+            observer.stop();
         }
         // `_queue`/`_delegate` release here; the output drops its own retains
         // when the session deallocates.
@@ -392,41 +697,42 @@ pub(crate) async fn open(
         }
         let _: () = msg_send![&*session, addOutput: &*output];
 
-        // Orient delivered frames upright. A phone's camera sensor is mounted
-        // landscape, so without pinning the output connection's orientation the
-        // CVPixelBuffers arrive rotated 90° relative to a portrait-held device
-        // — the "rotation is wrong" symptom. Pinning Portrait makes EVERY
-        // consumer (the iOS CALayer display, the CPU RGBA channel, a future
-        // GPU compositor) receive upright frames, converging on the same
-        // behavior the web backend gets for free from `getUserMedia`.
+        // Orient delivered frames upright by following the INTERFACE
+        // orientation, kept current across rotations (see
+        // `OrientationObserver`). The sensor is mounted landscape, so an
+        // un-rotated connection is only upright in one landscape orientation;
+        // up to 1.6.0 this pinned Portrait once at open, which rotated every
+        // frame 90° on an iPad (or phone) in landscape.
+        //
+        // There is exactly ONE connection to rotate: the iOS preview is an
+        // `AVSampleBufferDisplayLayer` fed the very `CMSampleBuffer`s this
+        // data output delivers (the `video` SDK's native path — there is no
+        // `AVCaptureVideoPreviewLayer` connection), and the CPU RGBA channel
+        // reads the same buffers. So rotating this connection makes every
+        // consumer upright at once, converging on what the web backend gets
+        // from `getUserMedia`.
         //
         // iOS-only: this same file also drives macOS capture, where the
-        // webcam is already landscape-natural and forcing Portrait would
-        // rotate it WRONG. The branch reflects a real form-factor difference
-        // (phone held portrait vs. a fixed landscape webcam), not a backend
-        // hack — the output (upright frames) still converges across platforms.
-        //
-        // `videoOrientation` is deprecated on iOS 17 in favor of
-        // `videoRotationAngle`, but remains the correct, honored API at the
-        // framework's iOS-16 deployment floor (verified on iPhone X / 16.7).
+        // webcam is fixed and landscape-natural (no interface orientation to
+        // follow) and its buffers are already upright. The branch reflects
+        // that form-factor difference; the output (upright, unmirrored
+        // frames) converges across platforms.
         #[cfg(target_os = "ios")]
-        {
-            // AVCaptureVideoOrientationPortrait. The setter takes an
-            // `AVCaptureVideoOrientation` (NSInteger == isize).
-            const AV_VIDEO_ORIENTATION_PORTRAIT: isize = 1;
+        let orientation_observer = {
             let media_type = NSString::from_str(AV_MEDIA_TYPE_VIDEO);
             let connection: Option<Retained<AnyObject>> =
                 msg_send_id![&*output, connectionWithMediaType: &*media_type];
-            if let Some(connection) = connection {
-                let supported: Bool = msg_send![&*connection, isVideoOrientationSupported];
-                if supported.as_bool() {
-                    let _: () = msg_send![
-                        &*connection,
-                        setVideoOrientation: AV_VIDEO_ORIENTATION_PORTRAIT
-                    ];
+            match connection {
+                Some(connection) => {
+                    let position: isize = msg_send![&*device, position];
+                    Some(OrientationObserver::start(
+                        connection,
+                        CameraPosition::from_raw(position),
+                    ))
                 }
+                None => None,
             }
-        }
+        };
 
         let _: () = msg_send![&*session, commitConfiguration];
         let _: () = msg_send![&*session, startRunning];
@@ -440,6 +746,8 @@ pub(crate) async fn open(
                 session,
                 _delegate: delegate,
                 _queue: queue,
+                #[cfg(target_os = "ios")]
+                orientation_observer,
             },
             Some(std::rc::Rc::new(surf_source) as NativeSource),
         ))

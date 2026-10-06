@@ -59,7 +59,8 @@ Both structural strategies are covered per scenario where they exist:
   `insert`. (SSR, web-hydration, non-splicing native.)
 - **spliced** (`supports_child_splice() = true`) — style-less regions
   splice directly into the real parent via `remove_child` +
-  `insert_at(base_index)`. (Web CSR, splice-capable native.)
+  `insert_at(index)`, the index worked out at splice time from the
+  current size of every region before it. (Web CSR, splice-capable native.)
 
 ## Writing / re-targeting scenarios
 

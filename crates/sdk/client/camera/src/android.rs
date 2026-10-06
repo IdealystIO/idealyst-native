@@ -40,7 +40,7 @@ use std::sync::{Mutex, OnceLock};
 
 use futures_channel::oneshot;
 use jni::objects::{JByteBuffer, JClass, JObject, JString, JValue};
-use jni::sys::{jint, jlong};
+use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
 use jni::{JNIEnv, JavaVM};
 
 use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
@@ -328,6 +328,28 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDire
     }
 }
 
+/// `RustCamera2Helper.nativeFrameRotation` — the clockwise angle the shim
+/// rotates each frame by, from the sensor mounting, the display's
+/// `Surface.ROTATION_*` and the lens facing. The math is the host-tested
+/// [`crate::android_rotation::frame_rotation`]; it lives in Rust so it can be
+/// unit-tested (there is no JVM test harness). Called on open and again on
+/// every display rotation, never per frame.
+///
+/// # Safety
+/// Called by the JVM with a valid `env`/`class`.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeFrameRotation(
+    _env: JNIEnv,
+    _class: JClass,
+    sensor_orientation: jint,
+    display_rotation: jint,
+    front: jboolean,
+) -> jint {
+    // Pure integer arithmetic on `rem_euclid` — cannot panic, so no
+    // catch_unwind is needed at this FFI boundary.
+    crate::android_rotation::frame_rotation(sensor_orientation, display_rotation, front != JNI_FALSE)
+}
+
 // Pin the exports so the linker keeps them in the app `cdylib`'s dynamic
 // symbol table (the JVM resolves them by `dlsym`).
 #[used]
@@ -339,3 +361,6 @@ static KEEP_NATIVE_ERROR: extern "system" fn(JNIEnv, JClass, jlong, jint, JStrin
 #[used]
 static KEEP_NATIVE_FRAME: extern "system" fn(JNIEnv, JClass, jlong, JByteBuffer, jint, jint) =
     Java_io_idealyst_camera_RustCamera2Helper_nativeFrameDirect;
+#[used]
+static KEEP_NATIVE_FRAME_ROTATION: extern "system" fn(JNIEnv, JClass, jint, jint, jboolean) -> jint =
+    Java_io_idealyst_camera_RustCamera2Helper_nativeFrameRotation;

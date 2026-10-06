@@ -235,7 +235,9 @@ struct OneShotHandle {
 
 struct OneShotInner {
     window: web_glue::dom::Window,
-    handle: i32,
+    /// The host's frame / timer id, verbatim (an `f64`: see
+    /// `web_glue::dom::Window::request_animation_frame`).
+    handle: f64,
     kind: ScheduledKind,
     /// The Closure must outlive its scheduled dispatch. Held here so
     /// Drop can release it *after* the browser has been told to cancel
@@ -273,7 +275,7 @@ struct RafLoopHandle {
 
 struct RafLoopInner {
     window: web_glue::dom::Window,
-    pending: Option<i32>,
+    pending: Option<f64>,
     closure: Option<Closure>,
     cancelled: bool,
 }
@@ -301,4 +303,65 @@ struct InertHandle;
 
 impl ScheduleHandle for InertHandle {
     fn cancel(&mut self) {}
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+    use web_glue::js::Function;
+    use web_glue::JsValue;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn eval(body: &str) -> JsValue {
+        Function::new_no_args(body).call0(&JsValue::UNDEFINED).unwrap()
+    }
+
+    /// Regression: every cancellable schedule (one-shot frame, timeout,
+    /// rAF loop) must reach the host's timer under a fake clock that numbers
+    /// its timers from `1e12` — Playwright's `page.clock`, which the
+    /// CrewForge kiosk e2e pins with `setFixedTime`. The handles crossed as
+    /// `i32`, so cancel named a truncated id, the timer stayed queued, and
+    /// it fired into the dropped `Closure` ("called after its Rust owner
+    /// dropped it"). Cancelling each must leave the fake clock empty, and
+    /// running whatever is left must not throw.
+    #[wasm_bindgen_test]
+    fn regression_cancel_reaches_fake_clock_timers_past_i32_range() {
+        eval(
+            "const w = window; \
+             const real = { raf: w.requestAnimationFrame, caf: w.cancelAnimationFrame, \
+                            st: w.setTimeout, ct: w.clearTimeout }; \
+             let next = 1e12; const q = new Map(); \
+             const add = (f) => { const id = next++; q.set(id, f); return id; }; \
+             const del = (id) => { q.delete(Number(id)); }; \
+             w.requestAnimationFrame = add; w.cancelAnimationFrame = del; \
+             w.setTimeout = (f) => add(f); w.clearTimeout = del; \
+             w.__fakeClock = { \
+               pending: () => q.size, \
+               run: () => { const errs = []; const due = Array.from(q.values()); q.clear(); \
+                            for (const f of due) { try { f(0); } catch (e) { errs.push(String(e.message || e)); } } \
+                            return errs.join('\\n'); }, \
+               restore: () => { w.requestAnimationFrame = real.raf; w.cancelAnimationFrame = real.caf; \
+                                w.setTimeout = real.st; w.clearTimeout = real.ct; delete w.__fakeClock; }, \
+             };",
+        );
+        let ran = Rc::new(std::cell::Cell::new(0));
+        let (a, b, c) = (ran.clone(), ran.clone(), ran.clone());
+        let mut frame = WebScheduler.after_animation_frame(Box::new(move || a.set(a.get() + 1)));
+        let mut timeout = WebScheduler.after_ms(10, Box::new(move || b.set(b.get() + 1)));
+        let mut lp = WebScheduler.raf_loop(Box::new(move || c.set(c.get() + 1)));
+        let queued = eval("return window.__fakeClock.pending();").as_f64();
+        frame.cancel();
+        timeout.cancel();
+        lp.cancel();
+        let pending = eval("return window.__fakeClock.pending();").as_f64();
+        let errors = eval("return window.__fakeClock.run();").as_string().unwrap_or_default();
+        eval("window.__fakeClock.restore();");
+
+        assert_eq!(queued, Some(3.0), "frame + timeout + loop each queue one timer");
+        assert_eq!(pending, Some(0.0), "cancel must remove each from the host's clock");
+        assert_eq!(errors, "", "nothing may fire into a dropped closure");
+        assert_eq!(ran.get(), 0);
+    }
 }

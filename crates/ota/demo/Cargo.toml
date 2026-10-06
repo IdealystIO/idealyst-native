@@ -1,0 +1,60 @@
+# The over-the-air demo: a macOS window whose top half is native (the
+# updater's state, live) and whose bottom half is a remote component
+# downloaded from a local MinIO bucket. Edit `Panel` in src/lib.rs, run
+# ./publish.sh, and the window picks it up within seconds. See README.md.
+
+[package]
+name = "ota-demo"
+# The bundle's version, shown in the window: bump it when you publish (or
+# don't — each release also shows its content hash).
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ota-demo"
+path = "src/main.rs"
+
+[dependencies]
+runtime-core = { workspace = true }
+idea-ui = { workspace = true }
+runtime-vocabulary = { workspace = true, features = ["remote"] }
+runtime-world = { workspace = true }
+runtime-shared = { workspace = true }
+
+# The app's side only; a bundle build (`--cfg idealyst_stream_guest`)
+# compiles neither.
+[target.'cfg(not(idealyst_stream_guest))'.dependencies]
+ota = { workspace = true }
+
+[dev-dependencies]
+host-mock = { workspace = true }
+tempfile = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+host-appkit = { workspace = true }
+
+# The bundle: this crate's own library.
+[package.metadata.idealyst.remote]
+bundles = [{ name = "panel", package = "ota-demo" }]
+
+# Where releases live: the local MinIO that ./setup.sh starts.
+[package.metadata.idealyst.ota]
+url = "http://localhost:9000/ota-demo/demo"
+bucket = "s3://ota-demo/demo"
+# The app's host functions (src/lib.rs): `ota::start` runs with them, and
+# `idealyst ota manifest` registers the manifest they make.
+host_fns = "host_fns"
+
+[package.metadata.idealyst.app]
+name      = "OTA Demo"
+bundle_id = "ai.truday.idealyst.otademo"
+version   = "0.0.1"
+targets   = ["macos"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

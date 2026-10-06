@@ -3845,6 +3845,47 @@ async fn sleep_ms(ms: i32) {
     let _ = web_glue::JsFuture::new(&promise).await;
 }
 
+/// REGRESSION TEST: a graphics `<canvas>` ignored its author size. The
+/// fill-the-parent default was written as an INLINE style
+/// (`width: 100%; height: 100%`), and an inline style beats every class rule,
+/// so a sized canvas (`.with_style` → a minted class) kept 100% × 100% — under
+/// an auto-height parent that fell back to the canvas's 2:1 intrinsic ratio (a
+/// 180 px QR code drew full-width and half as tall on the GPU path). The
+/// default is now the zero-specificity `css::GRAPHICS_FILL_RESET` rule: an
+/// author class wins, and an unstyled canvas still fills its parent.
+#[wasm_bindgen_test]
+async fn regression_graphics_canvas_takes_its_author_size_over_the_fill_default() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    // A sized parent for the unstyled case.
+    let parent = doc.create_element("div").unwrap();
+    let _ = parent.set_attribute("style", "width: 200px; height: 100px");
+    backend.mount.append_child(&parent).unwrap();
+    let unstyled = crate::primitives::graphics::create(&mut backend, Box::new(|_| {}), Box::new(|_| {}), Box::new(|| {}));
+    parent.append_child(&unstyled).unwrap();
+
+    // An author class, with exactly a minted class's specificity (0,1,0).
+    let sheet = backend.sheet();
+    let len = sheet.css_rules().map(|r| r.length()).unwrap_or(0);
+    sheet.insert_rule_with_index(".graphics-author-size { width: 120px; height: 80px; }", len).unwrap();
+    let sized = crate::primitives::graphics::create(&mut backend, Box::new(|_| {}), Box::new(|_| {}), Box::new(|| {}));
+    let sized_el: web_glue::dom::Element = sized.clone().unchecked_into();
+    sized_el.class_list().add_1("graphics-author-size").unwrap();
+    backend.mount.append_child(&sized).unwrap();
+
+    sleep_ms(30).await;
+    let size = |n: &web_glue::dom::Node| {
+        let el: web_glue::dom::Element = n.clone().unchecked_into();
+        (el.client_width(), el.client_height())
+    };
+    assert_eq!(size(&sized), (120, 80), "the author class sizes the canvas");
+    assert_eq!(size(&unstyled), (200, 100), "an unstyled canvas still fills its parent");
+    let inline = sized_el.get_attribute("style").unwrap_or_default();
+    assert!(!inline.contains("width"), "no inline size to beat the author: {inline:?}");
+}
+
 /// REGRESSION TEST: the graphics surface used to hand out a
 /// `WebCanvasWindowHandle` whose `obj` pointed at the canvas's WEB-GLUE
 /// handle. raw-window-handle defines that pointer as a wasm-bindgen
