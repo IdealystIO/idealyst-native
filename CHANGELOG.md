@@ -601,6 +601,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **An unknown tone or variant in a host function's argument no longer stops
+  the bundle** (`runtime-vocabulary`). A value crossing by key (`ToneRef`,
+  `VariantRef`, …) that the app has no key for, passed to a `#[host_fn]` (as
+  idea-ui's `push_standard_toast` takes a tone), failed to decode, which
+  traps the call and stopped every remote component the bundle served. As
+  plain data (a host function's argument, a signal's value, a callback's
+  argument) it now becomes the type's default, with a warning naming the
+  key. As an app component's prop it still fails in the remote component's
+  place, naming the key.
+- **Publishing with several people at once** (`ota-publish`): a publish
+  gave up after 5 index conflicts; with several publishing together the last
+  can lose more. It now retries up to 16 times with a jittered pause.
+  Verified against MinIO: eight racing publishes all land (`tests/s3.rs`,
+  `docs/ota.md` "Testing against S3").
+
 - **The local timezone is right on every native backend**
   (`runtime-shared`, new `zone-offset` crate). `runtime_core::time::
   local_offset_minutes()` was `0` (UTC) on Android, Linux, Windows,

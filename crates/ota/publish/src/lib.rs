@@ -23,6 +23,9 @@ use ota_index::{new_requirements, Bundle, Index, Release, INDEX_FILE, KEEP};
 const INDEX_CACHE: &str = "public, max-age=0, must-revalidate";
 /// A bundle file's name is its hash: it never changes.
 const BUNDLE_CACHE: &str = "public, max-age=31536000, immutable";
+/// How many times a publish re-reads and re-applies an index someone else
+/// changed before giving up ([`update`]).
+const ATTEMPTS: usize = 16;
 
 /// Where releases are written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +109,10 @@ impl Target {
 
     fn put(&self, path: &str, bytes: &[u8], content_type: &str, cache: &str, expect: Option<&Expect>) -> Result<Written> {
         match self {
+            // Check-then-rename: not atomic against another process
+            // publishing to the same directory at the same instant. A
+            // directory is for development and tests; S3's conditional
+            // writes are.
             Target::Dir(dir) => {
                 let file = dir.join(path);
                 if let Some(expect) = expect {
@@ -179,8 +186,16 @@ fn read(target: &Target) -> Result<(Index, Option<String>)> {
 
 /// Rewrite the index with `change`, re-reading and re-applying it if
 /// someone else wrote the index meanwhile.
+///
+/// Each conflict means another publish's write landed, so with `n`
+/// publishing at once the last one may lose `n - 1` times: the limit is
+/// generous, and a short jittered pause keeps them from colliding in step.
 fn update<T>(target: &Target, mut change: impl FnMut(&mut Index) -> Result<T>) -> Result<T> {
-    for _ in 0..5 {
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            let jitter = (now_nanos() % 100) as u64;
+            std::thread::sleep(std::time::Duration::from_millis(20 + jitter));
+        }
         let (mut index, version) = read(target)?;
         let out = change(&mut index)?;
         let expect = match version {

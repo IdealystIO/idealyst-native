@@ -434,8 +434,13 @@ bundle needs what this app doesn't have:
   `remote_bundle::check(&requires, codec, &provides)` compares them. That's how
   a server or an update client can pick a bundle an app can run before
   downloading it. `idealyst remote inspect` prints a bundle's list.
-- **Not covered:** a value the bundle passes to an app component by key (a
-  tone or variant name) is only checked when it crosses. Types the framework
+- **Not covered:** a value that crosses by key (a tone or variant name) is
+  only checked when it crosses. A key this app doesn't have, as an app
+  component's prop, shows an error in the remote component's place, naming
+  the key. In a host function's argument, a signal or a callback it becomes
+  the type's default instead (the default tone, say), and the app logs a
+  warning naming it: there's no place to show an error, and failing the call
+  would stop the whole bundle. Types the framework
   defines (`Color`, `StyleRules`) are covered by the codec version, not by
   structure. A context type the bundle reads is compared as a warning only,
   since the list can't tell which ones it reads.

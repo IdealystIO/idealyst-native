@@ -1893,12 +1893,15 @@ macro_rules! __remote_keyed {
                     $crate::remote::RemoteValue::encode(&self, out)
                 }
             }
+            // A prop: a key the app lacks fails, naming it, in the remote
+            // component's place — there is a place to show it.
             $crate::__remote_app_code! {
                 fn receive(
                     input: &mut &[u8],
                     _cx: &$crate::remote::host::ImportCx,
                 ) -> ::core::result::Result<Self, ::std::string::String> {
-                    <$ty as $crate::remote::RemoteValue>::decode(input)
+                    let key: ::std::string::String = $crate::remote::__try_receive_value(input)?;
+                    $crate::remote::__by_key::<$ty>(&key)
                 }
             }
         }
@@ -1917,9 +1920,18 @@ macro_rules! __remote_keyed {
                 let key: &str = $key;
                 $crate::remote::__send_value(&key, out)
             }
+            /// Plain data — a host function's argument, a signal's value,
+            /// a callback's argument — has no place to show an error, and
+            /// failing it would stop the whole bundle (a host function's
+            /// arguments that don't decode trap the call). So a key the app
+            /// lacks becomes the type's default, with a warning naming it,
+            /// when the type has one: a styling value from a bundle built
+            /// against a newer library mustn't take the bundle down.
             fn decode(input: &mut &[u8]) -> ::core::result::Result<Self, ::std::string::String> {
+                #[allow(unused_imports)]
+                use $crate::remote::{ViaKeyDefault as _, ViaNoKeyDefault as _};
                 let key: ::std::string::String = $crate::remote::__try_receive_value(input)?;
-                $crate::remote::__by_key::<$ty>(&key)
+                $crate::remote::__by_key_or(&key, (&$crate::remote::Arg::<$ty>::new()).key_default())
             }
         }
     };
@@ -1941,6 +1953,51 @@ pub fn __by_key<T: 'static>(key: &str) -> Result<T, String> {
     #[cfg(idealyst_stream_guest)]
     {
         Err(format!("a `{}` crosses by key only to the app (`{key}`)", std::any::type_name::<T>()))
+    }
+}
+
+/// The app's value of `T` registered under `key` or, when it has none and
+/// `default` is given, `T`'s default — with a warning naming the key. What
+/// a keyed value decodes through as plain data (`__remote_keyed!`).
+#[doc(hidden)]
+pub fn __by_key_or<T: 'static>(key: &str, default: Option<fn() -> T>) -> Result<T, String> {
+    match (__by_key::<T>(key), default) {
+        (Ok(v), _) => Ok(v),
+        (Err(e), None) => Err(e),
+        (Err(_), Some(default)) => {
+            runtime_shared::logging::log(
+                runtime_shared::logging::LogLevel::Warn,
+                &format!(
+                    "[remote] the app has no `{}` with key `{key}`; using its default (a bundle built against a newer version of the library that defines it?)",
+                    std::any::type_name::<T>()
+                ),
+            );
+            Ok(default())
+        }
+    }
+}
+
+/// [`Arg`]'s probe for a keyed type's fallback: [`ViaKeyDefault`] when it
+/// has a `Default`, else [`ViaNoKeyDefault`] (no fallback: the error stands).
+#[doc(hidden)]
+pub trait ViaKeyDefault<T> {
+    fn key_default(&self) -> Option<fn() -> T>;
+}
+
+impl<T: Default> ViaKeyDefault<T> for Arg<T> {
+    fn key_default(&self) -> Option<fn() -> T> {
+        Some(T::default)
+    }
+}
+
+#[doc(hidden)]
+pub trait ViaNoKeyDefault<T> {
+    fn key_default(&self) -> Option<fn() -> T>;
+}
+
+impl<T> ViaNoKeyDefault<T> for &Arg<T> {
+    fn key_default(&self) -> Option<fn() -> T> {
+        None
     }
 }
 

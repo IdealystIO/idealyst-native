@@ -140,6 +140,45 @@ cache headers are set on upload: the index is revalidated on each read, and the
 bundles are immutable. `bucket` can also be a local directory, with
 `url = "file://…"`, for development and tests.
 
+## Testing against S3
+
+MinIO speaks the S3 API, including the conditional writes publishing relies
+on, so a local container stands in for S3 and the CDN:
+
+```sh
+docker run -d --name ota-minio -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=otatest -e MINIO_ROOT_PASSWORD=otatest-secret \
+  minio/minio server /data --console-address :9001
+
+export AWS_ACCESS_KEY_ID=otatest AWS_SECRET_ACCESS_KEY=otatest-secret \
+       AWS_DEFAULT_REGION=us-east-1 AWS_ENDPOINT_URL=http://localhost:9000
+aws s3api create-bucket --bucket ota-test
+# Anyone may read, as through a CDN:
+aws s3api put-bucket-policy --bucket ota-test --policy \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::ota-test/*"]}]}'
+```
+
+Then publish to it, and point an app (or a test) at it over HTTP:
+
+```sh
+IDEALYST_OTA_BUCKET=s3://ota-test/my-app idealyst ota publish
+IDEALYST_OTA_URL=http://localhost:9000/ota-test/my-app cargo run   # the app reads it
+```
+
+The framework's own tests run against it when asked (they skip otherwise):
+
+```sh
+# Eight publishes racing to one index all land; publish, republish, roll back:
+IDEALYST_OTA_TEST_S3=s3://ota-test/race cargo test -p ota-publish --test s3
+# The showcase published there, downloaded over HTTP by the app's client:
+IDEALYST_OTA_BUCKET=s3://ota-test/showcase idealyst ota publish crates/streaming/showcase/app
+IDEALYST_OTA_TEST_URL=http://localhost:9000/ota-test/showcase \
+  cargo test -p remote-showcase --test ota over_http
+```
+
+`AWS_ENDPOINT_URL` needs AWS CLI 2.13 or later; the conditional writes need
+2.22 or later.
+
 ## Your own server
 
 None of this is required. The framework's side is the loader

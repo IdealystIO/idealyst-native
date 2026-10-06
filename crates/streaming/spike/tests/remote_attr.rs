@@ -592,8 +592,9 @@ fn camera() -> Vec<runtime_vocabulary::remote::HostFnDef> {
     vec![
         spike_camera::battery_level::export(),
         spike_camera::take_photo::export(),
-        // The fixture's own (`Nester`'s).
+        // The fixture's own (`Nester`'s, `SlyCall`'s).
         spike_remoteattr::mount_nested::export(),
+        spike_remoteattr::mood_says::export(),
     ]
 }
 
@@ -642,7 +643,12 @@ fn a_host_function_with_a_changed_signature_is_refused_at_load() {
     drifted.schema ^= 1;
     let err = remote_host::remote::install_with(
         REMOTE_ATTR_WASM,
-        vec![spike_camera::battery_level::export(), drifted, spike_remoteattr::mount_nested::export()],
+        vec![
+            spike_camera::battery_level::export(),
+            drifted,
+            spike_remoteattr::mount_nested::export(),
+            spike_remoteattr::mood_says::export(),
+        ],
     )
         .err()
         .expect("refused");
@@ -982,6 +988,27 @@ fn a_value_the_app_does_not_define_fails_naming_its_key() {
     let a = app();
     let t = mount_text(&a, || ui! { spike_remoteattr::SlyMood() });
     assert!(t.contains("MoodRef") && t.contains("`sly`"), "{t}");
+}
+
+/// Regression: a host function's argument naming a key the app lacks
+/// failed to decode, which traps the call — and stopped the WHOLE bundle,
+/// every remote component it served, over a styling value. It is the
+/// type's default now (with a warning), and the bundle carries on. (As a
+/// prop, the same key still fails in the component's place: above.)
+#[test]
+fn regression_an_unknown_key_in_a_host_fn_argument_does_not_stop_the_bundle() {
+    use spike_remoteattr::SlyCall;
+    let a = app();
+    let said = a.h.world.enter(|| signal(String::new()));
+    let realized = a.h.mount(a.h.world.enter(|| ui! { SlyCall(said = said) }));
+    a.h.flush();
+    let presses = a.h.shared.button_presses.borrow().clone();
+    presses[0]();
+    a.h.flush();
+    assert_eq!(said.get(), "***", "the app's default mood answered");
+    presses[1]();
+    a.h.flush();
+    assert_eq!(said.get(), "HI", "the bundle still runs:\n{}", text(&a, &realized));
 }
 
 #[test]

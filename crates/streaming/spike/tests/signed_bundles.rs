@@ -12,7 +12,12 @@ use spike_remoteattr::Greeting;
 use stream_spike::REMOTE_ATTR_WASM;
 
 fn camera() -> Vec<runtime_vocabulary::remote::HostFnDef> {
-    vec![spike_camera::battery_level::export(), spike_camera::take_photo::export(), spike_remoteattr::mount_nested::export()]
+    vec![
+        spike_camera::battery_level::export(),
+        spike_camera::take_photo::export(),
+        spike_remoteattr::mount_nested::export(),
+        spike_remoteattr::mood_says::export(),
+    ]
 }
 
 fn release(key: &SigningKey) -> Vec<u8> {

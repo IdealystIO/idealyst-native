@@ -532,6 +532,25 @@ pub fn SlyMood() -> Element {
     ui! { Say(text = "x".to_string(), mood = MoodRef(Rc::new(Sly))) }
 }
 
+/// A host function taking a keyed value: app code reached with a mood
+/// named by key.
+#[runtime_core::host_fn]
+pub fn mood_says(mood: MoodRef) -> String {
+    mood.0.say("hi")
+}
+
+/// Calls [`mood_says`] with a mood the app has no key for, then with one it
+/// has, writing each answer to the app's `said`.
+#[component(remote)]
+pub fn SlyCall(said: Signal<String>) -> Element {
+    ui! {
+        view() {
+            button(label = "sly", on_click = move || said.set(mood_says(MoodRef(Rc::new(Sly)))))
+            button(label = "loud", on_click = move || said.set(mood_says(MoodRef(Rc::new(Loud)))))
+        }
+    }
+}
+
 /// `Say`'s props as a NEWER build of it might declare them: one prop more.
 #[runtime_core::props]
 #[derive(Default)]

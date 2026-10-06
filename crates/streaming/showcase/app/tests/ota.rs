@@ -208,3 +208,39 @@ fn an_unsigned_release_is_refused_when_signatures_are_required() {
     assert!(matches!(&status, Status::Failed(e) if e.contains("not signed")), "{status:?}");
     assert_eq!(std::fs::read_dir(cache.path().join("bundles")).unwrap().count(), 0, "nothing cached");
 }
+
+/// Over real HTTP, from an S3-compatible store: set `IDEALYST_OTA_TEST_URL`
+/// to a release location `idealyst ota publish` wrote the showcase to (a
+/// MinIO bucket, say — `docs/ota.md`, "Testing against S3"). Skipped
+/// otherwise: it needs the network and a published release.
+#[test]
+fn over_http_from_s3() {
+    let Ok(url) = std::env::var("IDEALYST_OTA_TEST_URL") else {
+        eprintln!("skipped: set IDEALYST_OTA_TEST_URL to run against a published release");
+        return;
+    };
+    let cache = tempfile::tempdir().unwrap();
+    pump::install_executor();
+    pump::install_scheduler();
+    let h = Harness::new();
+    let config = Config { url: Box::leak(url.into_boxed_str()), public_keys: &[], app: "remote-showcase" };
+    let ota = h
+        .world
+        .enter(|| ota::start(config, Options { host_fns: host_fns(), cache_dir: Some(cache.path().into()), ..Default::default() }))
+        .unwrap();
+    let tree = h.world.enter(|| ui! { App() });
+    let _realized = h.mount(tree);
+    let screen = || h.live_roots().iter().map(|n| h.live_tree(*n)).collect::<Vec<_>>().join("\n");
+    // The downloads complete on the platform's HTTP stack: wait for them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !screen().contains(FEED) && std::time::Instant::now() < deadline {
+        pump::pump_timers();
+        pump::pump_tasks();
+        h.flush();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let status = h.world.enter(|| runtime_world::untrack(|| ota.status().get()));
+    assert!(screen().contains(FEED), "status {status:?}:\n{}", screen());
+    assert_eq!(status, Status::UpToDate);
+    assert_eq!(std::fs::read_dir(cache.path().join("bundles")).unwrap().count(), 1, "the download is cached");
+}
