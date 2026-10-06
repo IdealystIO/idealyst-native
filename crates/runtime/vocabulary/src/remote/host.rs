@@ -979,7 +979,9 @@ fn fill_handle<H: 'static>(
     Some(Box::new(move |h: H| {
         let tree: std::rc::Weak<dyn std::any::Any> = c;
         let id = super::handles::hold(wrap(h), tree, bundle);
-        r.call(&to_bytes(&id));
+        // The id, then which handle calls this app answers — so a bundle
+        // newer than the app doesn't send one it can't decode.
+        r.call(&to_bytes(&(id, super::handles::HANDLE_CALL_LEVEL)));
     }))
 }
 

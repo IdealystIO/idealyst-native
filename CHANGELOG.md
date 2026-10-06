@@ -175,6 +175,30 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A `virtual_grid`'s handle reports its scrollport** (`runtime-shared`,
+  `runtime-vocabulary`, `backend-web`, `backend-macos`,
+  `backend-ios-mobile`, `backend-android-mobile`, `host-mock`).
+  `VirtualGridHandle::scrollport()` returns the box the cells show
+  through and the thickness of each scrollbar that takes room from it
+  (`Scrollport { width, height, scrollbar_width, scrollbar_height }`), and
+  `on_scrollport(f)` calls `f` with it now and again whenever the grid
+  resizes or a scrollbar appears, hides or changes style. Before this an
+  app measured a wrapper view for the grid's visible width, which on a
+  browser with classic scrollbars counts the vertical bar as visible
+  content. Every backend reports it the same way: where scrollbars overlay
+  the content (iOS, Android, macOS's default) the thicknesses are 0 and the
+  scrollport is the whole box. The web reads `clientWidth` /
+  `clientHeight` and follows a `ResizeObserver`; macOS reads the clip
+  view's frame, which legacy scrollers shrink, and follows its frame
+  notification. It crosses to remote bundles too (two `HandleCall`
+  variants, appended). An app now tells a bundle which handle calls it
+  answers (`remote::handles::HANDLE_CALL_LEVEL`, sent with each handle it
+  fills), so a new bundle in an app built before this change answers
+  `None` itself instead of sending a call the app can't decode, which
+  would stop the bundle. Older bundles read the new fill unchanged. To fit a grid to its content, keep using
+  `flex_grow: 0` + `flex_basis: auto` rather than a height computed from
+  the scrollport.
+
 - **Canvas layers in the draw order, and the canvas's size** (`canvas`,
   `canvas-core`). `Scene::texture(i)` draws layer `i` at that point in the
   scene, so anything drawn after it lands on top (an outline over a camera
@@ -356,6 +380,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   container, checking that the port answers rather than the container's
   pid. If the port is taken, the session warns and falls back to a random
   port. See `docs/devcontainer.md`.
+- **A web page reaches the Robot relay on its own origin** (`backend-web`,
+  `dev-http`, `server`, `idealyst dev`). The relay listens on a random
+  loopback port of the dev process, and the page used to dial only that
+  `ws://127.0.0.1:<port>` — unreachable from a host browser when
+  `idealyst dev` runs in a devcontainer that forwards just the app's
+  port, so every robot verb answered "no app connected to the relay".
+  The page now dials `/__idealyst/relay` on its own origin first (`ws:`
+  or `wss:` from the page's scheme), then the injected URL. The dev web
+  server (`--web --local`) and a full-stack server built on
+  `server::router()` (told the relay's address in `IDEALYST_DEV_RELAY`)
+  splice that path to the relay. Native apps, `idealyst test`, the
+  Inspector and the MCP server are unchanged: they still use the relay's
+  TCP bridge (`--robot-port`, `robot.json`). A server not built on
+  `server::router()` has no proxy, so its page falls back to the
+  loopback URL. See "The Robot relay" in `docs/devcontainer.md`.
 - **The page shows its Robot connection** (`backend-web`, `dev-http`).
   The dev overlay gets a line above its badge: connected, connecting, or
   the URLs the page tried with their close codes and when it retries.
@@ -581,6 +620,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   (`SegmentButton`): tabs navigate, and a segmented control picks a
   value. Same props.
 
+- **The idea-ui docs cover the segmented look and the top-anchored
+  modal** (`idea-ui-docs`). The SegmentedControl page describes the
+  track, the selected fill, focus, and seating the control in a
+  horizontal `scroll_view` where its options can outgrow the screen; its
+  second demo now shows the two options it describes. The Modal page
+  lists `presentation` and `top_offset` and adds a live command-palette
+  demo of `ModalPresentation::Top`.
+
 - **Style layers stack the same way on every backend, and each one only
   adds the properties it sets** (`runtime-shared`, `runtime-vocabulary`,
   `css`, `backend-web`, `backend-ssr`, `premint-dump`). The order is
@@ -738,6 +785,44 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A fitted `virtual_grid` on macOS keeps its last row under legacy
+  scrollers** (`backend-macos`, `runtime-layout`). A grid styled to fit its
+  rows (`flex_grow: 0` + `flex_basis: auto`) was measured as if scrollers
+  never take room. With "Show scroll bars: Always" (or a mouse attached
+  under "Automatic") the horizontal scroller took 17pt from the clip view,
+  so the 120pt of rows sat in a 103pt clip and the grid scrolled
+  vertically: the web bug fixed for the browser, back on macOS. The grid
+  now measures with the legacy scroller's width while its style is legacy
+  and re-measures when the preference changes
+  (`NSPreferredScrollerStyleDidChangeNotification`). New:
+  `runtime_layout::grid_intrinsic_measure_live`, which reads the gutter on
+  every measure.
+
+- **A `signal_class` style keeps its sheet's breakpoint, container and
+  state blocks on web** (`runtime-vocabulary`). Web's fast path for
+  `signal_class` minted one class per value from the base and variants
+  alone, so with `base { min_height: 44 }` and
+  `breakpoint sm { min_height: 0 }` the element measured 44px at every
+  width, whatever value the signal held, and its hover and press
+  styling never applied. A sheet that declares any of those blocks now
+  takes the per-node path, which emits each layer as its own rule. A
+  sheet without them keeps the fast path. Reactive `stylesheet!`
+  styles never went through `signal_class`. Their side of the CrewForge
+  report (a chip losing its `sm` arm when hovered or pressed) was fixed
+  by the layer-order change above, and a browser test now covers a
+  variant flip too. See `docs/styling.md#layer-order`.
+- **An icon no longer sits about 2px low in a plain view** (`css`,
+  `backend-web`, `backend-ssr`, `backend-email`). The web `<svg>` was `display:
+  inline-block; vertical-align: middle`, which only worked while every
+  view was a flex box. Inside a view whose sheet names no flex property
+  (a CSS block), the icon sat on a line box: the view grew to the
+  inherited line-height and the glyph was pushed down inside it. The icon
+  is now `display: block` (`css::ICON_STYLE`; `ICON_INLINE_STYLE` remains
+  as a deprecated alias), a box the size of its glyph, as on the native
+  backends. Icons in flex rows are unchanged, since flex already made
+  them blocks. SSR and SSG pages emit the same style, and so does the
+  email backend, whose views are always plain `<div>`s and which still
+  emitted the old inline style.
 - **A `Field`'s live `error` shows in the Danger tone** (`idea-ui`). With
   `error = rx!(err.get())` starting at `None`, the help line's tone was
   chosen once when the Field was built ("default", the muted help grey),

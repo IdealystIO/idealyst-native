@@ -3149,4 +3149,152 @@ mod tests {
             "window.innerWidth must report the real viewport once the test is done"
         );
     }
+
+    // ---- CrewForge want_c5b3c05a: a breakpoint arm survives a variant flip
+
+    /// The reporter's chip sheet: `base { min_height: 44 }`,
+    /// `breakpoint sm { min_height: 0 }`, a `selected` variant and a
+    /// `hovered` state, none of which but the breakpoint touch
+    /// `min_height`.
+    fn chip_sheet() -> Rc<runtime_shared::StyleSheet> {
+        use runtime_shared::{Color, Length, StyleRules, StyleSheet, Tokenized};
+        let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+        let bg = |c: &str| Some(Tokenized::Literal(Color(c.into())));
+        Rc::new(
+            StyleSheet::new(move |_| StyleRules { min_height: px(44.0), ..Default::default() })
+                .variant("__bp_sm", "on", move |_| StyleRules { min_height: px(0.0), ..Default::default() })
+                .variant("selected", "off", move |_| StyleRules { background: bg("#eeeeee"), ..Default::default() })
+                .variant("selected", "on", move |_| StyleRules { background: bg("#3355ff"), ..Default::default() })
+                .variant("__state_hovered", "on", move |_| StyleRules {
+                    opacity: Some(Tokenized::Literal(0.8)),
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn computed_min_height(el: &web_glue::dom::Element) -> String {
+        web_glue::dom::window()
+            .unwrap()
+            .get_computed_style(el)
+            .unwrap()
+            .unwrap()
+            .get_property_value("min-height")
+            .unwrap()
+    }
+
+    fn assert_sm_viewport() {
+        let wide = web_glue::dom::window()
+            .unwrap()
+            .match_media("(min-width: 640px)")
+            .unwrap()
+            .map(|m| m.matches())
+            .unwrap_or(false);
+        assert!(wide, "the test needs a viewport at or above `sm` (640px) so the breakpoint arm is active");
+    }
+
+    /// Regression (CrewForge want_c5b3c05a, reactive sheet path): at a
+    /// viewport inside `sm`, a chip whose `selected` variant flips must
+    /// keep its `breakpoint sm { min_height: 0 }` arm. The reporter saw
+    /// the pressed chip's computed `min-height` go back to the base 44px
+    /// while its siblings stayed at 0.
+    #[wasm_bindgen_test]
+    async fn regression_variant_flip_keeps_breakpoint_arm() {
+        assert_sm_viewport();
+        // Class applies flush on a real microtask, as in the browser app
+        // (without a scheduler the flush runs inline, inside the
+        // backend borrow).
+        crate::install_scheduler();
+        let sheet = chip_sheet();
+        setup_mount();
+        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        crate::install_global_self(&backend);
+        let mut registry: Registry<WebBackend> = Registry::new();
+        runtime_vocabulary::register_builtins(&mut registry);
+        let registry = Rc::new(registry);
+        let world = World::new();
+        let (selected, realized) = world.enter(|| {
+            let selected = signal(false);
+            let tree = view()
+                .style(move || {
+                    runtime_shared::StyleApplication::new(sheet.clone())
+                        .with("selected", if selected.get() { "on" } else { "off" })
+                })
+                .build();
+            (selected, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        setup_mount().append_child(&root).unwrap();
+        world.flush();
+        microtask().await;
+        let el: web_glue::dom::Element = root.unchecked_into();
+        assert_eq!(computed_min_height(&el), "0px", "first render takes the sm arm");
+
+        for on in [true, false, true] {
+            selected.set(on);
+            world.flush();
+            microtask().await;
+            assert_eq!(
+                computed_min_height(&el),
+                "0px",
+                "selected={on}: the variant flip must not drop the sm arm (class {:?})",
+                el.get_attribute("class")
+            );
+        }
+        drop(realized);
+        drop(world);
+        setup_mount();
+    }
+
+    /// Regression (CrewForge want_c5b3c05a, `signal_class` path): the JS
+    /// fast path minted one class per value from the BASE resolution only,
+    /// so a sheet's breakpoint (and state) layers never reached the DOM.
+    /// The chip measured the base 44px at every viewport, whichever value
+    /// the signal held.
+    #[wasm_bindgen_test]
+    async fn regression_signal_class_keeps_breakpoint_arm() {
+        assert_sm_viewport();
+        // Class applies flush on a real microtask, as in the browser app
+        // (without a scheduler the flush runs inline, inside the
+        // backend borrow).
+        crate::install_scheduler();
+        let sheet = chip_sheet();
+        setup_mount();
+        let backend = Rc::new(RefCell::new(WebBackend::new("#app")));
+        crate::install_global_self(&backend);
+        let mut registry: Registry<WebBackend> = Registry::new();
+        runtime_vocabulary::register_builtins(&mut registry);
+        let registry = Rc::new(registry);
+        let world = World::new();
+        let (selected, realized) = world.enter(|| {
+            let selected = signal(0u32);
+            let tree = view()
+                .style(runtime_vocabulary::signal_class(selected, &[0, 1], move |v| {
+                    runtime_shared::StyleApplication::new(sheet.clone())
+                        .with("selected", if v == 1 { "on" } else { "off" })
+                }))
+                .build();
+            (selected, realize(&backend, &registry, tree))
+        });
+        let root = realized.collect_nodes().pop().expect("one root");
+        setup_mount().append_child(&root).unwrap();
+        world.flush();
+        microtask().await;
+        let el: web_glue::dom::Element = root.unchecked_into();
+        assert_eq!(computed_min_height(&el), "0px", "first render takes the sm arm");
+
+        for v in [1u32, 0, 1] {
+            selected.set(v);
+            world.flush();
+            microtask().await;
+            assert_eq!(
+                computed_min_height(&el),
+                "0px",
+                "selected={v}: the class swap must keep the sm arm (class {:?})",
+                el.get_attribute("class")
+            );
+        }
+        drop(realized);
+        drop(world);
+        setup_mount();
+    }
 }

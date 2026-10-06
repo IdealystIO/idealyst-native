@@ -5398,12 +5398,18 @@ impl MacosBackend {
         self.layout.set_overflow_scroll(taffy, true);
         // Report the grid's content size so an author can FIT it
         // (`flex_grow: 0` + `flex_basis: auto`) instead of pinning a
-        // parent to `rows × row_height`. Gutter 0: `virtual_grid::create`
-        // sets `NSScrollerStyleOverlay`, which reserves no space. The
-        // seeding above still makes an unstyled grid fill.
-        if let Some(metrics) = virtual_grid::live_metrics(&self.virtual_grid_registry, &view) {
+        // parent to `rows × row_height`. The gutter is LIVE: `create`
+        // sets overlay scrollers (no room), but the "show scroll bars"
+        // preference can turn them legacy under a mounted grid, and a
+        // legacy horizontal scroller takes its width from the clip view —
+        // see `virtual_grid::scroller_style_changed`. The seeding above
+        // still makes an unstyled grid fill.
+        if let (Some(metrics), Some(gutter)) = (
+            virtual_grid::live_metrics(&self.virtual_grid_registry, &view),
+            virtual_grid::live_gutter(&self.virtual_grid_registry, &view),
+        ) {
             self.layout
-                .set_measure_fn(taffy, runtime_layout::grid_intrinsic_measure(metrics, 0.0));
+                .set_measure_fn(taffy, runtime_layout::grid_intrinsic_measure_live(metrics, gutter));
         }
         let node = MacosNode::View(view);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::List));

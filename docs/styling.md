@@ -1052,6 +1052,14 @@ padding at every width. A state beats a variant, so
 `state pressed { background }` shows on top of any variant's
 background.
 
+Flipping a variant or entering a state re-resolves every layer, so an
+active breakpoint or container arm stays applied. This holds for every
+way a reactive style can arrive, including `signal_class`. On web,
+`signal_class` normally swaps between one pre-minted class per value. A
+class built that way holds only the base and the variants, so a sheet
+with any `breakpoint`, `container` or `state` block uses the per-node
+path that emits each layer as its own rule.
+
 ---
 
 ## Compound variants

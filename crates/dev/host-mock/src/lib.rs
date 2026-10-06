@@ -71,7 +71,7 @@
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use runtime_shared::accessibility::{AccessibilityProps, LiveRegionPriority, Role};
@@ -453,6 +453,64 @@ impl primitives::text_area::TextAreaOps for RecordingHandleOps {
 impl primitives::scroll_view::ScrollViewOps for RecordingHandleOps {
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
         handle_rec(node, format!("scroll_to {x} {y}"))
+    }
+}
+
+thread_local! {
+    /// What each grid's scrollport is, as [`set_virtual_grid_scrollport`]
+    /// last said — the mock's stand-in for a backend's measurement.
+    static GRID_SCROLLPORTS: RefCell<HashMap<Node, primitives::virtual_grid::Scrollport>> =
+        RefCell::new(HashMap::new());
+    /// Live `subscribe_scrollport` callbacks, by grid node.
+    static GRID_SCROLLPORT_SUBS: RefCell<Vec<(Node, Rc<dyn Fn(primitives::virtual_grid::Scrollport)>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Play the backend measuring grid `node`: store `port` as its scrollport
+/// and deliver it to every `subscribe_scrollport` callback for that node —
+/// what a real backend does after a resize or a scrollbar change.
+pub fn set_virtual_grid_scrollport(node: Node, port: primitives::virtual_grid::Scrollport) {
+    GRID_SCROLLPORTS.with(|m| m.borrow_mut().insert(node, port));
+    let subs: Vec<_> = GRID_SCROLLPORT_SUBS.with(|v| {
+        v.borrow().iter().filter(|(n, _)| *n == node).map(|(_, f)| f.clone()).collect()
+    });
+    for f in subs {
+        f(port);
+    }
+}
+
+impl primitives::virtual_grid::VirtualGridOps for RecordingHandleOps {
+    fn scroll_to_cell(&self, node: &dyn Any, col: usize, row: usize) {
+        handle_rec(node, format!("scroll_to_cell {col} {row}"))
+    }
+    fn scroll_offset(&self, node: &dyn Any) -> (f32, f32) {
+        handle_rec(node, "scroll_offset".into());
+        (0.0, 0.0)
+    }
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        handle_rec(node, format!("scroll_to {x} {y}"))
+    }
+    fn scrollport(&self, node: &dyn Any) -> Option<primitives::virtual_grid::Scrollport> {
+        handle_rec(node, "scrollport".into());
+        let n = node.downcast_ref::<Node>().copied()?;
+        GRID_SCROLLPORTS.with(|m| m.borrow().get(&n).copied())
+    }
+    fn subscribe_scrollport(
+        &self,
+        node: &dyn Any,
+        callback: Box<dyn Fn(primitives::virtual_grid::Scrollport)>,
+    ) -> runtime_shared::handles::LayoutSubscription {
+        handle_rec(node, "subscribe_scrollport".into());
+        let n = node.downcast_ref::<Node>().copied().unwrap_or(Node::MAX);
+        let cb: Rc<dyn Fn(primitives::virtual_grid::Scrollport)> = Rc::from(callback);
+        let id = Rc::as_ptr(&cb) as *const () as usize;
+        GRID_SCROLLPORT_SUBS.with(|v| v.borrow_mut().push((n, cb)));
+        runtime_shared::handles::LayoutSubscription::new(move || {
+            let _ = GRID_SCROLLPORT_SUBS.try_with(|v| {
+                v.borrow_mut().retain(|(k, c)| !(*k == n && Rc::as_ptr(c) as *const () as usize == id))
+            });
+            let _ = HANDLE_LOG.try_with(|l| l.borrow_mut().push(format!("unsubscribe_scrollport n{n}")));
+        })
     }
 }
 
@@ -1080,6 +1138,10 @@ impl caps::SafeAreaOps for HostMock {
 }
 
 impl caps::GridOps for HostMock {
+    fn make_virtual_grid_handle(&self, node: &Node) -> primitives::virtual_grid::VirtualGridHandle {
+        primitives::virtual_grid::VirtualGridHandle::new(Rc::new(*node), &RECORDING_HANDLE_OPS)
+    }
+
     fn create_virtual_grid(
         &mut self,
         callbacks: primitives::virtual_grid::GridCallbacks<Node>,

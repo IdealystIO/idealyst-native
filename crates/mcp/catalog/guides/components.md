@@ -196,6 +196,30 @@ Two mechanisms render a list of items; pick by size and volatility:
   parent to `rows × row_height` with a scrollbar allowance. Cap it with
   `max_height`.
 
+  To know what is visible (how many columns fit, column widths that fill
+  the visible width, how close the view is to an edge), read the grid's
+  scrollport from its handle instead of measuring a wrapper view. A wrapper
+  counts a classic scrollbar as visible content.
+
+  ```rust
+  let visible = signal(Scrollport::default());
+  virtual_grid(/* … */).on_handle(move |grid| {
+      // Called now, then whenever the grid resizes or a scrollbar
+      // appears, hides or changes style. Keep `sub` alive (a Ref slot,
+      // or a holder dropped in `on_scope_drop`).
+      let sub = grid.on_scrollport(move |port| visible.set(port));
+      /* hold `sub` */
+  })
+  ```
+
+  `Scrollport { width, height }` is the box the cells show through, and
+  `scrollbar_width` / `scrollbar_height` are what the vertical and the
+  horizontal bar took from it. Where scrollbars overlay the content (iOS,
+  Android, macOS's default, overlay-scrollbar browsers) both are `0` and
+  the scrollport is the grid's whole box. `grid.scrollport()` reads it
+  once (`None` before layout). Don't feed it back into the grid's own
+  height; fit the grid with the styles above.
+
   Sizes are per-column and per-row (a cell's box is their intersection), and
   author-supplied — there is no measure-on-mount mode, because a measured cell
   height would have to agree with its whole row. Pair with

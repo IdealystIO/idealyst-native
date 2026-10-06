@@ -4052,3 +4052,119 @@ async fn virtual_grid_fit_content_height_reserves_the_horizontal_scrollbar() {
     }
     sheet.remove();
 }
+
+// ---- virtual_grid: the handle reports the scrollport -------------------------
+
+/// Regression for the CrewForge report (10-05): "`VirtualGridHandle`
+/// exposes no scrollport client size or scrollbar thickness". The app
+/// measured a wrapper view for the grid's visible width, which on a
+/// classic-scrollbar browser counts the vertical bar as visible columns.
+///
+/// The handle now reports the box the cells show through (`clientWidth` /
+/// `clientHeight`) and each bar's thickness, and `on_scrollport` follows
+/// a bar APPEARING — the case a frame measurement can't see, because the
+/// grid's frame doesn't change. The bars are forced to a real 15px with
+/// `::-webkit-scrollbar` so the test means the same on overlay-scrollbar
+/// hosts (macOS), and the grid has a 2px border so a reading that forgot
+/// to take borders out would show up as a 4px "scrollbar".
+#[wasm_bindgen_test]
+async fn regression_virtual_grid_handle_reports_scrollport_and_scrollbar_thickness() {
+    use runtime_shared::primitives::virtual_grid::{GridCallbacks, Scrollport};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let sheet = doc.create_element("style").unwrap();
+    sheet.set_text_content(Some(
+        "[data-port-grid]::-webkit-scrollbar{width:15px;height:15px;background:#ccc}",
+    ));
+    doc.body().unwrap().append_child(&sheet).unwrap();
+    let num = |el: &web_glue::dom::Element, prop: &str| -> f32 {
+        web_glue::js::Reflect::get(el, &web_glue::JsValue::from_str(prop))
+            .unwrap()
+            .as_f64()
+            .unwrap() as f32
+    };
+
+    // 30 × 120 = 3600 wide: scrolls sideways. Rows start at 3 × 40 = 120,
+    // which fits the 300px box, so there is no vertical bar yet.
+    let rows = Rc::new(Cell::new(3usize));
+    let r = rows.clone();
+    let cell_doc = doc.clone();
+    let callbacks = GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 30),
+        row_count: Rc::new(move || r.get()),
+        col_width: Rc::new(|_| 120.0),
+        row_height: Rc::new(|_| 40.0),
+        cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+        mount_cell: Rc::new(move |_, _| {
+            let cell = cell_doc.create_element("div").unwrap();
+            (web_glue::JsCast::unchecked_into(cell), 0)
+        }),
+        release_cell: Rc::new(|_| {}),
+        on_scroll: None,
+    };
+    let node = crate::primitives::virtual_grid::create(&mut backend, callbacks, 1.0);
+    let grid: web_glue::dom::Element = node.clone().dyn_into().unwrap();
+    grid.set_attribute("data-port-grid", "").unwrap();
+    grid.set_attribute(
+        "style",
+        &format!(
+            "{}width:390px;height:300px;border:2px solid #000;",
+            grid.get_attribute("style").unwrap_or_default()
+        ),
+    )
+    .unwrap();
+    let handle = crate::primitives::virtual_grid::make_handle(&node);
+    assert_eq!(handle.scrollport(), None, "not in the document yet");
+    doc.get_element_by_id("app").unwrap().append_child(&node).unwrap();
+    sleep_ms(30).await;
+
+    let seen: Rc<RefCell<Vec<Scrollport>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    let sub = handle.on_scrollport(move |p| s.borrow_mut().push(p));
+
+    // Horizontal bar only.
+    let first = handle.scrollport().expect("laid out");
+    assert_eq!(first.width, num(&grid, "clientWidth"));
+    assert_eq!(first.height, num(&grid, "clientHeight"));
+    assert_eq!((first.scrollbar_width, first.scrollbar_height), (0.0, 15.0), "{first:?}");
+    assert_eq!(first.height + first.scrollbar_height + 4.0, num(&grid, "offsetHeight"));
+    assert_eq!(*seen.borrow(), vec![first], "the current value arrives at subscribe");
+
+    // 20 rows = 800 tall: a vertical bar appears. The frame is unchanged;
+    // only the scrollport shrinks.
+    let offset_w = num(&grid, "offsetWidth");
+    rows.set(20);
+    crate::primitives::virtual_grid::data_changed(&mut backend, &node);
+    sleep_ms(50).await;
+    assert_eq!(num(&grid, "offsetWidth"), offset_w, "the grid's frame did not move");
+    let barred = handle.scrollport().expect("laid out");
+    assert_eq!((barred.scrollbar_width, barred.scrollbar_height), (15.0, 15.0), "{barred:?}");
+    assert_eq!(barred.width, first.width - 15.0);
+    assert_eq!(
+        seen.borrow().last().copied(),
+        Some(barred),
+        "on_scrollport followed the bar appearing: {:?}",
+        seen.borrow()
+    );
+    assert_eq!(seen.borrow().len(), 2, "no repeats: {:?}", seen.borrow());
+
+    // Dropped: the next change is not delivered.
+    drop(sub);
+    grid.set_attribute(
+        "style",
+        &grid.get_attribute("style").unwrap_or_default().replace("width:390px", "width:500px"),
+    )
+    .unwrap();
+    sleep_ms(50).await;
+    assert_eq!(seen.borrow().len(), 2);
+
+    crate::primitives::virtual_grid::release(&mut backend, &node);
+    sleep_ms(0).await;
+    grid.remove();
+    sheet.remove();
+}

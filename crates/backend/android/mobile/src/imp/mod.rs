@@ -1930,6 +1930,39 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for AndroidVirtual
             primitives::virtual_grid::scroll_to(n, x, y);
         }
     }
+
+    /// `RustVirtualGrid` draws no scrollbars that take room (it enables
+    /// none; Android's are `insideOverlay` by default), so the scrollport
+    /// is the view's whole box in dp and both thicknesses are `0` — the
+    /// same reading as `AndroidViewOps::frame`.
+    fn scrollport(
+        &self,
+        node: &dyn std::any::Any,
+    ) -> Option<runtime_shared::primitives::virtual_grid::Scrollport> {
+        let frame = runtime_shared::ViewOps::frame(&AndroidViewOps, node)?;
+        Some(runtime_shared::primitives::virtual_grid::Scrollport::overlay(frame.width, frame.height))
+    }
+
+    /// With no room-taking scrollbars the scrollport changes only with the
+    /// frame, so this rides the layout pass's `on_layout` registry (which
+    /// also schedules the flush after the callback).
+    fn subscribe_scrollport(
+        &self,
+        node: &dyn std::any::Any,
+        callback: Box<dyn Fn(runtime_shared::primitives::virtual_grid::Scrollport)>,
+    ) -> runtime_shared::LayoutSubscription {
+        let Some(view) = node.downcast_ref::<GlobalRef>() else {
+            return runtime_shared::LayoutSubscription::noop();
+        };
+        // Same key derivation as `node_key` / `AndroidViewOps::subscribe_layout`.
+        let key = view.as_obj().as_raw() as usize;
+        crate::layout_subs::subscribe(
+            key,
+            Box::new(move |w, h| {
+                callback(runtime_shared::primitives::virtual_grid::Scrollport::overlay(w, h))
+            }),
+        )
+    }
 }
 pub(crate) static ANDROID_VIRTUAL_GRID_OPS: AndroidVirtualGridOps = AndroidVirtualGridOps;
 

@@ -377,6 +377,79 @@ mod tests {
         });
     }
 
+    /// The control's two sheets are its own, not the Tabs sheets it used to
+    /// borrow: distinct sheets with distinct premint identities, a single
+    /// author axis `selected` (default `off`) instead of the tab's `active`,
+    /// and the hovered/pressed/focused state overlays — focus draws the
+    /// themed ring rather than the platform default.
+    #[test]
+    fn segmented_sheets_are_their_own_not_the_tab_sheets() {
+        use crate::stylesheets::{TabBar, TabButton};
+        use runtime_core::StateBits;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for (ours, tabs, what) in [
+                (SegmentedGroup::sheet(), TabBar::sheet(), "track"),
+                (SegmentButton::sheet(), TabButton::sheet(), "segment"),
+            ] {
+                assert!(!Rc::ptr_eq(&ours, &tabs), "the {what} sheet is not the Tabs sheet");
+                assert_ne!(ours.premint_class(), tabs.premint_class(), "the {what} premints under its own class");
+            }
+
+            let seg = SegmentButton::sheet();
+            let axes: Vec<_> = seg.premint_author_axes().iter().map(|(a, d)| (a.as_str(), d.as_deref())).collect();
+            assert_eq!(axes, vec![("selected", Some("off"))], "one `selected` axis, resting off");
+            let mut arms: Vec<_> = seg
+                .variant_keys()
+                .into_iter()
+                .filter(|(axis, _)| axis == "selected")
+                .map(|(_, v)| v)
+                .collect();
+            arms.sort();
+            assert_eq!(arms, vec!["off".to_string(), "on".to_string()]);
+
+            let states: Vec<StateBits> = seg.state_axes().iter().map(|(b, _)| *b).collect();
+            for (bit, name) in [(StateBits::HOVERED, "hovered"), (StateBits::PRESSED, "pressed"), (StateBits::FOCUSED, "focused")] {
+                assert!(states.contains(&bit), "SegmentButton declares a `{name}` state");
+            }
+            let focused = resolve_style(&StyleApplication::new(seg.clone()).with("__state_focused", "on".to_string()));
+            assert_eq!(
+                focused.border_left_color.as_ref().and_then(|c| c.name()),
+                Some("color-focus-ring"),
+                "focus draws the themed ring"
+            );
+        });
+    }
+
+    /// Snapshot of the arms, by TOKEN name: every themed value the track and
+    /// the segments paint is a style token, so a theme swap retints them and
+    /// no color or spacing is a literal. The selected segment is a raised
+    /// key — the surface color with a border — on a `surface_alt` track.
+    #[test]
+    fn segmented_arms_are_built_from_style_tokens() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let name = |c: &Option<runtime_core::Tokenized<runtime_core::Color>>| c.as_ref().and_then(|c| c.name());
+
+            let group = resolve_style(&StyleApplication::new(SegmentedGroup::sheet()));
+            assert_eq!(name(&group.background), Some("color-surface-alt"), "the track is tinted");
+            assert_eq!(name(&group.border_left_color), Some("color-border"), "and bordered");
+            assert!(group.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some(), "track radius is a token");
+            assert!(group.padding_left.as_ref().and_then(|p| p.name()).is_some(), "track padding is a token");
+
+            let seg = |selected: &str| {
+                resolve_style(&StyleApplication::new(SegmentButton::sheet()).with("selected", selected.to_string()))
+            };
+            let (on, off) = (seg("on"), seg("off"));
+            assert_eq!(name(&on.background), Some("color-surface"), "the selected segment is filled in");
+            assert_eq!(name(&on.border_left_color), Some("color-border"), "and edged like a raised key");
+            assert_eq!(name(&on.color), Some("color-text"));
+            assert_eq!(name(&off.background), None, "an unselected segment is transparent");
+            assert_eq!(name(&off.color), Some("color-text-muted"));
+            assert!(on.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some(), "segment radius is a token");
+        });
+    }
+
     /// One pressable segment per option, wrapped in a single row view.
     #[test]
     fn builds_one_segment_per_option() {

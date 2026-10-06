@@ -54,14 +54,34 @@
 //! [`GridMetrics::intrinsic_size`]: the content plus any scrollbar the
 //! other axis needs. Native backends report it to layout through
 //! `runtime_layout::grid_intrinsic_measure`. The web grid's
-//! `overflow: auto` box gets the same size from the browser. Neither the
-//! handle nor `on_layout` exposes the viewport or scrollbar size: the
-//! backend already knows them when it lays the grid out, and a size the
-//! app reads back and feeds into a parent's height is a layout feedback
-//! loop.
+//! `overflow: auto` box gets the same size from the browser. Fit the grid
+//! with those styles, not with a height computed from
+//! [`VirtualGridHandle::scrollport`]: the backend already knows the
+//! scrollbar when it lays the grid out, and a size the app reads back and
+//! feeds into the grid's own height is a layout feedback loop.
+//!
+//! ## The scrollport
+//!
+//! [`VirtualGridHandle::scrollport`] / [`VirtualGridHandle::on_scrollport`]
+//! report the box the cells show through: the grid's size minus any
+//! scrollbar that takes room from it, plus the thickness of each such
+//! scrollbar ([`Scrollport`]). Use it for what is VISIBLE — how many
+//! columns fit, sizing columns to fill the visible width, how close the
+//! view is to an edge. Measuring a wrapper view instead counts a classic
+//! scrollbar as visible content.
+//!
+//! Every backend reports it the same way. Where scrollbars overlay the
+//! content (iOS, Android, AppKit's overlay style, a browser with overlay
+//! scrollbars) both thicknesses are `0` and the scrollport is the grid's
+//! frame. Where they take room (a browser with classic scrollbars, AppKit's
+//! legacy style), the scrollport is the inner box (`clientWidth` /
+//! `clientHeight` on the web, the clip view's frame on AppKit) and the
+//! thicknesses are what the bars took.
 
 use std::any::Any;
 use std::rc::Rc;
+
+use crate::LayoutSubscription;
 
 /// Stable identity for a cell, used for keyed reuse across data
 /// changes. Same contract (and same `u64` shape) as
@@ -427,6 +447,70 @@ impl VirtualGridHandle {
     pub fn scroll_to(&self, x: f32, y: f32) {
         self.ops.scroll_to(&*self.node, x, y);
     }
+
+    /// The box the cells show through right now — the grid's size minus
+    /// any scrollbar that takes room — and each scrollbar's thickness.
+    /// `None` until the grid has been laid out. See [`Scrollport`].
+    pub fn scrollport(&self) -> Option<Scrollport> {
+        self.ops.scrollport(&*self.node)
+    }
+
+    /// Call `f` with the grid's [`Scrollport`] now (when the grid is laid
+    /// out) and again whenever it changes: the grid resizes, or a scrollbar
+    /// appears, disappears or changes style. Never called twice in a row
+    /// with the same value. Drop the returned subscription to stop.
+    ///
+    /// For reading what is visible. Don't feed it back into the grid's own
+    /// size — fit the grid with `flex_grow: 0` + `flex_basis: auto`
+    /// instead (module docs).
+    pub fn on_scrollport<F: Fn(Scrollport) + 'static>(&self, f: F) -> LayoutSubscription {
+        // The change guard lives HERE, once, so every backend's delivery
+        // (ResizeObserver, a layout pass, a clip-view notification — all of
+        // which can fire at an unchanged size) reaches the author the same
+        // way.
+        let last: Rc<std::cell::Cell<Option<Scrollport>>> = Rc::new(std::cell::Cell::new(None));
+        let f = Rc::new(f);
+        let deliver = {
+            let last = last.clone();
+            let f = f.clone();
+            move |s: Scrollport| {
+                if last.get() != Some(s) {
+                    last.set(Some(s));
+                    f(s);
+                }
+            }
+        };
+        let sub = self.ops.subscribe_scrollport(&*self.node, Box::new(deliver.clone()));
+        if let Some(now) = self.scrollport() {
+            deliver(now);
+        }
+        sub
+    }
+}
+
+/// The box a grid's cells show through, in CSS px / native points.
+///
+/// `width` × `height` is the visible area: the grid's frame minus its
+/// borders and minus the room any scrollbar takes. `scrollbar_width` is the
+/// thickness the VERTICAL scrollbar takes from the width, and
+/// `scrollbar_height` the thickness the HORIZONTAL one takes from the
+/// height — `0.0` where there is no bar on that axis or the bar overlays
+/// the content (every native backend's default, see the module docs).
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Scrollport {
+    pub width: f32,
+    pub height: f32,
+    pub scrollbar_width: f32,
+    pub scrollbar_height: f32,
+}
+
+impl Scrollport {
+    /// A scrollport whose scrollbars overlay the content: the visible box
+    /// is the whole `width` × `height`.
+    pub fn overlay(width: f32, height: f32) -> Self {
+        Self { width, height, scrollbar_width: 0.0, scrollbar_height: 0.0 }
+    }
 }
 
 /// Backend-side implementation of [`VirtualGridHandle`]'s methods.
@@ -443,6 +527,27 @@ pub trait VirtualGridOps {
 
     #[allow(unused_variables)]
     fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {}
+
+    /// The grid's current [`Scrollport`]; `None` before the grid is laid
+    /// out (or on a backend without a grid engine).
+    #[allow(unused_variables)]
+    fn scrollport(&self, node: &dyn Any) -> Option<Scrollport> {
+        None
+    }
+
+    /// Call `callback` with the grid's [`Scrollport`] after each layout or
+    /// scrollbar change that may have changed it. May over-fire with an
+    /// unchanged value — [`VirtualGridHandle::on_scrollport`] filters
+    /// those. Backends must schedule the post-dispatch flush after calling
+    /// it, as `on_layout` delivery does (FRAMEWORK-NOTES #103).
+    #[allow(unused_variables)]
+    fn subscribe_scrollport(
+        &self,
+        node: &dyn Any,
+        callback: Box<dyn Fn(Scrollport)>,
+    ) -> LayoutSubscription {
+        LayoutSubscription::noop()
+    }
 }
 
 #[cfg(test)]
@@ -635,5 +740,117 @@ mod tests {
         assert_eq!(m.intrinsic_size((Some(50.0), Some(60.0)), (None, None), 15.0), (50.0, 60.0));
         assert_eq!(m.intrinsic_size((Some(390.0), None), (None, None), f32::NAN).1, 120.0);
         assert_eq!(m.intrinsic_size((Some(390.0), None), (None, None), -4.0).1, 120.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Scrollport — the handle plumbing. The CrewForge report (10-05):
+    // `VirtualGridHandle` exposed no client size or scrollbar thickness,
+    // so a grid's visible width was measured off a wrapper view, which
+    // counts a classic scrollbar as visible content.
+    // -----------------------------------------------------------------
+
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// What the fake backend reports, and the delivery it holds.
+        static PORT: std::cell::Cell<Option<Scrollport>> = const { std::cell::Cell::new(None) };
+        static DELIVER: RefCell<Option<Box<dyn Fn(Scrollport)>>> = const { RefCell::new(None) };
+        static UNSUBSCRIBED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    struct FakeOps;
+    impl VirtualGridOps for FakeOps {
+        fn scrollport(&self, _: &dyn Any) -> Option<Scrollport> {
+            PORT.with(|p| p.get())
+        }
+        fn subscribe_scrollport(&self, _: &dyn Any, cb: Box<dyn Fn(Scrollport)>) -> LayoutSubscription {
+            DELIVER.with(|d| *d.borrow_mut() = Some(cb));
+            LayoutSubscription::new(|| {
+                UNSUBSCRIBED.with(|u| u.set(true));
+                DELIVER.with(|d| *d.borrow_mut() = None);
+            })
+        }
+    }
+    static FAKE_OPS: FakeOps = FakeOps;
+
+    /// A backend resizing the grid / showing a bar.
+    fn backend_reports(s: Scrollport) {
+        PORT.with(|p| p.set(Some(s)));
+        DELIVER.with(|d| {
+            if let Some(cb) = d.borrow().as_ref() {
+                cb(s)
+            }
+        });
+    }
+
+    fn fake_handle() -> VirtualGridHandle {
+        PORT.with(|p| p.set(None));
+        DELIVER.with(|d| *d.borrow_mut() = None);
+        UNSUBSCRIBED.with(|u| u.set(false));
+        VirtualGridHandle::new(Rc::new(()), &FAKE_OPS)
+    }
+
+    /// Regression (CrewForge, "VirtualGridHandle exposes no scrollport
+    /// client size or scrollbar thickness"): the handle answers with what
+    /// the backend measured, bars included.
+    #[test]
+    fn regression_handle_reports_the_scrollport_and_scrollbar_thickness() {
+        let h = fake_handle();
+        assert_eq!(h.scrollport(), None, "not laid out yet");
+        let classic = Scrollport { width: 385.0, height: 105.0, scrollbar_width: 15.0, scrollbar_height: 15.0 };
+        PORT.with(|p| p.set(Some(classic)));
+        assert_eq!(h.scrollport(), Some(classic));
+    }
+
+    /// `on_scrollport` delivers the current value at once, then only
+    /// CHANGES — a backend re-firing at the same size (every layout pass,
+    /// a ResizeObserver's initial observation) reaches the author once.
+    #[test]
+    fn on_scrollport_delivers_now_then_only_changes() {
+        let h = fake_handle();
+        PORT.with(|p| p.set(Some(Scrollport::overlay(400.0, 120.0))));
+        let seen: Rc<RefCell<Vec<Scrollport>>> = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let sub = h.on_scrollport(move |p| s.borrow_mut().push(p));
+        assert_eq!(*seen.borrow(), vec![Scrollport::overlay(400.0, 120.0)], "current value at subscribe");
+
+        backend_reports(Scrollport::overlay(400.0, 120.0));
+        assert_eq!(seen.borrow().len(), 1, "an unchanged re-fire is filtered");
+
+        // A classic horizontal bar appears: same frame, smaller box.
+        let barred = Scrollport { width: 400.0, height: 105.0, scrollbar_width: 0.0, scrollbar_height: 15.0 };
+        backend_reports(barred);
+        assert_eq!(seen.borrow().last(), Some(&barred));
+        assert_eq!(seen.borrow().len(), 2);
+
+        drop(sub);
+        assert!(UNSUBSCRIBED.with(|u| u.get()), "dropping the subscription releases the backend's");
+    }
+
+    /// Subscribing before layout delivers nothing until the backend has
+    /// a size — no zero-sized placeholder reaches the author.
+    #[test]
+    fn on_scrollport_before_layout_waits_for_the_first_measurement() {
+        let h = fake_handle();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let _sub = h.on_scrollport(move |p| s.borrow_mut().push(p));
+        assert!(seen.borrow().is_empty());
+        backend_reports(Scrollport::overlay(300.0, 90.0));
+        assert_eq!(*seen.borrow(), vec![Scrollport::overlay(300.0, 90.0)]);
+    }
+
+    /// A backend without a grid engine answers `None` and never fires.
+    #[test]
+    fn the_default_ops_report_no_scrollport() {
+        struct Bare;
+        impl VirtualGridOps for Bare {}
+        static BARE: Bare = Bare;
+        let h = VirtualGridHandle::new(Rc::new(()), &BARE);
+        assert_eq!(h.scrollport(), None);
+        let fired = Rc::new(std::cell::Cell::new(false));
+        let f = fired.clone();
+        let _sub = h.on_scrollport(move |_| f.set(true));
+        assert!(!fired.get());
     }
 }

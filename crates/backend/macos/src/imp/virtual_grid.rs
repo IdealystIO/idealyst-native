@@ -33,7 +33,7 @@ use objc2::rc::Retained;
 use objc2::{msg_send, msg_send_id};
 use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker, NSObject};
-use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow};
+use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow, Scrollport};
 
 use super::MacosNode;
 
@@ -61,6 +61,14 @@ pub(crate) struct VirtualGridInstance {
     /// Bounds-change observer; the notification center holds it
     /// non-owningly, so the instance must.
     observer: Option<Retained<NSObject>>,
+    /// The thickness a scroller takes from the box right now — what the
+    /// intrinsic-size measure_fn reads (`grid_intrinsic_measure_live`).
+    /// `0` under overlay scrollers, the legacy scroller's width under the
+    /// legacy style. Kept current by [`scroller_style_changed`].
+    gutter: Rc<std::cell::Cell<f32>>,
+    /// Observer for the scroller-style preference change; same ownership
+    /// as `observer`.
+    style_observer: Option<Retained<NSObject>>,
 }
 
 pub(crate) type GridRegistry = HashMap<usize, VirtualGridInstance>;
@@ -124,6 +132,18 @@ pub(crate) fn create(
         }),
     );
 
+    // "Show scroll bars" changed (or a mouse was plugged in under
+    // "Automatic"): AppKit restyles every scroll view — this one too,
+    // despite the overlay style forced above — and a LEGACY scroller then
+    // takes its thickness from the clip view. Re-measure, or a grid
+    // fitted to its rows loses the last one under the horizontal bar.
+    let style_observer = crate::imp::callbacks::observe_notification(
+        mtm,
+        "NSPreferredScrollerStyleDidChangeNotification",
+        std::ptr::null_mut(),
+        Rc::new(move || crate::imp::with_backend(|b| scroller_style_changed(b, key))),
+    );
+
     registry.insert(
         key,
         VirtualGridInstance {
@@ -134,6 +154,8 @@ pub(crate) fn create(
             mounted: Rc::new(RefCell::new(HashMap::new())),
             last_window: Rc::new(RefCell::new(None)),
             observer,
+            gutter: Rc::new(std::cell::Cell::new(scroller_gutter(&scroll))),
+            style_observer: Some(style_observer),
         },
     );
 
@@ -156,6 +178,50 @@ pub(crate) fn live_metrics(registry: &GridRegistry, view: &NSView) -> Option<Rc<
     registry
         .get(&(view as *const NSView as usize))
         .map(|inst| inst.metrics.clone())
+}
+
+/// The grid's live gutter cell, for the measure_fn
+/// `create_virtual_grid_impl` installs.
+pub(crate) fn live_gutter(registry: &GridRegistry, view: &NSView) -> Option<Rc<std::cell::Cell<f32>>> {
+    registry
+        .get(&(view as *const NSView as usize))
+        .map(|inst| inst.gutter.clone())
+}
+
+/// The room one scroller takes from the box under `scroll`'s CURRENT
+/// style: `0` for overlay scrollers, which float over the content, and
+/// the legacy scroller's width for its control size otherwise — exactly
+/// what `NSScrollView` tiles out of the clip view (pinned by
+/// `regression_fit_content_grid_keeps_its_last_row_under_legacy_scrollers`).
+fn scroller_gutter(scroll: &NSView) -> f32 {
+    let style: isize = unsafe { msg_send![scroll, scrollerStyle] };
+    // NSScrollerStyleLegacy = 0, NSScrollerStyleOverlay = 1.
+    if style != 0 {
+        return 0.0;
+    }
+    let scroller: *mut objc2::runtime::AnyObject = unsafe { msg_send![scroll, horizontalScroller] };
+    let control_size: usize = if scroller.is_null() { 0 } else { unsafe { msg_send![scroller, controlSize] } };
+    let width: f64 = unsafe {
+        msg_send![objc2::class!(NSScroller), scrollerWidthForControlSize: control_size, scrollerStyle: 0isize]
+    };
+    width as f32
+}
+
+/// The scroller style of grid `key` may have changed: re-read the gutter
+/// and, if it moved, dirty the node so the next pass re-measures — the
+/// same re-measure a data change triggers.
+pub(crate) fn scroller_style_changed(backend: &mut crate::imp::MacosBackend, key: usize) {
+    let Some(inst) = backend.virtual_grid_registry.get(&key) else {
+        return;
+    };
+    let gutter = scroller_gutter(&inst.scroll_view);
+    if inst.gutter.replace(gutter) == gutter {
+        return;
+    }
+    let view = inst.scroll_view.clone();
+    let layout = backend.layout_for_view(&view);
+    backend.layout.mark_dirty(layout);
+    crate::imp::schedule_layout_pass();
 }
 
 pub(crate) fn data_changed(backend: &mut crate::imp::MacosBackend, node: &MacosNode) {
@@ -474,6 +540,9 @@ fn release_in(registry: &mut GridRegistry, node: &MacosNode) {
             unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
         let _: () = unsafe { msg_send![center, removeObserver: &*target] };
     }
+    if let Some(target) = inst.style_observer.take() {
+        crate::imp::callbacks::remove_observer(&target);
+    }
     let cbs = inst.callbacks.borrow_mut().take();
     let release_cell = cbs.as_ref().map(|c| c.release_cell.clone());
     let cells: Vec<MountedCell> = inst.mounted.borrow_mut().drain().map(|(_, v)| v).collect();
@@ -525,6 +594,73 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for MacosVirtualGr
             scroll_clip_to(view, x, y);
         }
     }
+
+    fn scrollport(&self, node: &dyn std::any::Any) -> Option<Scrollport> {
+        let Some(MacosNode::View(view)) = node.downcast_ref::<MacosNode>() else {
+            return None;
+        };
+        scrollport_of(view)
+    }
+
+    /// Delivered off the clip view's frame notification — see
+    /// `install_clip_frame_observer` for why that, and not the layout
+    /// pass's `on_layout` hook, is the trigger.
+    fn subscribe_scrollport(
+        &self,
+        node: &dyn std::any::Any,
+        callback: Box<dyn Fn(Scrollport)>,
+    ) -> runtime_shared::LayoutSubscription {
+        let Some(MacosNode::View(view)) = node.downcast_ref::<MacosNode>() else {
+            return runtime_shared::LayoutSubscription::noop();
+        };
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let scroll = view.clone();
+        let observer = crate::imp::callbacks::install_clip_frame_observer(
+            mtm,
+            view,
+            Rc::new(move || {
+                if let Some(port) = scrollport_of(&scroll) {
+                    callback(port);
+                    // A notification is an author-code entry point; commit
+                    // what the callback staged (FRAMEWORK-NOTES #103).
+                    backend_apple_core::dispatch_hook::fire_dispatch_hook();
+                }
+            }),
+        );
+        let Some(observer) = observer else {
+            return runtime_shared::LayoutSubscription::noop();
+        };
+        runtime_shared::LayoutSubscription::new(move || {
+            crate::imp::callbacks::remove_observer(&observer);
+            drop(observer);
+        })
+    }
+}
+
+/// The grid's scrollport: its clip view's frame, which `NSScrollView`
+/// tiles to leave room for LEGACY scrollers and stretches under OVERLAY
+/// ones. A scroller's thickness is what the clip view lost on that axis
+/// (`0` for overlay scrollers). `None` before layout.
+///
+/// `tile` first: the clip frame is only re-derived when the scroll view
+/// tiles, and a read straight after a document-size change (a scroller
+/// that should now auto-show) would otherwise see the previous layout.
+/// Tiling is idempotent, so a read that changes nothing costs nothing.
+fn scrollport_of(scroll: &NSView) -> Option<Scrollport> {
+    let _: () = unsafe { msg_send![scroll, tile] };
+    let frame: CGRect = unsafe { msg_send![scroll, frame] };
+    if frame.size.width <= 0.0 || frame.size.height <= 0.0 {
+        return None;
+    }
+    let clip: Option<Retained<NSView>> = unsafe { msg_send_id![scroll, contentView] };
+    let clip_frame: CGRect = unsafe { msg_send![&clip?, frame] };
+    let (w, h) = (clip_frame.size.width as f32, clip_frame.size.height as f32);
+    Some(Scrollport {
+        width: w,
+        height: h,
+        scrollbar_width: (frame.size.width as f32 - w).max(0.0),
+        scrollbar_height: (frame.size.height as f32 - h).max(0.0),
+    })
 }
 
 fn scroll_clip_to(scroll: &Retained<NSView>, x: f32, y: f32) {
@@ -648,6 +784,55 @@ mod pending_tests {
         assert!(f.registry.is_empty(), "the instance leaves the registry at once");
         drain_pending();
         assert_eq!(f.releases.get(), 4);
+    }
+
+    /// Regression (CrewForge 10-05: "`VirtualGridHandle` exposes no
+    /// scrollport client size or scrollbar thickness"). The handle reads
+    /// the clip view: under the grid's default OVERLAY scrollers the
+    /// scrollport is the whole frame, and once the "always show scroll
+    /// bars" preference turns the scrollers LEGACY, the horizontal bar the
+    /// 4000-wide content needs takes its thickness from the height — with
+    /// the grid's frame unchanged, which is why `on_scrollport` must follow
+    /// the clip view rather than the layout pass.
+    #[test]
+    fn regression_handle_reports_the_clip_view_as_the_scrollport() {
+        // Scheduled deliveries buffer on this thread and drain below —
+        // deterministic whether or not another test installed the
+        // main-queue scheduler (whose queue no test thread drains).
+        backend_apple_core::scheduler::install_scheduler();
+        backend_apple_core::scheduler::begin_mount_buffering();
+
+        let f = grid(100, 3); // 4000 × 120 of content in a 200 × 200 frame.
+        sync_in(&f.registry, f.key);
+        drain_pending(); // sizes the documentView
+        let handle = make_handle(&f.node);
+        assert_eq!(handle.scrollport(), Some(Scrollport::overlay(200.0, 200.0)), "overlay: the whole frame");
+
+        let seen: Rc<RefCell<Vec<Scrollport>>> = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        let sub = handle.on_scrollport(move |p| s.borrow_mut().push(p));
+        assert_eq!(*seen.borrow(), vec![Scrollport::overlay(200.0, 200.0)]);
+
+        let MacosNode::View(scroll) = &f.node else { unreachable!() };
+        let _: () = unsafe { msg_send![&**scroll, setScrollerStyle: 0isize] }; // NSScrollerStyleLegacy
+        let _: () = unsafe { msg_send![&**scroll, tile] };
+        runtime_shared::drain_buffered_microtasks();
+        let bar: f64 = unsafe {
+            msg_send![objc2::class!(NSScroller), scrollerWidthForControlSize: 0usize, scrollerStyle: 0isize]
+        };
+        let bar = bar as f32;
+        assert!(bar > 0.0, "a legacy scroller takes room");
+        let legacy = Scrollport { width: 200.0, height: 200.0 - bar, scrollbar_width: 0.0, scrollbar_height: bar };
+        assert_eq!(handle.scrollport(), Some(legacy), "content fits vertically: horizontal bar only");
+        assert_eq!(seen.borrow().last(), Some(&legacy), "followed the style change: {:?}", seen.borrow());
+
+        drop(sub);
+        let _: () = unsafe { msg_send![&**scroll, setScrollerStyle: 1isize] };
+        let _: () = unsafe { msg_send![&**scroll, tile] };
+        runtime_shared::drain_buffered_microtasks();
+        assert_eq!(seen.borrow().len(), 2, "a dropped subscription delivers nothing");
+
+        backend_apple_core::scheduler::end_mount_buffering();
     }
 
     /// The load-bearing omission: queueing a sync must not arm a layout
@@ -833,6 +1018,169 @@ mod intrinsic_size_tests {
         backend.layout.compute(root, 390.0, 725.0);
         assert_eq!(backend.layout.frame_of(grid).height, 200.0, "re-measured to 5 rows");
 
+        backend.release_virtual_grid_impl(&node);
+        drain_pending();
+    }
+
+    /// Lay out a fit-content grid (30 × 120 wide, `rows` × 40 tall) in a
+    /// 390 × 725 column and apply the frame to the real `NSScrollView`.
+    /// Returns `(backend, node, layout height, clip-view height)`.
+    fn fit_grid_in_legacy_style(legacy_before_create: bool) -> (crate::imp::MacosBackend, MacosNode, f32, f32) {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut backend = crate::imp::MacosBackend::new(mtm);
+        let callbacks = GridCallbacks::<MacosNode> {
+            col_count: Rc::new(|| 30),
+            row_count: Rc::new(|| 3),
+            col_width: Rc::new(|_| 120.0),
+            row_height: Rc::new(|_| 40.0),
+            cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+            mount_cell: Rc::new(move |_, _| {
+                let view: Retained<NSView> =
+                    Retained::into_super(crate::imp::view::FlippedView::new(mtm));
+                (MacosNode::View(view), 0)
+            }),
+            release_cell: Rc::new(|_| {}),
+            on_scroll: None,
+        };
+        let node = backend.create_virtual_grid_impl(callbacks, 1.0, &Default::default());
+        let scroll = node.as_view();
+        if legacy_before_create {
+            set_style_and_remeasure(&mut backend, &node, 0);
+        }
+        let grid = backend.layout_of(scroll).expect("grid has a layout node");
+        let mut fit = runtime_shared::StyleRules::default();
+        fit.flex_grow = Some(0.0f32.into());
+        fit.flex_basis = Some(runtime_shared::Length::Auto.into());
+        backend.layout.set_style(grid, &fit);
+        let root = backend.layout.new_node();
+        let mut rs = runtime_shared::StyleRules::default();
+        rs.width = Some(runtime_shared::Length::Px(390.0).into());
+        rs.height = Some(runtime_shared::Length::Px(725.0).into());
+        backend.layout.set_style(root, &rs);
+        backend.layout.add_child(root, grid);
+        if !legacy_before_create {
+            set_style_and_remeasure(&mut backend, &node, 0);
+        }
+        backend.layout.compute(root, 390.0, 725.0);
+        let f = backend.layout.frame_of(grid);
+        let _: () = unsafe {
+            msg_send![scroll, setFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(f.width as f64, f.height as f64))]
+        };
+        // Size the documentView (what the scroller's auto-show reads).
+        let key = scroll as *const NSView as usize;
+        sync_in(&backend.virtual_grid_registry, key);
+        drain_pending();
+        let _: () = unsafe { msg_send![scroll, tile] };
+        let clip: Option<Retained<NSView>> = unsafe { msg_send_id![scroll, contentView] };
+        let clip_frame: CGRect = unsafe { msg_send![&clip.unwrap(), frame] };
+        (backend, node, f.height, clip_frame.size.height as f32)
+    }
+
+    /// What the "show scroll bars" preference does to a live grid: AppKit
+    /// sets `scrollerStyle` on the scroll view, and the backend hears it
+    /// through `scroller_style_changed`.
+    fn set_style_and_remeasure(backend: &mut crate::imp::MacosBackend, node: &MacosNode, style: isize) {
+        let _: () = unsafe { msg_send![node.as_view(), setScrollerStyle: style] };
+        scroller_style_changed(backend, node.as_view() as *const NSView as usize);
+    }
+
+    /// Regression: a fit-content grid measured with a gutter of 0 assumed
+    /// OVERLAY scrollers. Under the LEGACY style ("Always show scroll
+    /// bars", or a mouse attached with "Automatic") the horizontal scroller
+    /// takes its thickness from the clip view, so the 120-tall rows sat in
+    /// a 105-tall clip — the last row cut, the grid scrolling vertically:
+    /// the exact web bug `1f95d84c` fixed, back on macOS.
+    #[test]
+    fn regression_fit_content_grid_keeps_its_last_row_under_legacy_scrollers() {
+        for legacy_before_layout in [true, false] {
+            let (mut backend, node, laid_out, clip_h) = fit_grid_in_legacy_style(legacy_before_layout);
+            let bar: f64 = unsafe {
+                msg_send![objc2::class!(NSScroller), scrollerWidthForControlSize: 0usize, scrollerStyle: 0isize]
+            };
+            assert!(
+                clip_h >= 120.0,
+                "every row visible: clip {clip_h}, laid out {laid_out}, bar {bar} ({legacy_before_layout})"
+            );
+            assert_eq!(laid_out, 120.0 + bar as f32, "rows + the legacy bar ({legacy_before_layout})");
+            backend.release_virtual_grid_impl(&node);
+            drain_pending();
+        }
+    }
+
+    /// The wiring: the preference notification alone (AppKit restyling the
+    /// scroll view, then posting `NSPreferredScrollerStyleDidChangeNotification`)
+    /// reaches the grid and re-measures it — no test-side call to
+    /// `scroller_style_changed`.
+    #[test]
+    fn the_scroller_style_preference_notification_remeasures_a_mounted_grid() {
+        backend_apple_core::scheduler::install_scheduler();
+        backend_apple_core::scheduler::begin_mount_buffering();
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let backend = Rc::new(RefCell::new(crate::imp::MacosBackend::new(mtm)));
+        crate::imp::install_global_self(Rc::downgrade(&backend));
+        let (node, grid, root) = {
+            let mut b = backend.borrow_mut();
+            let callbacks = GridCallbacks::<MacosNode> {
+                col_count: Rc::new(|| 30),
+                row_count: Rc::new(|| 3),
+                col_width: Rc::new(|_| 120.0),
+                row_height: Rc::new(|_| 40.0),
+                cell_key: Rc::new(|c, r| (c * 1000 + r) as u64),
+                mount_cell: Rc::new(move |_, _| {
+                    let view: Retained<NSView> =
+                        Retained::into_super(crate::imp::view::FlippedView::new(mtm));
+                    (MacosNode::View(view), 0)
+                }),
+                release_cell: Rc::new(|_| {}),
+                on_scroll: None,
+            };
+            let node = b.create_virtual_grid_impl(callbacks, 1.0, &Default::default());
+            let grid = b.layout_of(node.as_view()).unwrap();
+            let mut fit = runtime_shared::StyleRules::default();
+            fit.flex_grow = Some(0.0f32.into());
+            fit.flex_basis = Some(runtime_shared::Length::Auto.into());
+            b.layout.set_style(grid, &fit);
+            let root = b.layout.new_node();
+            let mut rs = runtime_shared::StyleRules::default();
+            rs.width = Some(runtime_shared::Length::Px(390.0).into());
+            rs.height = Some(runtime_shared::Length::Px(725.0).into());
+            b.layout.set_style(root, &rs);
+            b.layout.add_child(root, grid);
+            b.layout.compute(root, 390.0, 725.0);
+            assert_eq!(b.layout.frame_of(grid).height, 120.0, "overlay: rows only");
+            (node, grid, root)
+        };
+
+        let _: () = unsafe { msg_send![node.as_view(), setScrollerStyle: 0isize] };
+        let center: *mut objc2::runtime::AnyObject =
+            unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+        let name = objc2_foundation::NSString::from_str("NSPreferredScrollerStyleDidChangeNotification");
+        let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
+        let _: () = unsafe { msg_send![center, postNotificationName: &*name, object: nil] };
+        runtime_shared::drain_buffered_microtasks();
+
+        let bar: f64 = unsafe {
+            msg_send![objc2::class!(NSScroller), scrollerWidthForControlSize: 0usize, scrollerStyle: 0isize]
+        };
+        {
+            let mut b = backend.borrow_mut();
+            b.layout.compute(root, 390.0, 725.0);
+            assert_eq!(b.layout.frame_of(grid).height, 120.0 + bar as f32, "re-measured with the legacy bar");
+            b.release_virtual_grid_impl(&node);
+        }
+        drain_pending();
+        backend_apple_core::scheduler::end_mount_buffering();
+    }
+
+    /// Back to overlay: the measurement drops the gutter again.
+    #[test]
+    fn fit_content_grid_drops_the_gutter_when_scrollers_overlay_again() {
+        let (mut backend, node, _, _) = fit_grid_in_legacy_style(true);
+        set_style_and_remeasure(&mut backend, &node, 1);
+        let grid = backend.layout_of(node.as_view()).unwrap();
+        let root = backend.layout.parent_of(grid).expect("in the column");
+        backend.layout.compute(root, 390.0, 725.0);
+        assert_eq!(backend.layout.frame_of(grid).height, 120.0);
         backend.release_virtual_grid_impl(&node);
         drain_pending();
     }

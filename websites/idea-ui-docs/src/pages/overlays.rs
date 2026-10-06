@@ -9,10 +9,10 @@
 use std::rc::Rc;
 
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{signal, ui, Element, PressableHandle, Ref};
+use runtime_core::{memo, signal, ui, Element, PressableHandle, Ref};
 use idea_ui::{
     push_toast, push_toast_with, tone, typography_kind, variant, Alert, AlertClose, Button,
-    Collapsible, CollapsibleTransition, Modal, Popover, Stack, StackAxis, StackGap, StackJustify,
+    Collapsible, CollapsibleTransition, Field, Modal, ModalPresentation, Popover, Stack, StackAxis, StackGap, StackJustify,
     ToastHost, ToastPlacement, Tooltip, Typography,
 };
 
@@ -327,6 +327,14 @@ pub fn modal() -> Element {
     let on_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     let content_close = on_close.clone();
 
+    // The top-anchored demo: a command palette whose result list grows and
+    // shrinks as the query changes, so the card's height moves while the
+    // user types.
+    let palette_open = signal(false);
+    let on_palette_open: Rc<dyn Fn()> = Rc::new(move || palette_open.set(true));
+    let on_palette_close: Rc<dyn Fn()> = Rc::new(move || palette_open.set(false));
+    let query = signal(String::new());
+
     body(vec![ui! {
         Stack(gap = StackGap::Xl) {
             Section(title = "Live demo".to_string()) {
@@ -398,6 +406,62 @@ ui! {
 }"##.to_string())
             }
 
+            Section(title = "Top-anchored (command palette)".to_string()) {
+                P(content = "A centered card re-centers whenever its height changes, so a search \
+                    field at its top moves under the caret as the results filter. \
+                    `presentation = ModalPresentation::Top` pins the card's top edge a fixed \
+                    distance below the top of the safe area (`top_offset`, default 15% of the \
+                    safe height) and centers it horizontally; the card grows downward, caps to \
+                    the room below the offset, then scrolls. Type in the demo: the field stays \
+                    put as the list changes length.".to_string())
+                DemoSurface {
+                    Button(
+                        label = "Open palette".to_string(),
+                        on_click = on_palette_open,
+                        tone = tone::Neutral,
+                        variant = variant::Soft,
+                    )
+                    Modal(
+                        open = palette_open,
+                        presentation = ModalPresentation::Top,
+                        on_dismiss = Some(on_palette_close.clone()),
+                        content = move || {
+                            let on_query: Rc<dyn Fn(String)> = Rc::new(move |v| query.set(v));
+                            let results = memo(move || {
+                                let q = query.get().to_lowercase();
+                                ["Open file", "Go to line", "Toggle theme", "Close window"]
+                                    .into_iter()
+                                    .filter(|n| n.to_lowercase().contains(&q))
+                                    .collect::<Vec<&'static str>>()
+                            });
+                            ui! {
+                                Stack(gap = StackGap::Sm) {
+                                    Field(
+                                        value = query,
+                                        on_change = on_query,
+                                        placeholder = Some("Search commands…".to_string()),
+                                    )
+                                    for name in results, key = name.to_string() {
+                                        Typography(content = name.to_string())
+                                    }
+                                }
+                            }
+                        },
+                    )
+                }
+                CodePanel(src = r##"Modal(
+    open = open,
+    presentation = ModalPresentation::Top,
+    // top_offset = Some(96.0),   // optional; default is 15% of the safe height
+    on_dismiss = Some(on_close.clone()),
+    content = move || ui! {
+        Field(value = query, on_change = on_query.clone(),
+              placeholder = Some("Search commands…".into()))
+        // results — the card grows downward as these change
+    },
+)"##.to_string())
+            }
+
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "open",             ty: "Reactive<bool>",       desc: "Open state — pass your Signal<bool>. Always mounted; flipping false animates out then unmounts. Do NOT wrap in `if open { … }`." },
@@ -406,6 +470,8 @@ ui! {
                     Prop { name: "on_backdrop_press", ty: "Option<Rc<dyn Fn()>>", desc: "Intercepts the backdrop tap. Unset → falls back to on_dismiss when dismissable." },
                     Prop { name: "dismissable",      ty: "bool",                 desc: "true (default) lets the backdrop tap and Escape dismiss; false makes the backdrop inert unless on_backdrop_press is set." },
                     Prop { name: "width",            ty: "f32",                  desc: "Desired surface width on a roomy viewport (DIPs). Capped to the viewport reactively so it never overflows a phone. Default: 520." },
+                    Prop { name: "presentation",     ty: "ModalPresentation",    desc: "Centered (default) card, Top (card pinned below the top of the safe area, growing downward), or Sheet (full-width, pinned to the bottom)." },
+                    Prop { name: "top_offset",       ty: "Option<f32>",          desc: "Top only: DIPs from the top of the safe area to the card's top edge. None = 15% of the safe height. Gives way on a viewport too short to fit it." },
                 ])
             }
 

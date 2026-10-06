@@ -30,7 +30,7 @@ use web_glue::JsValue;
 use std::rc::Rc;
 
 use crate::WebBackend;
-use runtime_shared::primitives::virtual_grid::{GridCallbacks, GridMetrics};
+use runtime_shared::primitives::virtual_grid::{GridCallbacks, GridMetrics, Scrollport};
 use web_glue::JsCast;
 use web_glue::dom::Node;
 
@@ -361,6 +361,77 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for WebVirtualGrid
             el.set_scroll_top(y as i32);
         }
     }
+
+    fn scrollport(&self, node: &dyn std::any::Any) -> Option<Scrollport> {
+        scrollport_of(node.downcast_ref::<web_glue::dom::HtmlElement>()?)
+    }
+
+    /// A `ResizeObserver` on the grid's own box. Its default `content-box`
+    /// observation fires when the box resizes AND when a classic scrollbar
+    /// appears or goes (the bar is carved out of the content box, so the
+    /// observed size changes with the frame unchanged) — the two events
+    /// that move the scrollport. It also fires once on `observe`, which
+    /// `VirtualGridHandle::on_scrollport` filters as a repeat.
+    fn subscribe_scrollport(
+        &self,
+        node: &dyn std::any::Any,
+        callback: Box<dyn Fn(Scrollport)>,
+    ) -> runtime_shared::LayoutSubscription {
+        let Some(el) = node.downcast_ref::<web_glue::dom::HtmlElement>().cloned() else {
+            return runtime_shared::LayoutSubscription::noop();
+        };
+        let target = el.clone();
+        let cb = web_glue::Closure::new(move |_entries: JsValue| {
+            if let Some(port) = scrollport_of(&target) {
+                callback(port);
+                // An observer delivery is an author-code entry point; commit
+                // what the callback staged (FRAMEWORK-NOTES #103), as
+                // `subscribe_layout` does.
+                crate::dispatch_hook::fire_dispatch_hook();
+            }
+        });
+        let Ok(observer) = web_glue::dom::ResizeObserver::new(cb.as_js().unchecked_ref()) else {
+            return runtime_shared::LayoutSubscription::noop();
+        };
+        observer.observe(&el);
+        runtime_shared::LayoutSubscription::new(move || {
+            observer.disconnect();
+            drop(cb);
+        })
+    }
+}
+
+/// The grid's scrollport, read from the box the browser laid out.
+///
+/// `clientWidth` / `clientHeight` are the box minus borders and minus any
+/// classic scrollbar — what the cells show through. A bar's thickness is
+/// what's left of `offsetWidth` once the client box and the borders are
+/// taken out (`0` for an overlay scrollbar, which takes no room). `None`
+/// while the grid is out of the document, where every size reads `0`.
+fn scrollport_of(el: &web_glue::dom::HtmlElement) -> Option<Scrollport> {
+    if !el.is_connected() {
+        return None;
+    }
+    let border = |side: &str| -> f32 {
+        web_glue::dom::window()
+            .and_then(|w| w.get_computed_style(el).ok().flatten())
+            .and_then(|cs| cs.get_property_value(&format!("border-{side}-width")).ok())
+            .and_then(|v| v.trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(0.0)
+    };
+    let (cw, ch) = (el.client_width() as f32, el.client_height() as f32);
+    let bar = |outer: i32, client: f32, a: &str, b: &str| {
+        // `offsetWidth` is rounded to whole px while computed borders may
+        // be fractional; round the difference so a 0.5px border doesn't
+        // read as a half-pixel scrollbar.
+        (outer as f32 - client - border(a) - border(b)).round().max(0.0)
+    };
+    Some(Scrollport {
+        width: cw,
+        height: ch,
+        scrollbar_width: bar(el.offset_width(), cw, "left", "right"),
+        scrollbar_height: bar(el.offset_height(), ch, "top", "bottom"),
+    })
 }
 
 pub(crate) static WEB_VIRTUAL_GRID_OPS: WebVirtualGridOps = WebVirtualGridOps;

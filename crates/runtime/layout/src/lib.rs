@@ -96,7 +96,21 @@ pub fn grid_intrinsic_measure(
     metrics: Rc<std::cell::RefCell<runtime_shared::primitives::virtual_grid::GridMetrics>>,
     gutter: f32,
 ) -> MeasureFn {
+    grid_intrinsic_measure_live(metrics, Rc::new(std::cell::Cell::new(gutter)))
+}
+
+/// [`grid_intrinsic_measure`] for a backend whose scrollbar thickness can
+/// change while the grid is mounted: `gutter` is read on every measure.
+/// AppKit is the case — the "show scroll bars" preference switches a
+/// scroll view between overlay scrollers (no room) and legacy ones (they
+/// take their thickness from the clip view). The backend updates the
+/// cell and `mark_dirty`s the node, exactly as it does on a data change.
+pub fn grid_intrinsic_measure_live(
+    metrics: Rc<std::cell::RefCell<runtime_shared::primitives::virtual_grid::GridMetrics>>,
+    gutter: Rc<std::cell::Cell<f32>>,
+) -> MeasureFn {
     Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
+        let gutter = gutter.get();
         let definite = |a: AvailableSpace| match a {
             AvailableSpace::Definite(v) => Some(v),
             AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
@@ -2166,6 +2180,20 @@ mod tests {
         assert_eq!((overlay.width, overlay.height), (390.0, 120.0));
         let classic = fit(Some(grid_measure(wide_grid_metrics(), 15.0)));
         assert_eq!(classic.height, 135.0, "rows + the horizontal scrollbar, so nothing scrolls vertically");
+    }
+
+    /// A live gutter is read at measure time: a scrollbar style that
+    /// changes under a mounted grid (AppKit's overlay ↔ legacy) re-measures
+    /// to the new thickness once the node is dirtied.
+    #[test]
+    fn live_gutter_is_read_on_every_measure() {
+        let gutter = Rc::new(std::cell::Cell::new(0.0f32));
+        let m = grid_intrinsic_measure_live(Rc::new(std::cell::RefCell::new(wide_grid_metrics())), gutter.clone());
+        let avail = Size { width: AvailableSpace::Definite(390.0), height: AvailableSpace::Definite(725.0) };
+        let known = Size { width: Some(390.0), height: None };
+        assert_eq!(m(known, avail).height, 120.0);
+        gutter.set(17.0);
+        assert_eq!(m(known, avail).height, 137.0);
     }
 
     /// The same fit recipe in a parent with no height of its own (the

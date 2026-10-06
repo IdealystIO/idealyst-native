@@ -372,6 +372,9 @@ pub struct Args {
     /// `robot-relay` and wires the launched app to dial it (web-local injects
     /// the URL; desktop-native apps inherit it), so the MCP server / inspector /
     /// evaluators can introspect the running app on every platform the same way.
+    /// A web page dials the relay on its own origin (`/__idealyst/relay`,
+    /// proxied by the dev web server or a `server::router()` app), so in a
+    /// devcontainer forwarding the app's port is enough for a host browser.
     /// Pass this for a leaner dev session with no robot transport.
     #[arg(long)]
     pub no_robot: bool,

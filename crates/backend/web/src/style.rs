@@ -1149,9 +1149,12 @@ impl WebBackend {
             return entry.name.clone();
         }
 
-        // 3. Mint fresh. State overlays aren't expressible through
-        // the `signal_class` builder today, so we always emit just
-        // the base rule (state_rule_indices empty).
+        // 3. Mint fresh: one flat rule (state_rule_indices empty). The
+        // vocabulary never sends a sheet with `state` / `breakpoint` /
+        // `container` blocks here — those layers need the rule group
+        // `impl_apply_styled_variants` builds, so a layered `signal_class`
+        // takes the per-node path instead (`sheet_is_layered` in
+        // runtime-vocabulary's style_attach.rs).
         let class_name = hash_class_name(&key);
         let body = rules_to_css(&resolved);
         let rule_index = self.insert_rule(&class_name, &body);

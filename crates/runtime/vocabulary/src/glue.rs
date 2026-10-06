@@ -2650,7 +2650,7 @@ pub mod primitives {
     pub mod virtual_grid {
         pub use crate::builders::{virtual_grid, VirtualGridBuilder};
         pub use runtime_shared::primitives::virtual_grid::{
-            CellKey, GridMetrics, GridWindow, VirtualGridHandle,
+            CellKey, GridMetrics, GridWindow, Scrollport, VirtualGridHandle,
         };
     }
 

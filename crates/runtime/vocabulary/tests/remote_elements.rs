@@ -848,6 +848,152 @@ mod refs {
         assert_eq!(native[5], ["unsubscribe_layout n0"], "the subscription ends with the component");
     }
 
+    /// A bundle's grid handle reads the app grid's scrollport and follows
+    /// it as a native one does: the current value at subscribe, then each
+    /// change the backend reports (a classic scrollbar appearing), until
+    /// the subscription is dropped.
+    #[test]
+    fn a_grid_scrollport_crosses_exactly_like_the_native_one() {
+        use runtime_shared::primitives::virtual_grid::{Scrollport, VirtualGridHandle};
+        use runtime_vocabulary::builders::virtual_grid;
+        let run = |remote: bool| {
+            let h = Harness::new();
+            let handle: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+            let sink = handle.clone();
+            let tree = h.world.enter(|| {
+                component_scope(move || {
+                    virtual_grid(|| 30, || 3, |_| 120.0, |_| 40.0, |c, r| (c * 100 + r) as u64, |_, _| {
+                        text().content("x").build()
+                    })
+                    .on_handle(move |g| *sink.borrow_mut() = Some(g))
+                    .build()
+                })
+            });
+            let tree = if remote { cross(tree) } else { tree };
+            let realized = h.mount(tree);
+            h.flush();
+            // The grid is the only node the mock made a grid handle for;
+            // its id is in the log line for `create`.
+            let grid: host_mock::Node = h
+                .take_log()
+                .iter()
+                .find_map(|l| l.strip_prefix("create n").and_then(|r| r.split_once(' ')).filter(|(_, rest)| rest.starts_with("virtual_grid")).map(|(n, _)| n.parse().unwrap()))
+                .expect("grid created");
+            host_mock::set_virtual_grid_scrollport(grid, Scrollport::overlay(400.0, 135.0));
+            host_mock::take_handle_log();
+
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let s = seen.clone();
+            let g = handle.borrow().clone().expect("ref filled");
+            let sub = g.on_scrollport(move |p| s.borrow_mut().push(p));
+            let classic = Scrollport { width: 385.0, height: 120.0, scrollbar_width: 15.0, scrollbar_height: 15.0 };
+            host_mock::set_virtual_grid_scrollport(grid, classic);
+            let now = g.scrollport();
+            drop(sub);
+            host_mock::set_virtual_grid_scrollport(grid, Scrollport::overlay(1.0, 1.0));
+            h.flush();
+            let out = (seen.borrow().clone(), now, host_mock::take_handle_log());
+            drop(g);
+            drop(realized);
+            h.flush();
+            out
+        };
+        let (native, remote) = (run(false), run(true));
+        assert_eq!((&remote.0, &remote.1), (&native.0, &native.1), "the bundle saw what native code sees");
+        // The backend subscription is taken and released once either way.
+        // (Remote reads the scrollport once more: the app side's
+        // `on_scrollport` reads it at subscribe as well as the bundle's.)
+        for log in [&native.2, &remote.2] {
+            assert_eq!(log.first().map(String::as_str), Some("subscribe_scrollport n0"), "{log:?}");
+            assert_eq!(log.last().map(String::as_str), Some("unsubscribe_scrollport n0"), "{log:?}");
+        }
+        assert_eq!(
+            native.0,
+            [
+                Scrollport::overlay(400.0, 135.0),
+                Scrollport { width: 385.0, height: 120.0, scrollbar_width: 15.0, scrollbar_height: 15.0 },
+            ]
+        );
+        assert_eq!(native.1, Some(native.0[1]));
+    }
+
+    /// The bundle's grid handle and the native grid behind it, filled the
+    /// way an app from before handle-call levels fills a ref: the id
+    /// alone. Returns the bundle's handle and the native grid's node.
+    fn grid_filled_by_an_older_app(
+        h: &Harness,
+    ) -> (runtime_shared::primitives::virtual_grid::VirtualGridHandle, host_mock::Node, runtime_vocabulary::remote::handles::HoldGuard, runtime_scene::Realized<host_mock::Node>) {
+        use runtime_shared::primitives::virtual_grid::VirtualGridHandle;
+        use runtime_vocabulary::builders::virtual_grid;
+        use runtime_vocabulary::remote::handles::{fill, hold_scoped, Held, REMOTE_OPS};
+        let native: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+        let sink = native.clone();
+        let tree = h.world.enter(|| {
+            virtual_grid(|| 30, || 3, |_| 120.0, |_| 40.0, |c, r| (c * 100 + r) as u64, |_, _| text().content("x").build())
+                .on_handle(move |g| *sink.borrow_mut() = Some(g))
+                .build()
+        });
+        let realized = h.mount(tree);
+        h.flush();
+        let native = native.borrow().clone().expect("native grid handle");
+        let (id, guard) = hold_scoped(Held::VirtualGrid(native));
+        let theirs: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+        let t = theirs.clone();
+        let cb = fill(Some(Box::new(move |g: VirtualGridHandle| *t.borrow_mut() = Some(g))), |n| {
+            VirtualGridHandle::new(n, &REMOTE_OPS)
+        })
+        .expect("a fill callback");
+        bundle::invoke(cb, &to_bytes(&id)); // an older app: the id, no level
+        bundle::release(cb);
+        let handle = theirs.borrow().clone().expect("filled");
+        (handle, 0, guard, realized)
+    }
+
+    /// Regression (wire compatibility): a bundle built with `scrollport`
+    /// running in an app built before it. That app can't decode the
+    /// `Scrollport` / `SubscribeScrollport` calls — an undecodable handle
+    /// call is refused, and the refusal stops the bundle (`remote-host`'s
+    /// `handle_call` import maps it to a trap). The app's handle fill says
+    /// which calls it answers (`HANDLE_CALL_LEVEL`; an older app sends the
+    /// id alone), and the bundle answers what a backend without grid ops
+    /// does instead of sending: `None`, and a subscription that never
+    /// fires. Before the gate the call went out (the mock records it as
+    /// `scrollport n0`; a real older app would have stopped the bundle).
+    #[test]
+    fn regression_a_newer_bundle_sends_no_scrollport_call_to_an_older_app() {
+        use runtime_shared::primitives::virtual_grid::Scrollport;
+        let h = Harness::new();
+        let (handle, grid, guard, realized) = grid_filled_by_an_older_app(&h);
+        host_mock::set_virtual_grid_scrollport(grid, Scrollport::overlay(400.0, 135.0));
+        host_mock::take_handle_log();
+
+        assert_eq!(handle.scrollport(), None, "the trait default, answered in the bundle");
+        let fired = Rc::new(std::cell::Cell::new(false));
+        let f = fired.clone();
+        let sub = handle.on_scrollport(move |_| f.set(true));
+        host_mock::set_virtual_grid_scrollport(grid, Scrollport::overlay(300.0, 135.0));
+        assert!(!fired.get());
+        drop(sub);
+        assert_eq!(host_mock::take_handle_log(), Vec::<String>::new(), "nothing reached the app's handle");
+
+        // Older calls still go through.
+        handle.scroll_to(0.0, 40.0);
+        assert_eq!(host_mock::take_handle_log(), ["scroll_to 0 40 n0"]);
+        drop(handle);
+        drop(guard);
+        drop(realized);
+        h.flush();
+    }
+
+    /// The other direction: a bundle from before levels reads the app's
+    /// `(id, level)` fill as the id — postcard ignores what follows a value.
+    #[test]
+    fn an_older_bundle_reads_the_handle_id_out_of_a_fill_with_a_level() {
+        use runtime_vocabulary::remote::{from_bytes, handles::HANDLE_CALL_LEVEL};
+        let bytes = to_bytes(&(7u32, HANDLE_CALL_LEVEL));
+        assert_eq!(from_bytes::<u32>(&bytes).expect("decodes"), 7);
+    }
+
     /// A portal anchored to a node the bundle holds a ref to: the app's
     /// portal asks the bundle for the anchor's rect, and the bundle asks
     /// the app's real handle — the same calls reach the backend as natively.

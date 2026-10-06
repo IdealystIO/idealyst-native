@@ -304,11 +304,10 @@ fn multi_root_cell_panics_with_a_diagnostic() {
     );
 }
 
-/// `on_handle` fires at mount and the handle is safe to call on a
-/// backend with no grid ops — the defaulted contract every
-/// not-yet-adopting backend relies on.
+/// `on_handle` fires at mount and every handle method reaches the
+/// backend's grid ops on the mounted node.
 #[test]
-fn handle_is_inert_but_safe_without_backend_ops() {
+fn handle_methods_reach_the_backends_grid_ops() {
     let h = harness();
     let handle: Rc<
         RefCell<Option<runtime_shared::primitives::virtual_grid::VirtualGridHandle>>,
@@ -330,11 +329,103 @@ fn handle_is_inert_but_safe_without_backend_ops() {
             .build(),
         )
     });
+    host_mock::take_handle_log();
     let handle = handle.borrow();
     let handle = handle.as_ref().expect("on_handle must fire at mount");
     assert_eq!(handle.scroll_offset(), (0.0, 0.0));
     handle.scroll_to(10.0, 20.0);
     handle.scroll_to_cell(3, 4);
+    assert_eq!(handle.scrollport(), None, "not measured yet");
+    let log = host_mock::take_handle_log();
+    let grid = log[0].rsplit(' ').next().unwrap().to_string();
+    assert_eq!(
+        log,
+        [
+            format!("scroll_offset {grid}"),
+            format!("scroll_to 10 20 {grid}"),
+            format!("scroll_to_cell 3 4 {grid}"),
+            format!("scrollport {grid}"),
+        ]
+    );
+}
+
+/// The handle-less backend default stays harmless: a backend that never
+/// adopted grid ops (wgpu, GTK, Windows, terminal) answers `None` and
+/// never fires.
+#[test]
+fn handle_is_inert_but_safe_without_backend_ops() {
+    use runtime_shared::primitives::virtual_grid::{VirtualGridHandle, VirtualGridOps};
+    struct Bare;
+    impl VirtualGridOps for Bare {}
+    static BARE: Bare = Bare;
+    let handle = VirtualGridHandle::new(Rc::new(()), &BARE);
+    assert_eq!(handle.scroll_offset(), (0.0, 0.0));
+    handle.scroll_to(10.0, 20.0);
+    handle.scroll_to_cell(3, 4);
+    assert_eq!(handle.scrollport(), None);
+    let fired = Rc::new(Cell::new(false));
+    let f = fired.clone();
+    let _sub = handle.on_scrollport(move |_| f.set(true));
+    assert!(!fired.get());
+}
+
+/// Regression (CrewForge 10-05: "`VirtualGridHandle` exposes no
+/// scrollport client size or scrollbar thickness, so a grid sized to fit
+/// its content is wrong under classic scrollbars"). The app measured a
+/// WRAPPER view for the grid's visible width, which counts a classic
+/// vertical scrollbar as visible content. Through the handle, a signal
+/// follows the backend's scrollport — bar thickness included — and stops
+/// following once the subscription is dropped.
+#[test]
+fn regression_grid_handle_exposes_scrollport_and_scrollbar_thickness() {
+    use runtime_shared::primitives::virtual_grid::{Scrollport, VirtualGridHandle};
+    let h = harness();
+    let handle: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+    let sink = handle.clone();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            virtual_grid(
+                || 30,
+                || 3,
+                |_| 120.0,
+                |_| 40.0,
+                |c, r| (c * 1000 + r) as u64,
+                |_, _| text().content("x").build(),
+            )
+            .on_handle(move |hd| *sink.borrow_mut() = Some(hd))
+            .build(),
+        )
+    });
+    let handle = handle.borrow().clone().expect("on_handle fired");
+    host_mock::take_handle_log();
+    let grid: host_mock::Node = {
+        handle.scrollport();
+        let log = host_mock::take_handle_log();
+        log[0].rsplit(" n").next().unwrap().parse().unwrap()
+    };
+
+    // The backend has measured the grid before the app subscribes.
+    let overlay = Scrollport::overlay(400.0, 135.0);
+    host_mock::set_virtual_grid_scrollport(grid, overlay);
+
+    let visible = h.world.enter(|| signal(Scrollport::default()));
+    let sub = handle.on_scrollport(move |p| visible.set(p));
+    h.flush();
+    assert_eq!(visible.get(), overlay, "the current scrollport arrives at subscribe");
+
+    // A classic horizontal scrollbar appears (same frame, shorter box).
+    let classic = Scrollport { width: 385.0, height: 120.0, scrollbar_width: 15.0, scrollbar_height: 15.0 };
+    host_mock::set_virtual_grid_scrollport(grid, classic);
+    h.flush();
+    assert_eq!(visible.get(), classic);
+    assert_eq!(handle.scrollport(), Some(classic));
+
+    drop(sub);
+    host_mock::set_virtual_grid_scrollport(grid, overlay);
+    h.flush();
+    assert_eq!(visible.get(), classic, "a dropped subscription delivers nothing");
 }
 
 /// **Hard-abort regression** — the virtualizer's, on the two-axis

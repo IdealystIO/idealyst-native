@@ -216,10 +216,11 @@ pub struct SignalClassProp {
 /// zero per-node Rust work per fire (the old walker's
 /// `attach_style_signal_class`, rebuilt on a world-effect notifier
 /// because world signals have no `Signal::set` JS write hook). Other
-/// backends — and specs whose `compute` was wrapped after
-/// construction (see [`SignalClassProp::pristine_compute`]) — use the
-/// per-node binding-effect fallback, the shape the old core used on
-/// non-JS backends.
+/// backends, specs whose `compute` was wrapped after construction (see
+/// [`SignalClassProp::pristine_compute`]), and sheets that declare a
+/// `breakpoint`, `container` or `state` block (one flat class per value
+/// can't carry those layers) use the per-node binding-effect fallback,
+/// the shape the old core used on non-JS backends.
 pub fn signal_class<F, V>(signal: Signal<V>, values: &[u32], mapping: F) -> StyleProp
 where
     F: Fn(u32) -> StyleApplication + 'static,
@@ -682,8 +683,23 @@ pub fn attach_style<H: StyleServices>(
             // `compute` means the apps table no longer reflects the
             // rendered style; minting it would drop the wrapper's
             // overrides — navigator screen-style overlays).
+            //
+            // ...and only when no value's sheet is LAYERED. The fast path
+            // mints ONE flat class per value from `resolve(app)`
+            // (`mint_class_for_app`), which holds the base and the selected
+            // variants but none of the sheet's `breakpoint` / `container` /
+            // `state` blocks — those reach a CSS backend only as the
+            // `@media` / `@container` / pseudo-class layers
+            // `apply_styled_variants` emits. A layered sheet behind
+            // `signal_class` therefore lost its breakpoint arm on web
+            // (CrewForge want_c5b3c05a: the chip measured the base 44px
+            // with `breakpoint sm { min_height: 0 }` active) and its
+            // hover/press styling with it. The per-node effect below
+            // resolves every layer on every backend, so it is the path
+            // for those sheets.
             if backend.borrow().supports_js_class_bindings()
                 && Rc::ptr_eq(&spec.compute, &spec.pristine_compute)
+                && !spec.apps.iter().any(|app| sheet_is_layered(&app.sheet))
             {
                 return attach_signal_class_js(backend, node, spec);
             }
@@ -956,9 +972,23 @@ fn attach_signal_class_js<H: StyleServices>(
         drop(lease);
     });
 
-    // Same no-op state setter the static path returns — state overlays
-    // aren't part of the SignalClass abstraction (old walker parity).
+    // Same no-op state setter the static path returns. A sheet with
+    // `state` blocks never reaches this path (`sheet_is_layered`), so
+    // there is no state to drive.
     noop_setter()
+}
+
+#[cfg(not(idealyst_premint_only))]
+/// Whether `sheet` declares any overlay layer — a `breakpoint`,
+/// `container` or `state` block. Those layers are applied as separate
+/// rules over the base (`StyleOps::apply_styled_variants`), so a single
+/// class minted from `resolve(app)` cannot carry them; see the
+/// `SignalClass` arm of [`attach_style`]. Reads the sheet's cached axis
+/// slices — no allocation.
+fn sheet_is_layered(sheet: &StyleSheet) -> bool {
+    !sheet.state_axes().is_empty()
+        || !sheet.breakpoint_axes().is_empty()
+        || !sheet.container_axes().is_empty()
 }
 
 // ===========================================================================
@@ -1973,6 +2003,9 @@ mod tests {
         notified: Vec<(u64, u32)>,
         minted: usize,
         next_binding: u32,
+        /// `(state overlays, breakpoint overlays)` per
+        /// `apply_styled_variants` call — the layered per-node path.
+        layered: Vec<(usize, usize)>,
     }
 
     impl Host for JsHost {
@@ -2000,6 +2033,20 @@ mod tests {
         fn apply_style(&mut self, _node: &u32, _style: &Rc<StyleRules>) {}
         fn supports_js_class_bindings(&self) -> bool {
             true
+        }
+        // Web's shape: layers arrive declaratively.
+        fn handles_states_natively(&self) -> bool {
+            true
+        }
+        fn apply_styled_variants(
+            &mut self,
+            _node: &u32,
+            _base: &Rc<StyleRules>,
+            state_overlays: &[(StateBits, Rc<StyleRules>)],
+            breakpoint_overlays: &[(Breakpoint, Rc<StyleRules>)],
+            _container_overlays: &[(f32, Rc<StyleRules>)],
+        ) {
+            self.layered.push((state_overlays.len(), breakpoint_overlays.len()));
         }
         fn mint_class_for_app(&mut self, _app: &StyleApplication) -> Option<String> {
             self.minted += 1;
@@ -2102,6 +2149,63 @@ mod tests {
         drop(owned);
         let released = backend.borrow().released.clone();
         assert_eq!(released.len(), 3, "each node's binding released");
+    }
+
+    /// Regression (CrewForge want_c5b3c05a, `signal_class` half): the JS
+    /// fast path minted one flat class per value from `resolve(app)`, so a
+    /// sheet's `breakpoint` and `state` blocks never reached the backend —
+    /// on web the chip kept the base `min_height: 44` with
+    /// `breakpoint sm { min_height: 0 }` active. A layered sheet must take
+    /// the per-node path, which hands the backend every layer, and follow
+    /// the signal there.
+    #[test]
+    fn regression_signal_class_over_layered_sheet_keeps_its_layers() {
+        fn layered_app(v: u32) -> StyleApplication {
+            fn sheet() -> Rc<StyleSheet> {
+                static KEY: u8 = 0;
+                runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+                    let px = |v: f32| Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(v)));
+                    Rc::new(
+                        StyleSheet::new(move |_| StyleRules { min_height: px(44.0), ..Default::default() })
+                            .variant("__bp_sm", "on", move |_| StyleRules { min_height: px(0.0), ..Default::default() })
+                            .variant("__state_hovered", "on", |_| StyleRules {
+                                opacity: Some(runtime_shared::Tokenized::Literal(0.8)),
+                                ..Default::default()
+                            })
+                            .variant("selected", "off", |_| StyleRules::default())
+                            .variant("selected", "on", |_| StyleRules {
+                                opacity: Some(runtime_shared::Tokenized::Literal(0.9)),
+                                ..Default::default()
+                            }),
+                    )
+                })
+            }
+            StyleApplication::new(sheet()).with("selected", if v == 1 { "on" } else { "off" })
+        }
+
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(JsHost::default()));
+        let (sig, _owned) = world.enter(|| {
+            let sig = runtime_world::signal(0u32);
+            let ((), owned) = collect_owned(|| {
+                let _setter = attach_style(&backend, &0u32, signal_class(sig, &[0, 1], layered_app));
+            });
+            (sig, owned)
+        });
+        {
+            let b = backend.borrow();
+            assert_eq!(b.minted, 0, "no flat per-value class for a layered sheet");
+            assert!(b.registered.is_empty(), "no JS class binding for a layered sheet");
+            assert_eq!(b.layered, vec![(1, 1)], "the hovered state and the sm breakpoint reach the backend");
+        }
+
+        world.enter(|| sig.set(1));
+        world.flush();
+        assert_eq!(
+            backend.borrow().layered,
+            vec![(1, 1), (1, 1)],
+            "the flip re-applies with both layers still present"
+        );
     }
 
     /// The class path holds the shared notifier by lease too: once every

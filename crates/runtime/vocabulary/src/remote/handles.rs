@@ -29,6 +29,20 @@ pub use host_side::*;
 use runtime_shared::animation::AnimProp;
 use runtime_shared::Easing;
 
+/// Which [`HandleCall`]s this app answers, sent to a bundle with every
+/// handle it fills (the id, then this). A bundle checks it before sending
+/// a call newer than the app: an app built before a call existed can't
+/// decode it, and a call that doesn't decode stops the bundle — so the
+/// bundle answers the trait default itself instead (`scrollport()` is
+/// `None`, `on_scrollport` never fires: what a backend without grid ops
+/// answers). An app from before levels sends the id alone: level `0`.
+///
+/// - `0` — every call up to `Invoke`.
+/// - `1` — `Scrollport`, `SubscribeScrollport`.
+///
+/// Bump it when appending a call, and gate the new call on the new level.
+pub const HANDLE_CALL_LEVEL: u32 = 1;
+
 /// One handle method, as it crosses. Each reply is postcard-encoded: the
 /// method's return value, `()` when it has none.
 #[derive(Serialize, Deserialize, Debug)]
@@ -65,6 +79,16 @@ pub enum HandleCall {
     /// Call an app closure handed to the bundle (`Held::Call`) with encoded
     /// arguments; → its encoded reply.
     Invoke(Vec<u8>),
+    // Appended, never inserted: postcard encodes a variant by its index,
+    // so a variant added above would renumber every call after it and an
+    // app would misread a bundle built against the previous list. Each
+    // appended call is gated on `HANDLE_CALL_LEVEL` in the bundle.
+    /// `VirtualGridHandle::scrollport` → `Option<Scrollport>`.
+    Scrollport,
+    /// `VirtualGridOps::subscribe_scrollport`; `callback` takes a
+    /// `Scrollport`. → the subscription's id (`u32`), released with
+    /// [`HandleCall::Unsubscribe`].
+    SubscribeScrollport { callback: super::Cb },
 }
 
 /// A `NavCommand` as it crosses. Typed params never do: the receiving
@@ -101,13 +125,25 @@ mod bundle_side {
     use runtime_shared::primitives::text_area::TextAreaOps;
     use runtime_shared::primitives::text_input::TextInputOps;
     use runtime_shared::primitives::toggle::ToggleOps;
-    use runtime_shared::primitives::virtual_grid::VirtualGridOps;
+    use runtime_shared::primitives::virtual_grid::{Scrollport, VirtualGridOps};
     use runtime_shared::primitives::virtualizer::VirtualizerOps;
     use runtime_shared::Easing;
     use serde::de::DeserializeOwned;
 
     use super::HandleCall;
     use crate::remote::{from_bytes, to_bytes, Cb};
+
+    thread_local! {
+        /// The app's [`HANDLE_CALL_LEVEL`](super::HANDLE_CALL_LEVEL), as its
+        /// handle fills report it — one app per bundle, so one value.
+        static APP_LEVEL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Whether the app answers calls of `level` (see
+    /// [`HANDLE_CALL_LEVEL`](super::HANDLE_CALL_LEVEL)).
+    fn app_answers(level: u32) -> bool {
+        APP_LEVEL.with(|l| l.get()) >= level
+    }
 
     /// A handle's node, in a bundle: the app's id for the real handle.
     /// Dropping the last copy releases the app's entry.
@@ -317,6 +353,35 @@ mod bundle_side {
         fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
             send(node, HandleCall::ScrollTo { x, y })
         }
+        fn scrollport(&self, node: &dyn Any) -> Option<Scrollport> {
+            if !app_answers(1) {
+                return None;
+            }
+            call(node, HandleCall::Scrollport).flatten()
+        }
+        fn subscribe_scrollport(&self, node: &dyn Any, callback: Box<dyn Fn(Scrollport)>) -> LayoutSubscription {
+            if !app_answers(1) {
+                return LayoutSubscription::noop();
+            }
+            // Same ownership split as `subscribe_layout`: the app holds the
+            // callback, the bundle holds the subscription.
+            let cb: Cb = crate::remote::bundle::register_call(Rc::new(move |args: &[u8]| {
+                let port: Scrollport =
+                    from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a scrollport does not decode: {e}"));
+                callback(port);
+                Vec::new()
+            }));
+            let handle = id(node);
+            match call::<u32>(node, HandleCall::SubscribeScrollport { callback: cb }) {
+                Some(sub) if sub != 0 => LayoutSubscription::new(move || {
+                    try_send(handle, &HandleCall::Unsubscribe(sub));
+                }),
+                _ => {
+                    crate::remote::bundle::release(cb);
+                    LayoutSubscription::noop()
+                }
+            }
+        }
     }
 
     impl ImageOps for RemoteOps {}
@@ -399,7 +464,17 @@ mod bundle_side {
     pub fn fill<H: 'static>(ref_fill: Option<Box<dyn FnOnce(H)>>, make: fn(Rc<dyn Any>) -> H) -> Option<Cb> {
         let once = RefCell::new(Some(ref_fill?));
         Some(crate::remote::bundle::register_call(Rc::new(move |args: &[u8]| {
-            let id: u32 = from_bytes(args).unwrap_or_else(|e| panic!("remote codec: a handle id does not decode: {e}"));
+            // The id, then (from an app that has levels) the app's
+            // `HANDLE_CALL_LEVEL`. An older bundle reads the id alone —
+            // postcard ignores what follows a value.
+            let (id, rest) = postcard::take_from_bytes::<u32>(args)
+                .unwrap_or_else(|e| panic!("remote codec: a handle id does not decode: {e}"));
+            let level: u32 = if rest.is_empty() {
+                0
+            } else {
+                from_bytes(rest).unwrap_or_else(|e| panic!("remote codec: a handle-call level does not decode: {e}"))
+            };
+            APP_LEVEL.with(|l| l.set(l.get().max(level)));
             if let Some(f) = once.borrow_mut().take() {
                 f(make(Rc::new(RemoteNode(id))));
             }
@@ -654,19 +729,27 @@ mod host_side {
                 let sub = h.on_layout(move |w, hh| {
                     cb.call(&to_bytes(&(w, hh)));
                 });
-                let sub_id = NEXT.with(|n| {
-                    n.set(n.get() + 1);
-                    n.get()
-                });
-                let rejected = HANDLES.with(|t| match t.borrow_mut().get_mut(&id) {
-                    Some(e) => {
-                        e.subs.insert(sub_id, sub);
-                        None
+                to_bytes(&keep_sub(id, sub))
+            }
+            (H::VirtualGrid(h), C::Scrollport) => to_bytes(&h.scrollport()),
+            (H::VirtualGrid(h), C::SubscribeScrollport { callback }) => {
+                let tree = HANDLES.with(|t| t.borrow().get(&id).and_then(|e| e.tree.clone()));
+                let Some(conn) = tree.and_then(|t| t.upgrade()) else { return Ok(to_bytes(&0u32)) };
+                let cb = crate::remote::host::callback_for(&conn, callback);
+                // `on_scrollport` delivers the current value synchronously,
+                // and that delivery would call INTO the bundle while the
+                // bundle is still inside this call. Dropped until the
+                // subscription is in place: the bundle's own `on_scrollport`
+                // reads the current value itself once this returns.
+                let armed = Rc::new(std::cell::Cell::new(false));
+                let live = armed.clone();
+                let sub = h.on_scrollport(move |port| {
+                    if live.get() {
+                        cb.call(&to_bytes(&port));
                     }
-                    None => Some(sub),
                 });
-                drop(rejected);
-                to_bytes(&sub_id)
+                armed.set(true);
+                to_bytes(&keep_sub(id, sub))
             }
             (H::Pressable(h), C::Click) => unit(h.click()),
             (H::Button(h), C::Click) => unit(h.click()),
@@ -731,6 +814,25 @@ mod host_side {
         Vec::new()
     }
 
+    /// Keep `sub` alive in handle `id`'s entry until the bundle sends
+    /// `Unsubscribe` with the returned id (or the entry dies). A handle
+    /// that went away meanwhile drops it at once.
+    fn keep_sub(id: u32, sub: LayoutSubscription) -> u32 {
+        let sub_id = NEXT.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        });
+        let rejected = HANDLES.with(|t| match t.borrow_mut().get_mut(&id) {
+            Some(e) => {
+                e.subs.insert(sub_id, sub);
+                None
+            }
+            None => Some(sub),
+        });
+        drop(rejected);
+        sub_id
+    }
+
     /// What a call on a handle that is gone answers.
     fn default_reply(call: &HandleCall) -> Vec<u8> {
         use runtime_shared::primitives::portal::ViewportRect;
@@ -740,6 +842,10 @@ mod host_side {
             HandleCall::InstallKeyframes { .. } => to_bytes(&false),
             HandleCall::SubscribeLayout { .. } => to_bytes(&0u32),
             HandleCall::ScrollOffset => to_bytes(&(0.0f32, 0.0f32)),
+            HandleCall::Scrollport => {
+                to_bytes(&None::<runtime_shared::primitives::virtual_grid::Scrollport>)
+            }
+            HandleCall::SubscribeScrollport { .. } => to_bytes(&0u32),
             _ => Vec::new(),
         }
     }

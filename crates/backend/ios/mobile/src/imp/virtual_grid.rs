@@ -35,7 +35,7 @@ use objc2::rc::Retained;
 use objc2::msg_send;
 use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
 use objc2_ui_kit::{UIScrollView, UIView};
-use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow};
+use runtime_shared::primitives::virtual_grid::{CellKey, GridCallbacks, GridMetrics, GridWindow, Scrollport};
 
 use super::IosNode;
 
@@ -592,6 +592,35 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGrid
         if let Some(n) = node.downcast_ref::<IosNode>() {
             set_offset(n, x, y);
         }
+    }
+
+    /// UIKit's scroll indicators overlay the content and take no room, so
+    /// the scrollport is the scroller's whole box (`bounds.size`; the
+    /// bounds ORIGIN is the scroll offset) and both thicknesses are `0`.
+    fn scrollport(&self, node: &dyn std::any::Any) -> Option<Scrollport> {
+        let n = node.downcast_ref::<IosNode>()?;
+        let bounds: CGRect = unsafe { msg_send![n.as_view(), bounds] };
+        let (w, h) = (bounds.size.width as f32, bounds.size.height as f32);
+        (w > 0.0 && h > 0.0).then(|| Scrollport::overlay(w, h))
+    }
+
+    /// With overlay indicators the scrollport changes only when the frame
+    /// does, so this rides the layout pass's `on_layout` registry — which
+    /// also schedules the flush after the callback (FRAMEWORK-NOTES #103).
+    fn subscribe_scrollport(
+        &self,
+        node: &dyn std::any::Any,
+        callback: Box<dyn Fn(Scrollport)>,
+    ) -> runtime_shared::LayoutSubscription {
+        let Some(n) = node.downcast_ref::<IosNode>() else {
+            return runtime_shared::LayoutSubscription::noop();
+        };
+        // Same key derivation as `view_to_layout` / `IosViewOps::subscribe_layout`.
+        let key = n.as_view() as *const UIView as usize;
+        backend_apple_core::layout_subs::subscribe(
+            key,
+            Box::new(move |w, h| callback(Scrollport::overlay(w, h))),
+        )
     }
 }
 

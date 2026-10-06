@@ -372,6 +372,109 @@ pub(crate) fn install_scroll_observer(
     Some(unsafe { Retained::cast::<NSObject>(target) })
 }
 
+/// Observe `scroll_view`'s CLIP VIEW frame and call `callback` (on the
+/// next main-queue turn) whenever it changes; returns the observer for
+/// the caller to retain, `None` when there is no clip view.
+///
+/// The clip view's frame is the scrollport: `NSScrollView` re-tiles it
+/// when the scroll view resizes AND when a legacy scroller appears, hides
+/// or changes style (the "show scroll bars" preference flips every scroll
+/// view's `scrollerStyle`) — the last two with the scroll view's own frame
+/// unchanged, so a layout-pass hook alone would miss them.
+///
+/// Delivered through [`observe_notification`], deferred for the same
+/// re-entrancy reason as [`install_scroll_observer`]: AppKit posts the
+/// notification inside `setFrame:`, i.e. in the middle of a layout pass.
+pub(crate) fn install_clip_frame_observer(
+    mtm: MainThreadMarker,
+    scroll_view: &objc2_app_kit::NSView,
+    callback: Rc<dyn Fn()>,
+) -> Option<Retained<NSObject>> {
+    let clip_view: *mut objc2::runtime::AnyObject = unsafe { msg_send![scroll_view, contentView] };
+    if clip_view.is_null() {
+        return None;
+    }
+    let _: () = unsafe { msg_send![clip_view, setPostsFrameChangedNotifications: true] };
+    Some(observe_notification(mtm, "NSViewFrameDidChangeNotification", clip_view, callback))
+}
+
+pub(crate) struct NotificationTargetIvars {
+    callback: Rc<dyn Fn()>,
+}
+
+declare_class!(
+    /// Observer for [`observe_notification`]: `fire:` runs its callback
+    /// whatever the notification carries — unlike `ScrollObserverTarget`,
+    /// which reads a clip view off `notification.object` and so can't
+    /// observe a notification posted with no object (the scroller-style
+    /// preference change).
+    pub(crate) struct NotificationTarget;
+
+    unsafe impl ClassType for NotificationTarget {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystNotificationTarget";
+    }
+
+    impl DeclaredClass for NotificationTarget {
+        type Ivars = NotificationTargetIvars;
+    }
+
+    unsafe impl NSObjectProtocol for NotificationTarget {}
+
+    unsafe impl NotificationTarget {
+        #[method(fire:)]
+        fn fire(&self, _notification: &NSObjectRuntime) {
+            (self.ivars().callback)();
+        }
+    }
+);
+
+/// Call `callback` (on the next main-queue turn) whenever the default
+/// center posts `name` — from `object`, or from anyone when it is null.
+/// Returns the observer for the caller to retain and, when done, pass to
+/// [`remove_observer`].
+///
+/// Deferred because AppKit posts these synchronously — a frame change
+/// inside `setFrame:`, mid layout pass — and so that the callback runs
+/// after AppKit's own observers of the same notification have acted (an
+/// `NSScrollView` restyles itself on the scroller-style preference change).
+pub(crate) fn observe_notification(
+    mtm: MainThreadMarker,
+    name: &str,
+    object: *mut objc2::runtime::AnyObject,
+    callback: Rc<dyn Fn()>,
+) -> Retained<NSObject> {
+    let deferred: Rc<dyn Fn()> = Rc::new(move || {
+        let cb = callback.clone();
+        runtime_shared::schedule_microtask(move || cb());
+    });
+    let this = mtm.alloc::<NotificationTarget>();
+    let this = this.set_ivars(NotificationTargetIvars { callback: deferred });
+    let target: Retained<NotificationTarget> = unsafe { msg_send_id![super(this), init] };
+    let center: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+    let name: Retained<objc2_foundation::NSString> = objc2_foundation::NSString::from_str(name);
+    let _: () = unsafe {
+        msg_send![
+            center,
+            addObserver: &*target,
+            selector: objc2::sel!(fire:),
+            name: &*name,
+            object: object,
+        ]
+    };
+    unsafe { Retained::cast::<NSObject>(target) }
+}
+
+/// Undo [`install_clip_frame_observer`] (or any observer registered with
+/// the default center): no notification reaches `observer` afterwards.
+pub(crate) fn remove_observer(observer: &NSObject) {
+    let center: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+    let _: () = unsafe { msg_send![center, removeObserver: observer] };
+}
+
 // =========================================================================
 // EndReachObserverTarget — `on_end_reached` for anything wrapping an
 // `NSScrollView`: `scroll_view` and the virtualizer alike.

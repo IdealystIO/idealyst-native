@@ -774,7 +774,7 @@ pub fn segmented_control() -> Element {
     let view = signal("list".to_string());
     let on_view: Rc<dyn Fn(String)> = Rc::new(move |v| view.set(v));
 
-    let theme = signal("system".to_string());
+    let theme = signal("light".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
 
     let current = ui! {
@@ -829,12 +829,26 @@ ui! {
                     value = theme,
                     on_change = on_theme,
                     options = vec![
-                        SegmentOption::new("system", "System"),
                         SegmentOption::new("light", "Light"),
                         SegmentOption::new("dark", "Dark"),
                     ],
                 )
             }
+        }
+    }, ui! {
+        Section(title = "Appearance".to_string()) {
+            P(content = "The control is one bordered, tinted track (the `SegmentedGroup` sheet) \
+                holding a `SegmentButton` per option. The selected segment is filled with the \
+                surface color and edged like a raised key; the others are transparent with \
+                muted labels. Hover and press brighten a label without repainting its fill, so \
+                the selection always stays readable, and keyboard focus draws the themed focus \
+                ring around the focused segment. Every color, radius and spacing comes from \
+                the theme's style tokens, so it follows a light/dark swap. Tabs keep their \
+                underline strip: a tab navigates, a segmented control picks a value.".to_string())
+            P(content = "The track hugs its segments and never shrinks them, so a label is \
+                never squashed. Where the options can outgrow a narrow screen, put the control \
+                inside a horizontal `scroll_view` (the way `Tabs` seats its strip) so the \
+                overflow scrolls instead of drawing past its parent.".to_string())
         }
     }, ui! {
         Section(title = "Props".to_string()) {

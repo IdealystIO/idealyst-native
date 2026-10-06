@@ -463,6 +463,34 @@ mod tests {
         );
     }
 
+    /// REGRESSION TEST (CrewForge want_8ffc74d4, the email half). An
+    /// email `view` is a plain block `<div>`; an `inline-block` icon inside
+    /// one sat on a line box and rode ~2px low. The icon must carry the
+    /// shared `display:block` default, as web and SSR do. There is no layout
+    /// engine here, so the closest reachable assertion is the emitted markup
+    /// (backend-web's `regression_icon_in_non_flex_view_does_not_sit_on_a_line_box`
+    /// measures the actual box in a browser).
+    #[test]
+    fn regression_icon_in_view_is_a_block_not_an_inline_glyph() {
+        use runtime_shared::primitives::icon::{FillRule, IconData};
+        const ICON: IconData = IconData {
+            view_box: (24, 24),
+            paths: &["M12 2l3 7h7l-6 4 3 7-7-4-7 4 3-7-6-4h7z"],
+            fill_rule: FillRule::NonZero,
+            filled: false,
+        };
+        let out = newcore::render_email(|| {
+            use runtime_vocabulary::builders::{icon, view};
+            view().child(icon().data(ICON)).build()
+        });
+        assert!(
+            out.html.contains("<div><svg style=\"display:block;\""),
+            "icon must be a block box: {}",
+            out.html
+        );
+        assert!(!out.html.contains("inline-block"), "got: {}", out.html);
+    }
+
     /// Author text is HTML-escaped so template strings can't inject markup.
     #[test]
     fn text_content_is_escaped() {

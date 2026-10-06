@@ -352,7 +352,11 @@ impl caps::IconOps for EmailBackend {
             svg.attrs.push(("stroke-linecap", "round".to_string()));
             svg.attrs.push(("stroke-linejoin", "round".to_string()));
         }
-        svg.default_style = Some("display:inline-block;vertical-align:middle;");
+        // A block box the size of its glyph, as on web/SSR (`css::ICON_STYLE`).
+        // An email `view` is a plain `<div>`, so the old `inline-block;
+        // vertical-align: middle` put the icon on a line box: the div grew
+        // to the inherited line-height and the glyph sat ~2px low in it.
+        svg.default_style = Some(css::ICON_STYLE);
         let fill_rule = match data.fill_rule {
             runtime_shared::primitives::icon::FillRule::NonZero => "nonzero",
             runtime_shared::primitives::icon::FillRule::EvenOdd => "evenodd",
