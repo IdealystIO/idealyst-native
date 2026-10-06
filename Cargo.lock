@@ -735,7 +735,7 @@ checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
 
 [[package]]
 name = "audio"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "gio",
  "glib",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "auto-update"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "ed25519-dalek",
  "net",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "backend-apple-core"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "biometrics"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "cache"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "redis",
  "serde",
@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "futures-channel",
  "glib",
@@ -2211,14 +2211,14 @@ dependencies = [
 
 [[package]]
 name = "canvas"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "canvas-core",
 ]
 
 [[package]]
 name = "canvas-core"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "host-mock",
  "image",
@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-native"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -2279,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-vello"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "backend-linux",
  "canvas-core",
@@ -2380,7 +2380,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "charts"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "canvas-core",
  "charts-core",
@@ -2493,7 +2493,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clipboard"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "arboard",
  "jni 0.21.1",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "connectivity"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -2916,7 +2916,7 @@ dependencies = [
 
 [[package]]
 name = "credentials"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "jni 0.21.1",
  "keyring",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.8.1"
+version = "1.9.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -3187,7 +3187,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "datetime"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "chrono",
  "iana-time-zone",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "deep-link"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "runtime-core",
  "runtime-vocabulary",
@@ -3843,7 +3843,7 @@ dependencies = [
 
 [[package]]
 name = "email"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -4120,7 +4120,7 @@ dependencies = [
 
 [[package]]
 name = "file-export"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -4138,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -4172,7 +4172,7 @@ dependencies = [
 
 [[package]]
 name = "files"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -4309,7 +4309,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -4843,7 +4843,7 @@ dependencies = [
 
 [[package]]
 name = "graphql"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "async-graphql",
  "graphql_client",
@@ -5261,7 +5261,7 @@ dependencies = [
 
 [[package]]
 name = "haptics"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -5627,7 +5627,7 @@ dependencies = [
 
 [[package]]
 name = "host-web"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-web",
  "js-sys",
@@ -5645,7 +5645,7 @@ dependencies = [
 
 [[package]]
 name = "host-wgpu"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "host-android-mobile",
  "host-ios-mobile",
@@ -5921,7 +5921,7 @@ dependencies = [
 
 [[package]]
 name = "i18n"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "i18n-macros",
  "net",
@@ -6133,7 +6133,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6153,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6171,7 +6171,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6211,7 +6211,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.6"
+version = "1.5.7"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6221,7 +6221,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6252,7 +6252,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6332,7 +6332,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-config"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "aws-config",
  "cache",
@@ -6689,7 +6689,7 @@ dependencies = [
 
 [[package]]
 name = "jobs"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -7176,7 +7176,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "location"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "async-io",
  "futures-channel",
@@ -7278,7 +7278,7 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "maps"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-ios-mobile",
  "backend-web",
@@ -7313,7 +7313,7 @@ dependencies = [
 
 [[package]]
 name = "maps-web"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "maps-core",
  "web-glue",
@@ -7322,7 +7322,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -7472,7 +7472,7 @@ dependencies = [
 
 [[package]]
 name = "media-stream"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "futures-channel",
  "wasm-bindgen-test",
@@ -7481,7 +7481,7 @@ dependencies = [
 
 [[package]]
 name = "media-writer"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "block2 0.5.1",
  "files",
@@ -7585,7 +7585,7 @@ dependencies = [
 
 [[package]]
 name = "microphone"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "cpal",
  "futures-channel",
@@ -7861,7 +7861,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -8038,7 +8038,7 @@ dependencies = [
 
 [[package]]
 name = "notifications"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -8574,7 +8574,7 @@ dependencies = [
 
 [[package]]
 name = "offload"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "futures",
  "futures-channel",
@@ -8678,7 +8678,7 @@ dependencies = [
 
 [[package]]
 name = "ota"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "files",
  "net",
@@ -8732,7 +8732,7 @@ dependencies = [
 
 [[package]]
 name = "ota-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "remote-bundle",
  "serde",
@@ -8741,7 +8741,7 @@ dependencies = [
 
 [[package]]
 name = "ota-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8922,7 +8922,7 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
 name = "pdf"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "canvas-core",
  "hayro-interpret",
@@ -8980,7 +8980,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissions"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "block2 0.5.1",
  "jni 0.21.1",
@@ -9506,7 +9506,7 @@ dependencies = [
 
 [[package]]
 name = "pubsub"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -9993,7 +9993,7 @@ version = "1.0.0"
 
 [[package]]
 name = "remote-bundle"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
@@ -10416,7 +10416,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "runtime-world",
  "rustc-hash 2.1.2",
@@ -10779,7 +10779,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screen-recorder"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -11063,7 +11063,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "axum",
  "futures-channel",
@@ -11087,7 +11087,7 @@ dependencies = [
 
 [[package]]
 name = "server-aws"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "axum",
  "lambda_http",
@@ -11118,7 +11118,7 @@ dependencies = [
 
 [[package]]
 name = "server-kit"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "axum",
  "cache",
@@ -11191,7 +11191,7 @@ dependencies = [
 
 [[package]]
 name = "share"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -11775,7 +11775,7 @@ checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
 
 [[package]]
 name = "storage"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -11950,7 +11950,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -12172,7 +12172,7 @@ dependencies = [
 
 [[package]]
 name = "sync"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "runtime-core",
  "serde",
@@ -13467,7 +13467,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -13495,7 +13495,7 @@ dependencies = [
 
 [[package]]
 name = "video-compose"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "canvas-core",
  "canvas-vello",
@@ -13525,7 +13525,7 @@ dependencies = [
 
 [[package]]
 name = "video-decode"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -14023,7 +14023,7 @@ dependencies = [
 
 [[package]]
 name = "web-glue"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",
@@ -14134,7 +14134,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",

@@ -1,6 +1,6 @@
 [package]
 name = "canvas-vello"
-version = "1.6.0"
+version = "2.0.0"
 edition.workspace = true
 license.workspace = true
 
@@ -107,7 +107,7 @@ libc = "0.2"
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
 raw-window-handle = "0.6"
-canvas-native = { path = "../native", default-features = false, features = ["web-sys-canvas"], version = "1.6.0", registry = "idealyst" }
+canvas-native = { path = "../native", default-features = false, features = ["web-sys-canvas"], version = "1.7.0", registry = "idealyst" }
 # A texture layer's native source is a `web_glue::dom::MediaStream` (what the
 # media SDKs publish). HYBRID-BRIDGE: wgpu — the layer `<video>` is a web-sys
 # element for wgpu's `ExternalImageSource`, so the stream crosses to
