@@ -193,14 +193,8 @@ cargo check -q -p backend-web --target wasm32-unknown-unknown
 cargo check -q -p backend-ios-mobile --target aarch64-apple-ios
 ```
 
-Known non-signals — do not chase these, and do not report them as caused by the
-release:
-
-| Symptom | Cause |
-| --- | --- |
-| 4 × `newcore::tests` fail with `class NSScreen could not be found` (`perf_trace.rs`) | Host test binary doesn't link AppKit. Pre-existing. |
-
-If something else fails, establish whether it is pre-existing **without
+There are no known non-signals: every command above is expected to pass. If
+one fails, establish whether it is pre-existing **without
 `git stash`** (`CLAUDE.md` §0) — read the diff of the relevant files, or check
 whether any unreleased commit touches them:
 
