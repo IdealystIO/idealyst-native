@@ -12,8 +12,8 @@ license.workspace = true
 description = "Over-the-air remote-component updates for idealyst apps"
 
 [dependencies]
-ota-index = { path = "../index" }
-ota-macros = { path = "../macros" }
+ota-index = { workspace = true }
+ota-macros = { workspace = true }
 remote-bundle = { workspace = true }
 remote-host = { workspace = true }
 runtime-vocabulary = { workspace = true, features = ["remote"] }

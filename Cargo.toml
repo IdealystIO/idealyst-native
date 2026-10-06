@@ -481,6 +481,9 @@ css = { path = "crates/css", version = "1.8.0", registry = "idealyst" }
 remote-abi = { path = "crates/streaming/abi", version = "1.0.0", registry = "idealyst" }
 remote-bundle = { path = "crates/streaming/bundle-format", version = "1.0.0", registry = "idealyst" }
 remote-host = { path = "crates/streaming/host", version = "1.0.0", registry = "idealyst" }
+ota = { path = "crates/ota/client", version = "0.1.0", registry = "idealyst" }
+ota-index = { path = "crates/ota/index", version = "0.1.0", registry = "idealyst" }
+ota-macros = { path = "crates/ota/macros", version = "0.1.0", registry = "idealyst" }
 premint-dump = { path = "crates/tools/premint-dump" }
 # Link-time distributed slices — the premint style-dump registry
 # (`runtime_core::premint`, `style-dump` feature). Link-section

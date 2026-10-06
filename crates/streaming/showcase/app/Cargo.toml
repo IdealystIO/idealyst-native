@@ -55,7 +55,7 @@ host-mock = { workspace = true }
 build-remote = { path = "../../../tools/build/remote" }
 remote-bundle = { workspace = true }
 # `tests/ota.rs`: the showcase updated over the air from a release directory.
-ota = { path = "../../../ota/client" }
+ota = { workspace = true }
 ota-publish = { path = "../../../ota/publish" }
 tempfile = "3"
 

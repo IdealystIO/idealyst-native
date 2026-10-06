@@ -12,7 +12,7 @@ description = "Publishes idealyst over-the-air remote-component releases to S3 o
 
 [dependencies]
 anyhow = "1"
-ota-index = { path = "../index" }
+ota-index = { workspace = true }
 remote-bundle = { workspace = true }
 serde_json = { workspace = true }
 
