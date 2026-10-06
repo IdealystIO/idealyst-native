@@ -467,10 +467,10 @@ license = "MIT OR Apache-2.0"
 # cargo — there is no CLI-generated web wrapper crate any more.
 idealyst = { path = "crates/idealyst", version = "1.7.1", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "1.10.0", registry = "idealyst" }
-runtime-shared = { path = "crates/runtime/shared", version = "1.16.0", registry = "idealyst" }
+runtime-shared = { path = "crates/runtime/shared", version = "1.17.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.8.0", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.9.0", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.22.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "1.23.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.0", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -502,17 +502,17 @@ linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.15.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.10.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.15.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.16.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server" }
 docs-macro = { path = "websites/docs-macro" }
-runtime-layout = { path = "crates/runtime/layout", version = "1.8.0", registry = "idealyst" }
+runtime-layout = { path = "crates/runtime/layout", version = "1.9.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.0.0", registry = "idealyst" }
 zone-offset = { path = "crates/runtime/zone-offset", version = "1.5.2", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.8.0", registry = "idealyst" }
 dev-client = { path = "crates/dev/client", version = "1.8.0", registry = "idealyst" }
 dev-server = { path = "crates/dev/server", version = "1.8.0", registry = "idealyst" }
 mock-backend = { path = "crates/dev/mock-backend" }
-host-mock = { path = "crates/dev/host-mock", version = "1.7.0", registry = "idealyst" }
+host-mock = { path = "crates/dev/host-mock", version = "1.8.0", registry = "idealyst" }
 parity-goldens = { path = "crates/dev/parity-goldens" }
 ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
 headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.3", registry = "idealyst" }
@@ -553,27 +553,27 @@ lint = { path = "crates/tools/lint" }
 configure = { path = "crates/tools/configure" }
 icon-gen = { path = "crates/tools/icon-gen" }
 backend-apple-core = { path = "crates/backend/apple/core", version = "1.8.0", registry = "idealyst" }
-backend-macos = { path = "crates/backend/macos", version = "1.10.0", registry = "idealyst" }
+backend-macos = { path = "crates/backend/macos", version = "1.11.0", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "1.7.0", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.12.0", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.13.0", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "1.5.2", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "1.5.2", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "1.5.2", registry = "idealyst" }
-backend-android-mobile = { path = "crates/backend/android/mobile", version = "1.8.0", registry = "idealyst" }
+backend-android-mobile = { path = "crates/backend/android/mobile", version = "1.9.0", registry = "idealyst" }
 backend-android-tv = { path = "crates/backend/android/tv", version = "1.5.2", registry = "idealyst" }
 backend-roku = { path = "crates/backend/roku", version = "1.5.3", registry = "idealyst" }
 backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", registry = "idealyst" }
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "1.7.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "1.7.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "2.3.0", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "2.4.0", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "1.5.5", registry = "idealyst" }
-backend-email = { path = "crates/backend/email", version = "1.5.3", registry = "idealyst" }
+backend-email = { path = "crates/backend/email", version = "1.6.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "1.7.0", registry = "idealyst" }
 backend-linux = { path = "crates/backend/linux", version = "1.7.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.2", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.8.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.9.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "1.5.2", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "2.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
