@@ -112,10 +112,16 @@ pub(crate) fn unregister(backend: &mut AndroidBackend, key: usize) {
 /// `Padding` avoider `key` moves from `from_dp` to `to_dp` of keyboard
 /// padding, animated by the system IME animation that is starting now.
 /// Lays out once per [`padding_plan`] and hands the Kotlin avoider the
-/// views that move with their offsets (px) and the mode (0 = `GrowNow`:
-/// offsets run from `-dy` to 0; 1 = `ShrinkAtEnd`: from 0 to `dy`, then
-/// [`commit_padding`]). Returns `false` when there is nothing to animate
-/// (the Kotlin side then just commits at the end).
+/// views that move, with each one's OLD and NEW parent-relative top in
+/// device px (rounded exactly as `RustLayoutApply` writes them, so they
+/// compare equal to `View.getTop()`), and the mode (0 = `GrowNow`: the new
+/// layout is applied now; 1 = `ShrinkAtEnd`: Kotlin calls
+/// [`commit_padding`] when the animation ends). Kotlin animates each
+/// view's VISUAL top from old to new and translates by the difference from
+/// wherever its layout currently has it: the `LayoutParams` a pass writes
+/// only take effect at the next traversal, so the view can sit at either
+/// position on any given frame. Returns `false` when there is nothing to
+/// animate (the Kotlin side then just commits at the end).
 pub(crate) fn begin_padding(backend: &mut AndroidBackend, key: usize, from_dp: f32, to_dp: f32) -> bool {
     let Some(node) = backend.keyboard_avoiders.get(&key).map(|a| a.node) else { return false };
     let (vw, vh) = backend.viewport_size();
@@ -163,17 +169,26 @@ pub(crate) fn begin_padding(backend: &mut AndroidBackend, key: usize, from_dp: f
         for (i, v) in views.iter().enumerate() {
             let _ = env.set_object_array_element(&arr, i as i32, v.as_obj());
         }
-        let dys: Vec<f32> = moved.iter().map(|(_, dy)| dy * density).collect();
-        let Ok(farr) = env.new_float_array(dys.len() as i32) else {
+        let (old_tops, new_tops): (Vec<i32>, Vec<i32>) = moved
+            .iter()
+            .map(|(k, dy)| {
+                let new_y = after.iter().find(|(ka, _)| ka == k).map(|(_, y)| *y).unwrap_or(0.0);
+                crate::soft_keyboard_policy::tops_px(new_y, *dy, density)
+            })
+            .unzip();
+        let (Ok(old_arr), Ok(new_arr)) =
+            (env.new_int_array(old_tops.len() as i32), env.new_int_array(new_tops.len() as i32))
+        else {
             let _ = env.exception_clear();
             return;
         };
-        let _ = env.set_float_array_region(&farr, 0, &dys);
+        let _ = env.set_int_array_region(&old_arr, 0, &old_tops);
+        let _ = env.set_int_array_region(&new_arr, 0, &new_tops);
         let _ = env.call_method(
             kotlin.as_obj(),
             "setTargets",
-            "([Landroid/view/View;[FI)V",
-            &[JValue::Object(&arr), JValue::Object(&farr), JValue::Int(mode)],
+            "([Landroid/view/View;[I[II)V",
+            &[JValue::Object(&arr), JValue::Object(&old_arr), JValue::Object(&new_arr), JValue::Int(mode)],
         );
         let _ = env.exception_clear();
     });

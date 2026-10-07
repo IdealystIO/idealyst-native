@@ -143,14 +143,23 @@ Per-frame work never enters Rust:
   every frame.
 - **`Padding`**: Rust lays out **once** per keyboard move
   (`imp::soft_keyboard::begin_padding`) and returns only the views that
-  moved relative to their parent, with their offsets. Every frame, Kotlin
-  offsets them by the animation's `interpolatedFraction`. A translation
-  can move views but not resize them, so the size change happens where the
-  keyboard hides it (`soft_keyboard_policy::padding_plan`):
+  moved relative to their parent, each with its old and new top in device
+  px. Every frame, Kotlin moves each view's *visual* top from old to new by
+  the animation's `interpolatedFraction`, writing
+  `translationY = desired − getTop()`.
+
+  It measures against the view's *actual* top because a layout pass writes
+  `LayoutParams`, which only take effect at the next traversal. On any
+  frame the view may still be at its old position or already at its new
+  one, and assuming either made the close jump for two frames. A layout
+  listener re-places a view whenever its layout lands.
+
+  A translation can move views but not resize them, so the size change
+  happens where the keyboard hides it
+  (`soft_keyboard_policy::padding_plan`):
   - **Opening:** keep the current, larger layout during the animation and
     apply the smaller one at the end.
-  - **Closing:** apply the larger layout immediately and start the moved
-    views at their old positions.
+  - **Closing:** apply the larger layout immediately.
 
 Overlap is measured against the view's untranslated bottom edge. Leaving
 full-screen (`RustSystemUi.setFullscreen(false)`) keeps the window edge to

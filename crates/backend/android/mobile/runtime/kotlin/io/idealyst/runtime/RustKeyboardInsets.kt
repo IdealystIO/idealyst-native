@@ -46,12 +46,23 @@ class RustKeyboardInsets private constructor(private val root: View) :
     /** True from `onPrepare` to `onEnd` of an IME animation. */
     private var imeAnimating = false
 
+    /** The last height reported to `keyboard_inset()` (dp). The settle in
+     *  `onEnd` and repeated inset dispatches re-report the same height, and
+     *  must not overwrite the timing `onStart` reported with a 0 duration. */
+    private var reportedDp = -1f
+
+    private fun reportTarget(heightDp: Float, durationMs: Long) {
+        if (heightDp == reportedDp) return
+        reportedDp = heightDp
+        nativeKeyboardTarget(heightDp, durationMs)
+    }
+
     override fun onApplyWindowInsets(v: View, insets: WindowInsetsCompat): WindowInsetsCompat {
         applyBarMargins(insets)
         if (!imeAnimating) {
             // A non-animated change (rotation, IME switched, hardware
             // keyboard attached, first dispatch): apply it immediately.
-            nativeKeyboardTarget(hostOverlapDp(insets), 0L)
+            reportTarget(hostOverlapDp(insets), 0L)
             val ime = imePx(insets)
             avoiders.toList().forEach { it.applyStatic(ime) }
         }
@@ -69,7 +80,7 @@ class RustKeyboardInsets private constructor(private val root: View) :
         if (isIme(animation)) {
             // By `onStart` the root insets already hold the END state.
             ViewCompat.getRootWindowInsets(root)?.let { end ->
-                nativeKeyboardTarget(hostOverlapDp(end), animation.durationMillis)
+                reportTarget(hostOverlapDp(end), animation.durationMillis)
                 val ime = imePx(end)
                 avoiders.toList().forEach { it.onStart(ime) }
             }
@@ -92,7 +103,9 @@ class RustKeyboardInsets private constructor(private val root: View) :
         imeAnimating = false
         // Settle on the real end state (a cancelled animation stops short).
         ViewCompat.getRootWindowInsets(root)?.let { end ->
-            nativeKeyboardTarget(hostOverlapDp(end), 0L)
+            // Settle: reports only if a cancelled animation stopped short of
+            // the target `onStart` announced.
+            reportTarget(hostOverlapDp(end), 0L)
             val ime = imePx(end)
             avoiders.toList().forEach { it.onEnd(ime) }
         }

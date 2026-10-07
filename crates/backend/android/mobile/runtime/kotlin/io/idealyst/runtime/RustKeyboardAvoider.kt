@@ -14,12 +14,18 @@ import android.view.View
  * - **Translate** (`behavior = 1`): the view's own `translationY` follows
  *   the live IME inset.
  * - **Padding** (`behavior = 0`): Rust lays out ONCE at the start of the
- *   move ([nativeBeginPadding]) and hands back the views that moved and by
- *   how much ([setTargets]); each frame offsets them by the animation's
- *   progress. Sizes switch where the keyboard hides it: mode 0 (content
- *   grows) laid out at the start, offsets run `-dy → 0`; mode 1 (content
- *   shrinks) offsets run `0 → dy`, then [nativeCommitPadding] lays out the
- *   smaller size at the end. See `soft_keyboard_policy.rs`.
+ *   move ([nativeBeginPadding]) and hands back the views that move, each
+ *   with its old and new top ([setTargets]). Each frame, every moved view's
+ *   VISUAL top goes `old → new` by the animation's progress, written as
+ *   `translationY = desired − getTop()`. Measuring against the view's
+ *   actual top is what makes it robust: a layout pass writes
+ *   `LayoutParams`, which only take effect at the next traversal, so on any
+ *   given frame the view may still be at its old position or already at
+ *   its new one (assuming either produced a 2-frame jump on close). A
+ *   layout listener re-places a target whenever its layout lands. Sizes
+ *   switch where the keyboard hides it: mode 0 (content grows) is laid out
+ *   at the start; mode 1 (content shrinks) via [nativeCommitPadding] at the
+ *   end. See `soft_keyboard_policy.rs`.
  *
  * Overlap is measured against the view's UNTRANSLATED bottom edge, so a
  * Translate lift never feeds back into its own measurement.
@@ -34,13 +40,33 @@ class RustKeyboardAvoider private constructor(
     private var appliedDp = 0f
     /** Where the running move is heading (dp). */
     private var targetDp = 0f
-    /** Padding: views moving in the running animation, their offsets (px),
-     *  their translation before it started, and the mode (see class doc). */
+    /** Padding: views moving in the running animation, their old / new
+     *  tops (px, as `getTop()` reports them), their translation before it
+     *  started, the animation's progress and the mode (see class doc). */
     private var targets: Array<View> = emptyArray()
-    private var offsets = FloatArray(0)
+    private var oldTops = IntArray(0)
+    private var newTops = IntArray(0)
     private var bases = FloatArray(0)
+    private var progress = 0f
     private var mode = 0
     private var active = false
+
+    /** Re-places a target when its layout lands (see class doc); detaches
+     *  itself once the target is at its new top with the move finished. */
+    private val relayout = View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+        val i = targets.indexOf(v)
+        if (i >= 0) place(i)
+    }
+
+    private fun place(i: Int) {
+        val v = targets[i]
+        val desired = oldTops[i] + (newTops[i] - oldTops[i]) * progress
+        v.translationY = bases[i] + desired - v.top
+        if (!active && v.top == newTops[i]) {
+            v.translationY = bases[i]
+            v.removeOnLayoutChangeListener(relayout)
+        }
+    }
     private var detached = false
 
     private val density: Float
@@ -91,10 +117,8 @@ class RustKeyboardAvoider private constructor(
             return
         }
         if (!active) return
-        for (i in targets.indices) {
-            val offset = if (mode == GROW_NOW) -offsets[i] * (1f - fraction) else offsets[i] * fraction
-            targets[i].translationY = bases[i] + offset
-        }
+        progress = fraction
+        for (i in targets.indices) place(i)
     }
 
     fun onEnd(finalImePx: Int) {
@@ -104,13 +128,16 @@ class RustKeyboardAvoider private constructor(
             view.translationY = -overlapDp(finalImePx) * density
             return
         }
-        // Same frame: drop the offsets and apply the final layout, so views
-        // land exactly where the offsets were taking them.
-        for (i in targets.indices) targets[i].translationY = bases[i]
-        targets = emptyArray()
+        // Hold every moved view at its NEW top (by translation, until its
+        // layout gets there), then apply the final layout. The relayout
+        // listener drops each offset in the frame that view's layout lands,
+        // so nothing jumps.
+        progress = 1f
         active = false
         val finalDp = overlapDp(finalImePx)
-        if (finalDp != appliedDp && !nativeCommitPadding(key, finalDp)) {
+        val committed = finalDp == appliedDp || nativeCommitPadding(key, finalDp)
+        for (i in targets.indices) place(i)
+        if (!committed) {
             view.post { applyStatic(finalImePx) }
             return
         }
@@ -118,23 +145,33 @@ class RustKeyboardAvoider private constructor(
     }
 
     /** From Rust ([nativeBeginPadding]): the views this move translates. */
-    fun setTargets(views: Array<View>, offsetsPx: FloatArray, mode: Int) {
+    fun setTargets(views: Array<View>, oldTopsPx: IntArray, newTopsPx: IntArray, mode: Int) {
+        // A view's translation is the author's / animation's plus ours; keep
+        // theirs as the base. Between moves our offset is 0, so that is its
+        // current translation — except for a view still settling from an
+        // interrupted move, which keeps the base it had.
+        val previous = targets.indices.associate { targets[it] to bases[it] }
+        for (v in targets) v.removeOnLayoutChangeListener(relayout)
         targets = views
-        offsets = offsetsPx
-        bases = FloatArray(views.size) { views[it].translationY }
+        oldTops = oldTopsPx
+        newTops = newTopsPx
+        bases = FloatArray(views.size) { i -> previous[views[i]] ?: views[i].translationY }
+        progress = 0f
         this.mode = mode
-        if (mode == GROW_NOW) {
-            // The larger layout is already applied: start every moved view
-            // at its old position so nothing jumps.
-            for (i in views.indices) views[i].translationY = bases[i] - offsetsPx[i]
-            appliedDp = targetDp
+        if (mode == GROW_NOW) appliedDp = targetDp
+        for (i in views.indices) {
+            views[i].addOnLayoutChangeListener(relayout)
+            place(i)
         }
     }
 
     /** The view was released (from Rust). */
     fun detach() {
         detached = true
-        for (i in targets.indices) targets[i].translationY = bases[i]
+        for (i in targets.indices) {
+            targets[i].removeOnLayoutChangeListener(relayout)
+            targets[i].translationY = bases[i]
+        }
         targets = emptyArray()
         RustKeyboardInsets.avoiders.remove(this)
     }

@@ -2785,6 +2785,13 @@ impl AndroidBackend {
         // same pending JNI work (needs a device to verify), not done blind.
         let _ = secure;
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        // Give the field a Taffy intrinsic size: `View.measure` reports the
+        // EditText's single-line height (font + its own padding). Without a
+        // measure_fn Taffy had no content size for it, so an unstyled field
+        // laid out 0 tall and vanished (a composer showed only its padding);
+        // iOS/web size their fields intrinsically. Explicit style width /
+        // height still win. Same seam as `create_icon_impl`.
+        install_external_measure_fn(self, &node);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::TextField));
         node
     }

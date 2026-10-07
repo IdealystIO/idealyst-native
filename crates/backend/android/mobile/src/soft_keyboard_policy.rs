@@ -71,6 +71,18 @@ pub(crate) fn moved_views<K: Copy + PartialEq>(
         .collect()
 }
 
+/// A moved view's parent-relative top before and after the move, in device
+/// px, rounded EXACTLY as the layout pass writes frames
+/// (`(y * density).round()` into `RustLayoutApply`), so each equals what
+/// `View.getTop()` reports once that layout is in effect. The Kotlin avoider
+/// positions views by `desired − getTop()`, so a rounding mismatch here
+/// would leave a view off by a pixel — or, with the old "assume the layout
+/// already landed" approach, by a whole move (the close-animation jump).
+pub(crate) fn tops_px(new_y: f32, dy: f32, density: f32) -> (i32, i32) {
+    let px = |dp: f32| (dp * density).round() as i32;
+    (px(new_y - dy), px(new_y))
+}
+
 /// Moves smaller than this (dp) are rounding noise, not motion.
 const SUB_PIXEL: f32 = 0.5;
 
@@ -115,6 +127,21 @@ mod tests {
         let before = [("a", 10.0)];
         let after = [("a", 10.3), ("b", 50.0)];
         assert!(moved_views(&before, &after).is_empty());
+    }
+
+    /// Regression for the close-animation jump: Kotlin compares these tops
+    /// with `View.getTop()` to know whether the new layout has landed yet, so
+    /// both must round exactly like the frame applier does.
+    #[test]
+    fn regression_tops_match_the_frame_appliers_rounding() {
+        let density = 3.5;
+        // A composer moving from y = 424.3 dp (keyboard up) to 760.6 dp.
+        let (old, new) = tops_px(760.6, 336.3, density);
+        assert_eq!(new, (760.6f32 * density).round() as i32);
+        assert_eq!(old, ((760.6f32 - 336.3) * density).round() as i32);
+        // Opening (moving up): old is the larger top.
+        let (old, new) = tops_px(424.3, -336.3, density);
+        assert!(old > new);
     }
 
     #[test]
