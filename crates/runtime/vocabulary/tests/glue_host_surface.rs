@@ -212,3 +212,25 @@ fn regression_app_key_handler_installed_through_glue_reaches_the_backend() {
         h.ops()
     );
 }
+
+/// `keyboard_inset()` — the soft-keyboard author surface. Path pin: the
+/// glue fn IS the vocabulary's per-world ctx reader and the value type IS
+/// the shared `KeyboardInset` (backends push the shared type), so app
+/// code spelling `runtime_core::keyboard_inset()` reads what the platform
+/// reported.
+#[test]
+fn glue_reexports_keyboard_inset_and_it_reads_platform_pushes() {
+    let via_glue: fn() -> runtime_world::ReadSignal<glue::KeyboardInset> = glue::keyboard_inset;
+    let via_vocab: fn() -> runtime_world::ReadSignal<runtime_shared::KeyboardInset> =
+        runtime_vocabulary::keyboard::keyboard_inset;
+    assert_eq!(via_glue as usize, via_vocab as usize);
+
+    let world = runtime_world::World::new();
+    let kb = world.enter(glue::keyboard_inset);
+    runtime_vocabulary::keyboard::push(runtime_shared::KeyboardInset::new(
+        300.0,
+        runtime_shared::keyboard::WEB_KEYBOARD_ESTIMATE,
+    ));
+    world.flush();
+    assert_eq!(world.enter(|| kb.get().height), 300.0);
+}

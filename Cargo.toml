@@ -413,6 +413,7 @@ members = [
     "examples/baseline",
     "examples/inspector",
     "examples/login-demo",
+    "examples/keyboard-avoid",
     "examples/nav-showcase",
     "examples/whiteboard-demo",
 

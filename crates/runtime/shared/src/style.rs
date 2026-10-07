@@ -1375,6 +1375,23 @@ pub enum Easing {
     CubicBezier(f32, f32, f32, f32),
 }
 
+impl Easing {
+    /// The curve's cubic-bezier control points `[x1, y1, x2, y2]` — the
+    /// standard CSS sets for the named curves. Single source for the
+    /// evaluator (`animation::curve::apply_easing`) and for backends that
+    /// hand the curve to a platform animator.
+    pub fn control_points(self) -> [f32; 4] {
+        match self {
+            Easing::Linear => [0.0, 0.0, 1.0, 1.0],
+            Easing::Ease => [0.25, 0.1, 0.25, 1.0],
+            Easing::EaseIn => [0.42, 0.0, 1.0, 1.0],
+            Easing::EaseOut => [0.0, 0.0, 0.58, 1.0],
+            Easing::EaseInOut => [0.42, 0.0, 0.58, 1.0],
+            Easing::CubicBezier(x1, y1, x2, y2) => [x1, y1, x2, y2],
+        }
+    }
+}
+
 /// Animation timing for a single property. `duration_ms` is integer
 /// milliseconds (no floats — keeps `Hash`/`Eq` straightforward, and
 /// sub-millisecond timing isn't meaningful for UI transitions).

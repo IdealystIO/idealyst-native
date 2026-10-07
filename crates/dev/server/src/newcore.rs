@@ -697,6 +697,10 @@ impl caps::SafeAreaOps for WireRecordingBackend {
     fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
         WireRecordingBackend::apply_scroll_view_safe_area_inset(self, node, sides)
     }
+
+    fn mark_keyboard_avoiding(&mut self, node: &Self::Node, avoid: runtime_shared::KeyboardAvoid) {
+        WireRecordingBackend::mark_keyboard_avoiding(self, node, avoid)
+    }
 }
 
 // No two-axis grid engine on this backend yet; every `GridOps`

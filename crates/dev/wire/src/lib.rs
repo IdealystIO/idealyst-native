@@ -218,7 +218,15 @@ pub use payload_serde::{
 /// a v20 peer decodes and draws the text unlimited. Without it a truncated
 /// name crossed as an unlimited one and overflowed its cell, unlike
 /// `--local`.
-pub const PROTOCOL_VERSION: u32 = 21;
+///
+/// **Bumped to 22 for `AppToDev::KeyboardChanged`.** A new client→server
+/// message: the soft-keyboard inset, so author `keyboard_inset()` updates
+/// under runtime-server dev exactly as under `--local`. A v21 server
+/// can't decode it and drops the message (the keyboard still avoids
+/// on-device; only author reactivity misses it). Also adds
+/// `Command::MarkKeyboardAvoiding` (`keyboard_avoiding_view`).
+pub const PROTOCOL_VERSION: u32 = 22;
+
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
 /// than the canonical [`PROTOCOL_VERSION`] name. Both point at the same
@@ -464,6 +472,17 @@ pub enum AppToDev {
     /// from a `resize` event listener; native sends on window /
     /// trait collection changes.
     ViewportChanged { width: f32, height: f32 },
+
+    /// The soft keyboard moved (PROTOCOL_VERSION 22): the height (logical
+    /// px) of the app's root it covers once its animation settles, plus
+    /// that animation's duration and cubic-bezier control points
+    /// `[x1, y1, x2, y2]`. The client lays out against it locally (its
+    /// backend already avoids the keyboard); this relays the value to the
+    /// sidecar so author code's `keyboard_inset()` sees it — without it,
+    /// keyboard-reactive author code is frozen at "hidden" under
+    /// runtime-server dev while it works under `--local`. Sent by the
+    /// native shells' `tick` and the web dev transport, on change only.
+    KeyboardChanged { height: f32, duration_ms: u32, easing: [f32; 4] },
 
     /// Reply to [`DevToApp::CaptureScreenshot`]. Carries the same
     /// `request_id` so the server can correlate it with the blocked
@@ -917,6 +936,15 @@ pub enum Command {
     ApplyScrollViewSafeAreaInset {
         node: NodeId,
         sides: u8,
+    },
+    /// The node is a `keyboard_avoiding_view` (PROTOCOL_VERSION 22).
+    /// Only the opt-in crosses: the CLIENT backend observes its own soft
+    /// keyboard and moves the view with the platform's keyboard animation.
+    /// `behavior`: 0 = Padding, 1 = Translate.
+    MarkKeyboardAvoiding {
+        node: NodeId,
+        behavior: u8,
+        animated: bool,
     },
 
     // --- Styles ---

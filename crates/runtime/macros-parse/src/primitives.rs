@@ -26,6 +26,7 @@ pub fn canonical_primitive(name: &str) -> Option<&'static str> {
         "text" => Some("text"),
         "button" => Some("button"),
         "view" => Some("view"),
+        "keyboard_avoiding_view" => Some("keyboard_avoiding_view"),
         "when" => Some("when"),
         "image" => Some("image"),
         "icon" => Some("icon"),

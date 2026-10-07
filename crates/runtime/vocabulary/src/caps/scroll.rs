@@ -126,6 +126,17 @@ pub trait SafeAreaOps: Host {
     fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
         self.apply_safe_area_padding(node, sides);
     }
+
+    /// Make `node` a `keyboard_avoiding_view`: from now on (until the node
+    /// is released) the backend measures how much of this view the soft
+    /// keyboard covers and keeps its content clear of it per `avoid`,
+    /// driven by the platform's own keyboard animation. The default is a
+    /// no-op — correct for every backend without a soft keyboard (the view
+    /// stays a plain view). See `docs/keyboard.md`.
+    #[allow(unused_variables)]
+    fn mark_keyboard_avoiding(&mut self, node: &Self::Node, avoid: runtime_shared::KeyboardAvoid) {
+        // default: no-op
+    }
 }
 
 /// The `flat_list` / `virtualizer` primitive — backend-owned windowed

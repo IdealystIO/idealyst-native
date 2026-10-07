@@ -2011,6 +2011,21 @@ impl WireRecordingBackend {
         state.emit(Command::ApplySafeAreaPadding { node: *node, sides: sides.0 });
     }
 
+    /// `keyboard_avoiding_view` opt-in. Only the opt-in crosses: the CLIENT
+    /// backend observes its own soft keyboard and animates the view with
+    /// the platform's keyboard animation.
+    pub fn mark_keyboard_avoiding(&mut self, node: &NodeId, avoid: runtime_shared::KeyboardAvoid) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::MarkKeyboardAvoiding {
+            node: *node,
+            behavior: match avoid.behavior {
+                runtime_shared::KeyboardAvoidBehavior::Padding => 0,
+                runtime_shared::KeyboardAvoidBehavior::Translate => 1,
+            },
+            animated: avoid.animated,
+        });
+    }
+
     pub fn apply_scroll_view_safe_area_inset(
         &mut self,
         node: &NodeId,

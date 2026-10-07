@@ -298,6 +298,7 @@ fn emit_component(
         (Some("text"), _) => emit_text(&other_props, children),
         (Some("button"), _) => emit_button(&other_props, children),
         (Some("view"), _) => emit_view(&other_props, children),
+        (Some("keyboard_avoiding_view"), _) => emit_keyboard_avoiding_view(&other_props, children),
         (Some("when"), _) => emit_when(&other_props, children),
         (Some("icon"), _) => emit_icon(&other_props, children),
         (Some("image"), _) => emit_image(&other_props, children),
@@ -908,6 +909,20 @@ fn emit_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     }
 }
 
+fn emit_keyboard_avoiding_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
+    let kids = children.unwrap_or(&[]);
+    let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
+    let setters = builder_calls(props, KEYBOARD_AVOIDING_VIEW_BUILDER_PROPS);
+    quote! {
+        ::runtime_core::keyboard_avoiding_view({
+            let mut __c: ::std::vec::Vec<::runtime_core::Element>
+                = ::std::vec::Vec::new();
+            #( ::runtime_core::ChildList::append_to(#parts, &mut __c); )*
+            __c
+        }) #setters
+    }
+}
+
 fn emit_when(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let cond = props.iter().find(|p| p.name == "cond").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || false });
     let then_e = props.iter().find(|p| p.name == "then").map(|p| p.value.to_token_stream()).unwrap_or_else(|| quote! { || ::runtime_core::view(::std::vec::Vec::new()) });
@@ -1144,6 +1159,9 @@ const VIEW_BUILDER_ONLY: &[(&str, &str)] = &[(
     "`container` takes no value — chain `.container()` after the `view(…)` call",
 )];
 
+/// `keyboard_avoiding_view`'s inline setters on `GlueKeyboardAvoidingView`.
+const KEYBOARD_AVOIDING_VIEW_BUILDER_PROPS: &[&str] = &["behavior", "animated", "safe_area", "bind"];
+
 const TEXT_BUILDER_PROPS: &[&str] = &["bind"];
 
 const BUTTON_BUILDER_PROPS: &[&str] = &["leading_icon", "trailing_icon", "bind"];
@@ -1240,6 +1258,9 @@ pub(crate) fn prim_surface(canonical: &str) -> PrimSurface {
     };
     match canonical {
         "view" => s(COMMON_PROPS, &[], VIEW_BUILDER_PROPS, VIEW_BUILDER_ONLY, true),
+        "keyboard_avoiding_view" => {
+            s(COMMON_PROPS, &[], KEYBOARD_AVOIDING_VIEW_BUILDER_PROPS, &[], true)
+        }
         "text" => s(COMMON_PROPS, &["content"], TEXT_BUILDER_PROPS, &[], true),
         "button" => {
             s(BUTTON_COMMON_PROPS, &["label", "on_click"], BUTTON_BUILDER_PROPS, &[], false)
@@ -2970,6 +2991,7 @@ mod tests {
     /// builds (`None` for `when`, which lowers to a plain fn).
     const PRIMITIVE_GLUE_TYPES: &[(&str, Option<&str>)] = &[
         ("view", Some("GlueView")),
+        ("keyboard_avoiding_view", Some("GlueKeyboardAvoidingView")),
         ("text", Some("GlueText")),
         ("button", Some("GlueButton")),
         ("when", None),

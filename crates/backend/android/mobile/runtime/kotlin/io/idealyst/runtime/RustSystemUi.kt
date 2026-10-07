@@ -94,7 +94,11 @@ object RustSystemUi {
                             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
                     }
                 }
-                WindowCompat.setDecorFitsSystemWindows(window, true)
+                // Stay edge to edge when the keyboard tracker owns the
+                // insets: it keeps the root inside the bars itself, and
+                // fitting windows would hand the IME back to the system's
+                // one-step window resize (see RustKeyboardInsets).
+                WindowCompat.setDecorFitsSystemWindows(window, !RustKeyboardInsets.installed)
             }
         }
     }

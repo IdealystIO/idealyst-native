@@ -29,11 +29,23 @@ pub fn view() -> ViewBuilder {
             on_file_drop: None,
             preserves_focus: false,
             is_container: false,
+            keyboard_avoid: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
         },
         children: Vec::new(),
     }
+}
+
+/// Start a `keyboard_avoiding_view` — a `view` whose content the backend
+/// keeps clear of the soft keyboard, moving in step with the platform's own
+/// keyboard animation (see `docs/keyboard.md`). Defaults to
+/// [`KeyboardAvoidBehavior::Padding`](runtime_shared::KeyboardAvoidBehavior),
+/// animated; [`ViewBuilder::behavior`] / [`ViewBuilder::animated`] change it.
+pub fn keyboard_avoiding_view() -> ViewBuilder {
+    let mut b = view();
+    b.prim.keyboard_avoid = Some(runtime_shared::KeyboardAvoid::default());
+    b
 }
 
 pub struct ViewBuilder {
@@ -86,6 +98,19 @@ impl ViewBuilder {
 
     pub fn preserves_focus(mut self, preserve: bool) -> Self {
         self.prim.preserves_focus = preserve;
+        self
+    }
+
+    /// `keyboard_avoiding_view` only: how the content avoids the keyboard.
+    pub fn behavior(mut self, behavior: runtime_shared::KeyboardAvoidBehavior) -> Self {
+        self.prim.keyboard_avoid.get_or_insert_with(Default::default).behavior = behavior;
+        self
+    }
+
+    /// `keyboard_avoiding_view` only: `false` jumps straight to the final
+    /// position instead of moving with the keyboard's animation.
+    pub fn animated(mut self, animated: bool) -> Self {
+        self.prim.keyboard_avoid.get_or_insert_with(Default::default).animated = animated;
         self
     }
 

@@ -319,6 +319,8 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     // path — fresh creates, same posture as any post-boot resize).
     super::install_viewport_source(vp_sig);
     super::push_current_viewport_now(vp_sig);
+    // Soft-keyboard avoidance (mobile browsers) — see `keyboard_source`.
+    crate::keyboard_source::install_keyboard_source();
 }
 
 // ===========================================================================

@@ -18,6 +18,7 @@ pub(crate) mod keyboard;
 pub(crate) mod pending_focus;
 mod primitives;
 pub(crate) mod scheduler;
+pub(crate) mod soft_keyboard;
 mod screenshot;
 pub(crate) mod sticky;
 mod style;
@@ -352,6 +353,9 @@ pub struct AndroidBackend {
     /// topMargin, width, height }` so absolute-positioned and
     /// flex-laid-out children both land where Taffy says they should.
     pub(crate) layout: runtime_layout::LayoutTree,
+    /// Live `keyboard_avoiding_view`s, keyed like `view_to_layout`. See
+    /// `imp::soft_keyboard`.
+    pub(crate) keyboard_avoiders: HashMap<usize, soft_keyboard::Avoider>,
     /// View pointer → (`GlobalRef`, Taffy node). Indexed by the same
     /// raw `JObject*` pointer scheme as `anim_state`. Iterated in the
     /// layout pass to apply computed frames.
@@ -869,6 +873,7 @@ impl AndroidBackend {
             scroll_view_inner: HashMap::new(),
             portal_instances: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
+            keyboard_avoiders: HashMap::new(),
             view_to_layout: HashMap::new(),
             font_registry: font::FontRegistry::new(),
             sticky_registry: HashMap::new(),
@@ -881,6 +886,7 @@ impl AndroidBackend {
             app_key_ptr: None,
         };
         backend.install_viewport_resize_listener();
+        soft_keyboard::install(&backend);
         backend
     }
 
@@ -1243,6 +1249,7 @@ impl AndroidBackend {
         let layout_node = self.layout_for_view(node);
         self.layout.remove_node(layout_node);
         self.view_to_layout.remove(&key);
+        soft_keyboard::unregister(self, key);
     }
 
     /// Get or create a Taffy layout node for the given view. Called
@@ -1345,7 +1352,37 @@ impl AndroidBackend {
                 });
             }
         }
+        // The keyboard never shrinks the app viewport: only
+        // `keyboard_avoiding_view`s avoid it (`imp::soft_keyboard`).
         (w, h)
+    }
+
+    /// Run Taffy over every layout root WITHOUT applying frames to views.
+    /// The first half of [`Self::run_layout_pass`]; the keyboard avoider
+    /// also uses it alone to measure where views WILL be (see
+    /// `soft_keyboard::begin_padding`).
+    pub(crate) fn compute_layout_roots(&mut self, vw: f32, vh: f32) {
+        // Carries the view key as well as the node: a root that is a
+        // mounted `virtual_grid` cell is computed against its own box
+        // rather than the viewport. A cell is a root only because it
+        // has no Taffy PARENT — the grid engine places it in the
+        // scroller's content space — so the viewport would stretch it
+        // to the full screen. See `primitives::virtual_grid::CELL_BOXES`.
+        let roots: Vec<(usize, runtime_layout::LayoutNode)> = self
+            .view_to_layout
+            .iter()
+            .map(|(k, (_, n))| (*k, *n))
+            .filter(|(_, n)| self.layout.is_root(*n))
+            .collect();
+        let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
+        for (key, root_node) in &roots {
+            let (rw, rh) = crate::layout_policy::root_pass(
+                primitives::virtual_grid::cell_box(*key),
+                (vw, vh),
+            )
+            .compute_against;
+            self.layout.compute(*root_node, rw, rh);
+        }
     }
 
     /// Public wrapper around [`Self::run_layout_pass`]. Used by the
@@ -1518,29 +1555,7 @@ impl AndroidBackend {
             return;
         }
         let _t_total = phase_timer::PhaseTimer::start("layout_pass_total");
-        // Carries the view key as well as the node: a root that is a
-        // mounted `virtual_grid` cell is computed against its own box
-        // rather than the viewport. A cell is a root only because it
-        // has no Taffy PARENT — the grid engine places it in the
-        // scroller's content space — so the viewport would stretch it
-        // to the full screen. See `primitives::virtual_grid::CELL_BOXES`.
-        let roots: Vec<(usize, runtime_layout::LayoutNode)> = self
-            .view_to_layout
-            .iter()
-            .map(|(k, (_, n))| (*k, *n))
-            .filter(|(_, n)| self.layout.is_root(*n))
-            .collect();
-        {
-            let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
-            for (key, root_node) in &roots {
-                let (rw, rh) = crate::layout_policy::root_pass(
-                    primitives::virtual_grid::cell_box(*key),
-                    (vw, vh),
-                )
-                .compute_against;
-                self.layout.compute(*root_node, rw, rh);
-            }
-        }
+        self.compute_layout_roots(vw, vh);
         // Snapshot the entries up front so the mutable JNI calls
         // below don't conflict with the borrow on `self.view_to_layout`.
         let frames: Vec<(GlobalRef, runtime_layout::Frame)> = {

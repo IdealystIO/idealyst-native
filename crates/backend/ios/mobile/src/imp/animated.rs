@@ -81,11 +81,17 @@ pub(crate) struct AnimatedTransformState {
     /// style), later applies animate. See
     /// `transform_transition_policy::should_animate_static_transform`.
     pub static_transform_seen: bool,
+    /// A `keyboard_avoiding_view` (`Translate`) lift, in points (negative
+    /// = up). Its own term so it composes with the author's transform and
+    /// animations instead of overwriting `translate_y`; added in the
+    /// parent's space after them. See `IosBackend::apply_keyboard_avoiders`.
+    pub keyboard_ty: f32,
 }
 
 impl AnimatedTransformState {
     fn any_transform_set(&self) -> bool {
-        self.translate_x.is_some()
+        self.keyboard_ty != 0.0
+            || self.translate_x.is_some()
             || self.translate_y.is_some()
             || self.scale_x.is_some()
             || self.scale_y.is_some()
@@ -96,7 +102,7 @@ impl AnimatedTransformState {
     /// axes as identity defaults.
     fn compose(&self) -> CGAffineTransform {
         let tx = self.translate_x.unwrap_or(0.0) as CGFloat;
-        let ty = self.translate_y.unwrap_or(0.0) as CGFloat;
+        let ty = (self.translate_y.unwrap_or(0.0) + self.keyboard_ty) as CGFloat;
         let sx = self.scale_x.unwrap_or(1.0) as CGFloat;
         let sy = self.scale_y.unwrap_or(1.0) as CGFloat;
         let theta_rad = (self.rotate_z.unwrap_or(0.0) as CGFloat).to_radians();
@@ -151,6 +157,25 @@ unsafe impl Encode for CGAffineTransform {
             CGFloat::ENCODING,
         ],
     );
+}
+
+/// Set the `keyboard_avoiding_view` lift on `view` and re-emit its
+/// transform. Inside the keyboard's `UIView` animation block this animates
+/// with the keyboard. Returns whether the lift changed.
+pub(crate) fn set_keyboard_lift(
+    states: &mut HashMap<usize, AnimatedTransformState>,
+    view_ptr: usize,
+    view: &UIView,
+    lift: f32,
+) -> bool {
+    let state = states.entry(view_ptr).or_default();
+    if state.keyboard_ty == lift {
+        return false;
+    }
+    state.keyboard_ty = lift;
+    let matrix = state.compose();
+    let _: () = unsafe { msg_send![view, setTransform: matrix] };
+    true
 }
 
 /// Resolve any `static_translate_pct_x` / `_y` requests parked on

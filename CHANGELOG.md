@@ -11,6 +11,24 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **The soft keyboard no longer shrinks the app** (`backend-ios-mobile`,
+  `backend-android-mobile`). iOS used to cut the layout viewport by the
+  keyboard's height and Android let the system resize the window, so
+  every screen reflowed (in one jump) when a keyboard opened. Nothing
+  avoids the keyboard now unless it sits in the new
+  `keyboard_avoiding_view` (see Added), which moves with the keyboard's
+  own animation. On Android the window is now laid out edge to edge with
+  the system bars re-applied as margins on the host root, so app layout
+  between the bars is unchanged. *Migration:* wrap the app root in
+  `keyboard_avoiding_view { … }`, and wrap the content of any portal with
+  text fields (idea-ui's `Modal` already does). `docs/keyboard.md`.
+- **Remote bundles must be rebuilt again** (`runtime-vocabulary`,
+  `remote::CODEC_VERSION` 3). `Node::View` carries the new
+  `keyboard_avoid` field; an older bundle is refused with
+  `LoadError::IncompatibleCodec`. `ViewPrim` gains a public
+  `keyboard_avoid` field, so a `ViewPrim { .. }` literal needs it
+  (`keyboard_avoid: None`); the builders are unaffected.
+
 - **Remote bundles must be rebuilt** (`runtime-vocabulary`). A list of
   numbers (`Vec<u32>`, `[f64; N]`, …) now crosses between an app and a
   remote bundle as one little-endian byte run instead of element by
@@ -175,6 +193,40 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`keyboard_avoiding_view` — content that stays clear of the soft
+  keyboard, moving with the platform's own keyboard animation**
+  (`runtime-shared`, `runtime-layout`, `runtime-vocabulary`,
+  `runtime-macros`, `backend-ios-mobile`, `backend-android-mobile`,
+  `backend-web`, `idea-ui`). A core primitive (a `view` plus `behavior`
+  and `animated`): it measures how much of its own box the keyboard
+  covers and either pads its bottom by it (`Padding`, default — the
+  content area ends at the keyboard and `.safe_area(BOTTOM)` insets
+  inside collapse, so a composer sits flush) or lifts itself (`Translate`,
+  no relayout). iOS applies the change inside UIKit's keyboard animation
+  block; Android drives `translationY` from the system IME animation's
+  frames in Kotlin and lays out once per keyboard move; mobile web uses a
+  CSS transition estimating the keyboard (browsers expose no keyboard
+  animation). `keyboard_inset()` reports the keyboard's height and
+  animation timing to app code. idea-ui's `Modal` wraps its card in a
+  `Translate` avoider. Runtime-server dev relays it
+  (`Command::MarkKeyboardAvoiding`, `AppToDev::KeyboardChanged`,
+  PROTOCOL_VERSION 22). Android adds the Kotlin classes
+  `RustKeyboardInsets` and `RustKeyboardAvoider`, so reinstall the CLI.
+  New `Easing::control_points()`. `docs/keyboard.md`,
+  `examples/keyboard-avoid`.
+- **Inbound deep links on every target** (`runtime-shared`,
+  `runtime-vocabulary`, `backend-ios-mobile`, `backend-android-mobile`,
+  `backend-macos`, `backend-web`, `deep-link`). A link that launches the
+  app opens the linked screen on the first mount; a link arriving while
+  it runs goes through `runtime_shared::inbound_link` (observers,
+  interceptors, then the navigators) and moves the navigators the way a
+  web URL would. The run/build tools declare the app's links from
+  `Cargo.toml`. `docs/deep-links.md`.
+- **`spawn_then_in(&alive, future, callback)`** (`runtime-vocabulary`):
+  `spawn_then` bound to an explicit `ScopeAlive`, for a handler whose own
+  write rebuilds the control it is mounted on (the result used to be
+  dropped). The new `spawn-then-handler-anchor` lint flags the
+  unanchored shape.
 - **`autofocus` on `text_input` and `text_area`, and `focus()` works
   before the field is on screen** (`runtime-shared`,
   `runtime-vocabulary`, `runtime-macros`, `backend-web`,

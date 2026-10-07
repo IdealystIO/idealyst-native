@@ -44,6 +44,7 @@ on the registry internally, so one generic seam serves every target;
 | `whiteboard-demo` | Drawable canvas + camera + recording. See its module docs for the platform coverage: the canvas handler is real on web and an External placeholder on native. | web, macos, ios, android |
 | `inspector` | The Inspector's front end: a live debugging dashboard. Talks only to the Inspector server (`idealyst inspect`, which embeds and serves its web build); see [docs/inspector.md](../docs/inspector.md). | web, macos |
 | `baseline` | One text node. The framework's web bundle-size floor. | web |
+| `keyboard-avoid` | `keyboard_avoiding_view` at the root: a bottom composer rides the keyboard in step with the platform's own keyboard animation, plus a `keyboard_inset()` readout. See `docs/keyboard.md`. | web, ios, android |
 | `fiddle` | The online playground's compile server (not an idealyst app itself; `template/` is the project it compiles user snippets into). | — |
 
 ## Removed in the runtime-v2 one-core wave

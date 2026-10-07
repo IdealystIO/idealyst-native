@@ -1040,6 +1040,21 @@ where
             Command::ApplyScrollViewSafeAreaInset { node, sides } => {
                 self.register_safe_area(node, sides, true)?;
             }
+            Command::MarkKeyboardAvoiding { node, behavior, animated } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                self.backend.borrow_mut().mark_keyboard_avoiding(
+                    &n,
+                    runtime_shared::KeyboardAvoid {
+                        // 1 = Translate; 0 and any byte a newer peer invents
+                        // read as the default, Padding.
+                        behavior: match behavior {
+                            1 => runtime_shared::KeyboardAvoidBehavior::Translate,
+                            _ => runtime_shared::KeyboardAvoidBehavior::Padding,
+                        },
+                        animated,
+                    },
+                );
+            }
 
             // --- Animation ticks (per-frame, high-frequency) ---
             //

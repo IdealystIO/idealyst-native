@@ -3232,6 +3232,7 @@ name = "deep-link"
 version = "1.7.1"
 dependencies = [
  "runtime-core",
+ "runtime-shared",
  "runtime-vocabulary",
  "url",
  "wasm-bindgen-test",
@@ -6764,6 +6765,16 @@ dependencies = [
  "dev-server",
  "dnd",
  "idea-theme",
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
+name = "keyboard-avoid"
+version = "1.5.2"
+dependencies = [
  "idealyst",
  "runtime-core",
  "runtime-scene",

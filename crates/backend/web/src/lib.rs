@@ -85,11 +85,15 @@ mod style;
 pub mod time_source;
 pub mod url_provider;
 mod viewport_observer;
+/// Soft-keyboard avoidance on mobile browsers (VirtualKeyboard API /
+/// `visualViewport` → mount inset + `keyboard_inset()`).
+mod keyboard_source;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
 #[cfg(feature = "runtime-server")]
 pub use dev_transport::{connect_web, WebClientHandle};
+pub use keyboard_source::install_keyboard_avoidance;
 #[cfg(feature = "robot")]
 pub use robot_transport::install_robot_relay_client;
 pub use drop_deferral::install_drop_deferral;

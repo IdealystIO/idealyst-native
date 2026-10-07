@@ -94,6 +94,8 @@ pub enum P {
         on_hover: bool,
         ref_fill: bool,
         accessibility: AccessibilityProps,
+        /// `Some` for a `keyboard_avoiding_view`.
+        keyboard_avoid: Option<runtime_core::KeyboardAvoid>,
     },
     Text {
         /// Current content when statically knowable (`None` for bound /
@@ -261,6 +263,7 @@ mod imp {
                 on_hover: p.on_hover.is_some(),
                 ref_fill: p.ref_fill.is_some(),
                 accessibility: p.a11y,
+                keyboard_avoid: p.keyboard_avoid,
             };
         }
         if let Some(cell) = data.downcast_ref::<PrimCell<prims::TextPrim>>() {

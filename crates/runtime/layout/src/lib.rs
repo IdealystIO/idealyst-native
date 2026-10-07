@@ -218,6 +218,15 @@ pub struct LayoutTree {
     /// Combined with `author_padding` to produce Taffy's effective
     /// `style.padding`.
     safe_area_extra: HashMap<NodeId, [f32; 4]>, // top, right, bottom, left
+    /// Per-node bottom padding added by a `keyboard_avoiding_view`
+    /// (`Padding` behavior): how much of that view the soft keyboard covers,
+    /// in px. Combined into the node's effective bottom padding on top of
+    /// author padding, and it also collapses bottom `safe_area_extra` on the
+    /// node and its descendants (see [`Self::set_keyboard_padding`]): the
+    /// home indicator / navigation bar that inset reserves room for is
+    /// behind the keyboard, so keeping it would leave a gap the inset's
+    /// height between the content and the keyboard's top edge.
+    keyboard_padding: HashMap<NodeId, f32>,
     /// Direct children of a `Display::Grid` container. A grid item's CSS
     /// default `min-width: auto` resolves to its content's min size,
     /// which Taffy treats as the column's floor — so a wide cell can't
@@ -272,6 +281,7 @@ impl LayoutTree {
             hscroll_content: HashSet::new(),
             author_padding: HashMap::new(),
             safe_area_extra: HashMap::new(),
+            keyboard_padding: HashMap::new(),
             grid_items: HashSet::new(),
             table_grids: HashMap::new(),
             contents: HashSet::new(),
@@ -700,6 +710,7 @@ impl LayoutTree {
         self.hscroll_content.remove(&node.0);
         self.author_padding.remove(&node.0);
         self.safe_area_extra.remove(&node.0);
+        self.keyboard_padding.remove(&node.0);
         self.grid_items.remove(&node.0);
         self.table_grids.remove(&node.0);
         self.dropped.insert(node.0);
@@ -753,9 +764,107 @@ impl LayoutTree {
             .unwrap_or(Style::default());
         style.padding.top = LengthPercentage::Length(author[0] + top);
         style.padding.right = LengthPercentage::Length(author[1] + right);
-        style.padding.bottom = LengthPercentage::Length(author[2] + bottom);
+        style.padding.bottom = LengthPercentage::Length(author[2] + self.bottom_extra_of(node.0));
         style.padding.left = LengthPercentage::Length(author[3] + left);
         self.tree.set_style(node.0, style).expect("taffy set_style");
+    }
+
+    /// Set the keyboard padding of a `keyboard_avoiding_view` node (`Padding`
+    /// behavior): how much of that view the soft keyboard covers, in px
+    /// (`0.0` when it covers none). The node's effective bottom padding
+    /// becomes `author + collapsed safe-area extra + height`, and every
+    /// bottom `safe_area_extra` on the node or below it collapses by
+    /// `height` ([`runtime_shared::bottom_inset_under_keyboard`]) — so a
+    /// `.safe_area(BOTTOM)` composer inside sits flush on the keyboard.
+    ///
+    /// Scoped to the node's subtree on purpose: nothing outside a
+    /// keyboard-avoiding view re-lays out when the keyboard moves. Returns
+    /// whether any padding changed (no-op for an unchanged value).
+    pub fn set_keyboard_padding(&mut self, node: LayoutNode, height: f32) -> bool {
+        assert!(
+            !self.dropped.contains(&node.0),
+            "LayoutTree::set_keyboard_padding called on already-removed node {:?}",
+            node.0
+        );
+        let height = height.max(0.0);
+        let before = self.keyboard_padding.get(&node.0).copied().unwrap_or(0.0);
+        if before == height {
+            return false;
+        }
+        if height > 0.0 {
+            self.keyboard_padding.insert(node.0, height);
+        } else {
+            self.keyboard_padding.remove(&node.0);
+        }
+        // The node itself, plus every bottom-safe-area node in its subtree.
+        let mut affected: Vec<NodeId> = vec![node.0];
+        affected.extend(
+            self.safe_area_extra
+                .iter()
+                .filter(|(id, e)| e[2] > 0.0 && **id != node.0)
+                .map(|(id, _)| *id)
+                .filter(|id| self.is_ancestor_or_self(node.0, *id)),
+        );
+        let mut changed = false;
+        for id in affected {
+            let Some(mut style) = self.tree.style(id).ok().cloned() else { continue };
+            // A percent author padding never combined with the extras on this
+            // side (see the `author_padding` field doc).
+            let LengthPercentage::Length(old) = style.padding.bottom else { continue };
+            let author = self.author_padding.get(&id).map(|a| a[2]).unwrap_or(0.0);
+            let new = author + self.bottom_extra_of(id);
+            if old == new {
+                continue;
+            }
+            style.padding.bottom = LengthPercentage::Length(new);
+            self.tree.set_style(id, style).expect("taffy set_style");
+            changed = true;
+        }
+        changed
+    }
+
+    /// The keyboard padding currently set on `node` (px) — see
+    /// [`Self::set_keyboard_padding`].
+    pub fn keyboard_padding(&self, node: LayoutNode) -> f32 {
+        self.keyboard_padding.get(&node.0).copied().unwrap_or(0.0)
+    }
+
+    /// Whether `ancestor` is `id` or one of its (Taffy) ancestors.
+    fn is_ancestor_or_self(&self, ancestor: NodeId, id: NodeId) -> bool {
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if n == ancestor {
+                return true;
+            }
+            cur = self.tree.parent(n);
+        }
+        false
+    }
+
+    /// How much of `id`'s bottom the keyboard covers, as seen by the safe
+    /// area: the largest keyboard padding on `id` or any ancestor.
+    fn keyboard_cover_of(&self, id: NodeId) -> f32 {
+        if self.keyboard_padding.is_empty() {
+            return 0.0;
+        }
+        let mut cover = 0.0f32;
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if let Some(h) = self.keyboard_padding.get(&n) {
+                cover = cover.max(*h);
+            }
+            cur = self.tree.parent(n);
+        }
+        cover
+    }
+
+    /// Everything the framework adds to `id`'s bottom padding on top of the
+    /// author's: its opted-in safe-area inset less whatever the keyboard
+    /// covers, plus its own keyboard padding.
+    fn bottom_extra_of(&self, id: NodeId) -> f32 {
+        let extra = self.safe_area_extra.get(&id).map(|e| e[2]).unwrap_or(0.0);
+        runtime_shared::bottom_inset_under_keyboard(extra, self.keyboard_cover_of(id))
+            + self.keyboard_padding.get(&id).copied().unwrap_or(0.0)
     }
 
     /// Apply the framework's resolved style rules to a node by
@@ -1061,7 +1170,7 @@ impl LayoutTree {
         if let Some(v) = rules.padding_bottom.as_ref().map(|t| *t.value()) {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[2] = px;
-                let extra = self.safe_area_extra.get(&node.0).map(|e| e[2]).unwrap_or(0.0);
+                let extra = self.bottom_extra_of(node.0);
                 style.padding.bottom = LengthPercentage::Length(px + extra);
             } else {
                 style.padding.bottom = length_to_lp(v);
@@ -4995,5 +5104,119 @@ mod tests {
         assert_eq!(t.children_of(root), vec![c, a]);
         assert_eq!(t.children_of(other), vec![b]);
         assert_eq!(t.parent_of(b), Some(other));
+    }
+
+    // --- keyboard_avoiding_view padding vs. the bottom safe area ----------
+
+    /// iPhone-class screen: root column → avoider (fills) → [flex-1 body,
+    /// composer]. The composer has author padding 8 and opts into the
+    /// bottom safe area (34 pt home indicator); the field inside is 28 tall.
+    fn avoider_tree() -> (LayoutTree, LayoutNode, LayoutNode, LayoutNode) {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.width = Some(pct(100.0));
+        rr.height = Some(pct(100.0));
+        t.set_style(root, &rr);
+        let avoider = t.new_node();
+        let mut ar = StyleRules::default();
+        ar.flex_grow = Some(1.0f32.into());
+        t.set_style(avoider, &ar);
+        let body = t.new_node();
+        let mut br = StyleRules::default();
+        br.flex_grow = Some(1.0f32.into());
+        t.set_style(body, &br);
+        let bar = t.new_node();
+        let mut cr = StyleRules::default();
+        cr.padding_bottom = Some(px(8.0));
+        t.set_style(bar, &cr);
+        t.set_safe_area_extra(bar, 0.0, 0.0, 34.0, 0.0);
+        let field = t.new_node();
+        let mut fr = StyleRules::default();
+        fr.height = Some(px(28.0));
+        t.set_style(field, &fr);
+        t.add_child(bar, field);
+        t.add_child(avoider, body);
+        t.add_child(avoider, bar);
+        t.add_child(root, avoider);
+        (t, root, avoider, bar)
+    }
+
+    /// The avoider's keyboard padding makes its content end at the
+    /// keyboard's top, and the composer's home-indicator inset collapses —
+    /// otherwise a 34 pt dead band sits between composer and keyboard.
+    /// Restored exactly once the keyboard hides.
+    #[test]
+    fn keyboard_padding_ends_content_at_the_keyboard_and_collapses_safe_area() {
+        let (mut t, root, avoider, bar) = avoider_tree();
+        let (vw, vh, kb) = (393.0_f32, 852.0_f32, 336.0_f32);
+        t.compute(root, vw, vh);
+        let resting = t.frame_of(bar);
+        assert_eq!(resting.height, 28.0 + 8.0 + 34.0);
+        assert!((resting.y + resting.height - vh).abs() < 0.5);
+
+        assert!(t.set_keyboard_padding(avoider, kb));
+        t.compute(root, vw, vh);
+        let up = t.frame_of(bar);
+        assert_eq!(up.height, 28.0 + 8.0, "home-indicator inset collapsed, author 8 kept");
+        assert!((up.y + up.height - (vh - kb)).abs() < 0.5, "bar ends at the keyboard top");
+        assert_eq!(t.frame_of(avoider).height, vh, "the avoider itself keeps its size");
+
+        assert!(t.set_keyboard_padding(avoider, 0.0));
+        t.compute(root, vw, vh);
+        assert_eq!(t.frame_of(bar), resting);
+    }
+
+    /// Scoped: a bottom-safe-area node OUTSIDE the avoider keeps its inset —
+    /// nothing outside a keyboard-avoiding view re-lays out.
+    #[test]
+    fn keyboard_padding_does_not_touch_safe_area_outside_the_avoider() {
+        let (mut t, root, avoider, _bar) = avoider_tree();
+        let outside = t.new_node();
+        t.set_safe_area_extra(outside, 0.0, 0.0, 34.0, 0.0);
+        t.add_child(root, outside);
+        t.set_keyboard_padding(avoider, 300.0);
+        assert_eq!(t.tree.style(outside.0).unwrap().padding.bottom, LengthPercentage::Length(34.0));
+    }
+
+    /// Mid-move the keyboard covers less than the inset: only the uncovered
+    /// remainder applies, so the content never jumps by the inset.
+    #[test]
+    fn keyboard_padding_partially_covering_the_inset_keeps_the_remainder() {
+        let (mut t, _root, avoider, bar) = avoider_tree();
+        t.set_keyboard_padding(avoider, 20.0);
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(8.0 + 14.0));
+        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::Length(20.0));
+    }
+
+    /// Styles and safe-area extras applied WHILE the keyboard is up already
+    /// see the padding (a re-style mid-keyboard must not resurrect the inset
+    /// or drop the avoider's padding).
+    #[test]
+    fn keyboard_padding_survives_later_style_and_safe_area_writes() {
+        let (mut t, _root, avoider, bar) = avoider_tree();
+        t.set_keyboard_padding(avoider, 300.0);
+        let mut cr = StyleRules::default();
+        cr.padding_bottom = Some(px(12.0));
+        t.set_style(bar, &cr);
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(12.0));
+        t.set_safe_area_extra(bar, 0.0, 0.0, 40.0, 0.0);
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(12.0));
+        let mut ar = StyleRules::default();
+        ar.padding_bottom = Some(px(4.0));
+        t.set_style(avoider, &ar);
+        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::Length(304.0));
+        t.set_keyboard_padding(avoider, 0.0);
+        assert_eq!(t.tree.style(bar.0).unwrap().padding.bottom, LengthPercentage::Length(52.0));
+        assert_eq!(t.tree.style(avoider.0).unwrap().padding.bottom, LengthPercentage::Length(4.0));
+    }
+
+    #[test]
+    fn keyboard_padding_reports_no_change_for_the_same_value() {
+        let (mut t, _root, avoider, _bar) = avoider_tree();
+        assert!(!t.set_keyboard_padding(avoider, 0.0));
+        assert!(t.set_keyboard_padding(avoider, 100.0));
+        assert!(!t.set_keyboard_padding(avoider, 100.0));
+        assert_eq!(t.keyboard_padding(avoider), 100.0);
     }
 }

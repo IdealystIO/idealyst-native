@@ -120,6 +120,9 @@ pub struct SceneModel {
     /// (the opt-in is idempotent and resolved client-side). See
     /// `project_aas_state_snapshot`.
     node_safe_area: HashMap<NodeId, Command>,
+    /// Per-node `MarkKeyboardAvoiding`, replayed after `Create*` like the
+    /// safe-area opt-in (the client observes its own keyboard).
+    node_keyboard_avoid: HashMap<NodeId, Command>,
     /// Latest host-surface background (`SetAppBackground`), scrollbar theme
     /// (`SetScrollbarTheme`), and page metadata (`SetPageMetadata`) — each
     /// single-latest (the theme SDK re-emits on swap). Replayed in the
@@ -542,6 +545,7 @@ impl SceneModel {
                 self.node_icon_anim.remove(node);
                 self.node_a11y.remove(node);
                 self.node_safe_area.remove(node);
+                self.node_keyboard_avoid.remove(node);
                 // Releasing this node may have removed the last referent of
                 // a retired style — collect any now-unreferenced rules.
                 self.gc_retired_styles();
@@ -586,6 +590,9 @@ impl SceneModel {
             Command::ApplySafeAreaPadding { node, .. }
             | Command::ApplyScrollViewSafeAreaInset { node, .. } => {
                 self.node_safe_area.insert(*node, cmd.clone());
+            }
+            Command::MarkKeyboardAvoiding { node, .. } => {
+                self.node_keyboard_avoid.insert(*node, cmd.clone());
             }
             // Live-region announcements are transient — they fire once
             // when posted and don't have a persistent identity to
@@ -852,6 +859,9 @@ impl SceneModel {
         // none). Idempotent — replaying it just re-sets the same extra.
         for id in &node_ids {
             if let Some(cmd) = self.node_safe_area.get(id) {
+                out.push(cmd.clone());
+            }
+            if let Some(cmd) = self.node_keyboard_avoid.get(id) {
                 out.push(cmd.clone());
             }
         }

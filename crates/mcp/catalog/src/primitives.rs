@@ -106,6 +106,46 @@ inventory::submit! {
 
 inventory::submit! {
     PrimitiveEntry {
+        name: "keyboard_avoiding_view",
+        pascal_name: "KeyboardAvoidingView",
+        docs: "A `view` whose content the backend keeps clear of the soft keyboard, moving in step with the platform's OWN keyboard animation (iOS: inside UIKit's keyboard animation block; Android: the system IME animation's per-frame progress; mobile web: a CSS transition estimating it). It measures how much of ITS box the keyboard covers, so it only moves by what it actually overlaps. Nothing avoids the keyboard unless wrapped: put one at the app root to avoid it everywhere, and wrap a portal's content (modal, sheet) separately — portals mount outside the root. `Padding` (default) ends the content area at the keyboard's top and collapses `.safe_area(BOTTOM)` insets inside it, so a bottom composer sits flush on the keyboard; `Translate` lifts the whole view with no relayout (cheapest; forms, modals). A plain view on platforms without a soft keyboard. For custom reactions read `keyboard_inset()`.",
+        props: &[
+            PropFieldSpec {
+                name: "children",
+                type_str: "Vec<Element>",
+                doc: "Child primitives, inline `{ ... }` block inside `ui!`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "behavior",
+                type_str: "KeyboardAvoidBehavior",
+                doc: "`Padding` (default): pad the bottom by the covered height — the content area shrinks above the keyboard. `Translate`: lift the whole view, nothing re-lays out.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "animated",
+                type_str: "bool",
+                doc: "`true` (default): move with the keyboard's own animation. `false`: jump to the final position when the keyboard starts to move.",
+                constraint: "",
+            },
+            COMMON_STYLE_FIELD,
+            COMMON_REF_FILL_FIELD,
+            PropFieldSpec {
+                name: "safe_area",
+                type_str: "SafeAreaSides",
+                doc: "Per-side safe-area inset padding, as on `view`. A BOTTOM inset collapses under the keyboard.",
+                constraint: "",
+            },
+            COMMON_ACCESSIBILITY_FIELD,
+        ],
+        category: PrimitiveCategory::Structural,
+        backends: ALL_BACKENDS,
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    PrimitiveEntry {
         name: "text",
         pascal_name: "Text",
         docs: "Renders a string. A literal interpolates `{name}` placeholders f-string-style — signal slots are LIVE by type, `Display` values bake in (`text { \"count: {count}\" }`); a closure is reactive (`text { move || … }`); plain literals are static. Backends use native text widgets (`UILabel`, `TextView`, `<span>`, `NSTextField`). SLOTS TAKE A BARE IDENTIFIER ONLY (`{count}`). A field path, index, or method call inside braces — `{item.name}`, `{items[0]}`, `{obj.field()}` — is NOT a slot and is a COMPILE ERROR (loud, never silent): the message names the fix. Pull the value into a local first (`let name = item.name.clone(); text { \"{name}\" }`) or, when it must stay reactive, use a closure that reads it directly: `text { move || item.name.clone() }`.",

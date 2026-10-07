@@ -74,7 +74,8 @@ pub mod wasm;
 ///
 /// - 1: every value through postcard (implicit: those bundles report none).
 /// - 2: a list of numbers is one little-endian byte run ([`bulk`]).
-pub const CODEC_VERSION: u32 = 2;
+/// - 3: [`Node::View`] carries `keyboard_avoid` (`keyboard_avoiding_view`).
+pub const CODEC_VERSION: u32 = 3;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -116,6 +117,8 @@ pub enum Node {
         safe_area: u8,
         preserves_focus: bool,
         is_container: bool,
+        /// `Some` for a `keyboard_avoiding_view` (CODEC_VERSION 3).
+        keyboard_avoid: Option<runtime_shared::KeyboardAvoid>,
         /// Event handlers, each a callback taking the encoded event and
         /// replying the encoded response (see [`Handler`]).
         on_touch: Option<Cb>,

@@ -88,7 +88,7 @@ on. The set the framework ships is intentionally narrow — these are the
 snake_case tags `ui!` / `jsx!` recognize
 (`crates/runtime/macros/src/primitives.rs::canonical_primitive`):
 
-- **Layout / content**: `view`, `text`, `scroll_view`
+- **Layout / content**: `view`, `keyboard_avoiding_view`, `text`, `scroll_view`
 - **Controls**: `button`, `text_input`, `text_area`, `toggle`, `slider`
 - **Media**: `image`, `icon`, `link`
 - **Feedback**: `activity_indicator`
@@ -241,6 +241,23 @@ top-to-bottom), matching React Native.
 A `View` has no native behavior beyond "be a container." It exists
 to be the thing components hang structure off of — every layout
 component you write is going to compose `View`s.
+
+### `keyboard_avoiding_view` — a view that stays clear of the soft keyboard
+
+```rust
+pub fn keyboard_avoiding_view(children: Vec<Element>) -> GlueKeyboardAvoidingView
+```
+
+A `view` whose content the backend keeps clear of the on-screen
+keyboard, moving in step with the platform's own keyboard animation.
+`behavior` is `Padding` (default: the content area ends at the
+keyboard's top) or `Translate` (lift, no relayout). `animated = false`
+jumps instead of animating. It is a primitive rather than a component
+because the motion has to come from inside each platform's keyboard
+animation (UIKit's animation block, Android's IME insets animation),
+which only the backend can reach. Nothing avoids the keyboard unless
+wrapped: wrap the app root, and each portal's content. Full reference:
+[`keyboard.md`](keyboard.md).
 
 ### `Text` — the content leaf
 

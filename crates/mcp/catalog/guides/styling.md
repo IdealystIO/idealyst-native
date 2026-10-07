@@ -170,6 +170,7 @@ Note that **theme swaps never need a reactive style**: a static sheet whose valu
 - [[color_scheme]] — the platform light/dark default (useful for picking the initial theme).
 - [[current_breakpoint]] — read the active responsive breakpoint.
 - [[safe_area_insets]] — reactive per-side safe-area insets.
+- [[keyboard_inset]] — reactive soft-keyboard coverage + its animation timing, for app code that reacts to the keyboard. To keep content clear of it, wrap it in [[keyboard_avoiding_view]] (the app root, plus each portal's content).
 
 ## Per-platform notes
 

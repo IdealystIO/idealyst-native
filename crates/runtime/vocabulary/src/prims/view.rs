@@ -32,6 +32,9 @@ pub struct ViewPrim {
     pub on_file_drop: Option<FileDropHandler>,
     pub preserves_focus: bool,
     pub is_container: bool,
+    /// `Some` for a `keyboard_avoiding_view`: the backend keeps this view's
+    /// content clear of the soft keyboard (`SafeAreaOps::mark_keyboard_avoiding`).
+    pub keyboard_avoid: Option<runtime_shared::KeyboardAvoid>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(ViewHandle)>>,
 }

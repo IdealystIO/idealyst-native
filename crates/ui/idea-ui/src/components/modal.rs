@@ -1109,6 +1109,15 @@ fn assemble_overlay(
     let card = runtime_core::pressable(vec![anim_view], || {})
         .with_style(StyleApplication::new(card_layer_sheet()))
         .into_element();
+    // Keep the card clear of the soft keyboard (a form in a modal). A portal
+    // mounts outside the app root, so an app-level `keyboard_avoiding_view`
+    // can't reach it — the modal brings its own. `Translate` around the CARD
+    // only: it lifts by just what the card itself overlaps (a centered card a
+    // little, a bottom sheet by the keyboard's height), nothing re-lays out,
+    // and the dimming backdrop stays put.
+    let card = runtime_core::keyboard_avoiding_view(vec![card])
+        .behavior(runtime_core::KeyboardAvoidBehavior::Translate)
+        .into_element();
 
     // One fullscreen portal: backdrop (behind) + card as siblings in a
     // placement container (centered, top-anchored or bottom-pinned).
@@ -1332,12 +1341,33 @@ mod tests {
             // layer 1 = card layer (must be a Pressable so card taps don't
             // fall through to the backdrop).
             assert!(
-                matches!(classify(layers.remove(1)), P::Pressable { .. }),
+                matches!(card_layer(layers.remove(1)), P::Pressable { .. }),
                 "card layer must be a touch-consuming Pressable so a tap on \
                  the card doesn't fall through to the backdrop and dismiss \
                  the modal (Android FrameLayout fall-through)"
             );
     });
+    }
+
+    /// The card layer: a `Translate` keyboard avoider (a portal's content is
+    /// outside any app-level avoider) wrapping the touch-consuming card
+    /// `Pressable`. Returns the classified inner layer.
+    fn card_layer(layer: Element) -> P {
+        match classify(layer) {
+            P::View { keyboard_avoid: Some(avoid), mut children, .. } => {
+                assert_eq!(
+                    avoid.behavior,
+                    runtime_core::KeyboardAvoidBehavior::Translate,
+                    "the card lifts clear of the keyboard without re-laying out"
+                );
+                assert_eq!(children.len(), 1, "the avoider wraps exactly the card");
+                classify(children.remove(0))
+            }
+            _ => panic!(
+                "card layer must be a keyboard_avoiding_view around the card, \
+                 or a modal form sits under the soft keyboard"
+            ),
+        }
     }
 
     /// Find the body view — the first `View` with a direct `Text` child (the
@@ -1545,7 +1575,7 @@ mod tests {
             P::View { children, .. } => children,
             _ => panic!("portal child should be the placement container"),
         };
-        let mut card = match classify(layers.remove(1)) {
+        let mut card = match card_layer(layers.remove(1)) {
             P::Pressable { children, .. } => children,
             _ => panic!("card layer should be a Pressable"),
         };
@@ -1679,7 +1709,7 @@ mod tests {
                     _ => panic!("portal child should be the placement container"),
                 };
                 assert_eq!(layers.len(), 2, "container holds [backdrop, card]");
-                let mut card = match classify(layers.remove(1)) {
+                let mut card = match card_layer(layers.remove(1)) {
                     P::Pressable { children, .. } => children,
                     _ => panic!(
                         "the card layer must stay a touch-consuming Pressable in \

@@ -275,6 +275,7 @@ where
     // "client→server→client" loop latency to one tick.
     let socket_for_pump = socket.clone();
     let mut last_raf_ms = now_ms();
+    let mut last_keyboard = runtime_shared::KeyboardInset::HIDDEN;
     let outbound_pump = runtime_shared::raf_loop(move || {
         // Skip the entire tick while the socket is still mid-handshake
         // — `send_with_u8_array` would throw `InvalidStateError` and
@@ -293,6 +294,19 @@ where
         // animations "skipping the intro" on a slow page load.
         let dt_ms = if dt_ms > 100 { 16 } else { dt_ms };
         let _ = raf_tx.send(AppToDev::RequestFrame { dt_ms });
+        // Relay the soft-keyboard inset (reported locally by
+        // `keyboard_source`) when it changed, so author `keyboard_inset()`
+        // in the sidecar follows — the web twin of the native shells'
+        // `RuntimeServerShell::report_keyboard`.
+        let kb = runtime_vocabulary::keyboard::latest();
+        if kb != last_keyboard {
+            last_keyboard = kb;
+            let _ = raf_tx.send(AppToDev::KeyboardChanged {
+                height: kb.height,
+                duration_ms: kb.transition.duration_ms,
+                easing: kb.transition.easing.control_points(),
+            });
+        }
         // Drain everything currently queued.
         loop {
             match outbound_rx.try_recv() {

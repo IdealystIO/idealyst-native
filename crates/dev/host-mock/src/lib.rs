@@ -1132,6 +1132,13 @@ impl caps::SafeAreaOps for HostMock {
         );
     }
 
+    fn mark_keyboard_avoiding(&mut self, node: &Node, avoid: runtime_shared::KeyboardAvoid) {
+        self.s.rec(
+            "mark_keyboard_avoiding",
+            format!("mark_keyboard_avoiding n{node} {:?} animated={}", avoid.behavior, avoid.animated),
+        );
+    }
+
     // apply_scroll_view_safe_area_inset keeps the trait default (falls
     // back to apply_safe_area_padding) — the frozen fallback chain the
     // conformance battery pins.

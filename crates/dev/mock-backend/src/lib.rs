@@ -114,6 +114,8 @@ pub struct MockNode {
     /// opt-in crossed the wire AND that a device-insets change re-applies.
     pub safe_area_sides: Option<runtime_shared::SafeAreaSides>,
     pub safe_area_apply_count: u32,
+    /// `keyboard_avoiding_view` opt-in received over the wire.
+    pub keyboard_avoid: Option<runtime_shared::KeyboardAvoid>,
     /// Scroll offset written via `Backend::set_node_scroll` (read back by
     /// `node_scroll`). The mock treats every node as scrollable so
     /// navigator URL-sync scroll snapshot/restore is testable headlessly.
@@ -137,6 +139,7 @@ impl MockNode {
             animated: Vec::new(),
             safe_area_sides: None,
             safe_area_apply_count: 0,
+            keyboard_avoid: None,
             scroll: (0.0, 0.0),
         }
     }
@@ -212,6 +215,12 @@ impl MockBackend {
     /// The first node (if any) that had a safe-area opt-in applied, as
     /// `(sides, apply_count)`. Tests opt in on exactly one node, so this
     /// is unambiguous; `None` means the opt-in never reached the client.
+    /// The first node (if any) marked `keyboard_avoiding_view` by a replayed
+    /// `MarkKeyboardAvoiding`.
+    pub fn keyboard_avoiding(&self) -> Option<runtime_shared::KeyboardAvoid> {
+        self.nodes.values().find_map(|n| n.keyboard_avoid)
+    }
+
     pub fn safe_area_applied(&self) -> Option<(runtime_shared::SafeAreaSides, u32)> {
         self.nodes
             .values()
@@ -627,6 +636,12 @@ impl caps::SafeAreaOps for MockBackend {
         if let Some(n) = self.node_mut(*node) {
             n.safe_area_sides = Some(sides);
             n.safe_area_apply_count += 1;
+        }
+    }
+
+    fn mark_keyboard_avoiding(&mut self, node: &u64, avoid: runtime_shared::KeyboardAvoid) {
+        if let Some(n) = self.node_mut(*node) {
+            n.keyboard_avoid = Some(avoid);
         }
     }
 

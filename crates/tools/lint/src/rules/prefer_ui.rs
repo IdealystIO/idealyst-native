@@ -82,6 +82,7 @@ const EXEMPT_VARIANTS: &[&str] = &["External", "Component"];
 /// finding could only be suppressed, never fixed.
 const PRIMITIVE_CONSTRUCTORS: &[&str] = &[
     "view",
+    "keyboard_avoiding_view",
     "text",
     "button",
     "icon",
@@ -119,21 +120,21 @@ const FRAMEWORK_ROOTS: &[&str] = &[
     "primitives",
 ];
 
-/// The canonical constructor `name` spells, if it is one.
 /// Element constructors with NO `ui!` tag — never reported by this rule,
 /// but still evidence that a fn builds a tree (`prefer-component`).
 const TAGLESS_CONSTRUCTORS: &[&str] = &["pressable", "text_area"];
 
+/// The canonical constructor `name` spells, if it is one.
 pub(crate) fn constructor(name: &str) -> Option<&'static str> {
     PRIMITIVE_CONSTRUCTORS.iter().copied().find(|c| *c == name)
 }
 
-/// A framework name this module tracks through imports: a constructor or
 /// Whether a call to `name` builds an element, `ui!` tag or not.
 pub(crate) fn builds_element(name: &str) -> bool {
     constructor(name).is_some() || TAGLESS_CONSTRUCTORS.contains(&name)
 }
 
+/// A framework name this module tracks through imports: a constructor or
 /// one of the [`CONTROL_FLOW`] glue fns.
 fn tracked(name: &str) -> Option<&'static str> {
     constructor(name).or_else(|| CONTROL_FLOW.iter().copied().find(|c| *c == name))
@@ -147,7 +148,6 @@ fn has_framework_root(path: &syn::Path) -> bool {
 /// module is `builder` / `builders` — `builders::view()`,
 /// `runtime_vocabulary::builders::scroll_view()`, `builder::text(…)`.
 ///
-/// Two conditions keep this to the framework's layer (#26 / #105):
 /// Only a builder that HAS a `ui!` tag is reported (see
 /// [`PRIMITIVE_CONSTRUCTORS`]): `builders::swap_navigator(&ROUTE)`,
 /// `stack_navigator`, `navigator_outlet`, `portal`, `virtualizer`,
@@ -155,6 +155,7 @@ fn has_framework_root(path: &syn::Path) -> bool {
 /// things the macro cannot spell, and a finding there could only be
 /// suppressed.
 ///
+/// Two conditions keep this to the framework's layer (#26 / #105):
 ///
 /// - the `builder(s)` segment must be the one directly before the called
 ///   fn. A trailing `builder` is the ubiquitous builder-PATTERN
@@ -172,10 +173,10 @@ fn is_builder_layer_call(path: &syn::Path) -> bool {
     if n < 2 || !matches!(segs[n - 2].as_str(), "builder" | "builders") {
         return false;
     }
-    let owners = &segs[..n - 2];
     if constructor(&segs[n - 1]).is_none() {
         return false; // no `ui!` spelling to point at
     }
+    let owners = &segs[..n - 2];
     owners.is_empty()
         || owners.iter().any(|s| {
             FRAMEWORK_ROOTS.contains(&s.as_str()) && !matches!(s.as_str(), "builder" | "builders")
@@ -465,7 +466,6 @@ mod tests {
         assert_eq!(out.len(), 3, "{out:?}");
     }
 
-    /// The reported bug (#26 / #105): the builder arm matched a `builder`
     /// The reported bug: `pressable(…)` and `builders::swap_navigator(…)`
     /// were told to "compose inside `ui!`", but `ui!` has no tag for
     /// either (and idea-ui ships no `Pressable`), so the finding could
@@ -491,6 +491,7 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
     }
 
+    /// The reported bug (#26 / #105): the builder arm matched a `builder`
     /// segment ANYWHERE in the path — including the last one — so every
     /// third-party builder-pattern constructor (`r2d2::Pool::builder()`,
     /// `reqwest::Client::builder()`) was reported as a hand-built element.
@@ -709,10 +710,10 @@ mod tests {
         assert!(out[1].message.contains("reactive `if`"), "{out:?}");
         let help = out[0].help.as_deref().unwrap_or("");
         assert!(help.contains("-- <why>"), "the help names the reasoned opt-out: {help}");
-    }
         // The reported trap: the advice must say when the `ui!` form is
         // reactive, or a hoisted snapshot silently becomes a static match.
         assert!(help.contains("bare plain-value binding"), "{help}");
+    }
 
     /// Its own id, so a site that legitimately needs the call can opt out
     /// without also silencing the constructor findings — and vice versa.

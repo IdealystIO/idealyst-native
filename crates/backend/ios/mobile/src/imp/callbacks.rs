@@ -663,8 +663,8 @@ declare_class!(
             // (a flush unmounting the focused field makes UIKit resign first
             // responder and post this synchronously). See
             // `keyboard_frame_policy`.
-            if let Some(rect) = unsafe { keyboard_end_frame(note) } {
-                crate::imp::deliver_keyboard_frame(rect);
+            if let Some(change) = unsafe { keyboard_frame_change(note) } {
+                crate::imp::deliver_keyboard_frame(change);
             }
         }
     }
@@ -678,25 +678,36 @@ impl KeyboardObserver {
     }
 }
 
-/// Extract the keyboard's end frame (window/screen base coordinates) from a
+/// Extract the keyboard's end frame (window/screen base coordinates) and
+/// the animation that moves it there from a
 /// `UIKeyboardWillChangeFrameNotification`. Returns `None` if `userInfo` or
 /// the frame value is absent. The value under `UIKeyboardFrameEndUserInfoKey`
-/// is an `NSValue` wrapping a `CGRect`.
+/// is an `NSValue` wrapping a `CGRect`; duration and curve are `NSNumber`s
+/// (absent → no animation, which applies the frame immediately).
 ///
 /// # Safety
 /// `note` must be a valid `NSNotification`.
-pub(crate) unsafe fn keyboard_end_frame(note: &NSObject) -> Option<objc2_foundation::CGRect> {
+pub(crate) unsafe fn keyboard_frame_change(
+    note: &NSObject,
+) -> Option<crate::keyboard_frame_policy::KeyboardFrameChange<objc2_foundation::CGRect>> {
     let user_info: *mut NSObject = msg_send![note, userInfo];
     if user_info.is_null() {
         return None;
     }
-    let key = NSString::from_str("UIKeyboardFrameEndUserInfoKey");
-    let value: *mut NSObject = msg_send![user_info, objectForKey: &*key];
+    let lookup = |name: &str| -> *mut NSObject {
+        let key = NSString::from_str(name);
+        msg_send![user_info, objectForKey: &*key]
+    };
+    let value = lookup("UIKeyboardFrameEndUserInfoKey");
     if value.is_null() {
         return None;
     }
-    let rect: objc2_foundation::CGRect = msg_send![value, CGRectValue];
-    Some(rect)
+    let frame: objc2_foundation::CGRect = msg_send![value, CGRectValue];
+    let duration = lookup("UIKeyboardAnimationDurationUserInfoKey");
+    let duration_s: f64 = if duration.is_null() { 0.0 } else { msg_send![duration, doubleValue] };
+    let curve = lookup("UIKeyboardAnimationCurveUserInfoKey");
+    let curve: isize = if curve.is_null() { 0 } else { msg_send![curve, integerValue] };
+    Some(crate::keyboard_frame_policy::KeyboardFrameChange { frame, duration_s, curve })
 }
 
 // =========================================================================

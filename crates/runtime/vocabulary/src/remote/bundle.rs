@@ -439,6 +439,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             safe_area: p.safe_area.0,
             preserves_focus: p.preserves_focus,
             is_container: p.is_container,
+            keyboard_avoid: p.keyboard_avoid,
             on_touch: p.on_touch.map(|f| handler(move |e| f(e))),
             on_wheel: p.on_wheel.map(|f| handler(move |e| f(e))),
             on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),

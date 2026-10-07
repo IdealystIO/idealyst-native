@@ -345,6 +345,18 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     schedule_flush();
 }
 
+/// Report a soft-keyboard move to author code (`keyboard_inset()`).
+/// Called from the IME seam (`imp::soft_keyboard::on_target`, fed by
+/// `RustKeyboardInsets`) with the inset the IME is animating to. Same
+/// discipline as [`forward_viewport`]: the seam runs outside
+/// `World::enter`, so the push stages through the vocabulary's captured
+/// handle and rides one deduped [`schedule_flush`].
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn forward_keyboard_inset(inset: runtime_shared::KeyboardInset) {
+    runtime_vocabulary::keyboard::push(inset);
+    schedule_flush();
+}
+
 /// Run `f` with the mounted app's world ambient (`World::enter`).
 /// JNI-interop seam: exports that must CREATE reactive state
 /// (`signal()`, `memo()`) run outside any handler/effect, where no
@@ -1151,6 +1163,10 @@ mod native {
         fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
             AndroidBackend::apply_scroll_view_safe_area_inset_impl(self, node, sides)
         }
+
+        fn mark_keyboard_avoiding(&mut self, node: &Self::Node, avoid: runtime_shared::KeyboardAvoid) {
+            crate::imp::soft_keyboard::mark(self, node, avoid)
+        }
     }
 
     impl caps::GridOps for AndroidBackend {
@@ -1630,22 +1646,6 @@ mod tests {
         }
     }
 
-    /// `schedule_flush` queues exactly one deduped microtask; staged
-    /// writes commit when the looper turn drains it — the exact
-    /// stage-during-dispatch / commit-at-the-boundary contract the
-    /// dispatch-site glue relies on.
-    #[test]
-    fn schedule_flush_dedups_and_commits_on_looper_turn() {
-        install_test_scheduler();
-        let world = World::new();
-        set_flush_world(Some(world.clone()));
-
-        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
-        let count = world.enter(|| {
-            let count = signal(0i32);
-            let log = log.clone();
-            effect(move || log.borrow_mut().push(count.get()));
-            count
     /// REGRESSION: a link delivered from `onNewIntent` is a raw platform
     /// callback — no framework wrapper flushes after it. The navigation the
     /// router stages must still commit, so `deliver_inbound_link` owes the
@@ -1681,6 +1681,22 @@ mod tests {
         set_flush_world(None);
     }
 
+    /// `schedule_flush` queues exactly one deduped microtask; staged
+    /// writes commit when the looper turn drains it — the exact
+    /// stage-during-dispatch / commit-at-the-boundary contract the
+    /// dispatch-site glue relies on.
+    #[test]
+    fn schedule_flush_dedups_and_commits_on_looper_turn() {
+        install_test_scheduler();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+
+        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let count = world.enter(|| {
+            let count = signal(0i32);
+            let log = log.clone();
+            effect(move || log.borrow_mut().push(count.get()));
+            count
         });
         assert_eq!(*log.borrow(), vec![0], "effect ran once at creation");
 

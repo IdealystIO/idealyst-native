@@ -372,12 +372,14 @@ pub mod slots;
 #[cfg(feature = "ui-overlay")]
 pub mod overlay;
 pub mod style_attach;
+pub mod keyboard;
 pub mod theme;
 pub mod viewport;
 
 pub use builders::{
     activity_indicator, anchored_overlay, button, graphics, icon, image, link, navigator_outlet,
-    overlay, portal, presence, pressable, scroll_view, slider, stack_navigator, swap_navigator,
+    keyboard_avoiding_view, overlay, portal, presence, pressable, scroll_view, slider,
+    stack_navigator, swap_navigator,
     text, text_area, text_input, toggle, view, virtualizer, SceneChild, TextContent,
 };
 pub use caps::AllCaps;

@@ -337,6 +337,18 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     schedule_flush();
 }
 
+/// Report a soft-keyboard move to author code (`keyboard_inset()`).
+/// Called by the keyboard seam (`IosBackend::keyboard_moved`,
+/// fed by `UIKeyboardWillChangeFrameNotification`) with the inset the
+/// keyboard is animating to. Same discipline as [`forward_viewport`]: the
+/// seam runs outside `World::enter`, so the push stages through the
+/// vocabulary's captured handle and rides one deduped [`schedule_flush`].
+/// Before any world reads `keyboard_inset()` the value is kept as the seed.
+pub(crate) fn forward_keyboard_inset(inset: runtime_shared::KeyboardInset) {
+    runtime_vocabulary::keyboard::push(inset);
+    schedule_flush();
+}
+
 /// Run a platform-invoked vocabulary callback with the mounted world
 /// ambient (`World::enter`).
 ///
@@ -1216,6 +1228,10 @@ mod ios_impl {
 
         fn apply_scroll_view_safe_area_inset(&mut self, node: &Self::Node, sides: SafeAreaSides) {
             IosBackend::apply_scroll_view_safe_area_inset_impl(self, node, sides)
+        }
+
+        fn mark_keyboard_avoiding(&mut self, node: &Self::Node, avoid: runtime_shared::KeyboardAvoid) {
+            IosBackend::mark_keyboard_avoiding_impl(self, node, avoid)
         }
     }
 

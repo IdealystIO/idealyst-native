@@ -186,6 +186,18 @@ const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
         ),
     ),
     (
+        "RustKeyboardInsets.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustKeyboardInsets.kt"
+        ),
+    ),
+    (
+        "RustKeyboardAvoider.kt",
+        include_str!(
+            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustKeyboardAvoider.kt"
+        ),
+    ),
+    (
         "RustOverlayDismissListener.kt",
         include_str!(
             "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustOverlayDismissListener.kt"

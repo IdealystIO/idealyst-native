@@ -239,15 +239,32 @@ pub struct IosBackend {
     pub(crate) last_viewport: Option<(f32, f32)>,
     /// Height (points) of the soft keyboard currently overlapping the host
     /// view's bottom, or `0.0` when no keyboard is shown. UIKit overlays the
-    /// keyboard without resizing the host, so [`Self::viewport_size`]
-    /// subtracts this to shrink the layout viewport — making content reflow
-    /// above the keyboard and restore when it dismisses (the iOS analog of
-    /// Android's window resize). Driven by the `KeyboardObserver` →
+    /// keyboard without resizing the host; this value is what author code
+    /// sees through `keyboard_inset()`, and a change moves the
+    /// `keyboard_avoiding_view`s ([`Self::keyboard_moved`]) — the app
+    /// viewport itself never shrinks. Driven by the `KeyboardObserver` →
     /// [`deliver_keyboard_frame`] → [`Self::on_keyboard_frame_changed`], or
     /// by the layout pass when the frame arrived while the backend was
     /// borrowed (it must never be dropped — a lost close frame leaves the
     /// viewport short by the keyboard height for good).
     pub(crate) keyboard_overlap: f32,
+    /// True while a layout pass runs inside the keyboard's `UIView`
+    /// animation block (see [`Self::keyboard_moved`]). The
+    /// apply-frames loop reads it to give views that have NEVER been
+    /// framed their first frame with animations off — inside the block
+    /// they would otherwise grow out of a zero rect at the origin.
+    keyboard_animating: bool,
+    /// Live `keyboard_avoiding_view`s, keyed by view pointer
+    /// (`mark_keyboard_avoiding_impl`; dropped at teardown with the other
+    /// pointer-keyed tables).
+    keyboard_avoiders: HashMap<usize, KeyboardAvoider>,
+    /// The keyboard's top edge in host coordinates; `f32::INFINITY` while
+    /// it covers none of the host. Each avoider measures its own overlap
+    /// against it.
+    keyboard_top_in_host: f32,
+    /// Re-entrancy guard for [`Self::reconcile_keyboard_avoiders`] (it may
+    /// run one more layout pass, which must not reconcile again).
+    reconciling_avoiders: bool,
     /// Per-view cached animation state. Mirrors the web backend's
     /// `animated_states` map; see [`animated`] for the routing
     /// from [`AnimProp`](runtime_shared::animation::AnimProp) to
@@ -438,6 +455,21 @@ pub fn set_animated_color(
     };
 }
 
+/// A registered `keyboard_avoiding_view`.
+pub(crate) struct KeyboardAvoider {
+    view: Retained<UIView>,
+    node: runtime_layout::LayoutNode,
+    avoid: runtime_shared::KeyboardAvoid,
+    /// The overlap last applied (padding or lift), points.
+    applied: f32,
+}
+
+use crate::keyboard_frame_policy::AvoiderPass;
+
+/// A keyboard notification as the backend consumes it (UIKit rect type).
+pub(crate) type KeyboardFrameChange =
+    crate::keyboard_frame_policy::KeyboardFrameChange<objc2_foundation::CGRect>;
+
 thread_local! {
     /// Coalescing flag: set when a layout pass is queued but not yet
     /// fired. Subsequent `schedule_layout_pass()` calls are dropped
@@ -461,7 +493,7 @@ thread_local! {
     /// the backend is free) or at the top of
     /// [`IosBackend::run_layout_pass_global`]. See `keyboard_frame_policy`.
     static KEYBOARD_FRAME_MAILBOX:
-        crate::keyboard_frame_policy::KeyboardFrameMailbox<objc2_foundation::CGRect> =
+        crate::keyboard_frame_policy::KeyboardFrameMailbox<KeyboardFrameChange> =
         const { crate::keyboard_frame_policy::KeyboardFrameMailbox::new() };
 }
 
@@ -476,14 +508,14 @@ thread_local! {
 /// the frame goes into a latest-wins mailbox; if the backend is busy we
 /// queue a layout pass, whose drain retries until the borrow is released and
 /// applies the mailbox before reading the viewport.
-pub(crate) fn deliver_keyboard_frame(rect: objc2_foundation::CGRect) {
+pub(crate) fn deliver_keyboard_frame(change: KeyboardFrameChange) {
     let rc = IOS_BACKEND_SELF
         .with(|s| s.borrow().clone())
         .and_then(|weak| weak.upgrade());
     KEYBOARD_FRAME_MAILBOX.with(|mailbox| {
         crate::keyboard_frame_policy::deliver(
             mailbox,
-            rect,
+            change,
             rc.as_deref(),
             |b: &mut IosBackend, frame| b.on_keyboard_frame_changed(frame),
             schedule_layout_pass,
@@ -728,6 +760,10 @@ impl IosBackend {
             layout_style_keys: HashMap::new(),
             last_viewport: None,
             keyboard_overlap: 0.0,
+            keyboard_animating: false,
+            keyboard_avoiders: HashMap::new(),
+            keyboard_top_in_host: f32::INFINITY,
+            reconciling_avoiders: false,
             animated_states: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             collection_views: std::collections::HashSet::new(),
@@ -3345,6 +3381,7 @@ impl IosBackend {
             // this address — see `layout_for_view`'s re-registration,
             // which clears the same set for that reason.
             self.applied_frames.remove(&k);
+            self.keyboard_avoiders.remove(&k);
             self.layout_style_keys.remove(&k);
             self.external_content_measures.remove(&k);
             self.styled_texts.remove(&k);
@@ -4150,6 +4187,7 @@ impl IosBackend {
             // card" symptom: the card's recycled pointer inherited the
             // prior teardown's frame and never got laid out.
             self.applied_frames.remove(&k);
+            self.keyboard_avoiders.remove(&k);
             // Per-node animation state (opacity/transform caches) keyed by
             // the same pointer — drop it so a recycled pointer doesn't
             // inherit a dead view's transform/alpha (e.g. a leftover
@@ -4598,8 +4636,15 @@ impl IosBackend {
         // queued this pass for exactly that. Also covers runtime-server mode,
         // where there is no global self-handle and the host's synchronous
         // `run_layout` is the only drain.
-        if let Some(frame) = KEYBOARD_FRAME_MAILBOX.with(|m| m.take()) {
-            self.apply_keyboard_frame(frame);
+        if let Some(change) = KEYBOARD_FRAME_MAILBOX.with(|m| m.take()) {
+            if self.apply_keyboard_frame(change.frame) {
+                // The keyboard moved: move the avoiders with it (that runs
+                // the layout — inside the keyboard's animation for animated
+                // ones; the mailbox is empty now, so it's a plain pass).
+                drop(_t);
+                self.keyboard_moved(change);
+                return;
+            }
         }
         let (vw, vh) = self.viewport_size();
         backend_ios_core::ios_log(&format!(
@@ -4766,8 +4811,26 @@ impl IosBackend {
                 x: (frame.x + frame.width / 2.0) as f64,
                 y: (frame.y + frame.height / 2.0) as f64,
             };
+            // Inside the keyboard's animation block, a view that has never
+            // been framed would animate out of a zero rect at the origin
+            // (UIKit animates from the current model value). Give it its
+            // first frame with animations off; already-framed views animate
+            // with the keyboard.
+            let first_frame_unanimated =
+                self.keyboard_animating && !self.applied_frames.contains_key(key);
+            let animations_were_enabled: bool = if first_frame_unanimated {
+                let was = unsafe { msg_send![objc2::class!(UIView), areAnimationsEnabled] };
+                let _: () = unsafe { msg_send![objc2::class!(UIView), setAnimationsEnabled: false] };
+                was
+            } else {
+                true
+            };
             let _: () = unsafe { msg_send![view, setBounds: bounds] };
             let _: () = unsafe { msg_send![view, setCenter: center] };
+            if first_frame_unanimated {
+                let _: () =
+                    unsafe { msg_send![objc2::class!(UIView), setAnimationsEnabled: animations_were_enabled] };
+            }
             // Resize any `idealyst_gradient` CAGradientLayer this view
             // owns to match the new bounds. The gradient was inserted
             // at apply-style time when bounds were still 0×0; without
@@ -5044,18 +5107,16 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
         drop(_t_sync);
         drop(_t);
         phase_timer::take_and_dump("layout pass");
+        self.reconcile_keyboard_avoiders();
     }
 
     /// Return the viewport size for layout. Tries host_root.bounds
     /// first (which is non-zero after UIKit has laid out the host),
     /// then UIScreen.main.bounds.
     fn viewport_size(&self) -> (f32, f32) {
-        let (w, h) = self.host_viewport_size();
-        // Subtract the soft-keyboard overlap so the layout viewport ends at
-        // the top of the keyboard — content reflows above it, and restores
-        // to full height when `keyboard_overlap` returns to 0 on dismiss.
-        // Width is untouched (the keyboard only ever covers the bottom).
-        (w, (h - self.keyboard_overlap).max(0.0))
+        // The keyboard never shrinks the app viewport: only
+        // `keyboard_avoiding_view`s avoid it (see `keyboard_moved`).
+        self.host_viewport_size()
     }
 
     /// The raw host viewport (host bounds, falling back to the screen) with
@@ -5086,20 +5147,157 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
     /// layout pass so the viewport (now inset) re-flows. On dismiss the end
     /// frame sits below the host, the intersection is empty, and the overlap
     /// returns to 0 — making open and close symmetric.
-    pub(crate) fn on_keyboard_frame_changed(&mut self, kb_frame_screen: objc2_foundation::CGRect) {
-        if self.apply_keyboard_frame(kb_frame_screen) {
-            // Defer to the next main-queue turn (the standard out-of-band
-            // relayout path) rather than recomputing synchronously inside the
-            // notification dispatch.
-            schedule_layout_pass();
+    pub(crate) fn on_keyboard_frame_changed(&mut self, change: KeyboardFrameChange) {
+        if self.apply_keyboard_frame(change.frame) {
+            // Synchronously inside the notification: UIKit posts
+            // `willChangeFrame` just before it starts the keyboard's own
+            // animation, so an animation block opened here runs alongside
+            // it on the same clock.
+            self.keyboard_moved(change);
         }
+    }
+
+    /// Register a `keyboard_avoiding_view`. If the keyboard is already up
+    /// (a screen mounted while typing), the pass this schedules applies its
+    /// overlap through [`Self::reconcile_keyboard_avoiders`], unanimated.
+    pub(crate) fn mark_keyboard_avoiding_impl(
+        &mut self,
+        node: &IosNode,
+        avoid: runtime_shared::KeyboardAvoid,
+    ) {
+        let view = node.as_view();
+        let layout_node = self.layout_for_view(view);
+        let retained: Retained<UIView> =
+            unsafe { Retained::retain(view as *const UIView as *mut UIView) }.expect("non-null UIView");
+        self.keyboard_avoiders.insert(
+            node.view_key(),
+            KeyboardAvoider { view: retained, node: layout_node, avoid, applied: 0.0 },
+        );
+        schedule_layout_pass();
+    }
+
+    /// The keyboard moved (show / hide / resize): report it to author code
+    /// and move every `keyboard_avoiding_view` to its new overlap. Animated
+    /// avoiders change INSIDE a `UIView` animation block carrying the
+    /// keyboard notification's own duration and curve, so UIKit animates
+    /// their new frames / lift on the compositor in lockstep with the
+    /// keyboard — no per-frame work on our side. Unanimated ones (and any
+    /// change that arrives without an animation) apply first, outside it.
+    fn keyboard_moved(&mut self, change: KeyboardFrameChange) {
+        crate::newcore::forward_keyboard_inset(runtime_shared::KeyboardInset::new(
+            self.keyboard_overlap,
+            crate::keyboard_frame_policy::keyboard_transition(change.duration_s),
+        ));
+        let animate = change.duration_s > 0.0;
+        if self.apply_keyboard_avoiders(AvoiderPass::Instant { all: !animate }) {
+            self.run_layout_pass_global();
+        }
+        if !animate || !self.keyboard_avoiders.values().any(|a| a.avoid.animated) {
+            return;
+        }
+        let options = crate::keyboard_frame_policy::uiview_animation_options(change.curve);
+        let duration = change.duration_s;
+        self.keyboard_animating = true;
+        crate::keyboard_frame_policy::run_synchronously_within(
+            self,
+            |b: &mut IosBackend| {
+                if b.apply_keyboard_avoiders(AvoiderPass::Animated) {
+                    b.run_layout_pass_global();
+                }
+            },
+            |body| {
+                let animations = block2::StackBlock::new(move || body()).copy();
+                let _: () = unsafe {
+                    msg_send![
+                        objc2::class!(UIView),
+                        animateWithDuration: duration,
+                        delay: 0.0f64,
+                        options: options,
+                        animations: &*animations,
+                        completion: Option::<&block2::Block<dyn Fn(objc2::runtime::Bool)>>::None
+                    ]
+                };
+            },
+        );
+        self.keyboard_animating = false;
+    }
+
+    /// Bring the selected avoiders to their current overlap. `Padding` sets
+    /// the layout tree's keyboard padding (returns `true`: a layout pass is
+    /// needed); `Translate` writes the lift into the view's transform right
+    /// away. Avoiders not laid out yet are skipped — the reconcile after
+    /// their first pass picks them up.
+    fn apply_keyboard_avoiders(&mut self, pass: AvoiderPass) -> bool {
+        let keys: Vec<usize> = self
+            .keyboard_avoiders
+            .iter()
+            .filter(|(_, a)| pass.includes(a.avoid))
+            .map(|(k, _)| *k)
+            .collect();
+        let mut needs_layout = false;
+        for key in keys {
+            let Some(overlap) = self.avoider_overlap(key) else { continue };
+            let Some(a) = self.keyboard_avoiders.get_mut(&key) else { continue };
+            if a.applied == overlap {
+                continue;
+            }
+            a.applied = overlap;
+            match a.avoid.behavior {
+                runtime_shared::KeyboardAvoidBehavior::Padding => {
+                    let node = a.node;
+                    needs_layout |= self.layout.set_keyboard_padding(node, overlap);
+                }
+                runtime_shared::KeyboardAvoidBehavior::Translate => {
+                    let view = a.view.clone();
+                    animated::set_keyboard_lift(&mut self.animated_states, key, &view, -overlap);
+                }
+            }
+        }
+        needs_layout
+    }
+
+    /// How much of avoider `key` the keyboard covers: its UNTRANSFORMED
+    /// bottom edge (from the last frame the layout pass wrote — a `Translate`
+    /// lift must not feed back into its own measurement) against the
+    /// keyboard's top, both in host coordinates. `None` before its first
+    /// frame.
+    fn avoider_overlap(&self, key: usize) -> Option<f32> {
+        let a = self.keyboard_avoiders.get(&key)?;
+        let (x, y, w, h) = *self.applied_frames.get(&key)?;
+        if !self.keyboard_top_in_host.is_finite() {
+            return Some(0.0);
+        }
+        let host = self.host_root.as_ref()?;
+        let superview: Option<Retained<UIView>> = unsafe { msg_send_id![&*a.view, superview] };
+        let superview = superview?;
+        let _ = w;
+        let bottom_left = objc2_foundation::CGPoint { x: x as f64, y: (y + h) as f64 };
+        let in_host: objc2_foundation::CGPoint =
+            unsafe { msg_send![&*superview, convertPoint: bottom_left, toView: &**host] };
+        Some(runtime_shared::keyboard_overlap(in_host.y as f32, self.keyboard_top_in_host))
+    }
+
+    /// After a layout pass: an avoider whose frame moved under a raised
+    /// keyboard (its first layout, a rotation, a sibling growing) gets its
+    /// new overlap, unanimated, plus at most one extra pass.
+    fn reconcile_keyboard_avoiders(&mut self) {
+        if self.reconciling_avoiders || self.keyboard_avoiders.is_empty() {
+            return;
+        }
+        self.reconciling_avoiders = true;
+        if self.apply_keyboard_avoiders(AvoiderPass::Instant { all: true }) {
+            self.run_layout_pass_global();
+        }
+        self.reconciling_avoiders = false;
     }
 
     /// Recompute `keyboard_overlap` from a keyboard end frame. Returns
     /// whether it changed (by more than half a point). Shared by the
     /// immediate path ([`Self::on_keyboard_frame_changed`]) and the layout
     /// pass, which applies a frame that arrived while the backend was
-    /// borrowed and so needs no further pass scheduled.
+    /// borrowed. The same overlap becomes the layout tree's keyboard
+    /// obstruction, so a `.safe_area(BOTTOM)` inset collapses under the
+    /// keyboard instead of leaving a home-indicator-sized gap above it.
     fn apply_keyboard_frame(&mut self, kb_frame_screen: objc2_foundation::CGRect) -> bool {
         let overlap = match &self.host_root {
             Some(host) => {
@@ -5112,7 +5310,10 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
                 };
                 let host_bounds: objc2_foundation::CGRect =
                     unsafe { msg_send![&**host, bounds] };
-                rect_overlap_height(host_bounds, kb_in_host)
+                let overlap = rect_overlap_height(host_bounds, kb_in_host);
+                self.keyboard_top_in_host =
+                    if overlap > 0.0 { kb_in_host.origin.y as f32 } else { f32::INFINITY };
+                overlap
             }
             None => 0.0,
         };

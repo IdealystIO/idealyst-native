@@ -966,6 +966,16 @@ pub fn viewport_size() -> Signal<runtime_shared::ViewportSize> {
     crate::viewport::viewport_ctx().size_signal()
 }
 
+/// The reactive soft-keyboard inset: how much of the app's bottom edge
+/// the on-screen keyboard covers once its current animation settles, and
+/// that animation's timing. To keep content clear of the keyboard use
+/// [`keyboard_avoiding_view`]; read this to react in app code — hide a tab
+/// bar while it is up, or animate in step via `KeyboardInset::transition`.
+/// Always `HIDDEN` on platforms without a soft keyboard. See
+/// `crate::keyboard`.
+pub use crate::keyboard::keyboard_inset;
+pub use runtime_shared::{KeyboardAvoid, KeyboardAvoidBehavior, KeyboardInset};
+
 // `IntoStyleSource` — on the old core, "the trait `.with_style(…)`
 // accepts". The new-core counterpart of that ROLE is `IntoStyleProp`,
 // so the old name aliases it here: helper fns bounded
@@ -1670,6 +1680,57 @@ impl GlueView {
 }
 
 glue_wrapper_common!(GlueView);
+
+// ---------------------------------------------------------------------------
+// keyboard_avoiding_view
+// ---------------------------------------------------------------------------
+
+/// `keyboard_avoiding_view(children)` — a container whose content the
+/// backend keeps clear of the soft keyboard, moving in step with the
+/// platform's own keyboard animation. Wrap the app root to avoid the
+/// keyboard everywhere; wrap a portal's content (a modal, a sheet) to avoid
+/// it there — portals mount outside the root. Defaults to
+/// `KeyboardAvoidBehavior::Padding`, animated. See `docs/keyboard.md`.
+pub fn keyboard_avoiding_view(children: Vec<Element>) -> GlueKeyboardAvoidingView {
+    GlueKeyboardAvoidingView {
+        b: builders::keyboard_avoiding_view().children(children),
+        a11y: AccessibilityProps::default(),
+    }
+}
+
+pub struct GlueKeyboardAvoidingView {
+    b: builders::ViewBuilder,
+    a11y: AccessibilityProps,
+}
+
+impl GlueKeyboardAvoidingView {
+    /// `Padding` (default): the content area ends at the keyboard's top.
+    /// `Translate`: the whole view lifts, nothing re-lays out.
+    pub fn behavior(mut self, behavior: runtime_shared::KeyboardAvoidBehavior) -> Self {
+        self.b = self.b.behavior(behavior);
+        self
+    }
+
+    /// `false`: jump to the final position instead of moving with the
+    /// keyboard's animation.
+    pub fn animated(mut self, animated: bool) -> Self {
+        self.b = self.b.animated(animated);
+        self
+    }
+
+    pub fn safe_area(mut self, sides: SafeAreaSides) -> Self {
+        self.b = self.b.safe_area(sides);
+        self
+    }
+
+    /// Fill a `Ref<ViewHandle>` with this view's handle at mount.
+    pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
+        self.b = self.b.on_handle(move |h| r.fill(h));
+        self
+    }
+}
+
+glue_wrapper_common!(GlueKeyboardAvoidingView);
 
 // ---------------------------------------------------------------------------
 // text

@@ -62,6 +62,11 @@ where
             .borrow_mut()
             .apply_safe_area_padding(&node, prim.safe_area);
     }
+    // After children + style: the backend measures this view's frame to
+    // know how much of it the keyboard covers.
+    if let Some(avoid) = prim.keyboard_avoid {
+        backend.borrow_mut().mark_keyboard_avoiding(&node, avoid);
+    }
     // Input handlers are the longest-lived callbacks a backend holds: they
     // live on gesture recognizers / event controllers whose lifetime the
     // toolkit owns, so they are the most likely to be invoked after the

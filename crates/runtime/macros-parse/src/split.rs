@@ -548,8 +548,8 @@ pub fn children_kind(canonical: Option<&str>, is_primitive: bool) -> ChildrenKin
         return ChildrenKind::List;
     }
     match canonical {
-        Some("view") | Some("scroll_view") | Some("link") | Some("overlay")
-        | Some("anchored_overlay") => ChildrenKind::List,
+        Some("view") | Some("keyboard_avoiding_view") | Some("scroll_view") | Some("link")
+        | Some("overlay") | Some("anchored_overlay") => ChildrenKind::List,
         Some("text") => ChildrenKind::Content,
         // `emit_presence` wraps the block in `move || …`.
         Some("presence") => ChildrenKind::NestedScope,

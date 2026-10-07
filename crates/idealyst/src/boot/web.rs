@@ -130,6 +130,9 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     web_glue::dom::console::log_1(&format!("[dev-client] runtime-server mode: connecting to {url}").into());
 
     let backend = backend_web::WebBackend::new(config.mount_selector);
+    // Soft-keyboard avoidance in the replayer's mount, same as a local
+    // boot; the transport relays the inset to the sidecar.
+    backend_web::install_keyboard_avoidance(&backend);
     // `new_newcore` drives the backend's CAPABILITY surface (the
     // `runtime_vocabulary::caps` traits) rather than a `Backend` impl:
     // wire commands in, capability calls out. SDK web modules submit

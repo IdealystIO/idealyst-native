@@ -435,6 +435,58 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustViewportResizeListene
     });
 }
 
+/// `RustKeyboardAvoider.nativeBeginPadding` — a `Padding` avoider starts
+/// moving with the IME animation; lays out once and hands Kotlin the views
+/// to translate. See `imp::soft_keyboard::begin_padding`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyboardAvoider_nativeBeginPadding(
+    _env: JNIEnv,
+    _this: JObject,
+    key: jlong,
+    from_dp: jfloat,
+    to_dp: jfloat,
+) -> jboolean {
+    run_returning_callback("keyboard-begin-padding", || {
+        crate::imp::soft_keyboard::with_free_backend(|b| {
+            crate::imp::soft_keyboard::begin_padding(b, key as usize, from_dp, to_dp)
+        })
+        .unwrap_or(false) as jboolean
+    })
+}
+
+/// `RustKeyboardAvoider.nativeCommitPadding` — apply a `Padding` avoider's
+/// keyboard padding and lay out now (unanimated change, or the end of a
+/// deferred shrink). Returns false if the backend was busy (Kotlin retries
+/// on the next frame).
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyboardAvoider_nativeCommitPadding(
+    _env: JNIEnv,
+    _this: JObject,
+    key: jlong,
+    dp: jfloat,
+) -> jboolean {
+    run_returning_callback("keyboard-commit-padding", || {
+        crate::imp::soft_keyboard::with_free_backend(|b| {
+            crate::imp::soft_keyboard::commit_padding(b, key as usize, dp)
+        })
+        .is_some() as jboolean
+    })
+}
+
+/// `RustKeyboardInsets.nativeKeyboardTarget` — where the IME is heading and
+/// how long it takes; feeds author code's `keyboard_inset()`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustKeyboardInsets_nativeKeyboardTarget(
+    _env: JNIEnv,
+    _this: JObject,
+    height_dp: jfloat,
+    duration_ms: jlong,
+) {
+    run_void_callback("keyboard-target", || {
+        crate::imp::soft_keyboard::on_target(height_dp, duration_ms);
+    });
+}
+
 /// Map an Android keycode (plus a fallback unicode char for printable
 /// keys) to the canonical web-style key name. Kept tight: only the
 /// keys text-editor handlers typically reach for are named; everything

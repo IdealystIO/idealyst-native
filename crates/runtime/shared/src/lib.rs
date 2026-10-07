@@ -102,6 +102,7 @@ pub mod reactive;
 pub mod reactive_value;
 #[doc(hidden)]
 pub mod safe_area;
+pub mod keyboard;
 pub mod num;
 pub mod page_meta;
 #[doc(hidden)]
@@ -123,8 +124,8 @@ pub mod touch;
 pub mod wheel;
 pub mod hover;
 pub mod file_drop;
-pub mod primitives;
 pub mod inbound_link;
+pub mod primitives;
 
 // Cross-platform per-frame + async-driver primitives. Off by default;
 // see the `async-driver` feature in Cargo.toml.
@@ -373,6 +374,9 @@ pub use async_reducer::{async_reducer, AsyncReducer, AsyncStatus};
 pub use network_state::NetworkState;
 pub use safe_area::{safe_area_insets, set_safe_area_insets, EdgeInsets, SafeAreaSides};
 pub use viewport::{set_viewport_size, viewport_size, ViewportSize};
+pub use keyboard::{
+    bottom_inset_under_keyboard, keyboard_overlap, KeyboardAvoid, KeyboardAvoidBehavior, KeyboardInset,
+};
 pub use breakpoint::{
     breakpoints, current_breakpoint, install_breakpoints, Breakpoint, Breakpoints,
 };

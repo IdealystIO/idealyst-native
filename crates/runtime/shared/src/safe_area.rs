@@ -27,9 +27,13 @@
 //!
 //! ## Keyboard
 //!
-//! Out of scope for the safe area. The keyboard inset, if ever
-//! exposed, lives in a separate API — different reactivity rate,
-//! different accessibility semantics, different animation curve.
+//! The soft keyboard is not a safe-area edge — it has its own API
+//! ([`crate::keyboard`]: a different reactivity rate and its own
+//! animation curve). The two meet at one point: inside a
+//! `keyboard_avoiding_view` (`Padding`), a `.safe_area(BOTTOM)` inset
+//! shrinks by the covered height ([`crate::bottom_inset_under_keyboard`]),
+//! since the home indicator / navigation bar it reserves room for is
+//! behind the keyboard.
 //!
 //! [`Bound`]: crate::Bound
 

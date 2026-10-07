@@ -448,6 +448,8 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     // Live viewport source: window resizes re-fire breakpoint-dependent
     // author reactivity (the idea-ui-docs hamburger bug).
     install_viewport_source(vp_sig);
+    // Soft-keyboard avoidance (mobile browsers) — see `keyboard_source`.
+    crate::keyboard_source::install_keyboard_source();
 }
 
 /// Build the app root, realize it, put it on screen, and take ownership
@@ -624,6 +626,7 @@ pub fn stop() {
     crate::robot_transport::clear_newcore_driver_env();
     crate::newcore_url_sync::reset();
     remove_viewport_source();
+    crate::keyboard_source::remove_keyboard_source();
     crate::dispatch_hook::clear_dispatch_hook();
     FLUSH_WORLD.with(|w| *w.borrow_mut() = None);
     APP.with(|slot| {
@@ -1447,6 +1450,9 @@ impl caps::ScrollOps for WebBackend {
 }
 
 impl caps::SafeAreaOps for WebBackend {
+    fn mark_keyboard_avoiding(&mut self, node: &Self::Node, avoid: runtime_shared::KeyboardAvoid) {
+        crate::keyboard_source::register(node.as_ref(), avoid);
+    }
 }
 
 impl caps::GridOps for WebBackend {

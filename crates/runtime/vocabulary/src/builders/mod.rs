@@ -55,7 +55,8 @@ pub use virtual_grid::{virtual_grid, VirtualGridBuilder};
 pub use virtualizer::{virtualizer, VirtualizerBuilder};
 pub use text::{button, text, ButtonBuilder, TextBuilder};
 pub use view::{
-    pressable, scroll_view, view, PressableBuilder, ScrollViewBuilder, ViewBuilder,
+    keyboard_avoiding_view, pressable, scroll_view, view, PressableBuilder, ScrollViewBuilder,
+    ViewBuilder,
 };
 pub use widgets::{
     activity_indicator, slider, text_area, text_input, toggle, ActivityIndicatorBuilder,

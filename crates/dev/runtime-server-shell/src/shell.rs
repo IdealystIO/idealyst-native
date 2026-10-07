@@ -91,6 +91,9 @@ pub struct RuntimeServerShell<B: AllCaps + 'static> {
     /// drain tick — common when the shell doesn't have a layout-change
     /// listener and instead just samples on each frame.
     last_reported_viewport: RefCell<Option<wire::WireViewport>>,
+    /// Last soft-keyboard inset relayed via [`Self::report_keyboard`].
+    /// Starts hidden — what the sidecar's fresh session assumes.
+    last_reported_keyboard: RefCell<runtime_shared::KeyboardInset>,
 }
 
 /// Optional knobs for [`RuntimeServerShell::spawn_with_options`].
@@ -207,6 +210,7 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
             client,
             inbound: inbound_rx,
             last_reported_viewport: RefCell::new(initial_viewport),
+            last_reported_keyboard: RefCell::new(runtime_shared::KeyboardInset::HIDDEN),
         }
     }
 
@@ -267,6 +271,10 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         if let Some(vp) = viewport {
             self.report_viewport(vp);
         }
+        // The backend records every keyboard move it lays out against
+        // (`runtime_vocabulary::keyboard::push` from the platform seam);
+        // relay it so the sidecar's author `keyboard_inset()` follows.
+        self.report_keyboard(runtime_vocabulary::keyboard::latest());
         let had_inbound = self.drain();
         if had_inbound {
             // `Backend::run_layout` is a no-op by default; backends
@@ -312,6 +320,20 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
                 height: viewport.height,
             });
         *last = Some(viewport);
+    }
+
+    /// Relay the soft-keyboard inset to the sidecar as
+    /// `AppToDev::KeyboardChanged` when it differs from the last one sent.
+    /// The client's backend already lays out against the keyboard; this is
+    /// what makes author `keyboard_inset()` (running in the sidecar) see
+    /// it. Cheap when nothing changed (no message sent).
+    pub fn report_keyboard(&self, inset: runtime_shared::KeyboardInset) {
+        let mut last = self.last_reported_keyboard.borrow_mut();
+        if *last == inset {
+            return;
+        }
+        let _ = self.client.borrow().outbound().send(keyboard_changed(inset));
+        *last = inset;
     }
 
     pub fn drain_with_dt_ms(&self, dt_ms: u32) -> bool {
@@ -544,6 +566,37 @@ where
         }
         while let Ok(msg) = outbound_rx.try_recv() {
             ws_send(ws, &msg)?;
+        }
+    }
+}
+
+/// The wire form of a keyboard report.
+pub fn keyboard_changed(inset: runtime_shared::KeyboardInset) -> wire::AppToDev {
+    wire::AppToDev::KeyboardChanged {
+        height: inset.height,
+        duration_ms: inset.transition.duration_ms,
+        easing: inset.transition.easing.control_points(),
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+
+    /// The relay carries the device's height, real duration and curve.
+    #[test]
+    fn keyboard_changed_carries_height_duration_and_curve() {
+        let inset = runtime_shared::KeyboardInset::new(
+            291.0,
+            runtime_shared::Transition::new(285, runtime_shared::keyboard::ANDROID_IME_EASING),
+        );
+        match keyboard_changed(inset) {
+            wire::AppToDev::KeyboardChanged { height, duration_ms, easing } => {
+                assert_eq!(height, 291.0);
+                assert_eq!(duration_ms, 285);
+                assert_eq!(easing, [0.2, 0.0, 0.0, 1.0]);
+            }
+            other => panic!("wrong message: {other:?}"),
         }
     }
 }

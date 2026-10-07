@@ -215,6 +215,20 @@ inventory::submit! {
 
 inventory::submit! {
     UtilityEntry {
+        name: "keyboard_inset",
+        module_path: "runtime_core",
+        docs: "Reactive `ReadSignal<KeyboardInset>`: how much of the app root's bottom edge the soft keyboard covers once its current animation settles (`height`, 0 when hidden) plus that animation's timing (`transition`: the platform's real duration and keyboard curve on iOS/Android, an estimate on web). To keep content clear of the keyboard use the `keyboard_avoiding_view` primitive (wrap the app root, and each portal's content); read this to react in app code (hide a tab bar while typing, animate in lockstep via `transition`). Updates once per keyboard move, not per frame. Always hidden on platforms without a soft keyboard.",
+        params: &[],
+        return_type: "ReadSignal<KeyboardInset>",
+        return_type_short: "ReadSignal<KeyboardInset>",
+        category: UtilityCategory::Layout,
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
         name: "current_breakpoint",
         module_path: "runtime_core",
         docs: "Reactive `Signal<Breakpoint>` derived from the active theme's breakpoint thresholds and `viewport_size()`. Use in `.responsive()`-style flows; prefer this over hand-comparing widths so the threshold lives in the theme, not the call site.",

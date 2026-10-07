@@ -1742,6 +1742,16 @@ mod runtime {
                 // where the same app on web reflows.
                 publish_viewport(width, height);
             }
+            KeyboardChanged { height, duration_ms, easing } => {
+                // The client already laid out against the keyboard; this
+                // feeds author `keyboard_inset()` on the session's world
+                // (committed by the post-dispatch flush, like a resize).
+                runtime_vocabulary::keyboard::push(super::keyboard_inset_from_wire(
+                    height,
+                    duration_ms,
+                    easing,
+                ));
+            }
             Event { handler, args } => {
                 let _ = recorder.dispatch_event(handler, args);
             }
@@ -1800,6 +1810,63 @@ mod runtime {
             // reader thread, never routed to the (blocked) session thread.
             DeviceFrameResult { .. } => {}
         }
+    }
+}
+
+/// Rebuild the author-facing keyboard inset from an
+/// `AppToDev::KeyboardChanged` (curve as cubic-bezier control points).
+pub(crate) fn keyboard_inset_from_wire(
+    height: f32,
+    duration_ms: u32,
+    [x1, y1, x2, y2]: [f32; 4],
+) -> runtime_shared::KeyboardInset {
+    runtime_shared::KeyboardInset::new(
+        height,
+        runtime_shared::Transition::new(
+            duration_ms,
+            runtime_shared::Easing::CubicBezier(x1, y1, x2, y2),
+        ),
+    )
+}
+
+#[cfg(test)]
+mod keyboard_relay_tests {
+    use super::*;
+
+    /// Regression: under runtime-server dev, author code runs HERE, not on
+    /// the device. The device lays out against the keyboard locally, but
+    /// unless the inset crosses the wire, author `keyboard_inset()` stays
+    /// `HIDDEN` forever (it worked under `--local` only). The message must
+    /// survive the JSON codec and land in the session's keyboard ctx with
+    /// the device's height and timing.
+    #[test]
+    fn regression_keyboard_inset_reaches_sidecar_author_code() {
+        std::thread::spawn(|| {
+            let msg = wire::AppToDev::KeyboardChanged {
+                height: 335.0,
+                duration_ms: 383,
+                easing: runtime_shared::keyboard::IOS_KEYBOARD_EASING.control_points(),
+            };
+            let json = serde_json::to_vec(&msg).unwrap();
+            let back: wire::AppToDev = serde_json::from_slice(&json).unwrap();
+            let wire::AppToDev::KeyboardChanged { height, duration_ms, easing } = back else {
+                panic!("wrong message after round trip: {back:?}");
+            };
+
+            let world = runtime_world::World::new();
+            let kb = world.enter(runtime_vocabulary::keyboard::keyboard_inset);
+            runtime_vocabulary::keyboard::push(keyboard_inset_from_wire(height, duration_ms, easing));
+            world.flush();
+            let got = world.enter(|| kb.get());
+            assert_eq!(got.height, 335.0);
+            assert_eq!(got.transition.duration_ms, 383);
+            assert_eq!(
+                got.transition.easing.control_points(),
+                runtime_shared::keyboard::IOS_KEYBOARD_EASING.control_points()
+            );
+        })
+        .join()
+        .expect("keyboard relay reaches author code");
     }
 }
 
