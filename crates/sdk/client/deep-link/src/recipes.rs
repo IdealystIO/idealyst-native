@@ -15,24 +15,22 @@
 
 use runtime_core::recipe;
 
+
 recipe!(
     DeepLink,
-    /// Subscribe to inbound deep links and render the most recent one.
+    /// Show the most recent inbound deep link.
     ///
+    /// The framework already routes every link to its screen; `on_link` is
+    /// for app code that wants to see links too (analytics, a banner).
     /// `on_link` returns an RAII `LinkSubscription` — dropping it
     /// unsubscribes. Register it inside an effect and RETURN the guard as the
     /// effect's cleanup: the surrounding component scope owns the effect, so
-    /// the subscription lives exactly as long as the component and tears down
-    /// at unmount. (`on_cleanup` in a component body panics — the
-    /// cleanup-returned-from-an-effect shape is the supported one.) Each link
-    /// writes a reactive `signal` that the `text` reads, so the view re-renders
-    /// on every link. `feed_link` is what the platform host calls when the OS
-    /// delivers a URL — here we call it ourselves to demonstrate the flow.
+    /// the subscription lives exactly as long as the component. Each link
+    /// writes a `signal` the `text` reads, so the view follows every link.
     pub fn deep_link_listen() -> ::runtime_core::Element {
-        use crate::{feed_link, on_link, DeepLink};
+        use crate::{on_link, DeepLink};
         use ::runtime_core::{effect, signal, text, ui};
 
-        // The latest inbound link, rendered reactively below.
         let latest = signal::<Option<DeepLink>>(None);
 
         let _ = effect(move || {
@@ -41,14 +39,51 @@ recipe!(
             move || drop(sub)
         });
 
-        // Demonstrate the host ingress: feed a link as the OS would.
-        feed_link("myapp://demo/path?x=1");
-
         ui! {
             text(move || match latest.get() {
-                Some(link) => format!("{}://{}{}", link.scheme, link.host.unwrap_or_default(), link.path),
+                Some(link) => format!("opened {}", link.route_path()),
                 None => "waiting for a link…".to_string(),
             })
         }
+    }
+);
+
+recipe!(
+    DeepLink,
+    /// Hold deep links until the user signs in, then open the held one.
+    ///
+    /// `intercept` claims a link before the framework routes it (return
+    /// `true`). The held link is replayed with `route_link` once signed in.
+    /// The cold-start link needs no gate: navigators mounted only after
+    /// sign-in still open it, because the launch path waits until the root
+    /// navigator mounts.
+    pub fn deep_link_auth_gate(signed_in: ::runtime_core::Signal<bool>) -> ::runtime_core::Element {
+        use crate::{intercept, route_link, DeepLink};
+        use ::runtime_core::{effect, signal, text, ui};
+
+        let held = signal::<Option<DeepLink>>(None);
+
+        let _ = effect(move || {
+            let gate = intercept(move |link| {
+                if signed_in.peek() {
+                    return false; // signed in: let it route
+                }
+                held.set(Some(link.clone()));
+                true
+            });
+            move || drop(gate)
+        });
+
+        // Replay the held link the moment the user signs in.
+        let _ = effect(move || {
+            if signed_in.get() {
+                if let Some(link) = held.peek() {
+                    held.set(None);
+                    route_link(&link);
+                }
+            }
+        });
+
+        ui! { text("sign in to continue") }
     }
 );

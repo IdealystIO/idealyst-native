@@ -234,6 +234,18 @@ pub fn schedule_flush() {
     });
 }
 
+/// A link (deep link / universal link) arrived while the app is running:
+/// hand it to the framework's inbound-link ingress — observers, then
+/// interceptors, then the navigators — and flush, because the host calls
+/// this from a raw UIKit app-delegate callback outside every framework-wrapped
+/// handler, so nothing else would commit the staged navigation. Returns
+/// whether the link landed. Main thread only.
+pub fn deliver_inbound_link(url: &str) -> bool {
+    let landed = runtime_shared::inbound_link::deliver(url);
+    schedule_flush();
+    landed
+}
+
 /// Flush the mounted world immediately (skipped while it is already
 /// mid-flush).
 fn flush_now() {

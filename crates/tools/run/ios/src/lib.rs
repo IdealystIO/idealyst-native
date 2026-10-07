@@ -66,6 +66,10 @@ pub mod publish;
 /// glue + plist template as the simulator path — the device build is the
 /// same app, just signed and assembled via xcodebuild instead of swiftc.
 pub(crate) const APP_DELEGATE_SWIFT: &str = include_str!("../templates/AppDelegate.swift");
+/// Runtime-server mode's delegate: no link forwarding (the shell links
+/// none of the `ios_*_url` symbols the local delegate calls).
+pub(crate) const APP_DELEGATE_AAS_SWIFT: &str =
+    include_str!("../templates/AppDelegateRuntimeServer.swift");
 const VIEW_CONTROLLER_LOCAL_SWIFT: &str = include_str!("../templates/ViewController.swift");
 const VIEW_CONTROLLER_AAS_SWIFT: &str = include_str!("../templates/ViewControllerRuntimeServer.swift");
 pub(crate) const BRIDGING_HEADER_LOCAL_H: &str = include_str!("../templates/BridgingHeader.h");
@@ -279,7 +283,16 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     fs::create_dir_all(&swift_dir).with_context(|| format!("create {}", swift_dir.display()))?;
 
     // ── 3. Write Swift sources + bridging header ─────────────────
-    fs::write(swift_dir.join("AppDelegate.swift"), APP_DELEGATE_SWIFT)?;
+    // Per mode, like the bridging header below: the local delegate calls
+    // the wrapper's link entry points, which the runtime-server shell
+    // does not export.
+    fs::write(
+        swift_dir.join("AppDelegate.swift"),
+        match &opts.mode {
+            RunMode::Local => APP_DELEGATE_SWIFT,
+            RunMode::RuntimeServer { .. } => APP_DELEGATE_AAS_SWIFT,
+        },
+    )?;
     fs::write(
         swift_dir.join("ViewController.swift"),
         render_view_controller(&manifest, &opts.mode),
@@ -598,10 +611,18 @@ fn render_info_plist(
     // runtime-server endpoint, dev ATS exception) get concatenated here.
     // Newline + 4-space indent keeps the rendered plist consistent with the
     // template's existing entries.
+    // Custom URL schemes (`[package.metadata.idealyst.app.links]`). Local
+    // mode only: the runtime-server delegate forwards no links, so a
+    // declared scheme would open the shell and go nowhere.
+    let url_types = match mode {
+        RunMode::Local => manifest.app.links.plist_url_types(manifest.app.require_bundle_id()?),
+        RunMode::RuntimeServer { .. } => String::new(),
+    };
     let extra_entries = [
         icon_entries,
         endpoint_entry.as_str(),
         permission_entries,
+        url_types.as_str(),
         dev_ats_entry,
     ]
     .iter()
@@ -851,6 +872,7 @@ pub(crate) mod tests_support {
                 web: WebMetadata::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
+                links: Default::default(),
             },
         }
     }
@@ -885,6 +907,7 @@ mod tests {
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
+                links: Default::default(),
             },
         }
     }
@@ -894,6 +917,53 @@ mod tests {
     /// function / `#[sse]` host (the iOS simulator shares the host loopback).
     /// It must NOT blanket-allow arbitrary cleartext loads — that would relax
     /// ATS for the whole internet, not just local dev.
+    /// The sim plist declares the app's custom schemes in local mode; the
+    /// runtime-server shell forwards no links, so it declares none.
+    #[test]
+    fn sim_plist_declares_url_schemes_in_local_mode_only() {
+        let mut m = fake_manifest();
+        m.app.links.schemes = vec!["demo".into()];
+        let local = render_info_plist(&m, "demo", &RunMode::Local, "", "").unwrap();
+        assert!(local.contains("<key>CFBundleURLTypes</key>"), "{local}");
+        let aas = RunMode::RuntimeServer { endpoint: "ws://127.0.0.1:4000".to_string() };
+        let shell = render_info_plist(&m, "demo", &aas, "", "").unwrap();
+        assert!(!shell.contains("CFBundleURLTypes"));
+    }
+
+    /// REGRESSION: runtime-server mode compiled the LOCAL `AppDelegate.swift`
+    /// (which called `ios_set_launch_path`) against a bridging header that
+    /// never declared it — a Swift compile error. Each mode's delegate may
+    /// only call the Rust symbols its own header declares.
+    #[test]
+    fn regression_each_delegate_calls_only_symbols_its_header_declares() {
+        fn calls(swift: &str) -> Vec<String> {
+            swift
+                .match_indices("ios_")
+                .filter_map(|(i, _)| {
+                    let rest = &swift[i..];
+                    let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))?;
+                    rest[end..].starts_with('(').then(|| rest[..end].to_string())
+                })
+                .collect()
+        }
+        let pairs = [
+            (APP_DELEGATE_SWIFT, BRIDGING_HEADER_LOCAL_H),
+            (APP_DELEGATE_AAS_SWIFT, BRIDGING_HEADER_AAS_H),
+        ];
+        for (delegate, header) in pairs {
+            for symbol in calls(delegate) {
+                assert!(
+                    header.contains(&format!("{symbol}(")),
+                    "delegate calls `{symbol}` but its bridging header doesn't declare it"
+                );
+            }
+        }
+        // The local delegate forwards both link moments.
+        let local = calls(APP_DELEGATE_SWIFT);
+        assert!(local.contains(&"ios_launch_url".to_string()));
+        assert!(local.contains(&"ios_open_url".to_string()));
+    }
+
     #[test]
     fn dev_plist_allows_local_networking_but_not_arbitrary_loads() {
         for mode in [

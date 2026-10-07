@@ -38,6 +38,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 pub mod capabilities;
+pub mod links;
 pub mod source;
 pub mod web_html;
 
@@ -220,6 +221,12 @@ pub struct AppMetadata {
     /// generic default and a build-time warning. See
     /// [`capabilities`](crate::capabilities).
     pub permissions: std::collections::BTreeMap<String, String>,
+    /// Inbound links the app declares — custom URL schemes and
+    /// universal / App Link domains — from
+    /// `[package.metadata.idealyst.app.links]`. Drives the Info.plist URL
+    /// types, the associated-domains entitlement, the Android intent
+    /// filters and the web build's `.well-known` files. See [`links`].
+    pub links: links::LinksMetadata,
 }
 
 /// macOS-target-specific config from `[package.metadata.idealyst.app.macos]`.
@@ -559,6 +566,8 @@ struct RawAppMetadata {
     macos: Option<RawMacosMetadata>,
     #[serde(default)]
     permissions: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    links: Option<links::RawLinksMetadata>,
 }
 
 #[derive(Default, Deserialize)]
@@ -698,6 +707,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         web,
         macos,
         permissions: app_raw.permissions.unwrap_or_default(),
+        links: links::LinksMetadata::from_raw(app_raw.links.unwrap_or_default())?,
     };
 
     Ok(Manifest {
@@ -940,27 +950,47 @@ pub unsafe extern "C" fn ios_teardown() {{
     }});
 }}
 
-/// Cold-start deep-link hook. The Swift host calls this from
-/// `application(_:didFinishLaunchingWithOptions:)` (custom-scheme /
-/// universal-link launch) BEFORE `ios_main`, passing the URL's PATH
-/// component (e.g. `/encounters/abc`). It seeds the shared substrate's
-/// initial-path slot, which the vocabulary navigator handlers peek at
-/// mount so the deep-linked screen resolves and the back stack is
-/// reconstructed. When no launch URL is present the host never calls
-/// this and behavior is unchanged.
+/// Cold-start inbound link. The Swift host calls this from
+/// `application(_:didFinishLaunchingWithOptions:)` (custom-scheme or
+/// universal-link launch) BEFORE `ios_main`, passing the FULL URL. It
+/// records the launch URL and seeds the navigators' launch-path slot
+/// (`runtime_shared::inbound_link::launch`), which the navigator handlers
+/// peek at mount so the linked screen opens and its back stack is
+/// rebuilt. No launch URL ⇒ the host never calls this.
 ///
 /// # Safety
 /// - Must be invoked on the main thread, before `ios_main`.
-/// - `path` must be a non-null, valid, NUL-terminated C string, or null
-///   (treated as "no deep link").
+/// - `url` must be a non-null, valid, NUL-terminated C string, or null
+///   (treated as "no link").
 #[no_mangle]
-pub unsafe extern "C" fn ios_set_launch_path(path: *const std::os::raw::c_char) {{
-    if path.is_null() {{
-        return;
+pub unsafe extern "C" fn ios_launch_url(url: *const std::os::raw::c_char) {{
+    if let Some(url) = unsafe {{ c_url(url) }} {{
+        runtime_shared::inbound_link::launch(url);
     }}
-    match unsafe {{ std::ffi::CStr::from_ptr(path) }}.to_str() {{
-        Ok(s) if !s.is_empty() => runtime_shared::set_initial_path(Some(s.to_string())),
-        _ => {{}}
+}}
+
+/// Inbound link while running — `application(_:open:options:)` (custom
+/// scheme) and `application(_:continue:restorationHandler:)` (universal
+/// link). Routes through the live navigators and flushes.
+///
+/// # Safety
+/// Main thread only; `url` as for [`ios_launch_url`].
+#[no_mangle]
+pub unsafe extern "C" fn ios_open_url(url: *const std::os::raw::c_char) {{
+    if let Some(url) = unsafe {{ c_url(url) }} {{
+        backend_ios::newcore::deliver_inbound_link(url);
+    }}
+}}
+
+/// Borrow a non-empty UTF-8 URL from a host C string (`None` for null /
+/// empty / non-UTF-8).
+unsafe fn c_url<'a>(url: *const std::os::raw::c_char) -> Option<&'a str> {{
+    if url.is_null() {{
+        return None;
+    }}
+    match unsafe {{ std::ffi::CStr::from_ptr(url) }}.to_str() {{
+        Ok(s) if !s.is_empty() => Some(s),
+        _ => None,
     }}
 }}
 "#,
@@ -1111,6 +1141,7 @@ mod regression_tests {
                 web: WebMetadata::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
+                links: Default::default(),
             },
         }
     }
@@ -1199,6 +1230,30 @@ mod regression_tests {
     /// `ios_main` boots through `backend_ios::newcore::run_in_view`,
     /// enables `backend-ios-mobile/new-core`, and takes a plain path dep
     /// on the user crate (no core pin — there is one core).
+    /// The wrapper exports every symbol the local bridging header
+    /// declares (Swift links against them — a missing one fails the app
+    /// link), and the link entry points reach the inbound-link ingress.
+    #[test]
+    fn wrapper_exports_every_bridging_header_symbol() {
+        const HEADER: &str = include_str!("../../../run/ios/templates/BridgingHeader.h");
+        let (wrapper_dir, _tmp) = run_generator();
+        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+        let symbols: Vec<&str> = HEADER
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && l.contains('('))
+            .filter_map(|l| l.split('(').next()?.split_whitespace().last())
+            .collect();
+        assert!(symbols.contains(&"ios_launch_url") && symbols.contains(&"ios_open_url"));
+        for symbol in symbols {
+            assert!(
+                lib_rs.contains(&format!("extern \"C\" fn {symbol}(")),
+                "bridging header declares `{symbol}` but the wrapper doesn't export it"
+            );
+        }
+        assert!(lib_rs.contains("runtime_shared::inbound_link::launch("));
+        assert!(lib_rs.contains("backend_ios::newcore::deliver_inbound_link("));
+    }
+
     #[test]
     fn wrapper_boots_run_in_view_with_plain_user_dep() {
         let (wrapper_dir, _tmp) = run_generator();
@@ -1367,6 +1422,37 @@ mod regression_tests {
             "42",
             "build_number should round-trip from the manifest",
         );
+    }
+
+    /// `[package.metadata.idealyst.app.links]` parses (and validates) into
+    /// `LinksMetadata`; absent ⇒ no links; a bad value fails the parse
+    /// rather than building an app the OS never sends links to.
+    #[test]
+    fn links_parse_validate_and_default() {
+        fn parse_with(extra: &str) -> anyhow::Result<Manifest> {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let cargo = format!(
+                "[package]\nname = \"demo\"\nversion = \"0.0.1\"\n\
+                 [package.metadata.idealyst.app]\nbundle_id = \"ai.example.demo\"\n{extra}",
+            );
+            std::fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+            parse_manifest(tmp.path())
+        }
+
+        assert_eq!(parse_with("").unwrap().app.links, links::LinksMetadata::default());
+        let m = parse_with(
+            "[package.metadata.idealyst.app.links]\n\
+             schemes = [\"Demo\"]\ndomains = [\"demo.example.com\"]\n\
+             apple_team_id = \"ABCDE12345\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.app.links.schemes, vec!["demo"]);
+        assert_eq!(m.app.links.domains, vec!["demo.example.com"]);
+        assert_eq!(m.app.links.apple_team_id.as_deref(), Some("ABCDE12345"));
+
+        assert!(parse_with("[package.metadata.idealyst.app.links]\nschemes = [\"https\"]\n").is_err());
+        // A misspelled key is an error, not a silently empty block.
+        assert!(parse_with("[package.metadata.idealyst.app.links]\nscheme = [\"demo\"]\n").is_err());
     }
 
     /// `[package.metadata.idealyst.app.macos]` parses into `MacosMetadata`

@@ -864,8 +864,10 @@ shape: `busy.set(true)` then `spawn_then(save(…), done)`, with `busy` also
 driving the control's own structure. `idea-ui`'s `Button` re-anchors its
 `on_click` to the component's scope, so `loading = busy` is safe there; a
 control you build out of primitives must do the same — take
-`ScopeAlive::current()` in the component body and wrap the handler with
-`wrap0`, which publishes that scope for anything spawned inside. See
+`ScopeAlive::current()` in the component body and spawn with
+`spawn_then_in(&alive, call, done)` (or wrap the whole handler with
+`alive.wrap0(…)`, which publishes that scope for anything spawned inside).
+The `spawn-then-handler-anchor` lint flags the unanchored shape. See
 `runtime_core::spawn_then`'s module docs.
 
 ### Batching (opt-in)

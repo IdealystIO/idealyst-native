@@ -472,7 +472,7 @@ sdk!(
     "deep-link",
     SdkCategory::Device,
     SdkKind::Api,
-    "Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). The host forwards URLs in via `feed_link`. Also the LIVE address on web: `current_url()` (the address right now, parsed — path + query), `replace_url(url)` (rewrite the address bar without navigating; keeps history.state; no on_link dispatch) and `origin()` (for building absolute share links). Native answers None / no-op — a native app is not at a URL. Use these instead of reading `window.location` / calling `history.replaceState` through web-sys."
+    "Inbound links (custom scheme `myapp://…`, universal / App Links). The FRAMEWORK already routes them — the launch link opens its screen on first mount, a link while running moves the live navigators — once the app declares them under `[package.metadata.idealyst.app.links]` (schemes, domains, apple_team_id, android_cert_fingerprints; see docs/deep-links.md). This SDK is for app code: `on_link()` observes links, `intercept()` claims one before it routes (auth gate) and `route_link()` replays it, `initial_link()` is the launch URL, `DeepLink::route_path()` the app path a link routes to. Also the LIVE address on web: `current_url()` (the address right now, parsed — path + query), `replace_url(url)` (rewrite the address bar without navigating; keeps history.state; no on_link dispatch) and `origin()` (for building absolute share links). Native answers None / no-op — a native app is not at a URL. Use these instead of reading `window.location` / calling `history.replaceState` through web-sys."
 );
 sdk!(
     "connectivity",

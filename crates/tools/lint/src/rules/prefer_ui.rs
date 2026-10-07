@@ -66,12 +66,20 @@ const EXEMPT_VARIANTS: &[&str] = &["External", "Component"];
 
 /// The free constructor functions `ui!` lowers its primitive tags to —
 /// every snake_case tag the macro accepts (`canonical_primitive` in
-/// `runtime-macros/src/primitives.rs`) plus the glue siblings that share
-/// the same positional-constructor shape (`text_area`, `pressable`, the
-/// `image_*` / `external_link` variants). All reachable as
-/// `runtime_core::<name>` / `runtime_vocabulary::glue::<name>` (or, for
-/// `slider` / `activity_indicator` / `graphics`, under
+/// `runtime-macros-parse/src/primitives.rs`) plus the glue siblings the
+/// macro emits for a tag's prop variants (`image(asset = …)` →
+/// `image_asset`, `image(src = …)` → `image_from`, `link(external = …)` →
+/// `external_link`). All reachable as `runtime_core::<name>` /
+/// `runtime_vocabulary::glue::<name>` (or, for `slider` /
+/// `activity_indicator` / `graphics`, under
 /// `runtime_core::primitives::<name>::<name>`).
+///
+/// The rule's advice is "write it as a tag inside `ui!`", so a name
+/// belongs here ONLY if `ui!` has a tag for it. `pressable` and
+/// `text_area` were listed and are deliberately gone: neither has a `ui!`
+/// lowering (the macro leaves the `Pressable` tag to idea-ui, and a bare
+/// pressable / text area is reachable only through the fn), so the
+/// finding could only be suppressed, never fixed.
 const PRIMITIVE_CONSTRUCTORS: &[&str] = &[
     "view",
     "text",
@@ -86,14 +94,12 @@ const PRIMITIVE_CONSTRUCTORS: &[&str] = &[
     "anchored_overlay",
     "presence",
     "scroll_view",
-    "text_area",
     "text_input",
     "flat_list",
     "toggle",
     "slider",
     "activity_indicator",
     "graphics",
-    "pressable",
 ];
 
 /// Path segments that mark a path as pointing INTO the framework. Any
@@ -114,11 +120,20 @@ const FRAMEWORK_ROOTS: &[&str] = &[
 ];
 
 /// The canonical constructor `name` spells, if it is one.
+/// Element constructors with NO `ui!` tag — never reported by this rule,
+/// but still evidence that a fn builds a tree (`prefer-component`).
+const TAGLESS_CONSTRUCTORS: &[&str] = &["pressable", "text_area"];
+
 pub(crate) fn constructor(name: &str) -> Option<&'static str> {
     PRIMITIVE_CONSTRUCTORS.iter().copied().find(|c| *c == name)
 }
 
 /// A framework name this module tracks through imports: a constructor or
+/// Whether a call to `name` builds an element, `ui!` tag or not.
+pub(crate) fn builds_element(name: &str) -> bool {
+    constructor(name).is_some() || TAGLESS_CONSTRUCTORS.contains(&name)
+}
+
 /// one of the [`CONTROL_FLOW`] glue fns.
 fn tracked(name: &str) -> Option<&'static str> {
     constructor(name).or_else(|| CONTROL_FLOW.iter().copied().find(|c| *c == name))
@@ -133,6 +148,13 @@ fn has_framework_root(path: &syn::Path) -> bool {
 /// `runtime_vocabulary::builders::scroll_view()`, `builder::text(…)`.
 ///
 /// Two conditions keep this to the framework's layer (#26 / #105):
+/// Only a builder that HAS a `ui!` tag is reported (see
+/// [`PRIMITIVE_CONSTRUCTORS`]): `builders::swap_navigator(&ROUTE)`,
+/// `stack_navigator`, `navigator_outlet`, `portal`, `virtualizer`,
+/// `virtual_grid`, `pressable`, `text_area` are the author surface for
+/// things the macro cannot spell, and a finding there could only be
+/// suppressed.
+///
 ///
 /// - the `builder(s)` segment must be the one directly before the called
 ///   fn. A trailing `builder` is the ubiquitous builder-PATTERN
@@ -151,6 +173,9 @@ fn is_builder_layer_call(path: &syn::Path) -> bool {
         return false;
     }
     let owners = &segs[..n - 2];
+    if constructor(&segs[n - 1]).is_none() {
+        return false; // no `ui!` spelling to point at
+    }
     owners.is_empty()
         || owners.iter().any(|s| {
             FRAMEWORK_ROOTS.contains(&s.as_str()) && !matches!(s.as_str(), "builder" | "builders")
@@ -265,9 +290,8 @@ pub(crate) fn check_call(call: &syn::ExprCall, cx: &FileContext, out: &mut Vec<R
 
     // `builder::…` / `builders::…` — the raw builder layer, qualified (see
     // `is_builder_layer_call` for what does NOT count).
-    // Kept as its own arm (ahead of the constructor-name check) so a
-    // builder-layer fn that ISN'T in the constructor list — `builders::
-    // virtual_grid()`, say — still gets the pointer.
+    // Kept as its own arm (ahead of the constructor-name check) so the
+    // message names the builder layer rather than the glue constructor.
     if is_builder_layer_call(path) {
         out.push(
             RawDiag::new(
@@ -304,10 +328,15 @@ pub(crate) fn check_call(call: &syn::ExprCall, cx: &FileContext, out: &mut Vec<R
                 span_of(path_expr),
             )
             .with_help(format!(
-                "write {form} inside `ui! {{ … }}`; the macro picks static vs reactive and \
-                 supplies an out-of-flow placeholder for a missing branch. If this shape \
-                 genuinely needs the direct call, suppress it with the reason: \
-                 `// idealyst-lint-disable-next-line {CONTROL_FLOW_RULE} -- <why>`"
+                "write {form} inside `ui! {{ … }}`; the macro supplies an out-of-flow \
+                 placeholder for a missing branch and picks static vs reactive from the \
+                 condition: any call or method call in it (`.get()`, `f(sig)`, `x.len()`) \
+                 lowers reactively, and in an `if` a bare `Signal` / `Memo` is reactive by \
+                 type — but a bare plain-value binding (a hoisted `let x = sig.get();`) is \
+                 static and never updates, so keep the read inline or bind a \
+                 `memo(move || …)`. If this shape genuinely needs the direct call, suppress \
+                 it with the reason: `// idealyst-lint-disable-next-line {CONTROL_FLOW_RULE} \
+                 -- <why>`"
             )),
         );
         return;
@@ -417,7 +446,6 @@ mod tests {
             quote! { fn f() { glue::scroll_view(vec![]); } },
             quote! { fn f() { runtime_core::primitives::slider::slider(v, |_| {}); } },
             quote! { fn f() { runtime_core::image_from("a.png"); } },
-            quote! { fn f() { runtime_core::pressable(vec![], || {}); } },
         ] {
             let out = diags(src.clone());
             assert_eq!(out.len(), 1, "{src} → {out:?}");
@@ -431,13 +459,38 @@ mod tests {
             fn f() {
                 builder::view(vec![]);
                 runtime_vocabulary::builders::view().child(x).build();
-                builders::virtual_grid();
+                builders::scroll_view();
             }
         });
         assert_eq!(out.len(), 3, "{out:?}");
     }
 
     /// The reported bug (#26 / #105): the builder arm matched a `builder`
+    /// The reported bug: `pressable(…)` and `builders::swap_navigator(…)`
+    /// were told to "compose inside `ui!`", but `ui!` has no tag for
+    /// either (and idea-ui ships no `Pressable`), so the finding could
+    /// only be suppressed. Constructors and builders with no `ui!`
+    /// spelling are not this rule's business.
+    #[test]
+    fn regression_constructors_without_a_ui_tag_are_clean() {
+        let out = diags(quote! {
+            use runtime_core::*;
+            fn f() {
+                runtime_core::pressable(vec![], || {});
+                pressable(vec![], || {});
+                runtime_core::text_area(value, |_| {});
+                runtime_vocabulary::builders::swap_navigator(&HOME).screen(&A, a);
+                runtime_vocabulary::builders::stack_navigator(&HOME);
+                builders::navigator_outlet();
+                builders::virtual_grid();
+                builders::virtualizer();
+                builders::portal();
+                builders::pressable(|| {});
+            }
+        });
+        assert!(out.is_empty(), "{out:?}");
+    }
+
     /// segment ANYWHERE in the path — including the last one — so every
     /// third-party builder-pattern constructor (`r2d2::Pool::builder()`,
     /// `reqwest::Client::builder()`) was reported as a hand-built element.
@@ -470,7 +523,7 @@ mod tests {
             quote! { fn f() { builders::view(); } },
             quote! { fn f() { builder::text("x"); } },
             quote! { fn f() { runtime_vocabulary::builders::scroll_view(); } },
-            quote! { fn f() { idealyst::runtime_vocabulary::builders::virtual_grid(); } },
+            quote! { fn f() { idealyst::runtime_vocabulary::builders::text_input(); } },
             quote! { fn f() { runtime_core::builders::view().child(x).build(); } },
         ] {
             let out = diags(src.clone());
@@ -657,6 +710,9 @@ mod tests {
         let help = out[0].help.as_deref().unwrap_or("");
         assert!(help.contains("-- <why>"), "the help names the reasoned opt-out: {help}");
     }
+        // The reported trap: the advice must say when the `ui!` form is
+        // reactive, or a hoisted snapshot silently becomes a static match.
+        assert!(help.contains("bare plain-value binding"), "{help}");
 
     /// Its own id, so a site that legitimately needs the call can opt out
     /// without also silencing the constructor findings — and vice versa.

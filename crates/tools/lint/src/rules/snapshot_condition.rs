@@ -11,7 +11,8 @@
 //! A component body runs once, so a `let` whose initializer performs a
 //! bare `.get()` (outside any closure) is a frozen snapshot; using that
 //! binding as a `ui!`/`jsx!` `if` condition makes a branch that silently
-//! never updates. This is the edit-time twin of the runtime
+//! never updates — and the same for a `match NAME { … }` scrutinee, which
+//! builds once and never switches arms. This is the edit-time twin of the runtime
 //! kernel's run-once component body — the read is untracked by
 //! construction and nothing at runtime says so, so this catches it in the
 //! editor.
@@ -23,8 +24,16 @@
 //!   `rx!(…)` initializer keeps its reads inside a closure and never
 //!   matches; `.peek()` — and `.get_untracked()` on a `Reactive<T>` prop
 //!   — are different names: declared intent, never matched);
-//! - only bindings later used as a bare `if [!]NAME {` condition inside
-//!   a `ui!` / `jsx!` token stream in the same fn.
+//! - only bindings later used as a bare `if [!]NAME {` condition or a
+//!   bare `match NAME {` scrutinee inside a `ui!` / `jsx!` token stream in
+//!   the same fn.
+//!
+//! The `match` half matters because a bare identifier is exactly where
+//! `ui!`'s reactivity gate stops seeing a read: any call or method call
+//! in a condition (`.get()`, `f(sig)`, `x.len()`) lowers reactively, and
+//! a bare `Signal` / `Memo` is reactive by type in an `if` and a type
+//! error in a `match` — but a bare plain-value binding is static, so a
+//! hoisted snapshot there freezes silently.
 //!
 //! `HashMap::get(k)` and friends take arguments, so the zero-arg match
 //! skips them; `Cell::get()` is the known benign false positive, and the
@@ -63,7 +72,7 @@ pub(crate) fn check_fn(item: &syn::ItemFn, out: &mut Vec<RawDiag>) {
     let mut finder = UiMacroFinder { streams: Vec::new() };
     finder.visit_block(&item.block);
     for stream in finder.streams {
-        scan_if_conditions(stream, &mut |cond_ident| {
+        scan_conditions(stream, &mut |cond_ident, kw| {
             if let Some((name, span)) =
                 candidates.iter().find(|(n, _)| n == cond_ident)
             {
@@ -72,14 +81,15 @@ pub(crate) fn check_fn(item: &syn::ItemFn, out: &mut Vec<RawDiag>) {
                         RULE,
                         format!(
                             "`{name}` is a build-time snapshot used as a reactive-looking \
-                             `if` condition — the branch will never update"
+                             `{kw}` {} — the branch will never update",
+                            if kw == "match" { "scrutinee" } else { "condition" }
                         ),
                         *span,
                     )
                     .with_help(
                         "a component body runs once, so this `.get()` is frozen. For a \
                          live condition: `let … = memo(move || …)`, or inline the \
-                         `.get()` into the `if`. If the snapshot is intentional, say \
+                         `.get()` into the `if` / `match`. If the snapshot is intentional, say \
                          so: `.peek()` (on a `Reactive<T>` prop, `.get_untracked()`).",
                     ),
                 );
@@ -138,17 +148,27 @@ impl<'ast> Visit<'ast> for UiMacroFinder {
     }
 }
 
-/// Lexical scan for `if [!]* IDENT {` in a token stream, recursing into
-/// every group so nested blocks are covered. Calls `hit` with the
-/// condition identifier.
-fn scan_if_conditions(stream: TokenStream, hit: &mut impl FnMut(&str)) {
+/// Lexical scan for `if [!]* IDENT {` and `match IDENT {` in a token
+/// stream, recursing into every group so nested blocks are covered. Calls
+/// `hit` with the condition identifier and the keyword.
+fn scan_conditions(stream: TokenStream, hit: &mut impl FnMut(&str, &str)) {
     let tokens: Vec<TokenTree> = stream.into_iter().collect();
     let mut i = 0;
     while i < tokens.len() {
         if let TokenTree::Group(g) = &tokens[i] {
-            scan_if_conditions(g.stream(), hit);
+            scan_conditions(g.stream(), hit);
             i += 1;
             continue;
+        }
+        let is_match = matches!(&tokens[i], TokenTree::Ident(id) if id == "match");
+        if is_match {
+            if let (Some(TokenTree::Ident(cond)), Some(TokenTree::Group(body))) =
+                (tokens.get(i + 1), tokens.get(i + 2))
+            {
+                if body.delimiter() == Delimiter::Brace {
+                    hit(&cond.to_string(), "match");
+                }
+            }
         }
         let is_if = matches!(&tokens[i], TokenTree::Ident(id) if id == "if");
         if is_if {
@@ -163,7 +183,7 @@ fn scan_if_conditions(stream: TokenStream, hit: &mut impl FnMut(&str)) {
                 (tokens.get(j), tokens.get(j + 1))
             {
                 if body.delimiter() == Delimiter::Brace && *cond != "let" {
-                    hit(&cond.to_string());
+                    hit(&cond.to_string(), "if");
                 }
             }
         }
@@ -194,6 +214,34 @@ mod tests {
         });
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(out[0].message.contains("too_short"));
+    }
+
+    /// Regression: a hoisted snapshot as a `match` scrutinee lowers to a
+    /// static `match` that builds once — the `if`-only scan missed it.
+    #[test]
+    fn regression_flags_a_snapshot_match_scrutinee() {
+        let out = diags(quote! {
+            #[component]
+            fn A() -> Element {
+                let gate = mode.get();
+                ui! { view() { match gate { Mode::A => { text { "a" } } _ => { view() {} } } } }
+            }
+        });
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].message.contains("`match` scrutinee"), "{out:?}");
+    }
+
+    /// Inline reads and memos are live — clean.
+    #[test]
+    fn inline_get_and_memo_match_are_clean() {
+        let out = diags(quote! {
+            #[component]
+            fn A() -> Element {
+                let gate = memo(move || mode.get());
+                ui! { view() { match mode.get() { _ => { view() {} } } match gate { _ => { view() {} } } } }
+            }
+        });
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]

@@ -262,6 +262,9 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             ("ICON_ATTRS", &icon_attrs),
             ("USES_PERMISSIONS", &uses_permissions),
             ("SERVICES", &services),
+            // Only the local template carries the splice; the runtime-server
+            // shell forwards no links (its Activity has no link handling).
+            ("INTENT_FILTERS", &manifest.app.links.android_intent_filters()),
         ]),
     )?;
 
@@ -1074,7 +1077,40 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_robot_build_needs_internet, ANDROID_MANIFEST_LOCAL_XML};
+    use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
+
+    /// The launch Activity is `singleTask` (a warm link must reach the
+    /// running instance's `onNewIntent`, not mount a second app) and the
+    /// app's link filters are spliced inside it.
+    #[test]
+    fn local_manifest_declares_link_filters_on_a_single_task_activity() {
+        let raw = r#"
+            [package]
+            name = "demo"
+            version = "0.0.1"
+            [package.metadata.idealyst.app]
+            bundle_id = "ai.example.demo"
+            [package.metadata.idealyst.app.links]
+            schemes = ["demo"]
+            domains = ["demo.example.com"]
+        "#;
+        let tmp = std::env::temp_dir().join(format!("run-android-links-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), raw).unwrap();
+        let manifest = build_ios::parse_manifest(&tmp).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let xml = render(
+            ANDROID_MANIFEST_LOCAL_XML,
+            &[("INTENT_FILTERS", &manifest.app.links.android_intent_filters())],
+        );
+        let activity = &xml[xml.find("<activity").unwrap()..xml.find("</activity>").unwrap()];
+        assert!(activity.contains("android:launchMode=\"singleTask\""));
+        assert!(activity.contains("<data android:scheme=\"demo\" />"), "{activity}");
+        assert!(activity.contains("android:host=\"demo.example.com\""));
+        assert!(activity.contains("android:autoVerify=\"true\""));
+        assert!(!xml.contains("{{INTENT_FILTERS}}"));
+    }
 
     /// The dev/run manifest must enable cleartext HTTP so a dev build can
     /// reach a server-function / `#[sse]` host running over `http://` on the

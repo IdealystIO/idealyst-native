@@ -1,58 +1,66 @@
 # `deep-link`
 
-Cross-platform **inbound-URL** handling — deep links (custom URL schemes
-like `myapp://…`) and universal / app links (`https://example.com/…`). It
-delivers the URL that cold-started the app and notifies you of every link
-that arrives while it runs, parsed into a small `DeepLink`. You subscribe
-with `on_link` and get an RAII guard that unsubscribes on drop.
+Inbound links in app code: custom-scheme deep links (`myapp://items/42`)
+and universal links / App Links (`https://example.com/items/42`).
 
-It is deliberately a *raw inbound channel*. Mapping a URL onto a navigator
-route is the app's (or a router SDK's) job — this crate hands you the parsed
-URL and stops there.
+**The framework already routes links.** The link that launches the app
+opens its screen on the first mount. A link that arrives while the app runs
+moves the live navigators to the same screen. This crate is for app code
+that wants to see links, hold them (an auth gate) or replay them, plus the
+web address-bar calls below. The full guide, including the build
+configuration that makes the OS send links at all, is
+[`docs/deep-links.md`](../../../../docs/deep-links.md).
 
 ```rust
-use deep_link::{initial_link, on_link};
+use deep_link::{initial_link, intercept, on_link, route_link};
 
-# fn demo() {
-// The URL that cold-started the app, if any.
+// The URL that launched the app, if any.
 if let Some(link) = initial_link() {
-    println!("launched via {}{}", link.scheme, link.path);
+    log::info!("launched via {}", link.scheme);
 }
 
-// Every inbound link while this guard is alive. Drop it to unsubscribe.
-let sub = on_link(|link| {
-    for (k, v) in link.query_pairs() {
-        println!("{k} = {v}");
-    }
-});
-# drop(sub);
-# }
+// Every link that arrives while this guard is alive. Drop it to unsubscribe.
+let _sub = on_link(|link| log::info!("opened {}", link.route_path()));
 ```
 
 ## What you get
 
-A small parsed `DeepLink` plus a tiny subscription API:
-
-- `DeepLink::parse(raw) -> Result<DeepLink, ParseError>` — parse any custom
+- `DeepLink::parse(raw) -> Result<DeepLink, ParseError>` parses any custom
   or web URL. Fields: `scheme` (lowercased), `host: Option<String>`, `path`,
-  `query: Option<String>`, and `query_pairs() -> Vec<(String, String)>`
-  (percent-decoded, order-preserving).
-- `initial_link() -> Option<DeepLink>` — the **first** link ever fed; the
-  cold-start URL. Set once, stable for the app's lifetime, so a handler
-  registered after launch can still recover the launch URL.
-- `on_link(handler) -> LinkSubscription` — fires for every inbound link
-  while the returned guard is alive; dropping the guard unsubscribes. There
-  is no `mem::forget` — the guard *is* the lifetime.
-- `feed_link(raw_url)` — **host ingress**: the door the platform host calls
-  when the OS hands it a URL. The first call seeds `initial_link`; every
-  call parses and dispatches to all live handlers. This is the seam — the
-  SDK owns parse + registry + dispatch; the host owns *calling* it.
-- `seed_initial_from_platform()` — convenience the web bootstrap can call to
-  seed `initial_link` from `window.location.href`; a no-op on native (the
-  native host reads the launch URL / intent itself and calls `feed_link`).
+  `query: Option<String>`. `query_pairs()` returns the query
+  percent-decoded and in order. `route_path()` is the app path the
+  framework routes the link to.
+- `initial_link() -> Option<DeepLink>` is the URL that launched the app.
+  The host records it before the first mount and it never changes.
+- `on_link(handler) -> LinkSubscription` observes every link that arrives
+  while the app runs. Observing doesn't change routing.
+- `intercept(handler) -> LinkSubscription` is offered every link before it
+  routes. Returning `true` claims the link and the navigators don't move.
+- `route_link(&link) -> bool` routes a link the way the framework does,
+  which is how a claimed link is replayed later. Returns whether it landed.
+- `feed_link(raw) -> bool` delivers a raw URL as if the OS had. The hosts
+  call this themselves; it is public for custom hosts and tests.
 
-Every target delivers the **same shape** — platforms diverge in *where*
-`feed_link` is called from, not in the API you use.
+Dropping a `LinkSubscription` unregisters it. Handlers run on the UI thread
+in registration order: observers first, then interceptors, then routing.
+
+### Holding links until sign-in
+
+```rust
+let held = signal::<Option<DeepLink>>(None);
+let _gate = deep_link::intercept(move |link| {
+    if signed_in.peek() { return false; }   // let it route
+    held.set(Some(link.clone()));
+    true                                    // claimed
+});
+// …after sign-in:
+if let Some(link) = held.peek() { deep_link::route_link(&link); }
+```
+
+`on_link` and `intercept` never see the launch link, because it opens its
+screen as the navigators first mount, before app code could step in. A gate
+that mounts its navigators only after sign-in still opens the launch link:
+the launch path waits until the root navigator mounts.
 
 ## The live address
 
@@ -94,58 +102,50 @@ The native answers are the real answer, not a stub: a native app is not
 "at" a URL (its navigators hold the in-memory path) and is not served
 from an origin anything could be relative to.
 
-## Per-platform mechanism
+## Where links come from
 
-| Target | Where the host calls `feed_link` / seeds `initial_link` |
-| --- | --- |
-| web (wasm32) | `window.location.href` on bootstrap (→ `initial_link`); app-internal navigations / `popstate` → `feed_link`. **Runnable on web.** |
-| iOS / macOS | `application(_:open:options:)` (custom scheme) + `application(_:continue:restorationHandler:)` (universal links) → `feed_link`; launch URL seeds `initial_link`. **Compile-checked only.** |
-| Android | launch `Intent.getData()` in `onCreate` (→ `initial_link`) and `onNewIntent` (→ `feed_link`); `<intent-filter>` declares the scheme/host. **Compile-checked only.** |
+The OS hands the host the URL, and the host passes it to the framework's
+ingress, `runtime_shared::inbound_link`. This crate is the typed layer on
+top of that ingress. Hosts don't depend on an SDK, and the launch link
+arrives before any app code runs.
 
-The parse + registry + dispatch below `feed_link` is pure Rust and identical
-on every target, so once a host calls `feed_link` the observable behavior is
-the same everywhere. Wiring each backend host to *call* `feed_link` is the
-framework's job, not the app's.
+| Target | Launch link | While running |
+| --- | --- | --- |
+| iOS | `didFinishLaunching` launch options / user activity | `application(_:open:options:)`, `application(_:continue:restorationHandler:)` |
+| Android | the launch `Intent` in `onCreate` | `onNewIntent` (`singleTask` Activity) |
+| macOS | `application:openURLs:` before `applicationDidFinishLaunching:` | `application:openURLs:` |
+| web | the page address | — |
 
-## Permissions
+## Configuration
 
-None at runtime — but inbound links require **build-time manifest
-configuration**, not a runtime permission:
-
-- **iOS / macOS** — declare a custom URL scheme under `CFBundleURLTypes`
-  (custom-scheme links) and/or **Associated Domains** entitlement +
-  `apple-app-site-association` (universal links).
-- **Android** — an `<intent-filter>` on the launch Activity with
-  `android:scheme` (and `android:host` for app links + Digital Asset Links).
-- **web** — none; the entry URL is just `window.location`.
-
-This is app build-config, so the CLI's per-platform capability injection
-doesn't grant it the way it grants, say, a microphone permission. Injecting
-`CFBundleURLTypes` / associated-domains / `<intent-filter>` entries from the
-app's declared scheme/domain is a **separate build-tool seam** — not part of
-this crate.
-
-## Scope
-
-Deliver the parsed inbound URL — the unopinionated raw capability. Mapping a
-`DeepLink` onto a navigator route, validating it, or guarding it behind auth
-is deliberately left to the app or a higher-level router SDK rather than
-baked in here.
+There's no runtime permission. Declare the links under
+`[package.metadata.idealyst.app.links]` (`schemes`, `domains`,
+`apple_team_id`, `android_cert_fingerprints`). The build then writes the
+Info.plist URL types, the associated-domains entitlement, the Android intent
+filters and the web build's `.well-known` verification files. See
+[`docs/deep-links.md`](../../../../docs/deep-links.md).
 
 ## Testing checklist
 
-Manual verification per backend — an unchecked **native** box means the code
-compiles for that target but isn't confirmed on real hardware yet (see the
-verification note above). Tick each item as you exercise it.
-
 **Automated**
-- [ ] `cargo test -p deep-link` — parse, `query_pairs`, initial-link dedupe, subscription drop, reentrancy (the pure registry is fully unit-tested)
-- [ ] `cargo build -p deep-link --features catalog` — recipes/docs compile
-- [ ] `cargo build -p deep-link --target wasm32-unknown-unknown` — web target
-- [x] `cargo test -p deep-link --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/location_web.rs`: `replace_url` moves the real address without a history entry and keeps `history.state`; `current_url` follows it; `origin` matches `location.origin`
+- [x] `cargo test -p deep-link`: parsing, `query_pairs`, `route_path`,
+  the launch link, observe / intercept / route, unsubscribe on drop,
+  re-entrancy.
+- [x] `cargo test -p runtime-shared --lib inbound_link`: the ingress, the
+  observe → intercept → route order, and the URL-to-path mapping.
+- [x] `cargo test -p runtime-vocabulary --test inbound_links`: links that
+  arrive while running move swap and stack navigators, nested navigators
+  resolve from the link, and a query-only change updates the screen.
+- [x] `cargo test -p deep-link --target wasm32-unknown-unknown`
+  (`tests/location_web.rs`): `replace_url`, `current_url`, `origin`.
 
-**Behavior** (the host must call `feed_link` — these verify the host wiring, not just the registry)
-- [ ] **Web** — bootstrap seeds `initial_link()` from `window.location.href`; an app-internal navigation / `popstate` fed via `feed_link` fires `on_link` with the parsed URL.
-- [ ] **iOS** — open a `myapp://…` URL (and a universal `https://…` link) — `on_link` fires with the parsed link; a cold-start launch URL appears in `initial_link()`. Confirm the host forwards from `application(_:open:options:)` / `application(_:continue:…)`.
-- [ ] **macOS** — same custom-scheme + universal-link flow forwarded from the AppKit delegate.
-- [ ] **Android** — launching via an `<intent-filter>` URL surfaces the URL in `initial_link()` (from `onCreate`'s `Intent.getData()`); a warm `onNewIntent` fires `on_link`. Confirm the host forwards both into `feed_link`.
+**On a device or simulator**
+- [x] iOS simulator: a link delivered while running
+  (`application(_:open:options:)`) opens Settings → About in
+  `examples/nav-showcase`.
+- [x] macOS: `open "navshowcase://settings/about"` opens About, both while
+  running and when it launches the app (`examples/nav-showcase`).
+- [ ] iOS: a cold-start custom-scheme link (`simctl openurl` asks "Open
+  in …?" first), and universal links on a device.
+- [ ] Android: `adb shell am start -a android.intent.action.VIEW -d "<url>"`,
+  cold and warm.

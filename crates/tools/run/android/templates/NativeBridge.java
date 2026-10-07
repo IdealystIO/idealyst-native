@@ -19,11 +19,14 @@ public class NativeBridge {
     /// just needs to re-run Taffy and reapply the resulting frames.
     public static native void notifyConfigChanged();
 
-    /// Cold-start deep link: seed the navigator's initial path from the
-    /// launch Intent's data URI. Call from `MainActivity.onCreate`
-    /// BEFORE `attach`. `path` is the URI's path component
-    /// (e.g. "/encounters/abc"), or null/empty for no deep link.
-    public static native void setLaunchPath(String path);
+    /// Cold-start inbound link: record the launch URL and seed the
+    /// navigators' launch path from the launch Intent's full data URI.
+    /// Call from `MainActivity.onCreate` BEFORE `attach`.
+    public static native void setLaunchUrl(String url);
+
+    /// A link arrived while running (`onNewIntent`): route it through the
+    /// live navigators. Full data URI.
+    public static native void deliverLink(String url);
 
     /// Robot bridge: export the relay URL (baked into the manifest meta-data
     /// by `idealyst dev`) so the app DIALS the host relay instead of

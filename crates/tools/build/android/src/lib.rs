@@ -588,28 +588,66 @@ pub extern "system" fn Java_{jni}_NativeBridge_notifyConfigChanged<'local>(
     backend_android::notify_config_changed();
 }}
 
-/// Cold-start deep-link trampoline. `MainActivity.onCreate` calls this
-/// with the launch `Intent`'s data-URI PATH (e.g. `/encounters/abc`)
-/// BEFORE `attach`, so the navigator walker's synchronous initial mount
-/// resolves the deep-linked screen and reconstructs the back stack. When
-/// the Activity launched without a `VIEW`/app-link intent, the Java side
-/// never calls this and behavior is unchanged.
+/// Read a Java string argument for a link export (`None` for null /
+/// empty — the "no link" case).
+fn link_arg(env: &mut JNIEnv<'_>, url: &JString<'_>) -> Option<String> {{
+    // `get_string` errors on a null jstring.
+    let js = env.get_string(url).ok()?;
+    let s = js.to_str().unwrap_or("").to_string();
+    (!s.is_empty()).then_some(s)
+}}
+
+/// Crash loud on a panic in a link export: log the payload and abort.
+/// Unwinding across JNI is UB, and swallowing it would leave the
+/// navigators half-moved with no trace.
+fn abort_on_link_panic(what: &str, result: std::thread::Result<()>) {{
+    if let Err(payload) = result {{
+        let msg = payload
+            .downcast_ref::<&'static str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<panic payload not a string>".to_string());
+        log::error!("idealyst: {{what}} PANICKED: {{msg}}");
+        std::process::abort();
+    }}
+}}
+
+/// Cold-start inbound link. `MainActivity.onCreate` calls this with the
+/// launch `Intent`'s full data URI BEFORE `attach`: it records the launch
+/// URL and seeds the navigators' launch-path slot
+/// (`runtime_shared::inbound_link::launch`), so the synchronous initial
+/// mount opens the linked screen and rebuilds its back stack. Launched
+/// without a `VIEW` intent ⇒ the Java side never calls this.
 #[no_mangle]
-pub extern "system" fn Java_{jni}_NativeBridge_setLaunchPath<'local>(
+pub extern "system" fn Java_{jni}_NativeBridge_setLaunchUrl<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
-    path: JString<'local>,
+    url: JString<'local>,
 ) {{
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
-        // `get_string` errors on a null jstring, so this also handles the
-        // "no deep link" case where Java passes null.
-        if let Ok(js) = env.get_string(&path) {{
-            let s = js.to_str().unwrap_or("").to_string();
-            if !s.is_empty() {{
-                runtime_shared::set_initial_path(Some(s));
-            }}
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+        if let Some(url) = link_arg(&mut env, &url) {{
+            runtime_shared::inbound_link::launch(&url);
         }}
     }}));
+    abort_on_link_panic("setLaunchUrl", result);
+}}
+
+/// Inbound link while running. `MainActivity.onNewIntent` calls this
+/// (the Activity is `singleTask`, so a link re-delivers to the running
+/// instance instead of stacking a second one). Routes through the live
+/// navigators and flushes.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_deliverLink<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    url: JString<'local>,
+) {{
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+        if let Some(url) = link_arg(&mut env, &url) {{
+            backend_android::newcore::deliver_inbound_link(&url);
+        }}
+    }}));
+    abort_on_link_panic("deliverLink", result);
 }}
 
 /// Export the robot relay URL (baked into the manifest meta-data by
@@ -967,6 +1005,7 @@ mod regression_tests {
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
+                links: Default::default(),
             },
         }
     }
@@ -1058,6 +1097,33 @@ mod regression_tests {
     /// `newcore::start` with the app's registry-generic
     /// `register_scene_extensions` seam, and `detach` calls
     /// `newcore::stop()`. The user-crate dep pins no core feature.
+    /// Every `native` method `NativeBridge.java` declares must have a JNI
+    /// export in the generated local wrapper — a missing one is an
+    /// `UnsatisfiedLinkError` the first time Java calls it (for the link
+    /// trampolines, the first time a deep link arrives). The template lives
+    /// in run-android; the wrapper is generated here.
+    #[test]
+    fn local_wrapper_exports_every_native_bridge_method() {
+        const NATIVE_BRIDGE: &str =
+            include_str!("../../../run/android/templates/NativeBridge.java");
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+        let natives: Vec<&str> = NATIVE_BRIDGE
+            .lines()
+            .filter(|l| l.contains("static native"))
+            .filter_map(|l| l.split('(').next()?.split_whitespace().last())
+            .collect();
+        assert!(natives.contains(&"setLaunchUrl") && natives.contains(&"deliverLink"));
+        for name in natives {
+            assert!(
+                lib_rs.contains(&format!("_NativeBridge_{name}<")),
+                "NativeBridge.{name} has no JNI export in the wrapper"
+            );
+        }
+        assert!(lib_rs.contains("runtime_shared::inbound_link::launch("));
+        assert!(lib_rs.contains("backend_android::newcore::deliver_inbound_link("));
+    }
+
     #[test]
     fn local_wrapper_boots_scene_core_with_registration_seam() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);

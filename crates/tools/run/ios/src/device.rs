@@ -279,6 +279,25 @@ pub(crate) fn prepare_xcode_project(
         )?,
     )?;
 
+    // Entitlements: universal-link domains need the associated-domains
+    // entitlement signed into the app (automatic signing then adds the
+    // capability to the provisioning profile). Only written when the app
+    // declares domains; a stale file from an earlier build is removed so
+    // dropping `domains` really drops the entitlement.
+    const ENTITLEMENTS_FILE: &str = "App.entitlements";
+    let entitlements_path = project_root.join(ENTITLEMENTS_FILE);
+    let entitlements = match manifest.app.links.entitlements_plist() {
+        Some(plist) => {
+            std::fs::write(&entitlements_path, plist)
+                .with_context(|| format!("write {}", entitlements_path.display()))?;
+            Some(ENTITLEMENTS_FILE)
+        }
+        None => {
+            let _ = std::fs::remove_file(&entitlements_path);
+            None
+        }
+    };
+
     // Generate the .xcodeproj (no xcodegen dependency).
     let xcodeproj = project_root.join(format!("{executable_name}.xcodeproj"));
     write_xcodeproj(
@@ -290,6 +309,7 @@ pub(crate) fn prepare_xcode_project(
             library_search_path: &lib_dir,
             lib_name: &lib_name,
             frameworks: &frameworks,
+            entitlements,
         },
     )?;
 
@@ -326,13 +346,14 @@ fn render_device_info_plist(
     icon_entries: &str,
     permission_entries: &str,
 ) -> Result<String> {
-    let extra_entries = [icon_entries, permission_entries]
+    let bundle_id = manifest.app.require_bundle_id()?;
+    let url_types = manifest.app.links.plist_url_types(bundle_id);
+    let extra_entries = [icon_entries, permission_entries, url_types.as_str()]
         .iter()
         .filter(|s| !s.is_empty())
         .copied()
         .collect::<Vec<_>>()
         .join("\n    ");
-    let bundle_id = manifest.app.require_bundle_id()?;
     Ok(INFO_PLIST_TMPL
         .replace("{{APP_NAME}}", &xml_escape(&manifest.app.name))
         .replace("{{BUNDLE_ID}}", &xml_escape(bundle_id))
@@ -357,6 +378,12 @@ struct PbxParams<'a> {
     /// each SDK's declared frameworks). Drives the four framework-related
     /// pbxproj sections, replacing what used to be hardcoded in the template.
     frameworks: &'a [Framework],
+    /// The entitlements file (project-relative) to sign with, when the app
+    /// declares any — today, universal-link domains
+    /// (`com.apple.developer.associated-domains`). `None` ⇒ no
+    /// `CODE_SIGN_ENTITLEMENTS`, so a link-less app's provisioning profile
+    /// is not asked for a capability it doesn't use.
+    entitlements: Option<&'a str>,
 }
 
 /// Write `<name>.xcodeproj/project.pbxproj` from the parameterized
@@ -383,6 +410,13 @@ fn render_pbxproj(params: &PbxParams) -> String {
         .replace("{{APP_NAME}}", params.app_name)
         .replace("{{BUNDLE_ID}}", params.bundle_id)
         .replace("{{DEVELOPMENT_TEAM}}", params.team)
+        .replace(
+            "{{CODE_SIGN_ENTITLEMENTS}}",
+            &params
+                .entitlements
+                .map(|f| format!("\n\t\t\t\tCODE_SIGN_ENTITLEMENTS = \"{f}\";"))
+                .unwrap_or_default(),
+        )
         .replace(
             "{{LIBRARY_SEARCH_PATH}}",
             &params.library_search_path.display().to_string(),
@@ -929,6 +963,7 @@ mod tests {
             library_search_path: Path::new("/tmp/target/aarch64-apple-ios/release"),
             lib_name: "camera_preview_demo_ios_wrapper",
             frameworks: &frameworks,
+            entitlements: None,
         });
         assert!(
             !rendered.contains("{{"),
@@ -949,6 +984,44 @@ mod tests {
         }
     }
 
+    /// Universal links need the associated-domains entitlement SIGNED into
+    /// the app: both build configurations must point at the entitlements
+    /// file, and a link-less app must not reference one at all.
+    #[test]
+    fn pbxproj_signs_with_entitlements_only_when_declared() {
+        let frameworks = camera_frameworks();
+        let params = |entitlements| PbxParams {
+            app_name: "Demo",
+            bundle_id: "ai.example.demo",
+            team: "USC735CN86",
+            library_search_path: Path::new("/tmp/lib"),
+            lib_name: "demo_ios_wrapper",
+            frameworks: &frameworks,
+            entitlements,
+        };
+        let with = render_pbxproj(&params(Some("App.entitlements")));
+        assert_eq!(
+            with.matches("CODE_SIGN_ENTITLEMENTS = \"App.entitlements\";").count(),
+            2,
+            "Debug and Release both sign with the entitlements"
+        );
+        let without = render_pbxproj(&params(None));
+        assert!(!without.contains("CODE_SIGN_ENTITLEMENTS"));
+        assert!(!without.contains("{{"));
+    }
+
+    /// Custom schemes reach the device / App Store plist (the OS routes a
+    /// `myapp://` URL only to an app whose Info.plist declares it).
+    #[test]
+    fn device_plist_declares_custom_url_schemes() {
+        let mut m = crate::tests_support::fake_manifest();
+        assert!(!render_device_info_plist(&m, "Demo", "", "").unwrap().contains("CFBundleURLTypes"));
+        m.app.links.schemes = vec!["demo".into()];
+        let plist = render_device_info_plist(&m, "Demo", "", "").unwrap();
+        assert!(plist.contains("<key>CFBundleURLTypes</key>"), "{plist}");
+        assert!(plist.contains("<string>demo</string>"));
+    }
+
     /// The weak-linking gotcha (gotcha 1) is encoded as `ATTRIBUTES = (Weak, )`
     /// on the objc2-bound base frameworks (UIKit/Foundation). Without it dyld
     /// aborts at launch on the older OS. CoreGraphics / QuartzCore and every
@@ -963,6 +1036,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            entitlements: None,
         });
         // Only UIKit/Foundation are weak (objc2 back-deploy fix).
         for fw in ["UIKit", "Foundation"] {
@@ -1003,6 +1077,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "screen_share_ios_wrapper",
             frameworks: &frameworks,
+            entitlements: None,
         });
         // Present in all four sections.
         assert!(rendered.contains("ReplayKit.framework in Frameworks"));
@@ -1031,6 +1106,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            entitlements: None,
         });
         assert!(
             rendered.contains("CODE_SIGN_STYLE = Automatic"),
@@ -1152,6 +1228,7 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            entitlements: None,
         });
         assert!(rendered.contains("PBXResourcesBuildPhase"), "no Resources build phase");
         assert!(
@@ -1194,6 +1271,7 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             library_search_path: Path::new("/tmp/lib"),
             lib_name: "demo_ios_wrapper",
             frameworks: &frameworks,
+            entitlements: None,
         });
         let setting = format!("TARGETED_DEVICE_FAMILY = \"{}\";", crate::targeted_device_family());
         assert_eq!(rendered.matches(&setting).count(), 2, "Debug + Release:\n{rendered}");

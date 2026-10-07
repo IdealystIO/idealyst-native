@@ -127,12 +127,11 @@ pub fn app() -> Element {
             }
             let status = status.clone();
             status.set("queuing…".to_string());
-            // Fire the server call; reflect the result reactively.
-            runtime_core::driver::spawn_async(async move {
-                match signup(addr).await {
-                    Ok(msg) => status.set(msg),
-                    Err(e) => status.set(format!("error: {e}")),
-                }
+            // Fire the server call; reflect the result in the callback,
+            // which runs only while this screen is still mounted.
+            runtime_core::spawn_then(signup(addr), move |result| match result {
+                Ok(msg) => status.set(msg),
+                Err(e) => status.set(format!("error: {e}")),
             });
         })
     };

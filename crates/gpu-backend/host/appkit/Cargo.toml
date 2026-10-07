@@ -63,6 +63,12 @@ objc2-foundation = { version = "0.2", features = [
     # backgrounded — keeps the bridge responsive for the Inspector reading
     # it from the foreground.
     "NSProcessInfo",
+    # `application:openURLs:` (inbound deep links / universal links) hands
+    # the delegate an `NSArray<NSURL>`; `applicationDidFinishLaunching:`
+    # takes an `NSNotification`.
+    "NSArray",
+    "NSURL",
+    "NSNotification",
 ] }
 objc2-app-kit = { version = "0.2", features = [
     "NSResponder",

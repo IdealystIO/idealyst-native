@@ -1009,6 +1009,9 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
             &manifest.app.web.assets,
         )
         .with_context(|| format!("stage static bundle at {}", out.display()))?;
+        for warning in stage_well_known(&staged, &manifest.app)? {
+            reporter.log("build-web", warning);
+        }
         let staged_pkg = staged.join("pkg");
         sync_pkg_dir(&wrapper_pkg, &staged_pkg).with_context(|| {
             format!("sync {} → {}", wrapper_pkg.display(), staged_pkg.display())
@@ -1927,6 +1930,54 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Emit the domain-verification files universal links / App Links need,
+/// from `[package.metadata.idealyst.app.links]`:
+///
+/// - `.well-known/apple-app-site-association` (iOS / macOS universal links;
+///   needs `apple_team_id`),
+/// - `.well-known/assetlinks.json` (Android App Links; needs
+///   `android_cert_fingerprints`).
+///
+/// The OS fetches them from EVERY listed domain before it lets the app open
+/// that domain's links, so the web build carries them and whatever serves
+/// the domain must serve them (AASA with `Content-Type: application/json`,
+/// no redirects). Written after staging (which wipes the dir) and before
+/// compression. Returns a warning per file the declared domains need but the
+/// manifest lacks the identifier for — the links then open the browser
+/// instead of the app, which is otherwise silent.
+fn stage_well_known(bundle_dir: &Path, app: &build_ios::AppMetadata) -> Result<Vec<String>> {
+    let links = &app.links;
+    let mut warnings = Vec::new();
+    if links.domains.is_empty() {
+        return Ok(warnings);
+    }
+    let bundle_id = app.require_bundle_id()?;
+    let dir = bundle_dir.join(".well-known");
+    let mut write = |name: &str, body: Option<String>, missing: &str| -> Result<()> {
+        match body {
+            Some(body) => {
+                fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+                let path = dir.join(name);
+                fs::write(&path, body).with_context(|| format!("write {}", path.display()))
+            }
+            None => {
+                warnings.push(format!(
+                    "links: `domains` declared but no `{missing}` — skipping .well-known/{name}; \
+                     those links will open the browser, not the app"
+                ));
+                Ok(())
+            }
+        }
+    };
+    write(
+        "apple-app-site-association",
+        links.apple_app_site_association(bundle_id),
+        "apple_team_id",
+    )?;
+    write("assetlinks.json", links.asset_links(bundle_id), "android_cert_fingerprints")?;
+    Ok(warnings)
+}
+
 
 /// Replace every compressible file in `bundle_dir` with its gzipped
 /// bytes (keeps the original filename). Skips formats that are already
@@ -4357,6 +4408,48 @@ mod regression_tests {
             !pkg.join("demo_bg.wasm.br.br").exists(),
             "re-running must skip existing .br siblings",
         );
+    }
+
+    /// Universal links / App Links are verified against files the web build
+    /// serves: both land under `.well-known/` when their identifiers are
+    /// declared, and a missing identifier is reported rather than silent.
+    #[test]
+    fn stage_well_known_emits_verification_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fp = "AB:".repeat(31) + "AB";
+        let cargo = format!(
+            "[package]\nname = \"demo\"\nversion = \"0.0.1\"\n\
+             [package.metadata.idealyst.app]\nbundle_id = \"ai.example.demo\"\n\
+             [package.metadata.idealyst.app.links]\ndomains = [\"demo.example.com\"]\n\
+             apple_team_id = \"ABCDE12345\"\nandroid_cert_fingerprints = [\"{fp}\"]\n"
+        );
+        fs::write(tmp.path().join("Cargo.toml"), cargo).unwrap();
+        let app = build_ios::parse_manifest(tmp.path()).unwrap().app;
+        let out = tmp.path().join("dist");
+        fs::create_dir_all(&out).unwrap();
+
+        assert!(stage_well_known(&out, &app).unwrap().is_empty());
+        let aasa = fs::read_to_string(out.join(".well-known/apple-app-site-association")).unwrap();
+        assert!(aasa.contains("ABCDE12345.ai.example.demo"), "{aasa}");
+        let al = fs::read_to_string(out.join(".well-known/assetlinks.json")).unwrap();
+        assert!(al.contains("ai.example.demo") && al.contains(&fp), "{al}");
+
+        // Domains without the Android fingerprint: AASA only, plus a warning.
+        let mut app = app;
+        app.links.android_cert_fingerprints.clear();
+        let out2 = tmp.path().join("dist2");
+        fs::create_dir_all(&out2).unwrap();
+        let warnings = stage_well_known(&out2, &app).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("android_cert_fingerprints"));
+        assert!(!out2.join(".well-known/assetlinks.json").exists());
+
+        // No domains: nothing written, nothing warned.
+        app.links.domains.clear();
+        let out3 = tmp.path().join("dist3");
+        fs::create_dir_all(&out3).unwrap();
+        assert!(stage_well_known(&out3, &app).unwrap().is_empty());
+        assert!(!out3.join(".well-known").exists());
     }
 
     #[test]

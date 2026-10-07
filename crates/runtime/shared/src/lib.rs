@@ -124,6 +124,7 @@ pub mod wheel;
 pub mod hover;
 pub mod file_drop;
 pub mod primitives;
+pub mod inbound_link;
 
 // Cross-platform per-frame + async-driver primitives. Off by default;
 // see the `async-driver` feature in Cargo.toml.

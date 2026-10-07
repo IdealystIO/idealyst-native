@@ -251,6 +251,18 @@ pub fn schedule_flush() {
     });
 }
 
+/// A link (deep link / universal link) arrived while the app is running:
+/// hand it to the framework's inbound-link ingress — observers, then
+/// interceptors, then the navigators — and flush, because the host calls
+/// this from a raw Activity (`onNewIntent`) callback outside every framework-wrapped
+/// handler, so nothing else would commit the staged navigation. Returns
+/// whether the link landed. Main thread only.
+pub fn deliver_inbound_link(url: &str) -> bool {
+    let landed = runtime_shared::inbound_link::deliver(url);
+    schedule_flush();
+    landed
+}
+
 /// Flush the mounted world immediately (skipped while it is already
 /// mid-flush).
 fn flush_now() {
@@ -1634,6 +1646,41 @@ mod tests {
             let log = log.clone();
             effect(move || log.borrow_mut().push(count.get()));
             count
+    /// REGRESSION: a link delivered from `onNewIntent` is a raw platform
+    /// callback — no framework wrapper flushes after it. The navigation the
+    /// router stages must still commit, so `deliver_inbound_link` owes the
+    /// flush itself.
+    #[test]
+    fn regression_deliver_inbound_link_commits_what_the_router_staged() {
+        install_test_scheduler();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let path = world.enter(|| {
+            let path = signal(String::from("/"));
+            let log = log.clone();
+            effect(move || log.borrow_mut().push(path.get()));
+            path
+        });
+        // A stand-in for the navigators: stage the routed path the way a
+        // navigator's dispatch stages its command.
+        runtime_shared::inbound_link::install_router(Rc::new(move |p: &str| {
+            path.set(p.to_string());
+            true
+        }));
+
+        assert!(deliver_inbound_link("myapp://items/42"));
+        assert_eq!(*log.borrow(), vec!["/".to_string()], "staged, not yet committed");
+        pump();
+        assert_eq!(
+            *log.borrow(),
+            vec!["/".to_string(), "/items/42".to_string()],
+            "the link's navigation committed on the looper turn"
+        );
+        set_flush_world(None);
+    }
+
         });
         assert_eq!(*log.borrow(), vec![0], "effect ran once at creation");
 

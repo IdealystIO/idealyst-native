@@ -125,30 +125,35 @@
 //! `disabled`/`loading` prop rebuilds the pressable in place.
 //!
 //! **The remedy is to anchor the spawn to the scope the author means by
-//! "while this screen is open" — the enclosing component — by publishing
-//! that scope's token around the handler call:**
+//! "while this screen is open" — the enclosing component.** Take the
+//! token in the component body, where `current()` sees the component's
+//! own ownership scope, and name it at the spawn with [`spawn_then_in`]:
 //!
 //! ```ignore
-//! // In the component body, where `current()` sees the component's own
-//! // ownership scope:
-//! let alive = ScopeAlive::current();
-//! let on_press = alive.wrap0(Rc::new(move || {
+//! let alive = ScopeAlive::current();       // the component's scope
+//! let on_press = Rc::new(move || {
 //!     busy.set(true);
-//!     spawn_then(save(text), move |r| { busy.set(false); … });
-//! }));
+//!     spawn_then_in(&alive, save(text), move |r| { busy.set(false); … });
+//! });
 //! ```
 //!
-//! `wrap0` gates the call on that scope AND publishes its token for the
-//! duration, so a `spawn_then` reached from inside inherits it: alive
-//! across the control's own rebuilds, dead when the component actually
-//! unmounts. `idea-ui`'s `Button` does exactly this, which is why the
-//! busy-button shape works there
+//! The task is then alive across the control's own rebuilds and dead
+//! when the component actually unmounts. Wrapping the whole handler is
+//! the equivalent spelling when it spawns more than once —
+//! `alive.wrap0(handler)` gates the call on that scope AND publishes its
+//! token for the duration, so every plain `spawn_then` reached from
+//! inside inherits it. `idea-ui`'s `Button` wraps its `on_click` this way,
+//! which is why the busy-button shape works there
 //! (`idea-ui/tests/loading_button_spawn.rs`); a control built out of
-//! primitives has to do it itself.
+//! primitives has to do it itself. The `spawn-then-handler-anchor` lint
+//! flags the unanchored shape: a handler that writes a component signal
+//! and then calls a bare `spawn_then`.
 //!
-//! Regression: `handler_spawn_reanchored_to_the_component_survives_its_own_rebuild`
-//! (and its negative, `handler_spawned_task_dies_with_its_node`, which
-//! pins the default that makes the re-anchor necessary).
+//! Regression: `handler_spawn_reanchored_to_the_component_survives_its_own_rebuild`,
+//! `spawn_then_in_survives_the_handler_s_own_rebuild`,
+//! `spawn_then_in_dies_with_the_scope_it_names` (and the negative,
+//! `handler_spawned_task_dies_with_its_node`, which pins the default that
+//! makes the re-anchor necessary).
 //!
 //! Outside any world the token is permanently live, so a task spawned from
 //! a test or a boot path still applies its result.
@@ -183,7 +188,35 @@ where
 {
     // Taken HERE, in the caller's scope — not inside the async block,
     // where there is no ambient scope to anchor to.
-    let alive = ScopeAlive::current();
+    spawn_then_in(&ScopeAlive::current(), task, then);
+}
+
+/// [`spawn_then`] with an explicit lifetime: `then` runs only while
+/// `alive`'s scope is still up, instead of the scope ambient at the call.
+///
+/// The ambient scope is wrong in exactly one common place — an event
+/// handler whose own first write rebuilds the control it is mounted on
+/// (a `busy` flag driving the button's `loading`). There `spawn_then`
+/// binds to that control and drops the result. Take the component's
+/// token in its body and pass it here:
+///
+/// ```ignore
+/// let alive = ScopeAlive::current();      // in the component body
+/// let save = Rc::new(move || {
+///     busy.set(true);                      // rebuilds the button
+///     spawn_then_in(&alive, save_report(id), move |_| busy.set(false));
+/// });
+/// ```
+///
+/// See the module docs ("The trap") for why the ambient default is the
+/// node and not the component.
+pub fn spawn_then_in<T, F, A>(alive: &ScopeAlive, task: F, then: A)
+where
+    T: 'static,
+    F: Future<Output = T> + 'static,
+    A: FnOnce(T) + 'static,
+{
+    let alive = alive.clone();
     spawn_async(async move {
         let value = task.await;
         if alive.get() {
@@ -191,6 +224,7 @@ where
             // chained from inside `then` inherits this same lifetime
             // rather than anchoring to nothing (nothing is being built
             // here, and no guarded callback is on the stack).
+            // idealyst-lint-disable-next-line signal-across-await -- this IS the guard: `alive.get()` above, no await between it and the call
             alive.clone().run_within(|| then(value));
         }
         // Dead scope: `then` drops unrun, releasing its captures.

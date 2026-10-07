@@ -941,7 +941,7 @@ pub use runtime_shared::driver;
 // all. Prefer it over reaching into `driver::spawn_async` directly; see
 // `crate::scoped_spawn` for the guarantee.
 #[cfg(feature = "async-driver")]
-pub use crate::scoped_spawn::spawn_then;
+pub use crate::scoped_spawn::{spawn_then, spawn_then_in};
 // `resource` / `mutation` — new-core REIMPLEMENTATIONS (old fns are
 // built on old-core reactivity; see `crate::async_reactive`'s module
 // docs for anchoring, completion staging, and the documented

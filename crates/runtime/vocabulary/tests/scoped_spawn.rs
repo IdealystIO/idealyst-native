@@ -22,7 +22,8 @@ use std::task::{Context, Poll};
 use host_mock::Harness;
 use runtime_shared::driver::{install_async_executor, AsyncExecutor};
 use runtime_vocabulary::builders::view;
-use runtime_vocabulary::scoped_spawn::spawn_then;
+use runtime_vocabulary::callback_guard::ScopeAlive;
+use runtime_vocabulary::scoped_spawn::{spawn_then, spawn_then_in};
 use runtime_world::{signal, Signal};
 
 // ---------------------------------------------------------------------
@@ -514,6 +515,164 @@ fn handler_spawn_reanchored_to_the_component_survives_its_own_rebuild() {
     );
     let state = outer_state.borrow().expect("component state");
     assert_eq!(state.get(), 7, "and its writes must land");
+}
+
+/// Mount the busy-button shape: a component owning `state` and `busy`,
+/// whose pressable sits in an arm keyed on `busy`, so the handler's own
+/// `busy.set(true)` destroys the node that mounted it. The handler is
+/// NOT wrapped — `spawn` decides how the task is anchored. Returns the
+/// component's `state` slot and the outer hole that unmounts the whole
+/// component.
+fn mount_busy_button(
+    h: &Harness,
+    spawn: impl Fn(&ScopeAlive, Signal<i32>) + 'static,
+) -> (Screen, Rc<RefCell<Option<Signal<i32>>>>) {
+    let hole: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
+    let scoped: Rc<RefCell<Option<Signal<i32>>>> = Rc::new(RefCell::new(None));
+    let hole_b = hole.clone();
+    let scoped_b = scoped.clone();
+    let spawn = Rc::new(spawn);
+    let realized = h.mount(h.world.enter(|| {
+        let shown = signal(true);
+        *hole_b.borrow_mut() = Some(shown);
+        view()
+            .child(move || {
+                if !shown.get() {
+                    return view().build();
+                }
+                // The component body: its state, and its own token.
+                let state = signal(0i32);
+                *scoped_b.borrow_mut() = Some(state);
+                let busy = signal(false);
+                let alive = ScopeAlive::current();
+                let spawn = spawn.clone();
+                let on_press: Rc<dyn Fn()> = Rc::new(move || {
+                    busy.set(true); // rebuilds the arm below, pressable included
+                    spawn(&alive, state);
+                });
+                view()
+                    .child(move || {
+                        let _ = busy.get(); // structural hole keyed on `busy`
+                        let on_press = on_press.clone();
+                        view()
+                            .children(vec![runtime_vocabulary::builders::pressable(move || {
+                                on_press()
+                            })
+                            .build()])
+                            .build()
+                    })
+                    .build()
+            })
+            .build()
+    }));
+    let shown = hole.borrow().expect("hole built");
+    (Screen { _realized: realized, shown, scoped: scoped.clone() }, scoped)
+}
+
+/// The trap the `spawn-then-handler-anchor` lint reports, pinned: a bare
+/// `spawn_then` in an unwrapped handler whose first write rebuilds its
+/// own control binds to that control and silently drops the result.
+#[test]
+fn unanchored_handler_spawn_is_dropped_by_its_own_rebuild() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let ran: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let ran_c = ran.clone();
+    let (_screen, _state) = mount_busy_button(&h, move |_alive, state| {
+        let g = g.clone();
+        let ran = ran_c.clone();
+        spawn_then(
+            async move {
+                g.await;
+                7i32
+            },
+            move |v| {
+                *ran.borrow_mut() = true;
+                state.set(v);
+            },
+        );
+    });
+    h.world.flush();
+    h.press_handler(0)();
+    h.world.flush();
+    pump();
+    gate.complete();
+    pump();
+    h.world.flush();
+    assert!(!*ran.borrow(), "the ambient anchor is the rebuilt control, so the result is dropped");
+}
+
+/// `spawn_then_in` with the component's token is the one-token fix for
+/// the trap above: the task outlives the control's own rebuild.
+#[test]
+fn spawn_then_in_survives_the_handler_s_own_rebuild() {
+    ensure_executor();
+    let h = Harness::new();
+    let gate = Gate::new();
+    let g = gate.clone();
+    let (_screen, state) = mount_busy_button(&h, move |alive, state| {
+        let g = g.clone();
+        spawn_then_in(
+            alive,
+            async move {
+                g.await;
+                7i32
+            },
+            move |v| state.set(v),
+        );
+    });
+    h.world.flush();
+    h.press_handler(0)();
+    h.world.flush();
+    pump();
+    gate.complete();
+    pump();
+    h.world.flush();
+    let state = state.borrow().expect("component state");
+    assert_eq!(state.get(), 7, "the named scope is still alive, so the write lands");
+}
+
+/// The explicit token governs in both directions: spawned from OUTSIDE
+/// any world (where the ambient token is permanently live), the task
+/// still dies with the scope it names.
+#[test]
+fn spawn_then_in_dies_with_the_scope_it_names() {
+    ensure_executor();
+    let h = Harness::new();
+    let token: Rc<RefCell<Option<ScopeAlive>>> = Rc::new(RefCell::new(None));
+    let token_b = token.clone();
+    let screen = mount_screen(&h, move |_| {
+        *token_b.borrow_mut() = Some(ScopeAlive::current());
+    });
+    h.world.flush();
+    let alive = token.borrow().clone().expect("token taken in the screen body");
+
+    let gate = Gate::new();
+    let g = gate.clone();
+    let ran: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let ran_c = ran.clone();
+    let scoped = screen.scoped.borrow().expect("screen state");
+    spawn_then_in(
+        &alive,
+        async move {
+            g.await;
+            7i32
+        },
+        move |v| {
+            *ran_c.borrow_mut() = true;
+            scoped.set(v); // would abort if this ran
+        },
+    );
+    pump();
+
+    screen.shown.set(false); // the named scope unmounts
+    h.world.flush();
+    gate.complete();
+    pump();
+    h.world.flush();
+    assert!(!*ran.borrow(), "the callback must follow the named scope, not the ambient one");
 }
 
 // ---------------------------------------------------------------------

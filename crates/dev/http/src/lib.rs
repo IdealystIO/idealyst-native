@@ -1415,6 +1415,11 @@ fn header(name: &str, value: &str) -> Header {
 }
 
 fn content_type(path: &Path) -> &'static str {
+    // Apple fetches `/.well-known/apple-app-site-association` (universal
+    // links) and requires JSON, but the file name has no extension.
+    if path.file_name().and_then(|s| s.to_str()) == Some("apple-app-site-association") {
+        return "application/json";
+    }
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -1438,6 +1443,27 @@ fn content_type(path: &Path) -> &'static str {
         "otf" => "font/otf",
         "txt" | "map" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod content_type_tests {
+    use super::content_type;
+    use std::path::Path;
+
+    /// The extensionless AASA file must be served as JSON, or iOS / macOS
+    /// reject it and universal links open the browser.
+    #[test]
+    fn apple_app_site_association_is_served_as_json() {
+        assert_eq!(
+            content_type(Path::new("/srv/.well-known/apple-app-site-association")),
+            "application/json"
+        );
+        assert_eq!(
+            content_type(Path::new("/srv/.well-known/assetlinks.json")),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(content_type(Path::new("/srv/LICENSE")), "application/octet-stream");
     }
 }
 

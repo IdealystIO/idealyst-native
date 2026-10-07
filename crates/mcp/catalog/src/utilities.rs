@@ -32,7 +32,7 @@ inventory::submit! {
     UtilityEntry {
         name: "spawn_then",
         module_path: "runtime_core",
-        docs: "Bridge async APIs into synchronous UI code: `spawn_then(future, |result| { … })` runs `future` detached, then applies `result` in the callback. THE way to call an `async` SDK/server fn from a handler or component body (crate feature `async-driver`; generated wrappers enable it). Put ALL signal reads and writes in the CALLBACK, never in the future. Why: every `.await` is a flush boundary — the host flushes after each future poll, so the world commits, structural drivers run, and scopes are torn down BETWEEN two adjacent lines of one async block. A `Signal<T>` is `Copy` and captures into an `async move` with nothing in the types objecting, so a write after the await lands on a freed slot and aborts the app with `idealyst[stale-signal-handle]` (the classic case: a save handler that navigates on success — the navigation drops the screen and the trailing `busy.set(false)` dies every time). The callback is `FnOnce`, not a future, so it cannot suspend: it runs inside one turn with the liveness check immediately before it, making the update ATOMIC — every write lands or none does, which no per-write `is_alive()` guard can promise. Reads are covered too, and that matters more: a stale READ can never be made benign (there is no value to synthesize). The in-flight IO still completes; only its result is discarded, so a save is never abandoned mid-write. For declarative async state prefer `resource(deps, fetcher)` (fetch-and-store) or `mutation(handler)` (submit-and-settle), which carry the same guard. `runtime_core::driver::spawn_async` remains for genuinely detached work that must OUTLIVE the component (a background upload, a storage write-through). The `signal-across-await` lint flags the raw form. See [[reactivity-in-depth]].",
+        docs: "Bridge async APIs into synchronous UI code: `spawn_then(future, |result| { … })` runs `future` detached, then applies `result` in the callback. THE way to call an `async` SDK/server fn from a handler or component body (crate feature `async-driver`; generated wrappers enable it). Put ALL signal reads and writes in the CALLBACK, never in the future. Why: every `.await` is a flush boundary — the host flushes after each future poll, so the world commits, structural drivers run, and scopes are torn down BETWEEN two adjacent lines of one async block. A `Signal<T>` is `Copy` and captures into an `async move` with nothing in the types objecting, so a write after the await lands on a freed slot and aborts the app with `idealyst[stale-signal-handle]` (the classic case: a save handler that navigates on success — the navigation drops the screen and the trailing `busy.set(false)` dies every time). The callback is `FnOnce`, not a future, so it cannot suspend: it runs inside one turn with the liveness check immediately before it, making the update ATOMIC — every write lands or none does, which no per-write `is_alive()` guard can promise. Reads are covered too, and that matters more: a stale READ can never be made benign (there is no value to synthesize). The in-flight IO still completes; only its result is discarded, so a save is never abandoned mid-write. For declarative async state prefer `resource(deps, fetcher)` (fetch-and-store) or `mutation(handler)` (submit-and-settle), which carry the same guard. `runtime_core::driver::spawn_async` remains for genuinely detached work that must OUTLIVE the component (a background upload, a storage write-through). Anchoring: a call from a component body or effect binds to that scope; a call from an event handler binds to the node that mounted the handler — so if the handler's own write rebuilds that control (a `busy` flag driving its `loading`), use `spawn_then_in` with the component's `ScopeAlive`. The `signal-across-await` lint flags the raw form. See [[reactivity-in-depth]].",
         params: &[
             ParamSpec {
                 name: "task",
@@ -49,6 +49,36 @@ inventory::submit! {
         return_type_short: "()",
         category: UtilityCategory::Reactive,
         snippet: "spawn_then(\n\tasync move { ${1:task}.await },\n\tmove |${2:result}| {\n\t\t$0\n\t},\n);",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "spawn_then_in",
+        module_path: "runtime_core",
+        docs: "`spawn_then` with an explicit lifetime: `spawn_then_in(&alive, future, |result| { … })` applies `result` only while `alive`'s scope is up, instead of the scope ambient at the call. Needed in exactly one common place — an event handler whose own write rebuilds the control it is mounted on (`busy.set(true)` with `busy` driving the button's `loading` / `disabled`, or an `if` around it). There plain `spawn_then` binds to that control, the rebuild flips its token, and the result is silently dropped (spinner forever). Take `let alive = ScopeAlive::current();` in the COMPONENT BODY and pass it here: the task survives the control's rebuild and still dies when the component unmounts. idea-ui's `Button` already re-anchors its `on_click`. The `spawn-then-handler-anchor` lint flags the unanchored shape. See [[reactivity-in-depth]].",
+        params: &[
+            ParamSpec {
+                name: "alive",
+                type_str: "&ScopeAlive",
+                type_short_name: "ScopeAlive",
+            },
+            ParamSpec {
+                name: "task",
+                type_str: "impl Future<Output = T>",
+                type_short_name: "Future",
+            },
+            ParamSpec {
+                name: "then",
+                type_str: "impl FnOnce(T)",
+                type_short_name: "FnOnce",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Reactive,
+        snippet: "spawn_then_in(\n\t&${1:alive},\n\tasync move { ${2:task}.await },\n\tmove |${3:result}| {\n\t\t$0\n\t},\n);",
         _seal: (),
     }
 }

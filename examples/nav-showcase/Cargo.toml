@@ -39,3 +39,8 @@ name      = "Nav Showcase"
 bundle_id = "ai.truday.idealyst.navshowcase"
 version   = "0.0.1"
 targets   = ["web", "ios", "android"]
+
+# Inbound links: `navshowcase://settings/about` opens Settings → About,
+# whether it launches the app or arrives while it runs.
+[package.metadata.idealyst.app.links]
+schemes = ["navshowcase"]

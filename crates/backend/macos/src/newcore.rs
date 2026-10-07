@@ -470,6 +470,31 @@ pub fn schedule_flush() {
     });
 }
 
+/// A link (deep link / universal link) arrived while the app is running:
+/// hand it to the framework's inbound-link ingress — observers, then
+/// interceptors, then the navigators — and flush, because the host calls
+/// this from a raw AppKit Apple-Event callback outside every framework-wrapped
+/// handler, so nothing else would commit the staged navigation. Returns
+/// whether the link landed. Main thread only.
+pub fn deliver_inbound_link(url: &str) -> bool {
+    let landed = runtime_shared::inbound_link::deliver(url);
+    schedule_flush();
+    landed
+}
+
+/// The URL that LAUNCHED the app, delivered after the first mount — AppKit
+/// hands it to the delegate from inside `NSApp.run()`, after the host has
+/// already mounted (see host-appkit's `app_delegate`). Records it as the
+/// launch link and routes it, skipping observers and interceptors exactly
+/// as a launch link that seeds the launch slot does on the other targets;
+/// then flushes. Returns whether it landed. Main thread only.
+pub fn deliver_launch_link(url: &str) -> bool {
+    runtime_shared::inbound_link::record_launch(url);
+    let landed = runtime_shared::inbound_link::route(url);
+    schedule_flush();
+    landed
+}
+
 /// Flush the mounted world immediately (skipped while it is already
 /// mid-flush).
 fn flush_now() {

@@ -49,7 +49,7 @@ use syn::visit::Visit;
 use crate::diagnostic::RawDiag;
 use crate::rules::component_case::{has_component_attr, is_pascal_case, to_pascal_case};
 use crate::rules::last_segment;
-use crate::rules::prefer_ui::constructor;
+use crate::rules::prefer_ui::builds_element;
 
 pub(crate) const RULE: &str = "prefer-component";
 
@@ -206,7 +206,7 @@ fn composes_tree(block: &syn::Block) -> bool {
         }
         fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
             if let syn::Expr::Path(p) = c.func.as_ref() {
-                self.0 |= last_segment(&p.path).is_some_and(|s| constructor(&s).is_some());
+                self.0 |= last_segment(&p.path).is_some_and(|s| builds_element(&s));
             }
             syn::visit::visit_expr_call(self, c);
         }

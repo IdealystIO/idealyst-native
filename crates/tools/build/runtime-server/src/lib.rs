@@ -748,6 +748,7 @@ mod regression_tests {
                 web: Default::default(),
                 macos: Default::default(),
                 permissions: Default::default(),
+                links: Default::default(),
             },
         }
     }

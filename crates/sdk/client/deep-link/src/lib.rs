@@ -1,49 +1,46 @@
-//! Cross-platform inbound-URL handling — **deep links** and **universal /
-//! app links**.
+//! Cross-platform inbound-URL handling — **deep links** (custom schemes,
+//! `myapp://items/42`) and **universal / App Links**
+//! (`https://example.com/items/42`).
 //!
-//! This SDK delivers the URL that launched or resumed the app, parsed into
-//! a small [`DeepLink`], and notifies you of every subsequent inbound link.
-//! It is deliberately a *raw channel*: it hands you the parsed URL and
-//! stops there. Turning a URL into a navigator route is the app's (or a
-//! router SDK's) job — see [the scope note](#scope).
+//! The framework routes inbound links on its own: the link that launches
+//! the app opens its screen on the first mount, and a link that arrives
+//! while the app runs moves the live navigators to the same screen. This
+//! SDK is how app code takes part:
+//!
+//! - [`on_link`] — observe every link that arrives while the app runs.
+//! - [`intercept`] — claim a link before it routes (an auth gate), then
+//!   [`route_link`] it later.
+//! - [`initial_link`] — the URL the app was launched with.
+//! - [`DeepLink`] — the parsed URL ([`DeepLink::route_path`] is the app
+//!   path it routes to).
 //!
 //! ```ignore
 //! use deep_link::{initial_link, on_link};
 //!
-//! // The URL that cold-started the app, if any.
 //! if let Some(link) = initial_link() {
-//!     println!("launched via {}{}", link.scheme, link.path);
+//!     log::info!("launched via {}", link.scheme);
 //! }
-//!
-//! // Every inbound link while this guard is alive. Drop it to unsubscribe.
+//! // Every warm link while this guard is alive. Drop it to unsubscribe.
 //! let _sub = on_link(|link| {
 //!     for (k, v) in link.query_pairs() {
-//!         println!("{k} = {v}");
+//!         log::info!("{k} = {v}");
 //!     }
 //! });
 //! ```
 //!
 //! # How a link reaches you
 //!
-//! The OS hands the host (AppKit / UIKit / the Android Activity / the web
-//! bootstrap) a URL; the host forwards it to the single ingress door
-//! [`feed_link`]. The SDK parses it, records the very first one as the
-//! [`initial_link`], and dispatches it to every live [`on_link`] handler.
-//! [`feed_link`] is the platform-agnostic seam — the parse + registry +
-//! dispatch below it is pure Rust and identical on every target, so once a
-//! host calls [`feed_link`] everything works the same everywhere.
+//! The OS hands the host a URL — `application(_:open:options:)` /
+//! `application(_:continue:restorationHandler:)` on iOS, the
+//! `kAEGetURL` Apple Event on macOS, the launch `Intent` and `onNewIntent`
+//! on Android, the page address on web. The host calls the framework's
+//! ingress (`runtime_shared::inbound_link`): `launch` for the cold-start
+//! URL, `deliver` (then its flush) for a warm one. Every target delivers
+//! the same thing; only where the host calls from differs.
 //!
-//! Per-platform, the host calls [`feed_link`] from:
-//!
-//! - **apple** — `application(_:open:options:)` (custom scheme) and
-//!   `application(_:continue:restorationHandler:)` (universal links). The
-//!   cold-start launch URL seeds [`initial_link`]. *Compile-checked only.*
-//! - **android** — the launch `Intent.getData()` in `onCreate` (→
-//!   [`initial_link`]) and `onNewIntent` (→ [`feed_link`]); `<intent-filter>`
-//!   entries in the manifest declare the scheme/host. *Compile-checked only.*
-//! - **web** — on bootstrap, `window.location.href` seeds [`initial_link`];
-//!   custom-scheme links don't apply in a browser, but app-internal
-//!   navigations / `popstate` can be fed via [`feed_link`].
+//! How a URL maps to a screen is
+//! [`runtime_shared::inbound_link::route_path`]: the path of a web link;
+//! for a custom scheme, the authority is the first segment.
 //!
 //! # The live address
 //!
@@ -54,17 +51,13 @@
 //! an address bar, and are `None` / no-ops on native. See
 //! [`current_url`] for why that is the honest answer rather than a gap.
 //!
-//! # Permissions
+//! # Configuration
 //!
-//! None at runtime. Inbound links instead require **build-time manifest
-//! configuration** — a custom URL scheme / Associated Domains on Apple, an
-//! `<intent-filter>` with `android:scheme` / `android:host` on Android. See
-//! the README's "Permissions" section.
+//! No runtime permission. The OS only sends a link to an app that declares
+//! it, under `[package.metadata.idealyst.app.links]` in the app's
+//! `Cargo.toml` — see the README.
 
 #![deny(missing_docs)]
-
-use std::cell::RefCell;
-use std::rc::Rc;
 
 // Exactly one platform helper compiles per target; only `web` does real
 // work today (reads `window.location.href`). The native launch-URL reads
@@ -165,143 +158,143 @@ impl DeepLink {
 }
 
 // ---------------------------------------------------------------------------
-// The dispatch registry. A process-global, single-threaded registry: the
-// app UI (and thus every host that delivers links) runs on one thread on
-// every backend, so a thread-local avoids any Send/Sync requirement on the
-// handlers (web closures hold non-Send JS values). This mirrors how the
-// navigator SDK keeps its per-window state thread-local.
+// The inbound channel. The registry itself lives in the framework's host
+// seam (`runtime_shared::inbound_link`), because the HOST delivers links —
+// before any app code runs, for the cold-start one — and a host must not
+// depend on an SDK. This crate is the typed author face over it: it parses
+// the raw URLs the seam carries into `DeepLink`s.
 // ---------------------------------------------------------------------------
 
-type Handler = Rc<dyn Fn(DeepLink)>;
+use runtime_shared::inbound_link;
 
-struct Registry {
-    /// The first link ever fed — the cold-start URL. Set once, never
-    /// overwritten, so `initial_link()` is stable for the app's lifetime.
-    initial: Option<DeepLink>,
-    /// Whether `initial` has been claimed. Distinct from `initial.is_some()`
-    /// so that even an *unparseable* first feed marks the slot as decided
-    /// (we never retroactively promote a later link to "initial").
-    initial_claimed: bool,
-    /// Live subscriptions, keyed by a monotonic id so an RAII guard can
-    /// remove exactly its own entry on drop.
-    handlers: Vec<(u64, Handler)>,
-    next_id: u64,
-}
+impl DeepLink {
+    /// The app path this link routes to — what the framework hands the
+    /// navigators. `https://example.com/items/42?x=1` → `/items/42?x=1`;
+    /// for a custom scheme the authority is the first segment:
+    /// `myapp://items/42` → `/items/42`. See
+    /// [`runtime_shared::inbound_link::route_path`].
+    pub fn route_path(&self) -> String {
+        inbound_link::route_path(&self.to_url())
+    }
 
-impl Registry {
-    const fn new() -> Self {
-        Registry {
-            initial: None,
-            initial_claimed: false,
-            handlers: Vec::new(),
-            next_id: 0,
+    /// Re-serialize the parts back into a URL string.
+    fn to_url(&self) -> String {
+        let mut out = self.scheme.clone();
+        out.push(':');
+        if let Some(host) = &self.host {
+            out.push_str("//");
+            out.push_str(host);
         }
+        out.push_str(&self.path);
+        if let Some(q) = &self.query {
+            out.push('?');
+            out.push_str(q);
+        }
+        out
     }
 }
 
-thread_local! {
-    static REGISTRY: RefCell<Registry> = const { RefCell::new(Registry::new()) };
-}
-
-/// The cold-start URL that launched the app, if any.
+/// The URL that cold-started the app, if any.
 ///
-/// This is the **first** link [`feed_link`] ever received (typically the
-/// launch URL / launch intent the host forwards at startup). It is set once
-/// and never changes — later links arrive via [`on_link`], not here, so a
-/// handler registered after launch can still recover the launch URL.
+/// Recorded by the host before the app mounts (the launch URL / launch
+/// intent / the web page's address). It never changes — links that arrive
+/// later reach [`on_link`], not here. `None` when the app was opened
+/// normally, or when the launch URL does not parse.
+///
+/// You rarely need this for routing: the framework already opened the
+/// linked screen at launch. Use it for what the path alone doesn't carry
+/// (the scheme, the host, attribution parameters).
 pub fn initial_link() -> Option<DeepLink> {
-    REGISTRY.with(|r| r.borrow().initial.clone())
+    inbound_link::launch_url().and_then(|raw| DeepLink::parse(&raw).ok())
 }
 
-/// Subscribe to every inbound link delivered while the returned
-/// [`LinkSubscription`] is alive.
+/// Observe every link that arrives while the app runs, for as long as the
+/// returned [`LinkSubscription`] is alive. Dropping it unsubscribes.
 ///
-/// The handler fires for each [`feed_link`] **including** the cold-start
-/// link if it arrives after you subscribe. Dropping the returned guard
-/// unsubscribes; there is no other teardown to remember.
-///
-/// Handlers run synchronously on the thread that calls [`feed_link`] (the
-/// app/UI thread on every backend), in subscription order.
+/// Observing does not change routing — the framework still moves the
+/// navigators to the link (unless an [`intercept`]or claims it). Handlers
+/// run synchronously on the UI thread, in subscription order, before
+/// routing. A URL that does not parse is not delivered.
 pub fn on_link(handler: impl Fn(DeepLink) + 'static) -> LinkSubscription {
-    REGISTRY.with(|r| {
-        let mut reg = r.borrow_mut();
-        let id = reg.next_id;
-        reg.next_id += 1;
-        reg.handlers.push((id, Rc::new(handler)));
-        LinkSubscription { id }
-    })
+    LinkSubscription {
+        _registration: inbound_link::observe(move |raw| {
+            if let Ok(link) = DeepLink::parse(raw) {
+                handler(link);
+            }
+        }),
+    }
 }
 
-/// An RAII subscription guard. Drop it to unsubscribe the [`on_link`]
-/// handler it represents. Holds no closure itself — the registry owns that
-/// — so dropping is cheap and cannot run author code.
+/// Claim links before the framework routes them: return `true` to take a
+/// link (the navigators don't move), `false` to let it route. Active while
+/// the returned [`LinkSubscription`] is alive.
+///
+/// The usual reason is an auth gate — hold the link while signed out, then
+/// [`route_link`] it once the user is in:
+///
+/// ```ignore
+/// let held = signal::<Option<DeepLink>>(None);
+/// let gate = deep_link::intercept(move |link| {
+///     if signed_in.peek() { return false; }
+///     held.set(Some(link.clone()));
+///     true
+/// });
+/// // …after sign-in:
+/// if let Some(link) = held.peek() { deep_link::route_link(&link); }
+/// ```
+///
+/// Applies to links that arrive while the app runs. The cold-start link
+/// is resolved by the navigators as they first mount, so a gate that
+/// mounts its navigators only after sign-in (`if signed_in { … }`) already
+/// gets it: the launch path waits in the navigators' launch slot until the
+/// root navigator mounts. A URL that does not parse is never claimed.
+pub fn intercept(handler: impl Fn(&DeepLink) -> bool + 'static) -> LinkSubscription {
+    LinkSubscription {
+        _registration: inbound_link::intercept(move |raw| {
+            DeepLink::parse(raw).is_ok_and(|link| handler(&link))
+        }),
+    }
+}
+
+/// Move the navigators to `link`'s [`route_path`](DeepLink::route_path) —
+/// what the framework does with a link nobody intercepted. Returns whether
+/// the link landed (a navigator moved, or its screen is already showing).
+///
+/// Navigation is staged and commits on the framework's next flush, which
+/// every framework-delivered callback (press handlers, effects) already
+/// triggers.
+pub fn route_link(link: &DeepLink) -> bool {
+    inbound_link::route(&link.to_url())
+}
+
+/// An RAII guard for [`on_link`] / [`intercept`]. Drop it to unregister;
+/// dropping runs no author code.
 #[must_use = "dropping the subscription immediately unsubscribes; keep it alive while you want links"]
 pub struct LinkSubscription {
-    id: u64,
+    _registration: inbound_link::Registration,
 }
 
-impl Drop for LinkSubscription {
-    fn drop(&mut self) {
-        // The thread-local may already be torn down at process exit; ignore.
-        let _ = REGISTRY.try_with(|r| {
-            r.borrow_mut().handlers.retain(|(id, _)| *id != self.id);
-        });
-    }
+/// **Host ingress.** Deliver a raw inbound URL as if the OS had handed it
+/// to a running app: observers fire, interceptors are asked, then it
+/// routes. Returns whether it landed.
+///
+/// The framework's hosts already call this for you (via
+/// `runtime_shared::inbound_link::deliver`, followed by their flush); it is
+/// public for custom hosts and tests. From app code, prefer
+/// [`route_link`]. Outside a framework callback the navigation is staged
+/// until the next flush.
+pub fn feed_link(raw_url: &str) -> bool {
+    inbound_link::deliver(raw_url)
 }
 
-/// **Host ingress.** Feed a raw inbound URL into the SDK.
-///
-/// This is the door the platform host calls when the OS hands it a URL
-/// (`application(_:open:options:)` on Apple, `onNewIntent` on Android, the
-/// web bootstrap / a `popstate` handler on web). Wiring the host to call
-/// this is the orchestrator's job; the SDK side — parse, initial-link
-/// dedupe, dispatch — is all here.
-///
-/// Behavior:
-/// - The **first** call ever (per thread/process) seeds [`initial_link`]
-///   with the parsed URL. Subsequent calls never overwrite it.
-/// - Every call dispatches the parsed link to all live [`on_link`]
-///   handlers, in subscription order, on the calling thread.
-/// - An unparseable URL is dropped (no handler fires) but still *claims*
-///   the initial-link slot, so a malformed launch URL won't let a later
-///   link masquerade as the cold-start link.
-pub fn feed_link(raw_url: &str) {
-    let parsed = DeepLink::parse(raw_url).ok();
-
-    // Snapshot the handlers and seed `initial` under the borrow, then
-    // release it *before* invoking handlers — a handler may call `on_link`
-    // / drop a `LinkSubscription`, which re-borrows the registry. Holding
-    // the borrow across dispatch would panic on that reentrancy.
-    let handlers: Vec<Handler> = REGISTRY.with(|r| {
-        let mut reg = r.borrow_mut();
-        if !reg.initial_claimed {
-            reg.initial_claimed = true;
-            reg.initial = parsed.clone();
-        }
-        reg.handlers.iter().map(|(_, h)| Rc::clone(h)).collect()
-    });
-
-    if let Some(link) = parsed {
-        for h in handlers {
-            h(link.clone());
-        }
-    }
-}
-
-/// Seed [`initial_link`] from the platform's launch URL at startup.
-///
-/// A thin convenience the host bootstrap can call before any [`on_link`]
-/// subscriber exists. On **web** it reads `window.location.href`; on every
-/// other target it is a no-op (the native host reads the launch URL /
-/// intent itself and calls [`feed_link`]). Calling [`feed_link`] directly
-/// is equivalent — this just spares the web host from reading
-/// `window.location` itself.
+/// Record the platform's launch URL as [`initial_link`] if the host has not
+/// already. The web backend records `window.location.href` at boot, so
+/// this is only needed by a custom bootstrap; a no-op off web.
 pub fn seed_initial_from_platform() {
     #[cfg(target_arch = "wasm32")]
     if let Some(href) = web::current_href() {
-        feed_link(&href);
+        inbound_link::record_launch(&href);
     }
-    // Non-web: nothing to read here; the host seeds via `feed_link`.
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +388,8 @@ pub fn replace_url(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     // Each test runs on its own thread to get a fresh thread-local
     // registry — the registry is process-global per thread by design, so
@@ -480,21 +474,14 @@ mod tests {
     }
 
     #[test]
-    fn feed_link_fires_subscribed_handler() {
+    fn on_link_receives_warm_links_parsed() {
         fresh(|| {
-            let count = Rc::new(Cell::new(0u32));
             let got: Rc<RefCell<Option<DeepLink>>> = Rc::new(RefCell::new(None));
-
-            let c = Rc::clone(&count);
             let g = Rc::clone(&got);
-            let _sub = on_link(move |link| {
-                c.set(c.get() + 1);
-                *g.borrow_mut() = Some(link);
-            });
+            let _sub = on_link(move |link| *g.borrow_mut() = Some(link));
 
             feed_link("myapp://demo/path?x=1");
 
-            assert_eq!(count.get(), 1);
             let link = got.borrow().clone().unwrap();
             assert_eq!(link.scheme, "myapp");
             assert_eq!(link.host.as_deref(), Some("demo"));
@@ -504,24 +491,70 @@ mod tests {
     }
 
     #[test]
-    fn initial_link_is_first_feed_and_stable() {
+    fn initial_link_is_the_host_recorded_launch_url_not_a_warm_link() {
         fresh(|| {
             assert_eq!(initial_link(), None);
-            feed_link("myapp://first");
-            feed_link("myapp://second");
-            // initial stays the very first link, regardless of later feeds.
+            // A warm link is not the launch link.
+            feed_link("myapp://warm");
+            assert_eq!(initial_link(), None);
+            inbound_link::launch("myapp://first/x");
+            inbound_link::launch("myapp://second");
             assert_eq!(initial_link().unwrap().host.as_deref(), Some("first"));
         });
     }
 
     #[test]
-    fn unparseable_first_feed_still_claims_initial_slot() {
+    fn route_path_matches_the_framework_mapping() {
+        let custom = DeepLink::parse("myapp://items/42?x=1").unwrap();
+        assert_eq!(custom.route_path(), "/items/42?x=1");
+        let web = DeepLink::parse("https://example.com/items/42").unwrap();
+        assert_eq!(web.route_path(), "/items/42");
+        let bare = DeepLink::parse("myapp:/items/42").unwrap();
+        assert_eq!(bare.route_path(), "/items/42");
+    }
+
+    #[test]
+    fn intercept_holds_a_link_and_route_link_releases_it() {
         fresh(|| {
-            feed_link("garbage"); // unparseable: dropped, but claims the slot
-            assert_eq!(initial_link(), None);
-            feed_link("myapp://real");
-            // The later valid link must NOT be promoted to initial.
-            assert_eq!(initial_link(), None);
+            let routed = Rc::new(RefCell::new(Vec::<String>::new()));
+            let r = Rc::clone(&routed);
+            inbound_link::install_router(Rc::new(move |p| {
+                r.borrow_mut().push(p.to_string());
+                true
+            }));
+            let held = Rc::new(RefCell::new(None::<DeepLink>));
+            let h = Rc::clone(&held);
+            let gate = intercept(move |link| {
+                *h.borrow_mut() = Some(link.clone());
+                true
+            });
+            assert!(!feed_link("myapp://items/7"));
+            assert!(routed.borrow().is_empty());
+
+            let link = held.borrow_mut().take().unwrap();
+            assert!(route_link(&link));
+            assert_eq!(*routed.borrow(), vec!["/items/7".to_string()]);
+            drop(gate);
+            feed_link("myapp://items/8");
+            assert_eq!(routed.borrow().len(), 2);
+        });
+    }
+
+    #[test]
+    fn unparseable_links_are_neither_observed_nor_claimed() {
+        fresh(|| {
+            let seen = Rc::new(Cell::new(0u32));
+            let s = Rc::clone(&seen);
+            let _sub = on_link(move |_| s.set(s.get() + 1));
+            let claimed = Rc::new(Cell::new(0u32));
+            let c = Rc::clone(&claimed);
+            let _gate = intercept(move |_| {
+                c.set(c.get() + 1);
+                true
+            });
+            feed_link("garbage");
+            assert_eq!(seen.get(), 0);
+            assert_eq!(claimed.get(), 0);
         });
     }
 

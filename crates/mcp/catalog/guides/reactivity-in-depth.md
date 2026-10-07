@@ -292,7 +292,29 @@ intended.
   The IO itself still completes; only its result is discarded, so an
   in-flight save is never abandoned. `resource(deps, fetcher)` and
   `mutation(handler)` carry the same guard for fetch-and-store and
-  submit-and-settle. The `signal-across-await` lint flags the raw form.
+  submit-and-settle. The `signal-across-await` lint flags the raw form —
+  including writes through a closure or callback the task calls, signal
+  props, and struct-held signals.
+
+  Two more edges of the same bug. **The prelude is not safe either on web:**
+  the task's first poll is queued behind the spawning event's flush, so a
+  `busy.set(true)` *before* the first `.await` can still land on a freed
+  slot — do it before calling `spawn_async`. **A handler whose own write
+  rebuilds its control drops a bare `spawn_then`:** a call spawned from a
+  handler is anchored to the node that mounted it, so `busy.set(true)` with
+  `busy` driving that control's `loading` / `disabled` / `if` tears the
+  anchor down and the result is discarded. Anchor to the component instead:
+
+  ```rust
+  let alive = ScopeAlive::current();          // in the component body
+  let save = Rc::new(move || {
+      busy.set(true);                          // rebuilds the control
+      spawn_then_in(&alive, save_report(id), move |_| busy.set(false));
+  });
+  ```
+
+  idea-ui's `Button` already does this for its `on_click`; the
+  `spawn-then-handler-anchor` lint flags the unanchored shape elsewhere.
 - **Never `.set()` inside a `Ref::with` / `handle.with` closure.** That closure
   holds the arena borrow; a signal write inside it aborts with *"RefCell already
   borrowed"* (the `is_reactive_busy` guard does **not** catch this). Read the

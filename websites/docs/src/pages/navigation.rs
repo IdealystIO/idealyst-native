@@ -104,8 +104,8 @@ docs! {
            and SSR. ", code("to_path"), " builds the URL when you navigate to \
            the route; ", code("from_segments"), " parses it back when the \
            browser's location changes (back/forward, deep links). Native \
-           backends never call either method — they pass the boxed struct \
-           through directly."),
+           backends pass the boxed struct through directly and call ",
+          code("from_segments"), " only to open a deep link."),
     },
 
     section(heading = "Why params are typed") {
@@ -561,6 +561,25 @@ docs! {
            recorder. Building the navigator is enough — screen swaps ship \
            as plain node ops over the wire in ", code("idealyst dev"),
           "'s non-local mode for the same reason."),
+    },
+
+    section(heading = "Deep links") {
+        p("A link from outside the app — ", code("myapp://settings/about"),
+          " or ", code("https://example.com/settings/about"),
+          " — opens the screen at its path. It doesn't matter whether the \
+           link launched the app or arrived while it was running: the \
+           navigators resolve the path the same way they resolve a URL on \
+           web, including nested navigators and the back stack below a \
+           linked stack screen. For a custom scheme the part after ",
+          code("://"), " is the path; for a web link it is the URL's path."),
+
+        p("Declare the links under ", code("[package.metadata.idealyst.app.links]"),
+          " (", code("schemes"), ", ", code("domains"), ", and the IDs the \
+           domain verification files need); the build adds what each \
+           platform requires. To see links, hold one until sign-in, or \
+           replay it later, use the ", code("deep-link"), " SDK (",
+          code("on_link"), ", ", code("intercept"), ", ", code("route_link"),
+          "). The full guide is ", code("docs/deep-links.md"), "."),
     },
 
     section(heading = "The Link primitive") {

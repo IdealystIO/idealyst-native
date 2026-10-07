@@ -81,6 +81,15 @@
 //! at the moment IT mounts. See [`resolve_initial`] for the two sources
 //! and the boundary between them.
 //!
+//! # Inbound links (deep links / universal links)
+//!
+//! The launch link rides the launch slot like any cold URL. A link that
+//! arrives while the app runs goes through [`inbound::open_path`], which
+//! [`register_navigator`] installs as `runtime_shared::inbound_link`'s
+//! router: every live navigator registers its resolver, active path and
+//! dispatch, and the router moves the ones whose slice of the path
+//! changed. See [`inbound`] and `docs/deep-links.md`.
+//!
 //! # What is intentionally NOT ported here (each returns with its phase)
 //!
 //! - Native system-back routing (`on_system_back`) and the iOS/Android
@@ -148,6 +157,11 @@ impl<T: ViewOps + StyleServices + LifecycleOps + IntrospectionOps> NavCaps for T
 /// Install the three navigator handlers on `registry`. Called by
 /// [`register_builtins`](crate::handlers::register_builtins).
 pub fn register_navigator<H: NavCaps + 'static>(registry: &mut Registry<H>) {
+    // Inbound links (OS deep links / universal links) route through the
+    // live navigators — installed with the handlers so a host whose app
+    // has navigators routes warm links the way the launch slot routes
+    // the cold one.
+    runtime_shared::inbound_link::install_router(Rc::new(inbound::open_path));
     registry.register::<PrimCell<SwapNavigatorPrim>, _>(|cx, p, children| {
         mount_swap_navigator(cx, p.take(), children)
     });
@@ -724,6 +738,145 @@ pub mod url_sync {
     }
 }
 
+/// Inbound-link routing — move the LIVE navigators to an app path.
+///
+/// The cold-start link needs nothing here: the host seeds the launch slot
+/// and every navigator in the synchronous initial mount resolves its own
+/// slice of it ([`resolve_initial`]). A link that arrives while the app
+/// runs (`runtime_shared::inbound_link::deliver`) finds navigators that
+/// already show something, and [`open_path`] is how it moves them — so the
+/// same link opens the same screen whether it launched the app or not.
+///
+/// It is the forward half of web's `popstate` reconciler made
+/// backend-neutral, with the same rules:
+///
+/// - Every live navigator whose routes resolve the path is asked, parents
+///   before children (fewest base segments first), so a parent's command
+///   is staged before a child it re-reveals.
+/// - A navigator whose slice is unchanged is left alone — the change
+///   belongs to a nested navigator, and re-selecting would tear its
+///   subtree down. The LEAF (the navigator that consumes the end of the
+///   path) also moves when only the query changed, so the screen's state
+///   agrees with the link.
+/// - A changed slice navigates with the navigator's forward verb: `Select`
+///   on a swap, `Push` on a stack (the link lands on top of where the user
+///   was, so Back returns there).
+///
+/// A navigator that does not exist yet — it lives inside the screen the
+/// parent is about to mount — cannot be asked. Its parent's command
+/// carries the full link path instead; the driver holds it in a scoped
+/// slot ([`LinkPathGuard`]) for exactly the synchronous commit, and a
+/// navigator mounting inside that commit resolves its slice from it
+/// ([`resolve_initial`]'s second source). Scoped, not the launch slot:
+/// the launch slot is one-shot and cleared only by a root mount, which a
+/// warm link never triggers, and a navigator resolved from it is told it
+/// came from the LAUNCH URL — which on web seeds browser history entries
+/// that a mid-session navigation must not duplicate.
+pub mod inbound {
+    use super::*;
+    use std::cell::Cell;
+
+    /// What one live navigator hands the router at mount.
+    pub(super) struct LiveNav {
+        pub(super) base: String,
+        pub(super) kind: url_sync::NavSyncKind,
+        pub(super) resolve: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>>,
+        pub(super) active_path: Signal<String>,
+        pub(super) active_query: Signal<QueryParams>,
+        pub(super) dispatch: Rc<dyn Fn(NavCommand, Option<Rc<str>>)>,
+    }
+
+    thread_local! {
+        static LIVE: RefCell<Vec<(u64, Rc<LiveNav>)>> = const { RefCell::new(Vec::new()) };
+        static NEXT_ID: Cell<u64> = const { Cell::new(0) };
+        static LINK_PATH: RefCell<Option<Rc<str>>> = const { RefCell::new(None) };
+    }
+
+    /// Register a mounted navigator; it deregisters at navigator teardown
+    /// (its signals die with the same `Realized`, so the router never
+    /// reads a freed handle).
+    pub(super) fn register(nav: LiveNav) {
+        let id = NEXT_ID.with(|n| {
+            let id = n.get();
+            n.set(id + 1);
+            id
+        });
+        LIVE.with(|l| l.borrow_mut().push((id, Rc::new(nav))));
+        crate::style_attach::on_teardown(move || {
+            let _ = LIVE.try_with(|l| l.borrow_mut().retain(|(i, _)| *i != id));
+        });
+    }
+
+    /// Restores the previous link path on drop — nested commits (a child
+    /// driver running inside its parent's commit) stack correctly.
+    pub(super) struct LinkPathGuard {
+        prev: Option<Rc<str>>,
+    }
+
+    impl LinkPathGuard {
+        pub(super) fn set(path: Rc<str>) -> Self {
+            let prev = LINK_PATH.with(|l| l.borrow_mut().replace(path));
+            LinkPathGuard { prev }
+        }
+    }
+
+    impl Drop for LinkPathGuard {
+        fn drop(&mut self) {
+            let prev = self.prev.take();
+            let _ = LINK_PATH.try_with(|l| *l.borrow_mut() = prev);
+        }
+    }
+
+    /// The inbound link path a navigator mounting right now should
+    /// resolve, if it is mounting inside an inbound-link commit.
+    pub(super) fn pending_link_path() -> Option<String> {
+        LINK_PATH.with(|l| l.borrow().as_deref().map(str::to_string))
+    }
+
+    /// Move the live navigators to `full` (`/path?query`). Returns whether
+    /// the link landed: some navigator moved, or the screen at the end of
+    /// the path is already showing. Commands are STAGED — they commit on
+    /// the world's next flush, so a caller outside a framework-wrapped
+    /// handler must flush afterwards (the hosts' link entry points do).
+    ///
+    /// Routes match by PREFIX, exactly as at cold start: an index route
+    /// (`/`) matches every path and leaves the rest for a nested
+    /// navigator. A path no screen consumes therefore resolves the way the
+    /// same URL would at launch — usually to the index — and reports
+    /// `false` only when that is where the app already is.
+    pub fn open_path(full: &str) -> bool {
+        let (path, query) = split_query(full);
+        let mut navs: Vec<Rc<LiveNav>> =
+            LIVE.with(|l| l.borrow().iter().map(|(_, n)| n.clone()).collect());
+        // Parents first. Stable, so equal depths keep mount order.
+        navs.sort_by_key(|n| n.base.split('/').filter(|s| !s.is_empty()).count());
+        let link: Rc<str> = Rc::from(full);
+        let mut landed = false;
+        for nav in navs {
+            let Some((name, params, rem)) = (nav.resolve)(path) else { continue };
+            let owned = consumed_prefix(path, &rem);
+            let leaf = rem.is_empty();
+            let same_slice = url_key(&owned) == url_key(&nav.active_path.peek());
+            if same_slice && (!leaf || query == nav.active_query.peek()) {
+                landed |= leaf;
+                continue;
+            }
+            landed = true;
+            let url = match_prefix(&owned, &nav.base).map(|(_, rel)| rel).unwrap_or(owned);
+            let query = query.clone();
+            let cmd = match (nav.kind, same_slice) {
+                (url_sync::NavSyncKind::Swap, _) => NavCommand::Select { name, url, params, query },
+                // Same screen, new query: re-seat the top rather than
+                // stacking a duplicate of it.
+                (url_sync::NavSyncKind::Stack, true) => NavCommand::Replace { name, url, params, query },
+                (url_sync::NavSyncKind::Stack, false) => NavCommand::Push { name, url, params, query },
+            };
+            (nav.dispatch)(cmd, (!leaf).then(|| link.clone()));
+        }
+        landed
+    }
+}
+
 /// Native stack transitions — the seam a host uses to drive a real
 /// platform navigation container instead of the outlet swap.
 ///
@@ -884,11 +1037,15 @@ impl SyncSlot {
 // Command channel — queue + tick + driver effect
 // ===========================================================================
 
+/// One staged command: the command, the URL-sync suppress-after bit
+/// (`SyncSlot`), and — for an inbound-link navigation — the FULL link
+/// path the screens it mounts must keep resolving (see [`inbound`]).
+type Staged = (NavCommand, bool, Option<Rc<str>>);
+
 /// The handler-safe dispatch half: commands queue here (plain interior
-/// state), and the tick signal wakes the driver on the next flush. The
-/// per-command bool is the URL-sync suppress-after bit (`SyncSlot`).
+/// state), and the tick signal wakes the driver on the next flush.
 struct CommandChannel {
-    queue: Rc<RefCell<VecDeque<(NavCommand, bool)>>>,
+    queue: Rc<RefCell<VecDeque<Staged>>>,
     tick: Signal<u64>,
 }
 
@@ -897,8 +1054,8 @@ impl CommandChannel {
     /// the queue is plain interior state and `tick.update` is
     /// handle-routed. Two dispatches in one window compose (tick +2 →
     /// one driver wake draining both, in order).
-    fn dispatch(&self, cmd: NavCommand, suppress_sync_after: bool) {
-        self.queue.borrow_mut().push_back((cmd, suppress_sync_after));
+    fn dispatch(&self, cmd: NavCommand, suppress_sync_after: bool, link: Option<Rc<str>>) {
+        self.queue.borrow_mut().push_back((cmd, suppress_sync_after, link));
         self.tick.update(|n| n + 1);
     }
 }
@@ -1078,6 +1235,19 @@ fn resolve_initial(config: &NavConfig, base: &str) -> InitialResolution {
     };
     if let Some(hit) = resolve_from(peek_initial_path(), true) {
         return hit;
+    }
+    // A navigator mounting inside an inbound-link commit (see [`inbound`]):
+    // the link names its slice. Gated like the live URL below, for the
+    // same reason — a link that stops at this navigator's base leaves the
+    // choice to the configured initial.
+    if let Some(link) = inbound::pending_link_path() {
+        let names_a_screen_below_us = match_prefix(split_query(&link).0, base)
+            .is_some_and(|(_, rem)| !rem.is_empty());
+        if names_a_screen_below_us {
+            if let Some(hit) = resolve_from(Some(link), false) {
+                return hit;
+            }
+        }
     }
     // Second source, read only when the first missed: the live-URL read
     // is a host call (a `window.location` touch on web), and the launch
@@ -1372,12 +1542,15 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // The handler-safe dispatch: compose base, pre-write the mirror,
     // URL-sync before-hook (history write), queue for the driver.
     let sync = SyncSlot::default();
-    let dispatch: Rc<dyn Fn(NavCommand)> = {
+    // `dispatch_linked` additionally carries an inbound link's full path
+    // through to the driver (see [`inbound`]); every other caller rides
+    // `dispatch`, which carries none.
+    let dispatch_linked: Rc<dyn Fn(NavCommand, Option<Rc<str>>)> = {
         let channel = channel.clone();
         let base = base.clone();
         let sync = sync.clone();
         let screens = shared.screens.clone();
-        Rc::new(move |cmd| {
+        Rc::new(move |cmd, link| {
             // Last-driven navigator = the inspector's "current".
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
@@ -1385,8 +1558,12 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
-            channel.dispatch(cmd, suppress);
+            channel.dispatch(cmd, suppress, link);
         })
+    };
+    let dispatch: Rc<dyn Fn(NavCommand)> = {
+        let dispatch_linked = dispatch_linked.clone();
+        Rc::new(move |cmd| dispatch_linked(cmd, None))
     };
 
     // Route links inside this navigator's screens/chrome Select — the
@@ -1439,8 +1616,12 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             let _ = tick.get(); // subscribe; first run sees an empty queue
             loop {
                 let next = queue.borrow_mut().pop_front();
-                let Some((cmd, suppress_sync)) = next else { break };
+                let Some((cmd, suppress_sync, link)) = next else { break };
                 let kind = CommittedKind::of(&cmd);
+                // Screens this commit mounts resolve the rest of an
+                // inbound link from here (restored at the end of the
+                // iteration — the commit is synchronous).
+                let _link = link.map(inbound::LinkPathGuard::set);
                 match cmd {
                     NavCommand::Select { name, url, params, query } => {
                         shared.select(name, &url, params, query);
@@ -1580,6 +1761,14 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             Some(node) => Rc::new(node),
             None => Rc::new(()),
         };
+        inbound::register(inbound::LiveNav {
+            base: base.clone(),
+            kind: NavSyncKind::Swap,
+            resolve: resolve.clone(),
+            active_path,
+            active_query,
+            dispatch: dispatch_linked.clone(),
+        });
         sync.register(NavSyncRegistration {
             kind: NavSyncKind::Swap,
             base: base.clone(),
@@ -2095,12 +2284,15 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         tick: signal(0u64),
     });
     let sync = SyncSlot::default();
-    let dispatch: Rc<dyn Fn(NavCommand)> = {
+    // `dispatch_linked` additionally carries an inbound link's full path
+    // through to the driver (see [`inbound`]); every other caller rides
+    // `dispatch`, which carries none.
+    let dispatch_linked: Rc<dyn Fn(NavCommand, Option<Rc<str>>)> = {
         let channel = channel.clone();
         let base = base.clone();
         let sync = sync.clone();
         let screens = shared.screens.clone();
-        Rc::new(move |cmd| {
+        Rc::new(move |cmd, link| {
             // Last-driven navigator = the inspector's "current".
             #[cfg(feature = "robot")]
             crate::robot::mark_active_navigator(nav_id);
@@ -2108,8 +2300,12 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             let cmd = compose_url(&base, cmd);
             mirror_command(&cmd, active_route, active_path, active_query);
             let suppress = sync.before(&cmd);
-            channel.dispatch(cmd, suppress);
+            channel.dispatch(cmd, suppress, link);
         })
+    };
+    let dispatch: Rc<dyn Fn(NavCommand)> = {
+        let dispatch_linked = dispatch_linked.clone();
+        Rc::new(move |cmd| dispatch_linked(cmd, None))
     };
 
     // Route links inside this navigator's screens/chrome PUSH — the
@@ -2172,8 +2368,12 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             let _ = tick.get();
             loop {
                 let next = queue.borrow_mut().pop_front();
-                let Some((cmd, suppress_sync)) = next else { break };
+                let Some((cmd, suppress_sync, link)) = next else { break };
                 let kind = CommittedKind::of(&cmd);
+                // Screens this commit mounts resolve the rest of an
+                // inbound link from here (restored at the end of the
+                // iteration — the commit is synchronous).
+                let _link = link.map(inbound::LinkPathGuard::set);
                 match cmd {
                     NavCommand::Push { name, params, query, url } => {
                         shared.push(name, params, query, url)
@@ -2304,6 +2504,14 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
             Some(node) => Rc::new(node),
             None => Rc::new(()),
         };
+        inbound::register(inbound::LiveNav {
+            base: base.clone(),
+            kind: NavSyncKind::Stack,
+            resolve: resolve.clone(),
+            active_path,
+            active_query,
+            dispatch: dispatch_linked.clone(),
+        });
         sync.register(NavSyncRegistration {
             kind: NavSyncKind::Stack,
             base: base.clone(),

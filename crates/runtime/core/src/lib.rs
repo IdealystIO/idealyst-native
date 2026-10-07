@@ -124,6 +124,7 @@ mod _spawn_then_reachable {
     #[test]
     fn spawn_then_is_on_the_author_surface() {
         let _f: fn(std::future::Ready<i32>, fn(i32)) = crate::spawn_then;
+        let _g: fn(&crate::ScopeAlive, std::future::Ready<i32>, fn(i32)) = crate::spawn_then_in;
     }
 }
 

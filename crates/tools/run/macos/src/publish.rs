@@ -216,6 +216,11 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
         /* sandbox */ app_store,
         &resolved.macos_entitlements,
         &string_entitlements,
+        // Universal links: the domains the app opens (empty ⇒ omitted).
+        &[(
+            "com.apple.developer.associated-domains".to_string(),
+            manifest.app.links.associated_domains(),
+        )],
     );
     let entitlements_path = app
         .parent()
@@ -299,12 +304,15 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
 /// boolean `true`. `string_entitlements` carry string VALUES — the App Store
 /// `com.apple.application-identifier` (`<team>.<bundle>`) +
 /// `com.apple.developer.team-identifier`, which must be sealed into the
-/// signature to match the provisioning profile (error 90886). Pure (no IO)
-/// so it's unit-testable.
+/// signature to match the provisioning profile (error 90886).
+/// `array_entitlements` carry string-array values —
+/// `com.apple.developer.associated-domains` (`applinks:…`) for universal
+/// links. Pure (no IO) so it's unit-testable.
 fn entitlements_plist(
     sandbox: bool,
     bool_entitlements: &[String],
     string_entitlements: &[(String, String)],
+    array_entitlements: &[(String, Vec<String>)],
 ) -> String {
     let mut keys: Vec<String> = Vec::new();
     if sandbox {
@@ -321,10 +329,19 @@ fn entitlements_plist(
         .iter()
         .map(|(k, v)| format!("    <key>{k}</key>\n    <string>{v}</string>\n"))
         .collect();
+    let arrays: String = array_entitlements
+        .iter()
+        .filter(|(_, values)| !values.is_empty())
+        .map(|(k, values)| {
+            let items: String =
+                values.iter().map(|v| format!("        <string>{v}</string>\n")).collect();
+            format!("    <key>{k}</key>\n    <array>\n{items}    </array>\n")
+        })
+        .collect();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-<plist version=\"1.0\">\n<dict>\n{strings}{bools}</dict>\n</plist>\n"
+<plist version=\"1.0\">\n<dict>\n{strings}{arrays}{bools}</dict>\n</plist>\n"
     )
 }
 
@@ -680,6 +697,7 @@ mod tests {
                 "com.apple.application-identifier".to_string(),
                 "TEAMID1234.com.example.app".to_string(),
             )],
+            &[],
         );
         assert!(
             ent.contains("<key>com.apple.security.app-sandbox</key>"),
@@ -702,6 +720,7 @@ mod tests {
             false,
             &["com.apple.security.device.audio-input".to_string()],
             &[],
+            &[],
         );
         assert!(
             !ent.contains("app-sandbox"),
@@ -709,6 +728,29 @@ mod tests {
         );
         assert!(!ent.contains("application-identifier"));
         assert!(ent.contains("<key>com.apple.security.device.audio-input</key>"));
+    }
+
+    /// Universal links on macOS: the associated-domains entitlement is a
+    /// string ARRAY, and an app without domains must not carry the key
+    /// (the provisioning profile would then need the capability).
+    #[test]
+    fn associated_domains_entitlement_is_an_array_and_omitted_when_empty() {
+        let key = "com.apple.developer.associated-domains".to_string();
+        let ent = entitlements_plist(
+            true,
+            &[],
+            &[],
+            &[(key.clone(), vec!["applinks:example.com".to_string()])],
+        );
+        assert!(
+            ent.contains(
+                "<key>com.apple.developer.associated-domains</key>\n    <array>\n        \
+                 <string>applinks:example.com</string>\n    </array>"
+            ),
+            "{ent}"
+        );
+        let none = entitlements_plist(true, &[], &[], &[(key, Vec::new())]);
+        assert!(!none.contains("associated-domains"));
     }
 
     #[test]

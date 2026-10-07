@@ -107,7 +107,12 @@ pub fn all_rules() -> &'static [RuleInfo] {
         RuleInfo {
             id: signal_across_await::RULE,
             default_level: Level::Warn,
-            summary: "a component-scoped signal used after an `.await` in a detached `spawn_async` — the scope can be torn down at any await boundary, and the resumed task then aborts with `stale-signal-handle`",
+            summary: "a scope-owned signal (local, prop, struct field, or through a closure / callback) touched inside a detached `spawn_async` — after an `.await`, or at all on web where the body starts after the event's flush — aborts with `stale-signal-handle` once the scope is torn down",
+        },
+        RuleInfo {
+            id: signal_across_await::ANCHOR_RULE,
+            default_level: Level::Warn,
+            summary: "a handler that writes a component signal and then calls a bare `spawn_then` — the task is anchored to the control, so if the write rebuilds it the result is silently dropped; use `spawn_then_in(&alive, …)`",
         },
         RuleInfo {
             id: premint_crawl::STATE_KEYED_RULE,
@@ -130,7 +135,10 @@ pub(crate) fn collect(file: &syn::File) -> Vec<RawDiag> {
     // file imports, which idents it shadows — so `prefer-ui-macro` can
     // judge a bare `view(…)` with evidence instead of guessing.
     let file_cx = prefer_ui::FileContext::scan(file);
-    let mut linter = Linter { diags: Vec::new(), file_cx };
+    // Same-file struct declarations, so a props struct's signal and
+    // callback fields are visible to `signal-across-await`.
+    let signal_cx = signal_across_await::FileContext::scan(file);
+    let mut linter = Linter { diags: Vec::new(), file_cx, signal_cx };
     linter.visit_file(file);
     // Whole-file rule: needs call counts / value uses / imports across
     // the file before it can judge any one fn, so it runs its own walk.
@@ -141,14 +149,34 @@ pub(crate) fn collect(file: &syn::File) -> Vec<RawDiag> {
 struct Linter {
     diags: Vec<RawDiag>,
     file_cx: prefer_ui::FileContext,
+    signal_cx: signal_across_await::FileContext,
 }
 
 impl<'ast> Visit<'ast> for Linter {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         component_case::check_fn(node, &mut self.diags);
         snapshot_condition::check_fn(node, &mut self.diags);
-        signal_across_await::check_fn(node, &mut self.diags);
+        signal_across_await::check_fn(
+            &node.attrs,
+            &node.sig,
+            &node.block,
+            &self.signal_cx,
+            &mut self.diags,
+        );
         syn::visit::visit_item_fn(self, node);
+    }
+
+    // Methods spawn too — a `fn start(&self, on_err: Rc<dyn Fn(String)>)`
+    // that calls its callback from a task is the same bug as a free fn.
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        signal_across_await::check_fn(
+            &node.attrs,
+            &node.sig,
+            &node.block,
+            &self.signal_cx,
+            &mut self.diags,
+        );
+        syn::visit::visit_impl_item_fn(self, node);
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {

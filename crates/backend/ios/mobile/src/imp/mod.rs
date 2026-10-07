@@ -1477,15 +1477,19 @@ impl IosBackend {
 
     pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
         Some(std::rc::Rc::new(|url: &str| {
-            // [[UIApplication sharedApplication] openURL:] hands the URL
-            // to the system (Safari, Mail, the app registered for the
-            // scheme). Raw msg_send + class!() — same style as
-            // `color_scheme` below — so no extra objc2-ui-kit typed
-            // feature is needed. We use the single-arg form rather than
-            // openURL:options:completionHandler: to keep the call ABI
-            // trivially correct (one object arg in, BOOL out, no block
-            // to marshal). Must run on the main thread; `open_url` is
-            // only invoked from main-thread event handlers.
+            // [[UIApplication sharedApplication]
+            // openURL:options:completionHandler:] hands the URL to the
+            // system (Safari, Mail, the app registered for the scheme —
+            // including this app's own deep-link scheme). Raw msg_send +
+            // class!() — same style as `color_scheme` below — so no extra
+            // objc2-ui-kit typed feature is needed.
+            //
+            // NOT the single-arg `openURL:`: it is deprecated, and since
+            // iOS 18 UIKit refuses it outright ("BUG IN CLIENT OF UIKIT …
+            // Force returning false") — every `open_url` silently did
+            // nothing. Empty options, nil completion (there is no success
+            // signal on any backend). Must run on the main thread;
+            // `open_url` is only invoked from main-thread event handlers.
             let ns_url_str = NSString::from_str(url);
             let url_obj: *mut NSObject =
                 unsafe { msg_send![objc2::class!(NSURL), URLWithString: &*ns_url_str] };
@@ -1497,7 +1501,12 @@ impl IosBackend {
             if app.is_null() {
                 return;
             }
-            let _: bool = unsafe { msg_send![app, openURL: url_obj] };
+            let options: *mut NSObject =
+                unsafe { msg_send![objc2::class!(NSDictionary), dictionary] };
+            let completion = Option::<&block2::Block<dyn Fn(objc2::runtime::Bool)>>::None;
+            let _: () = unsafe {
+                msg_send![app, openURL: url_obj, options: options, completionHandler: completion]
+            };
         }))
     }
 

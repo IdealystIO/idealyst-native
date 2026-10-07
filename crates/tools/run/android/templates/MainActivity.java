@@ -46,26 +46,14 @@ public class MainActivity extends FragmentActivity {
             getWindow().getDecorView().getSystemUiVisibility()
                 | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
 
-        // Cold-start deep link. If the Activity was launched via an
-        // ACTION_VIEW intent (custom scheme or Android App Link), hand
-        // the URI's PATH to the framework BEFORE `attach` so the
-        // navigator walker resolves the deep-linked screen on its
-        // synchronous initial mount. No VIEW intent ⇒ skipped, behavior
-        // unchanged.
-        Intent launchIntent = getIntent();
-        if (launchIntent != null && Intent.ACTION_VIEW.equals(launchIntent.getAction())) {
-            Uri data = launchIntent.getData();
-            if (data != null) {
-                String path = data.getPath();
-                if (path == null || path.isEmpty()) {
-                    path = "/";
-                }
-                String query = data.getEncodedQuery();
-                if (query != null && !query.isEmpty()) {
-                    path += "?" + query;
-                }
-                NativeBridge.setLaunchPath(path);
-            }
+        // Cold-start inbound link. Launched via an ACTION_VIEW intent
+        // (custom scheme or Android App Link) ⇒ hand the full URI to the
+        // framework BEFORE `attach`, so the navigators open the linked
+        // screen on their synchronous initial mount. No VIEW intent ⇒
+        // skipped.
+        String launchUrl = viewIntentUrl(getIntent());
+        if (launchUrl != null) {
+            NativeBridge.setLaunchUrl(launchUrl);
         }
 
         // Robot bridge relay (dev only): `idealyst dev` bakes the relay URL
@@ -122,6 +110,28 @@ public class MainActivity extends FragmentActivity {
      * already has a retry loop that waits for the host to be measured
      * before applying frames, so a single notify is enough.
      */
+    /// A link while running. The Activity is `singleTask`, so Android
+    /// re-delivers a VIEW intent to this instance instead of stacking a
+    /// second Activity (a second `attach` would mount a second app).
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String url = viewIntentUrl(intent);
+        if (url != null) {
+            NativeBridge.deliverLink(url);
+        }
+    }
+
+    /// The data URI of an ACTION_VIEW intent, or null for any other intent.
+    private static String viewIntentUrl(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+            return null;
+        }
+        Uri data = intent.getData();
+        return data == null ? null : data.toString();
+    }
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);

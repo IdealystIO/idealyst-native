@@ -117,7 +117,8 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         &parse_manifest(project_dir)?.app.permissions,
     );
 
-    let spawn_target = match maybe_wrap_in_app_bundle(project_dir, &built.binary, &permission_pairs)? {
+    let links = parse_manifest(project_dir)?.app.links;
+    let spawn_target = match maybe_wrap_in_app_bundle(project_dir, &built.binary, &permission_pairs, &links)? {
         Some(path) => path,
         None => built.binary.clone(),
     };
@@ -142,6 +143,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                  an Apple Development certificate (or set DEVELOPMENT_TEAM) to \
                  make grants stick."
             ),
+        }
+    }
+
+    // A custom URL scheme only opens the app once LaunchServices knows the
+    // bundle declares it. A dev bundle is launched by spawning its binary
+    // directly (never through `open`), which doesn't register it — so
+    // register explicitly. Best effort: the app still runs without it,
+    // it just isn't reachable by `myapp://` links yet.
+    if !links.schemes.is_empty() {
+        if let Some(app_bundle) = app_bundle_for(&spawn_target) {
+            register_with_launch_services(&app_bundle);
         }
     }
 
@@ -268,6 +280,25 @@ pub(crate) fn select_identity_from_listing(
     first
 }
 
+/// `lsregister -f <app>`: make LaunchServices read the bundle's
+/// `CFBundleURLTypes` so its custom schemes open it. Warns (never fails the
+/// run) when the tool is missing or refuses.
+fn register_with_launch_services(app: &Path) {
+    const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/\
+        Frameworks/LaunchServices.framework/Support/lsregister";
+    match Command::new(LSREGISTER).arg("-f").arg(app).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "[run-macos] lsregister exited with {status}; custom URL schemes may not open {}",
+            app.display()
+        ),
+        Err(e) => eprintln!(
+            "[run-macos] could not run lsregister ({e}); custom URL schemes may not open {}",
+            app.display()
+        ),
+    }
+}
+
 /// `codesign --force --deep --sign <identity> <app>`. Deep-signs the bundle and
 /// its nested binary so the launched executable carries the stable cert
 /// identity TCC keys grants on. No hardened runtime / entitlements — this is a
@@ -294,8 +325,9 @@ fn codesign_bundle(app: &Path, identity: &str) -> Result<()> {
 /// binary INSIDE the bundle (which is what gets launched so macOS
 /// reads the parent `.app`'s metadata for dock chrome).
 ///
-/// Returns `Ok(None)` when the project has neither an `[icon]` block nor
-/// any capability-derived permission keys — the caller falls back to the
+/// Returns `Ok(None)` when the project has no `[icon]` block, no
+/// capability-derived permission keys and no custom URL schemes — the
+/// caller falls back to the
 /// bare-binary launch path. A project with permissions but no icon is
 /// still wrapped, because the usage-description strings have to live in an
 /// `Info.plist` for the OS to show them. Errors out on genuinely broken
@@ -306,9 +338,12 @@ fn maybe_wrap_in_app_bundle(
     project_dir: &Path,
     binary: &Path,
     permissions: &[(String, String)],
+    links: &build_ios::links::LinksMetadata,
 ) -> Result<Option<PathBuf>> {
     let config = icon_gen::load_config_from_manifest(project_dir)?;
-    if config.is_none() && permissions.is_empty() {
+    // URL schemes live in the bundle's Info.plist too: without a bundle
+    // the OS has nothing to route `myapp://` links to.
+    if config.is_none() && permissions.is_empty() && links.schemes.is_empty() {
         return Ok(None);
     }
     Ok(Some(
@@ -493,6 +528,11 @@ fn render_info_plist(
         ),
         None => String::new(),
     };
+    // Custom URL schemes from `[package.metadata.idealyst.app.links]`.
+    let url_types = match app.links.plist_url_types(&bundle_id) {
+        t if t.is_empty() => t,
+        t => format!("    {t}\n"),
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
@@ -502,6 +542,7 @@ fn render_info_plist(
          {permission_entries}\
          {category_entry}\
          {copyright_entry}\
+         {url_types}\
              <key>CFBundleExecutable</key>\n    <string>{executable}</string>\n\
              <key>CFBundleIdentifier</key>\n    <string>{bundle_id}</string>\n\
              <key>CFBundleName</key>\n    <string>{display_name}</string>\n\
@@ -561,6 +602,7 @@ mod tests {
             web: Default::default(),
             macos,
             permissions: Default::default(),
+            links: Default::default(),
         }
     }
 
@@ -587,6 +629,19 @@ mod tests {
 
     /// Category/copyright are optional — omit the keys when unset rather than
     /// emitting empty strings.
+    /// macOS routes `myapp://` (the kAEGetURL Apple Event) only to a bundle
+    /// whose Info.plist declares the scheme.
+    #[test]
+    fn info_plist_declares_custom_url_schemes() {
+        let mut app = app_metadata(MacosMetadata::default());
+        assert!(!render_info_plist("Demo", &app, "demo-macos", None, &[]).contains("CFBundleURLTypes"));
+        app.links.schemes = vec!["demo".to_string()];
+        let plist = render_info_plist("Demo", &app, "demo-macos", None, &[]);
+        assert!(plist.contains("<key>CFBundleURLTypes</key>"), "{plist}");
+        assert!(plist.contains("<string>demo</string>"));
+        assert!(plist.trim_end().ends_with("</plist>"));
+    }
+
     #[test]
     fn info_plist_omits_unset_optional_macos_keys() {
         let app = app_metadata(MacosMetadata::default());

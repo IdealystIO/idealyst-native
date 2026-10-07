@@ -92,4 +92,10 @@ pub fn install_url_provider() {
 
     // Cold-start deep-link seed for the walker's initial resolution.
     nav::set_initial_path(Some(pathname()));
+    // The page address is this target's launch link: record it for
+    // `deep_link::initial_link()` (the slot above is already seeded from
+    // the path, so record only — `inbound_link::launch` would re-seed it).
+    if let Ok(href) = window.location().href() {
+        runtime_shared::inbound_link::record_launch(&href);
+    }
 }
